@@ -1,0 +1,15 @@
+[package]
+name = "simcity"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = "0.17.3"
+rand = "0.8"
+
+[profile.dev]
+opt-level = 1
+
+# Enable a small amount of optimization in debug mode for dependencies, which helps Bevy a lot.
+[profile.dev.package."*"]
+opt-level = 3
