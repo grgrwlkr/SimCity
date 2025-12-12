@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 
+use bevy::ecs::message::{MessageReader, MessageWriter};
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
 use crate::game::camera::MainCamera;
+use crate::game::commands::GameCommand;
 use crate::game::sim::City;
 use crate::game::state::AppState;
+use crate::game::ui_state::{ToolMode, UiState};
 
 pub struct MapPlugin;
 
@@ -17,16 +20,11 @@ impl Plugin for MapPlugin {
             .init_resource::<BuildMode>()
             .add_systems(OnEnter(AppState::InGame), spawn_map_if_needed)
             .add_systems(OnEnter(AppState::MainMenu), cleanup_ingame_entities)
-            .add_systems(
-                Update,
-                (
-                    build_mode_hotkeys,
-                    update_cursor_highlight,
-                    place_building_with_click,
-                )
-                    .chain()
-                    .run_if(in_game_or_paused),
-            );
+            .add_systems(Update, sync_build_mode_from_ui.run_if(in_game_or_paused))
+            .add_systems(Update, build_mode_hotkeys.run_if(in_game_or_paused))
+            .add_systems(Update, update_cursor_highlight.run_if(in_game_or_paused))
+            .add_systems(Update, cursor_click_to_command.run_if(in_game_or_paused))
+            .add_systems(Update, apply_game_commands_to_map.run_if(in_game_or_paused));
     }
 }
 
@@ -43,9 +41,9 @@ pub struct MapConfig {
 impl Default for MapConfig {
     fn default() -> Self {
         Self {
-            width: 48,
-            height: 32,
-            tile_size: 24.0,
+            width: 128,
+            height: 128,
+            tile_size: 16.0,
         }
     }
 }
@@ -61,6 +59,7 @@ pub enum TileKind {
     Grass,
     Road,
     Residential,
+    Commercial,
     Industrial,
 }
 
@@ -70,6 +69,7 @@ impl TileKind {
             TileKind::Grass => Color::srgb(0.15, 0.42, 0.18),
             TileKind::Road => Color::srgb(0.18, 0.18, 0.20),
             TileKind::Residential => Color::srgb(0.18, 0.36, 0.72),
+            TileKind::Commercial => Color::srgb(0.18, 0.65, 0.22),
             TileKind::Industrial => Color::srgb(0.72, 0.56, 0.12),
         }
     }
@@ -79,6 +79,7 @@ impl TileKind {
             TileKind::Grass => 0,
             TileKind::Road => 10,
             TileKind::Residential => 50,
+            TileKind::Commercial => 60,
             TileKind::Industrial => 80,
         }
     }
@@ -158,14 +159,28 @@ fn in_game_or_paused(state: Res<State<AppState>>) -> bool {
     matches!(state.get(), AppState::InGame | AppState::Paused)
 }
 
+fn sync_build_mode_from_ui(ui: Res<UiState>, mut mode: ResMut<BuildMode>) {
+    let selected = match ui.tool {
+        ToolMode::Road => TileKind::Road,
+        ToolMode::Residential => TileKind::Residential,
+        ToolMode::Commercial => TileKind::Commercial,
+        ToolMode::Industrial => TileKind::Industrial,
+        ToolMode::Erase => TileKind::Grass,
+        ToolMode::Inspect => mode.selected, // keep previous selection
+    };
+    mode.selected = selected;
+}
+
 fn build_mode_hotkeys(keys: Res<ButtonInput<KeyCode>>, mut mode: ResMut<BuildMode>) {
     if keys.just_pressed(KeyCode::Digit1) {
         mode.selected = TileKind::Road;
     } else if keys.just_pressed(KeyCode::Digit2) {
         mode.selected = TileKind::Residential;
     } else if keys.just_pressed(KeyCode::Digit3) {
-        mode.selected = TileKind::Industrial;
+        mode.selected = TileKind::Commercial;
     } else if keys.just_pressed(KeyCode::Digit4) {
+        mode.selected = TileKind::Industrial;
+    } else if keys.just_pressed(KeyCode::Digit5) {
         mode.selected = TileKind::Grass;
     }
 }
@@ -206,21 +221,22 @@ fn update_cursor_highlight(
 }
 
 #[derive(SystemParam)]
-struct BuildClickParams<'w, 's> {
+struct CursorClickParams<'w, 's> {
     state: Res<'w, State<AppState>>,
     buttons: Res<'w, ButtonInput<MouseButton>>,
     cfg: Res<'w, MapConfig>,
+    ui_state: Res<'w, UiState>,
     mode: Res<'w, BuildMode>,
     q_window: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
     q_camera: Query<'w, 's, (&'static Camera, &'static GlobalTransform), With<MainCamera>>,
-    index: Res<'w, MapIndex>,
-    q_tiles: Query<'w, 's, (&'static mut Sprite, &'static mut TileKind)>,
-    city: ResMut<'w, City>,
 }
 
-fn place_building_with_click(mut p: BuildClickParams) {
+fn cursor_click_to_command(p: CursorClickParams, mut out: MessageWriter<GameCommand>) {
     if *p.state.get() != AppState::InGame {
         return; // don't build while paused
+    }
+    if p.ui_state.tool == ToolMode::Inspect {
+        return;
     }
     if !p.buttons.just_pressed(MouseButton::Left) {
         return;
@@ -243,31 +259,58 @@ fn place_building_with_click(mut p: BuildClickParams) {
         return;
     };
 
-    let Some(&entity) = p.index.by_pos.get(&IVec2::new(tile.x, tile.y)) else {
-        return;
-    };
+    out.write(GameCommand::SetTile {
+        pos: tile,
+        kind: p.mode.selected,
+    });
+}
 
-    let cost = p.mode.selected.cost();
-    if p.city.money < cost {
-        return;
+fn apply_game_commands_to_map(
+    mut commands: MessageReader<GameCommand>,
+    index: Res<MapIndex>,
+    mut q_tiles: Query<(&mut Sprite, &mut TileKind)>,
+    mut q_all_tiles: Query<(&mut Sprite, &mut TileKind), With<TilePos>>,
+    mut city: ResMut<City>,
+) {
+    for cmd in commands.read() {
+        match *cmd {
+            GameCommand::SetTile { pos, kind } => {
+                let Some(&entity) = index.by_pos.get(&IVec2::new(pos.x, pos.y)) else {
+                    continue;
+                };
+
+                let cost = kind.cost();
+                if city.money < cost {
+                    continue;
+                }
+
+                let Ok((mut sprite, mut current_kind)) = q_tiles.get_mut(entity) else {
+                    continue;
+                };
+
+                if *current_kind == kind {
+                    continue;
+                }
+
+                // Placeholder effects (we'll replace with zoning + buildings).
+                if kind == TileKind::Residential {
+                    city.population = city.population.saturating_add(5);
+                }
+
+                city.money -= cost;
+                *current_kind = kind;
+                sprite.color = kind.color();
+            }
+            GameCommand::GenerateMap { seed } => {
+                info!("GenerateMap requested (seed={seed})");
+                // MVP: reset all tiles to grass. Generation comes next milestone.
+                for (mut sprite, mut kind) in &mut q_all_tiles {
+                    *kind = TileKind::Grass;
+                    sprite.color = TileKind::Grass.color();
+                }
+            }
+        }
     }
-
-    let Ok((mut sprite, mut kind)) = p.q_tiles.get_mut(entity) else {
-        return;
-    };
-
-    if *kind == p.mode.selected {
-        return;
-    }
-
-    // Simple placeholder effects.
-    if p.mode.selected == TileKind::Residential {
-        p.city.population = p.city.population.saturating_add(5);
-    }
-
-    p.city.money -= cost;
-    *kind = p.mode.selected;
-    sprite.color = p.mode.selected.color();
 }
 
 fn map_origin(cfg: &MapConfig) -> Vec2 {

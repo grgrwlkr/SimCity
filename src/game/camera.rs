@@ -49,7 +49,7 @@ fn camera_keyboard_pan(
         return;
     }
 
-    let speed_world_units_per_sec = 900.0;
+    let speed_world_units_per_sec = 1500.0;
     let delta = dir.normalize() * speed_world_units_per_sec * time.delta_secs();
 
     let Ok(mut t) = q_cam.single_mut() else {

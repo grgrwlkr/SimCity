@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
 use crate::game::state::AppState;
+use crate::game::ui_state::UiState;
 
 pub struct SimPlugin;
 
@@ -76,8 +77,21 @@ fn handle_state_hotkeys(
     }
 }
 
-fn sim_tick(time: Res<Time>, mut clock: ResMut<SimClock>, mut city: ResMut<City>) {
-    clock.timer.tick(time.delta());
+fn sim_tick(
+    time: Res<Time>,
+    ui_state: Res<UiState>,
+    mut clock: ResMut<SimClock>,
+    mut city: ResMut<City>,
+) {
+    let speed = ui_state.sim_speed.multiplier();
+    if speed <= 0.0 {
+        return;
+    }
+
+    // Scale simulation time by sim speed (MVP). We'll replace this with a proper fixed timestep.
+    clock
+        .timer
+        .tick(time.delta().mul_f32(speed.clamp(0.0, 8.0)));
     if !clock.timer.just_finished() {
         return;
     }
