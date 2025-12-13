@@ -5,6 +5,7 @@ mod commands;
 mod map;
 mod sim;
 mod state;
+mod traffic;
 mod ui;
 mod ui_state;
 
@@ -19,6 +20,7 @@ impl Plugin for GamePlugin {
                 camera::CameraPlugin,
                 map::MapPlugin,
                 sim::SimPlugin,
+                traffic::TrafficPlugin,
                 ui::UiPlugin,
             ));
     }

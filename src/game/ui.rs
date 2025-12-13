@@ -148,6 +148,16 @@ fn top_bar_ui(
 
             ui.separator();
 
+            if matches!(state.get(), AppState::InGame | AppState::Paused) {
+                if ui.button("Spawn cars").clicked() {
+                    commands.write(GameCommand::SpawnDebugVehicles { count: 25 });
+                }
+                if ui.button("Clear cars").clicked() {
+                    commands.write(GameCommand::ClearVehicles);
+                }
+                ui.separator();
+            }
+
             // Quick status line
             ui.label(format!(
                 "Day {} | $ {} | Pop {} | Build {:?}",

@@ -11,4 +11,10 @@ pub enum GameCommand {
 
     /// Set the tile kind at the given tile position (MVP build/erase).
     SetTile { pos: TilePos, kind: TileKind },
+
+    /// Spawn a number of debug vehicles on roads (M3 prototype).
+    SpawnDebugVehicles { count: u32 },
+
+    /// Despawn all vehicles (M3 prototype).
+    ClearVehicles,
 }

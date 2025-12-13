@@ -160,7 +160,10 @@ impl MapGrid {
         true
     }
 
-    // Iteration helpers will be added when we build read-models / overlays.
+    /// Total number of cells.
+    pub fn len(&self) -> usize {
+        self.cells.len()
+    }
 }
 
 #[derive(Resource, Debug)]
@@ -455,6 +458,8 @@ fn apply_game_commands_to_grid(
                 generate_map_into_grid(&mut grid, new_seed);
                 dirty.mark_all();
             }
+            // Traffic commands are handled by TrafficPlugin.
+            GameCommand::SpawnDebugVehicles { .. } | GameCommand::ClearVehicles => {}
         }
     }
 }
@@ -581,7 +586,7 @@ fn path_preview_render(mut p: PathPreviewRenderParams) {
         return;
     };
 
-    let path = astar_road_path(&p.grid, start, end);
+    let path = astar_path(&p.grid, start, end);
     if path.is_empty() {
         return;
     }
@@ -643,7 +648,8 @@ impl PartialOrd for HeapState {
     }
 }
 
-fn astar_road_path(grid: &MapGrid, start: TilePos, goal: TilePos) -> Vec<TilePos> {
+/// A* pathfinding on road tiles. Returns empty vec if no path found.
+pub fn astar_path(grid: &MapGrid, start: TilePos, goal: TilePos) -> Vec<TilePos> {
     if start == goal {
         return vec![start];
     }
@@ -828,6 +834,11 @@ fn generate_map_into_grid(grid: &mut MapGrid, seed: u64) {
             // Move to the lowest neighbor (with a little randomness)
             let mut best = (x, y, grid.cells[i].height);
             for (nx, ny) in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)] {
+                // Bounds check (defensive — the boundary check above should guarantee this,
+                // but explicit check prevents issues if logic changes)
+                if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                    continue;
+                }
                 let ni = (ny as usize) * w + (nx as usize);
                 let h0 = grid.cells[ni].height;
                 if h0 < best.2 || (h0 == best.2 && rng.gen_bool(0.35)) {
