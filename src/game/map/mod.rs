@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
 
 use bevy::ecs::message::{MessageReader, MessageWriter};
 use bevy::ecs::system::SystemParam;
@@ -10,7 +11,7 @@ use crate::game::camera::MainCamera;
 use crate::game::commands::GameCommand;
 use crate::game::sim::City;
 use crate::game::state::AppState;
-use crate::game::ui_state::{ToolMode, UiState};
+use crate::game::ui_state::{OverlayMode, ToolMode, UiState};
 
 pub struct MapPlugin;
 
@@ -20,6 +21,8 @@ impl Plugin for MapPlugin {
             .add_systems(Startup, init_map_grid)
             .init_resource::<MapIndex>()
             .init_resource::<BuildMode>()
+            .init_resource::<CursorPaintState>()
+            .init_resource::<PathPreview>()
             .add_systems(OnEnter(AppState::InGame), spawn_map_if_needed)
             .add_systems(OnEnter(AppState::MainMenu), cleanup_ingame_entities)
             .add_systems(Update, build_mode_hotkeys.run_if(in_game_or_paused))
@@ -30,7 +33,7 @@ impl Plugin for MapPlugin {
                     .run_if(in_game_or_paused),
             )
             .add_systems(Update, update_cursor_highlight.run_if(in_game_or_paused))
-            .add_systems(Update, cursor_click_to_command.run_if(in_game_or_paused))
+            .add_systems(Update, cursor_paint_to_command.run_if(in_game_or_paused))
             .add_systems(
                 Update,
                 apply_game_commands_to_grid.run_if(in_game_or_paused),
@@ -40,7 +43,9 @@ impl Plugin for MapPlugin {
                 sync_dirty_tiles_to_render
                     .after(apply_game_commands_to_grid)
                     .run_if(in_game_or_paused),
-            );
+            )
+            .add_systems(Update, path_preview_input.run_if(in_game_or_paused))
+            .add_systems(Update, path_preview_render.run_if(in_game_or_paused));
     }
 }
 
@@ -223,6 +228,20 @@ impl Default for BuildMode {
 #[derive(Component)]
 struct CursorHighlight;
 
+#[derive(Component)]
+struct OverlayEntity;
+
+#[derive(Resource, Default)]
+struct CursorPaintState {
+    last_tile: Option<TilePos>,
+    was_pressed: bool,
+}
+
+#[derive(Resource, Default)]
+struct PathPreview {
+    start: Option<TilePos>,
+}
+
 fn cleanup_ingame_entities(mut commands: Commands, q: Query<Entity, With<InGameEntity>>) {
     for e in &q {
         commands.entity(e).despawn();
@@ -322,18 +341,11 @@ fn update_cursor_highlight(
     let Ok(window) = q_window.single() else {
         return;
     };
-    let Some(cursor) = window.cursor_position() else {
-        return;
-    };
 
     let Ok((camera, cam_gt)) = q_camera.single() else {
         return;
     };
-    let Ok(world) = camera.viewport_to_world_2d(cam_gt, cursor) else {
-        return;
-    };
-
-    let Some(tile) = world_to_tile(&cfg, world) else {
+    let Some(tile) = cursor_tile(&cfg, window, camera, cam_gt) else {
         return;
     };
 
@@ -349,7 +361,7 @@ fn update_cursor_highlight(
 }
 
 #[derive(SystemParam)]
-struct CursorClickParams<'w, 's> {
+struct CursorPaintParams<'w, 's> {
     state: Res<'w, State<AppState>>,
     buttons: Res<'w, ButtonInput<MouseButton>>,
     cfg: Res<'w, MapConfig>,
@@ -359,33 +371,39 @@ struct CursorClickParams<'w, 's> {
     q_camera: Query<'w, 's, (&'static Camera, &'static GlobalTransform), With<MainCamera>>,
 }
 
-fn cursor_click_to_command(p: CursorClickParams, mut out: MessageWriter<GameCommand>) {
+fn cursor_paint_to_command(
+    p: CursorPaintParams,
+    mut paint: ResMut<CursorPaintState>,
+    mut out: MessageWriter<GameCommand>,
+) {
     if *p.state.get() != AppState::InGame {
         return; // don't build while paused
     }
-    if p.ui_state.tool == ToolMode::Inspect {
+    if p.ui_state.tool == ToolMode::Inspect || p.ui_state.overlay == OverlayMode::Path {
         return;
     }
-    if !p.buttons.just_pressed(MouseButton::Left) {
+    let pressed = p.buttons.pressed(MouseButton::Left);
+    if !pressed {
+        paint.was_pressed = false;
+        paint.last_tile = None;
         return;
     }
 
     let Ok(window) = p.q_window.single() else {
         return;
     };
-    let Some(cursor) = window.cursor_position() else {
-        return;
-    };
-
     let Ok((camera, cam_gt)) = p.q_camera.single() else {
         return;
     };
-    let Ok(world) = camera.viewport_to_world_2d(cam_gt, cursor) else {
+    let Some(tile) = cursor_tile(&p.cfg, window, camera, cam_gt) else {
         return;
     };
-    let Some(tile) = world_to_tile(&p.cfg, world) else {
+
+    if paint.was_pressed && paint.last_tile == Some(tile) {
         return;
-    };
+    }
+    paint.was_pressed = true;
+    paint.last_tile = Some(tile);
 
     out.write(GameCommand::SetTile {
         pos: tile,
@@ -473,6 +491,263 @@ fn sync_dirty_tiles_to_render(
         *kind = effective_kind;
         sprite.color = effective_kind.color();
     }
+}
+
+fn cursor_tile(
+    cfg: &MapConfig,
+    window: &Window,
+    camera: &Camera,
+    cam_gt: &GlobalTransform,
+) -> Option<TilePos> {
+    let cursor = window.cursor_position()?;
+    let world = camera.viewport_to_world_2d(cam_gt, cursor).ok()?;
+    world_to_tile(cfg, world)
+}
+
+fn path_preview_input(
+    state: Res<State<AppState>>,
+    ui: Res<UiState>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    cfg: Res<MapConfig>,
+    q_window: Query<&Window, With<PrimaryWindow>>,
+    q_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    mut preview: ResMut<PathPreview>,
+) {
+    if *state.get() != AppState::InGame {
+        return;
+    }
+    if ui.overlay != OverlayMode::Path {
+        preview.start = None;
+        return;
+    }
+    if !buttons.just_pressed(MouseButton::Right) {
+        return;
+    }
+
+    let Ok(window) = q_window.single() else {
+        return;
+    };
+    let Ok((camera, cam_gt)) = q_camera.single() else {
+        return;
+    };
+    let Some(tile) = cursor_tile(&cfg, window, camera, cam_gt) else {
+        return;
+    };
+
+    if preview.start == Some(tile) {
+        preview.start = None;
+    } else {
+        preview.start = Some(tile);
+    }
+}
+
+#[derive(SystemParam)]
+struct PathPreviewRenderParams<'w, 's> {
+    state: Res<'w, State<AppState>>,
+    ui: Res<'w, UiState>,
+    cfg: Res<'w, MapConfig>,
+    grid: Res<'w, MapGrid>,
+    q_window: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
+    q_camera: Query<'w, 's, (&'static Camera, &'static GlobalTransform), With<MainCamera>>,
+    commands: Commands<'w, 's>,
+    q_overlay: Query<'w, 's, Entity, With<OverlayEntity>>,
+    preview: Res<'w, PathPreview>,
+}
+
+fn path_preview_render(mut p: PathPreviewRenderParams) {
+    if *p.state.get() != AppState::InGame {
+        return;
+    }
+
+    // Clear old overlay entities
+    for e in &p.q_overlay {
+        p.commands.entity(e).despawn();
+    }
+
+    if p.ui.overlay != OverlayMode::Path {
+        return;
+    }
+    let Some(start) = p.preview.start else {
+        return;
+    };
+
+    let Ok(window) = p.q_window.single() else {
+        return;
+    };
+    let Ok((camera, cam_gt)) = p.q_camera.single() else {
+        return;
+    };
+    let Some(end) = cursor_tile(&p.cfg, window, camera, cam_gt) else {
+        return;
+    };
+
+    let path = astar_road_path(&p.grid, start, end);
+    if path.is_empty() {
+        return;
+    }
+
+    let origin = map_origin(&p.cfg);
+    for pos in path {
+        let z = 20.0;
+        let tile_world = origin
+            + Vec2::new(
+                pos.x as f32 * p.cfg.tile_size,
+                pos.y as f32 * p.cfg.tile_size,
+            );
+
+        p.commands.spawn((
+            Sprite::from_color(
+                Color::srgba(1.0, 0.95, 0.25, 0.30),
+                Vec2::splat(p.cfg.tile_size + 2.0),
+            ),
+            Transform::from_translation(Vec3::new(tile_world.x, tile_world.y, z)),
+            OverlayEntity,
+            InGameEntity,
+        ));
+
+        if pos == start || pos == end {
+            p.commands.spawn((
+                Sprite::from_color(
+                    Color::srgba(1.0, 0.35, 0.10, 0.45),
+                    Vec2::splat(p.cfg.tile_size + 3.0),
+                ),
+                Transform::from_translation(Vec3::new(tile_world.x, tile_world.y, z + 1.0)),
+                OverlayEntity,
+                InGameEntity,
+            ));
+        }
+    }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+struct HeapState {
+    f: u32,
+    g: u32,
+    pos: TilePos,
+}
+
+impl Ord for HeapState {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // reverse for min-heap behavior
+        other
+            .f
+            .cmp(&self.f)
+            .then_with(|| other.g.cmp(&self.g))
+            .then_with(|| other.pos.y.cmp(&self.pos.y))
+            .then_with(|| other.pos.x.cmp(&self.pos.x))
+    }
+}
+impl PartialOrd for HeapState {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn astar_road_path(grid: &MapGrid, start: TilePos, goal: TilePos) -> Vec<TilePos> {
+    if start == goal {
+        return vec![start];
+    }
+
+    let Some(start_i) = grid.idx(start) else {
+        return Vec::new();
+    };
+    let Some(goal_i) = grid.idx(goal) else {
+        return Vec::new();
+    };
+
+    let is_road = |pos: TilePos| -> bool {
+        grid.get(pos)
+            .is_some_and(|cell| !cell.water && cell.placed == TileKind::Road)
+    };
+
+    if !is_road(start) || !is_road(goal) {
+        return Vec::new();
+    }
+
+    let w = grid.width as usize;
+    let h = grid.height as usize;
+    let len = w * h;
+
+    let mut came_from: Vec<Option<usize>> = vec![None; len];
+    let mut best_g: Vec<u32> = vec![u32::MAX; len];
+
+    let mut heap = BinaryHeap::<HeapState>::new();
+    best_g[start_i] = 0;
+    heap.push(HeapState {
+        g: 0,
+        f: manhattan(start, goal),
+        pos: start,
+    });
+
+    while let Some(HeapState { g, pos, .. }) = heap.pop() {
+        let Some(i) = grid.idx(pos) else {
+            continue;
+        };
+        if g != best_g[i] {
+            continue;
+        }
+
+        if pos == goal {
+            // reconstruct
+            let mut out = Vec::new();
+            let mut cur = Some(goal_i);
+            while let Some(ci) = cur {
+                let x = (ci % w) as i32;
+                let y = (ci / w) as i32;
+                out.push(TilePos { x, y });
+                cur = came_from[ci];
+            }
+            out.reverse();
+            return out;
+        }
+
+        let neighbors = [
+            TilePos {
+                x: pos.x - 1,
+                y: pos.y,
+            },
+            TilePos {
+                x: pos.x + 1,
+                y: pos.y,
+            },
+            TilePos {
+                x: pos.x,
+                y: pos.y - 1,
+            },
+            TilePos {
+                x: pos.x,
+                y: pos.y + 1,
+            },
+        ];
+
+        for npos in neighbors {
+            if npos.x < 0 || npos.y < 0 || npos.x >= grid.width || npos.y >= grid.height {
+                continue;
+            }
+            if !is_road(npos) {
+                continue;
+            }
+            let Some(ni) = grid.idx(npos) else {
+                continue;
+            };
+            let ng = g.saturating_add(1);
+            if ng < best_g[ni] {
+                best_g[ni] = ng;
+                came_from[ni] = Some(i);
+                heap.push(HeapState {
+                    g: ng,
+                    f: ng.saturating_add(manhattan(npos, goal)),
+                    pos: npos,
+                });
+            }
+        }
+    }
+
+    Vec::new()
+}
+
+fn manhattan(a: TilePos, b: TilePos) -> u32 {
+    a.x.abs_diff(b.x) + a.y.abs_diff(b.y)
 }
 
 fn generate_map_into_grid(grid: &mut MapGrid, seed: u64) {
