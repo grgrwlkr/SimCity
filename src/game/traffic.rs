@@ -6,6 +6,7 @@ use rand::prelude::*;
 use crate::game::commands::GameCommand;
 use crate::game::map::{MapConfig, MapGrid, TileKind, TilePos, astar_path};
 use crate::game::state::AppState;
+use crate::game::trips::{TripFinished, TripRequested};
 use crate::game::ui_state::{OverlayMode, UiState};
 
 /// Vehicle entity – stores route and visual offset.
@@ -17,6 +18,12 @@ pub struct Vehicle {
     pub progress: f32,
     /// World units per second.
     pub speed: f32,
+}
+
+#[derive(Component, Debug, Copy, Clone)]
+struct TripPassenger {
+    citizen: Entity,
+    purpose: crate::game::trips::TripPurpose,
 }
 
 /// Resource storing how many vehicles pass through each road tile (simple heatmap).
@@ -39,6 +46,7 @@ impl Plugin for TrafficPlugin {
             .add_systems(
                 Update,
                 (
+                    spawn_trip_vehicles,
                     spawn_debug_vehicles,
                     clear_vehicles,
                     move_vehicles,
@@ -118,6 +126,44 @@ fn spawn_debug_vehicles(
     }
 }
 
+fn spawn_trip_vehicles(
+    mut reader: bevy::ecs::message::MessageReader<TripRequested>,
+    mut commands: Commands,
+    grid: Res<MapGrid>,
+    cfg: Res<MapConfig>,
+) {
+    for msg in reader.read() {
+        let Some(start) = adjacent_road(&grid, msg.from) else {
+            continue;
+        };
+        let Some(goal) = adjacent_road(&grid, msg.to) else {
+            continue;
+        };
+        let route = astar_path(&grid, start, goal);
+        if route.is_empty() {
+            continue;
+        }
+        let world_pos = tile_to_world(&cfg, start);
+        commands.spawn((
+            Sprite {
+                color: Color::linear_rgb(0.95, 0.95, 0.95),
+                custom_size: Some(Vec2::splat(cfg.tile_size * 0.55)),
+                ..default()
+            },
+            Transform::from_xyz(world_pos.x, world_pos.y, 10.0),
+            Vehicle {
+                route,
+                progress: 0.0,
+                speed: 70.0,
+            },
+            TripPassenger {
+                citizen: msg.citizen,
+                purpose: msg.purpose,
+            },
+        ));
+    }
+}
+
 /// Despawn all vehicles when GameCommand::ClearVehicles is received.
 fn clear_vehicles(
     mut reader: bevy::ecs::message::MessageReader<GameCommand>,
@@ -141,11 +187,18 @@ fn move_vehicles(
     time: Res<Time>,
     cfg: Res<MapConfig>,
     mut commands: Commands,
-    mut q: Query<(Entity, &mut Vehicle, &mut Transform)>,
+    mut finished: bevy::ecs::message::MessageWriter<TripFinished>,
+    mut q: Query<(Entity, &mut Vehicle, &mut Transform, Option<&TripPassenger>)>,
 ) {
-    for (entity, mut v, mut tf) in q.iter_mut() {
+    for (entity, mut v, mut tf, passenger) in q.iter_mut() {
         if v.route.is_empty() {
             // Arrived – despawn.
+            if let Some(p) = passenger {
+                finished.write(TripFinished {
+                    citizen: p.citizen,
+                    purpose: p.purpose,
+                });
+            }
             commands.entity(entity).despawn();
             continue;
         }
@@ -160,6 +213,12 @@ fn move_vehicles(
         }
 
         if v.route.is_empty() {
+            if let Some(p) = passenger {
+                finished.write(TripFinished {
+                    citizen: p.citizen,
+                    purpose: p.purpose,
+                });
+            }
             commands.entity(entity).despawn();
             continue;
         }
@@ -278,6 +337,42 @@ fn collect_road_tiles(grid: &MapGrid) -> Vec<TilePos> {
         }
     }
     roads
+}
+
+fn adjacent_road(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
+    // If the tile itself is a road, accept it.
+    if let Some(cell) = grid.get(pos)
+        && !cell.water
+        && cell.placed == TileKind::Road
+    {
+        return Some(pos);
+    }
+    for npos in [
+        TilePos {
+            x: pos.x - 1,
+            y: pos.y,
+        },
+        TilePos {
+            x: pos.x + 1,
+            y: pos.y,
+        },
+        TilePos {
+            x: pos.x,
+            y: pos.y - 1,
+        },
+        TilePos {
+            x: pos.x,
+            y: pos.y + 1,
+        },
+    ] {
+        if let Some(cell) = grid.get(npos)
+            && !cell.water
+            && cell.placed == TileKind::Road
+        {
+            return Some(npos);
+        }
+    }
+    None
 }
 
 fn tile_to_world(cfg: &MapConfig, pos: TilePos) -> Vec2 {

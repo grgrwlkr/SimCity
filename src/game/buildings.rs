@@ -24,9 +24,9 @@ impl Plugin for BuildingsPlugin {
 }
 
 #[derive(Component, Debug, Copy, Clone)]
-struct Building {
-    kind: BuildingKind,
-    pos: TilePos,
+pub struct Building {
+    pub kind: BuildingKind,
+    pub pos: TilePos,
 }
 
 #[derive(Resource)]
