@@ -298,6 +298,8 @@ fn init_map_grid(mut commands: Commands, cfg: Res<MapConfig>) {
 fn spawn_map_if_needed(
     mut commands: Commands,
     cfg: Res<MapConfig>,
+    seed: Res<MapSeed>,
+    mut grid: ResMut<MapGrid>,
     mut index: ResMut<MapIndex>,
     q_tiles: Query<Entity, With<TilePos>>,
     mut dirty: ResMut<DirtyTiles>,
@@ -307,6 +309,9 @@ fn spawn_map_if_needed(
     }
 
     index.by_pos.clear();
+
+    // Auto-generate terrain on first enter so the player doesn't start on a flat blank map.
+    generate_map_into_grid(&mut grid, seed.0);
 
     let origin = map_origin(&cfg);
     for y in 0..cfg.height {
