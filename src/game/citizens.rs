@@ -35,6 +35,11 @@ pub struct Citizen {
     pub trip_timer: Timer,
 }
 
+#[derive(Component, Debug, Default)]
+pub struct CitizenWorkplace {
+    pub workplace: Option<TilePos>,
+}
+
 fn cleanup_citizens(mut commands: Commands, q: Query<Entity, With<Citizen>>) {
     for e in &q {
         commands.entity(e).despawn();
@@ -62,12 +67,15 @@ fn spawn_citizens_from_residential(
             continue;
         }
 
-        commands.spawn(Citizen {
-            home: b.pos,
-            at_home: true,
-            last_place: b.pos,
-            trip_timer: Timer::from_seconds(rng.gen_range(1.0..3.0), TimerMode::Repeating),
-        });
+        commands.spawn((
+            Citizen {
+                home: b.pos,
+                at_home: true,
+                last_place: b.pos,
+                trip_timer: Timer::from_seconds(rng.gen_range(1.0..3.0), TimerMode::Repeating),
+            },
+            CitizenWorkplace::default(),
+        ));
         have_home.insert(b.pos);
     }
 }
@@ -75,7 +83,7 @@ fn spawn_citizens_from_residential(
 fn citizen_trip_planner(
     time: Res<Time>,
     q_buildings: Query<&Building>,
-    mut q_citizens: Query<(Entity, &mut Citizen)>,
+    mut q_citizens: Query<(Entity, &mut Citizen, &CitizenWorkplace)>,
     mut out: MessageWriter<TripRequested>,
 ) {
     // Pre-collect possible destinations (non-res).
@@ -88,16 +96,21 @@ fn citizen_trip_planner(
 
     let mut rng = thread_rng();
 
-    for (e, mut c) in &mut q_citizens {
+    for (e, mut c, wp) in &mut q_citizens {
         c.trip_timer.tick(time.delta());
         if !c.trip_timer.just_finished() {
             continue;
         }
 
         if c.at_home {
-            // Go to a random job/shopping destination (MVP: any non-res building).
-            let Some(&dest) = destinations.choose(&mut rng) else {
-                continue;
+            // If assigned a workplace, go there; otherwise pick any destination (MVP).
+            let dest = if let Some(work) = wp.workplace {
+                work
+            } else {
+                let Some(&d) = destinations.choose(&mut rng) else {
+                    continue;
+                };
+                d
             };
 
             out.write(TripRequested {

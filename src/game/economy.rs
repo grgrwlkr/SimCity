@@ -3,6 +3,7 @@
 use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
 
+use crate::game::employment::EmploymentStats;
 use crate::game::map::{BuildingKind, MapGrid, TileKind, TilePos};
 use crate::game::sim::City;
 use crate::game::sim_events::DayAdvanced;
@@ -45,6 +46,7 @@ impl Default for EconomyConfig {
 fn apply_daily_economy(
     mut day_events: MessageReader<DayAdvanced>,
     cfg: Res<EconomyConfig>,
+    employment: Res<EmploymentStats>,
     grid: Res<MapGrid>,
     mut city: ResMut<City>,
 ) {
@@ -54,8 +56,8 @@ fn apply_daily_economy(
         let (road_tiles, buildings) = count_world(&grid);
 
         let income = (city.population as i64) * cfg.tax_per_citizen
-            + (buildings.commercial as i64) * cfg.income_per_commercial
-            + (buildings.industrial as i64) * cfg.income_per_industrial;
+            + (employment.employed_commercial as i64) * cfg.income_per_commercial
+            + (employment.employed_industrial as i64) * cfg.income_per_industrial;
 
         let expense = (road_tiles as i64) * cfg.road_maintenance
             + (buildings.total() as i64) * cfg.building_maintenance;

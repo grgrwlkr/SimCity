@@ -5,6 +5,7 @@ mod camera;
 mod citizens;
 mod commands;
 mod economy;
+mod employment;
 mod map;
 mod sim;
 mod sim_events;
@@ -29,6 +30,7 @@ impl Plugin for GamePlugin {
                 buildings::BuildingsPlugin,
                 citizens::CitizensPlugin,
                 economy::EconomyPlugin,
+                employment::EmploymentPlugin,
                 map::MapPlugin,
                 sim::SimPlugin,
                 traffic::TrafficPlugin,

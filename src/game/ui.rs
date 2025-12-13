@@ -7,6 +7,7 @@ use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use crate::game::buildings::Building;
 use crate::game::citizens::Citizen;
 use crate::game::commands::GameCommand;
+use crate::game::employment::EmploymentStats;
 use crate::game::map::BuildMode;
 use crate::game::sim::City;
 use crate::game::state::AppState;
@@ -33,11 +34,14 @@ struct UiMetrics {
     citizens: usize,
     vehicles: usize,
     buildings: usize,
+    employed: usize,
+    unemployed: usize,
 }
 
 fn update_ui_metrics(
     state: Res<State<AppState>>,
     mut metrics: ResMut<UiMetrics>,
+    employment: Option<Res<EmploymentStats>>,
     q_citizens: Query<Entity, With<Citizen>>,
     q_vehicles: Query<Entity, With<Vehicle>>,
     q_buildings: Query<Entity, With<Building>>,
@@ -46,11 +50,20 @@ fn update_ui_metrics(
         metrics.citizens = 0;
         metrics.vehicles = 0;
         metrics.buildings = 0;
+        metrics.employed = 0;
+        metrics.unemployed = 0;
         return;
     }
     metrics.citizens = q_citizens.iter().count();
     metrics.vehicles = q_vehicles.iter().count();
     metrics.buildings = q_buildings.iter().count();
+    if let Some(e) = employment {
+        metrics.employed = e.employed;
+        metrics.unemployed = e.unemployed;
+    } else {
+        metrics.employed = 0;
+        metrics.unemployed = 0;
+    }
 }
 
 fn announce_main_menu() {
@@ -183,12 +196,14 @@ fn top_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
 
             // Quick status line
             ui.label(format!(
-                "Day {} | $ {} ( +{} / -{} ) | Pop {} | Citizens {} | Vehicles {} | Buildings {} | Build {:?}",
+                "Day {} | $ {} ( +{} / -{} ) | Pop {} | Emp {}/{} | Citizens {} | Vehicles {} | Buildings {} | Build {:?}",
                 p.city.day,
                 p.city.money,
                 p.city.last_income,
                 p.city.last_expense,
                 p.city.population,
+                p.metrics.employed,
+                p.metrics.unemployed,
                 p.metrics.citizens,
                 p.metrics.vehicles,
                 p.metrics.buildings,
