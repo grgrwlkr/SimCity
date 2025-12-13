@@ -1,12 +1,16 @@
 use bevy::ecs::message::MessageWriter;
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
+use crate::game::buildings::Building;
+use crate::game::citizens::Citizen;
 use crate::game::commands::GameCommand;
 use crate::game::map::BuildMode;
 use crate::game::sim::City;
 use crate::game::state::AppState;
+use crate::game::traffic::Vehicle;
 use crate::game::ui_state::{OverlayMode, SimSpeed, ToolMode, UiState};
 
 pub struct UiPlugin;
@@ -14,12 +18,39 @@ pub struct UiPlugin;
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(EguiPlugin::default())
+            .init_resource::<UiMetrics>()
             .add_systems(OnEnter(AppState::MainMenu), announce_main_menu)
             .add_systems(OnEnter(AppState::InGame), announce_ingame)
             .add_systems(OnEnter(AppState::Paused), announce_paused)
             .add_systems(EguiPrimaryContextPass, top_bar_ui)
+            .add_systems(Update, update_ui_metrics)
             .add_systems(Update, update_window_title);
     }
+}
+
+#[derive(Resource, Default, Debug, Clone)]
+struct UiMetrics {
+    citizens: usize,
+    vehicles: usize,
+    buildings: usize,
+}
+
+fn update_ui_metrics(
+    state: Res<State<AppState>>,
+    mut metrics: ResMut<UiMetrics>,
+    q_citizens: Query<Entity, With<Citizen>>,
+    q_vehicles: Query<Entity, With<Vehicle>>,
+    q_buildings: Query<Entity, With<Building>>,
+) {
+    if !matches!(state.get(), AppState::InGame | AppState::Paused) {
+        metrics.citizens = 0;
+        metrics.vehicles = 0;
+        metrics.buildings = 0;
+        return;
+    }
+    metrics.citizens = q_citizens.iter().count();
+    metrics.vehicles = q_vehicles.iter().count();
+    metrics.buildings = q_buildings.iter().count();
 }
 
 fn announce_main_menu() {
@@ -75,15 +106,7 @@ fn update_window_title(
     }
 }
 
-fn top_bar_ui(
-    mut contexts: EguiContexts,
-    mut ui_state: ResMut<UiState>,
-    state: Res<State<AppState>>,
-    mut next_state: ResMut<NextState<AppState>>,
-    city: Res<City>,
-    mode: Res<BuildMode>,
-    mut commands: MessageWriter<GameCommand>,
-) {
+fn top_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
@@ -101,7 +124,7 @@ fn top_bar_ui(
                 ("2x", SimSpeed::X2),
                 ("4x", SimSpeed::X4),
             ] {
-                ui.selectable_value(&mut ui_state.sim_speed, speed, label);
+                ui.selectable_value(&mut p.ui_state.sim_speed, speed, label);
             }
 
             ui.separator();
@@ -116,7 +139,7 @@ fn top_bar_ui(
                 ("Erase", ToolMode::Erase),
                 ("Inspect", ToolMode::Inspect),
             ] {
-                ui.selectable_value(&mut ui_state.tool, tool, label);
+                ui.selectable_value(&mut p.ui_state.tool, tool, label);
             }
 
             ui.separator();
@@ -132,56 +155,75 @@ fn top_bar_ui(
                 ("Traffic", OverlayMode::Traffic),
                 ("Path", OverlayMode::Path),
             ] {
-                ui.selectable_value(&mut ui_state.overlay, overlay, label);
+                ui.selectable_value(&mut p.ui_state.overlay, overlay, label);
             }
 
             ui.separator();
 
             // Map seed + generation
             ui.label("Seed:");
-            ui.text_edit_singleline(&mut ui_state.seed_text);
-            let seed = ui_state.seed_text.trim().parse::<u64>().unwrap_or(1);
+            ui.text_edit_singleline(&mut p.ui_state.seed_text);
+            let seed = p.ui_state.seed_text.trim().parse::<u64>().unwrap_or(1);
             if ui.button("New Map").clicked() {
-                commands.write(GameCommand::GenerateMap { seed });
-                next_state.set(AppState::InGame);
+                p.commands.write(GameCommand::GenerateMap { seed });
+                p.next_state.set(AppState::InGame);
             }
 
             ui.separator();
 
-            if matches!(state.get(), AppState::InGame | AppState::Paused) {
+            if matches!(p.state.get(), AppState::InGame | AppState::Paused) {
                 if ui.button("Spawn cars").clicked() {
-                    commands.write(GameCommand::SpawnDebugVehicles { count: 25 });
+                    p.commands.write(GameCommand::SpawnDebugVehicles { count: 25 });
                 }
                 if ui.button("Clear cars").clicked() {
-                    commands.write(GameCommand::ClearVehicles);
+                    p.commands.write(GameCommand::ClearVehicles);
                 }
                 ui.separator();
             }
 
             // Quick status line
             ui.label(format!(
-                "Day {} | $ {} | Pop {} | Build {:?}",
-                city.day, city.money, city.population, mode.selected
+                "Day {} | $ {} ( +{} / -{} ) | Pop {} | Citizens {} | Vehicles {} | Buildings {} | Build {:?}",
+                p.city.day,
+                p.city.money,
+                p.city.last_income,
+                p.city.last_expense,
+                p.city.population,
+                p.metrics.citizens,
+                p.metrics.vehicles,
+                p.metrics.buildings,
+                p.mode.selected
             ));
 
             // State control hints
-            match state.get() {
+            match p.state.get() {
                 AppState::MainMenu => {
                     if ui.button("Start").clicked() {
-                        next_state.set(AppState::InGame);
+                        p.next_state.set(AppState::InGame);
                     }
                 }
                 AppState::InGame => {
                     if ui.button("Pause").clicked() {
-                        next_state.set(AppState::Paused);
+                        p.next_state.set(AppState::Paused);
                     }
                 }
                 AppState::Paused => {
                     if ui.button("Resume").clicked() {
-                        next_state.set(AppState::InGame);
+                        p.next_state.set(AppState::InGame);
                     }
                 }
             }
         });
     });
+}
+
+#[derive(SystemParam)]
+struct TopBarParams<'w> {
+    ui_state: ResMut<'w, UiState>,
+    state: Res<'w, State<AppState>>,
+    next_state: ResMut<'w, NextState<AppState>>,
+    city: Res<'w, City>,
+    mode: Res<'w, BuildMode>,
+    metrics: Res<'w, UiMetrics>,
+    commands: MessageWriter<'w, GameCommand>,
 }

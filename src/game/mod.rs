@@ -4,8 +4,10 @@ mod buildings;
 mod camera;
 mod citizens;
 mod commands;
+mod economy;
 mod map;
 mod sim;
+mod sim_events;
 mod state;
 mod traffic;
 mod trips;
@@ -20,11 +22,13 @@ impl Plugin for GamePlugin {
             .add_message::<commands::GameCommand>()
             .add_message::<trips::TripRequested>()
             .add_message::<trips::TripFinished>()
+            .add_message::<sim_events::DayAdvanced>()
             .init_resource::<ui_state::UiState>()
             .add_plugins((
                 camera::CameraPlugin,
                 buildings::BuildingsPlugin,
                 citizens::CitizensPlugin,
+                economy::EconomyPlugin,
                 map::MapPlugin,
                 sim::SimPlugin,
                 traffic::TrafficPlugin,

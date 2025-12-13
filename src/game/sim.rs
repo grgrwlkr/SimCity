@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 
+use crate::game::sim_events::DayAdvanced;
 use crate::game::state::AppState;
 use crate::game::ui_state::UiState;
 
@@ -21,6 +22,8 @@ pub struct City {
     pub money: i64,
     pub population: u32,
     pub happiness: f32,
+    pub last_income: i64,
+    pub last_expense: i64,
 }
 
 impl Default for City {
@@ -30,6 +33,8 @@ impl Default for City {
             money: 25_000,
             population: 0,
             happiness: 0.65,
+            last_income: 0,
+            last_expense: 0,
         }
     }
 }
@@ -82,6 +87,7 @@ fn sim_tick(
     ui_state: Res<UiState>,
     mut clock: ResMut<SimClock>,
     mut city: ResMut<City>,
+    mut day_out: bevy::ecs::message::MessageWriter<DayAdvanced>,
 ) {
     let speed = ui_state.sim_speed.multiplier();
     if speed <= 0.0 {
@@ -97,15 +103,7 @@ fn sim_tick(
     }
 
     city.day = city.day.saturating_add(1);
-
-    // Placeholder economy: passive tax income based on current population.
-    let daily_income = (city.population as i64) / 2;
-    city.money += daily_income;
-
-    // Placeholder: happiness slowly drifts toward 0.7
-    let target = 0.7;
-    city.happiness += (target - city.happiness) * 0.02;
-    city.happiness = city.happiness.clamp(0.0, 1.0);
+    day_out.write(DayAdvanced { day: city.day });
 }
 
 fn reset_city_for_new_game(mut city: ResMut<City>, mut clock: ResMut<SimClock>) {
