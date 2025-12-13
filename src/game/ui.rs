@@ -1,7 +1,7 @@
 use bevy::ecs::message::MessageWriter;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use bevy_egui::{EguiContexts, EguiPlugin, egui};
+use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
 use crate::game::commands::GameCommand;
 use crate::game::map::BuildMode;
@@ -17,7 +17,7 @@ impl Plugin for UiPlugin {
             .add_systems(OnEnter(AppState::MainMenu), announce_main_menu)
             .add_systems(OnEnter(AppState::InGame), announce_ingame)
             .add_systems(OnEnter(AppState::Paused), announce_paused)
-            .add_systems(Update, top_bar_ui)
+            .add_systems(EguiPrimaryContextPass, top_bar_ui)
             .add_systems(Update, update_window_title);
     }
 }

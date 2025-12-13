@@ -268,8 +268,7 @@ fn cursor_click_to_command(p: CursorClickParams, mut out: MessageWriter<GameComm
 fn apply_game_commands_to_map(
     mut commands: MessageReader<GameCommand>,
     index: Res<MapIndex>,
-    mut q_tiles: Query<(&mut Sprite, &mut TileKind)>,
-    mut q_all_tiles: Query<(&mut Sprite, &mut TileKind), With<TilePos>>,
+    mut q_tiles: Query<(&mut Sprite, &mut TileKind), With<TilePos>>,
     mut city: ResMut<City>,
 ) {
     for cmd in commands.read() {
@@ -304,7 +303,7 @@ fn apply_game_commands_to_map(
             GameCommand::GenerateMap { seed } => {
                 info!("GenerateMap requested (seed={seed})");
                 // MVP: reset all tiles to grass. Generation comes next milestone.
-                for (mut sprite, mut kind) in &mut q_all_tiles {
+                for (mut sprite, mut kind) in &mut q_tiles {
                     *kind = TileKind::Grass;
                     sprite.color = TileKind::Grass.color();
                 }

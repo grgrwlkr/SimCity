@@ -1,6 +1,7 @@
 use bevy::ecs::message::MessageReader;
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
+use bevy_egui::PrimaryEguiContext;
 
 use crate::game::state::AppState;
 
@@ -18,7 +19,7 @@ impl Plugin for CameraPlugin {
 pub struct MainCamera;
 
 fn spawn_camera(mut commands: Commands) {
-    commands.spawn((Camera2d, MainCamera));
+    commands.spawn((Camera2d, MainCamera, PrimaryEguiContext));
 }
 
 fn in_game_or_paused(state: Res<State<AppState>>) -> bool {
