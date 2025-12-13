@@ -110,11 +110,46 @@ impl TileKind {
     }
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum BuildingKind {
+    Residential,
+    Commercial,
+    Industrial,
+}
+
+impl BuildingKind {
+    pub fn color(self) -> Color {
+        match self {
+            BuildingKind::Residential => Color::srgb(0.10, 0.22, 0.55),
+            BuildingKind::Commercial => Color::srgb(0.10, 0.55, 0.18),
+            BuildingKind::Industrial => Color::srgb(0.65, 0.45, 0.08),
+        }
+    }
+
+    pub fn as_zone_tile(self) -> TileKind {
+        match self {
+            BuildingKind::Residential => TileKind::Residential,
+            BuildingKind::Commercial => TileKind::Commercial,
+            BuildingKind::Industrial => TileKind::Industrial,
+        }
+    }
+
+    pub fn from_zone_tile(kind: TileKind) -> Option<Self> {
+        match kind {
+            TileKind::Residential => Some(BuildingKind::Residential),
+            TileKind::Commercial => Some(BuildingKind::Commercial),
+            TileKind::Industrial => Some(BuildingKind::Industrial),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MapCell {
     pub height: u8,
     pub water: bool,
     pub placed: TileKind,
+    pub building: Option<BuildingKind>,
 }
 
 #[derive(Resource, Debug, Clone)]
@@ -135,6 +170,7 @@ impl MapGrid {
                     height: 0,
                     water: false,
                     placed: TileKind::Grass,
+                    building: None,
                 };
                 len
             ],
@@ -443,13 +479,10 @@ fn apply_game_commands_to_grid(
                     continue;
                 }
 
-                // Placeholder effects (we'll replace with zoning + buildings).
-                if kind == TileKind::Residential {
-                    city.population = city.population.saturating_add(5);
-                }
-
                 city.money -= cost;
                 cell.placed = kind;
+                // Invalidate any grown building on this tile when the player edits it.
+                cell.building = None;
                 grid.set(pos, cell);
                 dirty.mark(idx);
             }
@@ -764,6 +797,7 @@ fn generate_map_into_grid(grid: &mut MapGrid, seed: u64) {
         cell.height = rng.gen_range(0..=u8::MAX);
         cell.water = false;
         cell.placed = TileKind::Grass;
+        cell.building = None;
     }
 
     // Smooth heights a bit (cheap blur)

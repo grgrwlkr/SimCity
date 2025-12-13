@@ -35,6 +35,7 @@ pub struct TrafficPlugin;
 impl Plugin for TrafficPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TrafficOccupancy>()
+            .add_systems(OnEnter(AppState::MainMenu), cleanup_traffic_entities)
             .add_systems(
                 Update,
                 (
@@ -52,6 +53,19 @@ impl Plugin for TrafficPlugin {
 // ---------------------------------------------------------------------------
 // Systems
 // ---------------------------------------------------------------------------
+
+fn cleanup_traffic_entities(
+    mut commands: Commands,
+    q_vehicles: Query<Entity, With<Vehicle>>,
+    q_overlay: Query<Entity, With<TrafficOverlayTile>>,
+) {
+    for e in q_vehicles.iter() {
+        commands.entity(e).despawn();
+    }
+    for e in q_overlay.iter() {
+        commands.entity(e).despawn();
+    }
+}
 
 /// Spawn a batch of debug vehicles when GameCommand::SpawnDebugVehicles is received.
 fn spawn_debug_vehicles(
@@ -111,7 +125,10 @@ fn clear_vehicles(
     q_vehicles: Query<Entity, With<Vehicle>>,
 ) {
     for msg in reader.read() {
-        if matches!(msg, GameCommand::ClearVehicles) {
+        if matches!(
+            msg,
+            GameCommand::ClearVehicles | GameCommand::GenerateMap { .. }
+        ) {
             for entity in q_vehicles.iter() {
                 commands.entity(entity).despawn();
             }

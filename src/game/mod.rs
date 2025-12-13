@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 
+mod buildings;
 mod camera;
 mod commands;
 mod map;
@@ -18,6 +19,7 @@ impl Plugin for GamePlugin {
             .init_resource::<ui_state::UiState>()
             .add_plugins((
                 camera::CameraPlugin,
+                buildings::BuildingsPlugin,
                 map::MapPlugin,
                 sim::SimPlugin,
                 traffic::TrafficPlugin,
