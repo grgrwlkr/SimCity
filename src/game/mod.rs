@@ -12,6 +12,7 @@ mod sim;
 mod sim_events;
 mod state;
 mod traffic;
+mod transport;
 mod trips;
 mod ui;
 mod ui_state;
@@ -55,6 +56,7 @@ impl Plugin for GamePlugin {
                 economy::EconomyPlugin,
                 employment::EmploymentPlugin,
                 map::MapPlugin,
+                transport::TransportPlugin,
                 sim::SimPlugin,
                 traffic::TrafficPlugin,
                 ui::UiPlugin,

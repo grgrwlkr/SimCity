@@ -1,5 +1,6 @@
 //! M3: Traffic simulation – vehicles moving along roads via A* pathfinding.
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use rand::prelude::*;
 
@@ -7,6 +8,7 @@ use crate::game::commands::GameCommand;
 use crate::game::map::{MapConfig, MapGrid, TileKind, TilePos, astar_path};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
+use crate::game::transport::{PathCache, PathfindingConfig, RoadGraph, find_road_path_cached};
 use crate::game::trips::{TripFinished, TripRequested};
 use crate::game::ui_state::{OverlayMode, UiState};
 
@@ -43,12 +45,19 @@ pub struct TrafficPlugin;
 impl Plugin for TrafficPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TrafficOccupancy>()
+            .init_resource::<TrafficConfig>()
             .add_systems(OnEnter(AppState::MainMenu), cleanup_traffic_entities)
             // Commands (should respond even when paused)
             .add_systems(
                 Update,
-                (spawn_debug_vehicles, clear_vehicles)
+                clear_vehicles
                     .in_set(GameSet::CommandApply)
+                    .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+            )
+            .add_systems(
+                Update,
+                spawn_debug_vehicles
+                    .in_set(GameSet::GraphUpdate)
                     .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
             )
             // Simulation
@@ -66,6 +75,23 @@ impl Plugin for TrafficPlugin {
             )
             // Rendering
             .add_systems(Update, render_traffic_overlay.in_set(GameSet::RenderSync));
+    }
+}
+
+#[derive(Resource, Debug, Clone)]
+struct TrafficConfig {
+    /// Hard cap on active vehicles (debug + trip-driven).
+    max_active_vehicles: usize,
+    /// Guardrail: max number of route plans performed per tick.
+    max_route_plans_per_tick: usize,
+}
+
+impl Default for TrafficConfig {
+    fn default() -> Self {
+        Self {
+            max_active_vehicles: 1500,
+            max_route_plans_per_tick: 64,
+        }
     }
 }
 
@@ -89,20 +115,24 @@ fn cleanup_traffic_entities(
 /// Spawn a batch of debug vehicles when GameCommand::SpawnDebugVehicles is received.
 fn spawn_debug_vehicles(
     mut reader: bevy::ecs::message::MessageReader<GameCommand>,
-    mut commands: Commands,
-    grid: Res<MapGrid>,
-    cfg: Res<MapConfig>,
+    mut p: SpawnDebugVehiclesParams,
 ) {
     for msg in reader.read() {
         if let GameCommand::SpawnDebugVehicles { count } = msg {
-            let roads = collect_road_tiles(&grid);
+            let roads = collect_road_tiles(&p.grid);
             if roads.len() < 2 {
                 continue;
             }
 
             let mut rng = thread_rng();
 
+            let mut spawned = 0u32;
+            let mut total = p.q_vehicles.iter().count();
+
             for _ in 0..*count {
+                if total >= p.traffic_cfg.max_active_vehicles {
+                    break;
+                }
                 // Pick random start/goal from road tiles.
                 let start_i = rng.gen_range(0..roads.len());
                 let mut goal_i = rng.gen_range(0..roads.len());
@@ -112,17 +142,28 @@ fn spawn_debug_vehicles(
                 let start = roads[start_i];
                 let goal = roads[goal_i];
 
-                let route = astar_path(&grid, start, goal);
+                let mut route = find_road_path_cached(
+                    p.time.elapsed_secs_f64(),
+                    &p.path_cfg,
+                    &mut p.path_cache,
+                    &p.graph,
+                    start,
+                    goal,
+                );
+                if route.is_empty() {
+                    // Fallback: if graph isn't rebuilt yet this frame, use grid-based A*.
+                    route = astar_path(&p.grid, start, goal);
+                }
                 if route.is_empty() {
                     continue;
                 }
 
-                let world_pos = tile_to_world(&cfg, start);
+                let world_pos = tile_to_world(&p.cfg, start);
 
-                commands.spawn((
+                p.commands.spawn((
                     Sprite {
                         color: Color::linear_rgb(1.0, 0.8, 0.1),
-                        custom_size: Some(Vec2::splat(cfg.tile_size * 0.6)),
+                        custom_size: Some(Vec2::splat(p.cfg.tile_size * 0.6)),
                         ..default()
                     },
                     Transform::from_xyz(world_pos.x, world_pos.y, 10.0),
@@ -132,33 +173,68 @@ fn spawn_debug_vehicles(
                         speed: 60.0 + rng.gen_range(0.0..40.0),
                     },
                 ));
+                spawned += 1;
+                total += 1;
+            }
+            if spawned > 0 {
+                debug!("Spawned {spawned} debug vehicles");
             }
         }
     }
 }
 
+#[derive(SystemParam)]
+struct SpawnDebugVehiclesParams<'w, 's> {
+    commands: Commands<'w, 's>,
+    grid: Res<'w, MapGrid>,
+    cfg: Res<'w, MapConfig>,
+    time: Res<'w, Time>,
+    graph: Res<'w, RoadGraph>,
+    path_cfg: Res<'w, PathfindingConfig>,
+    path_cache: ResMut<'w, PathCache>,
+    q_vehicles: Query<'w, 's, Entity, With<Vehicle>>,
+    traffic_cfg: Res<'w, TrafficConfig>,
+}
+
 fn spawn_trip_vehicles(
     mut reader: bevy::ecs::message::MessageReader<TripRequested>,
-    mut commands: Commands,
-    grid: Res<MapGrid>,
-    cfg: Res<MapConfig>,
+    mut p: SpawnTripVehiclesParams,
 ) {
+    let mut planned = 0usize;
+    let mut total = p.q_vehicles.iter().count();
     for msg in reader.read() {
-        let Some(start) = adjacent_road(&grid, msg.from) else {
+        if planned >= p.traffic_cfg.max_route_plans_per_tick {
+            break;
+        }
+        if total >= p.traffic_cfg.max_active_vehicles {
+            break;
+        }
+        let Some(start) = adjacent_road(&p.grid, msg.from) else {
             continue;
         };
-        let Some(goal) = adjacent_road(&grid, msg.to) else {
+        let Some(goal) = adjacent_road(&p.grid, msg.to) else {
             continue;
         };
-        let route = astar_path(&grid, start, goal);
+        let mut route = find_road_path_cached(
+            p.time.elapsed_secs_f64(),
+            &p.path_cfg,
+            &mut p.path_cache,
+            &p.graph,
+            start,
+            goal,
+        );
+        if route.is_empty() {
+            // Fallback: if graph isn't built (or roads changed mid-frame), use grid-based A*.
+            route = astar_path(&p.grid, start, goal);
+        }
         if route.is_empty() {
             continue;
         }
-        let world_pos = tile_to_world(&cfg, start);
-        commands.spawn((
+        let world_pos = tile_to_world(&p.cfg, start);
+        p.commands.spawn((
             Sprite {
                 color: Color::linear_rgb(0.95, 0.95, 0.95),
-                custom_size: Some(Vec2::splat(cfg.tile_size * 0.55)),
+                custom_size: Some(Vec2::splat(p.cfg.tile_size * 0.55)),
                 ..default()
             },
             Transform::from_xyz(world_pos.x, world_pos.y, 10.0),
@@ -172,7 +248,22 @@ fn spawn_trip_vehicles(
                 purpose: msg.purpose,
             },
         ));
+        planned += 1;
+        total += 1;
     }
+}
+
+#[derive(SystemParam)]
+struct SpawnTripVehiclesParams<'w, 's> {
+    commands: Commands<'w, 's>,
+    grid: Res<'w, MapGrid>,
+    cfg: Res<'w, MapConfig>,
+    time: Res<'w, Time<bevy::time::Fixed>>,
+    graph: Res<'w, RoadGraph>,
+    path_cfg: Res<'w, PathfindingConfig>,
+    path_cache: ResMut<'w, PathCache>,
+    q_vehicles: Query<'w, 's, Entity, With<Vehicle>>,
+    traffic_cfg: Res<'w, TrafficConfig>,
 }
 
 /// Despawn all vehicles when GameCommand::ClearVehicles is received.

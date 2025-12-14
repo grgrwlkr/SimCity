@@ -12,6 +12,7 @@ use crate::game::commands::GameCommand;
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
+use crate::game::transport::GraphVersion;
 use crate::game::ui_state::{OverlayMode, ToolMode, UiState};
 
 pub struct MapPlugin;
@@ -481,6 +482,7 @@ fn apply_game_commands_to_grid(
     mut grid: ResMut<MapGrid>,
     mut dirty: ResMut<DirtyTiles>,
     mut city: ResMut<City>,
+    mut graph_version: ResMut<GraphVersion>,
 ) {
     for cmd in commands.read() {
         match *cmd {
@@ -499,6 +501,9 @@ fn apply_game_commands_to_grid(
                     continue;
                 }
 
+                let was_road = cell.placed == TileKind::Road;
+                let will_be_road = kind == TileKind::Road;
+
                 let cost = kind.cost();
                 if city.money < cost {
                     continue;
@@ -510,11 +515,18 @@ fn apply_game_commands_to_grid(
                 cell.building = None;
                 grid.set(pos, cell);
                 dirty.mark(idx);
+
+                // B) Transport: bump road graph version when road topology changes.
+                if was_road != will_be_road {
+                    graph_version.bump();
+                }
             }
             GameCommand::GenerateMap { seed: new_seed } => {
                 seed.0 = new_seed;
                 generate_map_into_grid(&mut grid, new_seed);
                 dirty.mark_all();
+                // Map regeneration can affect roads (and invalidates any cached paths).
+                graph_version.bump();
             }
             // Traffic commands are handled by TrafficPlugin.
             GameCommand::SpawnDebugVehicles { .. } | GameCommand::ClearVehicles => {}
