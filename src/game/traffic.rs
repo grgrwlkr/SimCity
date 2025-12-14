@@ -5,6 +5,7 @@ use rand::prelude::*;
 
 use crate::game::commands::GameCommand;
 use crate::game::map::{MapConfig, MapGrid, TileKind, TilePos, astar_path};
+use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::trips::{TripFinished, TripRequested};
 use crate::game::ui_state::{OverlayMode, UiState};
@@ -43,18 +44,28 @@ impl Plugin for TrafficPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TrafficOccupancy>()
             .add_systems(OnEnter(AppState::MainMenu), cleanup_traffic_entities)
+            // Commands (should respond even when paused)
             .add_systems(
                 Update,
-                (
-                    spawn_trip_vehicles,
-                    spawn_debug_vehicles,
-                    clear_vehicles,
-                    move_vehicles,
-                    update_traffic_occupancy,
-                )
+                (spawn_debug_vehicles, clear_vehicles)
+                    .in_set(GameSet::CommandApply)
                     .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
             )
-            .add_systems(Update, render_traffic_overlay);
+            // Simulation
+            .add_systems(
+                FixedUpdate,
+                (spawn_trip_vehicles, move_vehicles)
+                    .in_set(GameSet::Sim)
+                    .run_if(in_state(AppState::InGame)),
+            )
+            .add_systems(
+                FixedUpdate,
+                update_traffic_occupancy
+                    .in_set(GameSet::PostSim)
+                    .run_if(in_state(AppState::InGame)),
+            )
+            // Rendering
+            .add_systems(Update, render_traffic_overlay.in_set(GameSet::RenderSync));
     }
 }
 

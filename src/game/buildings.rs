@@ -2,10 +2,12 @@
 
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
+use bevy::time::Fixed;
 use rand::prelude::*;
 use std::collections::HashSet;
 
 use crate::game::map::{BuildingKind, DirtyTiles, MapConfig, MapGrid, TileKind, TilePos};
+use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
 use crate::game::ui_state::UiState;
@@ -17,8 +19,10 @@ impl Plugin for BuildingsPlugin {
         app.init_resource::<BuildingGrowthClock>()
             .add_systems(OnEnter(AppState::MainMenu), cleanup_buildings)
             .add_systems(
-                Update,
-                (grow_buildings, despawn_invalid_buildings).run_if(in_state(AppState::InGame)),
+                FixedUpdate,
+                (grow_buildings, despawn_invalid_buildings)
+                    .in_set(GameSet::Sim)
+                    .run_if(in_state(AppState::InGame)),
             );
     }
 }
@@ -67,7 +71,7 @@ fn despawn_invalid_buildings(
 
 #[derive(SystemParam)]
 struct GrowBuildingsParams<'w, 's> {
-    time: Res<'w, Time>,
+    time: Res<'w, Time<Fixed>>,
     ui: Res<'w, UiState>,
     cfg: Res<'w, MapConfig>,
     clock: ResMut<'w, BuildingGrowthClock>,

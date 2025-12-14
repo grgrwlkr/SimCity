@@ -9,6 +9,7 @@ use crate::game::citizens::Citizen;
 use crate::game::commands::GameCommand;
 use crate::game::employment::EmploymentStats;
 use crate::game::map::BuildMode;
+use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
 use crate::game::traffic::Vehicle;
@@ -24,8 +25,8 @@ impl Plugin for UiPlugin {
             .add_systems(OnEnter(AppState::InGame), announce_ingame)
             .add_systems(OnEnter(AppState::Paused), announce_paused)
             .add_systems(EguiPrimaryContextPass, top_bar_ui)
-            .add_systems(Update, update_ui_metrics)
-            .add_systems(Update, update_window_title);
+            .add_systems(Update, update_ui_metrics.in_set(GameSet::Ui))
+            .add_systems(Update, update_window_title.in_set(GameSet::Ui));
     }
 }
 

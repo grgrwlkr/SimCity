@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use crate::game::buildings::Building;
 use crate::game::citizens::{Citizen, CitizenWorkplace};
 use crate::game::map::{BuildingKind, MapGrid, TilePos};
+use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 
 pub struct EmploymentPlugin;
@@ -14,10 +15,17 @@ pub struct EmploymentPlugin;
 impl Plugin for EmploymentPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<EmploymentStats>()
-            .add_systems(Update, assign_jobs.run_if(in_state(AppState::InGame)))
             .add_systems(
-                Update,
-                compute_employment_stats.run_if(in_state(AppState::InGame)),
+                FixedUpdate,
+                assign_jobs
+                    .in_set(GameSet::Sim)
+                    .run_if(in_state(AppState::InGame)),
+            )
+            .add_systems(
+                FixedUpdate,
+                compute_employment_stats
+                    .in_set(GameSet::PostSim)
+                    .run_if(in_state(AppState::InGame)),
             );
     }
 }

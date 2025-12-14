@@ -9,6 +9,7 @@ use rand::prelude::*;
 
 use crate::game::camera::MainCamera;
 use crate::game::commands::GameCommand;
+use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
 use crate::game::ui_state::{OverlayMode, ToolMode, UiState};
@@ -25,27 +26,46 @@ impl Plugin for MapPlugin {
             .init_resource::<PathPreview>()
             .add_systems(OnEnter(AppState::InGame), spawn_map_if_needed)
             .add_systems(OnEnter(AppState::MainMenu), cleanup_ingame_entities)
-            .add_systems(Update, build_mode_hotkeys.run_if(in_game_or_paused))
+            // Input
             .add_systems(
                 Update,
-                sync_build_mode_from_ui
-                    .after(build_mode_hotkeys)
+                (
+                    build_mode_hotkeys,
+                    sync_build_mode_from_ui.after(build_mode_hotkeys),
+                )
+                    .in_set(GameSet::Input)
                     .run_if(in_game_or_paused),
             )
-            .add_systems(Update, update_cursor_highlight.run_if(in_game_or_paused))
-            .add_systems(Update, cursor_paint_to_command.run_if(in_game_or_paused))
             .add_systems(
                 Update,
-                apply_game_commands_to_grid.run_if(in_game_or_paused),
+                (
+                    update_cursor_highlight,
+                    cursor_paint_to_command,
+                    path_preview_input,
+                )
+                    .in_set(GameSet::Input)
+                    .run_if(in_game_or_paused),
             )
+            // Apply commands
+            .add_systems(
+                Update,
+                apply_game_commands_to_grid
+                    .in_set(GameSet::CommandApply)
+                    .run_if(in_game_or_paused),
+            )
+            // Render sync / overlays
             .add_systems(
                 Update,
                 sync_dirty_tiles_to_render
-                    .after(apply_game_commands_to_grid)
+                    .in_set(GameSet::RenderSync)
                     .run_if(in_game_or_paused),
             )
-            .add_systems(Update, path_preview_input.run_if(in_game_or_paused))
-            .add_systems(Update, path_preview_render.run_if(in_game_or_paused));
+            .add_systems(
+                Update,
+                path_preview_render
+                    .in_set(GameSet::RenderSync)
+                    .run_if(in_game_or_paused),
+            );
     }
 }
 

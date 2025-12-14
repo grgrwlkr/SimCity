@@ -2,11 +2,13 @@
 
 use bevy::ecs::message::{MessageReader, MessageWriter};
 use bevy::prelude::*;
+use bevy::time::Fixed;
 use rand::prelude::*;
 use std::collections::HashSet;
 
 use crate::game::buildings::Building;
 use crate::game::map::{BuildingKind, TilePos};
+use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::trips::{TripFinished, TripPurpose, TripRequested};
 
@@ -16,12 +18,13 @@ impl Plugin for CitizensPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(AppState::MainMenu), cleanup_citizens)
             .add_systems(
-                Update,
+                FixedUpdate,
                 (
                     spawn_citizens_from_residential,
                     citizen_trip_planner,
                     handle_trip_finished,
                 )
+                    .in_set(GameSet::Sim)
                     .run_if(in_state(AppState::InGame)),
             );
     }
@@ -81,7 +84,7 @@ fn spawn_citizens_from_residential(
 }
 
 fn citizen_trip_planner(
-    time: Res<Time>,
+    time: Res<Time<Fixed>>,
     q_buildings: Query<&Building>,
     mut q_citizens: Query<(Entity, &mut Citizen, &CitizenWorkplace)>,
     mut out: MessageWriter<TripRequested>,

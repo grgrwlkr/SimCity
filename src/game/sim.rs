@@ -1,5 +1,7 @@
 use bevy::prelude::*;
+use bevy::time::Fixed;
 
+use crate::game::sets::GameSet;
 use crate::game::sim_events::DayAdvanced;
 use crate::game::state::AppState;
 use crate::game::ui_state::UiState;
@@ -11,8 +13,13 @@ impl Plugin for SimPlugin {
         app.init_resource::<City>()
             .init_resource::<SimClock>()
             .add_systems(OnEnter(AppState::InGame), reset_city_for_new_game)
-            .add_systems(Update, handle_state_hotkeys)
-            .add_systems(Update, sim_tick.run_if(in_state(AppState::InGame)));
+            .add_systems(Update, handle_state_hotkeys.in_set(GameSet::Input))
+            .add_systems(
+                FixedUpdate,
+                sim_tick
+                    .in_set(GameSet::Sim)
+                    .run_if(in_state(AppState::InGame)),
+            );
     }
 }
 
@@ -83,7 +90,7 @@ fn handle_state_hotkeys(
 }
 
 fn sim_tick(
-    time: Res<Time>,
+    time: Res<Time<Fixed>>,
     ui_state: Res<UiState>,
     mut clock: ResMut<SimClock>,
     mut city: ResMut<City>,
