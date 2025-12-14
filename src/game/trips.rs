@@ -5,6 +5,7 @@ use crate::game::map::TilePos;
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum TripPurpose {
     Work,
+    Shop,
     ReturnHome,
 }
 

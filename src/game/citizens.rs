@@ -16,7 +16,8 @@ pub struct CitizensPlugin;
 
 impl Plugin for CitizensPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(AppState::MainMenu), cleanup_citizens)
+        app.init_resource::<CommuteStats>()
+            .add_systems(OnEnter(AppState::MainMenu), cleanup_citizens)
             .add_systems(
                 FixedUpdate,
                 (
@@ -33,14 +34,42 @@ impl Plugin for CitizensPlugin {
 #[derive(Component, Debug)]
 pub struct Citizen {
     pub home: TilePos,
-    pub at_home: bool,
+    pub state: CitizenState,
+    /// The last non-home place we travelled to (work or shop).
     pub last_place: TilePos,
-    pub trip_timer: Timer,
+    /// When to evaluate next action while in a stable state (home/work/shop).
+    pub decision_timer: Timer,
+    /// Shopping desire timer (MVP).
+    pub shopping_need: Timer,
+    /// One-shot timer while at work.
+    pub work_stay: Timer,
+    /// One-shot timer while at shop.
+    pub shop_stay: Timer,
+    /// Trip start time for measuring commute.
+    pub trip_departed_at_sec: Option<f64>,
+    pub trip_purpose: Option<TripPurpose>,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum CitizenState {
+    AtHome,
+    ToWork,
+    AtWork,
+    ToShop,
+    AtShop,
+    ToHome,
 }
 
 #[derive(Component, Debug, Default)]
 pub struct CitizenWorkplace {
     pub workplace: Option<TilePos>,
+}
+
+/// Derived metric: average trip duration (work+shop) in seconds.
+#[derive(Resource, Debug, Default, Copy, Clone)]
+pub struct CommuteStats {
+    pub avg_commute_secs: f32,
+    pub samples: u32,
 }
 
 fn cleanup_citizens(mut commands: Commands, q: Query<Entity, With<Citizen>>) {
@@ -70,12 +99,22 @@ fn spawn_citizens_from_residential(
             continue;
         }
 
+        let decision = Timer::from_seconds(rng.gen_range(1.0..3.0), TimerMode::Repeating);
+        let shopping_need = Timer::from_seconds(rng.gen_range(9.0..18.0), TimerMode::Repeating);
+        let work_stay = Timer::from_seconds(rng.gen_range(5.0..9.0), TimerMode::Once);
+        let shop_stay = Timer::from_seconds(rng.gen_range(2.0..5.0), TimerMode::Once);
+
         commands.spawn((
             Citizen {
                 home: b.pos,
-                at_home: true,
+                state: CitizenState::AtHome,
                 last_place: b.pos,
-                trip_timer: Timer::from_seconds(rng.gen_range(1.0..3.0), TimerMode::Repeating),
+                decision_timer: decision,
+                shopping_need,
+                work_stay,
+                shop_stay,
+                trip_departed_at_sec: None,
+                trip_purpose: None,
             },
             CitizenWorkplace::default(),
         ));
@@ -89,51 +128,97 @@ fn citizen_trip_planner(
     mut q_citizens: Query<(Entity, &mut Citizen, &CitizenWorkplace)>,
     mut out: MessageWriter<TripRequested>,
 ) {
-    // Pre-collect possible destinations (non-res).
-    let mut destinations = Vec::<TilePos>::new();
+    // Pre-collect possible shopping destinations (commercial buildings).
+    let mut shops = Vec::<TilePos>::new();
     for b in &q_buildings {
-        if matches!(b.kind, BuildingKind::Commercial | BuildingKind::Industrial) {
-            destinations.push(b.pos);
+        if b.kind == BuildingKind::Commercial {
+            shops.push(b.pos);
         }
     }
 
     let mut rng = thread_rng();
 
     for (e, mut c, wp) in &mut q_citizens {
-        c.trip_timer.tick(time.delta());
-        if !c.trip_timer.just_finished() {
+        // Advance timers.
+        c.shopping_need.tick(time.delta());
+        c.decision_timer.tick(time.delta());
+        c.work_stay.tick(time.delta());
+        c.shop_stay.tick(time.delta());
+
+        // Only decide in stable states.
+        let stable = matches!(
+            c.state,
+            CitizenState::AtHome | CitizenState::AtWork | CitizenState::AtShop
+        );
+        if !stable || !c.decision_timer.just_finished() {
             continue;
         }
 
-        if c.at_home {
-            // If assigned a workplace, go there; otherwise pick any destination (MVP).
-            let dest = if let Some(work) = wp.workplace {
-                work
-            } else {
-                let Some(&d) = destinations.choose(&mut rng) else {
+        match c.state {
+            CitizenState::AtHome => {
+                // Prefer shopping if need timer triggers and shops exist.
+                if c.shopping_need.just_finished()
+                    && let Some(&shop) = shops.choose(&mut rng)
+                {
+                    out.write(TripRequested {
+                        citizen: e,
+                        from: c.home,
+                        to: shop,
+                        purpose: TripPurpose::Shop,
+                    });
+                    c.state = CitizenState::ToShop;
+                    c.last_place = shop;
+                    c.trip_departed_at_sec = Some(time.elapsed_secs_f64());
+                    c.trip_purpose = Some(TripPurpose::Shop);
+                    continue;
+                }
+
+                // Otherwise go to work if assigned.
+                let Some(work) = wp.workplace else {
                     continue;
                 };
-                d
-            };
-
-            out.write(TripRequested {
-                citizen: e,
-                from: c.home,
-                to: dest,
-                purpose: TripPurpose::Work,
-            });
-            c.at_home = false;
-            c.last_place = dest;
-        } else {
-            // Return home.
-            out.write(TripRequested {
-                citizen: e,
-                from: c.last_place,
-                to: c.home,
-                purpose: TripPurpose::ReturnHome,
-            });
-            c.at_home = true;
-            c.last_place = c.home;
+                out.write(TripRequested {
+                    citizen: e,
+                    from: c.home,
+                    to: work,
+                    purpose: TripPurpose::Work,
+                });
+                c.state = CitizenState::ToWork;
+                c.last_place = work;
+                c.trip_departed_at_sec = Some(time.elapsed_secs_f64());
+                c.trip_purpose = Some(TripPurpose::Work);
+            }
+            CitizenState::AtWork => {
+                // After some time at work, go home.
+                if !c.work_stay.is_finished() {
+                    continue;
+                }
+                out.write(TripRequested {
+                    citizen: e,
+                    from: c.last_place,
+                    to: c.home,
+                    purpose: TripPurpose::ReturnHome,
+                });
+                c.state = CitizenState::ToHome;
+                c.trip_departed_at_sec = Some(time.elapsed_secs_f64());
+                c.trip_purpose = Some(TripPurpose::ReturnHome);
+            }
+            CitizenState::AtShop => {
+                // After some time at shop, go home.
+                if !c.shop_stay.is_finished() {
+                    continue;
+                }
+                out.write(TripRequested {
+                    citizen: e,
+                    from: c.last_place,
+                    to: c.home,
+                    purpose: TripPurpose::ReturnHome,
+                });
+                c.state = CitizenState::ToHome;
+                c.trip_departed_at_sec = Some(time.elapsed_secs_f64());
+                c.trip_purpose = Some(TripPurpose::ReturnHome);
+            }
+            CitizenState::ToWork | CitizenState::ToShop | CitizenState::ToHome => {}
         }
     }
 }
@@ -141,16 +226,45 @@ fn citizen_trip_planner(
 fn handle_trip_finished(
     mut reader: MessageReader<TripFinished>,
     mut q_citizens: Query<&mut Citizen>,
+    time: Res<Time<Fixed>>,
+    mut stats: ResMut<CommuteStats>,
 ) {
     for msg in reader.read() {
         if let Ok(mut c) = q_citizens.get_mut(msg.citizen) {
-            // In MVP we don't need more than toggling; this is here for future expansion.
-            match msg.purpose {
-                TripPurpose::Work => {}
-                TripPurpose::ReturnHome => {}
+            // Update commute stats when we have a departure timestamp.
+            if let Some(t0) = c.trip_departed_at_sec {
+                let dt = (time.elapsed_secs_f64() - t0).max(0.0) as f32;
+                // EMA-like update to avoid storing all samples.
+                let alpha = 0.15;
+                if stats.samples == 0 {
+                    stats.avg_commute_secs = dt;
+                } else {
+                    stats.avg_commute_secs = stats.avg_commute_secs * (1.0 - alpha) + dt * alpha;
+                }
+                stats.samples = stats.samples.saturating_add(1);
             }
-            // Keep citizen alive; timers will schedule next trip.
-            c.trip_timer.reset();
+
+            // Clear trip markers.
+            c.trip_departed_at_sec = None;
+            c.trip_purpose = None;
+
+            // State transitions on arrival.
+            match msg.purpose {
+                TripPurpose::Work => {
+                    c.state = CitizenState::AtWork;
+                    c.work_stay.reset();
+                }
+                TripPurpose::Shop => {
+                    c.state = CitizenState::AtShop;
+                    c.shop_stay.reset();
+                }
+                TripPurpose::ReturnHome => {
+                    c.state = CitizenState::AtHome;
+                }
+            }
+
+            // Next decision can happen later; keep timer running.
+            c.decision_timer.reset();
         }
     }
 }

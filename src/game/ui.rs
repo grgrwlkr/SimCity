@@ -6,6 +6,7 @@ use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
 use crate::game::buildings::Building;
 use crate::game::citizens::Citizen;
+use crate::game::citizens::CommuteStats;
 use crate::game::commands::GameCommand;
 use crate::game::employment::EmploymentStats;
 use crate::game::map::BuildMode;
@@ -37,47 +38,63 @@ struct UiMetrics {
     buildings: usize,
     employed: usize,
     unemployed: usize,
+    employment_rate: f32,
+    avg_commute_secs: f32,
     traffic_avg: f32,
     traffic_max: f32,
 }
 
-fn update_ui_metrics(
-    state: Res<State<AppState>>,
-    mut metrics: ResMut<UiMetrics>,
-    employment: Option<Res<EmploymentStats>>,
-    traffic: Option<Res<TrafficIndex>>,
-    q_citizens: Query<Entity, With<Citizen>>,
-    q_vehicles: Query<Entity, With<Vehicle>>,
-    q_buildings: Query<Entity, With<Building>>,
-) {
-    if !matches!(state.get(), AppState::InGame | AppState::Paused) {
-        metrics.citizens = 0;
-        metrics.vehicles = 0;
-        metrics.buildings = 0;
-        metrics.employed = 0;
-        metrics.unemployed = 0;
-        metrics.traffic_avg = 0.0;
-        metrics.traffic_max = 0.0;
+fn update_ui_metrics(mut p: UiMetricsParams) {
+    if !matches!(p.state.get(), AppState::InGame | AppState::Paused) {
+        p.metrics.citizens = 0;
+        p.metrics.vehicles = 0;
+        p.metrics.buildings = 0;
+        p.metrics.employed = 0;
+        p.metrics.unemployed = 0;
+        p.metrics.employment_rate = 0.0;
+        p.metrics.avg_commute_secs = 0.0;
+        p.metrics.traffic_avg = 0.0;
+        p.metrics.traffic_max = 0.0;
         return;
     }
-    metrics.citizens = q_citizens.iter().count();
-    metrics.vehicles = q_vehicles.iter().count();
-    metrics.buildings = q_buildings.iter().count();
-    if let Some(e) = employment {
-        metrics.employed = e.employed;
-        metrics.unemployed = e.unemployed;
+    p.metrics.citizens = p.q_citizens.iter().count();
+    p.metrics.vehicles = p.q_vehicles.iter().count();
+    p.metrics.buildings = p.q_buildings.iter().count();
+    if let Some(e) = p.employment.as_deref() {
+        p.metrics.employed = e.employed;
+        p.metrics.unemployed = e.unemployed;
+        p.metrics.employment_rate = e.employment_rate;
     } else {
-        metrics.employed = 0;
-        metrics.unemployed = 0;
+        p.metrics.employed = 0;
+        p.metrics.unemployed = 0;
+        p.metrics.employment_rate = 0.0;
     }
 
-    if let Some(t) = traffic {
-        metrics.traffic_avg = t.avg_congestion;
-        metrics.traffic_max = t.max_congestion;
+    if let Some(c) = p.commute.as_deref() {
+        p.metrics.avg_commute_secs = c.avg_commute_secs;
     } else {
-        metrics.traffic_avg = 0.0;
-        metrics.traffic_max = 0.0;
+        p.metrics.avg_commute_secs = 0.0;
     }
+
+    if let Some(t) = p.traffic.as_deref() {
+        p.metrics.traffic_avg = t.avg_congestion;
+        p.metrics.traffic_max = t.max_congestion;
+    } else {
+        p.metrics.traffic_avg = 0.0;
+        p.metrics.traffic_max = 0.0;
+    }
+}
+
+#[derive(SystemParam)]
+struct UiMetricsParams<'w, 's> {
+    state: Res<'w, State<AppState>>,
+    metrics: ResMut<'w, UiMetrics>,
+    employment: Option<Res<'w, EmploymentStats>>,
+    traffic: Option<Res<'w, TrafficIndex>>,
+    commute: Option<Res<'w, CommuteStats>>,
+    q_citizens: Query<'w, 's, Entity, With<Citizen>>,
+    q_vehicles: Query<'w, 's, Entity, With<Vehicle>>,
+    q_buildings: Query<'w, 's, Entity, With<Building>>,
 }
 
 fn announce_main_menu() {
@@ -210,7 +227,7 @@ fn top_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
 
             // Quick status line
             ui.label(format!(
-                "Day {} | $ {} ( +{} / -{} ) | Pop {} | Emp {}/{} | Traffic {:.0}%/{:.0}% | Citizens {} | Vehicles {} | Buildings {} | Build {:?}",
+                "Day {} | $ {} ( +{} / -{} ) | Pop {} | Emp {}/{} ({:.0}%) | Commute {:.0}s | Traffic {:.0}%/{:.0}% | Citizens {} | Vehicles {} | Buildings {} | Build {:?}",
                 p.city.day,
                 p.city.money,
                 p.city.last_income,
@@ -218,6 +235,8 @@ fn top_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
                 p.city.population,
                 p.metrics.employed,
                 p.metrics.unemployed,
+                (p.metrics.employment_rate * 100.0).clamp(0.0, 999.0),
+                p.metrics.avg_commute_secs.clamp(0.0, 9999.0),
                 (p.metrics.traffic_avg * 100.0).clamp(0.0, 999.0),
                 (p.metrics.traffic_max * 100.0).clamp(0.0, 999.0),
                 p.metrics.citizens,
