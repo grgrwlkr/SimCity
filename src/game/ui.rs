@@ -12,7 +12,7 @@ use crate::game::map::BuildMode;
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
-use crate::game::traffic::Vehicle;
+use crate::game::traffic::{TrafficIndex, Vehicle};
 use crate::game::ui_state::{OverlayMode, SimSpeed, ToolMode, UiState};
 
 pub struct UiPlugin;
@@ -37,12 +37,15 @@ struct UiMetrics {
     buildings: usize,
     employed: usize,
     unemployed: usize,
+    traffic_avg: f32,
+    traffic_max: f32,
 }
 
 fn update_ui_metrics(
     state: Res<State<AppState>>,
     mut metrics: ResMut<UiMetrics>,
     employment: Option<Res<EmploymentStats>>,
+    traffic: Option<Res<TrafficIndex>>,
     q_citizens: Query<Entity, With<Citizen>>,
     q_vehicles: Query<Entity, With<Vehicle>>,
     q_buildings: Query<Entity, With<Building>>,
@@ -53,6 +56,8 @@ fn update_ui_metrics(
         metrics.buildings = 0;
         metrics.employed = 0;
         metrics.unemployed = 0;
+        metrics.traffic_avg = 0.0;
+        metrics.traffic_max = 0.0;
         return;
     }
     metrics.citizens = q_citizens.iter().count();
@@ -64,6 +69,14 @@ fn update_ui_metrics(
     } else {
         metrics.employed = 0;
         metrics.unemployed = 0;
+    }
+
+    if let Some(t) = traffic {
+        metrics.traffic_avg = t.avg_congestion;
+        metrics.traffic_max = t.max_congestion;
+    } else {
+        metrics.traffic_avg = 0.0;
+        metrics.traffic_max = 0.0;
     }
 }
 
@@ -197,7 +210,7 @@ fn top_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
 
             // Quick status line
             ui.label(format!(
-                "Day {} | $ {} ( +{} / -{} ) | Pop {} | Emp {}/{} | Citizens {} | Vehicles {} | Buildings {} | Build {:?}",
+                "Day {} | $ {} ( +{} / -{} ) | Pop {} | Emp {}/{} | Traffic {:.0}%/{:.0}% | Citizens {} | Vehicles {} | Buildings {} | Build {:?}",
                 p.city.day,
                 p.city.money,
                 p.city.last_income,
@@ -205,6 +218,8 @@ fn top_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
                 p.city.population,
                 p.metrics.employed,
                 p.metrics.unemployed,
+                (p.metrics.traffic_avg * 100.0).clamp(0.0, 999.0),
+                (p.metrics.traffic_max * 100.0).clamp(0.0, 999.0),
                 p.metrics.citizens,
                 p.metrics.vehicles,
                 p.metrics.buildings,

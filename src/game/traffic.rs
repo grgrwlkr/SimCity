@@ -29,11 +29,28 @@ struct TripPassenger {
     purpose: crate::game::trips::TripPurpose,
 }
 
-/// Resource storing how many vehicles pass through each road tile (simple heatmap).
+/// Traffic read model (derived data; not a source of truth).
+///
+/// **Semantics (punt C):**
+/// - `per_tick_vehicles[idx]`: number of vehicles currently occupying the road tile at the end of
+///   the latest fixed sim tick (not "cumulative visits").
+/// - `ema_heat[idx]`: exponentially-smoothed view of `per_tick_vehicles` for visualization.
+///   This is what the Traffic overlay uses.
 #[derive(Resource, Default)]
 pub struct TrafficOccupancy {
-    /// Total visits per tile (use idx from MapGrid).
-    pub visits: Vec<u32>,
+    pub per_tick_vehicles: Vec<u16>,
+    pub ema_heat: Vec<f32>,
+}
+
+/// Aggregated traffic metrics for UI/economy.
+#[derive(Resource, Debug, Default, Copy, Clone)]
+pub struct TrafficIndex {
+    pub road_tiles: u32,
+    pub vehicles_on_roads: u32,
+    /// Average congestion in [0..1] across road tiles.
+    pub avg_congestion: f32,
+    /// Max congestion in [0..1] across road tiles.
+    pub max_congestion: f32,
 }
 
 /// Marker for road tile overlays that show traffic heat.
@@ -45,8 +62,12 @@ pub struct TrafficPlugin;
 impl Plugin for TrafficPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TrafficOccupancy>()
+            .init_resource::<TrafficIndex>()
             .init_resource::<TrafficConfig>()
-            .add_systems(OnEnter(AppState::MainMenu), cleanup_traffic_entities)
+            .add_systems(
+                OnEnter(AppState::MainMenu),
+                (cleanup_traffic_entities, reset_traffic_aggregates),
+            )
             // Commands (should respond even when paused)
             .add_systems(
                 Update,
@@ -84,6 +105,10 @@ struct TrafficConfig {
     max_active_vehicles: usize,
     /// Guardrail: max number of route plans performed per tick.
     max_route_plans_per_tick: usize,
+    /// Congestion capacity per road tile (MVP constant).
+    capacity_per_tile: f32,
+    /// EMA decay for heatmap in [0..1). Higher = slower to change.
+    heat_ema_decay: f32,
 }
 
 impl Default for TrafficConfig {
@@ -91,6 +116,8 @@ impl Default for TrafficConfig {
         Self {
             max_active_vehicles: 1500,
             max_route_plans_per_tick: 64,
+            capacity_per_tile: 4.0,
+            heat_ema_decay: 0.92,
         }
     }
 }
@@ -110,6 +137,12 @@ fn cleanup_traffic_entities(
     for e in q_overlay.iter() {
         commands.entity(e).despawn();
     }
+}
+
+fn reset_traffic_aggregates(mut occ: ResMut<TrafficOccupancy>, mut idx: ResMut<TrafficIndex>) {
+    occ.per_tick_vehicles.clear();
+    occ.ema_heat.clear();
+    *idx = TrafficIndex::default();
 }
 
 /// Spawn a batch of debug vehicles when GameCommand::SpawnDebugVehicles is received.
@@ -271,6 +304,8 @@ fn clear_vehicles(
     mut reader: bevy::ecs::message::MessageReader<GameCommand>,
     mut commands: Commands,
     q_vehicles: Query<Entity, With<Vehicle>>,
+    mut occ: ResMut<TrafficOccupancy>,
+    mut idx: ResMut<TrafficIndex>,
 ) {
     for msg in reader.read() {
         if matches!(
@@ -280,6 +315,10 @@ fn clear_vehicles(
             for entity in q_vehicles.iter() {
                 commands.entity(entity).despawn();
             }
+            // C) Traffic: reset derived aggregates when clearing vehicles / regenerating map.
+            occ.per_tick_vehicles.clear();
+            occ.ema_heat.clear();
+            *idx = TrafficIndex::default();
         }
     }
 }
@@ -345,24 +384,74 @@ fn move_vehicles(
 fn update_traffic_occupancy(
     grid: Res<MapGrid>,
     mut occ: ResMut<TrafficOccupancy>,
+    mut idx: ResMut<TrafficIndex>,
     q: Query<&Vehicle>,
+    cfg: Res<TrafficConfig>,
 ) {
-    // Ensure visits vec matches grid size.
-    if occ.visits.len() != grid.len() {
-        occ.visits.resize(grid.len(), 0);
+    // Ensure vectors match grid size.
+    let len = grid.len();
+    if occ.per_tick_vehicles.len() != len {
+        occ.per_tick_vehicles.clear();
+        occ.per_tick_vehicles.resize(len, 0);
+    } else {
+        occ.per_tick_vehicles.fill(0);
+    }
+    if occ.ema_heat.len() != len {
+        occ.ema_heat.clear();
+        occ.ema_heat.resize(len, 0.0);
     }
 
-    // Decay old occupancy slowly (so it fades if vehicles leave).
-    for v in occ.visits.iter_mut() {
-        *v = v.saturating_sub(1);
-    }
-
+    // Count occupancy at end-of-tick.
     for vehicle in q.iter() {
         if let Some(pos) = vehicle.route.first()
             && let Some(idx) = grid.idx(*pos)
         {
-            occ.visits[idx] = occ.visits[idx].saturating_add(5);
+            // saturate at u16::MAX; capacity is small in MVP anyway.
+            occ.per_tick_vehicles[idx] = occ.per_tick_vehicles[idx].saturating_add(1);
         }
+    }
+
+    // Update EMA heatmap (for overlay) and compute TrafficIndex.
+    let mut road_tiles = 0u32;
+    let mut vehicles_on_roads = 0u32;
+    let mut sum_cong = 0.0f32;
+    let mut max_cong = 0.0f32;
+
+    let decay = cfg.heat_ema_decay.clamp(0.0, 0.999);
+    let cap = cfg.capacity_per_tile.max(0.01);
+
+    for y in 0..grid.height {
+        for x in 0..grid.width {
+            let pos = TilePos { x, y };
+            let Some(ti) = grid.idx(pos) else { continue };
+            let Some(cell) = grid.get(pos) else { continue };
+            if cell.water || cell.placed != TileKind::Road {
+                continue;
+            }
+            road_tiles += 1;
+
+            let c = occ.per_tick_vehicles[ti] as f32;
+            vehicles_on_roads = vehicles_on_roads.saturating_add(occ.per_tick_vehicles[ti] as u32);
+
+            let cong = (c / cap).clamp(0.0, 1.0);
+            sum_cong += cong;
+            if cong > max_cong {
+                max_cong = cong;
+            }
+
+            // EMA: keep a smooth overlay.
+            occ.ema_heat[ti] = occ.ema_heat[ti] * decay + c * (1.0 - decay);
+        }
+    }
+
+    idx.road_tiles = road_tiles;
+    idx.vehicles_on_roads = vehicles_on_roads;
+    if road_tiles > 0 {
+        idx.avg_congestion = sum_cong / (road_tiles as f32);
+        idx.max_congestion = max_cong;
+    } else {
+        idx.avg_congestion = 0.0;
+        idx.max_congestion = 0.0;
     }
 }
 
@@ -384,11 +473,16 @@ fn render_traffic_overlay(
         return;
     }
 
-    if occ.visits.len() != grid.len() {
+    if occ.ema_heat.len() != grid.len() {
         return;
     }
 
-    let max_visits = occ.visits.iter().copied().max().unwrap_or(1).max(1);
+    let max_heat = occ
+        .ema_heat
+        .iter()
+        .copied()
+        .fold(0.0f32, |a, b| a.max(b))
+        .max(0.001);
 
     let origin = map_origin(&cfg);
 
@@ -401,8 +495,7 @@ fn render_traffic_overlay(
                 continue;
             }
 
-            let visits = occ.visits[idx];
-            let heat = (visits as f32) / (max_visits as f32);
+            let heat = (occ.ema_heat[idx] / max_heat).clamp(0.0, 1.0);
 
             // Low traffic: green, high traffic: red.
             let color = Color::linear_rgb(heat, 1.0 - heat, 0.0);

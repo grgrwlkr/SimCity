@@ -20,4 +20,3 @@ pub enum GameSet {
     /// Per-frame UI/readouts (non-sim).
     Ui,
 }
-
