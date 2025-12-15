@@ -4,7 +4,7 @@ use bevy::ecs::message::{MessageReader, MessageWriter};
 use bevy::prelude::*;
 use bevy::time::Fixed;
 use rand::prelude::*;
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use crate::game::buildings::Building;
 use crate::game::map::{BuildingKind, TilePos};
@@ -83,10 +83,10 @@ fn spawn_citizens_from_residential(
     q_buildings: Query<&Building>,
     q_citizens: Query<&Citizen>,
 ) {
-    // One citizen per residential building (MVP).
-    let mut have_home = HashSet::<TilePos>::new();
+    // Spawn up to building residential capacity per home tile (MVP).
+    let mut have_home = HashMap::<TilePos, usize>::new();
     for c in &q_citizens {
-        have_home.insert(c.home);
+        *have_home.entry(c.home).or_insert(0) += 1;
     }
 
     let mut rng = thread_rng();
@@ -95,7 +95,9 @@ fn spawn_citizens_from_residential(
         if b.kind != BuildingKind::Residential {
             continue;
         }
-        if have_home.contains(&b.pos) {
+        let current = have_home.get(&b.pos).copied().unwrap_or(0);
+        let target = (b.capacity_residents as usize).max(1);
+        if current >= target {
             continue;
         }
 
@@ -104,21 +106,28 @@ fn spawn_citizens_from_residential(
         let work_stay = Timer::from_seconds(rng.gen_range(5.0..9.0), TimerMode::Once);
         let shop_stay = Timer::from_seconds(rng.gen_range(2.0..5.0), TimerMode::Once);
 
-        commands.spawn((
-            Citizen {
-                home: b.pos,
-                state: CitizenState::AtHome,
-                last_place: b.pos,
-                decision_timer: decision,
-                shopping_need,
-                work_stay,
-                shop_stay,
-                trip_departed_at_sec: None,
-                trip_purpose: None,
-            },
-            CitizenWorkplace::default(),
-        ));
-        have_home.insert(b.pos);
+        let mut spawned_here = 0usize;
+        let max_spawn_here = (target - current).min(8); // guardrail
+        for _ in 0..max_spawn_here {
+            commands.spawn((
+                Citizen {
+                    home: b.pos,
+                    state: CitizenState::AtHome,
+                    last_place: b.pos,
+                    decision_timer: decision.clone(),
+                    shopping_need: shopping_need.clone(),
+                    work_stay: work_stay.clone(),
+                    shop_stay: shop_stay.clone(),
+                    trip_departed_at_sec: None,
+                    trip_purpose: None,
+                },
+                CitizenWorkplace::default(),
+            ));
+            spawned_here += 1;
+        }
+        if spawned_here > 0 {
+            *have_home.entry(b.pos).or_insert(0) += spawned_here;
+        }
     }
 }
 

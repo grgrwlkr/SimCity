@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use rand::prelude::*;
 
 use crate::game::commands::GameCommand;
-use crate::game::map::{MapConfig, MapGrid, TileKind, TilePos, astar_path};
+use crate::game::map::{MapConfig, MapGrid, TilePos, astar_path};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::transport::{PathCache, PathfindingConfig, RoadGraph, find_road_path_cached};
@@ -425,7 +425,7 @@ fn update_traffic_occupancy(
             let pos = TilePos { x, y };
             let Some(ti) = grid.idx(pos) else { continue };
             let Some(cell) = grid.get(pos) else { continue };
-            if cell.water || cell.placed != TileKind::Road {
+            if cell.water || !cell.road {
                 continue;
             }
             road_tiles += 1;
@@ -491,7 +491,7 @@ fn render_traffic_overlay(
             let pos = TilePos { x, y };
             let Some(idx) = grid.idx(pos) else { continue };
             let Some(cell) = grid.get(pos) else { continue };
-            if cell.placed != TileKind::Road {
+            if !cell.road {
                 continue;
             }
 
@@ -525,7 +525,7 @@ fn collect_road_tiles(grid: &MapGrid) -> Vec<TilePos> {
         for x in 0..grid.width {
             let pos = TilePos { x, y };
             if let Some(cell) = grid.get(pos)
-                && cell.placed == TileKind::Road
+                && cell.road
             {
                 roads.push(pos);
             }
@@ -538,7 +538,7 @@ fn adjacent_road(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
     // If the tile itself is a road, accept it.
     if let Some(cell) = grid.get(pos)
         && !cell.water
-        && cell.placed == TileKind::Road
+        && cell.road
     {
         return Some(pos);
     }
@@ -562,7 +562,7 @@ fn adjacent_road(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
     ] {
         if let Some(cell) = grid.get(npos)
             && !cell.water
-            && cell.placed == TileKind::Road
+            && cell.road
         {
             return Some(npos);
         }

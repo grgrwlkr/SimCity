@@ -1,12 +1,14 @@
 //! M4: Zoning -> building growth (primitives).
 
+use bevy::ecs::message::MessageReader;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::time::Fixed;
 use rand::prelude::*;
 use std::collections::HashSet;
 
-use crate::game::map::{BuildingKind, DirtyTiles, MapConfig, MapGrid, TileKind, TilePos};
+use crate::game::commands::GameCommand;
+use crate::game::map::{BuildingKind, DirtyTiles, MapConfig, MapGrid, MapSeed, TilePos};
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
@@ -17,7 +19,15 @@ pub struct BuildingsPlugin;
 impl Plugin for BuildingsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BuildingGrowthClock>()
+            .init_resource::<BuildingGrowthRng>()
             .add_systems(OnEnter(AppState::MainMenu), cleanup_buildings)
+            .add_systems(OnEnter(AppState::InGame), seed_growth_rng_from_map)
+            .add_systems(
+                Update,
+                reset_growth_rng_on_new_map
+                    .in_set(GameSet::CommandApply)
+                    .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+            )
             .add_systems(
                 FixedUpdate,
                 (grow_buildings, despawn_invalid_buildings)
@@ -31,11 +41,26 @@ impl Plugin for BuildingsPlugin {
 pub struct Building {
     pub kind: BuildingKind,
     pub pos: TilePos,
+    pub capacity_residents: u16,
+    pub capacity_jobs: u16,
 }
 
 #[derive(Resource)]
 struct BuildingGrowthClock {
     timer: Timer,
+}
+
+#[derive(Resource)]
+struct BuildingGrowthRng {
+    rng: StdRng,
+}
+
+impl Default for BuildingGrowthRng {
+    fn default() -> Self {
+        Self {
+            rng: StdRng::seed_from_u64(1),
+        }
+    }
 }
 
 impl Default for BuildingGrowthClock {
@@ -62,8 +87,8 @@ fn despawn_invalid_buildings(
             commands.entity(e).despawn();
             continue;
         };
-        let expected_zone = b.kind.as_zone_tile();
-        if cell.water || cell.placed != expected_zone || cell.building != Some(b.kind) {
+        let expected_zone = b.kind.as_zone();
+        if cell.water || cell.zone != expected_zone || cell.building != Some(b.kind) {
             commands.entity(e).despawn();
         }
     }
@@ -75,6 +100,7 @@ struct GrowBuildingsParams<'w, 's> {
     ui: Res<'w, UiState>,
     cfg: Res<'w, MapConfig>,
     clock: ResMut<'w, BuildingGrowthClock>,
+    rng: ResMut<'w, BuildingGrowthRng>,
     grid: ResMut<'w, MapGrid>,
     dirty: ResMut<'w, DirtyTiles>,
     city: ResMut<'w, City>,
@@ -105,7 +131,6 @@ fn grow_buildings(mut p: GrowBuildingsParams) {
         occupied.insert(b.pos);
     }
 
-    let mut rng = thread_rng();
     let len = p.grid.len();
     if len == 0 {
         return;
@@ -117,7 +142,7 @@ fn grow_buildings(mut p: GrowBuildingsParams) {
             break;
         }
 
-        let idx = rng.gen_range(0..len);
+        let idx = p.rng.rng.gen_range(0..len);
         let x = (idx % (p.grid.width as usize)) as i32;
         let y = (idx / (p.grid.width as usize)) as i32;
         let pos = TilePos { x, y };
@@ -129,11 +154,11 @@ fn grow_buildings(mut p: GrowBuildingsParams) {
         let Some(mut cell) = p.grid.get(pos) else {
             continue;
         };
-        if cell.water || cell.building.is_some() {
+        if cell.water || cell.road || cell.building.is_some() {
             continue;
         }
 
-        let Some(kind) = BuildingKind::from_zone_tile(cell.placed) else {
+        let Some(kind) = BuildingKind::from_zone(cell.zone) else {
             continue;
         };
         if !has_adjacent_road(&p.grid, pos) {
@@ -150,11 +175,12 @@ fn grow_buildings(mut p: GrowBuildingsParams) {
         occupied.insert(pos);
         spawned += 1;
 
-        // Placeholder effects (MVP).
-        match kind {
-            BuildingKind::Residential => p.city.population = p.city.population.saturating_add(10),
-            BuildingKind::Commercial => {}
-            BuildingKind::Industrial => {}
+        // Capacity-based effects (MVP).
+        if kind == BuildingKind::Residential {
+            p.city.population = p
+                .city
+                .population
+                .saturating_add(kind.capacity_residents() as u32);
         }
     }
 }
@@ -180,7 +206,7 @@ fn has_adjacent_road(grid: &MapGrid, pos: TilePos) -> bool {
     ] {
         if let Some(cell) = grid.get(npos)
             && !cell.water
-            && cell.placed == TileKind::Road
+            && cell.road
         {
             return true;
         }
@@ -198,7 +224,12 @@ fn spawn_building_entity(
     let world = origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size);
 
     commands.spawn((
-        Building { kind, pos },
+        Building {
+            kind,
+            pos,
+            capacity_residents: kind.capacity_residents(),
+            capacity_jobs: kind.capacity_jobs(),
+        },
         Sprite::from_color(kind.color(), Vec2::splat(cfg.tile_size * 0.75)),
         Transform::from_translation(Vec3::new(world.x, world.y, 8.0)),
     ));
@@ -209,4 +240,19 @@ fn map_origin(cfg: &MapConfig) -> Vec2 {
         -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
         -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
     )
+}
+
+fn seed_growth_rng_from_map(seed: Res<MapSeed>, mut rng: ResMut<BuildingGrowthRng>) {
+    rng.rng = StdRng::seed_from_u64(seed.0 ^ 0xB11D_1A95_5EED_u64);
+}
+
+fn reset_growth_rng_on_new_map(
+    mut reader: MessageReader<GameCommand>,
+    mut rng: ResMut<BuildingGrowthRng>,
+) {
+    for msg in reader.read() {
+        if let GameCommand::GenerateMap { seed } = msg {
+            rng.rng = StdRng::seed_from_u64(seed ^ 0xB11D_1A95_5EED_u64);
+        }
+    }
 }

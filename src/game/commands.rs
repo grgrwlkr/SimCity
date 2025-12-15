@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::game::map::{TileKind, TilePos};
+use crate::game::map::{TilePos, ZoneKind};
 
 /// Commands produced by UI / input and applied by simulation systems.
 #[derive(Message, Debug, Clone)]
@@ -10,7 +10,13 @@ pub enum GameCommand {
     GenerateMap { seed: u64 },
 
     /// Set the tile kind at the given tile position (MVP build/erase).
-    SetTile { pos: TilePos, kind: TileKind },
+    SetRoad { pos: TilePos, on: bool },
+
+    /// Paint zoning at the given tile position.
+    SetZone { pos: TilePos, zone: ZoneKind },
+
+    /// Erase player edits (road + zone + building) on the given tile.
+    EraseTile { pos: TilePos },
 
     /// Spawn a number of debug vehicles on roads (M3 prototype).
     SpawnDebugVehicles { count: u32 },

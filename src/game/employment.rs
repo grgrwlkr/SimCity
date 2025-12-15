@@ -3,11 +3,11 @@
 use bevy::prelude::*;
 use bevy::time::Fixed;
 use rand::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::game::buildings::Building;
 use crate::game::citizens::{Citizen, CitizenWorkplace};
-use crate::game::map::{BuildingKind, MapGrid, TileKind, TilePos, astar_path};
+use crate::game::map::{BuildingKind, MapGrid, TilePos, astar_path};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use bevy::ecs::system::SystemParam;
@@ -74,20 +74,28 @@ struct AssignJobsParams<'w, 's> {
 }
 
 fn assign_jobs(mut p: AssignJobsParams) {
-    // Each building tile provides 1 job (MVP). We track taken workplaces via citizen assignments.
-    let mut taken = HashSet::<TilePos>::new();
+    // Each commercial/industrial building provides a small number of job slots (MVP).
+    let mut taken = HashMap::<TilePos, u16>::new();
     for (wp, _) in &p.q_citizens {
         if let Some(pos) = wp.workplace {
-            taken.insert(pos);
+            *taken.entry(pos).or_insert(0) =
+                taken.get(&pos).copied().unwrap_or(0).saturating_add(1);
         }
     }
 
-    // Available job tiles = commercial/industrial buildings.
+    // Available job tiles = commercial/industrial buildings with job capacity.
     let mut jobs = Vec::<TilePos>::new();
+    let mut caps = HashMap::<TilePos, u16>::new();
     for b in &p.q_buildings {
-        if matches!(b.kind, BuildingKind::Commercial | BuildingKind::Industrial)
-            && !taken.contains(&b.pos)
-        {
+        if !matches!(b.kind, BuildingKind::Commercial | BuildingKind::Industrial) {
+            continue;
+        }
+        if b.capacity_jobs == 0 {
+            continue;
+        }
+        caps.insert(b.pos, b.capacity_jobs);
+        let used = taken.get(&b.pos).copied().unwrap_or(0);
+        if used < b.capacity_jobs {
             jobs.push(b.pos);
         }
     }
@@ -114,7 +122,12 @@ fn assign_jobs(mut p: AssignJobsParams) {
         // Search a limited number of candidate workplaces for reachability.
         let mut best: Option<(TilePos, usize)> = None; // (job_pos, path_len)
         for job_pos in jobs.iter().copied().take(p.cfg.max_candidates_per_citizen) {
-            if taken.contains(&job_pos) {
+            let cap = caps.get(&job_pos).copied().unwrap_or(0);
+            if cap == 0 {
+                continue;
+            }
+            let used = taken.get(&job_pos).copied().unwrap_or(0);
+            if used >= cap {
                 continue;
             }
             let Some(job_road) = adjacent_road(&p.grid, job_pos) else {
@@ -147,7 +160,8 @@ fn assign_jobs(mut p: AssignJobsParams) {
             continue;
         };
         wp.workplace = Some(job_pos);
-        taken.insert(job_pos);
+        *taken.entry(job_pos).or_insert(0) =
+            taken.get(&job_pos).copied().unwrap_or(0).saturating_add(1);
         assigned += 1;
     }
 }
@@ -198,7 +212,7 @@ fn compute_employment_stats(
 fn adjacent_road(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
     if let Some(cell) = grid.get(pos)
         && !cell.water
-        && cell.placed == TileKind::Road
+        && cell.road
     {
         return Some(pos);
     }
@@ -222,7 +236,7 @@ fn adjacent_road(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
     ] {
         if let Some(cell) = grid.get(npos)
             && !cell.water
-            && cell.placed == TileKind::Road
+            && cell.road
         {
             return Some(npos);
         }

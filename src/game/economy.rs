@@ -4,7 +4,7 @@ use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
 
 use crate::game::employment::EmploymentStats;
-use crate::game::map::{BuildingKind, MapGrid, TileKind, TilePos};
+use crate::game::map::{BuildingKind, MapGrid, TilePos};
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::sim_events::DayAdvanced;
@@ -109,7 +109,7 @@ fn count_world(grid: &MapGrid) -> (u32, BuildingCounts) {
         if cell.water {
             continue;
         }
-        if cell.placed == TileKind::Road {
+        if cell.road {
             roads += 1;
         }
         if let Some(kind) = cell.building {

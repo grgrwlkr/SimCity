@@ -131,6 +131,36 @@ impl TileKind {
     }
 }
 
+/// Zoning layer (separate from roads/terrain).
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Default)]
+pub enum ZoneKind {
+    #[default]
+    None,
+    Residential,
+    Commercial,
+    Industrial,
+}
+
+impl ZoneKind {
+    pub fn as_tile_kind(self) -> Option<TileKind> {
+        match self {
+            ZoneKind::None => None,
+            ZoneKind::Residential => Some(TileKind::Residential),
+            ZoneKind::Commercial => Some(TileKind::Commercial),
+            ZoneKind::Industrial => Some(TileKind::Industrial),
+        }
+    }
+
+    pub fn cost(self) -> i64 {
+        match self {
+            ZoneKind::None => 0,
+            ZoneKind::Residential => TileKind::Residential.cost(),
+            ZoneKind::Commercial => TileKind::Commercial.cost(),
+            ZoneKind::Industrial => TileKind::Industrial.cost(),
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum BuildingKind {
     Residential,
@@ -147,20 +177,37 @@ impl BuildingKind {
         }
     }
 
-    pub fn as_zone_tile(self) -> TileKind {
+    pub fn as_zone(self) -> ZoneKind {
         match self {
-            BuildingKind::Residential => TileKind::Residential,
-            BuildingKind::Commercial => TileKind::Commercial,
-            BuildingKind::Industrial => TileKind::Industrial,
+            BuildingKind::Residential => ZoneKind::Residential,
+            BuildingKind::Commercial => ZoneKind::Commercial,
+            BuildingKind::Industrial => ZoneKind::Industrial,
         }
     }
 
-    pub fn from_zone_tile(kind: TileKind) -> Option<Self> {
-        match kind {
-            TileKind::Residential => Some(BuildingKind::Residential),
-            TileKind::Commercial => Some(BuildingKind::Commercial),
-            TileKind::Industrial => Some(BuildingKind::Industrial),
-            _ => None,
+    pub fn from_zone(zone: ZoneKind) -> Option<Self> {
+        match zone {
+            ZoneKind::Residential => Some(BuildingKind::Residential),
+            ZoneKind::Commercial => Some(BuildingKind::Commercial),
+            ZoneKind::Industrial => Some(BuildingKind::Industrial),
+            ZoneKind::None => None,
+        }
+    }
+
+    /// Capacity constants (MVP, used to remove "magic numbers").
+    pub fn capacity_residents(self) -> u16 {
+        match self {
+            BuildingKind::Residential => 4,
+            BuildingKind::Commercial => 0,
+            BuildingKind::Industrial => 0,
+        }
+    }
+
+    pub fn capacity_jobs(self) -> u16 {
+        match self {
+            BuildingKind::Residential => 0,
+            BuildingKind::Commercial => 3,
+            BuildingKind::Industrial => 4,
         }
     }
 }
@@ -169,7 +216,10 @@ impl BuildingKind {
 pub struct MapCell {
     pub height: u8,
     pub water: bool,
-    pub placed: TileKind,
+    /// Base terrain (MVP: grass only). Roads/zones are separate layers.
+    pub terrain: TileKind,
+    pub road: bool,
+    pub zone: ZoneKind,
     pub building: Option<BuildingKind>,
 }
 
@@ -190,7 +240,9 @@ impl MapGrid {
                 MapCell {
                     height: 0,
                     water: false,
-                    placed: TileKind::Grass,
+                    terrain: TileKind::Grass,
+                    road: false,
+                    zone: ZoneKind::None,
                     building: None,
                 };
                 len
@@ -274,15 +326,23 @@ pub struct MapIndex {
 
 #[derive(Resource, Debug, Clone)]
 pub struct BuildMode {
-    pub selected: TileKind,
+    pub selected: BuildTool,
 }
 
 impl Default for BuildMode {
     fn default() -> Self {
         Self {
-            selected: TileKind::Road,
+            selected: BuildTool::Road,
         }
     }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum BuildTool {
+    Road,
+    Zone(ZoneKind),
+    Erase,
+    Inspect,
 }
 
 #[derive(Component)]
@@ -373,12 +433,12 @@ fn in_game_or_paused(state: Res<State<AppState>>) -> bool {
 
 fn sync_build_mode_from_ui(ui: Res<UiState>, mut mode: ResMut<BuildMode>) {
     let selected = match ui.tool {
-        ToolMode::Road => TileKind::Road,
-        ToolMode::Residential => TileKind::Residential,
-        ToolMode::Commercial => TileKind::Commercial,
-        ToolMode::Industrial => TileKind::Industrial,
-        ToolMode::Erase => TileKind::Grass,
-        ToolMode::Inspect => mode.selected, // keep previous selection
+        ToolMode::Road => BuildTool::Road,
+        ToolMode::Residential => BuildTool::Zone(ZoneKind::Residential),
+        ToolMode::Commercial => BuildTool::Zone(ZoneKind::Commercial),
+        ToolMode::Industrial => BuildTool::Zone(ZoneKind::Industrial),
+        ToolMode::Erase => BuildTool::Erase,
+        ToolMode::Inspect => BuildTool::Inspect,
     };
     mode.selected = selected;
 }
@@ -444,7 +504,7 @@ fn cursor_paint_to_command(
     if *p.state.get() != AppState::InGame {
         return; // don't build while paused
     }
-    if p.ui_state.tool == ToolMode::Inspect || p.ui_state.overlay == OverlayMode::Path {
+    if p.mode.selected == BuildTool::Inspect || p.ui_state.overlay == OverlayMode::Path {
         return;
     }
     let pressed = p.buttons.pressed(MouseButton::Left);
@@ -470,10 +530,21 @@ fn cursor_paint_to_command(
     paint.was_pressed = true;
     paint.last_tile = Some(tile);
 
-    out.write(GameCommand::SetTile {
-        pos: tile,
-        kind: p.mode.selected,
-    });
+    match p.mode.selected {
+        BuildTool::Road => {
+            out.write(GameCommand::SetRoad {
+                pos: tile,
+                on: true,
+            });
+        }
+        BuildTool::Zone(zone) => {
+            out.write(GameCommand::SetZone { pos: tile, zone });
+        }
+        BuildTool::Erase => {
+            out.write(GameCommand::EraseTile { pos: tile });
+        }
+        BuildTool::Inspect => {}
+    };
 }
 
 fn apply_game_commands_to_grid(
@@ -486,7 +557,7 @@ fn apply_game_commands_to_grid(
 ) {
     for cmd in commands.read() {
         match *cmd {
-            GameCommand::SetTile { pos, kind } => {
+            GameCommand::SetRoad { pos, on } => {
                 let Some(idx) = grid.idx(pos) else {
                     continue;
                 };
@@ -497,27 +568,67 @@ fn apply_game_commands_to_grid(
                     continue;
                 }
 
-                if cell.placed == kind {
+                if cell.road == on {
                     continue;
                 }
 
-                let was_road = cell.placed == TileKind::Road;
-                let will_be_road = kind == TileKind::Road;
-
-                let cost = kind.cost();
+                let cost = if on { TileKind::Road.cost() } else { 0 };
                 if city.money < cost {
                     continue;
                 }
 
                 city.money -= cost;
-                cell.placed = kind;
+                cell.road = on;
                 // Invalidate any grown building on this tile when the player edits it.
                 cell.building = None;
                 grid.set(pos, cell);
                 dirty.mark(idx);
 
                 // B) Transport: bump road graph version when road topology changes.
-                if was_road != will_be_road {
+                graph_version.bump();
+            }
+            GameCommand::SetZone { pos, zone } => {
+                let Some(idx) = grid.idx(pos) else {
+                    continue;
+                };
+                let mut cell = grid.get(pos).unwrap_or_default();
+
+                // Can't zone water.
+                if cell.water {
+                    continue;
+                }
+
+                if cell.zone == zone {
+                    continue;
+                }
+
+                let cost = zone.cost();
+                if city.money < cost {
+                    continue;
+                }
+                city.money -= cost;
+
+                cell.zone = zone;
+                // Zoning edits clear any existing building on tile for simplicity.
+                cell.building = None;
+                grid.set(pos, cell);
+                dirty.mark(idx);
+            }
+            GameCommand::EraseTile { pos } => {
+                let Some(idx) = grid.idx(pos) else {
+                    continue;
+                };
+                let mut cell = grid.get(pos).unwrap_or_default();
+                if cell.water {
+                    continue;
+                }
+                let road_changed = cell.road;
+                cell.road = false;
+                cell.zone = ZoneKind::None;
+                cell.building = None;
+                grid.set(pos, cell);
+                dirty.mark(idx);
+                if road_changed {
                     graph_version.bump();
                 }
             }
@@ -535,6 +646,7 @@ fn apply_game_commands_to_grid(
 }
 
 fn sync_dirty_tiles_to_render(
+    ui: Res<UiState>,
     grid: Res<MapGrid>,
     index: Res<MapIndex>,
     mut dirty: ResMut<DirtyTiles>,
@@ -560,8 +672,14 @@ fn sync_dirty_tiles_to_render(
         let cell = grid.get(pos).unwrap_or_default();
         let effective_kind = if cell.water {
             TileKind::Water
+        } else if cell.road {
+            TileKind::Road
+        } else if matches!(ui.overlay, OverlayMode::Zones | OverlayMode::None) {
+            // Base view: show zoning (if any) as colored tiles, otherwise terrain.
+            cell.zone.as_tile_kind().unwrap_or(cell.terrain)
         } else {
-            cell.placed
+            // For now, keep default base visuals for other overlays as well.
+            cell.zone.as_tile_kind().unwrap_or(cell.terrain)
         };
         *kind = effective_kind;
         sprite.color = effective_kind.color();
@@ -731,10 +849,8 @@ pub fn astar_path(grid: &MapGrid, start: TilePos, goal: TilePos) -> Vec<TilePos>
         return Vec::new();
     };
 
-    let is_road = |pos: TilePos| -> bool {
-        grid.get(pos)
-            .is_some_and(|cell| !cell.water && cell.placed == TileKind::Road)
-    };
+    let is_road =
+        |pos: TilePos| -> bool { grid.get(pos).is_some_and(|cell| !cell.water && cell.road) };
 
     if !is_road(start) || !is_road(goal) {
         return Vec::new();
@@ -833,7 +949,9 @@ fn generate_map_into_grid(grid: &mut MapGrid, seed: u64) {
     for cell in grid.cells.iter_mut() {
         cell.height = rng.gen_range(0..=u8::MAX);
         cell.water = false;
-        cell.placed = TileKind::Grass;
+        cell.terrain = TileKind::Grass;
+        cell.road = false;
+        cell.zone = ZoneKind::None;
         cell.building = None;
     }
 

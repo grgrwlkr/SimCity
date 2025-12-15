@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
 
-use crate::game::map::{MapGrid, TileKind, TilePos};
+use crate::game::map::{MapGrid, TilePos};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 
@@ -143,8 +143,7 @@ fn rebuild_road_graph(grid: Res<MapGrid>, gv: Res<GraphVersion>, mut graph: ResM
         let x = (idx % w) as i32;
         let y = (idx / w) as i32;
         let pos = TilePos { x, y };
-        grid.get(pos)
-            .is_some_and(|c| !c.water && c.placed == TileKind::Road)
+        grid.get(pos).is_some_and(|c| !c.water && c.road)
     };
 
     for idx in 0..len {
