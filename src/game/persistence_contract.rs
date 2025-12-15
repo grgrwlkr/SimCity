@@ -29,7 +29,7 @@ impl Plugin for PersistenceContractPlugin {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct SaveGameV1 {
     pub save_version: u32,
     pub seed: u64,
@@ -39,14 +39,14 @@ pub struct SaveGameV1 {
     pub next_citizen_id: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct MapGridV1 {
     pub width: i32,
     pub height: i32,
     pub tiles: Vec<MapTileV1>, // row-major
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Copy, Clone)]
 pub struct MapTileV1 {
     pub height: u8,
     pub water: bool,
@@ -56,7 +56,7 @@ pub struct MapTileV1 {
     pub building: Option<BuildingKind>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct CitizenSnapshotV1 {
     pub id: CitizenId,
     pub home: TilePos,

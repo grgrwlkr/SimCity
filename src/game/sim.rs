@@ -23,7 +23,7 @@ impl Plugin for SimPlugin {
     }
 }
 
-#[derive(Resource, Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Resource, Debug, Clone)]
 pub struct City {
     pub day: u32,
     pub money: i64,

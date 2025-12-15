@@ -52,7 +52,7 @@ pub struct Citizen {
     pub trip_purpose: Option<TripPurpose>,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Copy, Clone, Eq, PartialEq)]
 pub enum CitizenState {
     AtHome,
     ToWork,

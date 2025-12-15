@@ -8,6 +8,7 @@ mod economy;
 mod employment;
 mod ids;
 mod map;
+mod persistence;
 mod persistence_contract;
 mod sets;
 mod sim;
@@ -58,6 +59,7 @@ impl Plugin for GamePlugin {
                 economy::EconomyPlugin,
                 employment::EmploymentPlugin,
                 map::MapPlugin,
+                persistence::PersistencePlugin,
                 persistence_contract::PersistenceContractPlugin,
                 transport::TransportPlugin,
                 sim::SimPlugin,

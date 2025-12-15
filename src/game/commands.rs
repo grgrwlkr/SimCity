@@ -21,6 +21,12 @@ pub enum GameCommand {
     /// Debug: build an in-memory save snapshot (contract) and print a short summary to logs.
     DumpSaveContract,
 
+    /// M7: Save to `saves/slot{slot}.ron`.
+    SaveGame { slot: u8 },
+
+    /// M7: Load from `saves/slot{slot}.ron`.
+    LoadGame { slot: u8 },
+
     /// Spawn a number of debug vehicles on roads (M3 prototype).
     SpawnDebugVehicles { count: u32 },
 

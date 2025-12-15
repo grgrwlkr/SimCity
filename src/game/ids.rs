@@ -4,10 +4,12 @@
 
 use bevy::prelude::*;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct CitizenId(pub u64);
 
-#[derive(Component, Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(
+    Component, serde::Serialize, serde::Deserialize, Debug, Copy, Clone, Eq, PartialEq, Hash,
+)]
 pub struct CitizenIdComp(pub CitizenId);
 
 #[derive(Resource, Debug, Clone)]
@@ -30,5 +32,9 @@ impl CitizenIdGen {
 
     pub fn next(&self) -> u64 {
         self.next
+    }
+
+    pub fn set_next(&mut self, next: u64) {
+        self.next = next.max(1);
     }
 }

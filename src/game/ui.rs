@@ -226,6 +226,12 @@ fn top_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
                 if ui.button("Dump save").clicked() {
                     p.commands.write(GameCommand::DumpSaveContract);
                 }
+                if ui.button("Save").clicked() {
+                    p.commands.write(GameCommand::SaveGame { slot: 1 });
+                }
+                if ui.button("Load").clicked() {
+                    p.commands.write(GameCommand::LoadGame { slot: 1 });
+                }
                 ui.separator();
             }
 

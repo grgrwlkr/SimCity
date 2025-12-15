@@ -92,7 +92,9 @@ impl Default for MapConfig {
     }
 }
 
-#[derive(Component, Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Component, Debug, Copy, Clone, Eq, PartialEq, Hash,
+)]
 pub struct TilePos {
     pub x: i32,
     pub y: i32,
@@ -104,7 +106,18 @@ pub struct HoveredTile {
     pub tile: Option<TilePos>,
 }
 
-#[derive(Component, Debug, Copy, Clone, Eq, PartialEq, Hash, Default)]
+#[derive(
+    serde::Serialize,
+    serde::Deserialize,
+    Component,
+    Debug,
+    Copy,
+    Clone,
+    Eq,
+    PartialEq,
+    Hash,
+    Default,
+)]
 pub enum TileKind {
     Water,
     #[default]
@@ -140,7 +153,9 @@ impl TileKind {
 }
 
 /// Zoning layer (separate from roads/terrain).
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Default)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Debug, Copy, Clone, Eq, PartialEq, Hash, Default,
+)]
 pub enum ZoneKind {
     #[default]
     None,
@@ -169,7 +184,7 @@ impl ZoneKind {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum BuildingKind {
     Residential,
     Commercial,
@@ -667,7 +682,9 @@ fn apply_game_commands_to_grid(
             // Traffic commands are handled by TrafficPlugin.
             GameCommand::SpawnDebugVehicles { .. }
             | GameCommand::ClearVehicles
-            | GameCommand::DumpSaveContract => {}
+            | GameCommand::DumpSaveContract
+            | GameCommand::SaveGame { .. }
+            | GameCommand::LoadGame { .. } => {}
         }
     }
 }
