@@ -1,7 +1,9 @@
 use bevy::ecs::message::MessageReader;
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
+use bevy_egui::PrimaryEguiContext;
 
+use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 
 pub struct CameraPlugin;
@@ -9,8 +11,18 @@ pub struct CameraPlugin;
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_camera)
-            .add_systems(Update, camera_keyboard_pan.run_if(in_game_or_paused))
-            .add_systems(Update, camera_mouse_wheel_zoom.run_if(in_game_or_paused));
+            .add_systems(
+                Update,
+                camera_keyboard_pan
+                    .in_set(GameSet::Input)
+                    .run_if(in_game_or_paused),
+            )
+            .add_systems(
+                Update,
+                camera_mouse_wheel_zoom
+                    .in_set(GameSet::Input)
+                    .run_if(in_game_or_paused),
+            );
     }
 }
 
@@ -18,7 +30,7 @@ impl Plugin for CameraPlugin {
 pub struct MainCamera;
 
 fn spawn_camera(mut commands: Commands) {
-    commands.spawn((Camera2d, MainCamera));
+    commands.spawn((Camera2d, MainCamera, PrimaryEguiContext));
 }
 
 fn in_game_or_paused(state: Res<State<AppState>>) -> bool {
@@ -49,7 +61,7 @@ fn camera_keyboard_pan(
         return;
     }
 
-    let speed_world_units_per_sec = 900.0;
+    let speed_world_units_per_sec = 1500.0;
     let delta = dir.normalize() * speed_world_units_per_sec * time.delta_secs();
 
     let Ok(mut t) = q_cam.single_mut() else {
