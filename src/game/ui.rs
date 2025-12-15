@@ -9,7 +9,7 @@ use crate::game::citizens::Citizen;
 use crate::game::citizens::CommuteStats;
 use crate::game::commands::GameCommand;
 use crate::game::employment::EmploymentStats;
-use crate::game::map::BuildMode;
+use crate::game::map::{BuildMode, HoveredTile, MapGrid, ZoneKind};
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
@@ -26,6 +26,7 @@ impl Plugin for UiPlugin {
             .add_systems(OnEnter(AppState::InGame), announce_ingame)
             .add_systems(OnEnter(AppState::Paused), announce_paused)
             .add_systems(EguiPrimaryContextPass, top_bar_ui)
+            .add_systems(EguiPrimaryContextPass, inspector_ui.after(top_bar_ui))
             .add_systems(Update, update_ui_metrics.in_set(GameSet::Ui))
             .add_systems(Update, update_window_title.in_set(GameSet::Ui));
     }
@@ -276,4 +277,128 @@ struct TopBarParams<'w> {
     mode: Res<'w, BuildMode>,
     metrics: Res<'w, UiMetrics>,
     commands: MessageWriter<'w, GameCommand>,
+}
+
+fn zone_label(z: ZoneKind) -> &'static str {
+    match z {
+        ZoneKind::None => "None",
+        ZoneKind::Residential => "Residential",
+        ZoneKind::Commercial => "Commercial",
+        ZoneKind::Industrial => "Industrial",
+    }
+}
+
+fn overlay_sources(o: OverlayMode) -> &'static str {
+    match o {
+        OverlayMode::None => "Base map: MapGrid (terrain/road/zone/water)",
+        OverlayMode::Water => "MapGrid.water",
+        OverlayMode::Height => "MapGrid.height",
+        OverlayMode::Zones => "MapGrid.zone (+ road)",
+        OverlayMode::Roads => "MapGrid.road",
+        OverlayMode::Traffic => "TrafficOccupancy.ema_heat + TrafficIndex",
+        OverlayMode::Path => "Computed live: MapGrid roads + cursor start/end",
+    }
+}
+
+fn inspector_ui(mut contexts: EguiContexts, p: InspectorParams) {
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+
+    if !matches!(p.state.get(), AppState::InGame | AppState::Paused) {
+        return;
+    }
+
+    let Some(tile) = p.hovered.tile else {
+        return;
+    };
+
+    egui::Window::new("Inspector")
+        .default_pos(egui::pos2(10.0, 64.0))
+        .resizable(true)
+        .show(&*ctx, |ui| {
+            ui.label(format!("Tile: ({}, {})", tile.x, tile.y));
+            ui.label(format!(
+                "Overlay source: {}",
+                overlay_sources(p.ui_state.overlay)
+            ));
+            ui.separator();
+
+            let Some(cell) = p.grid.get(tile) else {
+                ui.label("Out of bounds");
+                return;
+            };
+
+            ui.label(format!("Height: {}", cell.height));
+            ui.label(format!("Water: {}", cell.water));
+            ui.label(format!("Terrain: {:?}", cell.terrain));
+            ui.label(format!("Road: {}", cell.road));
+            ui.label(format!("Zone: {}", zone_label(cell.zone)));
+            ui.label(format!("Building (grid): {:?}", cell.building));
+
+            // Building entity (render)
+            let mut b_found = None;
+            for b in p.q_buildings.iter() {
+                if b.pos == tile {
+                    b_found = Some(*b);
+                    break;
+                }
+            }
+            if let Some(b) = b_found {
+                ui.separator();
+                ui.label("Building entity:");
+                ui.label(format!("Kind: {:?}", b.kind));
+                ui.label(format!(
+                    "Capacity: residents {} / jobs {}",
+                    b.capacity_residents, b.capacity_jobs
+                ));
+            }
+
+            // Vehicles on tile (by current route head).
+            let mut vehicles = 0usize;
+            let mut sample: Option<(usize, f32)> = None; // (route_len, progress)
+            for v in p.q_vehicles.iter() {
+                if v.route.first() == Some(&tile) {
+                    vehicles += 1;
+                    if sample.is_none() {
+                        sample = Some((v.route.len(), v.progress));
+                    }
+                }
+            }
+
+            ui.separator();
+            ui.label(format!("Vehicles on tile: {}", vehicles));
+            if let Some((len, prog)) = sample {
+                ui.label(format!(
+                    "Sample vehicle: route_len {} progress {:.2}",
+                    len, prog
+                ));
+            }
+
+            // Citizens linked to tile (home or last_place).
+            let mut home_c = 0usize;
+            let mut place_c = 0usize;
+            for c in p.q_citizens.iter() {
+                if c.home == tile {
+                    home_c += 1;
+                }
+                if c.last_place == tile {
+                    place_c += 1;
+                }
+            }
+            ui.separator();
+            ui.label(format!("Citizens home here: {}", home_c));
+            ui.label(format!("Citizens last_place here: {}", place_c));
+        });
+}
+
+#[derive(SystemParam)]
+struct InspectorParams<'w, 's> {
+    state: Res<'w, State<AppState>>,
+    ui_state: Res<'w, UiState>,
+    hovered: Res<'w, HoveredTile>,
+    grid: Res<'w, MapGrid>,
+    q_buildings: Query<'w, 's, &'static Building>,
+    q_vehicles: Query<'w, 's, &'static Vehicle>,
+    q_citizens: Query<'w, 's, &'static Citizen>,
 }

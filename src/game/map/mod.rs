@@ -25,6 +25,7 @@ impl Plugin for MapPlugin {
             .init_resource::<BuildMode>()
             .init_resource::<CursorPaintState>()
             .init_resource::<PathPreview>()
+            .init_resource::<HoveredTile>()
             .add_systems(OnEnter(AppState::InGame), spawn_map_if_needed)
             .add_systems(OnEnter(AppState::MainMenu), cleanup_ingame_entities)
             // Input
@@ -41,6 +42,7 @@ impl Plugin for MapPlugin {
                 Update,
                 (
                     update_cursor_highlight,
+                    update_hovered_tile,
                     cursor_paint_to_command,
                     path_preview_input,
                 )
@@ -94,6 +96,12 @@ impl Default for MapConfig {
 pub struct TilePos {
     pub x: i32,
     pub y: i32,
+}
+
+/// Cursor hover read model for UI/inspector.
+#[derive(Resource, Debug, Default, Copy, Clone)]
+pub struct HoveredTile {
+    pub tile: Option<TilePos>,
 }
 
 #[derive(Component, Debug, Copy, Clone, Eq, PartialEq, Hash, Default)]
@@ -483,6 +491,23 @@ fn update_cursor_highlight(
     };
     t.translation.x = tile_world.x;
     t.translation.y = tile_world.y;
+}
+
+fn update_hovered_tile(
+    cfg: Res<MapConfig>,
+    q_window: Query<&Window, With<PrimaryWindow>>,
+    q_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    mut hovered: ResMut<HoveredTile>,
+) {
+    let Ok(window) = q_window.single() else {
+        hovered.tile = None;
+        return;
+    };
+    let Ok((camera, cam_gt)) = q_camera.single() else {
+        hovered.tile = None;
+        return;
+    };
+    hovered.tile = cursor_tile(&cfg, window, camera, cam_gt);
 }
 
 #[derive(SystemParam)]
