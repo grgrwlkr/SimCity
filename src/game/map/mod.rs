@@ -665,7 +665,9 @@ fn apply_game_commands_to_grid(
                 graph_version.bump();
             }
             // Traffic commands are handled by TrafficPlugin.
-            GameCommand::SpawnDebugVehicles { .. } | GameCommand::ClearVehicles => {}
+            GameCommand::SpawnDebugVehicles { .. }
+            | GameCommand::ClearVehicles
+            | GameCommand::DumpSaveContract => {}
         }
     }
 }

@@ -5,6 +5,7 @@ use bevy::prelude::*;
 use rand::prelude::*;
 
 use crate::game::commands::GameCommand;
+use crate::game::ids::CitizenId;
 use crate::game::map::{MapConfig, MapGrid, TilePos, astar_path};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
@@ -25,7 +26,7 @@ pub struct Vehicle {
 
 #[derive(Component, Debug, Copy, Clone)]
 struct TripPassenger {
-    citizen: Entity,
+    citizen: CitizenId,
     purpose: crate::game::trips::TripPurpose,
 }
 
@@ -570,9 +571,22 @@ fn adjacent_road(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
     None
 }
 
+fn tile_to_world(cfg: &MapConfig, pos: TilePos) -> Vec2 {
+    let origin = map_origin(cfg);
+    origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size)
+}
+
+fn map_origin(cfg: &MapConfig) -> Vec2 {
+    Vec2::new(
+        -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
+        -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::ids::CitizenId;
     use crate::game::trips::TripPurpose;
     use bevy::app::App;
     use bevy::ecs::message::MessageReader;
@@ -599,7 +613,7 @@ mod tests {
             .insert_resource(FinishCount::default())
             .add_systems(Update, (move_vehicles, count_trip_finished).chain());
 
-        let citizen = app.world_mut().spawn_empty().id();
+        let citizen = CitizenId(42);
         let vehicle = app
             .world_mut()
             .spawn((
@@ -621,16 +635,4 @@ mod tests {
         assert_eq!(app.world().resource::<FinishCount>().0, 1);
         assert!(app.world().get_entity(vehicle).is_err());
     }
-}
-
-fn tile_to_world(cfg: &MapConfig, pos: TilePos) -> Vec2 {
-    let origin = map_origin(cfg);
-    origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size)
-}
-
-fn map_origin(cfg: &MapConfig) -> Vec2 {
-    Vec2::new(
-        -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
-        -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
-    )
 }

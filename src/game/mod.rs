@@ -6,7 +6,9 @@ mod citizens;
 mod commands;
 mod economy;
 mod employment;
+mod ids;
 mod map;
+mod persistence_contract;
 mod sets;
 mod sim;
 mod sim_events;
@@ -56,6 +58,7 @@ impl Plugin for GamePlugin {
                 economy::EconomyPlugin,
                 employment::EmploymentPlugin,
                 map::MapPlugin,
+                persistence_contract::PersistenceContractPlugin,
                 transport::TransportPlugin,
                 sim::SimPlugin,
                 traffic::TrafficPlugin,

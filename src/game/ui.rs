@@ -223,6 +223,9 @@ fn top_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
                 if ui.button("Clear cars").clicked() {
                     p.commands.write(GameCommand::ClearVehicles);
                 }
+                if ui.button("Dump save").clicked() {
+                    p.commands.write(GameCommand::DumpSaveContract);
+                }
                 ui.separator();
             }
 

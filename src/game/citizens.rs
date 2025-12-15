@@ -7,6 +7,7 @@ use rand::prelude::*;
 use std::collections::HashMap;
 
 use crate::game::buildings::Building;
+use crate::game::ids::{CitizenIdComp, CitizenIdGen};
 use crate::game::map::{BuildingKind, TilePos};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
@@ -17,6 +18,7 @@ pub struct CitizensPlugin;
 impl Plugin for CitizensPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CommuteStats>()
+            .init_resource::<CitizenIdGen>()
             .add_systems(OnEnter(AppState::MainMenu), cleanup_citizens)
             .add_systems(
                 FixedUpdate,
@@ -80,6 +82,7 @@ fn cleanup_citizens(mut commands: Commands, q: Query<Entity, With<Citizen>>) {
 
 fn spawn_citizens_from_residential(
     mut commands: Commands,
+    mut id_gen: ResMut<CitizenIdGen>,
     q_buildings: Query<&Building>,
     q_citizens: Query<&Citizen>,
 ) {
@@ -109,7 +112,9 @@ fn spawn_citizens_from_residential(
         let mut spawned_here = 0usize;
         let max_spawn_here = (target - current).min(8); // guardrail
         for _ in 0..max_spawn_here {
+            let id = id_gen.alloc();
             commands.spawn((
+                CitizenIdComp(id),
                 Citizen {
                     home: b.pos,
                     state: CitizenState::AtHome,
@@ -134,7 +139,7 @@ fn spawn_citizens_from_residential(
 fn citizen_trip_planner(
     time: Res<Time<Fixed>>,
     q_buildings: Query<&Building>,
-    mut q_citizens: Query<(Entity, &mut Citizen, &CitizenWorkplace)>,
+    mut q_citizens: Query<(&CitizenIdComp, &mut Citizen, &CitizenWorkplace)>,
     mut out: MessageWriter<TripRequested>,
 ) {
     // Pre-collect possible shopping destinations (commercial buildings).
@@ -147,7 +152,7 @@ fn citizen_trip_planner(
 
     let mut rng = thread_rng();
 
-    for (e, mut c, wp) in &mut q_citizens {
+    for (id, mut c, wp) in &mut q_citizens {
         // Advance timers.
         c.shopping_need.tick(time.delta());
         c.decision_timer.tick(time.delta());
@@ -170,7 +175,7 @@ fn citizen_trip_planner(
                     && let Some(&shop) = shops.choose(&mut rng)
                 {
                     out.write(TripRequested {
-                        citizen: e,
+                        citizen: id.0,
                         from: c.home,
                         to: shop,
                         purpose: TripPurpose::Shop,
@@ -187,7 +192,7 @@ fn citizen_trip_planner(
                     continue;
                 };
                 out.write(TripRequested {
-                    citizen: e,
+                    citizen: id.0,
                     from: c.home,
                     to: work,
                     purpose: TripPurpose::Work,
@@ -203,7 +208,7 @@ fn citizen_trip_planner(
                     continue;
                 }
                 out.write(TripRequested {
-                    citizen: e,
+                    citizen: id.0,
                     from: c.last_place,
                     to: c.home,
                     purpose: TripPurpose::ReturnHome,
@@ -218,7 +223,7 @@ fn citizen_trip_planner(
                     continue;
                 }
                 out.write(TripRequested {
-                    citizen: e,
+                    citizen: id.0,
                     from: c.last_place,
                     to: c.home,
                     purpose: TripPurpose::ReturnHome,
@@ -234,12 +239,21 @@ fn citizen_trip_planner(
 
 fn handle_trip_finished(
     mut reader: MessageReader<TripFinished>,
+    q_id: Query<(Entity, &CitizenIdComp)>,
     mut q_citizens: Query<&mut Citizen>,
     time: Res<Time<Fixed>>,
     mut stats: ResMut<CommuteStats>,
 ) {
+    let mut id_to_entity = HashMap::new();
+    for (e, id) in &q_id {
+        id_to_entity.insert(id.0, e);
+    }
+
     for msg in reader.read() {
-        if let Ok(mut c) = q_citizens.get_mut(msg.citizen) {
+        let Some(&entity) = id_to_entity.get(&msg.citizen) else {
+            continue;
+        };
+        if let Ok(mut c) = q_citizens.get_mut(entity) {
             // Update commute stats when we have a departure timestamp.
             if let Some(t0) = c.trip_departed_at_sec {
                 let dt = (time.elapsed_secs_f64() - t0).max(0.0) as f32;

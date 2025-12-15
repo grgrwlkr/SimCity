@@ -18,6 +18,9 @@ pub enum GameCommand {
     /// Erase player edits (road + zone + building) on the given tile.
     EraseTile { pos: TilePos },
 
+    /// Debug: build an in-memory save snapshot (contract) and print a short summary to logs.
+    DumpSaveContract,
+
     /// Spawn a number of debug vehicles on roads (M3 prototype).
     SpawnDebugVehicles { count: u32 },
 
