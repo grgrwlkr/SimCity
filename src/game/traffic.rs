@@ -570,6 +570,59 @@ fn adjacent_road(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
     None
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::trips::TripPurpose;
+    use bevy::app::App;
+    use bevy::ecs::message::MessageReader;
+
+    #[derive(Resource, Default)]
+    struct FinishCount(u32);
+
+    fn count_trip_finished(mut reader: MessageReader<TripFinished>, mut cnt: ResMut<FinishCount>) {
+        for _ in reader.read() {
+            cnt.0 += 1;
+        }
+    }
+
+    #[test]
+    fn vehicle_arrival_emits_trip_finished() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<TripFinished>()
+            .insert_resource(MapConfig {
+                width: 8,
+                height: 8,
+                tile_size: 16.0,
+            })
+            .insert_resource(FinishCount::default())
+            .add_systems(Update, (move_vehicles, count_trip_finished).chain());
+
+        let citizen = app.world_mut().spawn_empty().id();
+        let vehicle = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: Vec::new(),
+                    progress: 0.0,
+                    speed: 0.0,
+                },
+                Transform::default(),
+                TripPassenger {
+                    citizen,
+                    purpose: TripPurpose::Work,
+                },
+            ))
+            .id();
+
+        app.update();
+
+        assert_eq!(app.world().resource::<FinishCount>().0, 1);
+        assert!(app.world().get_entity(vehicle).is_err());
+    }
+}
+
 fn tile_to_world(cfg: &MapConfig, pos: TilePos) -> Vec2 {
     let origin = map_origin(cfg);
     origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size)

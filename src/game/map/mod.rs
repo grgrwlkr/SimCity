@@ -220,7 +220,7 @@ impl BuildingKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MapCell {
     pub height: u8,
     pub water: bool,
@@ -1088,4 +1088,150 @@ fn world_to_tile(cfg: &MapConfig, world: Vec2) -> Option<TilePos> {
     }
 
     Some(TilePos { x, y })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::commands::GameCommand;
+    use crate::game::sim::City;
+    use crate::game::transport::GraphVersion;
+    use bevy::app::App;
+    use bevy::ecs::message::MessageWriter;
+
+    fn snapshot_cells(grid: &MapGrid) -> Vec<MapCell> {
+        grid.cells.clone()
+    }
+
+    #[test]
+    fn map_generation_is_deterministic_for_seed() {
+        let mut a = MapGrid::new(32, 32);
+        let mut b = MapGrid::new(32, 32);
+
+        generate_map_into_grid(&mut a, 123);
+        generate_map_into_grid(&mut b, 123);
+
+        assert_eq!(snapshot_cells(&a), snapshot_cells(&b));
+    }
+
+    #[test]
+    fn astar_path_smoke_test_on_simple_line() {
+        let mut grid = MapGrid::new(5, 5);
+        // Build a straight horizontal road from (0,2) to (4,2)
+        for x in 0..5 {
+            let pos = TilePos { x, y: 2 };
+            let mut c = grid.get(pos).unwrap_or_default();
+            c.road = true;
+            grid.set(pos, c);
+        }
+
+        let path = astar_path(&grid, TilePos { x: 0, y: 2 }, TilePos { x: 4, y: 2 });
+        assert!(!path.is_empty());
+        assert_eq!(path.first().copied(), Some(TilePos { x: 0, y: 2 }));
+        assert_eq!(path.last().copied(), Some(TilePos { x: 4, y: 2 }));
+        // Minimal length for a straight line is 5 tiles.
+        assert_eq!(path.len(), 5);
+    }
+
+    #[derive(Resource, Default)]
+    struct TestCommandOnce(bool);
+
+    fn send_road_command_once(
+        mut out: MessageWriter<GameCommand>,
+        mut sent: ResMut<TestCommandOnce>,
+    ) {
+        if sent.0 {
+            return;
+        }
+        sent.0 = true;
+        out.write(GameCommand::SetRoad {
+            pos: TilePos { x: 1, y: 1 },
+            on: true,
+        });
+    }
+
+    fn send_road_on_water_once(
+        mut out: MessageWriter<GameCommand>,
+        mut sent: ResMut<TestCommandOnce>,
+    ) {
+        if sent.0 {
+            return;
+        }
+        sent.0 = true;
+        out.write(GameCommand::SetRoad {
+            pos: TilePos { x: 2, y: 2 },
+            on: true,
+        });
+    }
+
+    #[test]
+    fn command_apply_marks_dirty_and_bumps_graph_version_on_road_change() {
+        let mut app = App::new();
+        app.add_message::<GameCommand>()
+            .insert_resource(MapSeed(1))
+            .insert_resource(MapGrid::new(8, 8))
+            .insert_resource(DirtyTiles::new(64))
+            .insert_resource(City::default())
+            .insert_resource(GraphVersion(1))
+            .insert_resource(TestCommandOnce::default())
+            .add_systems(
+                Update,
+                (send_road_command_once, apply_game_commands_to_grid).chain(),
+            );
+
+        app.update();
+
+        let grid = app.world().resource::<MapGrid>();
+        assert!(grid.get(TilePos { x: 1, y: 1 }).unwrap().road);
+
+        let gv = app.world().resource::<GraphVersion>();
+        assert_ne!(gv.0, 1, "GraphVersion should bump on road change");
+
+        // DirtyTiles should contain the edited index.
+        let idx = grid.idx(TilePos { x: 1, y: 1 }).unwrap();
+        let dirty = app.world().resource::<DirtyTiles>();
+        assert!(dirty.flags[idx], "Dirty flag must be set for edited tile");
+    }
+
+    #[test]
+    fn water_tiles_are_not_buildable_by_commands() {
+        let mut app = App::new();
+        app.add_message::<GameCommand>()
+            .insert_resource(MapSeed(1))
+            .insert_resource(MapGrid::new(8, 8))
+            .insert_resource(DirtyTiles::new(64))
+            .insert_resource(City::default())
+            .insert_resource(GraphVersion(1))
+            .insert_resource(TestCommandOnce::default())
+            .add_systems(
+                Update,
+                (send_road_on_water_once, apply_game_commands_to_grid).chain(),
+            );
+
+        // Mark (2,2) as water.
+        {
+            let mut grid = app.world_mut().resource_mut::<MapGrid>();
+            let pos = TilePos { x: 2, y: 2 };
+            let mut c = grid.get(pos).unwrap_or_default();
+            c.water = true;
+            grid.set(pos, c);
+        }
+
+        let money_before = app.world().resource::<City>().money;
+        app.update();
+        let money_after = app.world().resource::<City>().money;
+        assert_eq!(
+            money_before, money_after,
+            "Should not spend money on water tiles"
+        );
+
+        let grid = app.world().resource::<MapGrid>();
+        assert!(!grid.get(TilePos { x: 2, y: 2 }).unwrap().road);
+
+        let gv = app.world().resource::<GraphVersion>();
+        assert_eq!(
+            gv.0, 1,
+            "GraphVersion should not bump when command is rejected"
+        );
+    }
 }
