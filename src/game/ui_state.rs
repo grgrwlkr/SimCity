@@ -28,6 +28,9 @@ pub enum ToolMode {
     Residential,
     Commercial,
     Industrial,
+    FireStation,
+    PoliceStation,
+    Hospital,
     Erase,
     Inspect,
 }

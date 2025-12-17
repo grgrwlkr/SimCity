@@ -117,6 +117,10 @@ fn count_world(grid: &MapGrid) -> (u32, BuildingCounts) {
                 BuildingKind::Residential => b.residential += 1,
                 BuildingKind::Commercial => b.commercial += 1,
                 BuildingKind::Industrial => b.industrial += 1,
+                // Service buildings are not part of the current economy MVP accounting.
+                BuildingKind::FireStation
+                | BuildingKind::PoliceStation
+                | BuildingKind::Hospital => {}
             }
         }
     }

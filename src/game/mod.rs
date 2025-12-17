@@ -11,6 +11,7 @@ mod map;
 mod persistence;
 mod persistence_contract;
 mod roads;
+mod services;
 mod sets;
 mod sim;
 mod sim_events;
@@ -63,6 +64,7 @@ impl Plugin for GamePlugin {
                 map::MapPlugin,
                 persistence::PersistencePlugin,
                 persistence_contract::PersistenceContractPlugin,
+                services::ServicesPlugin,
                 transport::TransportPlugin,
                 zone_placement::ZonePlacementPlugin,
                 sim::SimPlugin,

@@ -8,6 +8,7 @@ use crate::game::commands::GameCommand;
 use crate::game::ids::CitizenId;
 use crate::game::map::{MapConfig, MapGrid, TilePos, astar_path};
 use crate::game::roads::RoadDir;
+use crate::game::services::ServiceVehicle;
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::transport::{
@@ -331,23 +332,32 @@ fn clear_vehicles(
 }
 
 /// Move vehicles along their routes.
+#[allow(clippy::type_complexity)]
 fn move_vehicles(
     time: Res<Time>,
     cfg: Res<MapConfig>,
     mut commands: Commands,
     mut finished: bevy::ecs::message::MessageWriter<TripFinished>,
-    mut q: Query<(Entity, &mut Vehicle, &mut Transform, Option<&TripPassenger>)>,
+    mut q: Query<(
+        Entity,
+        &mut Vehicle,
+        &mut Transform,
+        Option<&TripPassenger>,
+        Option<&ServiceVehicle>,
+    )>,
 ) {
-    for (entity, mut v, mut tf, passenger) in q.iter_mut() {
+    for (entity, mut v, mut tf, passenger, service_vehicle) in q.iter_mut() {
         if v.route.is_empty() {
-            // Arrived – despawn.
-            if let Some(p) = passenger {
-                finished.write(TripFinished {
-                    citizen: p.citizen,
-                    purpose: p.purpose,
-                });
+            // Arrived – despawn trip vehicles, keep service vehicles (idle).
+            if service_vehicle.is_none() {
+                if let Some(p) = passenger {
+                    finished.write(TripFinished {
+                        citizen: p.citizen,
+                        purpose: p.purpose,
+                    });
+                }
+                commands.entity(entity).despawn();
             }
-            commands.entity(entity).despawn();
             continue;
         }
 
@@ -361,13 +371,15 @@ fn move_vehicles(
         }
 
         if v.route.is_empty() {
-            if let Some(p) = passenger {
-                finished.write(TripFinished {
-                    citizen: p.citizen,
-                    purpose: p.purpose,
-                });
+            if service_vehicle.is_none() {
+                if let Some(p) = passenger {
+                    finished.write(TripFinished {
+                        citizen: p.citizen,
+                        purpose: p.purpose,
+                    });
+                }
+                commands.entity(entity).despawn();
             }
-            commands.entity(entity).despawn();
             continue;
         }
 

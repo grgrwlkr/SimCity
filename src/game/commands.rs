@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::game::map::{TilePos, ZoneKind};
+use crate::game::map::{BuildingKind, TilePos, ZoneKind};
 use crate::game::roads::RoadCell;
 
 /// Commands produced by UI / input and applied by simulation systems.
@@ -15,6 +15,9 @@ pub enum GameCommand {
 
     /// Paint zoning at the given tile position.
     SetZone { pos: TilePos, zone: ZoneKind },
+
+    /// Place a building directly (used for service buildings).
+    PlaceBuilding { pos: TilePos, kind: BuildingKind },
 
     /// Erase player edits (road + zone + building) on the given tile.
     EraseTile { pos: TilePos },

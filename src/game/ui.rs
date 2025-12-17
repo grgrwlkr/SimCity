@@ -204,6 +204,9 @@ fn top_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
             ui.selectable_value(&mut p.ui_state.tool, ToolMode::Residential, "R");
             ui.selectable_value(&mut p.ui_state.tool, ToolMode::Commercial, "C");
             ui.selectable_value(&mut p.ui_state.tool, ToolMode::Industrial, "I");
+            ui.selectable_value(&mut p.ui_state.tool, ToolMode::FireStation, "Fire");
+            ui.selectable_value(&mut p.ui_state.tool, ToolMode::PoliceStation, "Police");
+            ui.selectable_value(&mut p.ui_state.tool, ToolMode::Hospital, "Hospital");
             ui.selectable_value(&mut p.ui_state.tool, ToolMode::Erase, "Erase");
             ui.selectable_value(&mut p.ui_state.tool, ToolMode::Inspect, "Inspect");
 

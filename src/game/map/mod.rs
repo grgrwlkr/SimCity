@@ -7,6 +7,7 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use rand::prelude::*;
 
+use crate::game::buildings::Building;
 use crate::game::camera::MainCamera;
 use crate::game::commands::GameCommand;
 use crate::game::roads::{RoadCell, RoadDir, RoadKind};
@@ -191,6 +192,9 @@ pub enum BuildingKind {
     Residential,
     Commercial,
     Industrial,
+    FireStation,
+    PoliceStation,
+    Hospital,
 }
 
 impl BuildingKind {
@@ -199,6 +203,9 @@ impl BuildingKind {
             BuildingKind::Residential => Color::srgb(0.10, 0.22, 0.55),
             BuildingKind::Commercial => Color::srgb(0.10, 0.55, 0.18),
             BuildingKind::Industrial => Color::srgb(0.65, 0.45, 0.08),
+            BuildingKind::FireStation => Color::srgb(0.75, 0.15, 0.12),
+            BuildingKind::PoliceStation => Color::srgb(0.12, 0.22, 0.75),
+            BuildingKind::Hospital => Color::srgb(0.12, 0.75, 0.22),
         }
     }
 
@@ -207,6 +214,9 @@ impl BuildingKind {
             BuildingKind::Residential => ZoneKind::Residential,
             BuildingKind::Commercial => ZoneKind::Commercial,
             BuildingKind::Industrial => ZoneKind::Industrial,
+            BuildingKind::FireStation | BuildingKind::PoliceStation | BuildingKind::Hospital => {
+                ZoneKind::None
+            }
         }
     }
 
@@ -219,12 +229,59 @@ impl BuildingKind {
         }
     }
 
+    /// Radius of service coverage in tiles.
+    #[allow(dead_code)]
+    pub fn service_radius(self) -> Option<u16> {
+        match self {
+            BuildingKind::FireStation => Some(20),
+            BuildingKind::PoliceStation => Some(25),
+            BuildingKind::Hospital => Some(30),
+            _ => None,
+        }
+    }
+
+    /// Number of service vehicles the station can dispatch.
+    #[allow(dead_code)]
+    pub fn vehicle_capacity(self) -> u8 {
+        match self {
+            BuildingKind::FireStation => 3,
+            BuildingKind::PoliceStation => 4,
+            BuildingKind::Hospital => 2,
+            _ => 0,
+        }
+    }
+
+    /// Build cost (used by future building placement UI).
+    #[allow(dead_code)]
+    pub fn build_cost(self) -> i64 {
+        match self {
+            BuildingKind::Residential => 50,
+            BuildingKind::Commercial => 60,
+            BuildingKind::Industrial => 80,
+            BuildingKind::FireStation => 500,
+            BuildingKind::PoliceStation => 400,
+            BuildingKind::Hospital => 800,
+        }
+    }
+
+    /// Daily maintenance cost (used by future economy integration).
+    #[allow(dead_code)]
+    pub fn daily_maintenance(self) -> i64 {
+        match self {
+            BuildingKind::FireStation => 20,
+            BuildingKind::PoliceStation => 25,
+            BuildingKind::Hospital => 40,
+            BuildingKind::Residential | BuildingKind::Commercial | BuildingKind::Industrial => 2,
+        }
+    }
+
     /// Capacity constants (MVP, used to remove "magic numbers").
     pub fn capacity_residents(self) -> u16 {
         match self {
             BuildingKind::Residential => 4,
             BuildingKind::Commercial => 0,
             BuildingKind::Industrial => 0,
+            BuildingKind::FireStation | BuildingKind::PoliceStation | BuildingKind::Hospital => 0,
         }
     }
 
@@ -233,6 +290,7 @@ impl BuildingKind {
             BuildingKind::Residential => 0,
             BuildingKind::Commercial => 3,
             BuildingKind::Industrial => 4,
+            BuildingKind::FireStation | BuildingKind::PoliceStation | BuildingKind::Hospital => 0,
         }
     }
 }
@@ -366,6 +424,7 @@ impl Default for BuildMode {
 pub enum BuildTool {
     Road(RoadKind),
     Zone(ZoneKind),
+    PlaceBuilding(BuildingKind),
     Erase,
     Inspect,
 }
@@ -463,6 +522,9 @@ fn sync_build_mode_from_ui(ui: Res<UiState>, mut mode: ResMut<BuildMode>) {
         ToolMode::Residential => BuildTool::Zone(ZoneKind::Residential),
         ToolMode::Commercial => BuildTool::Zone(ZoneKind::Commercial),
         ToolMode::Industrial => BuildTool::Zone(ZoneKind::Industrial),
+        ToolMode::FireStation => BuildTool::PlaceBuilding(BuildingKind::FireStation),
+        ToolMode::PoliceStation => BuildTool::PlaceBuilding(BuildingKind::PoliceStation),
+        ToolMode::Hospital => BuildTool::PlaceBuilding(BuildingKind::Hospital),
         ToolMode::Erase => BuildTool::Erase,
         ToolMode::Inspect => BuildTool::Inspect,
     };
@@ -646,6 +708,18 @@ fn cursor_paint_to_command(
             }
             out.write(GameCommand::SetZone { pos: tile, zone });
         }
+        BuildTool::PlaceBuilding(kind) => {
+            // Reuse zoning placement constraints + require no existing zone to keep UX simple.
+            if !can_zone_tile(&p.grid, tile) {
+                return;
+            }
+            if let Some(cell) = p.grid.get(tile)
+                && cell.zone != ZoneKind::None
+            {
+                return;
+            }
+            out.write(GameCommand::PlaceBuilding { pos: tile, kind });
+        }
         BuildTool::Erase => {
             out.write(GameCommand::EraseTile { pos: tile });
         }
@@ -653,15 +727,39 @@ fn cursor_paint_to_command(
     }
 }
 
+fn spawn_building_entity(
+    commands: &mut Commands,
+    cfg: &MapConfig,
+    pos: TilePos,
+    kind: BuildingKind,
+) {
+    let origin = map_origin(cfg);
+    let world = origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size);
+
+    commands.spawn((
+        Building {
+            kind,
+            pos,
+            capacity_residents: kind.capacity_residents(),
+            capacity_jobs: kind.capacity_jobs(),
+        },
+        Sprite::from_color(kind.color(), Vec2::splat(cfg.tile_size * 0.75)),
+        Transform::from_translation(Vec3::new(world.x, world.y, 8.0)),
+    ));
+}
+
+#[allow(clippy::too_many_arguments)]
 fn apply_game_commands_to_grid(
-    mut commands: MessageReader<GameCommand>,
+    mut cmd_reader: MessageReader<GameCommand>,
+    mut commands: Commands,
+    cfg: Res<MapConfig>,
     mut seed: ResMut<MapSeed>,
     mut grid: ResMut<MapGrid>,
     mut dirty: ResMut<DirtyTiles>,
     mut city: ResMut<City>,
     mut graph_version: ResMut<GraphVersion>,
 ) {
-    for cmd in commands.read() {
+    for cmd in cmd_reader.read() {
         match *cmd {
             GameCommand::SetRoad { pos, road } => {
                 let Some(idx) = grid.idx(pos) else {
@@ -734,6 +832,39 @@ fn apply_game_commands_to_grid(
                 cell.building = None;
                 grid.set(pos, cell);
                 dirty.mark(idx);
+            }
+            GameCommand::PlaceBuilding { pos, kind } => {
+                let Some(idx) = grid.idx(pos) else {
+                    continue;
+                };
+                let Some(mut cell) = grid.get(pos) else {
+                    continue;
+                };
+
+                // Placement: same as zoning constraints + forbid placing over zoning for now.
+                if !can_zone_tile(&grid, pos) {
+                    continue;
+                }
+                if cell.zone != ZoneKind::None {
+                    continue;
+                }
+
+                if cell.building == Some(kind) {
+                    continue;
+                }
+
+                let cost = kind.build_cost();
+                if city.money < cost {
+                    continue;
+                }
+                city.money -= cost;
+
+                cell.building = Some(kind);
+                cell.zone = ZoneKind::None;
+                grid.set(pos, cell);
+                dirty.mark(idx);
+
+                spawn_building_entity(&mut commands, &cfg, pos, kind);
             }
             GameCommand::EraseTile { pos } => {
                 let Some(idx) = grid.idx(pos) else {
@@ -1290,6 +1421,11 @@ mod tests {
     fn command_apply_marks_dirty_and_bumps_graph_version_on_road_change() {
         let mut app = App::new();
         app.add_message::<GameCommand>()
+            .insert_resource(MapConfig {
+                width: 8,
+                height: 8,
+                tile_size: 16.0,
+            })
             .insert_resource(MapSeed(1))
             .insert_resource(MapGrid::new(8, 8))
             .insert_resource(DirtyTiles::new(64))
@@ -1322,6 +1458,11 @@ mod tests {
     fn water_tiles_are_not_buildable_by_commands() {
         let mut app = App::new();
         app.add_message::<GameCommand>()
+            .insert_resource(MapConfig {
+                width: 8,
+                height: 8,
+                tile_size: 16.0,
+            })
             .insert_resource(MapSeed(1))
             .insert_resource(MapGrid::new(8, 8))
             .insert_resource(DirtyTiles::new(64))
