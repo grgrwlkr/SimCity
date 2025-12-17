@@ -212,13 +212,13 @@ fn rebuild_road_graph(grid: Res<MapGrid>, gv: Res<GraphVersion>, mut graph: ResM
         if x + 1 < w {
             consider(1, idx + 1, RoadDir::East);
         }
-        // N (y-1)
+        // y decreases -> world down -> South
         if y > 0 {
-            consider(2, idx - w, RoadDir::North);
+            consider(2, idx - w, RoadDir::South);
         }
-        // S (y+1)
+        // y increases -> world up -> North
         if y + 1 < h {
-            consider(3, idx + w, RoadDir::South);
+            consider(3, idx + w, RoadDir::North);
         }
         graph.edges[idx] = mask;
     }
@@ -401,7 +401,7 @@ pub fn find_road_path_cached(
         if (mask & (1 << 2)) != 0 && idx >= w {
             push_neighbor(
                 idx - w,
-                step_cost_for_edge(idx, idx - w, RoadDir::North, w, ctx.traffic, ctx.grid),
+                step_cost_for_edge(idx, idx - w, RoadDir::South, w, ctx.traffic, ctx.grid),
                 &mut came_from,
                 &mut best_g,
             );
@@ -409,7 +409,7 @@ pub fn find_road_path_cached(
         if (mask & (1 << 3)) != 0 && idx + w < len {
             push_neighbor(
                 idx + w,
-                step_cost_for_edge(idx, idx + w, RoadDir::South, w, ctx.traffic, ctx.grid),
+                step_cost_for_edge(idx, idx + w, RoadDir::North, w, ctx.traffic, ctx.grid),
                 &mut came_from,
                 &mut best_g,
             );
