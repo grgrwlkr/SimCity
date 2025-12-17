@@ -1515,7 +1515,7 @@ fn generate_map_into_grid(grid: &mut MapGrid, seed: u64) {
 
     // Base height noise
     for cell in grid.cells.iter_mut() {
-        cell.height = rng.gen_range(0..=u8::MAX);
+        cell.height = rng.random_range(0..=u8::MAX);
         cell.water = false;
         cell.terrain = TileKind::Grass;
         cell.road = RoadCell::none();
@@ -1555,9 +1555,9 @@ fn generate_map_into_grid(grid: &mut MapGrid, seed: u64) {
     // Lakes: a few random blobs
     let lake_count = 6;
     for _ in 0..lake_count {
-        let cx = rng.gen_range(0..w as i32);
-        let cy = rng.gen_range(0..h as i32);
-        let r: i32 = rng.gen_range(3..10);
+        let cx = rng.random_range(0..w as i32);
+        let cy = rng.random_range(0..h as i32);
+        let r: i32 = rng.random_range(3..10);
         for y in (cy - r)..=(cy + r) {
             for x in (cx - r)..=(cx + r) {
                 if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
@@ -1576,8 +1576,8 @@ fn generate_map_into_grid(grid: &mut MapGrid, seed: u64) {
     // Rivers: trace downhill from a few sources
     let river_count = 4;
     for _ in 0..river_count {
-        let mut x = rng.gen_range(0..w as i32);
-        let mut y = rng.gen_range(0..h as i32);
+        let mut x = rng.random_range(0..w as i32);
+        let mut y = rng.random_range(0..h as i32);
         let mut steps = 0;
         while steps < (w + h) as i32 {
             let i = (y as usize) * w + (x as usize);
@@ -1598,7 +1598,7 @@ fn generate_map_into_grid(grid: &mut MapGrid, seed: u64) {
                 }
                 let ni = (ny as usize) * w + (nx as usize);
                 let h0 = grid.cells[ni].height;
-                if h0 < best.2 || (h0 == best.2 && rng.gen_bool(0.35)) {
+                if h0 < best.2 || (h0 == best.2 && rng.random_bool(0.35)) {
                     best = (nx, ny, h0);
                 }
             }

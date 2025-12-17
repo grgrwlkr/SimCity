@@ -116,7 +116,7 @@ fn assign_jobs(mut p: AssignJobsParams) {
         return;
     }
 
-    let mut rng = thread_rng();
+    let mut rng = rand::rng();
     jobs.shuffle(&mut rng);
 
     let mut assigned = 0usize;

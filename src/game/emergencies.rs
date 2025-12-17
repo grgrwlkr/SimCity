@@ -163,8 +163,8 @@ fn spawn_emergencies(
     let population_factor = (city.population as f32 / 100.0).max(0.4);
     let spawn_chance = manager.base_spawn_chance * population_factor;
 
-    let mut rng = thread_rng();
-    if rng.gen_range(0.0..1.0) > spawn_chance {
+    let mut rng = rand::rng();
+    if rng.random_range(0.0..1.0) > spawn_chance {
         return;
     }
 
@@ -184,12 +184,12 @@ fn spawn_emergencies(
     }
 
     let pos = *buildings.choose(&mut rng).unwrap();
-    let kind = match rng.gen_range(0..3) {
+    let kind = match rng.random_range(0..3) {
         0 => EmergencyKind::Fire,
         1 => EmergencyKind::Crime,
         _ => EmergencyKind::Medical,
     };
-    let severity = rng.gen_range(0.3..1.0);
+    let severity = rng.random_range(0.3..1.0);
 
     commands.spawn(Emergency {
         kind,

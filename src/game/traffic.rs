@@ -167,7 +167,7 @@ fn spawn_debug_vehicles(
                 continue;
             }
 
-            let mut rng = thread_rng();
+            let mut rng = rand::rng();
 
             let mut spawned = 0u32;
             let mut total = p.q_vehicles.iter().count();
@@ -177,8 +177,8 @@ fn spawn_debug_vehicles(
                     break;
                 }
                 // Pick random start/goal from road tiles.
-                let start_i = rng.gen_range(0..roads.len());
-                let mut goal_i = rng.gen_range(0..roads.len());
+                let start_i = rng.random_range(0..roads.len());
+                let mut goal_i = rng.random_range(0..roads.len());
                 if goal_i == start_i {
                     goal_i = (goal_i + 1) % roads.len();
                 }
@@ -216,7 +216,7 @@ fn spawn_debug_vehicles(
                     Vehicle {
                         route,
                         progress: 0.0,
-                        speed: 60.0 + rng.gen_range(0.0..40.0),
+                        speed: 60.0 + rng.random_range(0.0..40.0),
                     },
                 ));
                 spawned += 1;
@@ -289,8 +289,8 @@ fn spawn_trip_vehicles(
             && pt.stops.contains(&start)
             && pt.stops.contains(&goal)
         {
-            let mut rng = thread_rng();
-            if rng.gen_range(0.0..1.0) <= pt_cfg.adoption_rate.clamp(0.0, 1.0) {
+            let mut rng = rand::rng();
+            if rng.random_range(0.0..1.0) <= pt_cfg.adoption_rate.clamp(0.0, 1.0) {
                 let dist_world = (route.len() as f32) * p.cfg.tile_size;
                 let travel_secs =
                     (dist_world / pt_cfg.bus_speed.max(1.0)) + pt_cfg.wait_secs.max(0.0);

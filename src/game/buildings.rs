@@ -245,7 +245,7 @@ fn grow_buildings(mut p: GrowBuildingsParams) {
             break;
         }
 
-        let idx = p.rng.rng.gen_range(0..len);
+        let idx = p.rng.rng.random_range(0..len);
         let x = (idx % (p.grid.width as usize)) as i32;
         let y = (idx / (p.grid.width as usize)) as i32;
         let pos = TilePos { x, y };

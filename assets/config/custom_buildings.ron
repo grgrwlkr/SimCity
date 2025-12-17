@@ -3,7 +3,7 @@
         (
             id: 1,
             name: "Park",
-            color: [0.10, 0.80, 0.10],
+            color: (0.10, 0.80, 0.10),
             build_cost: 100,
             capacity_residents: 0,
             capacity_jobs: 0,
@@ -11,7 +11,7 @@
         (
             id: 2,
             name: "Landmark",
-            color: [0.80, 0.20, 0.80],
+            color: (0.80, 0.20, 0.80),
             build_cost: 300,
             capacity_residents: 0,
             capacity_jobs: 0,

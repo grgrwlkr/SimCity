@@ -110,7 +110,7 @@ fn spawn_citizens_from_residential(
         *have_home.entry(c.home).or_insert(0) += 1;
     }
 
-    let mut rng = thread_rng();
+    let mut rng = rand::rng();
 
     for b in &q_buildings {
         if b.kind != BuildingKind::Residential {
@@ -122,10 +122,10 @@ fn spawn_citizens_from_residential(
             continue;
         }
 
-        let decision = Timer::from_seconds(rng.gen_range(1.0..3.0), TimerMode::Repeating);
-        let shopping_need = Timer::from_seconds(rng.gen_range(9.0..18.0), TimerMode::Repeating);
-        let work_stay = Timer::from_seconds(rng.gen_range(5.0..9.0), TimerMode::Once);
-        let shop_stay = Timer::from_seconds(rng.gen_range(2.0..5.0), TimerMode::Once);
+        let decision = Timer::from_seconds(rng.random_range(1.0..3.0), TimerMode::Repeating);
+        let shopping_need = Timer::from_seconds(rng.random_range(9.0..18.0), TimerMode::Repeating);
+        let work_stay = Timer::from_seconds(rng.random_range(5.0..9.0), TimerMode::Once);
+        let shop_stay = Timer::from_seconds(rng.random_range(2.0..5.0), TimerMode::Once);
 
         let mut spawned_here = 0usize;
         let max_spawn_here = (target - current).min(8); // guardrail
@@ -169,7 +169,7 @@ fn citizen_trip_planner(
         }
     }
 
-    let mut rng = thread_rng();
+    let mut rng = rand::rng();
 
     // Reset per-tick stats (derived read model).
     shopping.demand_events = 0;
