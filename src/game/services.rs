@@ -149,7 +149,7 @@ fn sync_service_stations_from_buildings(
     }
 }
 
-fn adjacent_road_any(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
+pub(crate) fn adjacent_road_any(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
     if let Some(cell) = grid.get(pos)
         && !cell.water
         && cell.road.is_some()
@@ -189,7 +189,7 @@ fn tile_to_world(cfg: &MapConfig, pos: TilePos) -> Vec2 {
     origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size)
 }
 
-fn spawn_service_vehicle(
+pub(crate) fn spawn_service_vehicle(
     commands: &mut Commands,
     cfg: &MapConfig,
     kind: ServiceKind,

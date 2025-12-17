@@ -727,25 +727,27 @@ fn cursor_paint_to_command(
     }
 }
 
-fn spawn_building_entity(
+pub(crate) fn spawn_building_entity(
     commands: &mut Commands,
     cfg: &MapConfig,
     pos: TilePos,
     kind: BuildingKind,
-) {
+) -> Entity {
     let origin = map_origin(cfg);
     let world = origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size);
 
-    commands.spawn((
-        Building {
-            kind,
-            pos,
-            capacity_residents: kind.capacity_residents(),
-            capacity_jobs: kind.capacity_jobs(),
-        },
-        Sprite::from_color(kind.color(), Vec2::splat(cfg.tile_size * 0.75)),
-        Transform::from_translation(Vec3::new(world.x, world.y, 8.0)),
-    ));
+    commands
+        .spawn((
+            Building {
+                kind,
+                pos,
+                capacity_residents: kind.capacity_residents(),
+                capacity_jobs: kind.capacity_jobs(),
+            },
+            Sprite::from_color(kind.color(), Vec2::splat(cfg.tile_size * 0.75)),
+            Transform::from_translation(Vec3::new(world.x, world.y, 8.0)),
+        ))
+        .id()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -864,7 +866,7 @@ fn apply_game_commands_to_grid(
                 grid.set(pos, cell);
                 dirty.mark(idx);
 
-                spawn_building_entity(&mut commands, &cfg, pos, kind);
+                let _ = spawn_building_entity(&mut commands, &cfg, pos, kind);
             }
             GameCommand::EraseTile { pos } => {
                 let Some(idx) = grid.idx(pos) else {

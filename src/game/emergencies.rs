@@ -112,7 +112,7 @@ pub struct Emergency {
 
 /// Runtime stats for UI later.
 #[allow(dead_code)]
-#[derive(Default, Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Default, Debug, Clone)]
 pub struct EmergencyStats {
     pub total_fires: u32,
     pub total_crimes: u32,
