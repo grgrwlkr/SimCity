@@ -15,7 +15,7 @@ use bevy::ecs::system::SystemParam;
 
 use crate::game::roads::RoadDir;
 use crate::game::transport::{
-    PathCache, PathfindingConfig, PathfindingCtx, RoadGraph, find_road_path_cached,
+    PathCache, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph, find_road_path_cached,
 };
 
 pub struct EmploymentPlugin;
@@ -24,6 +24,13 @@ impl Plugin for EmploymentPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<EmploymentStats>()
             .init_resource::<EmploymentConfig>()
+            .add_systems(
+                FixedUpdate,
+                clear_invalid_workplaces
+                    .in_set(GameSet::Sim)
+                    .before(assign_jobs)
+                    .run_if(in_state(AppState::InGame)),
+            )
             .add_systems(
                 FixedUpdate,
                 assign_jobs
@@ -39,7 +46,7 @@ impl Plugin for EmploymentPlugin {
     }
 }
 
-#[derive(Resource, Debug, Clone)]
+#[derive(Resource, serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct EmploymentConfig {
     /// Max new assignments per sim tick.
     pub max_assignments_per_tick: usize,
@@ -72,6 +79,7 @@ struct AssignJobsParams<'w, 's> {
     grid: Res<'w, MapGrid>,
     time: Res<'w, Time<Fixed>>,
     graph: Res<'w, RoadGraph>,
+    regions: Res<'w, RegionGraph>,
     traffic: Res<'w, TrafficOccupancy>,
     path_cfg: Res<'w, PathfindingConfig>,
     path_cache: ResMut<'w, PathCache>,
@@ -143,6 +151,7 @@ fn assign_jobs(mut p: AssignJobsParams) {
                 cfg: &p.path_cfg,
                 cache: &mut p.path_cache,
                 graph: &p.graph,
+                regions: Some(&p.regions),
                 traffic: &p.traffic,
                 grid: &p.grid,
             };
@@ -170,6 +179,21 @@ fn assign_jobs(mut p: AssignJobsParams) {
         *taken.entry(job_pos).or_insert(0) =
             taken.get(&job_pos).copied().unwrap_or(0).saturating_add(1);
         assigned += 1;
+    }
+}
+
+fn clear_invalid_workplaces(grid: Res<MapGrid>, mut q: Query<&mut CitizenWorkplace>) {
+    for mut wp in q.iter_mut() {
+        let Some(pos) = wp.workplace else {
+            continue;
+        };
+        let kind = grid.get(pos).and_then(|c| c.building);
+        if !matches!(
+            kind,
+            Some(BuildingKind::Commercial) | Some(BuildingKind::Industrial)
+        ) {
+            wp.workplace = None;
+        }
     }
 }
 

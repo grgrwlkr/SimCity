@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use crate::game::buildings::Building;
 use crate::game::ids::{CitizenIdComp, CitizenIdGen};
-use crate::game::map::{BuildingKind, TilePos};
+use crate::game::map::{BuildingKind, MapGrid, TilePos};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::trips::{TripFinished, TripPurpose, TripRequested};
@@ -18,6 +18,7 @@ pub struct CitizensPlugin;
 impl Plugin for CitizensPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CommuteStats>()
+            .init_resource::<ShoppingDemandStats>()
             .init_resource::<CitizenIdGen>()
             .add_systems(OnEnter(AppState::MainMenu), cleanup_citizens)
             .add_systems(
@@ -28,6 +29,12 @@ impl Plugin for CitizensPlugin {
                     handle_trip_finished,
                 )
                     .in_set(GameSet::Sim)
+                    .run_if(in_state(AppState::InGame)),
+            )
+            .add_systems(
+                FixedUpdate,
+                cleanup_homeless_citizens
+                    .in_set(GameSet::PostSim)
                     .run_if(in_state(AppState::InGame)),
             );
     }
@@ -72,6 +79,17 @@ pub struct CitizenWorkplace {
 pub struct CommuteStats {
     pub avg_commute_secs: f32,
     pub samples: u32,
+}
+
+/// Derived metric: shopping demand vs availability.
+#[derive(Resource, Debug, Default, Copy, Clone)]
+pub struct ShoppingDemandStats {
+    /// Number of times citizens wanted to shop this tick.
+    pub demand_events: u32,
+    /// Number of demand events that couldn't be satisfied due to lack of shops.
+    pub unmet_events: u32,
+    /// Unmet ratio in [0..1] for this tick.
+    pub unmet_ratio: f32,
 }
 
 fn cleanup_citizens(mut commands: Commands, q: Query<Entity, With<Citizen>>) {
@@ -140,6 +158,7 @@ fn citizen_trip_planner(
     time: Res<Time<Fixed>>,
     q_buildings: Query<&Building>,
     mut q_citizens: Query<(&CitizenIdComp, &mut Citizen, &CitizenWorkplace)>,
+    mut shopping: ResMut<ShoppingDemandStats>,
     mut out: MessageWriter<TripRequested>,
 ) {
     // Pre-collect possible shopping destinations (commercial buildings).
@@ -151,6 +170,10 @@ fn citizen_trip_planner(
     }
 
     let mut rng = thread_rng();
+
+    // Reset per-tick stats (derived read model).
+    shopping.demand_events = 0;
+    shopping.unmet_events = 0;
 
     for (id, mut c, wp) in &mut q_citizens {
         // Advance timers.
@@ -170,21 +193,24 @@ fn citizen_trip_planner(
 
         match c.state {
             CitizenState::AtHome => {
-                // Prefer shopping if need timer triggers and shops exist.
-                if c.shopping_need.just_finished()
-                    && let Some(&shop) = shops.choose(&mut rng)
-                {
-                    out.write(TripRequested {
-                        citizen: id.0,
-                        from: c.home,
-                        to: shop,
-                        purpose: TripPurpose::Shop,
-                    });
-                    c.state = CitizenState::ToShop;
-                    c.last_place = shop;
-                    c.trip_departed_at_sec = Some(time.elapsed_secs_f64());
-                    c.trip_purpose = Some(TripPurpose::Shop);
-                    continue;
+                // Prefer shopping if need timer triggers.
+                if c.shopping_need.just_finished() {
+                    shopping.demand_events = shopping.demand_events.saturating_add(1);
+                    if let Some(&shop) = shops.choose(&mut rng) {
+                        out.write(TripRequested {
+                            citizen: id.0,
+                            from: c.home,
+                            to: shop,
+                            purpose: TripPurpose::Shop,
+                        });
+                        c.state = CitizenState::ToShop;
+                        c.last_place = shop;
+                        c.trip_departed_at_sec = Some(time.elapsed_secs_f64());
+                        c.trip_purpose = Some(TripPurpose::Shop);
+                        continue;
+                    } else {
+                        shopping.unmet_events = shopping.unmet_events.saturating_add(1);
+                    }
                 }
 
                 // Otherwise go to work if assigned.
@@ -235,6 +261,12 @@ fn citizen_trip_planner(
             CitizenState::ToWork | CitizenState::ToShop | CitizenState::ToHome => {}
         }
     }
+
+    shopping.unmet_ratio = if shopping.demand_events > 0 {
+        (shopping.unmet_events as f32) / (shopping.demand_events as f32)
+    } else {
+        0.0
+    };
 }
 
 fn handle_trip_finished(
@@ -288,6 +320,22 @@ fn handle_trip_finished(
 
             // Next decision can happen later; keep timer running.
             c.decision_timer.reset();
+        }
+    }
+}
+
+fn cleanup_homeless_citizens(
+    mut commands: Commands,
+    grid: Res<MapGrid>,
+    q: Query<(Entity, &Citizen)>,
+) {
+    for (e, c) in q.iter() {
+        let ok_home = grid
+            .get(c.home)
+            .and_then(|cell| cell.building)
+            .is_some_and(|k| k == BuildingKind::Residential);
+        if !ok_home {
+            commands.entity(e).despawn();
         }
     }
 }

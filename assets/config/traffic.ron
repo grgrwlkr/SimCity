@@ -1,0 +1,5 @@
+(
+    max_active_vehicles: 1500,
+    max_route_plans_per_tick: 64,
+    heat_ema_decay: 0.92,
+)

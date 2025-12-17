@@ -4,18 +4,23 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use rand::prelude::*;
 
+use crate::game::camera::MainCamera;
 use crate::game::commands::GameCommand;
 use crate::game::ids::CitizenId;
 use crate::game::map::{MapConfig, MapGrid, TilePos, astar_path};
+use crate::game::public_transport::{
+    BusVehicle, PendingTransitTrips, PendingTrip, PublicTransportConfig, PublicTransportIndex,
+};
 use crate::game::roads::RoadDir;
 use crate::game::services::ServiceVehicle;
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::transport::{
-    PathCache, PathfindingConfig, PathfindingCtx, RoadGraph, find_road_path_cached,
+    PathCache, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph, find_road_path_cached,
 };
 use crate::game::trips::{TripFinished, TripRequested};
 use crate::game::ui_state::{OverlayMode, UiState};
+use bevy::window::PrimaryWindow;
 
 /// Vehicle entity – stores route and visual offset.
 #[derive(Component)]
@@ -100,12 +105,15 @@ impl Plugin for TrafficPlugin {
                     .run_if(in_state(AppState::InGame)),
             )
             // Rendering
-            .add_systems(Update, render_traffic_overlay.in_set(GameSet::RenderSync));
+            .add_systems(
+                Update,
+                (render_traffic_overlay, cull_vehicle_lod).in_set(GameSet::RenderSync),
+            );
     }
 }
 
-#[derive(Resource, Debug, Clone)]
-struct TrafficConfig {
+#[derive(Resource, serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct TrafficConfig {
     /// Hard cap on active vehicles (debug + trip-driven).
     max_active_vehicles: usize,
     /// Guardrail: max number of route plans performed per tick.
@@ -182,6 +190,7 @@ fn spawn_debug_vehicles(
                     cfg: &p.path_cfg,
                     cache: &mut p.path_cache,
                     graph: &p.graph,
+                    regions: Some(&p.regions),
                     traffic: &p.traffic,
                     grid: &p.grid,
                 };
@@ -227,6 +236,7 @@ struct SpawnDebugVehiclesParams<'w, 's> {
     cfg: Res<'w, MapConfig>,
     time: Res<'w, Time>,
     graph: Res<'w, RoadGraph>,
+    regions: Res<'w, RegionGraph>,
     traffic: Res<'w, TrafficOccupancy>,
     path_cfg: Res<'w, PathfindingConfig>,
     path_cache: ResMut<'w, PathCache>,
@@ -258,6 +268,7 @@ fn spawn_trip_vehicles(
             cfg: &p.path_cfg,
             cache: &mut p.path_cache,
             graph: &p.graph,
+            regions: Some(&p.regions),
             traffic: &p.traffic,
             grid: &p.grid,
         };
@@ -270,6 +281,29 @@ fn spawn_trip_vehicles(
         if route.is_empty() {
             continue;
         }
+
+        // Public transport (MVP): if both endpoints are bus stops, optionally satisfy the trip
+        // without spawning an individual car.
+        if let (Some(pt), Some(pt_cfg), Some(pending)) =
+            (p.pt.as_deref(), p.pt_cfg.as_deref(), p.pt_pending.as_mut())
+            && pt.stops.contains(&start)
+            && pt.stops.contains(&goal)
+        {
+            let mut rng = thread_rng();
+            if rng.gen_range(0.0..1.0) <= pt_cfg.adoption_rate.clamp(0.0, 1.0) {
+                let dist_world = (route.len() as f32) * p.cfg.tile_size;
+                let travel_secs =
+                    (dist_world / pt_cfg.bus_speed.max(1.0)) + pt_cfg.wait_secs.max(0.0);
+                pending.trips.push(PendingTrip {
+                    citizen: msg.citizen,
+                    purpose: msg.purpose,
+                    remaining_secs: travel_secs,
+                });
+                planned += 1;
+                continue;
+            }
+        }
+
         let world_pos = tile_to_world(&p.cfg, start);
         p.commands.spawn((
             Sprite {
@@ -300,9 +334,13 @@ struct SpawnTripVehiclesParams<'w, 's> {
     cfg: Res<'w, MapConfig>,
     time: Res<'w, Time<bevy::time::Fixed>>,
     graph: Res<'w, RoadGraph>,
+    regions: Res<'w, RegionGraph>,
     traffic: Res<'w, TrafficOccupancy>,
     path_cfg: Res<'w, PathfindingConfig>,
     path_cache: ResMut<'w, PathCache>,
+    pt_cfg: Option<Res<'w, PublicTransportConfig>>,
+    pt: Option<Res<'w, PublicTransportIndex>>,
+    pt_pending: Option<ResMut<'w, PendingTransitTrips>>,
     q_vehicles: Query<'w, 's, Entity, With<Vehicle>>,
     traffic_cfg: Res<'w, TrafficConfig>,
 }
@@ -344,12 +382,13 @@ fn move_vehicles(
         &mut Transform,
         Option<&TripPassenger>,
         Option<&ServiceVehicle>,
+        Option<&BusVehicle>,
     )>,
 ) {
-    for (entity, mut v, mut tf, passenger, service_vehicle) in q.iter_mut() {
+    for (entity, mut v, mut tf, passenger, service_vehicle, bus_vehicle) in q.iter_mut() {
         if v.route.is_empty() {
             // Arrived – despawn trip vehicles, keep service vehicles (idle).
-            if service_vehicle.is_none() {
+            if service_vehicle.is_none() && bus_vehicle.is_none() {
                 if let Some(p) = passenger {
                     finished.write(TripFinished {
                         citizen: p.citizen,
@@ -371,7 +410,7 @@ fn move_vehicles(
         }
 
         if v.route.is_empty() {
-            if service_vehicle.is_none() {
+            if service_vehicle.is_none() && bus_vehicle.is_none() {
                 if let Some(p) = passenger {
                     finished.write(TripFinished {
                         citizen: p.citizen,
@@ -531,6 +570,60 @@ fn render_traffic_overlay(
                 Transform::from_xyz(world.x, world.y, 5.0),
             ));
         }
+    }
+}
+
+/// Simple vehicle LOD: hide vehicles outside the camera viewport.
+fn cull_vehicle_lod(
+    cfg: Res<MapConfig>,
+    q_window: Query<&Window, With<PrimaryWindow>>,
+    q_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    mut q_vehicles: Query<(&Transform, &mut Visibility), With<Vehicle>>,
+) {
+    let Ok(window) = q_window.single() else {
+        return;
+    };
+    let Ok((camera, cam_gt)) = q_camera.single() else {
+        return;
+    };
+
+    let viewport = camera
+        .logical_viewport_size()
+        .unwrap_or(Vec2::new(window.width(), window.height()))
+        .max(Vec2::ONE);
+    let corners = [
+        Vec2::new(0.0, 0.0),
+        Vec2::new(viewport.x, 0.0),
+        Vec2::new(0.0, viewport.y),
+        Vec2::new(viewport.x, viewport.y),
+    ];
+
+    let mut min = Vec2::splat(f32::INFINITY);
+    let mut max = Vec2::splat(f32::NEG_INFINITY);
+    for c in corners {
+        let Ok(w) = camera.viewport_to_world_2d(cam_gt, c) else {
+            // If we can't compute bounds, keep everything visible.
+            for (_, mut vis) in q_vehicles.iter_mut() {
+                *vis = Visibility::Visible;
+            }
+            return;
+        };
+        min = min.min(w);
+        max = max.max(w);
+    }
+
+    let margin = cfg.tile_size * 4.0;
+    let min = min - Vec2::splat(margin);
+    let max = max + Vec2::splat(margin);
+
+    for (tf, mut vis) in q_vehicles.iter_mut() {
+        let p = tf.translation.truncate();
+        let inside = p.x >= min.x && p.x <= max.x && p.y >= min.y && p.y <= max.y;
+        *vis = if inside {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
     }
 }
 

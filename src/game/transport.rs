@@ -20,6 +20,7 @@ impl Plugin for TransportPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GraphVersion>()
             .init_resource::<RoadGraph>()
+            .init_resource::<RegionGraph>()
             .init_resource::<PathfindingConfig>()
             .init_resource::<PathCache>()
             .add_systems(OnEnter(AppState::MainMenu), reset_transport)
@@ -27,6 +28,13 @@ impl Plugin for TransportPlugin {
                 Update,
                 rebuild_road_graph
                     .in_set(GameSet::GraphUpdate)
+                    .run_if(in_game_or_paused),
+            )
+            .add_systems(
+                Update,
+                rebuild_region_graph
+                    .in_set(GameSet::GraphUpdate)
+                    .after(rebuild_road_graph)
                     .run_if(in_game_or_paused),
             );
     }
@@ -67,10 +75,63 @@ impl RoadGraph {
     }
 }
 
-#[derive(Resource, Debug, Clone)]
+/// Coarse region connectivity graph used to prune low-level A* searches.
+#[derive(Resource, Debug, Default, Clone)]
+pub struct RegionGraph {
+    pub version: u64,
+    pub region_size: usize,
+    pub regions_w: usize,
+    pub regions_h: usize,
+    /// Per-region 4-bit neighbor mask (W,E,S,N).
+    pub edges: Vec<u8>,
+}
+
+impl RegionGraph {
+    fn is_built_for(&self, version: u64, region_size: usize, w: usize, h: usize) -> bool {
+        if self.version != version || self.region_size != region_size || self.edges.is_empty() {
+            return false;
+        }
+        let expect_w = w.div_ceil(region_size);
+        let expect_h = h.div_ceil(region_size);
+        self.regions_w == expect_w && self.regions_h == expect_h
+    }
+
+    fn region_id(&self, pos: TilePos) -> Option<usize> {
+        if pos.x < 0 || pos.y < 0 {
+            return None;
+        }
+        let x = pos.x as usize;
+        let y = pos.y as usize;
+        let rx = x / self.region_size;
+        let ry = y / self.region_size;
+        if rx >= self.regions_w || ry >= self.regions_h {
+            return None;
+        }
+        Some(ry * self.regions_w + rx)
+    }
+}
+
+#[derive(Resource, serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PathfindingConfig {
     pub cache_capacity: usize,
     pub cache_ttl_secs: f64,
+    /// Congestion weight factor `k` in: `w = base_cost * (1 + k * congestion)`.
+    pub congestion_k: f32,
+    /// Clamp for congestion ratio (occupancy / capacity).
+    pub congestion_max: f32,
+    /// Cost penalty for lane changes (perpendicular move, same travel dir).
+    pub lane_change_penalty: f32,
+    /// Cost penalty for turns (perpendicular move into new dir lane).
+    pub turn_penalty: f32,
+    /// Scale factor converting float weights into integer A* costs.
+    pub cost_scale: f32,
+
+    /// Enable a simple hierarchical pre-pass (region graph) to prune A* search space.
+    pub enable_hierarchical: bool,
+    /// Region size in tiles for the hierarchical pre-pass.
+    pub region_size: usize,
+    /// How many neighbor regions around the high-level path to include (safety margin).
+    pub region_pad: i32,
 }
 
 impl Default for PathfindingConfig {
@@ -78,6 +139,15 @@ impl Default for PathfindingConfig {
         Self {
             cache_capacity: 4096,
             cache_ttl_secs: 10.0,
+            congestion_k: 2.0,
+            congestion_max: 2.0,
+            lane_change_penalty: 40.0,
+            turn_penalty: 80.0,
+            cost_scale: 1000.0,
+
+            enable_hierarchical: true,
+            region_size: 16,
+            region_pad: 1,
         }
     }
 }
@@ -113,16 +183,23 @@ impl PathCache {
 fn reset_transport(
     mut gv: ResMut<GraphVersion>,
     mut graph: ResMut<RoadGraph>,
+    mut regions: ResMut<RegionGraph>,
     mut cache: ResMut<PathCache>,
 ) {
     gv.0 = 1;
     graph.version = 0;
     graph.edges.clear();
     graph.road_indices.clear();
+    regions.version = 0;
+    regions.edges.clear();
     cache.clear();
 }
 
 fn rebuild_road_graph(grid: Res<MapGrid>, gv: Res<GraphVersion>, mut graph: ResMut<RoadGraph>) {
+    rebuild_road_graph_inner(&grid, &gv, &mut graph);
+}
+
+fn rebuild_road_graph_inner(grid: &MapGrid, gv: &GraphVersion, graph: &mut RoadGraph) {
     if graph.is_built_for(gv.0)
         && graph.width == grid.width as usize
         && graph.height == grid.height as usize
@@ -224,6 +301,92 @@ fn rebuild_road_graph(grid: Res<MapGrid>, gv: Res<GraphVersion>, mut graph: ResM
     }
 }
 
+fn rebuild_region_graph(
+    grid: Res<MapGrid>,
+    gv: Res<GraphVersion>,
+    cfg: Res<PathfindingConfig>,
+    mut regions: ResMut<RegionGraph>,
+) {
+    let w = grid.width as usize;
+    let h = grid.height as usize;
+    let region_size = cfg.region_size.max(1);
+
+    if regions.is_built_for(gv.0, region_size, w, h) {
+        return;
+    }
+
+    let regions_w = w.div_ceil(region_size);
+    let regions_h = h.div_ceil(region_size);
+    let region_count = regions_w * regions_h;
+
+    regions.version = gv.0;
+    regions.region_size = region_size;
+    regions.regions_w = regions_w;
+    regions.regions_h = regions_h;
+    regions.edges.clear();
+    regions.edges.resize(region_count, 0);
+
+    let region_id_xy = |x: i32, y: i32| -> Option<usize> {
+        if x < 0 || y < 0 || x >= grid.width || y >= grid.height {
+            return None;
+        }
+        let rx = (x as usize) / region_size;
+        let ry = (y as usize) / region_size;
+        Some(ry * regions_w + rx)
+    };
+
+    for y in 0..grid.height {
+        for x in 0..grid.width {
+            let pos = TilePos { x, y };
+            let Some(cell) = grid.get(pos) else {
+                continue;
+            };
+            if cell.water || !cell.road.is_some() {
+                continue;
+            }
+
+            let Some(rid) = region_id_xy(x, y) else {
+                continue;
+            };
+
+            // Connect regions if any road tiles touch across a region boundary.
+            for (nx, ny) in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)] {
+                let Some(npos_cell) = grid.get(TilePos { x: nx, y: ny }) else {
+                    continue;
+                };
+                if npos_cell.water || !npos_cell.road.is_some() {
+                    continue;
+                }
+                let Some(nrid) = region_id_xy(nx, ny) else {
+                    continue;
+                };
+                if nrid == rid {
+                    continue;
+                }
+
+                let rx = rid % regions_w;
+                let ry = rid / regions_w;
+                let nrx = nrid % regions_w;
+                let nry = nrid / regions_w;
+
+                if nrx + 1 == rx {
+                    regions.edges[rid] |= 1 << 0; // W
+                    regions.edges[nrid] |= 1 << 1; // E
+                } else if nrx == rx + 1 {
+                    regions.edges[rid] |= 1 << 1; // E
+                    regions.edges[nrid] |= 1 << 0; // W
+                } else if nry + 1 == ry {
+                    regions.edges[rid] |= 1 << 2; // S
+                    regions.edges[nrid] |= 1 << 3; // N
+                } else if nry == ry + 1 {
+                    regions.edges[rid] |= 1 << 3; // N
+                    regions.edges[nrid] |= 1 << 2; // S
+                }
+            }
+        }
+    }
+}
+
 #[derive(Copy, Clone, Eq, PartialEq)]
 struct HeapState {
     f: u32,
@@ -273,6 +436,7 @@ pub struct PathfindingCtx<'a> {
     pub cfg: &'a PathfindingConfig,
     pub cache: &'a mut PathCache,
     pub graph: &'a RoadGraph,
+    pub regions: Option<&'a RegionGraph>,
     pub traffic: &'a TrafficOccupancy,
     pub grid: &'a MapGrid,
 }
@@ -323,6 +487,47 @@ pub fn find_road_path_cached(
         return entry.path.clone();
     }
 
+    let allowed_regions = compute_allowed_regions(ctx, start, goal);
+
+    // Try pruned search first, then fall back to full A* if needed.
+    for attempt in 0..2 {
+        let allowed = if attempt == 0 {
+            allowed_regions.as_deref()
+        } else {
+            None
+        };
+
+        if let Some(out) = astar_road_graph(ctx, start_idx, goal_idx, allowed) {
+            // insert into cache + maintain size
+            ctx.cache.map.insert(
+                key,
+                CacheEntry {
+                    path: out.clone(),
+                    last_used_sec: ctx.time_now_sec,
+                },
+            );
+            ctx.cache.lru.push_back((key, ctx.time_now_sec));
+            enforce_cache_limits(ctx.time_now_sec, ctx.cfg, ctx.cache);
+            return out;
+        }
+
+        if allowed_regions.is_none() {
+            break;
+        }
+    }
+
+    Vec::new()
+}
+
+fn astar_road_graph(
+    ctx: &mut PathfindingCtx<'_>,
+    start_idx: usize,
+    goal_idx: usize,
+    allowed_regions: Option<&[bool]>,
+) -> Option<Vec<TilePos>> {
+    let w = ctx.graph.width;
+    let len = ctx.graph.edges.len();
+
     // A* over road graph
     let mut came_from: Vec<Option<usize>> = vec![None; len];
     let mut best_g: Vec<u32> = vec![u32::MAX; len];
@@ -334,6 +539,20 @@ pub fn find_road_path_cached(
         f: manhattan_idx(start_idx, goal_idx, w),
         idx: start_idx,
     });
+
+    let regions = ctx.regions;
+    let is_allowed = |idx: usize| -> bool {
+        let Some(mask) = allowed_regions else {
+            return true;
+        };
+        let Some(rg) = regions else {
+            return true;
+        };
+        let Some(rid) = rg.region_id(idx_to_pos(idx, w)) else {
+            return true;
+        };
+        mask.get(rid).copied().unwrap_or(true)
+    };
 
     while let Some(HeapState { g, idx, .. }) = heap.pop() {
         if g != best_g[idx] {
@@ -347,76 +566,195 @@ pub fn find_road_path_cached(
                 cur = came_from[ci];
             }
             out.reverse();
-
-            // insert into cache + maintain size
-            ctx.cache.map.insert(
-                key,
-                CacheEntry {
-                    path: out.clone(),
-                    last_used_sec: ctx.time_now_sec,
-                },
-            );
-            ctx.cache.lru.push_back((key, ctx.time_now_sec));
-            enforce_cache_limits(ctx.time_now_sec, ctx.cfg, ctx.cache);
-
-            return out;
+            return Some(out);
         }
 
         let mask = ctx.graph.edges[idx];
         if mask == 0 {
             continue;
         }
-        // neighbors in W,E,N,S
-        let mut push_neighbor =
-            |nidx: usize, step_cost: u32, came_from: &mut [Option<usize>], best_g: &mut [u32]| {
-                let ng = g.saturating_add(step_cost.max(1));
-                if ng < best_g[nidx] {
-                    best_g[nidx] = ng;
-                    came_from[nidx] = Some(idx);
-                    let f = ng.saturating_add(manhattan_idx(nidx, goal_idx, w));
-                    heap.push(HeapState {
-                        g: ng,
-                        f,
-                        idx: nidx,
-                    });
-                }
-            };
+
+        // neighbors in W,E,S,N
+        let mut push_neighbor = |nidx: usize, step_cost: u32| {
+            if !is_allowed(nidx) {
+                return;
+            }
+            let ng = g.saturating_add(step_cost.max(1));
+            if ng < best_g[nidx] {
+                best_g[nidx] = ng;
+                came_from[nidx] = Some(idx);
+                let f = ng.saturating_add(manhattan_idx(nidx, goal_idx, w));
+                heap.push(HeapState {
+                    g: ng,
+                    f,
+                    idx: nidx,
+                });
+            }
+        };
 
         if (mask & (1 << 0)) != 0 && idx > 0 {
             push_neighbor(
                 idx - 1,
-                step_cost_for_edge(idx, idx - 1, RoadDir::West, w, ctx.traffic, ctx.grid),
-                &mut came_from,
-                &mut best_g,
+                step_cost_for_edge(
+                    idx,
+                    idx - 1,
+                    RoadDir::West,
+                    w,
+                    ctx.cfg,
+                    ctx.traffic,
+                    ctx.grid,
+                ),
             );
         }
         if (mask & (1 << 1)) != 0 && idx + 1 < len {
             push_neighbor(
                 idx + 1,
-                step_cost_for_edge(idx, idx + 1, RoadDir::East, w, ctx.traffic, ctx.grid),
-                &mut came_from,
-                &mut best_g,
+                step_cost_for_edge(
+                    idx,
+                    idx + 1,
+                    RoadDir::East,
+                    w,
+                    ctx.cfg,
+                    ctx.traffic,
+                    ctx.grid,
+                ),
             );
         }
         if (mask & (1 << 2)) != 0 && idx >= w {
             push_neighbor(
                 idx - w,
-                step_cost_for_edge(idx, idx - w, RoadDir::South, w, ctx.traffic, ctx.grid),
-                &mut came_from,
-                &mut best_g,
+                step_cost_for_edge(
+                    idx,
+                    idx - w,
+                    RoadDir::South,
+                    w,
+                    ctx.cfg,
+                    ctx.traffic,
+                    ctx.grid,
+                ),
             );
         }
         if (mask & (1 << 3)) != 0 && idx + w < len {
             push_neighbor(
                 idx + w,
-                step_cost_for_edge(idx, idx + w, RoadDir::North, w, ctx.traffic, ctx.grid),
-                &mut came_from,
-                &mut best_g,
+                step_cost_for_edge(
+                    idx,
+                    idx + w,
+                    RoadDir::North,
+                    w,
+                    ctx.cfg,
+                    ctx.traffic,
+                    ctx.grid,
+                ),
             );
         }
     }
 
-    Vec::new()
+    None
+}
+
+fn compute_allowed_regions(
+    ctx: &PathfindingCtx<'_>,
+    start: TilePos,
+    goal: TilePos,
+) -> Option<Vec<bool>> {
+    if !ctx.cfg.enable_hierarchical {
+        return None;
+    }
+    let rg = ctx.regions?;
+    if !rg.is_built_for(
+        ctx.graph.version,
+        ctx.cfg.region_size.max(1),
+        ctx.graph.width,
+        ctx.graph.height,
+    ) {
+        return None;
+    }
+
+    let start_r = rg.region_id(start)?;
+    let goal_r = rg.region_id(goal)?;
+    if start_r == goal_r {
+        return None;
+    }
+
+    let region_path = bfs_region_path(rg, start_r, goal_r)?;
+    let pad = ctx.cfg.region_pad.max(0);
+
+    let mut allowed = vec![false; rg.edges.len()];
+    for rid in region_path {
+        let rx = (rid % rg.regions_w) as i32;
+        let ry = (rid / rg.regions_w) as i32;
+        for dy in -pad..=pad {
+            for dx in -pad..=pad {
+                let nx = rx + dx;
+                let ny = ry + dy;
+                if nx < 0 || ny < 0 {
+                    continue;
+                }
+                let nxu = nx as usize;
+                let nyu = ny as usize;
+                if nxu >= rg.regions_w || nyu >= rg.regions_h {
+                    continue;
+                }
+                allowed[nyu * rg.regions_w + nxu] = true;
+            }
+        }
+    }
+
+    Some(allowed)
+}
+
+fn bfs_region_path(rg: &RegionGraph, start: usize, goal: usize) -> Option<Vec<usize>> {
+    let n = rg.edges.len();
+    if start >= n || goal >= n {
+        return None;
+    }
+    let mut pred = vec![usize::MAX; n];
+    let mut q = VecDeque::new();
+    pred[start] = start;
+    q.push_back(start);
+
+    while let Some(cur) = q.pop_front() {
+        if cur == goal {
+            break;
+        }
+        let mask = rg.edges[cur];
+        let x = cur % rg.regions_w;
+        let y = cur / rg.regions_w;
+
+        let visit = |nidx: usize, pred: &mut [usize], q: &mut VecDeque<usize>| {
+            if pred[nidx] == usize::MAX {
+                pred[nidx] = cur;
+                q.push_back(nidx);
+            }
+        };
+
+        if (mask & (1 << 0)) != 0 && x > 0 {
+            visit(cur - 1, &mut pred, &mut q);
+        }
+        if (mask & (1 << 1)) != 0 && x + 1 < rg.regions_w {
+            visit(cur + 1, &mut pred, &mut q);
+        }
+        if (mask & (1 << 2)) != 0 && y > 0 {
+            visit(cur - rg.regions_w, &mut pred, &mut q);
+        }
+        if (mask & (1 << 3)) != 0 && y + 1 < rg.regions_h {
+            visit(cur + rg.regions_w, &mut pred, &mut q);
+        }
+    }
+
+    if pred[goal] == usize::MAX {
+        return None;
+    }
+    let mut path = Vec::new();
+    let mut cur = goal;
+    path.push(cur);
+    while cur != start {
+        cur = pred[cur];
+        path.push(cur);
+    }
+    path.reverse();
+    Some(path)
 }
 
 fn step_cost_for_edge(
@@ -424,6 +762,7 @@ fn step_cost_for_edge(
     next_idx: usize,
     move_dir: RoadDir,
     w: usize,
+    cfg: &PathfindingConfig,
     traffic: &TrafficOccupancy,
     grid: &MapGrid,
 ) -> u32 {
@@ -454,14 +793,15 @@ fn step_cost_for_edge(
         .get(next_idx)
         .copied()
         .unwrap_or(0) as f32;
-    let congestion = (occupancy / capacity).clamp(0.0, 2.0);
+    // We compute the weight for entering `next_idx` (cost-to-enter model).
+    let congestion = (occupancy / capacity).clamp(0.0, cfg.congestion_max.max(0.0));
 
-    let congestion_k = 2.0;
     let travel_time = 1.0 / speed;
-    let congestion_factor = 1.0 + congestion_k * congestion;
     let desirability_factor = 1.0 / desirability;
+    let base_cost = travel_time * desirability_factor;
+    let congestion_factor = 1.0 + cfg.congestion_k * congestion;
 
-    let raw = travel_time * congestion_factor * desirability_factor * 1000.0;
+    let raw = base_cost * congestion_factor * cfg.cost_scale.max(1.0);
 
     // Extra penalties to stabilize lane behavior:
     // - lane change: small penalty so we don't zig-zag
@@ -471,9 +811,9 @@ fn step_cost_for_edge(
         let left = cur.dir.left();
         let right = cur.dir.right();
         if (move_dir == left || move_dir == right) && next.dir == cur.dir {
-            penalty += 40.0;
+            penalty += cfg.lane_change_penalty.max(0.0);
         } else if (move_dir == left || move_dir == right) && next.dir == move_dir {
-            penalty += 80.0;
+            penalty += cfg.turn_penalty.max(0.0);
         }
     }
 
@@ -504,5 +844,84 @@ fn enforce_cache_limits(time_now_sec: f64, cfg: &PathfindingConfig, cache: &mut 
         {
             cache.map.remove(&key);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::roads::{RoadCell, RoadDir, RoadKind};
+
+    #[test]
+    fn congestion_affects_route_choice_between_parallel_lanes() {
+        // Two parallel east-bound lane tiles (y=0 lane0, y=1 lane1) from x=0..3.
+        // We congest the lower lane around the middle so pathfinding should lane-change to avoid it.
+        let mut grid = MapGrid::new(4, 2);
+        for x in 0..4 {
+            let pos0 = TilePos { x, y: 0 };
+            let mut c0 = grid.get(pos0).unwrap_or_default();
+            c0.water = false;
+            c0.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                dir: RoadDir::East,
+                lane: 0,
+            };
+            grid.set(pos0, c0);
+
+            let pos1 = TilePos { x, y: 1 };
+            let mut c1 = grid.get(pos1).unwrap_or_default();
+            c1.water = false;
+            c1.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                dir: RoadDir::East,
+                lane: 1,
+            };
+            grid.set(pos1, c1);
+        }
+
+        let gv = GraphVersion(1);
+        let mut graph = RoadGraph::default();
+        rebuild_road_graph_inner(&grid, &gv, &mut graph);
+        assert!(graph.is_built_for(gv.0));
+
+        // Congest tiles (1,0) and (2,0) to push the route onto y=1.
+        let mut traffic = TrafficOccupancy::default();
+        traffic.per_tick_vehicles.resize(grid.len(), 0);
+        traffic.ema_heat.resize(grid.len(), 0.0);
+        let idx_10 = grid.idx(TilePos { x: 1, y: 0 }).unwrap();
+        let idx_20 = grid.idx(TilePos { x: 2, y: 0 }).unwrap();
+        traffic.per_tick_vehicles[idx_10] = 6;
+        traffic.per_tick_vehicles[idx_20] = 6;
+
+        let cfg = PathfindingConfig::default();
+        let mut cache = PathCache::default();
+        let mut ctx = PathfindingCtx {
+            time_now_sec: 0.0,
+            cfg: &cfg,
+            cache: &mut cache,
+            graph: &graph,
+            regions: None,
+            traffic: &traffic,
+            grid: &grid,
+        };
+
+        let start = TilePos { x: 0, y: 0 };
+        let goal = TilePos { x: 3, y: 0 };
+        let path = find_road_path_cached(&mut ctx, start, goal);
+
+        assert_eq!(path.first().copied(), Some(start));
+        assert_eq!(path.last().copied(), Some(goal));
+        assert!(
+            path.iter().any(|p| p.y == 1),
+            "Expected path to use the alternate lane due to congestion"
+        );
+        assert!(
+            !path.contains(&TilePos { x: 1, y: 0 }),
+            "Expected path to avoid congested tile (1,0)"
+        );
+        assert!(
+            !path.contains(&TilePos { x: 2, y: 0 }),
+            "Expected path to avoid congested tile (2,0)"
+        );
     }
 }

@@ -1,0 +1,23 @@
+[
+    (
+        id: "sandbox",
+        name: "Sandbox",
+        seed: 1,
+        starting_money: 2000,
+        starting_day: 1,
+        objectives: [],
+        initial_commands: [],
+    ),
+    (
+        id: "starter",
+        name: "Starter Town",
+        seed: 42,
+        starting_money: 1500,
+        starting_day: 1,
+        objectives: [
+            PopulationAtLeast(target: 50),
+            HappinessAtLeast(target: 0.6),
+        ],
+        initial_commands: [],
+    ),
+]

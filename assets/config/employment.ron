@@ -1,0 +1,4 @@
+(
+    max_assignments_per_tick: 32,
+    max_candidates_per_citizen: 24,
+)

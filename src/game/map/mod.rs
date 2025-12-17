@@ -29,6 +29,8 @@ impl Plugin for MapPlugin {
             .init_resource::<CursorPaintState>()
             .init_resource::<PathPreview>()
             .init_resource::<HoveredTile>()
+            .init_resource::<LastOverlayMode>()
+            .init_resource::<BuildingEntityIndex>()
             .add_systems(OnEnter(AppState::InGame), spawn_map_if_needed)
             .add_systems(OnEnter(AppState::MainMenu), cleanup_ingame_entities)
             // Input
@@ -62,6 +64,26 @@ impl Plugin for MapPlugin {
             // Render sync / overlays
             .add_systems(
                 Update,
+                mark_dirty_on_overlay_change
+                    .in_set(GameSet::RenderSync)
+                    .before(sync_dirty_tiles_to_render)
+                    .run_if(in_game_or_paused),
+            )
+            .add_systems(
+                Update,
+                sync_building_entities_from_grid
+                    .in_set(GameSet::RenderSync)
+                    .run_if(in_game_or_paused),
+            )
+            .add_systems(
+                Update,
+                cull_tile_chunks
+                    .in_set(GameSet::RenderSync)
+                    .before(sync_dirty_tiles_to_render)
+                    .run_if(in_game_or_paused),
+            )
+            .add_systems(
+                Update,
                 sync_dirty_tiles_to_render
                     .in_set(GameSet::RenderSync)
                     .run_if(in_game_or_paused),
@@ -78,7 +100,30 @@ impl Plugin for MapPlugin {
 #[derive(Component)]
 struct InGameEntity;
 
-#[derive(Resource, Debug, Clone)]
+/// Chunk size for map tile sprite culling (performance).
+const TILE_CHUNK_SIZE: i32 = 16;
+
+#[derive(Component, Debug, Copy, Clone)]
+struct TileChunkRoot {
+    cx: i32,
+    cy: i32,
+}
+
+#[derive(Resource, Debug, Copy, Clone)]
+struct LastOverlayMode(OverlayMode);
+
+impl Default for LastOverlayMode {
+    fn default() -> Self {
+        Self(OverlayMode::None)
+    }
+}
+
+#[derive(Resource, Default)]
+struct BuildingEntityIndex {
+    by_pos: HashMap<TilePos, Entity>,
+}
+
+#[derive(Resource, serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct MapConfig {
     pub width: i32,
     pub height: i32,
@@ -137,8 +182,9 @@ impl TileKind {
             TileKind::Water => Color::srgb(0.08, 0.28, 0.78),
             TileKind::Grass => Color::srgb(0.15, 0.42, 0.18),
             TileKind::Road => Color::srgb(0.18, 0.18, 0.20),
-            TileKind::Residential => Color::srgb(0.18, 0.36, 0.72),
-            TileKind::Commercial => Color::srgb(0.18, 0.65, 0.22),
+            // Residential = green, Commercial = blue (see roadmap bugfix 8.1).
+            TileKind::Residential => Color::srgb(0.18, 0.65, 0.22),
+            TileKind::Commercial => Color::srgb(0.18, 0.36, 0.72),
             TileKind::Industrial => Color::srgb(0.72, 0.56, 0.12),
         }
     }
@@ -200,8 +246,9 @@ pub enum BuildingKind {
 impl BuildingKind {
     pub fn color(self) -> Color {
         match self {
-            BuildingKind::Residential => Color::srgb(0.10, 0.22, 0.55),
-            BuildingKind::Commercial => Color::srgb(0.10, 0.55, 0.18),
+            // Residential = green, Commercial = blue (see roadmap bugfix 8.1).
+            BuildingKind::Residential => Color::srgb(0.10, 0.55, 0.18),
+            BuildingKind::Commercial => Color::srgb(0.10, 0.22, 0.55),
             BuildingKind::Industrial => Color::srgb(0.65, 0.45, 0.08),
             BuildingKind::FireStation => Color::srgb(0.75, 0.15, 0.12),
             BuildingKind::PoliceStation => Color::srgb(0.12, 0.22, 0.75),
@@ -479,11 +526,35 @@ fn spawn_map_if_needed(
     // Auto-generate terrain on first enter so the player doesn't start on a flat blank map.
     generate_map_into_grid(&mut grid, seed.0);
 
+    // Chunk roots (used for culling large off-screen tile groups).
+    let chunks_x = (cfg.width + TILE_CHUNK_SIZE - 1) / TILE_CHUNK_SIZE;
+    let chunks_y = (cfg.height + TILE_CHUNK_SIZE - 1) / TILE_CHUNK_SIZE;
+    let mut chunks = HashMap::<IVec2, Entity>::new();
+    for cy in 0..chunks_y {
+        for cx in 0..chunks_x {
+            let e = commands
+                .spawn((
+                    TileChunkRoot { cx, cy },
+                    Transform::default(),
+                    Visibility::Visible,
+                    InGameEntity,
+                ))
+                .id();
+            chunks.insert(IVec2::new(cx, cy), e);
+        }
+    }
+
     let origin = map_origin(&cfg);
     for y in 0..cfg.height {
         for x in 0..cfg.width {
             let kind = TileKind::Grass;
             let world = origin + Vec2::new(x as f32 * cfg.tile_size, y as f32 * cfg.tile_size);
+
+            let cx = x / TILE_CHUNK_SIZE;
+            let cy = y / TILE_CHUNK_SIZE;
+            let Some(&parent) = chunks.get(&IVec2::new(cx, cy)) else {
+                continue;
+            };
 
             let e = commands
                 .spawn((
@@ -494,6 +565,10 @@ fn spawn_map_if_needed(
                     InGameEntity,
                 ))
                 .id();
+            // Parent under chunk root for cheap culling.
+            // NOTE: we avoid `set_parent_in_place` here: it relies on `GlobalTransform` being
+            // up-to-date at spawn time, which is not guaranteed.
+            commands.entity(parent).add_child(e);
 
             index.by_pos.insert(IVec2::new(x, y), e);
         }
@@ -514,6 +589,77 @@ fn spawn_map_if_needed(
 
 fn in_game_or_paused(state: Res<State<AppState>>) -> bool {
     matches!(state.get(), AppState::InGame | AppState::Paused)
+}
+
+fn cull_tile_chunks(
+    cfg: Res<MapConfig>,
+    q_window: Query<&Window, With<PrimaryWindow>>,
+    q_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    mut q_chunks: Query<(&TileChunkRoot, &mut Visibility)>,
+) {
+    let Ok(window) = q_window.single() else {
+        return;
+    };
+    let Ok((camera, cam_gt)) = q_camera.single() else {
+        return;
+    };
+
+    let viewport = camera
+        .logical_viewport_size()
+        .unwrap_or(Vec2::new(window.width(), window.height()))
+        .max(Vec2::ONE);
+
+    let corners = [
+        Vec2::new(0.0, 0.0),
+        Vec2::new(viewport.x, 0.0),
+        Vec2::new(0.0, viewport.y),
+        Vec2::new(viewport.x, viewport.y),
+    ];
+
+    let origin = map_origin(&cfg);
+    let mut min_world = Vec2::splat(f32::INFINITY);
+    let mut max_world = Vec2::splat(f32::NEG_INFINITY);
+    for c in corners {
+        let Ok(w) = camera.viewport_to_world_2d(cam_gt, c) else {
+            // If we can't compute the viewport bounds, do not cull anything.
+            for (_, mut vis) in q_chunks.iter_mut() {
+                *vis = Visibility::Visible;
+            }
+            return;
+        };
+        min_world = min_world.min(w);
+        max_world = max_world.max(w);
+    }
+
+    let world_to_tile_i = |w: Vec2| -> IVec2 {
+        let local = w - origin;
+        IVec2::new(
+            (local.x / cfg.tile_size).floor() as i32,
+            (local.y / cfg.tile_size).floor() as i32,
+        )
+    };
+
+    let mut min_t = world_to_tile_i(min_world);
+    let mut max_t = world_to_tile_i(max_world);
+    // Clamp to map bounds (camera can go out of range).
+    min_t.x = min_t.x.clamp(0, cfg.width.max(1) - 1);
+    min_t.y = min_t.y.clamp(0, cfg.height.max(1) - 1);
+    max_t.x = max_t.x.clamp(0, cfg.width.max(1) - 1);
+    max_t.y = max_t.y.clamp(0, cfg.height.max(1) - 1);
+
+    let pad = 1;
+    let min_cx = (min_t.x / TILE_CHUNK_SIZE) - pad;
+    let max_cx = (max_t.x / TILE_CHUNK_SIZE) + pad;
+    let min_cy = (min_t.y / TILE_CHUNK_SIZE) - pad;
+    let max_cy = (max_t.y / TILE_CHUNK_SIZE) + pad;
+
+    for (chunk, mut vis) in q_chunks.iter_mut() {
+        if chunk.cx >= min_cx && chunk.cx <= max_cx && chunk.cy >= min_cy && chunk.cy <= max_cy {
+            *vis = Visibility::Visible;
+        } else {
+            *vis = Visibility::Hidden;
+        }
+    }
 }
 
 fn sync_build_mode_from_ui(ui: Res<UiState>, mut mode: ResMut<BuildMode>) {
@@ -597,7 +743,6 @@ fn update_hovered_tile(
 
 #[derive(SystemParam)]
 struct CursorPaintParams<'w, 's> {
-    state: Res<'w, State<AppState>>,
     buttons: Res<'w, ButtonInput<MouseButton>>,
     cfg: Res<'w, MapConfig>,
     ui_state: Res<'w, UiState>,
@@ -613,9 +758,7 @@ fn cursor_paint_to_command(
     mut paint: ResMut<CursorPaintState>,
     mut out: MessageWriter<GameCommand>,
 ) {
-    if *p.state.get() != AppState::InGame {
-        return; // don't build while paused
-    }
+    // Building is allowed while paused (city-builder UX).
     if p.mode.selected == BuildTool::Inspect || p.ui_state.overlay == OverlayMode::Path {
         return;
     }
@@ -931,24 +1074,182 @@ fn sync_dirty_tiles_to_render(
         let cell = grid.get(pos).unwrap_or_default();
         let base_size = Vec2::splat(cfg.tile_size - 1.0);
 
-        let (effective_kind, color, size) = if cell.water {
-            (TileKind::Water, TileKind::Water.color(), base_size)
-        } else if cell.road.is_some() {
-            (TileKind::Road, cell.road.kind.color(), base_size)
-        } else if matches!(ui.overlay, OverlayMode::Zones | OverlayMode::None) {
-            // Base view: show zoning (if any) as colored tiles, otherwise terrain.
-            let k = cell.zone.as_tile_kind().unwrap_or(cell.terrain);
-            (k, k.color(), base_size)
-        } else {
-            // For now, keep default base visuals for other overlays as well.
-            let k = cell.zone.as_tile_kind().unwrap_or(cell.terrain);
-            (k, k.color(), base_size)
+        let base_terrain_or_zone = cell.zone.as_tile_kind().unwrap_or(cell.terrain);
+
+        let (effective_kind, color, size) = match ui.overlay {
+            OverlayMode::Height => {
+                let t = (cell.height as f32) / 255.0;
+                let gray = Color::srgb(t, t, t);
+                let k = if cell.water {
+                    TileKind::Water
+                } else if cell.road.is_some() {
+                    TileKind::Road
+                } else {
+                    base_terrain_or_zone
+                };
+                (k, gray, base_size)
+            }
+            OverlayMode::Water => {
+                if cell.water {
+                    (
+                        TileKind::Water,
+                        Color::srgba(0.15, 0.45, 0.95, 0.85),
+                        base_size,
+                    )
+                } else {
+                    (
+                        base_terrain_or_zone,
+                        Color::srgba(0.0, 0.0, 0.0, 0.10),
+                        base_size,
+                    )
+                }
+            }
+            OverlayMode::Roads => {
+                if cell.road.is_some() {
+                    (TileKind::Road, Color::srgb(0.92, 0.92, 0.96), base_size)
+                } else if cell.water {
+                    (
+                        TileKind::Water,
+                        Color::srgba(0.1, 0.2, 0.4, 0.15),
+                        base_size,
+                    )
+                } else {
+                    (
+                        base_terrain_or_zone,
+                        Color::srgba(0.0, 0.0, 0.0, 0.10),
+                        base_size,
+                    )
+                }
+            }
+            OverlayMode::Zones
+            | OverlayMode::None
+            | OverlayMode::Traffic
+            | OverlayMode::Path
+            | OverlayMode::ServiceCoverage => {
+                // Base view: always show water/roads; zoning is shown on non-road tiles.
+                if cell.water {
+                    (TileKind::Water, TileKind::Water.color(), base_size)
+                } else if cell.road.is_some() {
+                    (TileKind::Road, cell.road.kind.color(), base_size)
+                } else {
+                    (
+                        base_terrain_or_zone,
+                        base_terrain_or_zone.color(),
+                        base_size,
+                    )
+                }
+            }
         };
 
         *kind = effective_kind;
         sprite.color = color;
         sprite.custom_size = Some(size);
     }
+}
+
+fn mark_dirty_on_overlay_change(
+    ui: Res<UiState>,
+    mut last: ResMut<LastOverlayMode>,
+    mut dirty: ResMut<DirtyTiles>,
+) {
+    if !ui.is_changed() {
+        return;
+    }
+    if ui.overlay == last.0 {
+        return;
+    }
+    last.0 = ui.overlay;
+    dirty.mark_all();
+}
+
+fn sync_building_entities_from_grid(
+    mut commands: Commands,
+    cfg: Res<MapConfig>,
+    grid: Res<MapGrid>,
+    mut index: ResMut<BuildingEntityIndex>,
+    mut q_buildings: Query<(Entity, &mut Building, &mut Sprite, &mut Transform)>,
+) {
+    // Collect existing building entities by tile position.
+    let mut existing: HashMap<TilePos, Vec<Entity>> = HashMap::new();
+    for (e, b, _, _) in q_buildings.iter_mut() {
+        existing.entry(b.pos).or_default().push(e);
+    }
+
+    let origin = map_origin(&cfg);
+    let mut next_index = HashMap::<TilePos, Entity>::new();
+
+    // Reconcile existing entities to grid (despawn missing/duplicates, update kind/transform).
+    for (pos, entities) in existing {
+        let expected = grid
+            .get(pos)
+            .and_then(|c| (!c.water).then_some(c.building))
+            .flatten();
+
+        let Some(expected_kind) = expected else {
+            for e in entities {
+                commands.entity(e).despawn();
+            }
+            continue;
+        };
+
+        // Prefer the previously-tracked entity for stability (keeps station/vehicle references).
+        let winner = if let Some(&prev) = index.by_pos.get(&pos)
+            && entities.contains(&prev)
+        {
+            prev
+        } else {
+            entities[0]
+        };
+
+        for e in entities {
+            if e != winner {
+                commands.entity(e).despawn();
+            }
+        }
+
+        if let Ok((_, mut b, mut sprite, mut tf)) = q_buildings.get_mut(winner) {
+            // Update data to match the grid snapshot.
+            if b.kind != expected_kind || b.pos != pos {
+                *b = Building {
+                    kind: expected_kind,
+                    pos,
+                    capacity_residents: expected_kind.capacity_residents(),
+                    capacity_jobs: expected_kind.capacity_jobs(),
+                };
+            }
+            sprite.color = expected_kind.color();
+            sprite.custom_size = Some(Vec2::splat(cfg.tile_size * 0.75));
+
+            let world =
+                origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size);
+            tf.translation = Vec3::new(world.x, world.y, 8.0);
+        }
+
+        next_index.insert(pos, winner);
+    }
+
+    // Spawn missing entities for any buildings that exist in the grid but not in ECS.
+    for y in 0..grid.height {
+        for x in 0..grid.width {
+            let pos = TilePos { x, y };
+            let Some(cell) = grid.get(pos) else {
+                continue;
+            };
+            if cell.water {
+                continue;
+            }
+            let Some(kind) = cell.building else {
+                continue;
+            };
+            if next_index.contains_key(&pos) {
+                continue;
+            }
+            let e = spawn_building_entity(&mut commands, &cfg, pos, kind);
+            next_index.insert(pos, e);
+        }
+    }
+
+    index.by_pos = next_index;
 }
 
 fn cursor_tile(

@@ -19,7 +19,7 @@ use crate::game::sim::City;
 use crate::game::state::AppState;
 use crate::game::traffic::{TrafficOccupancy, Vehicle};
 use crate::game::transport::{
-    PathCache, PathfindingConfig, PathfindingCtx, RoadGraph, find_road_path_cached,
+    PathCache, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph, find_road_path_cached,
 };
 use crate::game::ui_state::UiState;
 
@@ -338,6 +338,7 @@ struct DispatchParams<'w, 's> {
     path_cfg: Res<'w, PathfindingConfig>,
     path_cache: ResMut<'w, PathCache>,
     graph: Res<'w, RoadGraph>,
+    regions: Res<'w, RegionGraph>,
     traffic: Res<'w, TrafficOccupancy>,
     q_emergencies: Query<'w, 's, (Entity, &'static mut Emergency)>,
     q_stations: Query<'w, 's, (Entity, &'static mut ServiceStation)>,
@@ -350,6 +351,7 @@ fn dispatch_emergency_vehicles(mut p: DispatchParams) {
         cfg: &p.path_cfg,
         cache: &mut p.path_cache,
         graph: &p.graph,
+        regions: Some(&p.regions),
         traffic: &p.traffic,
         grid: &p.grid,
     };
@@ -460,6 +462,7 @@ struct ResolveParams<'w, 's> {
     path_cfg: Res<'w, PathfindingConfig>,
     path_cache: ResMut<'w, PathCache>,
     graph: Res<'w, RoadGraph>,
+    regions: Res<'w, RegionGraph>,
     traffic: Res<'w, TrafficOccupancy>,
     q_emergencies: Query<'w, 's, (Entity, &'static mut Emergency)>,
     q_stations: Query<'w, 's, &'static mut ServiceStation>,
@@ -479,6 +482,7 @@ fn resolve_emergencies(mut p: ResolveParams) {
         cfg: &p.path_cfg,
         cache: &mut p.path_cache,
         graph: &p.graph,
+        regions: Some(&p.regions),
         traffic: &p.traffic,
         grid: &p.grid,
     };

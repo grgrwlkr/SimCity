@@ -32,6 +32,13 @@ impl Plugin for ServicesPlugin {
                 .in_set(GameSet::Sim)
                 .run_if(in_state(AppState::InGame)),
         )
+        .init_resource::<ServiceCoverageIndex>()
+        .add_systems(
+            FixedUpdate,
+            compute_service_coverage_index
+                .in_set(GameSet::PostSim)
+                .run_if(in_state(AppState::InGame)),
+        )
         .add_systems(
             Update,
             render_service_coverage_overlay
@@ -84,6 +91,24 @@ pub struct ServiceStation {
     pub pos: TilePos,
     pub total_vehicles: u8,
     pub available_vehicles: u8,
+}
+
+/// Derived read model: how many zoned buildings are covered by services.
+#[derive(Resource, Debug, Default, Copy, Clone)]
+pub struct ServiceCoverageIndex {
+    pub fire: f32,    // 0..1
+    pub police: f32,  // 0..1
+    pub medical: f32, // 0..1
+    pub buildings_total: u32,
+}
+
+impl ServiceCoverageIndex {
+    pub fn overall(self) -> f32 {
+        if self.buildings_total == 0 {
+            return 0.0;
+        }
+        ((self.fire + self.police + self.medical) / 3.0).clamp(0.0, 1.0)
+    }
 }
 
 #[derive(Component)]
@@ -294,6 +319,71 @@ fn park_returned_service_vehicles(
                 .min(station.total_vehicles);
         }
     }
+}
+
+fn compute_service_coverage_index(grid: Res<MapGrid>, mut out: ResMut<ServiceCoverageIndex>) {
+    let mut buildings = Vec::<TilePos>::new();
+    let mut fire = Vec::<TilePos>::new();
+    let mut police = Vec::<TilePos>::new();
+    let mut medical = Vec::<TilePos>::new();
+
+    for y in 0..grid.height {
+        for x in 0..grid.width {
+            let pos = TilePos { x, y };
+            let Some(cell) = grid.get(pos) else {
+                continue;
+            };
+            if cell.water {
+                continue;
+            }
+
+            match cell.building {
+                Some(
+                    BuildingKind::Residential | BuildingKind::Commercial | BuildingKind::Industrial,
+                ) => {
+                    buildings.push(pos);
+                }
+                Some(BuildingKind::FireStation) => fire.push(pos),
+                Some(BuildingKind::PoliceStation) => police.push(pos),
+                Some(BuildingKind::Hospital) => medical.push(pos),
+                None => {}
+            }
+        }
+    }
+
+    let total = buildings.len() as u32;
+    if total == 0 {
+        *out = ServiceCoverageIndex::default();
+        return;
+    }
+
+    let ratio = |stations: &[TilePos], radius: i32| -> f32 {
+        if stations.is_empty() || radius <= 0 {
+            return 0.0;
+        }
+        let mut covered = 0u32;
+        for bpos in buildings.iter().copied() {
+            if stations
+                .iter()
+                .copied()
+                .any(|spos| (bpos.x - spos.x).abs() + (bpos.y - spos.y).abs() <= radius)
+            {
+                covered += 1;
+            }
+        }
+        (covered as f32) / (total as f32)
+    };
+
+    let fire_r = BuildingKind::FireStation.service_radius().unwrap_or(0) as i32;
+    let police_r = BuildingKind::PoliceStation.service_radius().unwrap_or(0) as i32;
+    let medical_r = BuildingKind::Hospital.service_radius().unwrap_or(0) as i32;
+
+    *out = ServiceCoverageIndex {
+        fire: ratio(&fire, fire_r),
+        police: ratio(&police, police_r),
+        medical: ratio(&medical, medical_r),
+        buildings_total: total,
+    };
 }
 
 fn render_service_coverage_overlay(

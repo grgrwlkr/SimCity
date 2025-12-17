@@ -1,0 +1,12 @@
+(
+    cache_capacity: 4096,
+    cache_ttl_secs: 10.0,
+    congestion_k: 2.0,
+    congestion_max: 2.0,
+    lane_change_penalty: 40.0,
+    turn_penalty: 80.0,
+    cost_scale: 1000.0,
+    enable_hierarchical: true,
+    region_size: 16,
+    region_pad: 1,
+)
