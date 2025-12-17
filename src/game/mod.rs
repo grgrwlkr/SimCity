@@ -5,6 +5,7 @@ mod camera;
 mod citizens;
 mod commands;
 mod economy;
+mod emergencies;
 mod employment;
 mod ids;
 mod map;
@@ -60,6 +61,7 @@ impl Plugin for GamePlugin {
                 buildings::BuildingsPlugin,
                 citizens::CitizensPlugin,
                 economy::EconomyPlugin,
+                emergencies::EmergenciesPlugin,
                 employment::EmploymentPlugin,
                 map::MapPlugin,
                 persistence::PersistencePlugin,

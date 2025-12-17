@@ -8,6 +8,7 @@ use crate::game::buildings::Building;
 use crate::game::citizens::Citizen;
 use crate::game::citizens::CommuteStats;
 use crate::game::commands::GameCommand;
+use crate::game::emergencies::Emergency;
 use crate::game::employment::EmploymentStats;
 use crate::game::map::{BuildMode, HoveredTile, MapGrid, ZoneKind};
 use crate::game::roads::RoadKind;
@@ -386,6 +387,28 @@ fn inspector_ui(mut contexts: EguiContexts, p: InspectorParams) {
                 ));
             }
 
+            // Emergency at tile (if any).
+            let mut emergency_found: Option<&Emergency> = None;
+            for e in p.q_emergencies.iter() {
+                if e.pos == tile {
+                    emergency_found = Some(e);
+                    break;
+                }
+            }
+            if let Some(e) = emergency_found {
+                ui.separator();
+                ui.label("Emergency:");
+                ui.label(format!("Kind: {:?}", e.kind));
+                ui.label(format!("Severity: {:.2}", e.severity));
+                ui.label(format!("Responded: {}", e.responded));
+                ui.label(format!("Time remaining: {:.1}s", e.time_remaining.max(0.0)));
+                ui.label(format!(
+                    "Resolution: {:.0}%",
+                    (e.resolution_progress.clamp(0.0, 1.0) * 100.0)
+                ));
+                ui.label(format!("Assigned vehicle: {:?}", e.assigned_vehicle));
+            }
+
             // Vehicles on tile (by current route head).
             let mut vehicles = 0usize;
             let mut sample: Option<(usize, f32)> = None; // (route_len, progress)
@@ -430,6 +453,7 @@ struct InspectorParams<'w, 's> {
     ui_state: Res<'w, UiState>,
     hovered: Res<'w, HoveredTile>,
     grid: Res<'w, MapGrid>,
+    q_emergencies: Query<'w, 's, &'static Emergency>,
     q_buildings: Query<'w, 's, &'static Building>,
     q_vehicles: Query<'w, 's, &'static Vehicle>,
     q_citizens: Query<'w, 's, &'static Citizen>,

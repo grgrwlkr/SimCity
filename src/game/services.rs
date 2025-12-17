@@ -9,6 +9,7 @@
 use bevy::prelude::*;
 
 use crate::game::buildings::Building;
+use crate::game::emergencies::Emergency;
 use crate::game::map::{BuildingKind, MapConfig, MapGrid, TilePos};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
@@ -23,6 +24,12 @@ impl Plugin for ServicesPlugin {
             sync_service_stations_from_buildings
                 .in_set(GameSet::Sim)
                 .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+        )
+        .add_systems(
+            FixedUpdate,
+            park_returned_service_vehicles
+                .in_set(GameSet::Sim)
+                .run_if(in_state(AppState::InGame)),
         );
     }
 }
@@ -88,6 +95,7 @@ pub enum ServiceVehicleState {
 pub struct ServiceVehicle {
     pub kind: ServiceKind,
     pub home_station: Entity,
+    pub home_road: TilePos,
     pub mission: Option<Entity>,
     pub state: ServiceVehicleState,
 }
@@ -198,13 +206,16 @@ fn spawn_service_vehicle(
             },
             Transform::from_xyz(world_pos.x, world_pos.y, 12.0),
             Vehicle {
-                route: Vec::new(),
+                // Keep a "parked" tile so dispatch can build a route from the correct lane tile.
+                // Speed 0 keeps the vehicle stationary.
+                route: vec![start_pos],
                 progress: 0.0,
-                speed: kind.vehicle_speed(),
+                speed: 0.0,
             },
             ServiceVehicle {
                 kind,
                 home_station: station,
+                home_road: start_pos,
                 mission: None,
                 state: ServiceVehicleState::AtStation,
             },
@@ -223,4 +234,61 @@ fn spawn_service_vehicle(
             ));
         })
         .id()
+}
+
+fn park_returned_service_vehicles(
+    mut q_vehicles: Query<(&mut ServiceVehicle, &mut Vehicle)>,
+    mut q_stations: Query<&mut ServiceStation>,
+    q_emergencies: Query<Entity, With<Emergency>>,
+) {
+    for (mut sv, mut vehicle) in q_vehicles.iter_mut() {
+        // When a service vehicle finishes its route (either returning or due to missing mission),
+        // snap it back to "parked at station" so it becomes dispatchable again.
+        if sv.state == ServiceVehicleState::AtStation {
+            // Ensure a stable parked representation.
+            if vehicle.route.is_empty() {
+                vehicle.route = vec![sv.home_road];
+            }
+            vehicle.speed = 0.0;
+            continue;
+        }
+
+        // If the mission entity is gone (emergency despawned), allow the vehicle to return/park.
+        if let Some(mission) = sv.mission
+            && q_emergencies.get(mission).is_err()
+        {
+            sv.mission = None;
+            // If we're not actively heading somewhere, treat as returning.
+            if matches!(
+                sv.state,
+                ServiceVehicleState::EnRoute | ServiceVehicleState::OnScene
+            ) {
+                sv.state = ServiceVehicleState::Returning;
+            }
+        }
+
+        if !vehicle.route.is_empty() {
+            continue;
+        }
+
+        // Only park automatically when the vehicle is *returning*.
+        // (When it arrives to an emergency, its route becomes empty and it must stay OnScene
+        // until resolution completes.)
+        if sv.state != ServiceVehicleState::Returning {
+            continue;
+        }
+
+        sv.state = ServiceVehicleState::AtStation;
+        sv.mission = None;
+        vehicle.speed = 0.0;
+        vehicle.route = vec![sv.home_road];
+
+        if let Ok(mut station) = q_stations.get_mut(sv.home_station) {
+            // Return capacity, but don't exceed total.
+            station.available_vehicles = station
+                .available_vehicles
+                .saturating_add(1)
+                .min(station.total_vehicles);
+        }
+    }
 }
