@@ -15,6 +15,7 @@ use crate::game::sim::City;
 use crate::game::state::AppState;
 use crate::game::transport::GraphVersion;
 use crate::game::ui_state::{OverlayMode, ToolMode, UiState};
+use crate::game::zone_placement::{ZonePlacementCache, can_zone_tile};
 
 pub struct MapPlugin;
 
@@ -539,6 +540,8 @@ struct CursorPaintParams<'w, 's> {
     cfg: Res<'w, MapConfig>,
     ui_state: Res<'w, UiState>,
     mode: Res<'w, BuildMode>,
+    zone_cache: Option<Res<'w, ZonePlacementCache>>,
+    grid: Res<'w, MapGrid>,
     q_window: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
     q_camera: Query<'w, 's, (&'static Camera, &'static GlobalTransform), With<MainCamera>>,
 }
@@ -634,6 +637,13 @@ fn cursor_paint_to_command(
             }
         }
         BuildTool::Zone(zone) => {
+            if let Some(cache) = p.zone_cache.as_deref() {
+                if !cache.valid_positions.contains(&tile) {
+                    return;
+                }
+            } else if !can_zone_tile(&p.grid, tile) {
+                return;
+            }
             out.write(GameCommand::SetZone { pos: tile, zone });
         }
         BuildTool::Erase => {
@@ -704,8 +714,8 @@ fn apply_game_commands_to_grid(
                 };
                 let mut cell = grid.get(pos).unwrap_or_default();
 
-                // Can't zone water.
-                if cell.water {
+                // Can't zone if placement constraints are not met.
+                if !can_zone_tile(&grid, pos) {
                     continue;
                 }
 

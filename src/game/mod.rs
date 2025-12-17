@@ -20,6 +20,7 @@ mod transport;
 mod trips;
 mod ui;
 mod ui_state;
+mod zone_placement;
 
 pub struct GamePlugin;
 
@@ -63,6 +64,7 @@ impl Plugin for GamePlugin {
                 persistence::PersistencePlugin,
                 persistence_contract::PersistenceContractPlugin,
                 transport::TransportPlugin,
+                zone_placement::ZonePlacementPlugin,
                 sim::SimPlugin,
                 traffic::TrafficPlugin,
                 ui::UiPlugin,
