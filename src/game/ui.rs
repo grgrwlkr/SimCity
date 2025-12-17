@@ -9,9 +9,11 @@ use crate::game::citizens::Citizen;
 use crate::game::citizens::CommuteStats;
 use crate::game::commands::GameCommand;
 use crate::game::emergencies::Emergency;
+use crate::game::emergencies::EmergencyManager;
 use crate::game::employment::EmploymentStats;
 use crate::game::map::{BuildMode, HoveredTile, MapGrid, ZoneKind};
 use crate::game::roads::RoadKind;
+use crate::game::services::ServiceStation;
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
@@ -45,6 +47,17 @@ struct UiMetrics {
     avg_commute_secs: f32,
     traffic_avg: f32,
     traffic_max: f32,
+
+    fire_stations: u32,
+    police_stations: u32,
+    medical_stations: u32,
+    fire_vehicles: (u32, u32),    // available / total
+    police_vehicles: (u32, u32),  // available / total
+    medical_vehicles: (u32, u32), // available / total
+
+    active_emergencies: u32,
+    emergencies_resolved: u32,
+    emergencies_failed: u32,
 }
 
 fn update_ui_metrics(mut p: UiMetricsParams) {
@@ -58,6 +71,16 @@ fn update_ui_metrics(mut p: UiMetricsParams) {
         p.metrics.avg_commute_secs = 0.0;
         p.metrics.traffic_avg = 0.0;
         p.metrics.traffic_max = 0.0;
+
+        p.metrics.fire_stations = 0;
+        p.metrics.police_stations = 0;
+        p.metrics.medical_stations = 0;
+        p.metrics.fire_vehicles = (0, 0);
+        p.metrics.police_vehicles = (0, 0);
+        p.metrics.medical_vehicles = (0, 0);
+        p.metrics.active_emergencies = 0;
+        p.metrics.emergencies_resolved = 0;
+        p.metrics.emergencies_failed = 0;
         return;
     }
     p.metrics.citizens = p.q_citizens.iter().count();
@@ -86,6 +109,51 @@ fn update_ui_metrics(mut p: UiMetricsParams) {
         p.metrics.traffic_avg = 0.0;
         p.metrics.traffic_max = 0.0;
     }
+
+    // Services stats.
+    let mut fire_s = 0u32;
+    let mut police_s = 0u32;
+    let mut medical_s = 0u32;
+    let mut fire_av = 0u32;
+    let mut fire_total = 0u32;
+    let mut police_av = 0u32;
+    let mut police_total = 0u32;
+    let mut medical_av = 0u32;
+    let mut medical_total = 0u32;
+    for s in p.q_stations.iter() {
+        match s.kind {
+            crate::game::services::ServiceKind::Fire => {
+                fire_s += 1;
+                fire_av += s.available_vehicles as u32;
+                fire_total += s.total_vehicles as u32;
+            }
+            crate::game::services::ServiceKind::Police => {
+                police_s += 1;
+                police_av += s.available_vehicles as u32;
+                police_total += s.total_vehicles as u32;
+            }
+            crate::game::services::ServiceKind::Medical => {
+                medical_s += 1;
+                medical_av += s.available_vehicles as u32;
+                medical_total += s.total_vehicles as u32;
+            }
+        }
+    }
+    p.metrics.fire_stations = fire_s;
+    p.metrics.police_stations = police_s;
+    p.metrics.medical_stations = medical_s;
+    p.metrics.fire_vehicles = (fire_av, fire_total);
+    p.metrics.police_vehicles = (police_av, police_total);
+    p.metrics.medical_vehicles = (medical_av, medical_total);
+
+    p.metrics.active_emergencies = p.q_emergencies.iter().count() as u32;
+    if let Some(m) = p.emergency_manager.as_deref() {
+        p.metrics.emergencies_resolved = m.stats.resolved_in_time;
+        p.metrics.emergencies_failed = m.stats.failed_responses;
+    } else {
+        p.metrics.emergencies_resolved = 0;
+        p.metrics.emergencies_failed = 0;
+    }
 }
 
 #[derive(SystemParam)]
@@ -95,9 +163,12 @@ struct UiMetricsParams<'w, 's> {
     employment: Option<Res<'w, EmploymentStats>>,
     traffic: Option<Res<'w, TrafficIndex>>,
     commute: Option<Res<'w, CommuteStats>>,
+    emergency_manager: Option<Res<'w, EmergencyManager>>,
     q_citizens: Query<'w, 's, Entity, With<Citizen>>,
     q_vehicles: Query<'w, 's, Entity, With<Vehicle>>,
     q_buildings: Query<'w, 's, Entity, With<Building>>,
+    q_stations: Query<'w, 's, &'static ServiceStation>,
+    q_emergencies: Query<'w, 's, Entity, With<Emergency>>,
 }
 
 fn announce_main_menu() {
@@ -223,6 +294,7 @@ fn top_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
                 ("Roads", OverlayMode::Roads),
                 ("Traffic", OverlayMode::Traffic),
                 ("Path", OverlayMode::Path),
+                ("Service", OverlayMode::ServiceCoverage),
             ] {
                 ui.selectable_value(&mut p.ui_state.overlay, overlay, label);
             }
@@ -279,6 +351,25 @@ fn top_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
                 p.mode.selected
             ));
 
+            ui.separator();
+            ui.label("Emergency Services");
+            ui.label(format!(
+                "Fire: {} stations, {}/{} vehicles",
+                p.metrics.fire_stations, p.metrics.fire_vehicles.0, p.metrics.fire_vehicles.1
+            ));
+            ui.label(format!(
+                "Police: {} stations, {}/{} vehicles",
+                p.metrics.police_stations, p.metrics.police_vehicles.0, p.metrics.police_vehicles.1
+            ));
+            ui.label(format!(
+                "Medical: {} stations, {}/{} vehicles",
+                p.metrics.medical_stations, p.metrics.medical_vehicles.0, p.metrics.medical_vehicles.1
+            ));
+            ui.label(format!(
+                "Active emergencies: {} | Resolved: {} | Failed: {}",
+                p.metrics.active_emergencies, p.metrics.emergencies_resolved, p.metrics.emergencies_failed
+            ));
+
             // State control hints
             match p.state.get() {
                 AppState::MainMenu => {
@@ -330,6 +421,7 @@ fn overlay_sources(o: OverlayMode) -> &'static str {
         OverlayMode::Roads => "MapGrid.road",
         OverlayMode::Traffic => "TrafficOccupancy.ema_heat + TrafficIndex",
         OverlayMode::Path => "Computed live: MapGrid roads + cursor start/end",
+        OverlayMode::ServiceCoverage => "ServiceStation coverage (radius) + uncovered zones",
     }
 }
 

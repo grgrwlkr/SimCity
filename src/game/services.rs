@@ -14,6 +14,7 @@ use crate::game::map::{BuildingKind, MapConfig, MapGrid, TilePos};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::traffic::Vehicle;
+use crate::game::ui_state::{OverlayMode, UiState};
 
 pub struct ServicesPlugin;
 
@@ -30,6 +31,12 @@ impl Plugin for ServicesPlugin {
             park_returned_service_vehicles
                 .in_set(GameSet::Sim)
                 .run_if(in_state(AppState::InGame)),
+        )
+        .add_systems(
+            Update,
+            render_service_coverage_overlay
+                .in_set(GameSet::RenderSync)
+                .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
         );
     }
 }
@@ -78,6 +85,9 @@ pub struct ServiceStation {
     pub total_vehicles: u8,
     pub available_vehicles: u8,
 }
+
+#[derive(Component)]
+struct ServiceCoverageOverlayTile;
 
 /// Service vehicle state machine (minimal for now; dispatch logic is 5.4+).
 #[allow(dead_code)]
@@ -177,13 +187,6 @@ fn adjacent_road_any(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
 fn tile_to_world(cfg: &MapConfig, pos: TilePos) -> Vec2 {
     let origin = map_origin(cfg);
     origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size)
-}
-
-fn map_origin(cfg: &MapConfig) -> Vec2 {
-    Vec2::new(
-        -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
-        -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
-    )
 }
 
 fn spawn_service_vehicle(
@@ -291,4 +294,109 @@ fn park_returned_service_vehicles(
                 .min(station.total_vehicles);
         }
     }
+}
+
+fn render_service_coverage_overlay(
+    ui: Res<UiState>,
+    cfg: Res<MapConfig>,
+    grid: Res<MapGrid>,
+    q_stations: Query<&ServiceStation>,
+    q_buildings: Query<&Building>,
+    mut commands: Commands,
+    existing: Query<Entity, With<ServiceCoverageOverlayTile>>,
+) {
+    // Clear old overlay.
+    for e in existing.iter() {
+        commands.entity(e).despawn();
+    }
+
+    if ui.overlay != OverlayMode::ServiceCoverage {
+        return;
+    }
+
+    // Collect stations with radius.
+    let mut stations: Vec<(ServiceKind, TilePos, i32)> = Vec::new();
+    for s in q_stations.iter() {
+        // Find building kind at station position to get radius.
+        let mut radius = None;
+        for b in q_buildings.iter() {
+            if b.pos == s.pos {
+                radius = b.kind.service_radius().map(|r| r as i32);
+                break;
+            }
+        }
+        let Some(r) = radius else {
+            continue;
+        };
+        stations.push((s.kind, s.pos, r));
+    }
+
+    let origin = map_origin(&cfg);
+
+    // Helper to convert tile -> world.
+    let to_world = |pos: TilePos| -> Vec2 {
+        origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size)
+    };
+
+    // For each tile, mark uncovered zoned tiles red and render soft coverage tint.
+    // (MVP approach; optimized later if needed.)
+    for y in 0..grid.height {
+        for x in 0..grid.width {
+            let pos = TilePos { x, y };
+            let Some(cell) = grid.get(pos) else { continue };
+            if cell.water {
+                continue;
+            }
+
+            let mut covered = false;
+            let mut cover_color: Option<Color> = None;
+            for (kind, spos, radius) in stations.iter().copied() {
+                let d = (pos.x - spos.x).abs() + (pos.y - spos.y).abs();
+                if d <= radius {
+                    covered = true;
+                    // tint by last station kind (good enough for MVP)
+                    cover_color = Some(match kind {
+                        ServiceKind::Fire => Color::srgba(0.9, 0.2, 0.1, 0.06),
+                        ServiceKind::Police => Color::srgba(0.1, 0.3, 0.9, 0.06),
+                        ServiceKind::Medical => Color::srgba(0.1, 0.8, 0.2, 0.06),
+                    });
+                }
+            }
+
+            // Overlay coverage tint.
+            if let Some(c) = cover_color {
+                let wpos = to_world(pos);
+                commands.spawn((
+                    ServiceCoverageOverlayTile,
+                    Sprite {
+                        color: c,
+                        custom_size: Some(Vec2::splat(cfg.tile_size)),
+                        ..default()
+                    },
+                    Transform::from_xyz(wpos.x, wpos.y, 4.0),
+                ));
+            }
+
+            // Mark zoned tiles without coverage.
+            if cell.zone != crate::game::map::ZoneKind::None && !covered {
+                let wpos = to_world(pos);
+                commands.spawn((
+                    ServiceCoverageOverlayTile,
+                    Sprite {
+                        color: Color::srgba(0.9, 0.1, 0.1, 0.25),
+                        custom_size: Some(Vec2::splat(cfg.tile_size)),
+                        ..default()
+                    },
+                    Transform::from_xyz(wpos.x, wpos.y, 4.2),
+                ));
+            }
+        }
+    }
+}
+
+fn map_origin(cfg: &MapConfig) -> Vec2 {
+    Vec2::new(
+        -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
+        -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
+    )
 }

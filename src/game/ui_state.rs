@@ -44,6 +44,7 @@ pub enum OverlayMode {
     Roads,
     Traffic,
     Path,
+    ServiceCoverage,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
