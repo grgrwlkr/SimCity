@@ -109,7 +109,7 @@ fn count_world(grid: &MapGrid) -> (u32, BuildingCounts) {
         if cell.water {
             continue;
         }
-        if cell.road {
+        if cell.road.is_some() {
             roads += 1;
         }
         if let Some(kind) = cell.building {

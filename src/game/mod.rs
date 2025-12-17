@@ -10,6 +10,7 @@ mod ids;
 mod map;
 mod persistence;
 mod persistence_contract;
+mod roads;
 mod sets;
 mod sim;
 mod sim_events;

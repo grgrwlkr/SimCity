@@ -10,9 +10,13 @@ use crate::game::citizens::{Citizen, CitizenWorkplace};
 use crate::game::map::{BuildingKind, MapGrid, TilePos, astar_path};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
+use crate::game::traffic::TrafficOccupancy;
 use bevy::ecs::system::SystemParam;
 
-use crate::game::transport::{PathCache, PathfindingConfig, RoadGraph, find_road_path_cached};
+use crate::game::roads::RoadDir;
+use crate::game::transport::{
+    PathCache, PathfindingConfig, PathfindingCtx, RoadGraph, find_road_path_cached,
+};
 
 pub struct EmploymentPlugin;
 
@@ -68,6 +72,7 @@ struct AssignJobsParams<'w, 's> {
     grid: Res<'w, MapGrid>,
     time: Res<'w, Time<Fixed>>,
     graph: Res<'w, RoadGraph>,
+    traffic: Res<'w, TrafficOccupancy>,
     path_cfg: Res<'w, PathfindingConfig>,
     path_cache: ResMut<'w, PathCache>,
     cfg: Res<'w, EmploymentConfig>,
@@ -115,9 +120,6 @@ fn assign_jobs(mut p: AssignJobsParams) {
             continue;
         }
         let home = citizen.home;
-        let Some(home_road) = adjacent_road(&p.grid, home) else {
-            continue;
-        };
 
         // Search a limited number of candidate workplaces for reachability.
         let mut best: Option<(TilePos, usize)> = None; // (job_pos, path_len)
@@ -130,17 +132,22 @@ fn assign_jobs(mut p: AssignJobsParams) {
             if used >= cap {
                 continue;
             }
-            let Some(job_road) = adjacent_road(&p.grid, job_pos) else {
+            let Some(home_road) = adjacent_road_towards(&p.grid, home, job_pos) else {
                 continue;
             };
-            let mut path = find_road_path_cached(
-                p.time.elapsed_secs_f64(),
-                &p.path_cfg,
-                &mut p.path_cache,
-                &p.graph,
-                home_road,
-                job_road,
-            );
+            let Some(job_road) = adjacent_road_towards(&p.grid, job_pos, home) else {
+                continue;
+            };
+            let mut ctx = PathfindingCtx {
+                time_now_sec: p.time.elapsed_secs_f64(),
+                cfg: &p.path_cfg,
+                cache: &mut p.path_cache,
+                graph: &p.graph,
+                traffic: &p.traffic,
+                grid: &p.grid,
+            };
+
+            let mut path = find_road_path_cached(&mut ctx, home_road, job_road);
             if path.is_empty() {
                 // Fallback if road graph isn't ready.
                 path = astar_path(&p.grid, home_road, job_road);
@@ -209,14 +216,29 @@ fn compute_employment_stats(
     };
 }
 
-fn adjacent_road(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
-    if let Some(cell) = grid.get(pos)
-        && !cell.water
-        && cell.road
-    {
-        return Some(pos);
+fn desired_dir(from: TilePos, to: TilePos) -> RoadDir {
+    let dx = to.x - from.x;
+    let dy = to.y - from.y;
+    if dx.abs() >= dy.abs() {
+        if dx >= 0 {
+            RoadDir::East
+        } else {
+            RoadDir::West
+        }
+    } else if dy >= 0 {
+        RoadDir::North
+    } else {
+        RoadDir::South
     }
-    for npos in [
+}
+
+fn adjacent_road_towards(grid: &MapGrid, pos: TilePos, target: TilePos) -> Option<TilePos> {
+    let want = desired_dir(pos, target);
+    let mut best_any = None;
+
+    // Check pos itself first, then 4-neighbors.
+    let candidates = [
+        pos,
         TilePos {
             x: pos.x - 1,
             y: pos.y,
@@ -233,13 +255,19 @@ fn adjacent_road(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
             x: pos.x,
             y: pos.y + 1,
         },
-    ] {
-        if let Some(cell) = grid.get(npos)
+    ];
+
+    for cpos in candidates {
+        if let Some(cell) = grid.get(cpos)
             && !cell.water
-            && cell.road
+            && cell.road.is_some()
         {
-            return Some(npos);
+            best_any = best_any.or(Some(cpos));
+            if cell.road.dir == want {
+                return Some(cpos);
+            }
         }
     }
-    None
+
+    best_any
 }

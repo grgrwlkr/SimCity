@@ -12,6 +12,7 @@ use crate::game::commands::GameCommand;
 use crate::game::ids::{CitizenId, CitizenIdComp, CitizenIdGen};
 use crate::game::map::{BuildingKind, TileKind, TilePos, ZoneKind};
 use crate::game::map::{MapGrid, MapSeed};
+use crate::game::roads::RoadCell;
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
@@ -51,7 +52,7 @@ pub struct MapTileV1 {
     pub height: u8,
     pub water: bool,
     pub terrain: TileKind,
-    pub road: bool,
+    pub road: RoadCell,
     pub zone: ZoneKind,
     pub building: Option<BuildingKind>,
 }

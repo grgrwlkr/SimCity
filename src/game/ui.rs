@@ -10,6 +10,7 @@ use crate::game::citizens::CommuteStats;
 use crate::game::commands::GameCommand;
 use crate::game::employment::EmploymentStats;
 use crate::game::map::{BuildMode, HoveredTile, MapGrid, ZoneKind};
+use crate::game::roads::RoadKind;
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
@@ -110,7 +111,7 @@ fn announce_ingame() {
     info!("Controls:");
     info!("  WASD / Arrows - pan camera");
     info!("  Mouse wheel   - zoom");
-    info!("  1 Road, 2 Residential, 3 Commercial, 4 Industrial, 5 Grass");
+    info!("  1 Road (cycle 2/4/6 lanes), 2 Residential, 3 Commercial, 4 Industrial, 5 Erase");
     info!("  LMB on tile   - build");
     info!("  Space         - pause");
     info!("  Esc           - back to menu");
@@ -176,16 +177,35 @@ fn top_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
 
             // Tool selection
             ui.label("Tool:");
-            for (label, tool) in [
-                ("Road", ToolMode::Road),
-                ("R", ToolMode::Residential),
-                ("C", ToolMode::Commercial),
-                ("I", ToolMode::Industrial),
-                ("Erase", ToolMode::Erase),
-                ("Inspect", ToolMode::Inspect),
+            let current_road_kind = match p.ui_state.tool {
+                ToolMode::Road(k) => k,
+                _ => RoadKind::TwoLane,
+            };
+
+            ui.selectable_value(
+                &mut p.ui_state.tool,
+                ToolMode::Road(current_road_kind),
+                "Road",
+            );
+
+            ui.label("Lanes:");
+            for (label, kind) in [
+                ("2", RoadKind::TwoLane),
+                ("4", RoadKind::FourLane),
+                ("6", RoadKind::SixLane),
             ] {
-                ui.selectable_value(&mut p.ui_state.tool, tool, label);
+                let selected = matches!(p.ui_state.tool, ToolMode::Road(k) if k == kind);
+                let resp = ui.selectable_label(selected, label);
+                if resp.clicked() {
+                    p.ui_state.tool = ToolMode::Road(kind);
+                }
             }
+
+            ui.selectable_value(&mut p.ui_state.tool, ToolMode::Residential, "R");
+            ui.selectable_value(&mut p.ui_state.tool, ToolMode::Commercial, "C");
+            ui.selectable_value(&mut p.ui_state.tool, ToolMode::Industrial, "I");
+            ui.selectable_value(&mut p.ui_state.tool, ToolMode::Erase, "Erase");
+            ui.selectable_value(&mut p.ui_state.tool, ToolMode::Inspect, "Inspect");
 
             ui.separator();
 
@@ -341,7 +361,7 @@ fn inspector_ui(mut contexts: EguiContexts, p: InspectorParams) {
             ui.label(format!("Height: {}", cell.height));
             ui.label(format!("Water: {}", cell.water));
             ui.label(format!("Terrain: {:?}", cell.terrain));
-            ui.label(format!("Road: {}", cell.road));
+            ui.label(format!("Road: {:?}", cell.road));
             ui.label(format!("Zone: {}", zone_label(cell.zone)));
             ui.label(format!("Building (grid): {:?}", cell.building));
 

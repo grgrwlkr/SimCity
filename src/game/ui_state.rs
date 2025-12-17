@@ -1,5 +1,7 @@
 use bevy::prelude::*;
 
+use crate::game::roads::RoadKind;
+
 #[derive(Resource, Debug, Clone)]
 pub struct UiState {
     /// Seed input as text so we can edit it easily in egui.
@@ -13,7 +15,7 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             seed_text: "1".to_string(),
-            tool: ToolMode::Road,
+            tool: ToolMode::Road(RoadKind::TwoLane),
             overlay: OverlayMode::None,
             sim_speed: SimSpeed::X1,
         }
@@ -22,7 +24,7 @@ impl Default for UiState {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum ToolMode {
-    Road,
+    Road(RoadKind),
     Residential,
     Commercial,
     Industrial,

@@ -154,7 +154,7 @@ fn grow_buildings(mut p: GrowBuildingsParams) {
         let Some(mut cell) = p.grid.get(pos) else {
             continue;
         };
-        if cell.water || cell.road || cell.building.is_some() {
+        if cell.water || cell.road.is_some() || cell.building.is_some() {
             continue;
         }
 
@@ -206,7 +206,7 @@ fn has_adjacent_road(grid: &MapGrid, pos: TilePos) -> bool {
     ] {
         if let Some(cell) = grid.get(npos)
             && !cell.water
-            && cell.road
+            && cell.road.is_some()
         {
             return true;
         }

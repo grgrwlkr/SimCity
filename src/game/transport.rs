@@ -9,8 +9,10 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
 
 use crate::game::map::{MapGrid, TilePos};
+use crate::game::roads::{RoadCell, RoadDir};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
+use crate::game::traffic::TrafficOccupancy;
 
 pub struct TransportPlugin;
 
@@ -139,38 +141,84 @@ fn rebuild_road_graph(grid: Res<MapGrid>, gv: Res<GraphVersion>, mut graph: ResM
     graph.edges.resize(len, 0);
     graph.road_indices.clear();
 
-    let is_road_idx = |idx: usize| -> bool {
+    let road_at_idx = |idx: usize| -> Option<RoadCell> {
         let x = (idx % w) as i32;
         let y = (idx / w) as i32;
         let pos = TilePos { x, y };
-        grid.get(pos).is_some_and(|c| !c.water && c.road)
+        grid.get(pos)
+            .and_then(|c| (!c.water && c.road.is_some()).then_some(c.road))
     };
 
     for idx in 0..len {
-        if !is_road_idx(idx) {
+        let Some(cur) = road_at_idx(idx) else {
             continue;
-        }
+        };
         graph.road_indices.push(idx);
 
         let x = idx % w;
         let y = idx / w;
 
         let mut mask = 0u8;
+
+        // Movement rules (MVP, right-hand, lane-based):
+        // - Straight: move in cur.dir only, to a neighbor lane tile whose dir == cur.dir.
+        // - Lane change: move left/right (perpendicular), staying in same dir, only to adjacent lane.
+        // - Turn: move left/right into a tile whose dir matches the movement direction,
+        //   only from outer lanes (left turn from leftmost, right turn from rightmost).
+        let mut consider = |bit: u8, nidx: usize, move_dir: RoadDir| {
+            let Some(next) = road_at_idx(nidx) else {
+                return;
+            };
+            if cur.dir == RoadDir::None || next.dir == RoadDir::None {
+                return;
+            }
+
+            // Straight
+            if move_dir == cur.dir && next.dir == cur.dir {
+                mask |= 1 << bit;
+                return;
+            }
+
+            let left = cur.dir.left();
+            let right = cur.dir.right();
+
+            // Lane change (perpendicular move, same travel dir)
+            if (move_dir == left || move_dir == right)
+                && next.dir == cur.dir
+                && next.kind == cur.kind
+                && next.lanes_total() == cur.lanes_total()
+            {
+                if next.lane.abs_diff(cur.lane) == 1 {
+                    mask |= 1 << bit;
+                }
+                return;
+            }
+
+            // Turn (perpendicular move into new dir lane)
+            if move_dir == left && next.dir == left && cur.is_leftmost_for_dir() {
+                mask |= 1 << bit;
+                return;
+            }
+            if move_dir == right && next.dir == right && cur.is_rightmost_for_dir() {
+                mask |= 1 << bit;
+            }
+        };
+
         // W
-        if x > 0 && is_road_idx(idx - 1) {
-            mask |= 1 << 0;
+        if x > 0 {
+            consider(0, idx - 1, RoadDir::West);
         }
         // E
-        if x + 1 < w && is_road_idx(idx + 1) {
-            mask |= 1 << 1;
+        if x + 1 < w {
+            consider(1, idx + 1, RoadDir::East);
         }
         // N (y-1)
-        if y > 0 && is_road_idx(idx - w) {
-            mask |= 1 << 2;
+        if y > 0 {
+            consider(2, idx - w, RoadDir::North);
         }
         // S (y+1)
-        if y + 1 < h && is_road_idx(idx + w) {
-            mask |= 1 << 3;
+        if y + 1 < h {
+            consider(3, idx + w, RoadDir::South);
         }
         graph.edges[idx] = mask;
     }
@@ -220,23 +268,29 @@ fn idx_to_pos(idx: usize, w: usize) -> TilePos {
 /// - graph not built for version
 /// - start/goal not road nodes
 /// - no path found
+pub struct PathfindingCtx<'a> {
+    pub time_now_sec: f64,
+    pub cfg: &'a PathfindingConfig,
+    pub cache: &'a mut PathCache,
+    pub graph: &'a RoadGraph,
+    pub traffic: &'a TrafficOccupancy,
+    pub grid: &'a MapGrid,
+}
+
 pub fn find_road_path_cached(
-    time_now_sec: f64,
-    cfg: &PathfindingConfig,
-    cache: &mut PathCache,
-    graph: &RoadGraph,
+    ctx: &mut PathfindingCtx<'_>,
     start: TilePos,
     goal: TilePos,
 ) -> Vec<TilePos> {
     if start == goal {
         return vec![start];
     }
-    if graph.edges.is_empty() || graph.width == 0 {
+    if ctx.graph.edges.is_empty() || ctx.graph.width == 0 {
         return Vec::new();
     }
 
-    let w = graph.width;
-    let len = graph.edges.len();
+    let w = ctx.graph.width;
+    let len = ctx.graph.edges.len();
 
     let start_idx = (start.y as isize) * (w as isize) + (start.x as isize);
     let goal_idx = (goal.y as isize) * (w as isize) + (goal.x as isize);
@@ -248,7 +302,7 @@ pub fn find_road_path_cached(
     if start_idx >= len || goal_idx >= len {
         return Vec::new();
     }
-    if graph.edges[start_idx] == 0 || graph.edges[goal_idx] == 0 {
+    if ctx.graph.edges[start_idx] == 0 {
         // Must be on road graph (note: dead-end road would still have mask != 0 if connected).
         return Vec::new();
     }
@@ -256,15 +310,15 @@ pub fn find_road_path_cached(
     let key = PathKey {
         start,
         goal,
-        version: graph.version,
+        version: ctx.graph.version,
     };
 
     // TTL eviction on access
-    if let Some(entry) = cache.map.get(&key)
-        && time_now_sec - entry.last_used_sec <= cfg.cache_ttl_secs
+    if let Some(entry) = ctx.cache.map.get(&key)
+        && ctx.time_now_sec - entry.last_used_sec <= ctx.cfg.cache_ttl_secs
     {
         // refresh LRU
-        cache.lru.push_back((key, time_now_sec));
+        ctx.cache.lru.push_back((key, ctx.time_now_sec));
         // clone path out (small vectors in MVP; ok)
         return entry.path.clone();
     }
@@ -295,30 +349,27 @@ pub fn find_road_path_cached(
             out.reverse();
 
             // insert into cache + maintain size
-            cache.map.insert(
+            ctx.cache.map.insert(
                 key,
                 CacheEntry {
                     path: out.clone(),
-                    last_used_sec: time_now_sec,
+                    last_used_sec: ctx.time_now_sec,
                 },
             );
-            cache.lru.push_back((key, time_now_sec));
-            enforce_cache_limits(time_now_sec, cfg, cache);
+            ctx.cache.lru.push_back((key, ctx.time_now_sec));
+            enforce_cache_limits(ctx.time_now_sec, ctx.cfg, ctx.cache);
 
             return out;
         }
 
-        let mask = graph.edges[idx];
+        let mask = ctx.graph.edges[idx];
         if mask == 0 {
             continue;
         }
-        // step cost: uniform for now (congestion weighting is handled after we define traffic semantics).
-        let step = 1u32;
-
         // neighbors in W,E,N,S
         let mut push_neighbor =
-            |nidx: usize, came_from: &mut [Option<usize>], best_g: &mut [u32]| {
-                let ng = g.saturating_add(step);
+            |nidx: usize, step_cost: u32, came_from: &mut [Option<usize>], best_g: &mut [u32]| {
+                let ng = g.saturating_add(step_cost.max(1));
                 if ng < best_g[nidx] {
                     best_g[nidx] = ng;
                     came_from[nidx] = Some(idx);
@@ -332,20 +383,101 @@ pub fn find_road_path_cached(
             };
 
         if (mask & (1 << 0)) != 0 && idx > 0 {
-            push_neighbor(idx - 1, &mut came_from, &mut best_g);
+            push_neighbor(
+                idx - 1,
+                step_cost_for_edge(idx, idx - 1, RoadDir::West, w, ctx.traffic, ctx.grid),
+                &mut came_from,
+                &mut best_g,
+            );
         }
         if (mask & (1 << 1)) != 0 && idx + 1 < len {
-            push_neighbor(idx + 1, &mut came_from, &mut best_g);
+            push_neighbor(
+                idx + 1,
+                step_cost_for_edge(idx, idx + 1, RoadDir::East, w, ctx.traffic, ctx.grid),
+                &mut came_from,
+                &mut best_g,
+            );
         }
         if (mask & (1 << 2)) != 0 && idx >= w {
-            push_neighbor(idx - w, &mut came_from, &mut best_g);
+            push_neighbor(
+                idx - w,
+                step_cost_for_edge(idx, idx - w, RoadDir::North, w, ctx.traffic, ctx.grid),
+                &mut came_from,
+                &mut best_g,
+            );
         }
         if (mask & (1 << 3)) != 0 && idx + w < len {
-            push_neighbor(idx + w, &mut came_from, &mut best_g);
+            push_neighbor(
+                idx + w,
+                step_cost_for_edge(idx, idx + w, RoadDir::South, w, ctx.traffic, ctx.grid),
+                &mut came_from,
+                &mut best_g,
+            );
         }
     }
 
     Vec::new()
+}
+
+fn step_cost_for_edge(
+    cur_idx: usize,
+    next_idx: usize,
+    move_dir: RoadDir,
+    w: usize,
+    traffic: &TrafficOccupancy,
+    grid: &MapGrid,
+) -> u32 {
+    // Weight model (MVP):
+    // travel_time = 1 / speed_limit
+    // congestion_factor = 1 + k * congestion
+    // desirability_factor = 1 / desirability
+    //
+    // edge_weight = travel_time * congestion_factor * desirability_factor
+    // Scaled to u32 for A*.
+    let cur = grid
+        .get(idx_to_pos(cur_idx, w))
+        .map(|c| c.road)
+        .unwrap_or_default();
+    let next = grid
+        .get(idx_to_pos(next_idx, w))
+        .map(|c| c.road)
+        .unwrap_or_default();
+
+    let road_kind = next.kind;
+
+    let speed = road_kind.speed_limit().max(1.0);
+    let capacity = (road_kind.capacity_per_lane_tile() as f32).max(1.0);
+    let desirability = road_kind.desirability().max(0.1);
+
+    let occupancy = traffic
+        .per_tick_vehicles
+        .get(next_idx)
+        .copied()
+        .unwrap_or(0) as f32;
+    let congestion = (occupancy / capacity).clamp(0.0, 2.0);
+
+    let congestion_k = 2.0;
+    let travel_time = 1.0 / speed;
+    let congestion_factor = 1.0 + congestion_k * congestion;
+    let desirability_factor = 1.0 / desirability;
+
+    let raw = travel_time * congestion_factor * desirability_factor * 1000.0;
+
+    // Extra penalties to stabilize lane behavior:
+    // - lane change: small penalty so we don't zig-zag
+    // - turn: slightly larger penalty (turns are "harder" and limited anyway)
+    let mut penalty = 0.0f32;
+    if cur.dir != RoadDir::None && next.dir != RoadDir::None {
+        let left = cur.dir.left();
+        let right = cur.dir.right();
+        if (move_dir == left || move_dir == right) && next.dir == cur.dir {
+            penalty += 40.0;
+        } else if (move_dir == left || move_dir == right) && next.dir == move_dir {
+            penalty += 80.0;
+        }
+    }
+
+    (raw + penalty).max(1.0) as u32
 }
 
 fn enforce_cache_limits(time_now_sec: f64, cfg: &PathfindingConfig, cache: &mut PathCache) {

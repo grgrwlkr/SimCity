@@ -9,6 +9,7 @@ use rand::prelude::*;
 
 use crate::game::camera::MainCamera;
 use crate::game::commands::GameCommand;
+use crate::game::roads::{RoadCell, RoadDir, RoadKind};
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
@@ -241,7 +242,7 @@ pub struct MapCell {
     pub water: bool,
     /// Base terrain (MVP: grass only). Roads/zones are separate layers.
     pub terrain: TileKind,
-    pub road: bool,
+    pub road: RoadCell,
     pub zone: ZoneKind,
     pub building: Option<BuildingKind>,
 }
@@ -264,7 +265,7 @@ impl MapGrid {
                     height: 0,
                     water: false,
                     terrain: TileKind::Grass,
-                    road: false,
+                    road: RoadCell::none(),
                     zone: ZoneKind::None,
                     building: None,
                 };
@@ -355,14 +356,14 @@ pub struct BuildMode {
 impl Default for BuildMode {
     fn default() -> Self {
         Self {
-            selected: BuildTool::Road,
+            selected: BuildTool::Road(RoadKind::TwoLane),
         }
     }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum BuildTool {
-    Road,
+    Road(RoadKind),
     Zone(ZoneKind),
     Erase,
     Inspect,
@@ -377,6 +378,7 @@ struct OverlayEntity;
 #[derive(Resource, Default)]
 struct CursorPaintState {
     last_tile: Option<TilePos>,
+    last_dir: IVec2,
     was_pressed: bool,
 }
 
@@ -456,7 +458,7 @@ fn in_game_or_paused(state: Res<State<AppState>>) -> bool {
 
 fn sync_build_mode_from_ui(ui: Res<UiState>, mut mode: ResMut<BuildMode>) {
     let selected = match ui.tool {
-        ToolMode::Road => BuildTool::Road,
+        ToolMode::Road(kind) => BuildTool::Road(kind),
         ToolMode::Residential => BuildTool::Zone(ZoneKind::Residential),
         ToolMode::Commercial => BuildTool::Zone(ZoneKind::Commercial),
         ToolMode::Industrial => BuildTool::Zone(ZoneKind::Industrial),
@@ -468,7 +470,12 @@ fn sync_build_mode_from_ui(ui: Res<UiState>, mut mode: ResMut<BuildMode>) {
 
 fn build_mode_hotkeys(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut<UiState>) {
     if keys.just_pressed(KeyCode::Digit1) {
-        ui.tool = ToolMode::Road;
+        ui.tool = match ui.tool {
+            ToolMode::Road(RoadKind::TwoLane) => ToolMode::Road(RoadKind::FourLane),
+            ToolMode::Road(RoadKind::FourLane) => ToolMode::Road(RoadKind::SixLane),
+            ToolMode::Road(RoadKind::SixLane) => ToolMode::Road(RoadKind::TwoLane),
+            _ => ToolMode::Road(RoadKind::TwoLane),
+        };
     } else if keys.just_pressed(KeyCode::Digit2) {
         ui.tool = ToolMode::Residential;
     } else if keys.just_pressed(KeyCode::Digit3) {
@@ -567,15 +574,64 @@ fn cursor_paint_to_command(
     if paint.was_pressed && paint.last_tile == Some(tile) {
         return;
     }
+    let prev_tile = paint.last_tile;
     paint.was_pressed = true;
     paint.last_tile = Some(tile);
 
     match p.mode.selected {
-        BuildTool::Road => {
-            out.write(GameCommand::SetRoad {
-                pos: tile,
-                on: true,
-            });
+        BuildTool::Road(kind) => {
+            let lanes = kind.lanes().max(1) as i32;
+            let half = lanes / 2;
+
+            // Determine draw direction from drag, fall back to last_dir.
+            let mut dir = paint.last_dir;
+            if let Some(prev) = prev_tile {
+                let d = IVec2::new(tile.x - prev.x, tile.y - prev.y);
+                if d == IVec2::new(1, 0)
+                    || d == IVec2::new(-1, 0)
+                    || d == IVec2::new(0, 1)
+                    || d == IVec2::new(0, -1)
+                {
+                    dir = d;
+                }
+            }
+            if dir == IVec2::ZERO {
+                dir = IVec2::new(1, 0);
+            }
+            paint.last_dir = dir;
+
+            let road_dir = match (dir.x, dir.y) {
+                (1, 0) => RoadDir::East,
+                (-1, 0) => RoadDir::West,
+                (0, 1) => RoadDir::North,
+                (0, -1) => RoadDir::South,
+                _ => RoadDir::None,
+            };
+
+            // Thickness: occupy exactly `lanes` tiles perpendicular to draw direction.
+            // We bias the extra tile (even widths) to the right-hand side of the draw direction.
+            // perp = (-dy, dx) (left). Right side is -perp.
+            let perp = IVec2::new(-dir.y, dir.x);
+            for o in (-half)..(half) {
+                let lane = (o + half) as u8;
+                let lane_dir = if (lane as i32) < half {
+                    road_dir
+                } else {
+                    road_dir.opposite()
+                };
+                let pos = TilePos {
+                    x: tile.x + perp.x * o,
+                    y: tile.y + perp.y * o,
+                };
+                out.write(GameCommand::SetRoad {
+                    pos,
+                    road: RoadCell {
+                        kind,
+                        dir: lane_dir,
+                        lane,
+                    },
+                });
+            }
         }
         BuildTool::Zone(zone) => {
             out.write(GameCommand::SetZone { pos: tile, zone });
@@ -584,7 +640,7 @@ fn cursor_paint_to_command(
             out.write(GameCommand::EraseTile { pos: tile });
         }
         BuildTool::Inspect => {}
-    };
+    }
 }
 
 fn apply_game_commands_to_grid(
@@ -597,7 +653,7 @@ fn apply_game_commands_to_grid(
 ) {
     for cmd in commands.read() {
         match *cmd {
-            GameCommand::SetRoad { pos, on } => {
+            GameCommand::SetRoad { pos, road } => {
                 let Some(idx) = grid.idx(pos) else {
                     continue;
                 };
@@ -608,17 +664,32 @@ fn apply_game_commands_to_grid(
                     continue;
                 }
 
-                if cell.road == on {
+                if !road.is_some() || road.dir == RoadDir::None {
+                    continue;
+                }
+                if cell.road == road {
                     continue;
                 }
 
-                let cost = if on { TileKind::Road.cost() } else { 0 };
+                // Road upgrade rule:
+                // - can build on empty tile
+                // - can upgrade to a larger road
+                // - can't downgrade (Erase -> rebuild)
+                let cost = if cell.road.kind == RoadKind::None {
+                    road.kind.build_cost_per_lane_tile()
+                } else if RoadKind::is_upgrade(cell.road.kind, road.kind) {
+                    road.kind
+                        .build_cost_per_lane_tile()
+                        .saturating_sub(cell.road.kind.build_cost_per_lane_tile())
+                } else {
+                    continue;
+                };
                 if city.money < cost {
                     continue;
                 }
 
                 city.money -= cost;
-                cell.road = on;
+                cell.road = road;
                 // Invalidate any grown building on this tile when the player edits it.
                 cell.building = None;
                 grid.set(pos, cell);
@@ -662,8 +733,8 @@ fn apply_game_commands_to_grid(
                 if cell.water {
                     continue;
                 }
-                let road_changed = cell.road;
-                cell.road = false;
+                let road_changed = cell.road.is_some();
+                cell.road = RoadCell::none();
                 cell.zone = ZoneKind::None;
                 cell.building = None;
                 grid.set(pos, cell);
@@ -691,6 +762,7 @@ fn apply_game_commands_to_grid(
 
 fn sync_dirty_tiles_to_render(
     ui: Res<UiState>,
+    cfg: Res<MapConfig>,
     grid: Res<MapGrid>,
     index: Res<MapIndex>,
     mut dirty: ResMut<DirtyTiles>,
@@ -714,19 +786,25 @@ fn sync_dirty_tiles_to_render(
         };
 
         let cell = grid.get(pos).unwrap_or_default();
-        let effective_kind = if cell.water {
-            TileKind::Water
-        } else if cell.road {
-            TileKind::Road
+        let base_size = Vec2::splat(cfg.tile_size - 1.0);
+
+        let (effective_kind, color, size) = if cell.water {
+            (TileKind::Water, TileKind::Water.color(), base_size)
+        } else if cell.road.is_some() {
+            (TileKind::Road, cell.road.kind.color(), base_size)
         } else if matches!(ui.overlay, OverlayMode::Zones | OverlayMode::None) {
             // Base view: show zoning (if any) as colored tiles, otherwise terrain.
-            cell.zone.as_tile_kind().unwrap_or(cell.terrain)
+            let k = cell.zone.as_tile_kind().unwrap_or(cell.terrain);
+            (k, k.color(), base_size)
         } else {
             // For now, keep default base visuals for other overlays as well.
-            cell.zone.as_tile_kind().unwrap_or(cell.terrain)
+            let k = cell.zone.as_tile_kind().unwrap_or(cell.terrain);
+            (k, k.color(), base_size)
         };
+
         *kind = effective_kind;
-        sprite.color = effective_kind.color();
+        sprite.color = color;
+        sprite.custom_size = Some(size);
     }
 }
 
@@ -893,8 +971,10 @@ pub fn astar_path(grid: &MapGrid, start: TilePos, goal: TilePos) -> Vec<TilePos>
         return Vec::new();
     };
 
-    let is_road =
-        |pos: TilePos| -> bool { grid.get(pos).is_some_and(|cell| !cell.water && cell.road) };
+    let is_road = |pos: TilePos| -> bool {
+        grid.get(pos)
+            .is_some_and(|cell| !cell.water && cell.road.is_some())
+    };
 
     if !is_road(start) || !is_road(goal) {
         return Vec::new();
@@ -994,7 +1074,7 @@ fn generate_map_into_grid(grid: &mut MapGrid, seed: u64) {
         cell.height = rng.gen_range(0..=u8::MAX);
         cell.water = false;
         cell.terrain = TileKind::Grass;
-        cell.road = false;
+        cell.road = RoadCell::none();
         cell.zone = ZoneKind::None;
         cell.building = None;
     }
@@ -1113,6 +1193,7 @@ fn world_to_tile(cfg: &MapConfig, world: Vec2) -> Option<TilePos> {
 mod tests {
     use super::*;
     use crate::game::commands::GameCommand;
+    use crate::game::roads::{RoadCell, RoadDir, RoadKind};
     use crate::game::sim::City;
     use crate::game::transport::GraphVersion;
     use bevy::app::App;
@@ -1140,7 +1221,11 @@ mod tests {
         for x in 0..5 {
             let pos = TilePos { x, y: 2 };
             let mut c = grid.get(pos).unwrap_or_default();
-            c.road = true;
+            c.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                dir: RoadDir::East,
+                lane: 0,
+            };
             grid.set(pos, c);
         }
 
@@ -1165,7 +1250,11 @@ mod tests {
         sent.0 = true;
         out.write(GameCommand::SetRoad {
             pos: TilePos { x: 1, y: 1 },
-            on: true,
+            road: RoadCell {
+                kind: RoadKind::TwoLane,
+                dir: RoadDir::East,
+                lane: 0,
+            },
         });
     }
 
@@ -1179,7 +1268,11 @@ mod tests {
         sent.0 = true;
         out.write(GameCommand::SetRoad {
             pos: TilePos { x: 2, y: 2 },
-            on: true,
+            road: RoadCell {
+                kind: RoadKind::TwoLane,
+                dir: RoadDir::East,
+                lane: 0,
+            },
         });
     }
 
@@ -1201,7 +1294,10 @@ mod tests {
         app.update();
 
         let grid = app.world().resource::<MapGrid>();
-        assert!(grid.get(TilePos { x: 1, y: 1 }).unwrap().road);
+        assert_eq!(
+            grid.get(TilePos { x: 1, y: 1 }).unwrap().road.kind,
+            RoadKind::TwoLane,
+        );
 
         let gv = app.world().resource::<GraphVersion>();
         assert_ne!(gv.0, 1, "GraphVersion should bump on road change");
@@ -1245,7 +1341,10 @@ mod tests {
         );
 
         let grid = app.world().resource::<MapGrid>();
-        assert!(!grid.get(TilePos { x: 2, y: 2 }).unwrap().road);
+        assert_eq!(
+            grid.get(TilePos { x: 2, y: 2 }).unwrap().road.kind,
+            RoadKind::None,
+        );
 
         let gv = app.world().resource::<GraphVersion>();
         assert_eq!(
