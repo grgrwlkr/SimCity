@@ -5,6 +5,7 @@ use bevy::ecs::message::{MessageReader, MessageWriter};
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
+use bevy_egui::EguiContexts;
 use rand::prelude::*;
 
 use crate::game::buildings::Building;
@@ -14,6 +15,7 @@ use crate::game::roads::{RoadCell, RoadDir, RoadKind};
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
+use crate::game::traffic::TrafficConfig;
 use crate::game::transport::GraphVersion;
 use crate::game::ui_state::{OverlayMode, ToolMode, UiState};
 use crate::game::zone_placement::{ZonePlacementCache, can_zone_tile};
@@ -28,6 +30,8 @@ impl Plugin for MapPlugin {
             .init_resource::<BuildMode>()
             .init_resource::<CursorPaintState>()
             .init_resource::<PathPreview>()
+            .init_resource::<RoadBuildState>()
+            .init_resource::<RoadsChangedThisFrame>()
             .init_resource::<HoveredTile>()
             .init_resource::<LastOverlayMode>()
             .init_resource::<BuildingEntityIndex>()
@@ -92,6 +96,19 @@ impl Plugin for MapPlugin {
                 Update,
                 path_preview_render
                     .in_set(GameSet::RenderSync)
+                    .run_if(in_game_or_paused),
+            )
+            .add_systems(
+                Update,
+                road_preview_render
+                    .in_set(GameSet::RenderSync)
+                    .run_if(in_game_or_paused),
+            )
+            .add_systems(
+                Update,
+                render_lane_markings
+                    .in_set(GameSet::RenderSync)
+                    .after(sync_dirty_tiles_to_render)
                     .run_if(in_game_or_paused),
             );
     }
@@ -446,6 +463,10 @@ impl DirtyTiles {
     }
 }
 
+/// Tracks whether roads have changed this frame (for lane marking re-render).
+#[derive(Resource, Default)]
+struct RoadsChangedThisFrame(bool);
+
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct MapSeed(pub u64);
 
@@ -485,7 +506,6 @@ struct OverlayEntity;
 #[derive(Resource, Default)]
 struct CursorPaintState {
     last_tile: Option<TilePos>,
-    last_dir: IVec2,
     was_pressed: bool,
 }
 
@@ -493,6 +513,23 @@ struct CursorPaintState {
 struct PathPreview {
     start: Option<TilePos>,
 }
+
+/// State for point-to-point road building.
+#[derive(Resource, Default)]
+struct RoadBuildState {
+    /// First click position (start of road segment).
+    start: Option<TilePos>,
+    /// Direction of the road being built (determined by start->current).
+    direction: Option<RoadDir>,
+}
+
+/// Marker component for road preview ghost tiles.
+#[derive(Component)]
+struct RoadPreviewTile;
+
+/// Marker component for lane marking overlay entities.
+#[derive(Component)]
+struct LaneMarkingEntity;
 
 fn cleanup_ingame_entities(mut commands: Commands, q: Query<Entity, With<InGameEntity>>) {
     for e in &q {
@@ -745,6 +782,7 @@ fn update_hovered_tile(
 struct CursorPaintParams<'w, 's> {
     buttons: Res<'w, ButtonInput<MouseButton>>,
     cfg: Res<'w, MapConfig>,
+    traffic_cfg: Res<'w, TrafficConfig>,
     ui_state: Res<'w, UiState>,
     mode: Res<'w, BuildMode>,
     zone_cache: Option<Res<'w, ZonePlacementCache>>,
@@ -754,18 +792,22 @@ struct CursorPaintParams<'w, 's> {
 }
 
 fn cursor_paint_to_command(
+    mut egui_contexts: EguiContexts,
     p: CursorPaintParams,
+    keys: Res<ButtonInput<KeyCode>>,
     mut paint: ResMut<CursorPaintState>,
+    mut road_build: ResMut<RoadBuildState>,
     mut out: MessageWriter<GameCommand>,
 ) {
     // Building is allowed while paused (city-builder UX).
     if p.mode.selected == BuildTool::Inspect || p.ui_state.overlay == OverlayMode::Path {
         return;
     }
-    let pressed = p.buttons.pressed(MouseButton::Left);
-    if !pressed {
-        paint.was_pressed = false;
-        paint.last_tile = None;
+
+    // Prevent UI clicks from triggering map edits.
+    if let Ok(ctx) = egui_contexts.ctx_mut()
+        && ctx.wants_pointer_input()
+    {
         return;
     }
 
@@ -775,71 +817,71 @@ fn cursor_paint_to_command(
     let Ok((camera, cam_gt)) = p.q_camera.single() else {
         return;
     };
-    let Some(tile) = cursor_tile(&p.cfg, window, camera, cam_gt) else {
+    let tile = cursor_tile(&p.cfg, window, camera, cam_gt);
+
+    // Handle road building with point-to-point system.
+    if let BuildTool::Road(kind) = p.mode.selected {
+        // Cancel on ESC or right-click.
+        if keys.just_pressed(KeyCode::Escape) || p.buttons.just_pressed(MouseButton::Right) {
+            road_build.start = None;
+            road_build.direction = None;
+            return;
+        }
+
+        // Left click to set start or confirm end.
+        if p.buttons.just_pressed(MouseButton::Left) {
+            let Some(current_tile) = tile else {
+                return;
+            };
+
+            if road_build.start.is_none() {
+                // First click: set start position.
+                road_build.start = Some(current_tile);
+                road_build.direction = None;
+            } else {
+                // Second click: apply the road.
+                let start = road_build.start.unwrap();
+                let tiles = compute_road_line(start, current_tile);
+
+                if !tiles.is_empty() {
+                    // Determine direction from start to end.
+                    let road_dir = compute_road_direction(start, current_tile);
+                    let drive_on_right = p.traffic_cfg.drive_on_right;
+
+                    for pos in tiles {
+                        emit_road_commands(&mut out, pos, kind, road_dir, drive_on_right);
+                    }
+                }
+
+                // Reset state for next road segment.
+                road_build.start = None;
+                road_build.direction = None;
+            }
+        }
+        return;
+    }
+
+    // Original drag-paint behavior for zones and other tools.
+    let pressed = p.buttons.pressed(MouseButton::Left);
+    if !pressed {
+        paint.was_pressed = false;
+        paint.last_tile = None;
+        return;
+    }
+
+    let Some(tile) = tile else {
         return;
     };
 
     if paint.was_pressed && paint.last_tile == Some(tile) {
         return;
     }
-    let prev_tile = paint.last_tile;
     paint.was_pressed = true;
     paint.last_tile = Some(tile);
 
     match p.mode.selected {
-        BuildTool::Road(kind) => {
-            let lanes = kind.lanes().max(1) as i32;
-            let half = lanes / 2;
-
-            // Determine draw direction from drag, fall back to last_dir.
-            let mut dir = paint.last_dir;
-            if let Some(prev) = prev_tile {
-                let d = IVec2::new(tile.x - prev.x, tile.y - prev.y);
-                if d == IVec2::new(1, 0)
-                    || d == IVec2::new(-1, 0)
-                    || d == IVec2::new(0, 1)
-                    || d == IVec2::new(0, -1)
-                {
-                    dir = d;
-                }
-            }
-            if dir == IVec2::ZERO {
-                dir = IVec2::new(1, 0);
-            }
-            paint.last_dir = dir;
-
-            let road_dir = match (dir.x, dir.y) {
-                (1, 0) => RoadDir::East,
-                (-1, 0) => RoadDir::West,
-                (0, 1) => RoadDir::North,
-                (0, -1) => RoadDir::South,
-                _ => RoadDir::None,
-            };
-
-            // Thickness: occupy exactly `lanes` tiles perpendicular to draw direction.
-            // We bias the extra tile (even widths) to the right-hand side of the draw direction.
-            // perp = (-dy, dx) (left). Right side is -perp.
-            let perp = IVec2::new(-dir.y, dir.x);
-            for o in (-half)..(half) {
-                let lane = (o + half) as u8;
-                let lane_dir = if (lane as i32) < half {
-                    road_dir
-                } else {
-                    road_dir.opposite()
-                };
-                let pos = TilePos {
-                    x: tile.x + perp.x * o,
-                    y: tile.y + perp.y * o,
-                };
-                out.write(GameCommand::SetRoad {
-                    pos,
-                    road: RoadCell {
-                        kind,
-                        dir: lane_dir,
-                        lane,
-                    },
-                });
-            }
+        BuildTool::Road(_) => {
+            // Handled above with point-to-point system.
         }
         BuildTool::Zone(zone) => {
             if let Some(cache) = p.zone_cache.as_deref() {
@@ -867,6 +909,333 @@ fn cursor_paint_to_command(
             out.write(GameCommand::EraseTile { pos: tile });
         }
         BuildTool::Inspect => {}
+    }
+}
+
+/// Compute a straight line of tiles from start to end (horizontal or vertical only).
+/// If diagonal, snaps to the dominant axis.
+fn compute_road_line(start: TilePos, end: TilePos) -> Vec<TilePos> {
+    let dx = end.x - start.x;
+    let dy = end.y - start.y;
+
+    if dx == 0 && dy == 0 {
+        return vec![start];
+    }
+
+    let mut tiles = Vec::new();
+
+    // Snap to dominant axis (horizontal or vertical).
+    if dx.abs() >= dy.abs() {
+        // Horizontal line.
+        let step = if dx > 0 { 1 } else { -1 };
+        let mut x = start.x;
+        while (step > 0 && x <= end.x) || (step < 0 && x >= end.x) {
+            tiles.push(TilePos { x, y: start.y });
+            x += step;
+        }
+    } else {
+        // Vertical line.
+        let step = if dy > 0 { 1 } else { -1 };
+        let mut y = start.y;
+        while (step > 0 && y <= end.y) || (step < 0 && y >= end.y) {
+            tiles.push(TilePos { x: start.x, y });
+            y += step;
+        }
+    }
+
+    tiles
+}
+
+/// Determine road direction from start to end tile.
+fn compute_road_direction(start: TilePos, end: TilePos) -> RoadDir {
+    let dx = end.x - start.x;
+    let dy = end.y - start.y;
+
+    // Canonicalize to keep road geometry stable regardless of draw direction:
+    // - horizontal roads use East as the "paint" direction (West lanes are opposite)
+    // - vertical roads use North as the "paint" direction (South lanes are opposite)
+    if dx.abs() >= dy.abs() {
+        RoadDir::East
+    } else {
+        RoadDir::North
+    }
+}
+
+/// Emit road commands for a single tile position with proper lane layout.
+fn emit_road_commands(
+    out: &mut MessageWriter<GameCommand>,
+    pos: TilePos,
+    kind: RoadKind,
+    road_dir: RoadDir,
+    drive_on_right: bool,
+) {
+    let lanes = kind.lanes().max(1) as i32;
+    let half = lanes / 2;
+
+    // Direction perpendicular to road direction (for lane offsets).
+    // Important: geometry must NOT depend on draw direction (or drive side),
+    // otherwise the same road drawn in the opposite direction shifts on the grid.
+    let dir = road_dir.delta();
+    let perp = IVec2::new(-dir.y, dir.x); // left of canonical road_dir
+
+    for o in (-half)..half {
+        let lane = (o + half) as u8;
+        // Lanes are indexed 0..lanes-1 from rightmost to leftmost in `road_dir`.
+        //
+        // - Right-hand traffic: rightmost half goes `road_dir`, leftmost half goes opposite.
+        // - Left-hand traffic:  rightmost half goes opposite, leftmost half goes `road_dir`.
+        let lane_dir = if drive_on_right {
+            if (lane as i32) < half {
+                road_dir
+            } else {
+                road_dir.opposite()
+            }
+        } else if (lane as i32) < half {
+            road_dir.opposite()
+        } else {
+            road_dir
+        };
+        let lane_pos = TilePos {
+            x: pos.x + perp.x * o,
+            y: pos.y + perp.y * o,
+        };
+        out.write(GameCommand::SetRoad {
+            pos: lane_pos,
+            road: RoadCell {
+                kind,
+                dir: lane_dir,
+                lane,
+            },
+        });
+    }
+}
+
+/// Render transparent preview of road being built.
+fn road_preview_render(
+    mut commands: Commands,
+    road_build: Res<RoadBuildState>,
+    mode: Res<BuildMode>,
+    cfg: Res<MapConfig>,
+    q_window: Query<&Window, With<PrimaryWindow>>,
+    q_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    q_preview: Query<Entity, With<RoadPreviewTile>>,
+) {
+    // Clear old preview tiles.
+    for e in &q_preview {
+        commands.entity(e).despawn();
+    }
+
+    // Only show preview when building roads and we have a start point.
+    let BuildTool::Road(kind) = mode.selected else {
+        return;
+    };
+    let Some(start) = road_build.start else {
+        return;
+    };
+
+    let Ok(window) = q_window.single() else {
+        return;
+    };
+    let Ok((camera, cam_gt)) = q_camera.single() else {
+        return;
+    };
+    let Some(current) = cursor_tile(&cfg, window, camera, cam_gt) else {
+        return;
+    };
+
+    let tiles = compute_road_line(start, current);
+    if tiles.is_empty() {
+        return;
+    }
+
+    let road_dir = compute_road_direction(start, current);
+    let origin = map_origin(&cfg);
+    let lanes = kind.lanes().max(1) as i32;
+    let half = lanes / 2;
+    let dir = road_dir.delta();
+    let perp = IVec2::new(-dir.y, dir.x);
+
+    // Semi-transparent preview color.
+    let preview_color = Color::srgba(0.3, 0.3, 0.35, 0.5);
+
+    for pos in tiles {
+        for o in (-half)..half {
+            let lane_pos = TilePos {
+                x: pos.x + perp.x * o,
+                y: pos.y + perp.y * o,
+            };
+            let world = origin
+                + Vec2::new(
+                    lane_pos.x as f32 * cfg.tile_size,
+                    lane_pos.y as f32 * cfg.tile_size,
+                );
+
+            commands.spawn((
+                Sprite::from_color(preview_color, Vec2::splat(cfg.tile_size * 0.95)),
+                Transform::from_translation(Vec3::new(world.x, world.y, 15.0)),
+                RoadPreviewTile,
+                InGameEntity,
+            ));
+        }
+    }
+
+    // Highlight start tile.
+    let start_world = origin
+        + Vec2::new(
+            start.x as f32 * cfg.tile_size,
+            start.y as f32 * cfg.tile_size,
+        );
+    commands.spawn((
+        Sprite::from_color(
+            Color::srgba(0.2, 0.8, 0.2, 0.6),
+            Vec2::splat(cfg.tile_size * 0.5),
+        ),
+        Transform::from_translation(Vec3::new(start_world.x, start_world.y, 16.0)),
+        RoadPreviewTile,
+        InGameEntity,
+    ));
+}
+
+/// Render road markings (center line + per-lane direction arrows).
+fn render_lane_markings(
+    mut commands: Commands,
+    cfg: Res<MapConfig>,
+    grid: Res<MapGrid>,
+    mut roads_changed: ResMut<RoadsChangedThisFrame>,
+    q_markings: Query<Entity, With<LaneMarkingEntity>>,
+) {
+    // Only re-render if roads changed this frame.
+    if !roads_changed.0 {
+        return;
+    }
+    roads_changed.0 = false;
+
+    // Clear old markings.
+    for e in &q_markings {
+        commands.entity(e).despawn();
+    }
+
+    let origin = map_origin(&cfg);
+    let tile_size = cfg.tile_size;
+
+    // Visual style.
+    let center_line_color = Color::srgba(1.0, 0.85, 0.1, 0.9);
+    let lane_divider_color = Color::srgba(0.98, 0.98, 0.98, 0.45);
+    let arrow_color = Color::srgba(0.98, 0.98, 0.98, 0.70);
+    let z_base = 6.0; // Above road tile; below buildings/vehicles.
+
+    // Make markings thick enough to be visible when zoomed out.
+    let center_thickness = tile_size * 0.14;
+    let lane_div_thickness = tile_size * 0.10;
+    let dash_len = tile_size * 0.55;
+
+    let arrow_body = Vec2::new(tile_size * 0.40, tile_size * 0.10);
+    let head_len = tile_size * 0.22;
+    let head_thickness = tile_size * 0.09;
+    let head_angle = std::f32::consts::FRAC_PI_4;
+
+    for y in 0..grid.height {
+        for x in 0..grid.width {
+            let pos = TilePos { x, y };
+            let Some(cell) = grid.get(pos) else {
+                continue;
+            };
+            let road = cell.road;
+            if !road.is_some() || road.dir == RoadDir::None {
+                continue;
+            }
+
+            let world = origin + Vec2::new(x as f32 * tile_size, y as f32 * tile_size);
+
+            // ---- Lane dividers + center line (exactly one between opposite directions)
+            let lanes = road.lanes_total();
+            let half = lanes / 2;
+
+            let axis_dir = match road.dir {
+                RoadDir::East | RoadDir::West => RoadDir::East,
+                RoadDir::North | RoadDir::South => RoadDir::North,
+                RoadDir::None => continue,
+            };
+            let axis_delta = axis_dir.delta();
+            let perp = IVec2::new(-axis_delta.y, axis_delta.x); // left of canonical axis
+            let boundary_offset = Vec2::new(perp.x as f32, perp.y as f32) * (tile_size * 0.5);
+
+            let (solid_size, dash_size) = if matches!(axis_dir, RoadDir::East) {
+                (
+                    Vec2::new(tile_size, center_thickness),
+                    Vec2::new(dash_len, lane_div_thickness),
+                )
+            } else {
+                (
+                    Vec2::new(center_thickness, tile_size),
+                    Vec2::new(lane_div_thickness, dash_len),
+                )
+            };
+
+            if lanes >= 2 {
+                // Center line on the last lane tile before the direction flips:
+                // lane == half-1 corresponds to offset o == -1 in our lane placement.
+                if road.lane == half.saturating_sub(1) {
+                    commands.spawn((
+                        Sprite::from_color(center_line_color, solid_size),
+                        Transform::from_translation(Vec3::new(
+                            world.x + boundary_offset.x,
+                            world.y + boundary_offset.y,
+                            z_base + 0.05,
+                        )),
+                        LaneMarkingEntity,
+                        InGameEntity,
+                    ));
+                } else if road.lane < lanes.saturating_sub(1) && road.lane != half.saturating_sub(1)
+                {
+                    // Divider between this lane and lane+1 (skip the center line).
+                    commands.spawn((
+                        Sprite::from_color(lane_divider_color, dash_size),
+                        Transform::from_translation(Vec3::new(
+                            world.x + boundary_offset.x,
+                            world.y + boundary_offset.y,
+                            z_base + 0.04,
+                        )),
+                        LaneMarkingEntity,
+                        InGameEntity,
+                    ));
+                }
+            }
+
+            // ---- Per-lane direction arrow (simple chevron)
+            let (rot, forward) = match road.dir {
+                RoadDir::East => (0.0, Vec2::new(1.0, 0.0)),
+                RoadDir::North => (std::f32::consts::FRAC_PI_2, Vec2::new(0.0, 1.0)),
+                RoadDir::West => (std::f32::consts::PI, Vec2::new(-1.0, 0.0)),
+                RoadDir::South => (-std::f32::consts::FRAC_PI_2, Vec2::new(0.0, -1.0)),
+                RoadDir::None => continue,
+            };
+
+            // Arrow body
+            commands.spawn((
+                Sprite::from_color(arrow_color, arrow_body),
+                Transform::from_translation(Vec3::new(world.x, world.y, z_base + 0.10))
+                    .with_rotation(Quat::from_rotation_z(rot)),
+                LaneMarkingEntity,
+                InGameEntity,
+            ));
+
+            // Arrow head (two short segments)
+            let tip = world + forward * (tile_size * 0.22);
+            let head_size = Vec2::new(head_len, head_thickness);
+            let head_rot_a = rot + std::f32::consts::PI - head_angle;
+            let head_rot_b = rot + std::f32::consts::PI + head_angle;
+
+            for head_rot in [head_rot_a, head_rot_b] {
+                commands.spawn((
+                    Sprite::from_color(arrow_color, head_size),
+                    Transform::from_translation(Vec3::new(tip.x, tip.y, z_base + 0.11))
+                        .with_rotation(Quat::from_rotation_z(head_rot)),
+                    LaneMarkingEntity,
+                    InGameEntity,
+                ));
+            }
+        }
     }
 }
 
@@ -903,6 +1272,7 @@ fn apply_game_commands_to_grid(
     mut dirty: ResMut<DirtyTiles>,
     mut city: ResMut<City>,
     mut graph_version: ResMut<GraphVersion>,
+    mut roads_changed: ResMut<RoadsChangedThisFrame>,
 ) {
     for cmd in cmd_reader.read() {
         match *cmd {
@@ -917,36 +1287,73 @@ fn apply_game_commands_to_grid(
                     continue;
                 }
 
-                if !road.is_some() || road.dir == RoadDir::None {
-                    continue;
-                }
-                if cell.road == road {
+                if !road.is_some() {
                     continue;
                 }
 
-                // Road upgrade rule:
+                // If road already exists with same properties, skip (no cost, no change).
+                // Note: intersections may override `dir` below, so compare after that logic.
+                let mut new_road = road;
+
+                // If we are writing onto an existing road tile with a perpendicular axis,
+                // convert this tile into an intersection node (`dir: None`).
+                //
+                // This is a pragmatic MVP: it preserves connectivity at crossings without
+                // requiring multi-direction lane data in a single tile.
+                let axis_of = |d: RoadDir| -> Option<bool> {
+                    // true = horizontal, false = vertical
+                    match d {
+                        RoadDir::East | RoadDir::West => Some(true),
+                        RoadDir::North | RoadDir::South => Some(false),
+                        RoadDir::None => None,
+                    }
+                };
+                if cell.road.is_some()
+                    && cell.road.dir != RoadDir::None
+                    && new_road.dir != RoadDir::None
+                    && axis_of(cell.road.dir).is_some()
+                    && axis_of(new_road.dir).is_some()
+                    && axis_of(cell.road.dir) != axis_of(new_road.dir)
+                {
+                    new_road.dir = RoadDir::None;
+                }
+                // If the tile is already an intersection node, keep it an intersection.
+                // Note: only check if there IS an existing road; empty tiles have dir=None by default.
+                if cell.road.is_some() && cell.road.dir == RoadDir::None {
+                    new_road.dir = RoadDir::None;
+                }
+
+                if cell.road == new_road {
+                    continue;
+                }
+
+                // Road upgrade/build rules:
                 // - can build on empty tile
                 // - can upgrade to a larger road
+                // - can overwrite existing road of same kind (for intersections)
                 // - can't downgrade (Erase -> rebuild)
                 let cost = if cell.road.kind == RoadKind::None {
-                    road.kind.build_cost_per_lane_tile()
-                } else if RoadKind::is_upgrade(cell.road.kind, road.kind) {
-                    road.kind
+                    new_road.kind.build_cost_per_lane_tile()
+                } else if cell.road.kind == new_road.kind {
+                    // Same road kind but different direction (intersection) - no extra cost.
+                    0
+                } else if RoadKind::is_upgrade(cell.road.kind, new_road.kind) {
+                    new_road
+                        .kind
                         .build_cost_per_lane_tile()
                         .saturating_sub(cell.road.kind.build_cost_per_lane_tile())
                 } else {
                     continue;
                 };
-                if city.money < cost {
-                    continue;
-                }
 
+                // Allow roads to be built even when in debt (road tooling UX).
                 city.money -= cost;
-                cell.road = road;
+                cell.road = new_road;
                 // Invalidate any grown building on this tile when the player edits it.
                 cell.building = None;
                 grid.set(pos, cell);
                 dirty.mark(idx);
+                roads_changed.0 = true;
 
                 // B) Transport: bump road graph version when road topology changes.
                 graph_version.bump();
@@ -1037,11 +1444,14 @@ fn apply_game_commands_to_grid(
                 graph_version.bump();
             }
             // Traffic commands are handled by TrafficPlugin.
+            // Intersection commands are handled by IntersectionsPlugin.
             GameCommand::SpawnDebugVehicles { .. }
             | GameCommand::ClearVehicles
             | GameCommand::DumpSaveContract
             | GameCommand::SaveGame { .. }
-            | GameCommand::LoadGame { .. } => {}
+            | GameCommand::LoadGame { .. }
+            | GameCommand::PlaceTrafficLight { .. }
+            | GameCommand::RemoveTrafficLight { .. } => {}
         }
     }
 }
@@ -1734,6 +2144,7 @@ mod tests {
             .insert_resource(DirtyTiles::new(64))
             .insert_resource(City::default())
             .insert_resource(GraphVersion(1))
+            .insert_resource(RoadsChangedThisFrame::default())
             .insert_resource(TestCommandOnce::default())
             .add_systems(
                 Update,
@@ -1771,6 +2182,7 @@ mod tests {
             .insert_resource(DirtyTiles::new(64))
             .insert_resource(City::default())
             .insert_resource(GraphVersion(1))
+            .insert_resource(RoadsChangedThisFrame::default())
             .insert_resource(TestCommandOnce::default())
             .add_systems(
                 Update,

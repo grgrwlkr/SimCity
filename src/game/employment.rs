@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use crate::game::buildings::Building;
 use crate::game::citizens::{Citizen, CitizenWorkplace};
-use crate::game::map::{BuildingKind, MapGrid, TilePos, astar_path};
+use crate::game::map::{BuildingKind, MapGrid, TilePos};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::traffic::TrafficOccupancy;
@@ -156,11 +156,8 @@ fn assign_jobs(mut p: AssignJobsParams) {
                 grid: &p.grid,
             };
 
-            let mut path = find_road_path_cached(&mut ctx, home_road, job_road);
-            if path.is_empty() {
-                // Fallback if road graph isn't ready.
-                path = astar_path(&p.grid, home_road, job_road);
-            }
+            let path = find_road_path_cached(&mut ctx, home_road, job_road);
+            // No fallback to astar_path - vehicles must follow lane rules.
             if path.is_empty() {
                 continue;
             }

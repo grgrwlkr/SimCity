@@ -237,46 +237,260 @@ fn rebuild_road_graph_inner(grid: &MapGrid, gv: &GraphVersion, graph: &mut RoadG
 
         let mut mask = 0u8;
 
-        // Movement rules (MVP, right-hand, lane-based):
-        // - Straight: move in cur.dir only, to a neighbor lane tile whose dir == cur.dir.
-        // - Lane change: move left/right (perpendicular), staying in same dir, only to adjacent lane.
-        // - Turn: move left/right into a tile whose dir matches the movement direction,
-        //   only from outer lanes (left turn from leftmost, right turn from rightmost).
+        // Movement rules (strict lane-based, right-hand traffic):
+        // 1. Straight: move in cur.dir only, to a neighbor lane tile whose dir == cur.dir.
+        // 2. Lane change: move left/right (perpendicular), staying in same dir, only to adjacent lane.
+        // 3. Turn: move left/right into a tile whose dir matches the movement direction,
+        //    only from outer lanes (left turn from leftmost, right turn from rightmost).
+        // 4. U-turn: only allowed at intersections (tile with multiple road directions).
+        //
+        // FORBIDDEN:
+        // - Moving against lane direction (driving wrong way).
+        // - Crossing into oncoming traffic lanes (except at intersections for turns).
+        // - Lane changes to oncoming lanes.
         let mut consider = |bit: u8, nidx: usize, move_dir: RoadDir| {
             let Some(next) = road_at_idx(nidx) else {
                 return;
             };
-            if cur.dir == RoadDir::None || next.dir == RoadDir::None {
+            // Intersection nodes (`dir: None`) are special:
+            // - allow entering from straight or valid turn entry
+            // - allow leaving only into lanes matching movement direction
+            // - allow movement within intersection tiles
+            match (cur.dir, next.dir) {
+                (RoadDir::None, RoadDir::None) => {
+                    // Movement within intersection: enforce circular movement (counter-clockwise for right-hand traffic).
+                    // This prevents vehicles from crossing into oncoming lanes during intersection navigation.
+                    //
+                    // For counter-clockwise circulation (right-hand traffic):
+                    // - Top edge: can only move West (left)
+                    // - Left edge: can only move South (down)
+                    // - Bottom edge: can only move East (right)
+                    // - Right edge: can only move North (up)
+                    //
+                    // This creates a circular flow around the perimeter of the intersection,
+                    // preventing illegal maneuvers like crossing the center diagonally.
+
+                    if !lanes_on_same_road_side(cur, next) {
+                        return;
+                    }
+
+                    // Determine which edge of the intersection we're on and enforce circular flow.
+                    // We need to find the bounds of the current intersection cluster.
+                    let cur_x = idx % w;
+                    let cur_y = idx / w;
+
+                    // For now, use a simple heuristic: check neighboring intersection tiles
+                    // to determine our position in the intersection grid.
+                    let has_intersection_west =
+                        cur_x > 0 && road_at_idx(idx - 1).is_some_and(|r| r.dir == RoadDir::None);
+                    let has_intersection_east = cur_x + 1 < w
+                        && road_at_idx(idx + 1).is_some_and(|r| r.dir == RoadDir::None);
+                    let has_intersection_south =
+                        cur_y > 0 && road_at_idx(idx - w).is_some_and(|r| r.dir == RoadDir::None);
+                    let has_intersection_north = cur_y + 1 < h
+                        && road_at_idx(idx + w).is_some_and(|r| r.dir == RoadDir::None);
+
+                    // Determine position in intersection and allowed movement directions.
+                    // Corners allow two directions: one along the circular flow, one for exit.
+                    // Edges allow one direction along the circular flow.
+                    // Interior tiles allow any direction (for larger intersections).
+
+                    let allowed = if !has_intersection_north && !has_intersection_east {
+                        // Top-right corner: allow West (circular) or South (toward exit/continue)
+                        move_dir == RoadDir::West || move_dir == RoadDir::South
+                    } else if !has_intersection_north && !has_intersection_west {
+                        // Top-left corner: allow South (circular) or could exit North/West
+                        move_dir == RoadDir::South
+                            || move_dir == RoadDir::West
+                            || move_dir == RoadDir::North
+                    } else if !has_intersection_south && !has_intersection_west {
+                        // Bottom-left corner: allow East (circular) or South (toward exit)
+                        move_dir == RoadDir::East
+                            || move_dir == RoadDir::South
+                            || move_dir == RoadDir::West
+                    } else if !has_intersection_south && !has_intersection_east {
+                        // Bottom-right corner: allow North (circular) or East (continue)
+                        move_dir == RoadDir::North || move_dir == RoadDir::East
+                    } else if !has_intersection_north {
+                        // Top edge (but not corner): move West only
+                        move_dir == RoadDir::West
+                    } else if !has_intersection_west {
+                        // Left edge (but not corner): move South only
+                        move_dir == RoadDir::South
+                    } else if !has_intersection_south {
+                        // Bottom edge (but not corner): move East only
+                        move_dir == RoadDir::East
+                    } else if !has_intersection_east {
+                        // Right edge (but not corner): move North only
+                        move_dir == RoadDir::North
+                    } else {
+                        // Interior tile: allow movement in any direction
+                        true
+                    };
+
+                    if allowed {
+                        mask |= 1 << bit;
+                    }
+                    return;
+                }
+                (RoadDir::None, nd) => {
+                    // Leaving an intersection: must enter a lane that matches movement dir.
+                    // CRITICAL: The target tile must be PHYSICALLY in the direction of movement
+                    // AND the lane must be going in the same direction as we're moving.
+                    // This prevents "teleporting" across oncoming lanes at intersections.
+                    if nd == RoadDir::None || nd != move_dir {
+                        return;
+                    }
+
+                    let cur_x = idx % w;
+                    let cur_y = idx / w;
+                    let next_x = nidx % w;
+                    let next_y = nidx / w;
+
+                    let delta = move_dir.delta();
+                    let actual_dx = (next_x as i32) - (cur_x as i32);
+                    let actual_dy = (next_y as i32) - (cur_y as i32);
+
+                    // Only allow movement if the target is in the correct physical direction.
+                    if actual_dx == delta.x && actual_dy == delta.y {
+                        // ADDITIONAL CHECK: Ensure we enter the correct lane for the direction.
+                        // For right-hand traffic, turns should enter appropriate lanes:
+                        // - Right turn: enter rightmost lane of target direction
+                        // - Left turn: enter leftmost lane of target direction
+                        // - Straight: can enter any lane of target direction
+
+                        // For now, allow any valid lane. The turn logic should have ensured
+                        // we only reach here from valid entry points.
+                        // DEBUG: Log allowed intersection exits
+                        println!(
+                            "[graph] ALLOW EXIT: ({},{}) -> ({},{}) lane_dir={:?}",
+                            cur_x, cur_y, next_x, next_y, nd
+                        );
+                        mask |= 1 << bit;
+                    }
+                    return;
+                }
+                (cd, RoadDir::None) => {
+                    // Entering an intersection: allow straight or a valid turn entry.
+                    // CRITICAL: Verify target tile is physically in the movement direction.
+                    let cur_x = idx % w;
+                    let cur_y = idx / w;
+                    let next_x = nidx % w;
+                    let next_y = nidx / w;
+
+                    let delta = move_dir.delta();
+                    let actual_dx = (next_x as i32) - (cur_x as i32);
+                    let actual_dy = (next_y as i32) - (cur_y as i32);
+
+                    // Must be moving in the correct physical direction.
+                    if actual_dx != delta.x || actual_dy != delta.y {
+                        return;
+                    }
+
+                    let left = cd.left();
+                    let right = cd.right();
+
+                    // Straight: always allowed (moving in lane direction).
+                    if move_dir == cd {
+                        println!(
+                            "[graph] ALLOW ENTER STRAIGHT: ({},{}) dir={:?} -> ({},{})",
+                            cur_x, cur_y, cd, next_x, next_y
+                        );
+                        mask |= 1 << bit;
+                        return;
+                    }
+                    // Left turn: only from leftmost lane (closest to center).
+                    // CRITICAL: Check that we don't cross into oncoming traffic lanes
+                    if move_dir == left && cur.is_leftmost_for_dir() {
+                        // For left turn, ensure the target lane is on the same side of road
+                        // (same direction or intersection lane)
+                        if (next.dir == RoadDir::None || next.dir == move_dir)
+                            && lanes_on_same_road_side(cur, next)
+                        {
+                            println!(
+                                "[graph] ALLOW ENTER LEFT: ({},{}) dir={:?} -> ({},{})",
+                                cur_x, cur_y, cd, next_x, next_y
+                            );
+                            mask |= 1 << bit;
+                            return;
+                        }
+                    }
+                    // Right turn: only from rightmost lane.
+                    // CRITICAL: Check that we don't cross into oncoming traffic lanes
+                    if move_dir == right && cur.is_rightmost_for_dir() {
+                        // For right turn, ensure the target lane is on the same side of road
+                        // (same direction or intersection lane)
+                        if (next.dir == RoadDir::None || next.dir == move_dir)
+                            && lanes_on_same_road_side(cur, next)
+                        {
+                            println!(
+                                "[graph] ALLOW ENTER RIGHT: ({},{}) dir={:?} -> ({},{})",
+                                cur_x, cur_y, cd, next_x, next_y
+                            );
+                            mask |= 1 << bit;
+                        }
+                    }
+                    return;
+                }
+                _ => {}
+            }
+
+            // BLOCK: Never allow moving opposite to our lane direction (wrong-way driving).
+            if move_dir == cur.dir.opposite() {
                 return;
             }
 
-            // Straight
-            if move_dir == cur.dir && next.dir == cur.dir {
-                mask |= 1 << bit;
+            // BLOCK: Never allow entering a lane going opposite to us (head-on collision).
+            if next.dir == cur.dir.opposite() {
                 return;
             }
 
             let left = cur.dir.left();
             let right = cur.dir.right();
 
-            // Lane change (perpendicular move, same travel dir)
+            // Straight movement: only if moving in our direction and next lane matches.
+            if move_dir == cur.dir && next.dir == cur.dir {
+                mask |= 1 << bit;
+                return;
+            }
+
+            // Lane change (perpendicular move, same travel dir on same road).
             if (move_dir == left || move_dir == right)
                 && next.dir == cur.dir
                 && next.kind == cur.kind
                 && next.lanes_total() == cur.lanes_total()
             {
+                // Only adjacent lane (lane index differs by 1).
                 if next.lane.abs_diff(cur.lane) == 1 {
                     mask |= 1 << bit;
                 }
                 return;
             }
 
-            // Turn (perpendicular move into new dir lane)
-            if move_dir == left && next.dir == left && cur.is_leftmost_for_dir() {
+            // Turn at intersection (perpendicular move into new direction lane).
+            // Standard traffic rules: turn into the nearest lane of the target direction.
+            //
+            // CRITICAL: Ensure we don't cross into oncoming traffic lanes during turns.
+            // For multi-lane roads, lanes are divided: lower indices = one direction, higher = opposite.
+            // Turns must stay within the same "side" of the road.
+
+            // Left turn: from leftmost lane → into leftmost lane of new direction.
+            if move_dir == left
+                && next.dir == left
+                && cur.is_leftmost_for_dir()
+                && next.is_leftmost_for_dir()
+                && lanes_on_same_road_side(cur, next)
+            {
                 mask |= 1 << bit;
                 return;
             }
-            if move_dir == right && next.dir == right && cur.is_rightmost_for_dir() {
+            // Right turn: from rightmost lane → into rightmost lane of new direction.
+            if move_dir == right
+                && next.dir == right
+                && cur.is_rightmost_for_dir()
+                && next.is_rightmost_for_dir()
+                && lanes_on_same_road_side(cur, next)
+            {
                 mask |= 1 << bit;
             }
         };
@@ -845,6 +1059,32 @@ fn enforce_cache_limits(time_now_sec: f64, cfg: &PathfindingConfig, cache: &mut 
             cache.map.remove(&key);
         }
     }
+}
+
+/// Check if two lanes are on the same side of a multi-lane road.
+/// For roads with even number of lanes, lower half = one direction, upper half = opposite.
+/// This prevents turns from crossing into oncoming traffic.
+fn lanes_on_same_road_side(cur: RoadCell, next: RoadCell) -> bool {
+    let cur_lanes = cur.lanes_total();
+    let next_lanes = next.lanes_total();
+
+    // Different road types or lane counts - be conservative
+    if cur.kind != next.kind || cur_lanes != next_lanes {
+        return false;
+    }
+
+    let half_lanes = cur_lanes / 2;
+
+    // For single-direction roads (2 lanes), all lanes are same direction
+    if cur_lanes <= 2 {
+        return true;
+    }
+
+    // Check if both lanes are in the same half (same traffic direction)
+    let cur_side = if cur.lane < half_lanes { 0 } else { 1 };
+    let next_side = if next.lane < half_lanes { 0 } else { 1 };
+
+    cur_side == next_side
 }
 
 #[cfg(test)]

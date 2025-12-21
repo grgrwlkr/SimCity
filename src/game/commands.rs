@@ -36,4 +36,12 @@ pub enum GameCommand {
 
     /// Despawn all vehicles (M3 prototype).
     ClearVehicles,
+
+    /// Place a traffic light at an intersection.
+    #[allow(dead_code)]
+    PlaceTrafficLight { pos: TilePos },
+
+    /// Remove a traffic light from an intersection.
+    #[allow(dead_code)]
+    RemoveTrafficLight { pos: TilePos },
 }

@@ -359,6 +359,17 @@ fn top_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
 
             ui.separator();
 
+            // Money (keep it visible even when the status line wraps).
+            ui.label(format!("Day {}", p.city.day));
+            let money_color = if p.city.money < 0 {
+                egui::Color32::LIGHT_RED
+            } else {
+                egui::Color32::LIGHT_GREEN
+            };
+            ui.colored_label(money_color, format!("$ {}", p.city.money));
+
+            ui.separator();
+
             // Tool selection
             ui.label("Tool:");
             let current_road_kind = match p.ui_state.tool {

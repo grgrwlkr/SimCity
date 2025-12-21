@@ -13,6 +13,7 @@ mod economy;
 mod emergencies;
 mod employment;
 mod ids;
+mod intersections;
 mod map;
 mod persistence;
 mod persistence_contract;
@@ -87,6 +88,7 @@ impl Plugin for GamePlugin {
                 zone_placement::ZonePlacementPlugin,
                 sim::SimPlugin,
                 traffic::TrafficPlugin,
+                intersections::IntersectionsPlugin,
                 ui::UiPlugin,
             ));
     }

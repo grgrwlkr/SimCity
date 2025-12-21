@@ -7,7 +7,7 @@ use rand::prelude::*;
 use crate::game::camera::MainCamera;
 use crate::game::commands::GameCommand;
 use crate::game::ids::CitizenId;
-use crate::game::map::{MapConfig, MapGrid, TilePos, astar_path};
+use crate::game::map::{MapConfig, MapGrid, TilePos};
 use crate::game::public_transport::{
     BusVehicle, PendingTransitTrips, PendingTrip, PublicTransportConfig, PublicTransportIndex,
 };
@@ -120,6 +120,13 @@ pub struct TrafficConfig {
     max_route_plans_per_tick: usize,
     /// EMA decay for heatmap in [0..1). Higher = slower to change.
     heat_ema_decay: f32,
+    /// If true, traffic drives on the right (US/Russia). If false, drives on the left (UK/Japan).
+    #[serde(default = "default_drive_on_right")]
+    pub drive_on_right: bool,
+}
+
+fn default_drive_on_right() -> bool {
+    true
 }
 
 impl Default for TrafficConfig {
@@ -128,6 +135,7 @@ impl Default for TrafficConfig {
             max_active_vehicles: 1500,
             max_route_plans_per_tick: 64,
             heat_ema_decay: 0.92,
+            drive_on_right: true,
         }
     }
 }
@@ -195,12 +203,11 @@ fn spawn_debug_vehicles(
                     grid: &p.grid,
                 };
 
-                let mut route = find_road_path_cached(&mut ctx, start, goal);
+                let route = find_road_path_cached(&mut ctx, start, goal);
+                // No fallback to astar_path - vehicles must follow lane rules.
                 if route.is_empty() {
-                    // Fallback: if graph isn't rebuilt yet this frame, use grid-based A*.
-                    route = astar_path(&p.grid, start, goal);
-                }
-                if route.is_empty() {
+                    // Debug: log when no valid path is found
+                    // println!("[traffic] No valid path from {:?} to {:?}", start, goal);
                     continue;
                 }
 
@@ -273,11 +280,8 @@ fn spawn_trip_vehicles(
             grid: &p.grid,
         };
 
-        let mut route = find_road_path_cached(&mut ctx, start, goal);
-        if route.is_empty() {
-            // Fallback: if graph isn't built (or roads changed mid-frame), use grid-based A*.
-            route = astar_path(&p.grid, start, goal);
-        }
+        let route = find_road_path_cached(&mut ctx, start, goal);
+        // No fallback to astar_path - vehicles must follow lane rules.
         if route.is_empty() {
             continue;
         }

@@ -10,7 +10,6 @@ use bevy::prelude::*;
 use rand::prelude::*;
 
 use crate::game::buildings::Building;
-use crate::game::map::astar_path;
 use crate::game::map::{BuildingKind, MapConfig, MapGrid, TilePos};
 use crate::game::roads::RoadDir;
 use crate::game::services::{ServiceKind, ServiceStation, ServiceVehicle, ServiceVehicleState};
@@ -284,16 +283,12 @@ fn pick_reachable_road_endpoint(
 
 fn find_path_with_fallback(
     ctx: &mut PathfindingCtx<'_>,
-    grid: &MapGrid,
+    _grid: &MapGrid,
     start: TilePos,
     goal: TilePos,
 ) -> Vec<TilePos> {
-    let mut p = find_road_path_cached(ctx, start, goal);
-    if p.is_empty() {
-        // Fallback to grid-based road A* if lane graph is not built / endpoints are tricky.
-        p = astar_path(grid, start, goal);
-    }
-    p
+    // No fallback to astar_path - vehicles must follow lane rules.
+    find_road_path_cached(ctx, start, goal)
 }
 
 fn adjacent_road_any(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
