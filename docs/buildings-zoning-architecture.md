@@ -159,12 +159,14 @@ pub enum ZoneKind {
 ```rust
 impl ZoneKind {
     /// Стоимость размещения зоны
+    /// ВАЖНО: Зоны всегда бесплатные (zoning is just marking land for development).
+    /// Метод оставлен для совместимости, но в коде размещения зон стоимость не проверяется.
     pub fn cost(self) -> i64 {
         match self {
             ZoneKind::None => 0,
-            ZoneKind::Residential => 5,
-            ZoneKind::Commercial => 5,
-            ZoneKind::Industrial => 5,
+            ZoneKind::Residential => 0,  // Бесплатно
+            ZoneKind::Commercial => 0,   // Бесплатно
+            ZoneKind::Industrial => 0,    // Бесплатно
         }
     }
 }
@@ -305,6 +307,17 @@ pub struct ServiceCoverageIndex {
 
 ### Правила размещения зон
 
+**ВАЖНО: Зоны всегда бесплатные**
+
+Зонирование (разметка земли для автоматической застройки) является бесплатным действием. Это сделано для того, чтобы игрок мог начать строительство города с нуля, не имея начального капитала. Зонирование — это просто разметка земли, которая указывает, где могут автоматически вырасти здания при наличии спроса (RCI Demand).
+
+**Архитектурное правило:**
+- Размещение зон (R/C/I) не требует денег и не проверяет баланс города
+- Стоимость возникает только при автоматическом росте зданий на размеченных участках
+- Служебные здания (пожарная, полиция, больница) требуют оплаты, так как размещаются вручную
+
+### Правила размещения зон
+
 ```rust
 pub fn can_zone_tile(grid: &MapGrid, pos: TilePos) -> bool {
     let cell = grid.get(pos)?;
@@ -380,14 +393,10 @@ GameCommand::SetZone { pos, zone } => {
         continue;
     }
     
-    // Проверка денег
-    let cost = zone.cost();
-    if city.money < cost {
-        continue;
-    }
+    // Зоны всегда бесплатные (zoning is just marking land for development)
+    // Нет проверки денег и списания средств
     
     // Применение
-    city.money -= cost;
     cell.zone = zone;
     grid.set(pos, cell);
     dirty.mark(idx);

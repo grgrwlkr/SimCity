@@ -205,17 +205,6 @@ impl TileKind {
             TileKind::Industrial => Color::srgb(0.72, 0.56, 0.12),
         }
     }
-
-    pub fn cost(self) -> i64 {
-        match self {
-            TileKind::Water => 0,
-            TileKind::Grass => 0,
-            TileKind::Road => 10,
-            TileKind::Residential => 50,
-            TileKind::Commercial => 60,
-            TileKind::Industrial => 80,
-        }
-    }
 }
 
 /// Zoning layer (separate from roads/terrain).
@@ -237,15 +226,6 @@ impl ZoneKind {
             ZoneKind::Residential => Some(TileKind::Residential),
             ZoneKind::Commercial => Some(TileKind::Commercial),
             ZoneKind::Industrial => Some(TileKind::Industrial),
-        }
-    }
-
-    pub fn cost(self) -> i64 {
-        match self {
-            ZoneKind::None => 0,
-            ZoneKind::Residential => TileKind::Residential.cost(),
-            ZoneKind::Commercial => TileKind::Commercial.cost(),
-            ZoneKind::Industrial => TileKind::Industrial.cost(),
         }
     }
 }
@@ -294,7 +274,6 @@ impl BuildingKind {
     }
 
     /// Radius of service coverage in tiles.
-    #[allow(dead_code)]
     pub fn service_radius(self) -> Option<u16> {
         match self {
             BuildingKind::FireStation => Some(20),
@@ -305,7 +284,6 @@ impl BuildingKind {
     }
 
     /// Number of service vehicles the station can dispatch.
-    #[allow(dead_code)]
     pub fn vehicle_capacity(self) -> u8 {
         match self {
             BuildingKind::FireStation => 3,
@@ -315,8 +293,7 @@ impl BuildingKind {
         }
     }
 
-    /// Build cost (used by future building placement UI).
-    #[allow(dead_code)]
+    /// Build cost (used by building placement).
     pub fn build_cost(self) -> i64 {
         match self {
             BuildingKind::Residential => 50,
@@ -325,17 +302,6 @@ impl BuildingKind {
             BuildingKind::FireStation => 500,
             BuildingKind::PoliceStation => 400,
             BuildingKind::Hospital => 800,
-        }
-    }
-
-    /// Daily maintenance cost (used by future economy integration).
-    #[allow(dead_code)]
-    pub fn daily_maintenance(self) -> i64 {
-        match self {
-            BuildingKind::FireStation => 20,
-            BuildingKind::PoliceStation => 25,
-            BuildingKind::Hospital => 40,
-            BuildingKind::Residential | BuildingKind::Commercial | BuildingKind::Industrial => 2,
         }
     }
 
@@ -785,7 +751,7 @@ struct CursorPaintParams<'w, 's> {
     traffic_cfg: Res<'w, TrafficConfig>,
     ui_state: Res<'w, UiState>,
     mode: Res<'w, BuildMode>,
-    zone_cache: Option<Res<'w, ZonePlacementCache>>,
+    zone_cache: Res<'w, ZonePlacementCache>,
     grid: Res<'w, MapGrid>,
     q_window: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
     q_camera: Query<'w, 's, (&'static Camera, &'static GlobalTransform), With<MainCamera>>,
@@ -884,11 +850,13 @@ fn cursor_paint_to_command(
             // Handled above with point-to-point system.
         }
         BuildTool::Zone(zone) => {
-            if let Some(cache) = p.zone_cache.as_deref() {
-                if !cache.valid_positions.contains(&tile) {
-                    return;
-                }
-            } else if !can_zone_tile(&p.grid, tile) {
+            // Check cache first (fast path), but also check can_zone_tile directly
+            // in case cache is stale (e.g., road was just built this frame).
+            if !p.zone_cache.valid_positions.contains(&tile) && !can_zone_tile(&p.grid, tile) {
+                return;
+            }
+            // Final check: must be able to zone this tile
+            if !can_zone_tile(&p.grid, tile) {
                 return;
             }
             out.write(GameCommand::SetZone { pos: tile, zone });
@@ -1373,12 +1341,7 @@ fn apply_game_commands_to_grid(
                     continue;
                 }
 
-                let cost = zone.cost();
-                if city.money < cost {
-                    continue;
-                }
-                city.money -= cost;
-
+                // Zones are free to place (zoning is just marking land for development).
                 cell.zone = zone;
                 // Zoning edits clear any existing building on tile for simplicity.
                 cell.building = None;
@@ -1444,14 +1407,11 @@ fn apply_game_commands_to_grid(
                 graph_version.bump();
             }
             // Traffic commands are handled by TrafficPlugin.
-            // Intersection commands are handled by IntersectionsPlugin.
             GameCommand::SpawnDebugVehicles { .. }
             | GameCommand::ClearVehicles
             | GameCommand::DumpSaveContract
             | GameCommand::SaveGame { .. }
-            | GameCommand::LoadGame { .. }
-            | GameCommand::PlaceTrafficLight { .. }
-            | GameCommand::RemoveTrafficLight { .. } => {}
+            | GameCommand::LoadGame { .. } => {}
         }
     }
 }

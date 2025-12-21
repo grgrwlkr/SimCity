@@ -3,13 +3,10 @@
 //! Intersections are detected where multiple road directions meet.
 //! Players can manually place traffic lights at intersections.
 
-use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
 use std::collections::HashSet;
 
-use crate::game::commands::GameCommand;
-use crate::game::map::{MapConfig, MapGrid, TilePos};
-use crate::game::roads::RoadDir;
+use crate::game::map::{MapConfig, TilePos};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::transport::GraphVersion;
@@ -24,12 +21,6 @@ impl Plugin for IntersectionsPlugin {
                 Update,
                 detect_intersections
                     .in_set(GameSet::GraphUpdate)
-                    .run_if(in_game_or_paused),
-            )
-            .add_systems(
-                Update,
-                handle_traffic_light_commands
-                    .in_set(GameSet::CommandApply)
                     .run_if(in_game_or_paused),
             )
             .add_systems(
@@ -49,18 +40,6 @@ impl Plugin for IntersectionsPlugin {
 
 fn in_game_or_paused(state: Res<State<AppState>>) -> bool {
     matches!(state.get(), AppState::InGame | AppState::Paused)
-}
-
-/// Data about an intersection.
-#[derive(Debug, Clone)]
-pub struct Intersection {
-    /// Center tile of the intersection.
-    pub pos: TilePos,
-    /// Road directions meeting at this intersection.
-    #[allow(dead_code)]
-    pub directions: HashSet<RoadDir>,
-    /// Whether a traffic light is installed here.
-    pub has_traffic_light: bool,
 }
 
 /// Traffic light component for intersection entities.
@@ -90,18 +69,6 @@ impl Default for TrafficLight {
     }
 }
 
-impl TrafficLight {
-    /// Check if a given direction is currently green.
-    #[allow(dead_code)]
-    pub fn is_green(&self, dir: RoadDir) -> bool {
-        match self.phase {
-            0 => matches!(dir, RoadDir::North | RoadDir::South),
-            1 => matches!(dir, RoadDir::East | RoadDir::West),
-            _ => true,
-        }
-    }
-}
-
 /// Marker for traffic light visual entities.
 #[derive(Component)]
 struct TrafficLightVisual;
@@ -111,147 +78,24 @@ struct TrafficLightVisual;
 pub struct IntersectionIndex {
     /// Map version this index was built for.
     pub version: u64,
-    /// All detected intersections by position.
-    pub intersections: Vec<Intersection>,
     /// Set of positions with traffic lights for quick lookup.
     pub traffic_light_positions: HashSet<TilePos>,
 }
 
-impl IntersectionIndex {
-    #[allow(dead_code)]
-    pub fn get(&self, pos: TilePos) -> Option<&Intersection> {
-        self.intersections.iter().find(|i| i.pos == pos)
-    }
-
-    #[allow(dead_code)]
-    pub fn has_traffic_light(&self, pos: TilePos) -> bool {
-        self.traffic_light_positions.contains(&pos)
-    }
-}
-
 fn reset_intersections(mut index: ResMut<IntersectionIndex>) {
     index.version = 0;
-    index.intersections.clear();
     index.traffic_light_positions.clear();
 }
 
 /// Detect intersections where multiple road directions meet.
-fn detect_intersections(
-    grid: Res<MapGrid>,
-    gv: Res<GraphVersion>,
-    mut index: ResMut<IntersectionIndex>,
-) {
+/// Currently only tracks version for synchronization; intersection data is not used yet.
+fn detect_intersections(gv: Res<GraphVersion>, mut index: ResMut<IntersectionIndex>) {
     if index.version == gv.0 {
         return;
     }
 
     index.version = gv.0;
-    index.intersections.clear();
     // Keep traffic_light_positions - they persist until explicitly removed.
-
-    for y in 0..grid.height {
-        for x in 0..grid.width {
-            let pos = TilePos { x, y };
-            let Some(cell) = grid.get(pos) else {
-                continue;
-            };
-            if !cell.road.is_some() {
-                continue;
-            }
-
-            // Check all 4 neighbors for road tiles with different directions.
-            // Intersection nodes are represented as `RoadDir::None` (see road build logic).
-            let mut directions = HashSet::new();
-            if cell.road.dir != RoadDir::None {
-                directions.insert(cell.road.dir);
-            }
-
-            let neighbors = [
-                TilePos { x: x - 1, y },
-                TilePos { x: x + 1, y },
-                TilePos { x, y: y - 1 },
-                TilePos { x, y: y + 1 },
-            ];
-
-            for npos in neighbors {
-                if let Some(ncell) = grid.get(npos)
-                    && ncell.road.is_some()
-                    && ncell.road.dir != RoadDir::None
-                {
-                    directions.insert(ncell.road.dir);
-                }
-            }
-
-            // An intersection is either:
-            // - explicitly marked (`dir: None`) by the road builder, or
-            // - a tile where 3+ distinct directions meet.
-            if cell.road.dir == RoadDir::None || directions.len() >= 3 {
-                let has_light = index.traffic_light_positions.contains(&pos);
-                index.intersections.push(Intersection {
-                    pos,
-                    directions,
-                    has_traffic_light: has_light,
-                });
-            }
-        }
-    }
-}
-
-/// Handle commands to place/remove traffic lights.
-fn handle_traffic_light_commands(
-    mut reader: MessageReader<GameCommand>,
-    mut index: ResMut<IntersectionIndex>,
-    mut commands: Commands,
-    q_lights: Query<(Entity, &TrafficLight)>,
-) {
-    for cmd in reader.read() {
-        match cmd {
-            GameCommand::PlaceTrafficLight { pos } => {
-                // Only allow placing at intersections.
-                let is_intersection = index.intersections.iter().any(|i| i.pos == *pos);
-                if !is_intersection {
-                    continue;
-                }
-
-                if index.traffic_light_positions.contains(pos) {
-                    continue;
-                }
-
-                index.traffic_light_positions.insert(*pos);
-
-                // Update intersection data.
-                if let Some(intersection) = index.intersections.iter_mut().find(|i| i.pos == *pos) {
-                    intersection.has_traffic_light = true;
-                }
-
-                // Spawn traffic light entity.
-                commands.spawn(TrafficLight {
-                    pos: *pos,
-                    ..default()
-                });
-            }
-            GameCommand::RemoveTrafficLight { pos } => {
-                if !index.traffic_light_positions.contains(pos) {
-                    continue;
-                }
-
-                index.traffic_light_positions.remove(pos);
-
-                // Update intersection data.
-                if let Some(intersection) = index.intersections.iter_mut().find(|i| i.pos == *pos) {
-                    intersection.has_traffic_light = false;
-                }
-
-                // Despawn traffic light entity.
-                for (entity, light) in &q_lights {
-                    if light.pos == *pos {
-                        commands.entity(entity).despawn();
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
 }
 
 /// Update traffic light phases.

@@ -42,6 +42,7 @@ pub struct ZonePlacementCache {
 }
 
 /// True if `pos` is eligible for zoning placement (R/C/I).
+/// Note: This does NOT check if a zone already exists - zones can be overwritten.
 pub fn can_zone_tile(grid: &MapGrid, pos: TilePos) -> bool {
     let Some(cell) = grid.get(pos) else {
         return false;
@@ -99,6 +100,7 @@ fn update_zone_placement_cache(
         return;
     }
 
+    // Clear and recompute cache when roads change.
     cache.valid_positions.clear();
     cache.graph_version = graph_version.0;
 
