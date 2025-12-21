@@ -1,0 +1,7 @@
+(
+    max_active_vehicles: 1500,
+    max_route_plans_per_tick: 64,
+    heat_ema_decay: 0.92,
+    // true = right-hand traffic (US/Russia), false = left-hand traffic (UK/Japan)
+    drive_on_right: true,
+)

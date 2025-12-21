@@ -8,6 +8,7 @@ use rand::prelude::*;
 use std::collections::HashSet;
 
 use crate::game::commands::GameCommand;
+use crate::game::demand::RciDemand;
 use crate::game::map::{BuildingKind, DirtyTiles, MapConfig, MapGrid, MapSeed, TilePos};
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
@@ -18,10 +19,14 @@ pub struct BuildingsPlugin;
 
 impl Plugin for BuildingsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<BuildingGrowthClock>()
+        app.init_resource::<BuildingTuning>()
+            .init_resource::<BuildingGrowthClock>()
             .init_resource::<BuildingGrowthRng>()
             .add_systems(OnEnter(AppState::MainMenu), cleanup_buildings)
-            .add_systems(OnEnter(AppState::InGame), seed_growth_rng_from_map)
+            .add_systems(
+                OnEnter(AppState::InGame),
+                (seed_growth_rng_from_map, apply_building_tuning),
+            )
             .add_systems(
                 Update,
                 reset_growth_rng_on_new_map
@@ -30,7 +35,11 @@ impl Plugin for BuildingsPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                (grow_buildings, despawn_invalid_buildings)
+                (
+                    grow_buildings,
+                    building_decay_no_road_access,
+                    despawn_invalid_buildings,
+                )
                     .in_set(GameSet::Sim)
                     .run_if(in_state(AppState::InGame)),
             );
@@ -44,6 +53,31 @@ pub struct Building {
     pub capacity_residents: u16,
     pub capacity_jobs: u16,
 }
+
+/// Externalized tuning for building growth/decay (MVP).
+///
+/// Loaded optionally via `ConfigLoaderPlugin` from `assets/config/buildings.ron`.
+#[derive(Resource, serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct BuildingTuning {
+    /// How often the growth system attempts to spawn buildings (seconds, sim time).
+    pub growth_period_secs: f32,
+}
+
+impl Default for BuildingTuning {
+    fn default() -> Self {
+        Self {
+            growth_period_secs: 0.6,
+        }
+    }
+}
+
+/// When a building loses road access, start a demolition countdown.
+#[derive(Component, Debug, Copy, Clone)]
+struct NoRoadAccessDecay {
+    remaining_secs: f32,
+}
+
+const NO_ROAD_ACCESS_GRACE_SECS: f32 = 20.0;
 
 #[derive(Resource)]
 struct BuildingGrowthClock {
@@ -71,6 +105,11 @@ impl Default for BuildingGrowthClock {
     }
 }
 
+fn apply_building_tuning(tuning: Res<BuildingTuning>, mut clock: ResMut<BuildingGrowthClock>) {
+    let secs = tuning.growth_period_secs.max(0.05);
+    clock.timer = Timer::from_seconds(secs, TimerMode::Repeating);
+}
+
 fn cleanup_buildings(mut commands: Commands, q: Query<Entity, With<Building>>) {
     for e in &q {
         commands.entity(e).despawn();
@@ -94,10 +133,74 @@ fn despawn_invalid_buildings(
     }
 }
 
+fn building_decay_no_road_access(
+    time: Res<Time<Fixed>>,
+    ui: Res<UiState>,
+    mut commands: Commands,
+    mut grid: ResMut<MapGrid>,
+    mut dirty: ResMut<DirtyTiles>,
+    mut city: ResMut<City>,
+    mut q: Query<(Entity, &Building, Option<&mut NoRoadAccessDecay>)>,
+) {
+    let speed = ui.sim_speed.multiplier();
+    if speed <= 0.0 {
+        return;
+    }
+    let dt = time.delta_secs() * speed.clamp(0.0, 8.0);
+
+    for (e, b, decay) in q.iter_mut() {
+        let has_access = has_adjacent_road(&grid, b.pos);
+
+        if has_access {
+            if decay.is_some() {
+                commands.entity(e).remove::<NoRoadAccessDecay>();
+            }
+            continue;
+        }
+
+        // No access: start or tick countdown.
+        let mut remaining = decay
+            .as_deref()
+            .map(|d| d.remaining_secs)
+            .unwrap_or(NO_ROAD_ACCESS_GRACE_SECS);
+        remaining -= dt;
+
+        if remaining > 0.0 {
+            commands.entity(e).insert(NoRoadAccessDecay {
+                remaining_secs: remaining,
+            });
+            continue;
+        }
+
+        // Demolish: remove from sim state and despawn entity.
+        let Some(mut cell) = grid.get(b.pos) else {
+            commands.entity(e).despawn();
+            continue;
+        };
+        if cell.building != Some(b.kind) {
+            commands.entity(e).despawn();
+            continue;
+        }
+        cell.building = None;
+        grid.set(b.pos, cell);
+        if let Some(idx) = grid.idx(b.pos) {
+            dirty.mark(idx);
+        }
+
+        // Minimal city stat rollback (symmetry with growth).
+        if b.kind == BuildingKind::Residential {
+            city.population = city.population.saturating_sub(b.capacity_residents as u32);
+        }
+
+        commands.entity(e).despawn();
+    }
+}
+
 #[derive(SystemParam)]
 struct GrowBuildingsParams<'w, 's> {
     time: Res<'w, Time<Fixed>>,
     ui: Res<'w, UiState>,
+    demand: Res<'w, RciDemand>,
     cfg: Res<'w, MapConfig>,
     clock: ResMut<'w, BuildingGrowthClock>,
     rng: ResMut<'w, BuildingGrowthRng>,
@@ -142,7 +245,7 @@ fn grow_buildings(mut p: GrowBuildingsParams) {
             break;
         }
 
-        let idx = p.rng.rng.gen_range(0..len);
+        let idx = p.rng.rng.random_range(0..len);
         let x = (idx % (p.grid.width as usize)) as i32;
         let y = (idx / (p.grid.width as usize)) as i32;
         let pos = TilePos { x, y };
@@ -154,13 +257,16 @@ fn grow_buildings(mut p: GrowBuildingsParams) {
         let Some(mut cell) = p.grid.get(pos) else {
             continue;
         };
-        if cell.water || cell.road || cell.building.is_some() {
+        if cell.water || cell.road.is_some() || cell.building.is_some() {
             continue;
         }
 
         let Some(kind) = BuildingKind::from_zone(cell.zone) else {
             continue;
         };
+        if !demand_allows_growth(&p.demand, kind) {
+            continue;
+        }
         if !has_adjacent_road(&p.grid, pos) {
             continue;
         }
@@ -185,6 +291,15 @@ fn grow_buildings(mut p: GrowBuildingsParams) {
     }
 }
 
+fn demand_allows_growth(demand: &RciDemand, kind: BuildingKind) -> bool {
+    match kind {
+        BuildingKind::Residential => demand.residential > 0.0,
+        BuildingKind::Commercial => demand.commercial > 0.0,
+        BuildingKind::Industrial => demand.industrial > 0.0,
+        _ => true,
+    }
+}
+
 fn has_adjacent_road(grid: &MapGrid, pos: TilePos) -> bool {
     for npos in [
         TilePos {
@@ -206,7 +321,7 @@ fn has_adjacent_road(grid: &MapGrid, pos: TilePos) -> bool {
     ] {
         if let Some(cell) = grid.get(npos)
             && !cell.water
-            && cell.road
+            && cell.road.is_some()
         {
             return true;
         }

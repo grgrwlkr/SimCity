@@ -4,14 +4,19 @@
 //! "what is saved" contract stable before implementing M7 Save/Load.
 
 use bevy::ecs::message::MessageReader;
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::game::citizens::CitizenState;
 use crate::game::citizens::{Citizen, CitizenWorkplace};
 use crate::game::commands::GameCommand;
+use crate::game::emergencies::{EmergencyManager, EmergencyStats};
 use crate::game::ids::{CitizenId, CitizenIdComp, CitizenIdGen};
 use crate::game::map::{BuildingKind, TileKind, TilePos, ZoneKind};
 use crate::game::map::{MapGrid, MapSeed};
+use crate::game::roads::RoadCell;
+use crate::game::services::ServiceKind;
+use crate::game::services::ServiceStation;
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
@@ -40,6 +45,26 @@ pub struct SaveGameV1 {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct SaveGameV2 {
+    pub save_version: u32, // = 2
+    pub seed: u64,
+    pub map: MapGridV1,
+    pub city: City,
+    pub citizens: Vec<CitizenSnapshotV1>,
+    pub next_citizen_id: u64,
+    pub service_stations: Vec<ServiceStationSnapshot>,
+    pub emergency_stats: EmergencyStats,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Copy, Clone)]
+pub struct ServiceStationSnapshot {
+    pub kind: ServiceKind,
+    pub pos: TilePos,
+    pub total_vehicles: u8,
+    pub available_vehicles: u8,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct MapGridV1 {
     pub width: i32,
     pub height: i32,
@@ -51,7 +76,7 @@ pub struct MapTileV1 {
     pub height: u8,
     pub water: bool,
     pub terrain: TileKind,
-    pub road: bool,
+    pub road: RoadCell,
     pub zone: ZoneKind,
     pub building: Option<BuildingKind>,
 }
@@ -113,19 +138,55 @@ fn snapshot_savegame_v1(
     }
 }
 
-fn dump_save_contract(
-    mut reader: MessageReader<GameCommand>,
-    seed: Res<MapSeed>,
-    grid: Res<MapGrid>,
-    city: Res<City>,
-    id_gen: Res<CitizenIdGen>,
-    q_citizens: Query<(&CitizenIdComp, &Citizen, Option<&CitizenWorkplace>)>,
-) {
+fn snapshot_savegame_v2(
+    seed: &MapSeed,
+    grid: &MapGrid,
+    city: &City,
+    citizens: &Query<(&CitizenIdComp, &Citizen, Option<&CitizenWorkplace>)>,
+    id_gen: &CitizenIdGen,
+    stations: &Query<&ServiceStation>,
+    emergency_manager: Option<&EmergencyManager>,
+) -> SaveGameV2 {
+    let v1 = snapshot_savegame_v1(seed, grid, city, citizens, id_gen);
+
+    let mut out_stations = Vec::new();
+    for s in stations.iter() {
+        out_stations.push(ServiceStationSnapshot {
+            kind: s.kind,
+            pos: s.pos,
+            total_vehicles: s.total_vehicles,
+            available_vehicles: s.available_vehicles,
+        });
+    }
+
+    SaveGameV2 {
+        save_version: 2,
+        seed: v1.seed,
+        map: v1.map,
+        city: v1.city,
+        citizens: v1.citizens,
+        next_citizen_id: v1.next_citizen_id,
+        service_stations: out_stations,
+        emergency_stats: emergency_manager
+            .map(|m| m.stats.clone())
+            .unwrap_or_default(),
+    }
+}
+
+fn dump_save_contract(mut reader: MessageReader<GameCommand>, p: DumpParams) {
     for cmd in reader.read() {
         if !matches!(cmd, GameCommand::DumpSaveContract) {
             continue;
         }
-        let save = snapshot_savegame_v1(&seed, &grid, &city, &q_citizens, &id_gen);
+        let save = snapshot_savegame_v2(
+            &p.seed,
+            &p.grid,
+            &p.city,
+            &p.q_citizens,
+            &p.id_gen,
+            &p.q_stations,
+            p.emergency_manager.as_deref(),
+        );
 
         // Touch snapshot fields so the contract stays "live" in the binary (no dead_code).
         let (t_height, t_water, t_terrain, t_road, t_zone, t_building) =
@@ -154,8 +215,19 @@ fn dump_save_contract(
             (None, None, None, None, None)
         };
 
+        let (s_kind, s_pos, s_total, s_avail) = if let Some(s) = save.service_stations.first() {
+            (
+                Some(s.kind),
+                Some(s.pos),
+                Some(s.total_vehicles),
+                Some(s.available_vehicles),
+            )
+        } else {
+            (None, None, None, None)
+        };
+
         info!(
-            "SaveContract v{}: seed={} map={}x{} tiles={} citizens={} next_citizen_id={} money={} day={} tile0={:?}/{:?}/{:?}/{:?}/{:?}/{:?} citizen0={:?}/{:?}/{:?}/{:?}/{:?}",
+            "SaveContract v{}: seed={} map={}x{} tiles={} citizens={} next_citizen_id={} money={} day={} stations={} emergency_stats={:?} tile0={:?}/{:?}/{:?}/{:?}/{:?}/{:?} citizen0={:?}/{:?}/{:?}/{:?}/{:?} station0={:?}/{:?}/{:?}/{:?}",
             save.save_version,
             save.seed,
             save.map.width,
@@ -165,6 +237,8 @@ fn dump_save_contract(
             save.next_citizen_id,
             save.city.money,
             save.city.day,
+            save.service_stations.len(),
+            save.emergency_stats,
             t_height,
             t_water,
             t_terrain,
@@ -175,7 +249,30 @@ fn dump_save_contract(
             c_home,
             c_last,
             c_state,
-            c_workplace
+            c_workplace,
+            s_kind,
+            s_pos,
+            s_total,
+            s_avail
         );
     }
+}
+
+#[derive(SystemParam)]
+struct DumpParams<'w, 's> {
+    seed: Res<'w, MapSeed>,
+    grid: Res<'w, MapGrid>,
+    city: Res<'w, City>,
+    id_gen: Res<'w, CitizenIdGen>,
+    q_citizens: Query<
+        'w,
+        's,
+        (
+            &'static CitizenIdComp,
+            &'static Citizen,
+            Option<&'static CitizenWorkplace>,
+        ),
+    >,
+    q_stations: Query<'w, 's, &'static ServiceStation>,
+    emergency_manager: Option<Res<'w, EmergencyManager>>,
 }

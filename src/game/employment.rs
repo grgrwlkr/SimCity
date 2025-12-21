@@ -7,12 +7,16 @@ use std::collections::HashMap;
 
 use crate::game::buildings::Building;
 use crate::game::citizens::{Citizen, CitizenWorkplace};
-use crate::game::map::{BuildingKind, MapGrid, TilePos, astar_path};
+use crate::game::map::{BuildingKind, MapGrid, TilePos};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
+use crate::game::traffic::TrafficOccupancy;
 use bevy::ecs::system::SystemParam;
 
-use crate::game::transport::{PathCache, PathfindingConfig, RoadGraph, find_road_path_cached};
+use crate::game::roads::RoadDir;
+use crate::game::transport::{
+    PathCache, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph, find_road_path_cached,
+};
 
 pub struct EmploymentPlugin;
 
@@ -20,6 +24,13 @@ impl Plugin for EmploymentPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<EmploymentStats>()
             .init_resource::<EmploymentConfig>()
+            .add_systems(
+                FixedUpdate,
+                clear_invalid_workplaces
+                    .in_set(GameSet::Sim)
+                    .before(assign_jobs)
+                    .run_if(in_state(AppState::InGame)),
+            )
             .add_systems(
                 FixedUpdate,
                 assign_jobs
@@ -35,7 +46,7 @@ impl Plugin for EmploymentPlugin {
     }
 }
 
-#[derive(Resource, Debug, Clone)]
+#[derive(Resource, serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct EmploymentConfig {
     /// Max new assignments per sim tick.
     pub max_assignments_per_tick: usize,
@@ -68,6 +79,8 @@ struct AssignJobsParams<'w, 's> {
     grid: Res<'w, MapGrid>,
     time: Res<'w, Time<Fixed>>,
     graph: Res<'w, RoadGraph>,
+    regions: Res<'w, RegionGraph>,
+    traffic: Res<'w, TrafficOccupancy>,
     path_cfg: Res<'w, PathfindingConfig>,
     path_cache: ResMut<'w, PathCache>,
     cfg: Res<'w, EmploymentConfig>,
@@ -103,7 +116,7 @@ fn assign_jobs(mut p: AssignJobsParams) {
         return;
     }
 
-    let mut rng = thread_rng();
+    let mut rng = rand::rng();
     jobs.shuffle(&mut rng);
 
     let mut assigned = 0usize;
@@ -115,9 +128,6 @@ fn assign_jobs(mut p: AssignJobsParams) {
             continue;
         }
         let home = citizen.home;
-        let Some(home_road) = adjacent_road(&p.grid, home) else {
-            continue;
-        };
 
         // Search a limited number of candidate workplaces for reachability.
         let mut best: Option<(TilePos, usize)> = None; // (job_pos, path_len)
@@ -130,21 +140,24 @@ fn assign_jobs(mut p: AssignJobsParams) {
             if used >= cap {
                 continue;
             }
-            let Some(job_road) = adjacent_road(&p.grid, job_pos) else {
+            let Some(home_road) = adjacent_road_towards(&p.grid, home, job_pos) else {
                 continue;
             };
-            let mut path = find_road_path_cached(
-                p.time.elapsed_secs_f64(),
-                &p.path_cfg,
-                &mut p.path_cache,
-                &p.graph,
-                home_road,
-                job_road,
-            );
-            if path.is_empty() {
-                // Fallback if road graph isn't ready.
-                path = astar_path(&p.grid, home_road, job_road);
-            }
+            let Some(job_road) = adjacent_road_towards(&p.grid, job_pos, home) else {
+                continue;
+            };
+            let mut ctx = PathfindingCtx {
+                time_now_sec: p.time.elapsed_secs_f64(),
+                cfg: &p.path_cfg,
+                cache: &mut p.path_cache,
+                graph: &p.graph,
+                regions: Some(&p.regions),
+                traffic: &p.traffic,
+                grid: &p.grid,
+            };
+
+            let path = find_road_path_cached(&mut ctx, home_road, job_road);
+            // No fallback to astar_path - vehicles must follow lane rules.
             if path.is_empty() {
                 continue;
             }
@@ -163,6 +176,21 @@ fn assign_jobs(mut p: AssignJobsParams) {
         *taken.entry(job_pos).or_insert(0) =
             taken.get(&job_pos).copied().unwrap_or(0).saturating_add(1);
         assigned += 1;
+    }
+}
+
+fn clear_invalid_workplaces(grid: Res<MapGrid>, mut q: Query<&mut CitizenWorkplace>) {
+    for mut wp in q.iter_mut() {
+        let Some(pos) = wp.workplace else {
+            continue;
+        };
+        let kind = grid.get(pos).and_then(|c| c.building);
+        if !matches!(
+            kind,
+            Some(BuildingKind::Commercial) | Some(BuildingKind::Industrial)
+        ) {
+            wp.workplace = None;
+        }
     }
 }
 
@@ -209,14 +237,29 @@ fn compute_employment_stats(
     };
 }
 
-fn adjacent_road(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
-    if let Some(cell) = grid.get(pos)
-        && !cell.water
-        && cell.road
-    {
-        return Some(pos);
+fn desired_dir(from: TilePos, to: TilePos) -> RoadDir {
+    let dx = to.x - from.x;
+    let dy = to.y - from.y;
+    if dx.abs() >= dy.abs() {
+        if dx >= 0 {
+            RoadDir::East
+        } else {
+            RoadDir::West
+        }
+    } else if dy >= 0 {
+        RoadDir::North
+    } else {
+        RoadDir::South
     }
-    for npos in [
+}
+
+fn adjacent_road_towards(grid: &MapGrid, pos: TilePos, target: TilePos) -> Option<TilePos> {
+    let want = desired_dir(pos, target);
+    let mut best_any = None;
+
+    // Check pos itself first, then 4-neighbors.
+    let candidates = [
+        pos,
         TilePos {
             x: pos.x - 1,
             y: pos.y,
@@ -233,13 +276,19 @@ fn adjacent_road(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
             x: pos.x,
             y: pos.y + 1,
         },
-    ] {
-        if let Some(cell) = grid.get(npos)
+    ];
+
+    for cpos in candidates {
+        if let Some(cell) = grid.get(cpos)
             && !cell.water
-            && cell.road
+            && cell.road.is_some()
         {
-            return Some(npos);
+            best_any = best_any.or(Some(cpos));
+            if cell.road.dir == want {
+                return Some(cpos);
+            }
         }
     }
-    None
+
+    best_any
 }

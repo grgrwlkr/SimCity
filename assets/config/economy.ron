@@ -1,0 +1,8 @@
+(
+    tax_per_citizen: 2,
+    income_per_commercial: 6,
+    income_per_industrial: 8,
+    road_maintenance: 1,
+    building_maintenance: 2,
+    happiness_target: 0.7,
+)

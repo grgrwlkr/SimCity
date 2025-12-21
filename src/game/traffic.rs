@@ -4,14 +4,23 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use rand::prelude::*;
 
+use crate::game::camera::MainCamera;
 use crate::game::commands::GameCommand;
 use crate::game::ids::CitizenId;
-use crate::game::map::{MapConfig, MapGrid, TilePos, astar_path};
+use crate::game::map::{MapConfig, MapGrid, TilePos};
+use crate::game::public_transport::{
+    BusVehicle, PendingTransitTrips, PendingTrip, PublicTransportConfig, PublicTransportIndex,
+};
+use crate::game::roads::RoadDir;
+use crate::game::services::ServiceVehicle;
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
-use crate::game::transport::{PathCache, PathfindingConfig, RoadGraph, find_road_path_cached};
+use crate::game::transport::{
+    PathCache, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph, find_road_path_cached,
+};
 use crate::game::trips::{TripFinished, TripRequested};
 use crate::game::ui_state::{OverlayMode, UiState};
+use bevy::window::PrimaryWindow;
 
 /// Vehicle entity – stores route and visual offset.
 #[derive(Component)]
@@ -96,20 +105,28 @@ impl Plugin for TrafficPlugin {
                     .run_if(in_state(AppState::InGame)),
             )
             // Rendering
-            .add_systems(Update, render_traffic_overlay.in_set(GameSet::RenderSync));
+            .add_systems(
+                Update,
+                (render_traffic_overlay, cull_vehicle_lod).in_set(GameSet::RenderSync),
+            );
     }
 }
 
-#[derive(Resource, Debug, Clone)]
-struct TrafficConfig {
+#[derive(Resource, serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct TrafficConfig {
     /// Hard cap on active vehicles (debug + trip-driven).
     max_active_vehicles: usize,
     /// Guardrail: max number of route plans performed per tick.
     max_route_plans_per_tick: usize,
-    /// Congestion capacity per road tile (MVP constant).
-    capacity_per_tile: f32,
     /// EMA decay for heatmap in [0..1). Higher = slower to change.
     heat_ema_decay: f32,
+    /// If true, traffic drives on the right (US/Russia). If false, drives on the left (UK/Japan).
+    #[serde(default = "default_drive_on_right")]
+    pub drive_on_right: bool,
+}
+
+fn default_drive_on_right() -> bool {
+    true
 }
 
 impl Default for TrafficConfig {
@@ -117,8 +134,8 @@ impl Default for TrafficConfig {
         Self {
             max_active_vehicles: 1500,
             max_route_plans_per_tick: 64,
-            capacity_per_tile: 4.0,
             heat_ema_decay: 0.92,
+            drive_on_right: true,
         }
     }
 }
@@ -158,7 +175,7 @@ fn spawn_debug_vehicles(
                 continue;
             }
 
-            let mut rng = thread_rng();
+            let mut rng = rand::rng();
 
             let mut spawned = 0u32;
             let mut total = p.q_vehicles.iter().count();
@@ -168,27 +185,29 @@ fn spawn_debug_vehicles(
                     break;
                 }
                 // Pick random start/goal from road tiles.
-                let start_i = rng.gen_range(0..roads.len());
-                let mut goal_i = rng.gen_range(0..roads.len());
+                let start_i = rng.random_range(0..roads.len());
+                let mut goal_i = rng.random_range(0..roads.len());
                 if goal_i == start_i {
                     goal_i = (goal_i + 1) % roads.len();
                 }
                 let start = roads[start_i];
                 let goal = roads[goal_i];
 
-                let mut route = find_road_path_cached(
-                    p.time.elapsed_secs_f64(),
-                    &p.path_cfg,
-                    &mut p.path_cache,
-                    &p.graph,
-                    start,
-                    goal,
-                );
+                let mut ctx = PathfindingCtx {
+                    time_now_sec: p.time.elapsed_secs_f64(),
+                    cfg: &p.path_cfg,
+                    cache: &mut p.path_cache,
+                    graph: &p.graph,
+                    regions: Some(&p.regions),
+                    traffic: &p.traffic,
+                    grid: &p.grid,
+                };
+
+                let route = find_road_path_cached(&mut ctx, start, goal);
+                // No fallback to astar_path - vehicles must follow lane rules.
                 if route.is_empty() {
-                    // Fallback: if graph isn't rebuilt yet this frame, use grid-based A*.
-                    route = astar_path(&p.grid, start, goal);
-                }
-                if route.is_empty() {
+                    // Debug: log when no valid path is found
+                    // println!("[traffic] No valid path from {:?} to {:?}", start, goal);
                     continue;
                 }
 
@@ -204,7 +223,7 @@ fn spawn_debug_vehicles(
                     Vehicle {
                         route,
                         progress: 0.0,
-                        speed: 60.0 + rng.gen_range(0.0..40.0),
+                        speed: 60.0 + rng.random_range(0.0..40.0),
                     },
                 ));
                 spawned += 1;
@@ -224,6 +243,8 @@ struct SpawnDebugVehiclesParams<'w, 's> {
     cfg: Res<'w, MapConfig>,
     time: Res<'w, Time>,
     graph: Res<'w, RoadGraph>,
+    regions: Res<'w, RegionGraph>,
+    traffic: Res<'w, TrafficOccupancy>,
     path_cfg: Res<'w, PathfindingConfig>,
     path_cache: ResMut<'w, PathCache>,
     q_vehicles: Query<'w, 's, Entity, With<Vehicle>>,
@@ -243,27 +264,50 @@ fn spawn_trip_vehicles(
         if total >= p.traffic_cfg.max_active_vehicles {
             break;
         }
-        let Some(start) = adjacent_road(&p.grid, msg.from) else {
+        let Some(start) = adjacent_road_towards(&p.grid, msg.from, msg.to) else {
             continue;
         };
-        let Some(goal) = adjacent_road(&p.grid, msg.to) else {
+        let Some(goal) = adjacent_road_towards(&p.grid, msg.to, msg.from) else {
             continue;
         };
-        let mut route = find_road_path_cached(
-            p.time.elapsed_secs_f64(),
-            &p.path_cfg,
-            &mut p.path_cache,
-            &p.graph,
-            start,
-            goal,
-        );
-        if route.is_empty() {
-            // Fallback: if graph isn't built (or roads changed mid-frame), use grid-based A*.
-            route = astar_path(&p.grid, start, goal);
-        }
+        let mut ctx = PathfindingCtx {
+            time_now_sec: p.time.elapsed_secs_f64(),
+            cfg: &p.path_cfg,
+            cache: &mut p.path_cache,
+            graph: &p.graph,
+            regions: Some(&p.regions),
+            traffic: &p.traffic,
+            grid: &p.grid,
+        };
+
+        let route = find_road_path_cached(&mut ctx, start, goal);
+        // No fallback to astar_path - vehicles must follow lane rules.
         if route.is_empty() {
             continue;
         }
+
+        // Public transport (MVP): if both endpoints are bus stops, optionally satisfy the trip
+        // without spawning an individual car.
+        if let (Some(pt), Some(pt_cfg), Some(pending)) =
+            (p.pt.as_deref(), p.pt_cfg.as_deref(), p.pt_pending.as_mut())
+            && pt.stops.contains(&start)
+            && pt.stops.contains(&goal)
+        {
+            let mut rng = rand::rng();
+            if rng.random_range(0.0..1.0) <= pt_cfg.adoption_rate.clamp(0.0, 1.0) {
+                let dist_world = (route.len() as f32) * p.cfg.tile_size;
+                let travel_secs =
+                    (dist_world / pt_cfg.bus_speed.max(1.0)) + pt_cfg.wait_secs.max(0.0);
+                pending.trips.push(PendingTrip {
+                    citizen: msg.citizen,
+                    purpose: msg.purpose,
+                    remaining_secs: travel_secs,
+                });
+                planned += 1;
+                continue;
+            }
+        }
+
         let world_pos = tile_to_world(&p.cfg, start);
         p.commands.spawn((
             Sprite {
@@ -294,8 +338,13 @@ struct SpawnTripVehiclesParams<'w, 's> {
     cfg: Res<'w, MapConfig>,
     time: Res<'w, Time<bevy::time::Fixed>>,
     graph: Res<'w, RoadGraph>,
+    regions: Res<'w, RegionGraph>,
+    traffic: Res<'w, TrafficOccupancy>,
     path_cfg: Res<'w, PathfindingConfig>,
     path_cache: ResMut<'w, PathCache>,
+    pt_cfg: Option<Res<'w, PublicTransportConfig>>,
+    pt: Option<Res<'w, PublicTransportIndex>>,
+    pt_pending: Option<ResMut<'w, PendingTransitTrips>>,
     q_vehicles: Query<'w, 's, Entity, With<Vehicle>>,
     traffic_cfg: Res<'w, TrafficConfig>,
 }
@@ -325,23 +374,33 @@ fn clear_vehicles(
 }
 
 /// Move vehicles along their routes.
+#[allow(clippy::type_complexity)]
 fn move_vehicles(
     time: Res<Time>,
     cfg: Res<MapConfig>,
     mut commands: Commands,
     mut finished: bevy::ecs::message::MessageWriter<TripFinished>,
-    mut q: Query<(Entity, &mut Vehicle, &mut Transform, Option<&TripPassenger>)>,
+    mut q: Query<(
+        Entity,
+        &mut Vehicle,
+        &mut Transform,
+        Option<&TripPassenger>,
+        Option<&ServiceVehicle>,
+        Option<&BusVehicle>,
+    )>,
 ) {
-    for (entity, mut v, mut tf, passenger) in q.iter_mut() {
+    for (entity, mut v, mut tf, passenger, service_vehicle, bus_vehicle) in q.iter_mut() {
         if v.route.is_empty() {
-            // Arrived – despawn.
-            if let Some(p) = passenger {
-                finished.write(TripFinished {
-                    citizen: p.citizen,
-                    purpose: p.purpose,
-                });
+            // Arrived – despawn trip vehicles, keep service vehicles (idle).
+            if service_vehicle.is_none() && bus_vehicle.is_none() {
+                if let Some(p) = passenger {
+                    finished.write(TripFinished {
+                        citizen: p.citizen,
+                        purpose: p.purpose,
+                    });
+                }
+                commands.entity(entity).despawn();
             }
-            commands.entity(entity).despawn();
             continue;
         }
 
@@ -355,13 +414,15 @@ fn move_vehicles(
         }
 
         if v.route.is_empty() {
-            if let Some(p) = passenger {
-                finished.write(TripFinished {
-                    citizen: p.citizen,
-                    purpose: p.purpose,
-                });
+            if service_vehicle.is_none() && bus_vehicle.is_none() {
+                if let Some(p) = passenger {
+                    finished.write(TripFinished {
+                        citizen: p.citizen,
+                        purpose: p.purpose,
+                    });
+                }
+                commands.entity(entity).despawn();
             }
-            commands.entity(entity).despawn();
             continue;
         }
 
@@ -419,14 +480,13 @@ fn update_traffic_occupancy(
     let mut max_cong = 0.0f32;
 
     let decay = cfg.heat_ema_decay.clamp(0.0, 0.999);
-    let cap = cfg.capacity_per_tile.max(0.01);
 
     for y in 0..grid.height {
         for x in 0..grid.width {
             let pos = TilePos { x, y };
             let Some(ti) = grid.idx(pos) else { continue };
             let Some(cell) = grid.get(pos) else { continue };
-            if cell.water || !cell.road {
+            if cell.water || !cell.road.is_some() {
                 continue;
             }
             road_tiles += 1;
@@ -434,6 +494,7 @@ fn update_traffic_occupancy(
             let c = occ.per_tick_vehicles[ti] as f32;
             vehicles_on_roads = vehicles_on_roads.saturating_add(occ.per_tick_vehicles[ti] as u32);
 
+            let cap = (cell.road.kind.capacity_per_lane_tile() as f32).max(1.0);
             let cong = (c / cap).clamp(0.0, 1.0);
             sum_cong += cong;
             if cong > max_cong {
@@ -492,7 +553,7 @@ fn render_traffic_overlay(
             let pos = TilePos { x, y };
             let Some(idx) = grid.idx(pos) else { continue };
             let Some(cell) = grid.get(pos) else { continue };
-            if !cell.road {
+            if !cell.road.is_some() {
                 continue;
             }
 
@@ -516,6 +577,60 @@ fn render_traffic_overlay(
     }
 }
 
+/// Simple vehicle LOD: hide vehicles outside the camera viewport.
+fn cull_vehicle_lod(
+    cfg: Res<MapConfig>,
+    q_window: Query<&Window, With<PrimaryWindow>>,
+    q_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    mut q_vehicles: Query<(&Transform, &mut Visibility), With<Vehicle>>,
+) {
+    let Ok(window) = q_window.single() else {
+        return;
+    };
+    let Ok((camera, cam_gt)) = q_camera.single() else {
+        return;
+    };
+
+    let viewport = camera
+        .logical_viewport_size()
+        .unwrap_or(Vec2::new(window.width(), window.height()))
+        .max(Vec2::ONE);
+    let corners = [
+        Vec2::new(0.0, 0.0),
+        Vec2::new(viewport.x, 0.0),
+        Vec2::new(0.0, viewport.y),
+        Vec2::new(viewport.x, viewport.y),
+    ];
+
+    let mut min = Vec2::splat(f32::INFINITY);
+    let mut max = Vec2::splat(f32::NEG_INFINITY);
+    for c in corners {
+        let Ok(w) = camera.viewport_to_world_2d(cam_gt, c) else {
+            // If we can't compute bounds, keep everything visible.
+            for (_, mut vis) in q_vehicles.iter_mut() {
+                *vis = Visibility::Visible;
+            }
+            return;
+        };
+        min = min.min(w);
+        max = max.max(w);
+    }
+
+    let margin = cfg.tile_size * 4.0;
+    let min = min - Vec2::splat(margin);
+    let max = max + Vec2::splat(margin);
+
+    for (tf, mut vis) in q_vehicles.iter_mut() {
+        let p = tf.translation.truncate();
+        let inside = p.x >= min.x && p.x <= max.x && p.y >= min.y && p.y <= max.y;
+        *vis = if inside {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -526,7 +641,7 @@ fn collect_road_tiles(grid: &MapGrid) -> Vec<TilePos> {
         for x in 0..grid.width {
             let pos = TilePos { x, y };
             if let Some(cell) = grid.get(pos)
-                && cell.road
+                && cell.road.is_some()
             {
                 roads.push(pos);
             }
@@ -535,15 +650,29 @@ fn collect_road_tiles(grid: &MapGrid) -> Vec<TilePos> {
     roads
 }
 
-fn adjacent_road(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
-    // If the tile itself is a road, accept it.
-    if let Some(cell) = grid.get(pos)
-        && !cell.water
-        && cell.road
-    {
-        return Some(pos);
+fn desired_dir(from: TilePos, to: TilePos) -> RoadDir {
+    let dx = to.x - from.x;
+    let dy = to.y - from.y;
+    if dx.abs() >= dy.abs() {
+        if dx >= 0 {
+            RoadDir::East
+        } else {
+            RoadDir::West
+        }
+    } else if dy >= 0 {
+        RoadDir::North
+    } else {
+        RoadDir::South
     }
-    for npos in [
+}
+
+fn adjacent_road_towards(grid: &MapGrid, pos: TilePos, target: TilePos) -> Option<TilePos> {
+    let want = desired_dir(pos, target);
+    let mut best_any = None;
+
+    // Check pos itself first, then 4-neighbors.
+    let candidates = [
+        pos,
         TilePos {
             x: pos.x - 1,
             y: pos.y,
@@ -560,15 +689,21 @@ fn adjacent_road(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
             x: pos.x,
             y: pos.y + 1,
         },
-    ] {
-        if let Some(cell) = grid.get(npos)
+    ];
+
+    for cpos in candidates {
+        if let Some(cell) = grid.get(cpos)
             && !cell.water
-            && cell.road
+            && cell.road.is_some()
         {
-            return Some(npos);
+            best_any = best_any.or(Some(cpos));
+            if cell.road.dir == want {
+                return Some(cpos);
+            }
         }
     }
-    None
+
+    best_any
 }
 
 fn tile_to_world(cfg: &MapConfig, pos: TilePos) -> Vec2 {

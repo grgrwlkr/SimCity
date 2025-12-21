@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
-use crate::game::map::{TilePos, ZoneKind};
+use crate::game::map::{BuildingKind, TilePos, ZoneKind};
+use crate::game::roads::RoadCell;
 
 /// Commands produced by UI / input and applied by simulation systems.
 #[derive(Message, Debug, Clone)]
@@ -10,10 +11,13 @@ pub enum GameCommand {
     GenerateMap { seed: u64 },
 
     /// Set the tile kind at the given tile position (MVP build/erase).
-    SetRoad { pos: TilePos, on: bool },
+    SetRoad { pos: TilePos, road: RoadCell },
 
     /// Paint zoning at the given tile position.
     SetZone { pos: TilePos, zone: ZoneKind },
+
+    /// Place a building directly (used for service buildings).
+    PlaceBuilding { pos: TilePos, kind: BuildingKind },
 
     /// Erase player edits (road + zone + building) on the given tile.
     EraseTile { pos: TilePos },
@@ -32,4 +36,12 @@ pub enum GameCommand {
 
     /// Despawn all vehicles (M3 prototype).
     ClearVehicles,
+
+    /// Place a traffic light at an intersection.
+    #[allow(dead_code)]
+    PlaceTrafficLight { pos: TilePos },
+
+    /// Remove a traffic light from an intersection.
+    #[allow(dead_code)]
+    RemoveTrafficLight { pos: TilePos },
 }

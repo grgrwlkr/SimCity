@@ -1,15 +1,26 @@
 use bevy::prelude::*;
 
+mod audio_sfx;
 mod buildings;
 mod camera;
 mod citizens;
 mod commands;
+mod config_loader;
+mod custom_buildings;
+mod day_night;
+mod demand;
 mod economy;
+mod emergencies;
 mod employment;
 mod ids;
+mod intersections;
 mod map;
 mod persistence;
 mod persistence_contract;
+mod public_transport;
+mod roads;
+mod scenarios;
+mod services;
 mod sets;
 mod sim;
 mod sim_events;
@@ -19,6 +30,7 @@ mod transport;
 mod trips;
 mod ui;
 mod ui_state;
+mod zone_placement;
 
 pub struct GamePlugin;
 
@@ -53,17 +65,30 @@ impl Plugin for GamePlugin {
             .add_message::<sim_events::DayAdvanced>()
             .init_resource::<ui_state::UiState>()
             .add_plugins((
+                config_loader::ConfigLoaderPlugin,
+                custom_buildings::CustomBuildingsPlugin,
                 camera::CameraPlugin,
                 buildings::BuildingsPlugin,
                 citizens::CitizensPlugin,
+                demand::DemandPlugin,
                 economy::EconomyPlugin,
+                emergencies::EmergenciesPlugin,
                 employment::EmploymentPlugin,
                 map::MapPlugin,
+                scenarios::ScenariosPlugin,
+            ))
+            .add_plugins((
                 persistence::PersistencePlugin,
                 persistence_contract::PersistenceContractPlugin,
+                public_transport::PublicTransportPlugin,
+                audio_sfx::AudioSfxPlugin,
+                day_night::DayNightPlugin,
+                services::ServicesPlugin,
                 transport::TransportPlugin,
+                zone_placement::ZonePlacementPlugin,
                 sim::SimPlugin,
                 traffic::TrafficPlugin,
+                intersections::IntersectionsPlugin,
                 ui::UiPlugin,
             ));
     }

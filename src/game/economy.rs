@@ -5,6 +5,7 @@ use bevy::prelude::*;
 
 use crate::game::employment::EmploymentStats;
 use crate::game::map::{BuildingKind, MapGrid, TilePos};
+use crate::game::services::ServiceCoverageIndex;
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::sim_events::DayAdvanced;
@@ -23,7 +24,7 @@ impl Plugin for EconomyPlugin {
     }
 }
 
-#[derive(Resource, Debug, Clone)]
+#[derive(Resource, serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct EconomyConfig {
     pub tax_per_citizen: i64,
     pub income_per_commercial: i64,
@@ -51,6 +52,7 @@ fn apply_daily_economy(
     cfg: Res<EconomyConfig>,
     employment: Res<EmploymentStats>,
     grid: Res<MapGrid>,
+    service: Option<Res<ServiceCoverageIndex>>,
     mut city: ResMut<City>,
 ) {
     // Consume all day events (if sim speed is high, multiple days can advance).
@@ -76,6 +78,12 @@ fn apply_daily_economy(
         } else {
             cfg.happiness_target
         };
+        let service_bonus = service
+            .as_deref()
+            // Up to +0.06 happiness target at full coverage.
+            .map(|s| 0.06 * s.overall())
+            .unwrap_or(0.0);
+        let target = (target + service_bonus).clamp(0.0, 1.0);
         city.happiness += (target - city.happiness) * 0.02;
         city.happiness = city.happiness.clamp(0.0, 1.0);
     }
@@ -109,7 +117,7 @@ fn count_world(grid: &MapGrid) -> (u32, BuildingCounts) {
         if cell.water {
             continue;
         }
-        if cell.road {
+        if cell.road.is_some() {
             roads += 1;
         }
         if let Some(kind) = cell.building {
@@ -117,6 +125,10 @@ fn count_world(grid: &MapGrid) -> (u32, BuildingCounts) {
                 BuildingKind::Residential => b.residential += 1,
                 BuildingKind::Commercial => b.commercial += 1,
                 BuildingKind::Industrial => b.industrial += 1,
+                // Service buildings are not part of the current economy MVP accounting.
+                BuildingKind::FireStation
+                | BuildingKind::PoliceStation
+                | BuildingKind::Hospital => {}
             }
         }
     }
