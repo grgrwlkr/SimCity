@@ -272,6 +272,38 @@ fn rebuild_road_graph_inner(grid: &MapGrid, gv: &GraphVersion, graph: &mut RoadG
                 }
             }
 
+            // Check lane type restrictions for turns
+            if next.dir == RoadDir::None {
+                // At intersection - check if lane type allows this movement
+                let is_left_turn = move_dir == cur.dir.left();
+                let is_right_turn = move_dir == cur.dir.right();
+                let is_straight = move_dir == cur.dir;
+
+                match cur.lane_type {
+                    crate::game::roads::LaneType::LeftTurnOnly => {
+                        // Only allow left turn
+                        if !is_left_turn {
+                            return;
+                        }
+                    }
+                    crate::game::roads::LaneType::RightTurnOnly => {
+                        // Only allow right turn
+                        if !is_right_turn {
+                            return;
+                        }
+                    }
+                    crate::game::roads::LaneType::StraightOnly => {
+                        // Only allow straight
+                        if !is_straight {
+                            return;
+                        }
+                    }
+                    crate::game::roads::LaneType::Regular => {
+                        // Regular lane allows all movements
+                    }
+                }
+            }
+
             // Intersection nodes (`dir: None`) are special:
             // - allow entering from straight or valid turn entry
             // - allow leaving only into lanes matching movement direction
@@ -1142,6 +1174,7 @@ mod tests {
                 dir: RoadDir::East,
                 lane: 0,
                 flow: crate::game::roads::RoadFlow::TwoWay,
+                lane_type: crate::game::roads::LaneType::Regular,
             };
             grid.set(pos0, c0);
 
@@ -1151,9 +1184,9 @@ mod tests {
             c1.road = RoadCell {
                 kind: RoadKind::TwoLane,
                 dir: RoadDir::East,
-                lane: 0,
-                flow: crate::game::roads::RoadFlow::TwoWay,
                 lane: 1,
+                flow: crate::game::roads::RoadFlow::TwoWay,
+                lane_type: crate::game::roads::LaneType::Regular,
             };
             grid.set(pos1, c1);
         }

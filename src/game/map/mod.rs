@@ -1039,6 +1039,7 @@ fn emit_road_commands(
                 dir: lane_dir,
                 lane,
                 flow,
+                lane_type: crate::game::roads::LaneType::Regular,
             },
         });
     }
@@ -2230,6 +2231,7 @@ mod tests {
                 dir: RoadDir::East,
                 lane: 0,
                 flow: crate::game::roads::RoadFlow::TwoWay,
+                lane_type: crate::game::roads::LaneType::Regular,
             };
             grid.set(pos, c);
         }
@@ -2259,6 +2261,8 @@ mod tests {
                 kind: RoadKind::TwoLane,
                 dir: RoadDir::East,
                 lane: 0,
+                flow: crate::game::roads::RoadFlow::TwoWay,
+                lane_type: crate::game::roads::LaneType::Regular,
             },
         });
     }
@@ -2277,6 +2281,8 @@ mod tests {
                 kind: RoadKind::TwoLane,
                 dir: RoadDir::East,
                 lane: 0,
+                flow: crate::game::roads::RoadFlow::TwoWay,
+                lane_type: crate::game::roads::LaneType::Regular,
             },
         });
     }

@@ -148,6 +148,22 @@ pub enum RoadFlow {
     OneWay(RoadDir),
 }
 
+/// Lane type - determines allowed movements
+#[derive(
+    serde::Serialize, serde::Deserialize, Debug, Copy, Clone, Eq, PartialEq, Hash, Default,
+)]
+pub enum LaneType {
+    /// Regular lane - can go straight, change lanes, and turn at intersections
+    #[default]
+    Regular,
+    /// Left turn only lane - must turn left at next intersection
+    LeftTurnOnly,
+    /// Right turn only lane - must turn right at next intersection
+    RightTurnOnly,
+    /// Straight only lane - cannot turn, only go straight
+    StraightOnly,
+}
+
 impl RoadDir {
     #[allow(dead_code)]
     pub fn delta(self) -> IVec2 {
@@ -203,6 +219,8 @@ pub struct RoadCell {
     pub lane: u8,
     /// Flow direction (two-way or one-way)
     pub flow: RoadFlow,
+    /// Lane type - determines allowed movements (turns, straight, etc.)
+    pub lane_type: LaneType,
 }
 
 impl RoadCell {
