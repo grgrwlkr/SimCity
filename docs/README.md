@@ -7,6 +7,41 @@
 > 2. **Проверьте** зависимости в `system-dependencies.md` — изменения могут затронуть другие системы
 > 3. **Обновите** документацию после внесения изменений, чтобы она оставалась актуальной
 
+## 📋 Статус реализации (Обновлено: Январь 2025)
+
+### ✅ Выполненные улучшения (2025-01)
+
+**UI и UX:**
+- ✅ UI Redesign (status bar, toolbar, sidebar)
+- ✅ Undo/Redo система (Ctrl+Z, Ctrl+Y)
+- ✅ Tooltips для всех элементов
+- ✅ Shortcuts panel (клавиша ?)
+- ✅ Notifications система
+- ✅ UI Settings панель (F10)
+- ✅ Улучшенные графики с hover
+
+**Дороги и трафик:**
+- ✅ Односторонние дороги (RoadFlow)
+- ✅ Полосы поворота (LaneType)
+- ✅ Остановка на красный свет
+- ✅ Учёт светофоров в pathfinding
+- ✅ Жёлтый сигнал светофора
+- ✅ Правила приоритета перекрёстков
+
+**Здания и экономика:**
+- ✅ Уровни зданий (до 3 уровней)
+- ✅ Land Value система
+- ✅ Pollution система
+
+### 🔲 Приоритетные улучшения (следующие шаги)
+
+1. **Weighted Pathfinding** — учёт пробок в маршрутизации
+2. **RCI Demand System** — расширение логики спроса
+3. **Building Demolition/Decay** — система разрушения зданий
+4. **Persistence v2** — сохранение новых фич
+5. **Interactive Minimap** — клик для перемещения камеры
+6. **Context Menu** — контекстное меню по правому клику
+
 ## Общая архитектура
 
 - `master-plan.md` — **архитектура + MVP/эпики + детальный план реализации**
@@ -30,12 +65,13 @@
   - Алгоритм обнаружения перекрёстков
   - Правила движения через перекрёсток (въезд, циркуляция, выезд)
   - Светофоры: управление, фазы, визуализация
-  - Текущие ограничения системы
-  - **12 возможных улучшений** с приоритетами и реализацией:
-    - Остановка на красный свет
-    - Учёт светофоров в pathfinding
-    - Жёлтый сигнал и стрелки
-    - Правила приоритета (yield/stop)
+  - **Выполненные улучшения (2025-01):**
+    - ✅ **Остановка на красный свет** — через VehicleTrafficState компонент
+    - ✅ **Учёт светофоров в pathfinding** — penalty за задержку на перекрёстках
+    - ✅ **Жёлтый сигнал светофора** — LightPhase enum с жёлтой фазой
+    - ✅ **Правила приоритета** — IntersectionPriority компонент (yield/stop signs)
+  - **Планируемые улучшения:**
+    - Стрелки светофора
     - Адаптивные светофоры и "зелёная волна"
     - Круговое движение (roundabout)
     - Пешеходные переходы
@@ -73,21 +109,21 @@
 ## Здания и зонирование
 
 - `buildings-zoning-architecture.md` — **детальная документация системы зданий и зонирования**
-  - Архитектура модулей (buildings.rs, zone_placement.rs, demand.rs, employment.rs, services.rs)
-  - Структуры данных (ZoneKind, BuildingKind, Building, MapCell)
+  - Архитектура модулей (buildings.rs, zone_placement.rs, demand.rs, employment.rs, services.rs, land_value.rs, pollution.rs)
+  - Структуры данных (ZoneKind, BuildingKind, Building, MapCell, LandValueIndex, PollutionIndex)
   - Система зонирования (R/C/I зоны, правила размещения, кеширование)
   - Рост зданий (алгоритм, период, проверка спроса, декай)
   - RCI Demand (расчёт спроса, формулы, баланс)
   - Служебные здания (Fire/Police/Hospital, радиус покрытия)
   - Занятость населения (assign_jobs, EmploymentStats)
-  - Визуализация (оверлеи зон, покрытие услугами)
-  - Текущие ограничения системы
-  - **15 возможных улучшений** с приоритетами и реализацией:
-    - Уровни зданий (Level 1-3)
+  - Визуализация (оверлеи зон, покрытие услугами, land value, pollution)
+  - **Выполненные улучшения (2025-01):**
+    - ✅ **Уровни зданий** (Level 1-3) — система upgrade_buildings()
+    - ✅ **Land Value** — система стоимости земли с влиянием на рост зданий
+    - ✅ **Pollution** — система загрязнения от промышленных зданий
+  - **Планируемые улучшения:**
     - Время строительства
-    - Land Value (стоимость земли)
     - Многотайловые здания (2×2, 3×3)
-    - Загрязнение (Pollution)
     - Специализация зон (Office, Retail, Heavy/Light Industry)
     - Заброшенные здания (Abandonment)
     - Исторические здания
@@ -102,16 +138,16 @@
 
 - `roads-architecture.md` — **детальная документация системы дорог**
   - Архитектура модулей (roads.rs, map/mod.rs, transport.rs)
-  - Структуры данных (RoadKind, RoadDir, RoadCell, RoadGraph, GraphVersion)
+  - Структуры данных (RoadKind, RoadDir, RoadCell, RoadFlow, LaneType, RoadGraph, GraphVersion)
   - Система полос (Lane System): размещение, индексация, крайние полосы
   - Построение дорог (point-to-point, compute_road_line, emit_road_commands)
   - Граф дорог (RoadGraph): bitmask связности, rebuild_road_graph
   - Правила движения (прямо, смена полосы, повороты, перекрёстки)
   - Визуализация (разметка, центральная линия, стрелки, превью)
-  - Текущие ограничения системы
-  - **15 возможных улучшений** с приоритетами и реализацией:
-    - Односторонние дороги
-    - Полосы поворота (Turn Lanes)
+  - **Выполненные улучшения (2025-01):**
+    - ✅ **Односторонние дороги** — RoadFlow enum (TwoWay, OneWay)
+    - ✅ **Полосы поворота** — LaneType enum (Regular, LeftTurnOnly, RightTurnOnly, StraightOnly)
+  - **Планируемые улучшения:**
     - Разные типы дорог (Highway, Arterial, Local)
     - Диагональные дороги
     - Кривые и дуги
@@ -128,22 +164,22 @@
 ## Интерфейс (UI)
 
 - `ui-architecture.md` — **детальная документация системы интерфейса**
-  - Архитектура модулей (ui.rs, ui_state.rs, camera.rs, commands.rs)
-  - Структуры данных (UiState, ToolMode, OverlayMode, SimSpeed, UiMetrics, UiHistory)
-  - Компоненты интерфейса (Top Bar, Inspector, Minimap, Statistics, Building Popup)
+  - Архитектура модулей (ui.rs, ui_state.rs, ui_settings.rs, notifications.rs, command_history.rs, camera.rs, commands.rs)
+  - Структуры данных (UiState, ToolMode, OverlayMode, SimSpeed, UiMetrics, UiHistory, UiSettings, Notifications)
+  - Компоненты интерфейса (Top Status Bar, Bottom Toolbar, Right Sidebar, Inspector, Minimap, Statistics, Building Popup)
   - Система инструментов (Tool → BuildMode → GameCommand)
-  - Оверлеи (None, Water, Height, Zones, Roads, Traffic, Path, ServiceCoverage)
+  - Оверлеи (None, Water, Height, Zones, Roads, Traffic, Path, ServiceCoverage, LandValue, Pollution)
   - Камера и навигация (WASD pan, mouse wheel zoom)
   - Команды и взаимодействие с симуляцией
-  - Текущие ограничения системы (включая монолитный layout)
-  - **17 возможных улучшений** с приоритетами и реализацией:
-    - **UI Redesign** — компактный layout в стиле SimCity/Cities: Skylines (toolbar внизу, статус наверху, sidebar справа)
-    - Undo/Redo система
-    - Tooltips и подсказки
-    - Keyboard shortcuts panel
-    - Улучшенные графики (egui_plot)
-    - Notification система
-    - UI Settings (тема, шрифт, hotkeys)
+  - **Выполненные улучшения (2025-01):**
+    - ✅ **UI Redesign** — разделение на status bar, toolbar, sidebar
+    - ✅ **Undo/Redo система** (Ctrl+Z, Ctrl+Y)
+    - ✅ **Tooltips** для всех элементов
+    - ✅ **Shortcuts panel** (клавиша ?)
+    - ✅ **Notifications** система
+    - ✅ **UI Settings** панель (F10)
+    - ✅ **Улучшенные графики** с hover
+  - **Планируемые улучшения:**
     - Интерактивная миникарта
     - Brush size для зонирования
     - Tutorial система

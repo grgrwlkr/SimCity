@@ -1659,25 +1659,25 @@ fn context_menu_ui(
 
 ## Сводная таблица улучшений
 
-| #   | Улучшение           | Приоритет      | Сложность  | Влияние    | Зависимости |
-| --- | ------------------- | -------------- | ---------- | ---------- | ----------- |
-| 1.1 | **UI Redesign**     | 🔴 High         | Высокая    | Очень выс. | —           |
-| 1.2 | Undo/Redo           | 🔴 High         | Средняя    | Высокое    | —           |
-| 1.3 | Tooltips            | 🔴 High         | Низкая     | Среднее    | —           |
-| 1.4 | Shortcuts panel     | 🔴 High         | Низкая     | Среднее    | —           |
-| 2.1 | Улучшенные графики  | 🟡 Medium       | Средняя    | Среднее    | egui_plot   |
-| 2.2 | Notifications       | 🟡 Medium       | Средняя    | Среднее    | —           |
-| 2.3 | UI Settings         | 🟡 Medium       | Средняя    | Среднее    | —           |
-| 2.4 | Interactive minimap | 🟡 Medium       | Низкая     | Среднее    | —           |
-| 2.5 | Brush size          | 🟡 Medium       | Низкая     | Среднее    | —           |
-| 3.1 | Tutorial            | 🟢 Low          | Высокая    | Среднее    | —           |
-| 3.2 | Локализация         | 🟢 Low          | Высокая    | Низкое     | —           |
-| 3.3 | Custom hotkeys      | 🟢 Low          | Средняя    | Низкое     | —           |
-| 3.4 | UI sounds           | 🟢 Low          | Низкая     | Низкое     | audio       |
-| 3.5 | Context menu        | 🟢 Low          | Средняя    | Среднее    | —           |
-| 4.1 | Drag & drop         | 🔵 Experimental | Высокая    | Высокое    | —           |
-| 4.2 | Procedural UI       | 🔵 Experimental | Высокая    | Среднее    | reflection  |
-| 4.3 | VR/AR UI            | 🔵 Experimental | Очень выс. | Низкое     | VR support  |
+| #   | Улучшение           | Приоритет      | Сложность  | Влияние    | Зависимости | Статус |
+| --- | ------------------- | -------------- | ---------- | ---------- | ----------- | ------ |
+| 1.1 | **UI Redesign**     | 🔴 High         | Высокая    | Очень выс. | —           | ✅ Выполнено (2025-01) |
+| 1.2 | Undo/Redo           | 🔴 High         | Средняя    | Высокое    | —           | ✅ Выполнено (2025-01) |
+| 1.3 | Tooltips            | 🔴 High         | Низкая     | Среднее    | —           | ✅ Выполнено (2025-01) |
+| 1.4 | Shortcuts panel     | 🔴 High         | Низкая     | Среднее    | —           | ✅ Выполнено (2025-01) |
+| 2.1 | Улучшенные графики  | 🟡 Medium       | Средняя    | Среднее    | egui_plot   | ✅ Выполнено (2025-01) |
+| 2.2 | Notifications       | 🟡 Medium       | Средняя    | Среднее    | —           | ✅ Выполнено (2025-01) |
+| 2.3 | UI Settings         | 🟡 Medium       | Средняя    | Среднее    | —           | ✅ Выполнено (2025-01) |
+| 2.4 | Interactive minimap | 🟡 Medium       | Низкая     | Среднее    | —           | 🔲 Не реализовано |
+| 2.5 | Brush size          | 🟡 Medium       | Низкая     | Среднее    | —           | 🔲 Не реализовано |
+| 3.1 | Tutorial            | 🟢 Low          | Высокая    | Среднее    | —           | 🔲 Не реализовано |
+| 3.2 | Локализация         | 🟢 Low          | Высокая    | Низкое     | —           | 🔲 Не реализовано |
+| 3.3 | Custom hotkeys      | 🟢 Low          | Средняя    | Низкое     | —           | 🔲 Не реализовано |
+| 3.4 | UI sounds           | 🟢 Low          | Низкая     | Низкое     | audio       | 🔲 Не реализовано |
+| 3.5 | Context menu        | 🟢 Low          | Средняя    | Среднее    | —           | 🔲 Не реализовано |
+| 4.1 | Drag & drop         | 🔵 Experimental | Высокая    | Высокое    | —           | 🔲 Не реализовано |
+| 4.2 | Procedural UI       | 🔵 Experimental | Высокая    | Среднее    | reflection  | 🔲 Не реализовано |
+| 4.3 | VR/AR UI            | 🔵 Experimental | Очень выс. | Низкое     | VR support  | 🔲 Не реализовано |
 
 ---
 
@@ -1693,19 +1693,30 @@ fn context_menu_ui(
 ✅ Графики истории  
 ✅ Keyboard + mouse navigation  
 ✅ Статусная строка с метриками  
+✅ **Разделённый UI layout** (status bar, toolbar, sidebar) — реализовано  
+✅ **Undo/Redo система** (Ctrl+Z, Ctrl+Y) — реализовано  
+✅ **Tooltips для всех элементов** — реализовано  
+✅ **Shortcuts panel** (клавиша ?) — реализовано  
+✅ **Notifications система** — реализовано  
+✅ **UI Settings панель** (F10) — реализовано  
+✅ **Улучшенные графики** с hover — реализовано  
 
-### Главные слабости
+### Выполненные улучшения (2025-01)
 
-❌ Монолитный layout — всё в одной строке наверху  
-❌ Нет визуальной иерархии  
-❌ Не похоже на классические city builders  
+1. ✅ **UI Redesign** — разделение на `top_status_bar_ui()`, `bottom_toolbar_ui()`, `right_sidebar_ui()`
+2. ✅ **Undo/Redo** — система `CommandHistory` с `UndoableCommand` enum
+3. ✅ **Tooltips** — функция `tool_tooltip()` и `.on_hover_text()` для всех элементов
+4. ✅ **Shortcuts Panel** — панель с клавиатурными сокращениями (toggle по `?`)
+5. ✅ **Notifications** — система уведомлений о событиях (строительство, апгрейды, emergencies)
+6. ✅ **UI Settings** — панель настроек с сохранением предпочтений
+7. ✅ **Improved Graphs** — улучшенные графики с hover tooltips
 
-### Приоритетные улучшения
+### Приоритетные улучшения (следующие шаги)
 
-1. **UI Redesign** — полная реструктуризация layout (toolbar внизу, статус наверху, sidebar справа)
-2. **Undo/Redo** — критически важно для UX
-3. **Tooltips** — помощь новым игрокам
-4. **Notifications** — обратная связь о событиях
+1. **Interactive minimap** — клик на minimap для перемещения камеры
+2. **Brush size** — настройка размера кисти для зонирования
+3. **Context menu** — контекстное меню по правому клику
+4. **Custom hotkeys** — настройка пользовательских горячих клавиш
 
 ### Долгосрочное развитие
 
@@ -1717,5 +1728,6 @@ fn context_menu_ui(
 ---
 
 **Документ создан:** 2025-12-19  
-**Версия кодовой базы:** SimCity commit `gpt...origin/gpt`  
-**Модули:** `src/game/ui.rs`, `src/game/ui_state.rs`, `src/game/camera.rs`, `src/game/commands.rs`
+**Последнее обновление:** 2025-01  
+**Версия кодовой базы:** SimCity commit `62803a1`  
+**Модули:** `src/game/ui.rs`, `src/game/ui_state.rs`, `src/game/ui_settings.rs`, `src/game/notifications.rs`, `src/game/command_history.rs`, `src/game/camera.rs`, `src/game/commands.rs`
