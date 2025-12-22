@@ -13,6 +13,7 @@ use crate::game::state::AppState;
 use crate::game::traffic::TrafficOccupancy;
 use bevy::ecs::system::SystemParam;
 
+use crate::game::intersections::IntersectionIndex;
 use crate::game::roads::RoadDir;
 use crate::game::transport::{
     PathCache, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph, find_road_path_cached,
@@ -83,6 +84,7 @@ struct AssignJobsParams<'w, 's> {
     traffic: Res<'w, TrafficOccupancy>,
     path_cfg: Res<'w, PathfindingConfig>,
     path_cache: ResMut<'w, PathCache>,
+    intersections: Res<'w, IntersectionIndex>,
     cfg: Res<'w, EmploymentConfig>,
 }
 
@@ -154,6 +156,7 @@ fn assign_jobs(mut p: AssignJobsParams) {
                 regions: Some(&p.regions),
                 traffic: &p.traffic,
                 grid: &p.grid,
+                intersections: &p.intersections,
             };
 
             let path = find_road_path_cached(&mut ctx, home_road, job_road);

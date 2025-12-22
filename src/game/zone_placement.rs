@@ -174,6 +174,7 @@ mod tests {
             kind: RoadKind::TwoLane,
             dir: RoadDir::East,
             lane: 0,
+            flow: crate::game::roads::RoadFlow::TwoWay,
         };
         grid.set(TilePos { x: 2, y: 2 }, road_cell);
 

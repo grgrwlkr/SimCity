@@ -42,30 +42,93 @@ fn in_game_or_paused(state: Res<State<AppState>>) -> bool {
     matches!(state.get(), AppState::InGame | AppState::Paused)
 }
 
+/// Light phase for traffic lights
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum LightPhase {
+    NorthSouthGreen,
+    NorthSouthYellow,
+    EastWestGreen,
+    EastWestYellow,
+}
+
 /// Traffic light component for intersection entities.
 #[derive(Component, Debug, Clone)]
 pub struct TrafficLight {
     /// Position of the intersection.
     pub pos: TilePos,
-    /// Current phase (0 = N-S green, 1 = E-W green, etc.)
-    pub phase: u8,
-    /// Total number of phases.
-    pub num_phases: u8,
+    /// Current light phase
+    pub phase: LightPhase,
     /// Time remaining in current phase (seconds).
     pub phase_timer: f32,
-    /// Duration of each phase (seconds).
-    pub phase_duration: f32,
+    /// Duration of green phase (seconds).
+    pub green_duration: f32,
+    /// Duration of yellow phase (seconds).
+    pub yellow_duration: f32,
 }
 
 impl Default for TrafficLight {
     fn default() -> Self {
         Self {
             pos: TilePos { x: 0, y: 0 },
-            phase: 0,
-            num_phases: 2,
+            phase: LightPhase::NorthSouthGreen,
             phase_timer: 10.0,
-            phase_duration: 10.0,
+            green_duration: 10.0,
+            yellow_duration: 3.0,
         }
+    }
+}
+
+impl TrafficLight {
+    /// Check if the light is green for a given direction
+    pub fn is_green(&self, dir: crate::game::roads::RoadDir) -> bool {
+        matches!(
+            (self.phase, dir),
+            (
+                LightPhase::NorthSouthGreen,
+                crate::game::roads::RoadDir::North | crate::game::roads::RoadDir::South
+            ) | (
+                LightPhase::EastWestGreen,
+                crate::game::roads::RoadDir::East | crate::game::roads::RoadDir::West
+            )
+        )
+    }
+
+    /// Check if the light is yellow for a given direction
+    pub fn is_yellow(&self, dir: crate::game::roads::RoadDir) -> bool {
+        matches!(
+            (self.phase, dir),
+            (
+                LightPhase::NorthSouthYellow,
+                crate::game::roads::RoadDir::North | crate::game::roads::RoadDir::South
+            ) | (
+                LightPhase::EastWestYellow,
+                crate::game::roads::RoadDir::East | crate::game::roads::RoadDir::West
+            )
+        )
+    }
+
+    /// Check if the light is red for a given direction (not green and not yellow)
+    pub fn is_red(&self, dir: crate::game::roads::RoadDir) -> bool {
+        !self.is_green(dir) && !self.is_yellow(dir)
+    }
+}
+
+/// Intersection priority rules
+#[derive(Component, Debug, Copy, Clone, Eq, PartialEq)]
+pub enum IntersectionPriority {
+    /// No priority rules (default: right-of-way)
+    None,
+    /// Yield sign - must yield to traffic from right
+    YieldSign,
+    /// Stop sign - must come to complete stop
+    StopSign,
+    /// Main road - has priority over side roads
+    MainRoad,
+}
+
+impl Default for IntersectionPriority {
+    fn default() -> Self {
+        IntersectionPriority::None
     }
 }
 
@@ -106,8 +169,25 @@ fn update_traffic_lights(time: Res<Time>, mut q_lights: Query<&mut TrafficLight>
         light.phase_timer -= dt;
 
         if light.phase_timer <= 0.0 {
-            light.phase = (light.phase + 1) % light.num_phases;
-            light.phase_timer = light.phase_duration;
+            // Transition to next phase
+            light.phase = match light.phase {
+                LightPhase::NorthSouthGreen => {
+                    light.phase_timer = light.yellow_duration;
+                    LightPhase::NorthSouthYellow
+                }
+                LightPhase::NorthSouthYellow => {
+                    light.phase_timer = light.green_duration;
+                    LightPhase::EastWestGreen
+                }
+                LightPhase::EastWestGreen => {
+                    light.phase_timer = light.yellow_duration;
+                    LightPhase::EastWestYellow
+                }
+                LightPhase::EastWestYellow => {
+                    light.phase_timer = light.green_duration;
+                    LightPhase::NorthSouthGreen
+                }
+            };
         }
     }
 }
@@ -133,10 +213,14 @@ fn render_traffic_lights(
                 light.pos.y as f32 * cfg.tile_size,
             );
 
-        // Color based on phase (simplified: green for active direction).
+        // Color based on phase
         let color = match light.phase {
-            0 => Color::srgba(0.2, 0.9, 0.2, 0.8), // N-S green.
-            _ => Color::srgba(0.9, 0.2, 0.2, 0.8), // E-W red (from N-S perspective).
+            LightPhase::NorthSouthGreen | LightPhase::EastWestGreen => {
+                Color::srgba(0.2, 0.9, 0.2, 0.8) // Green
+            }
+            LightPhase::NorthSouthYellow | LightPhase::EastWestYellow => {
+                Color::srgba(0.9, 0.9, 0.2, 0.8) // Yellow
+            }
         };
 
         commands.spawn((

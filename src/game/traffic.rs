@@ -7,6 +7,7 @@ use rand::prelude::*;
 use crate::game::camera::MainCamera;
 use crate::game::commands::GameCommand;
 use crate::game::ids::CitizenId;
+use crate::game::intersections::{IntersectionIndex, IntersectionPriority, TrafficLight};
 use crate::game::map::{MapConfig, MapGrid, TilePos};
 use crate::game::public_transport::{
     BusVehicle, PendingTransitTrips, PendingTrip, PublicTransportConfig, PublicTransportIndex,
@@ -31,7 +32,81 @@ pub struct Vehicle {
     pub progress: f32,
     /// World units per second.
     pub speed: f32,
+    /// Maximum speed for this vehicle.
+    pub max_speed: f32,
+    /// Maximum acceleration (world units per second squared).
+    pub max_accel: f32,
 }
+
+impl Default for Vehicle {
+    fn default() -> Self {
+        Self {
+            route: Vec::new(),
+            progress: 0.0,
+            speed: 0.0,
+            max_speed: 60.0, // Default speed
+            max_accel: 20.0, // Default acceleration
+        }
+    }
+}
+
+/// State of vehicle relative to traffic lights
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub enum VehicleTrafficState {
+    /// Moving freely (no traffic light ahead)
+    FreeFlow,
+    /// Approaching a traffic light
+    Approaching {
+        light_pos: TilePos,
+        distance_to_stop: f32,
+    },
+    /// Braking before stop line
+    Braking {
+        light_pos: TilePos,
+        target_speed: f32,
+    },
+    /// Stopped in queue
+    Stopped {
+        light_pos: TilePos,
+        queue_position: u8,
+    },
+    /// Waiting for green light
+    WaitingForGreen { light_pos: TilePos },
+    /// Accelerating after green
+    Accelerating,
+    /// Crossing intersection
+    CrossingIntersection,
+}
+
+/// Braking parameters for vehicles
+#[derive(Resource)]
+pub struct BrakingParams {
+    /// Comfortable deceleration (world units per second squared)
+    pub comfortable_decel: f32,
+    /// Maximum deceleration (emergency)
+    pub max_decel: f32,
+    /// Minimum distance to start braking
+    pub min_braking_distance: f32,
+}
+
+impl Default for BrakingParams {
+    fn default() -> Self {
+        Self {
+            comfortable_decel: 30.0,
+            max_decel: 80.0,
+            min_braking_distance: 0.5,
+        }
+    }
+}
+
+/// Distance to detect traffic lights ahead (in tiles)
+const TRAFFIC_LIGHT_DETECTION_DISTANCE: f32 = 8.0;
+
+/// Safe distance between vehicles in queue (in tiles)
+const QUEUE_GAP: f32 = 0.3;
+
+/// Stop line offset relative to intersection (0.0 = tile boundary)
+const STOP_LINE_OFFSET: f32 = 0.15;
 
 #[derive(Component, Debug, Copy, Clone)]
 struct TripPassenger {
@@ -74,6 +149,7 @@ impl Plugin for TrafficPlugin {
         app.init_resource::<TrafficOccupancy>()
             .init_resource::<TrafficIndex>()
             .init_resource::<TrafficConfig>()
+            .init_resource::<BrakingParams>()
             .add_systems(
                 OnEnter(AppState::MainMenu),
                 (cleanup_traffic_entities, reset_traffic_aggregates),
@@ -94,7 +170,13 @@ impl Plugin for TrafficPlugin {
             // Simulation
             .add_systems(
                 FixedUpdate,
-                (spawn_trip_vehicles, move_vehicles)
+                (
+                    update_vehicle_traffic_state,
+                    update_traffic_queues.after(update_vehicle_traffic_state),
+                    check_intersection_priority.after(update_traffic_queues),
+                    spawn_trip_vehicles,
+                    move_vehicles.after(check_intersection_priority),
+                )
                     .in_set(GameSet::Sim)
                     .run_if(in_state(AppState::InGame)),
             )
@@ -201,6 +283,7 @@ fn spawn_debug_vehicles(
                     regions: Some(&p.regions),
                     traffic: &p.traffic,
                     grid: &p.grid,
+                    intersections: &p.intersections,
                 };
 
                 let route = find_road_path_cached(&mut ctx, start, goal);
@@ -213,6 +296,7 @@ fn spawn_debug_vehicles(
 
                 let world_pos = tile_to_world(&p.cfg, start);
 
+                let speed = 60.0 + rng.random_range(0.0..40.0);
                 p.commands.spawn((
                     Sprite {
                         color: Color::linear_rgb(1.0, 0.8, 0.1),
@@ -223,8 +307,11 @@ fn spawn_debug_vehicles(
                     Vehicle {
                         route,
                         progress: 0.0,
-                        speed: 60.0 + rng.random_range(0.0..40.0),
+                        speed,
+                        max_speed: speed,
+                        max_accel: 20.0,
                     },
+                    VehicleTrafficState::FreeFlow,
                 ));
                 spawned += 1;
                 total += 1;
@@ -247,6 +334,7 @@ struct SpawnDebugVehiclesParams<'w, 's> {
     traffic: Res<'w, TrafficOccupancy>,
     path_cfg: Res<'w, PathfindingConfig>,
     path_cache: ResMut<'w, PathCache>,
+    intersections: Res<'w, IntersectionIndex>,
     q_vehicles: Query<'w, 's, Entity, With<Vehicle>>,
     traffic_cfg: Res<'w, TrafficConfig>,
 }
@@ -278,6 +366,7 @@ fn spawn_trip_vehicles(
             regions: Some(&p.regions),
             traffic: &p.traffic,
             grid: &p.grid,
+            intersections: &p.intersections,
         };
 
         let route = find_road_path_cached(&mut ctx, start, goal);
@@ -309,6 +398,7 @@ fn spawn_trip_vehicles(
         }
 
         let world_pos = tile_to_world(&p.cfg, start);
+        let max_speed = 70.0;
         p.commands.spawn((
             Sprite {
                 color: Color::linear_rgb(0.95, 0.95, 0.95),
@@ -319,8 +409,11 @@ fn spawn_trip_vehicles(
             Vehicle {
                 route,
                 progress: 0.0,
-                speed: 70.0,
+                speed: max_speed,
+                max_speed,
+                max_accel: 20.0,
             },
+            VehicleTrafficState::FreeFlow,
             TripPassenger {
                 citizen: msg.citizen,
                 purpose: msg.purpose,
@@ -342,6 +435,7 @@ struct SpawnTripVehiclesParams<'w, 's> {
     traffic: Res<'w, TrafficOccupancy>,
     path_cfg: Res<'w, PathfindingConfig>,
     path_cache: ResMut<'w, PathCache>,
+    intersections: Res<'w, IntersectionIndex>,
     pt_cfg: Option<Res<'w, PublicTransportConfig>>,
     pt: Option<Res<'w, PublicTransportIndex>>,
     pt_pending: Option<ResMut<'w, PendingTransitTrips>>,
@@ -376,20 +470,24 @@ fn clear_vehicles(
 /// Move vehicles along their routes.
 #[allow(clippy::type_complexity)]
 fn move_vehicles(
-    time: Res<Time>,
+    time: Res<Time<Fixed>>,
     cfg: Res<MapConfig>,
+    braking_params: Res<BrakingParams>,
     mut commands: Commands,
     mut finished: bevy::ecs::message::MessageWriter<TripFinished>,
     mut q: Query<(
         Entity,
         &mut Vehicle,
         &mut Transform,
+        &VehicleTrafficState,
         Option<&TripPassenger>,
         Option<&ServiceVehicle>,
         Option<&BusVehicle>,
     )>,
 ) {
-    for (entity, mut v, mut tf, passenger, service_vehicle, bus_vehicle) in q.iter_mut() {
+    let dt = time.delta_secs();
+
+    for (entity, mut v, mut tf, state, passenger, service_vehicle, bus_vehicle) in q.iter_mut() {
         if v.route.is_empty() {
             // Arrived – despawn trip vehicles, keep service vehicles (idle).
             if service_vehicle.is_none() && bus_vehicle.is_none() {
@@ -404,8 +502,26 @@ fn move_vehicles(
             continue;
         }
 
+        // Compute acceleration based on traffic state
+        let accel = compute_acceleration(&v, state, &braking_params, dt);
+
+        // Update speed
+        v.speed = (v.speed + accel * dt).clamp(0.0, v.max_speed);
+
+        // Check if movement is blocked
+        let can_move = match state {
+            VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. } => {
+                false
+            }
+            _ => true,
+        };
+
+        if !can_move {
+            continue; // Don't move
+        }
+
         // Distance to advance this frame.
-        let dist = v.speed * time.delta_secs();
+        let dist = v.speed * dt;
         v.progress += dist / cfg.tile_size;
 
         while v.progress >= 1.0 && !v.route.is_empty() {
@@ -439,6 +555,302 @@ fn move_vehicles(
         let lerped = curr_world.lerp(next_world, v.progress.clamp(0.0, 1.0));
         tf.translation.x = lerped.x;
         tf.translation.y = lerped.y;
+    }
+}
+
+/// Update vehicle traffic state relative to traffic lights
+fn update_vehicle_traffic_state(
+    _time: Res<Time<Fixed>>,
+    _cfg: Res<MapConfig>,
+    _grid: Res<MapGrid>,
+    intersections: Res<IntersectionIndex>,
+    q_lights: Query<&crate::game::intersections::TrafficLight>,
+    mut q_vehicles: Query<(&Vehicle, &mut VehicleTrafficState)>,
+) {
+    for (vehicle, mut state) in q_vehicles.iter_mut() {
+        // Find nearest traffic light on route
+        let light_ahead = find_traffic_light_ahead(
+            &vehicle.route,
+            vehicle.progress,
+            TRAFFIC_LIGHT_DETECTION_DISTANCE,
+            &intersections,
+        );
+
+        match (&*state, light_ahead) {
+            // No traffic light ahead
+            (_, None) => {
+                *state = VehicleTrafficState::FreeFlow;
+            }
+            // Traffic light detected - start approaching
+            (VehicleTrafficState::FreeFlow, Some((light_pos, distance))) => {
+                *state = VehicleTrafficState::Approaching {
+                    light_pos,
+                    distance_to_stop: distance,
+                };
+            }
+            // Approaching - check if need to brake
+            (
+                VehicleTrafficState::Approaching {
+                    light_pos,
+                    distance_to_stop,
+                },
+                Some((pos, distance)),
+            ) if pos == *light_pos => {
+                // Get light state
+                if find_light_at(&q_lights, *light_pos) {
+                    if let Some(light) = q_lights.iter().find(|l| l.pos == *light_pos) {
+                        let entry_dir = compute_entry_direction(&vehicle.route, *light_pos);
+
+                        if !light.is_green(entry_dir) {
+                            // Red/yellow - start braking
+                            *state = VehicleTrafficState::Braking {
+                                light_pos: *light_pos,
+                                target_speed: 0.0,
+                            };
+                        } else {
+                            // Green - can proceed
+                            *state = VehicleTrafficState::CrossingIntersection;
+                        }
+                    }
+                }
+            }
+            // Braking - check if stopped
+            (VehicleTrafficState::Braking { light_pos, .. }, Some((pos, distance)))
+                if pos == *light_pos && distance <= STOP_LINE_OFFSET =>
+            {
+                *state = VehicleTrafficState::Stopped {
+                    light_pos: *light_pos,
+                    queue_position: 0,
+                };
+            }
+            // Stopped - wait for green
+            (VehicleTrafficState::Stopped { light_pos, .. }, _) => {
+                if let Some(light) = q_lights.iter().find(|l| l.pos == *light_pos) {
+                    let entry_dir = compute_entry_direction(&vehicle.route, *light_pos);
+
+                    if light.is_green(entry_dir) {
+                        *state = VehicleTrafficState::Accelerating;
+                    } else {
+                        *state = VehicleTrafficState::WaitingForGreen {
+                            light_pos: *light_pos,
+                        };
+                    }
+                }
+            }
+            // Waiting for green - check if it turned green
+            (VehicleTrafficState::WaitingForGreen { light_pos }, _) => {
+                if let Some(light) = q_lights.iter().find(|l| l.pos == *light_pos) {
+                    let entry_dir = compute_entry_direction(&vehicle.route, *light_pos);
+
+                    if light.is_green(entry_dir) {
+                        *state = VehicleTrafficState::Accelerating;
+                    }
+                }
+            }
+            // Accelerating - transition to crossing
+            (VehicleTrafficState::Accelerating, _) => {
+                if vehicle.speed >= vehicle.max_speed * 0.5 {
+                    *state = VehicleTrafficState::CrossingIntersection;
+                }
+            }
+            // Crossing - check if passed
+            (VehicleTrafficState::CrossingIntersection, Some((pos, _))) => {
+                // Check if we've passed the intersection
+                if let Some(current_tile) = vehicle.route.first() {
+                    if *current_tile != pos {
+                        // Passed the intersection
+                        *state = VehicleTrafficState::FreeFlow;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Find traffic light ahead on route
+fn find_traffic_light_ahead(
+    route: &[TilePos],
+    progress: f32,
+    max_distance: f32,
+    intersections: &IntersectionIndex,
+) -> Option<(TilePos, f32)> {
+    let mut distance = 1.0 - progress; // Remaining distance to end of current tile
+
+    for (_i, tile) in route.iter().enumerate().skip(1) {
+        if distance > max_distance {
+            return None;
+        }
+
+        if intersections.traffic_light_positions.contains(tile) {
+            return Some((*tile, distance));
+        }
+
+        distance += 1.0;
+    }
+
+    None
+}
+
+/// Find traffic light at position
+fn find_light_at(q_lights: &Query<&TrafficLight>, pos: TilePos) -> bool {
+    q_lights.iter().any(|light| light.pos == pos)
+}
+
+/// Compute entry direction to intersection
+fn compute_entry_direction(route: &[TilePos], intersection_pos: TilePos) -> RoadDir {
+    if route.len() < 2 {
+        return RoadDir::None;
+    }
+
+    // Find the tile before intersection
+    for i in 0..route.len().saturating_sub(1) {
+        if route[i + 1] == intersection_pos {
+            let from = route[i];
+            let dx = intersection_pos.x - from.x;
+            let dy = intersection_pos.y - from.y;
+
+            if dx > 0 {
+                return RoadDir::East;
+            } else if dx < 0 {
+                return RoadDir::West;
+            } else if dy > 0 {
+                return RoadDir::North;
+            } else if dy < 0 {
+                return RoadDir::South;
+            }
+        }
+    }
+
+    RoadDir::None
+}
+
+/// Update traffic queues before traffic lights
+fn update_traffic_queues(mut q_vehicles: Query<(Entity, &Vehicle, &mut VehicleTrafficState)>) {
+    use std::collections::HashMap;
+
+    // Group vehicles by traffic light
+    let mut queues: HashMap<TilePos, Vec<(Entity, f32)>> = HashMap::new();
+
+    for (entity, vehicle, state) in q_vehicles.iter() {
+        let light_pos = match state {
+            VehicleTrafficState::Stopped { light_pos, .. }
+            | VehicleTrafficState::Braking { light_pos, .. }
+            | VehicleTrafficState::WaitingForGreen { light_pos }
+            | VehicleTrafficState::Approaching { light_pos, .. } => *light_pos,
+            _ => continue,
+        };
+
+        // Calculate distance to light
+        let dist = compute_distance_to_light(&vehicle.route, vehicle.progress, light_pos);
+        queues.entry(light_pos).or_default().push((entity, dist));
+    }
+
+    // Sort by distance and assign queue positions
+    for (_light_pos, mut queue) in queues {
+        queue.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+        for (i, (entity, _)) in queue.iter().enumerate() {
+            if let Ok((_, _, mut state)) = q_vehicles.get_mut(*entity) {
+                if let VehicleTrafficState::Stopped { light_pos: pos, .. } = &mut *state {
+                    *state = VehicleTrafficState::Stopped {
+                        light_pos: *pos,
+                        queue_position: i as u8,
+                    };
+                }
+            }
+        }
+    }
+}
+
+/// Compute distance to traffic light along route
+fn compute_distance_to_light(route: &[TilePos], progress: f32, light_pos: TilePos) -> f32 {
+    let mut distance = 1.0 - progress;
+
+    for tile in route.iter().skip(1) {
+        if *tile == light_pos {
+            return distance;
+        }
+        distance += 1.0;
+    }
+
+    distance
+}
+
+/// Check intersection priority rules (yield/stop signs)
+fn check_intersection_priority(
+    _grid: Res<MapGrid>,
+    intersections: Res<IntersectionIndex>,
+    q_vehicles: Query<(Entity, &Vehicle, &VehicleTrafficState)>,
+    _q_intersections: Query<&IntersectionPriority>,
+) {
+    // For intersections without traffic lights, apply priority rules
+    // Simplified implementation: check if vehicle is approaching intersection
+    // and apply yield/stop rules based on priority type
+
+    for (_entity, vehicle, _state) in q_vehicles.iter() {
+        // Only check for vehicles in FreeFlow state approaching intersections
+        // This is a placeholder - full implementation would:
+        // 1. Check if vehicle is approaching intersection without traffic light
+        // 2. Check intersection priority (yield/stop/main road)
+        // 3. Apply rules (stop, yield to right, etc.)
+        // 4. Update VehicleTrafficState accordingly
+
+        // For now, just check if next tile is intersection without traffic light
+        if let Some(next_tile) = vehicle.route.first() {
+            let _has_traffic_light = intersections.traffic_light_positions.contains(next_tile);
+            // Priority rules would be applied here
+        }
+    }
+}
+
+/// Compute acceleration based on traffic state
+fn compute_acceleration(
+    vehicle: &Vehicle,
+    state: &VehicleTrafficState,
+    params: &BrakingParams,
+    dt: f32,
+) -> f32 {
+    match state {
+        VehicleTrafficState::FreeFlow | VehicleTrafficState::CrossingIntersection => {
+            // Accelerate to max speed
+            let delta_v = vehicle.max_speed - vehicle.speed;
+            (delta_v * 2.0).clamp(-params.max_decel, vehicle.max_accel)
+        }
+        VehicleTrafficState::Approaching {
+            distance_to_stop, ..
+        } => {
+            // Smooth braking based on distance
+            let required_decel =
+                (vehicle.speed * vehicle.speed) / (2.0 * distance_to_stop.max(0.1));
+
+            if required_decel > params.comfortable_decel {
+                -required_decel.min(params.max_decel)
+            } else {
+                0.0
+            }
+        }
+        VehicleTrafficState::Braking { target_speed, .. } => {
+            // Active braking to target speed
+            let delta_v = *target_speed - vehicle.speed;
+            if delta_v < 0.0 {
+                delta_v.max(-params.max_decel * dt) / dt
+            } else {
+                0.0
+            }
+        }
+        VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. } => {
+            // Full stop
+            if vehicle.speed > 0.01 {
+                -params.max_decel
+            } else {
+                0.0
+            }
+        }
+        VehicleTrafficState::Accelerating => {
+            // Smooth start
+            vehicle.max_accel * 0.8
+        }
     }
 }
 

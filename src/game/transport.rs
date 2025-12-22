@@ -8,6 +8,7 @@ use bevy::prelude::*;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
 
+use crate::game::intersections::IntersectionIndex;
 use crate::game::map::{MapGrid, TilePos};
 use crate::game::roads::{RoadCell, RoadDir};
 use crate::game::sets::GameSet;
@@ -252,6 +253,25 @@ fn rebuild_road_graph_inner(grid: &MapGrid, gv: &GraphVersion, graph: &mut RoadG
             let Some(next) = road_at_idx(nidx) else {
                 return;
             };
+
+            // Check one-way road restrictions
+            match next.flow {
+                crate::game::roads::RoadFlow::OneWay(one_way_dir) => {
+                    // For one-way roads, only allow movement in the specified direction
+                    // Block movement if we're trying to go against the one-way direction
+                    if move_dir != one_way_dir && move_dir != one_way_dir.opposite() {
+                        // Allow only if we're moving in the one-way direction
+                        // or if it's an intersection (dir == None)
+                        if next.dir != RoadDir::None && move_dir != one_way_dir {
+                            return;
+                        }
+                    }
+                }
+                crate::game::roads::RoadFlow::TwoWay => {
+                    // Two-way roads allow movement in both directions (existing logic)
+                }
+            }
+
             // Intersection nodes (`dir: None`) are special:
             // - allow entering from straight or valid turn entry
             // - allow leaving only into lanes matching movement direction
@@ -653,6 +673,7 @@ pub struct PathfindingCtx<'a> {
     pub regions: Option<&'a RegionGraph>,
     pub traffic: &'a TrafficOccupancy,
     pub grid: &'a MapGrid,
+    pub intersections: &'a IntersectionIndex,
 }
 
 pub fn find_road_path_cached(
@@ -817,6 +838,7 @@ fn astar_road_graph(
                     ctx.cfg,
                     ctx.traffic,
                     ctx.grid,
+                    ctx.intersections,
                 ),
             );
         }
@@ -831,6 +853,7 @@ fn astar_road_graph(
                     ctx.cfg,
                     ctx.traffic,
                     ctx.grid,
+                    ctx.intersections,
                 ),
             );
         }
@@ -845,6 +868,7 @@ fn astar_road_graph(
                     ctx.cfg,
                     ctx.traffic,
                     ctx.grid,
+                    ctx.intersections,
                 ),
             );
         }
@@ -859,6 +883,7 @@ fn astar_road_graph(
                     ctx.cfg,
                     ctx.traffic,
                     ctx.grid,
+                    ctx.intersections,
                 ),
             );
         }
@@ -979,6 +1004,7 @@ fn step_cost_for_edge(
     cfg: &PathfindingConfig,
     traffic: &TrafficOccupancy,
     grid: &MapGrid,
+    intersections: &IntersectionIndex,
 ) -> u32 {
     // Weight model (MVP):
     // travel_time = 1 / speed_limit
@@ -1031,7 +1057,17 @@ fn step_cost_for_edge(
         }
     }
 
-    (raw + penalty).max(1.0) as u32
+    // Traffic light penalty: average wait time (half cycle duration)
+    let mut traffic_light_penalty = 0.0f32;
+    let next_pos = idx_to_pos(next_idx, w);
+    if intersections.traffic_light_positions.contains(&next_pos) {
+        // Average delay: half of a typical cycle (10s / 2 = 5s)
+        // Convert to cost units (assuming 1.0 = 1 tile travel time)
+        let avg_wait_secs = 5.0;
+        traffic_light_penalty = avg_wait_secs * cfg.cost_scale.max(1.0);
+    }
+
+    (raw + penalty + traffic_light_penalty).max(1.0) as u32
 }
 
 fn enforce_cache_limits(time_now_sec: f64, cfg: &PathfindingConfig, cache: &mut PathCache) {
@@ -1105,6 +1141,7 @@ mod tests {
                 kind: RoadKind::TwoLane,
                 dir: RoadDir::East,
                 lane: 0,
+                flow: crate::game::roads::RoadFlow::TwoWay,
             };
             grid.set(pos0, c0);
 
@@ -1114,6 +1151,8 @@ mod tests {
             c1.road = RoadCell {
                 kind: RoadKind::TwoLane,
                 dir: RoadDir::East,
+                lane: 0,
+                flow: crate::game::roads::RoadFlow::TwoWay,
                 lane: 1,
             };
             grid.set(pos1, c1);
@@ -1135,6 +1174,7 @@ mod tests {
 
         let cfg = PathfindingConfig::default();
         let mut cache = PathCache::default();
+        let intersections = IntersectionIndex::default();
         let mut ctx = PathfindingCtx {
             time_now_sec: 0.0,
             cfg: &cfg,
@@ -1143,6 +1183,7 @@ mod tests {
             regions: None,
             traffic: &traffic,
             grid: &grid,
+            intersections: &intersections,
         };
 
         let start = TilePos { x: 0, y: 0 };

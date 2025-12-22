@@ -10,7 +10,9 @@ use bevy::prelude::*;
 use rand::prelude::*;
 
 use crate::game::buildings::Building;
+use crate::game::intersections::IntersectionIndex;
 use crate::game::map::{BuildingKind, MapConfig, MapGrid, TilePos};
+use crate::game::notifications::{NotificationKind, Notifications};
 use crate::game::roads::RoadDir;
 use crate::game::services::{ServiceKind, ServiceStation, ServiceVehicle, ServiceVehicleState};
 use crate::game::sets::GameSet;
@@ -145,6 +147,7 @@ fn spawn_emergencies(
     time: Res<Time<Fixed>>,
     city: Res<City>,
     mut manager: ResMut<EmergencyManager>,
+    notifications: Option<ResMut<Notifications>>,
     mut commands: Commands,
     q_emergencies: Query<&Emergency>,
     q_buildings: Query<&Building>,
@@ -207,6 +210,20 @@ fn spawn_emergencies(
         EmergencyKind::Fire => manager.stats.total_fires += 1,
         EmergencyKind::Crime => manager.stats.total_crimes += 1,
         EmergencyKind::Medical => manager.stats.total_medical += 1,
+    }
+
+    // Emit notification
+    if let Some(mut notif) = notifications {
+        let kind_name = match kind {
+            EmergencyKind::Fire => "Fire",
+            EmergencyKind::Crime => "Crime",
+            EmergencyKind::Medical => "Medical",
+        };
+        notif.add(
+            format!("{} emergency at ({}, {})", kind_name, pos.x, pos.y),
+            NotificationKind::Warning,
+            5.0,
+        );
     }
 }
 
@@ -335,6 +352,7 @@ struct DispatchParams<'w, 's> {
     graph: Res<'w, RoadGraph>,
     regions: Res<'w, RegionGraph>,
     traffic: Res<'w, TrafficOccupancy>,
+    intersections: Res<'w, IntersectionIndex>,
     q_emergencies: Query<'w, 's, (Entity, &'static mut Emergency)>,
     q_stations: Query<'w, 's, (Entity, &'static mut ServiceStation)>,
     q_vehicles: Query<'w, 's, (Entity, &'static mut ServiceVehicle, &'static mut Vehicle)>,
@@ -349,6 +367,7 @@ fn dispatch_emergency_vehicles(mut p: DispatchParams) {
         regions: Some(&p.regions),
         traffic: &p.traffic,
         grid: &p.grid,
+        intersections: &p.intersections,
     };
 
     for (emergency_entity, mut emergency) in p.q_emergencies.iter_mut() {
@@ -459,6 +478,8 @@ struct ResolveParams<'w, 's> {
     graph: Res<'w, RoadGraph>,
     regions: Res<'w, RegionGraph>,
     traffic: Res<'w, TrafficOccupancy>,
+    intersections: Res<'w, IntersectionIndex>,
+    notifications: Option<ResMut<'w, Notifications>>,
     q_emergencies: Query<'w, 's, (Entity, &'static mut Emergency)>,
     q_stations: Query<'w, 's, &'static mut ServiceStation>,
     q_vehicles: Query<'w, 's, (Entity, &'static mut ServiceVehicle, &'static mut Vehicle)>,
@@ -480,6 +501,7 @@ fn resolve_emergencies(mut p: ResolveParams) {
         regions: Some(&p.regions),
         traffic: &p.traffic,
         grid: &p.grid,
+        intersections: &p.intersections,
     };
 
     // Map emergency -> road once.
@@ -509,6 +531,20 @@ fn resolve_emergencies(mut p: ResolveParams) {
                 if vehicle.route.is_empty() {
                     sv.state = ServiceVehicleState::OnScene;
                     emergency.responded = true;
+
+                    // Emit notification
+                    if let Some(ref mut notif) = p.notifications {
+                        let kind_name = match emergency.kind {
+                            EmergencyKind::Fire => "Fire",
+                            EmergencyKind::Crime => "Crime",
+                            EmergencyKind::Medical => "Medical",
+                        };
+                        notif.add(
+                            format!("{} emergency responded", kind_name),
+                            NotificationKind::Info,
+                            3.0,
+                        );
+                    }
                 }
             }
             ServiceVehicleState::OnScene => {
@@ -545,6 +581,34 @@ fn resolve_emergencies(mut p: ResolveParams) {
 
                     if emergency.time_remaining > 0.0 {
                         p.manager.stats.resolved_in_time += 1;
+
+                        // Emit notification
+                        if let Some(ref mut notif) = p.notifications {
+                            let kind_name = match emergency.kind {
+                                EmergencyKind::Fire => "Fire",
+                                EmergencyKind::Crime => "Crime",
+                                EmergencyKind::Medical => "Medical",
+                            };
+                            notif.add(
+                                format!("{} emergency resolved", kind_name),
+                                NotificationKind::Info,
+                                3.0,
+                            );
+                        }
+                    } else {
+                        // Failed to resolve in time
+                        if let Some(ref mut notif) = p.notifications {
+                            let kind_name = match emergency.kind {
+                                EmergencyKind::Fire => "Fire",
+                                EmergencyKind::Crime => "Crime",
+                                EmergencyKind::Medical => "Medical",
+                            };
+                            notif.add(
+                                format!("{} emergency failed", kind_name),
+                                NotificationKind::Warning,
+                                5.0,
+                            );
+                        }
                     }
                 }
             }

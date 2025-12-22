@@ -9,7 +9,9 @@ use std::collections::HashSet;
 
 use crate::game::commands::GameCommand;
 use crate::game::demand::RciDemand;
+use crate::game::land_value::LandValueIndex;
 use crate::game::map::{BuildingKind, DirtyTiles, MapConfig, MapGrid, MapSeed, TilePos};
+use crate::game::notifications::{NotificationKind, Notifications};
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
@@ -39,6 +41,7 @@ impl Plugin for BuildingsPlugin {
                     grow_buildings,
                     building_decay_no_road_access,
                     despawn_invalid_buildings,
+                    upgrade_buildings,
                 )
                     .in_set(GameSet::Sim)
                     .run_if(in_state(AppState::InGame)),
@@ -50,6 +53,7 @@ impl Plugin for BuildingsPlugin {
 pub struct Building {
     pub kind: BuildingKind,
     pub pos: TilePos,
+    pub level: u8, // 1, 2, or 3
     pub capacity_residents: u16,
     pub capacity_jobs: u16,
 }
@@ -201,6 +205,8 @@ struct GrowBuildingsParams<'w, 's> {
     time: Res<'w, Time<Fixed>>,
     ui: Res<'w, UiState>,
     demand: Res<'w, RciDemand>,
+    land_value: Option<Res<'w, LandValueIndex>>,
+    notifications: Option<ResMut<'w, Notifications>>,
     cfg: Res<'w, MapConfig>,
     clock: ResMut<'w, BuildingGrowthClock>,
     rng: ResMut<'w, BuildingGrowthRng>,
@@ -271,6 +277,22 @@ fn grow_buildings(mut p: GrowBuildingsParams) {
             continue;
         }
 
+        // Check land value requirement
+        if let Some(land_val) = p.land_value.as_deref() {
+            if let Some(idx) = p.grid.idx(pos) {
+                let value = land_val.get(idx);
+                let min_value = match kind {
+                    BuildingKind::Residential => 0.3,
+                    BuildingKind::Commercial => 0.4,
+                    BuildingKind::Industrial => 0.0, // Industrial doesn't depend on land value
+                    _ => 0.0,
+                };
+                if value < min_value {
+                    continue;
+                }
+            }
+        }
+
         // Mark in sim state first (source of truth).
         cell.building = Some(kind);
         p.grid.set(pos, cell);
@@ -281,12 +303,27 @@ fn grow_buildings(mut p: GrowBuildingsParams) {
         occupied.insert(pos);
         spawned += 1;
 
+        // Emit notification
+        if let Some(ref mut notif) = p.notifications {
+            let kind_name = match kind {
+                BuildingKind::Residential => "Residential",
+                BuildingKind::Commercial => "Commercial",
+                BuildingKind::Industrial => "Industrial",
+                _ => "Building",
+            };
+            notif.add(
+                format!("New {} building constructed", kind_name),
+                NotificationKind::Info,
+                3.0,
+            );
+        }
+
         // Capacity-based effects (MVP).
         if kind == BuildingKind::Residential {
             p.city.population = p
                 .city
                 .population
-                .saturating_add(kind.capacity_residents() as u32);
+                .saturating_add(kind.capacity_residents_for_level(1) as u32);
         }
     }
 }
@@ -342,8 +379,9 @@ fn spawn_building_entity(
         Building {
             kind,
             pos,
-            capacity_residents: kind.capacity_residents(),
-            capacity_jobs: kind.capacity_jobs(),
+            level: 1, // Start at level 1
+            capacity_residents: kind.capacity_residents_for_level(1),
+            capacity_jobs: kind.capacity_jobs_for_level(1),
         },
         Sprite::from_color(kind.color(), Vec2::splat(cfg.tile_size * 0.75)),
         Transform::from_translation(Vec3::new(world.x, world.y, 8.0)),
@@ -368,6 +406,110 @@ fn reset_growth_rng_on_new_map(
     for msg in reader.read() {
         if let GameCommand::GenerateMap { seed } = msg {
             rng.rng = StdRng::seed_from_u64(seed ^ 0xB11D_1A95_5EED_u64);
+        }
+    }
+}
+
+/// Upgrade buildings based on demand and conditions
+fn upgrade_buildings(
+    time: Res<Time<Fixed>>,
+    ui: Res<UiState>,
+    demand: Res<RciDemand>,
+    mut rng: ResMut<BuildingGrowthRng>,
+    mut city: ResMut<City>,
+    mut notifications: Option<ResMut<Notifications>>,
+    mut q_buildings: Query<(&mut Building, &mut Transform, &mut Sprite)>,
+) {
+    let speed = ui.sim_speed.multiplier();
+    if speed <= 0.0 {
+        return;
+    }
+
+    // Check for upgrades periodically (every 5 seconds)
+    let upgrade_period = 5.0;
+    let dt = time.delta_secs() * speed.clamp(0.0, 8.0);
+
+    // Simple timer: upgrade check every upgrade_period seconds
+    static mut LAST_UPGRADE_CHECK: f32 = 0.0;
+    unsafe {
+        LAST_UPGRADE_CHECK += dt;
+        if LAST_UPGRADE_CHECK < upgrade_period {
+            return;
+        }
+        LAST_UPGRADE_CHECK = 0.0;
+    }
+
+    // Check if notifications are available once
+    let has_notifications = notifications.is_some();
+
+    for (mut building, mut transform, _sprite) in q_buildings.iter_mut() {
+        // Only upgrade residential, commercial, and industrial buildings
+        if !matches!(
+            building.kind,
+            BuildingKind::Residential | BuildingKind::Commercial | BuildingKind::Industrial
+        ) {
+            continue;
+        }
+
+        // Already at max level
+        if building.level >= 3 {
+            continue;
+        }
+
+        // Check demand
+        let demand_ok = match building.kind {
+            BuildingKind::Residential => demand.residential > 0.3,
+            BuildingKind::Commercial => demand.commercial > 0.3,
+            BuildingKind::Industrial => demand.industrial > 0.3,
+            _ => false,
+        };
+
+        if !demand_ok {
+            continue;
+        }
+
+        // Random chance to upgrade (5% per check)
+        if rng.rng.random_range(0.0..1.0) > 0.05 {
+            continue;
+        }
+
+        // Upgrade!
+        building.level += 1;
+
+        // Update capacity
+        let old_residents = building.capacity_residents;
+
+        building.capacity_residents = building.kind.capacity_residents_for_level(building.level);
+        building.capacity_jobs = building.kind.capacity_jobs_for_level(building.level);
+
+        // Update population if residential
+        if building.kind == BuildingKind::Residential {
+            let delta = building.capacity_residents.saturating_sub(old_residents);
+            city.population = city.population.saturating_add(delta as u32);
+        }
+
+        // Visual change: scale sprite based on level
+        let scale = 0.75 + (building.level as f32 - 1.0) * 0.15; // 0.75, 0.90, 1.05
+        transform.scale = Vec3::splat(scale);
+
+        // Emit notification
+        if has_notifications {
+            if let Some(ref mut notif) = notifications.as_mut() {
+                let kind_name = match building.kind {
+                    BuildingKind::Residential => "Residential",
+                    BuildingKind::Commercial => "Commercial",
+                    BuildingKind::Industrial => "Industrial",
+                    _ => "Building",
+                };
+                notif.add(
+                    format!(
+                        "{} building upgraded to level {}",
+                        kind_name, building.level
+                    ),
+                    NotificationKind::Info,
+                    3.0,
+                );
+            }
         }
     }
 }

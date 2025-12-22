@@ -9,6 +9,8 @@ pub struct UiState {
     pub tool: ToolMode,
     pub overlay: OverlayMode,
     pub sim_speed: SimSpeed,
+    /// One-way road mode (when Road tool is selected)
+    pub one_way_mode: bool,
 }
 
 impl Default for UiState {
@@ -18,6 +20,7 @@ impl Default for UiState {
             tool: ToolMode::Road(RoadKind::TwoLane),
             overlay: OverlayMode::None,
             sim_speed: SimSpeed::X1,
+            one_way_mode: false,
         }
     }
 }
@@ -45,6 +48,8 @@ pub enum OverlayMode {
     Traffic,
     Path,
     ServiceCoverage,
+    LandValue,
+    Pollution,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]

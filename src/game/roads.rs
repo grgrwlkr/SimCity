@@ -136,6 +136,18 @@ pub enum RoadDir {
     South,
 }
 
+/// Road flow direction (two-way or one-way)
+#[derive(
+    serde::Serialize, serde::Deserialize, Debug, Copy, Clone, Eq, PartialEq, Hash, Default,
+)]
+pub enum RoadFlow {
+    /// Two-way traffic (default)
+    #[default]
+    TwoWay,
+    /// One-way traffic in the specified direction
+    OneWay(RoadDir),
+}
+
 impl RoadDir {
     #[allow(dead_code)]
     pub fn delta(self) -> IVec2 {
@@ -189,6 +201,8 @@ pub struct RoadCell {
     pub dir: RoadDir,
     /// Lane index within the cross-section, 0..kind.lanes()-1 (rightmost to leftmost in draw dir).
     pub lane: u8,
+    /// Flow direction (two-way or one-way)
+    pub flow: RoadFlow,
 }
 
 impl RoadCell {

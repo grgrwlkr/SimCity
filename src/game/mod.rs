@@ -4,6 +4,7 @@ mod audio_sfx;
 mod buildings;
 mod camera;
 mod citizens;
+mod command_history;
 mod commands;
 mod config_loader;
 mod custom_buildings;
@@ -14,9 +15,12 @@ mod emergencies;
 mod employment;
 mod ids;
 mod intersections;
+mod land_value;
 mod map;
+mod notifications;
 mod persistence;
 mod persistence_contract;
+mod pollution;
 mod public_transport;
 mod roads;
 mod scenarios;
@@ -29,6 +33,7 @@ mod traffic;
 mod transport;
 mod trips;
 mod ui;
+mod ui_settings;
 mod ui_state;
 mod zone_placement;
 
@@ -76,12 +81,12 @@ impl Plugin for GamePlugin {
                 employment::EmploymentPlugin,
                 map::MapPlugin,
                 scenarios::ScenariosPlugin,
-            ))
-            .add_plugins((
                 persistence::PersistencePlugin,
                 persistence_contract::PersistenceContractPlugin,
                 public_transport::PublicTransportPlugin,
                 audio_sfx::AudioSfxPlugin,
+            ))
+            .add_plugins((
                 day_night::DayNightPlugin,
                 services::ServicesPlugin,
                 transport::TransportPlugin,
@@ -89,7 +94,11 @@ impl Plugin for GamePlugin {
                 sim::SimPlugin,
                 traffic::TrafficPlugin,
                 intersections::IntersectionsPlugin,
+                land_value::LandValuePlugin,
+                notifications::NotificationsPlugin,
+                pollution::PollutionPlugin,
                 ui::UiPlugin,
+                ui_settings::UiSettingsPlugin,
             ));
     }
 }

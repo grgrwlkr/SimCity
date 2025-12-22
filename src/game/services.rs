@@ -13,7 +13,7 @@ use crate::game::emergencies::Emergency;
 use crate::game::map::{BuildingKind, MapConfig, MapGrid, TilePos};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
-use crate::game::traffic::Vehicle;
+use crate::game::traffic::{Vehicle, VehicleTrafficState};
 use crate::game::ui_state::{OverlayMode, UiState};
 
 pub struct ServicesPlugin;
@@ -239,7 +239,10 @@ pub(crate) fn spawn_service_vehicle(
                 route: vec![start_pos],
                 progress: 0.0,
                 speed: 0.0,
+                max_speed: kind.vehicle_speed(),
+                max_accel: 25.0,
             },
+            VehicleTrafficState::FreeFlow,
             ServiceVehicle {
                 kind,
                 home_station: station,

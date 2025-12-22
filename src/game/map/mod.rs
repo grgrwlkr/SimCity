@@ -10,7 +10,10 @@ use rand::prelude::*;
 
 use crate::game::buildings::Building;
 use crate::game::camera::MainCamera;
+use crate::game::command_history::{CommandHistory, UndoableCommand};
 use crate::game::commands::GameCommand;
+use crate::game::land_value::LandValueIndex;
+use crate::game::pollution::PollutionIndex;
 use crate::game::roads::{RoadCell, RoadDir, RoadKind};
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
@@ -25,6 +28,7 @@ pub struct MapPlugin;
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(MapConfig::default())
+            .insert_resource(CommandHistory::new(100))
             .add_systems(Startup, init_map_grid)
             .init_resource::<MapIndex>()
             .init_resource::<BuildMode>()
@@ -43,6 +47,7 @@ impl Plugin for MapPlugin {
                 (
                     build_mode_hotkeys,
                     sync_build_mode_from_ui.after(build_mode_hotkeys),
+                    handle_undo_redo.after(sync_build_mode_from_ui),
                 )
                     .in_set(GameSet::Input)
                     .run_if(in_game_or_paused),
@@ -321,6 +326,29 @@ impl BuildingKind {
             BuildingKind::Commercial => 3,
             BuildingKind::Industrial => 4,
             BuildingKind::FireStation | BuildingKind::PoliceStation | BuildingKind::Hospital => 0,
+        }
+    }
+
+    /// Capacity for residents at a given level
+    pub fn capacity_residents_for_level(self, level: u8) -> u16 {
+        match (self, level) {
+            (BuildingKind::Residential, 1) => 4,
+            (BuildingKind::Residential, 2) => 12,
+            (BuildingKind::Residential, 3) => 30,
+            _ => self.capacity_residents(),
+        }
+    }
+
+    /// Capacity for jobs at a given level
+    pub fn capacity_jobs_for_level(self, level: u8) -> u16 {
+        match (self, level) {
+            (BuildingKind::Commercial, 1) => 3,
+            (BuildingKind::Commercial, 2) => 10,
+            (BuildingKind::Commercial, 3) => 25,
+            (BuildingKind::Industrial, 1) => 4,
+            (BuildingKind::Industrial, 2) => 15,
+            (BuildingKind::Industrial, 3) => 40,
+            _ => self.capacity_jobs(),
         }
     }
 }
@@ -699,6 +727,27 @@ fn build_mode_hotkeys(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut<UiState>) 
     }
 }
 
+/// Handle undo/redo hotkeys (Ctrl+Z, Ctrl+Y)
+fn handle_undo_redo(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut history: ResMut<CommandHistory>,
+    mut commands: MessageWriter<GameCommand>,
+) {
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+
+    if ctrl && keys.just_pressed(KeyCode::KeyZ) {
+        if let Some(cmd) = history.undo() {
+            commands.write(cmd.undo_command());
+        }
+    }
+
+    if ctrl && keys.just_pressed(KeyCode::KeyY) {
+        if let Some(cmd) = history.redo() {
+            commands.write(cmd.redo_command());
+        }
+    }
+}
+
 fn update_cursor_highlight(
     cfg: Res<MapConfig>,
     q_window: Query<&Window, With<PrimaryWindow>>,
@@ -815,7 +864,14 @@ fn cursor_paint_to_command(
                     let drive_on_right = p.traffic_cfg.drive_on_right;
 
                     for pos in tiles {
-                        emit_road_commands(&mut out, pos, kind, road_dir, drive_on_right);
+                        emit_road_commands(
+                            &mut out,
+                            pos,
+                            kind,
+                            road_dir,
+                            drive_on_right,
+                            p.ui_state.one_way_mode,
+                        );
                     }
                 }
 
@@ -936,6 +992,7 @@ fn emit_road_commands(
     kind: RoadKind,
     road_dir: RoadDir,
     drive_on_right: bool,
+    one_way: bool,
 ) {
     let lanes = kind.lanes().max(1) as i32;
     let half = lanes / 2;
@@ -967,12 +1024,21 @@ fn emit_road_commands(
             x: pos.x + perp.x * o,
             y: pos.y + perp.y * o,
         };
+        // Determine flow based on one-way mode
+        let flow = if one_way {
+            // For one-way roads, use the road_dir as the one-way direction
+            crate::game::roads::RoadFlow::OneWay(road_dir)
+        } else {
+            crate::game::roads::RoadFlow::TwoWay
+        };
+
         out.write(GameCommand::SetRoad {
             pos: lane_pos,
             road: RoadCell {
                 kind,
                 dir: lane_dir,
                 lane,
+                flow,
             },
         });
     }
@@ -1221,8 +1287,9 @@ pub(crate) fn spawn_building_entity(
             Building {
                 kind,
                 pos,
-                capacity_residents: kind.capacity_residents(),
-                capacity_jobs: kind.capacity_jobs(),
+                level: 1,
+                capacity_residents: kind.capacity_residents_for_level(1),
+                capacity_jobs: kind.capacity_jobs_for_level(1),
             },
             Sprite::from_color(kind.color(), Vec2::splat(cfg.tile_size * 0.75)),
             Transform::from_translation(Vec3::new(world.x, world.y, 8.0)),
@@ -1241,6 +1308,7 @@ fn apply_game_commands_to_grid(
     mut city: ResMut<City>,
     mut graph_version: ResMut<GraphVersion>,
     mut roads_changed: ResMut<RoadsChangedThisFrame>,
+    mut history: ResMut<CommandHistory>,
 ) {
     for cmd in cmd_reader.read() {
         match *cmd {
@@ -1258,6 +1326,9 @@ fn apply_game_commands_to_grid(
                 if !road.is_some() {
                     continue;
                 }
+
+                // Save old state for undo
+                let old_road = cell.road;
 
                 // If road already exists with same properties, skip (no cost, no change).
                 // Note: intersections may override `dir` below, so compare after that logic.
@@ -1314,6 +1385,13 @@ fn apply_game_commands_to_grid(
                     continue;
                 };
 
+                // Save command to history before applying
+                history.push(UndoableCommand::SetRoad {
+                    pos,
+                    old: old_road,
+                    new: new_road,
+                });
+
                 // Allow roads to be built even when in debt (road tooling UX).
                 city.money -= cost;
                 cell.road = new_road;
@@ -1340,6 +1418,16 @@ fn apply_game_commands_to_grid(
                 if cell.zone == zone {
                     continue;
                 }
+
+                // Save old state for undo
+                let old_zone = cell.zone;
+
+                // Save command to history before applying
+                history.push(UndoableCommand::SetZone {
+                    pos,
+                    old: old_zone,
+                    new: zone,
+                });
 
                 // Zones are free to place (zoning is just marking land for development).
                 cell.zone = zone;
@@ -1372,6 +1460,17 @@ fn apply_game_commands_to_grid(
                 if city.money < cost {
                     continue;
                 }
+
+                // Save old state for undo
+                let old_building = cell.building;
+
+                // Save command to history before applying
+                history.push(UndoableCommand::PlaceBuilding {
+                    pos,
+                    old: old_building,
+                    new: kind,
+                });
+
                 city.money -= cost;
 
                 cell.building = Some(kind);
@@ -1389,6 +1488,20 @@ fn apply_game_commands_to_grid(
                 if cell.water {
                     continue;
                 }
+
+                // Save old state for undo
+                let old_road = cell.road;
+                let old_zone = cell.zone;
+                let old_building = cell.building;
+
+                // Save command to history before applying
+                history.push(UndoableCommand::EraseTile {
+                    pos,
+                    old_road,
+                    old_zone,
+                    old_building,
+                });
+
                 let road_changed = cell.road.is_some();
                 cell.road = RoadCell::none();
                 cell.zone = ZoneKind::None;
@@ -1421,6 +1534,8 @@ fn sync_dirty_tiles_to_render(
     cfg: Res<MapConfig>,
     grid: Res<MapGrid>,
     index: Res<MapIndex>,
+    land_value: Option<Res<LandValueIndex>>,
+    pollution: Option<Res<PollutionIndex>>,
     mut dirty: ResMut<DirtyTiles>,
     mut q_tiles: Query<(&mut Sprite, &mut TileKind)>,
 ) {
@@ -1489,6 +1604,80 @@ fn sync_dirty_tiles_to_render(
                         Color::srgba(0.0, 0.0, 0.0, 0.10),
                         base_size,
                     )
+                }
+            }
+            OverlayMode::LandValue => {
+                // Land value overlay: red (low) to green (high)
+                if let Some(land_val) = land_value.as_deref() {
+                    let value = land_val.get(idx);
+                    // Gradient from red (0.0) to green (1.0)
+                    let color = if value < 0.5 {
+                        // Red to yellow
+                        let t = value * 2.0;
+                        Color::srgb(1.0, t, 0.0)
+                    } else {
+                        // Yellow to green
+                        let t = (value - 0.5) * 2.0;
+                        Color::srgb(1.0 - t, 1.0, 0.0)
+                    };
+                    let k = if cell.water {
+                        TileKind::Water
+                    } else if cell.road.is_some() {
+                        TileKind::Road
+                    } else {
+                        base_terrain_or_zone
+                    };
+                    (k, color, base_size)
+                } else {
+                    // Fallback to base view if land value not available
+                    if cell.water {
+                        (TileKind::Water, TileKind::Water.color(), base_size)
+                    } else if cell.road.is_some() {
+                        (TileKind::Road, cell.road.kind.color(), base_size)
+                    } else {
+                        (
+                            base_terrain_or_zone,
+                            base_terrain_or_zone.color(),
+                            base_size,
+                        )
+                    }
+                }
+            }
+            OverlayMode::Pollution => {
+                // Pollution overlay: green (clean) to red (polluted)
+                if let Some(poll) = pollution.as_deref() {
+                    let poll_value = poll.get(idx);
+                    // Gradient from green (0.0) to red (1.0)
+                    let color = if poll_value < 0.5 {
+                        // Green to yellow
+                        let t = poll_value * 2.0;
+                        Color::srgb(t, 1.0, 0.0)
+                    } else {
+                        // Yellow to red
+                        let t = (poll_value - 0.5) * 2.0;
+                        Color::srgb(1.0, 1.0 - t, 0.0)
+                    };
+                    let k = if cell.water {
+                        TileKind::Water
+                    } else if cell.road.is_some() {
+                        TileKind::Road
+                    } else {
+                        base_terrain_or_zone
+                    };
+                    (k, color, base_size)
+                } else {
+                    // Fallback to base view if pollution not available
+                    if cell.water {
+                        (TileKind::Water, TileKind::Water.color(), base_size)
+                    } else if cell.road.is_some() {
+                        (TileKind::Road, cell.road.kind.color(), base_size)
+                    } else {
+                        (
+                            base_terrain_or_zone,
+                            base_terrain_or_zone.color(),
+                            base_size,
+                        )
+                    }
                 }
             }
             OverlayMode::Zones
@@ -1583,8 +1772,9 @@ fn sync_building_entities_from_grid(
                 *b = Building {
                     kind: expected_kind,
                     pos,
-                    capacity_residents: expected_kind.capacity_residents(),
-                    capacity_jobs: expected_kind.capacity_jobs(),
+                    level: b.level, // Preserve existing level
+                    capacity_residents: expected_kind.capacity_residents_for_level(b.level),
+                    capacity_jobs: expected_kind.capacity_jobs_for_level(b.level),
                 };
             }
             sprite.color = expected_kind.color();
@@ -2039,6 +2229,7 @@ mod tests {
                 kind: RoadKind::TwoLane,
                 dir: RoadDir::East,
                 lane: 0,
+                flow: crate::game::roads::RoadFlow::TwoWay,
             };
             grid.set(pos, c);
         }

@@ -841,49 +841,511 @@ y=17  ↓S    ↓S    ↑N    ↑N    ← Вертикальная дорога 
 
 **Описание:** Машины должны останавливаться перед перекрёстком при красном сигнале.
 
-**Реализация:**
+**Архитектура решения:**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    СИСТЕМА ОСТАНОВКИ НА СВЕТОФОРЕ                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌────────────┐    ┌────────────┐    ┌────────────┐    ┌────────────┐      │
+│  │  Обнару-   │    │  Расчёт    │    │ Торможение │    │  Очередь   │      │
+│  │  жение     │───►│  стоп-     │───►│ /Ускорение │───►│  машин     │      │
+│  │  светофора │    │  линии     │    │            │    │            │      │
+│  └────────────┘    └────────────┘    └────────────┘    └────────────┘      │
+│                                                                              │
+│  Компоненты:                                                                │
+│  • VehicleTrafficState — состояние машины у светофора                       │
+│  • StopLinePosition — позиция стоп-линии                                    │
+│  • TrafficLightAwareness — осведомлённость о светофоре                      │
+│  • BrakingModel — модель торможения                                         │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Новые структуры данных:**
 
 ```rust
-// В traffic.rs → move_vehicles:
+/// Состояние машины относительно светофора
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub enum VehicleTrafficState {
+    /// Едет свободно (нет светофора впереди)
+    FreeFlow,
+    
+    /// Приближается к светофору
+    Approaching {
+        light_pos: TilePos,
+        distance_to_stop: f32,  // В тайлах
+    },
+    
+    /// Тормозит перед стоп-линией
+    Braking {
+        light_pos: TilePos,
+        target_speed: f32,
+    },
+    
+    /// Стоит в очереди (полная остановка)
+    Stopped {
+        light_pos: TilePos,
+        queue_position: u8,  // 0 = первый у линии
+    },
+    
+    /// Ожидает зелёного
+    WaitingForGreen {
+        light_pos: TilePos,
+    },
+    
+    /// Начинает движение (зелёный загорелся)
+    Accelerating,
+    
+    /// Проезжает перекрёсток
+    CrossingIntersection,
+}
 
-fn move_vehicles(
-    time: Res<Time>,
-    cfg: Res<MapConfig>,
-    intersections: Res<IntersectionIndex>,
-    q_lights: Query<&TrafficLight>,
-    mut q_vehicles: Query<(&mut Vehicle, &mut Transform)>,
-) {
-    for (mut v, mut tf) in q_vehicles.iter_mut() {
-        // Проверка: следующий тайл — перекрёсток со светофором?
-        if let Some(next_tile) = v.route.get(1) {
-            if intersections.has_traffic_light(*next_tile) {
-                // Найти светофор
-                for light in &q_lights {
-                    if light.pos == *next_tile {
-                        // Определить направление въезда
-                        let entry_dir = compute_entry_direction(v.route[0], *next_tile);
-                        
-                        // Если красный — остановка
-                        if !light.is_green(entry_dir) {
-                            // Замедление до остановки
-                            v.speed = (v.speed - BRAKE_DECEL * dt).max(0.0);
-                            if v.progress > 0.8 {
-                                // Не продвигаемся дальше 80% тайла
-                                continue;
-                            }
-                        }
-                    }
-                }
-            }
+/// Расстояние обнаружения светофора (в тайлах)
+pub const TRAFFIC_LIGHT_DETECTION_DISTANCE: f32 = 8.0;
+
+/// Безопасное расстояние между машинами в очереди (в тайлах)
+pub const QUEUE_GAP: f32 = 0.3;
+
+/// Позиция стоп-линии относительно перекрёстка (0.0 = граница тайла)
+pub const STOP_LINE_OFFSET: f32 = 0.15;
+
+/// Параметры торможения
+pub struct BrakingParams {
+    /// Комфортное замедление (м/с²) → примерно 3.0
+    pub comfortable_decel: f32,
+    
+    /// Максимальное замедление (экстренное)
+    pub max_decel: f32,
+    
+    /// Минимальная дистанция для начала торможения
+    pub min_braking_distance: f32,
+}
+
+impl Default for BrakingParams {
+    fn default() -> Self {
+        Self {
+            comfortable_decel: 3.0,
+            max_decel: 8.0,
+            min_braking_distance: 0.5,
         }
-        
-        // Обычная логика движения...
     }
 }
 ```
 
-**Сложность:** Средняя  
-**Влияние:** Высокое (реалистичность симуляции)
+**Основная логика:**
+
+```rust
+/// Система обновления состояния машины относительно светофоров
+fn update_vehicle_traffic_state(
+    mut q_vehicles: Query<(Entity, &Vehicle, &mut VehicleTrafficState)>,
+    q_lights: Query<&TrafficLight>,
+    intersections: Res<IntersectionIndex>,
+    grid: Res<MapGrid>,
+) {
+    for (entity, vehicle, mut state) in q_vehicles.iter_mut() {
+        // 1. Найти ближайший светофор на маршруте
+        let light_ahead = find_traffic_light_ahead(
+            &vehicle.route,
+            vehicle.progress,
+            TRAFFIC_LIGHT_DETECTION_DISTANCE,
+            &intersections,
+        );
+        
+        match (&*state, light_ahead) {
+            // Нет светофора впереди
+            (_, None) => {
+                *state = VehicleTrafficState::FreeFlow;
+            }
+            
+            // Обнаружен светофор — начинаем приближение
+            (VehicleTrafficState::FreeFlow, Some((light_pos, distance))) => {
+                *state = VehicleTrafficState::Approaching {
+                    light_pos,
+                    distance_to_stop: distance,
+                };
+            }
+            
+            // Приближаемся — проверяем, нужно ли тормозить
+            (VehicleTrafficState::Approaching { light_pos, .. }, Some((pos, distance))) 
+                if pos == *light_pos => 
+            {
+                // Получить состояние светофора
+                if let Some(light) = find_light_at(&q_lights, *light_pos) {
+                    let entry_dir = compute_entry_direction(&vehicle.route, *light_pos);
+                    
+                    if !light.is_green(entry_dir) {
+                        // Красный/жёлтый — начинаем торможение
+                        *state = VehicleTrafficState::Braking {
+                            light_pos: *light_pos,
+                            target_speed: 0.0,
+                        };
+                    } else {
+                        // Зелёный — можно ехать
+                        *state = VehicleTrafficState::CrossingIntersection;
+                    }
+                }
+            }
+            
+            // Тормозим — проверяем остановку
+            (VehicleTrafficState::Braking { light_pos, .. }, Some((pos, distance))) 
+                if pos == *light_pos && distance <= STOP_LINE_OFFSET => 
+            {
+                *state = VehicleTrafficState::Stopped {
+                    light_pos: *light_pos,
+                    queue_position: 0,
+                };
+            }
+            
+            // Стоим — ждём зелёного
+            (VehicleTrafficState::Stopped { light_pos, .. }, _) => {
+                if let Some(light) = find_light_at(&q_lights, *light_pos) {
+                    let entry_dir = compute_entry_direction(&vehicle.route, *light_pos);
+                    
+                    if light.is_green(entry_dir) {
+                        *state = VehicleTrafficState::Accelerating;
+                    }
+                }
+            }
+            
+            // Ускоряемся — переходим к проезду
+            (VehicleTrafficState::Accelerating, _) => {
+                // После набора скорости переходим к проезду
+                if vehicle.speed >= vehicle.max_speed * 0.5 {
+                    *state = VehicleTrafficState::CrossingIntersection;
+                }
+            }
+            
+            _ => {}
+        }
+    }
+}
+
+/// Найти светофор на маршруте впереди
+fn find_traffic_light_ahead(
+    route: &[TilePos],
+    progress: f32,
+    max_distance: f32,
+    intersections: &IntersectionIndex,
+) -> Option<(TilePos, f32)> {
+    let mut distance = 1.0 - progress;  // Оставшееся до конца текущего тайла
+    
+    for (i, tile) in route.iter().enumerate().skip(1) {
+        if distance > max_distance {
+            return None;
+        }
+        
+        if intersections.has_traffic_light(*tile) {
+            return Some((*tile, distance));
+        }
+        
+        distance += 1.0;
+    }
+    
+    None
+}
+```
+
+**Модель торможения (IDM-inspired):**
+
+```rust
+/// Рассчитать требуемое ускорение/торможение
+fn compute_acceleration(
+    vehicle: &Vehicle,
+    state: &VehicleTrafficState,
+    params: &BrakingParams,
+    dt: f32,
+) -> f32 {
+    match state {
+        VehicleTrafficState::FreeFlow | VehicleTrafficState::CrossingIntersection => {
+            // Ускорение к максимальной скорости
+            let delta_v = vehicle.max_speed - vehicle.speed;
+            (delta_v * 2.0).clamp(-params.max_decel, vehicle.max_accel)
+        }
+        
+        VehicleTrafficState::Approaching { distance_to_stop, .. } => {
+            // Плавное торможение с учётом дистанции
+            // Формула: a = -v² / (2 * s) для остановки точно на линии
+            let required_decel = (vehicle.speed * vehicle.speed) / (2.0 * distance_to_stop.max(0.1));
+            
+            if required_decel > params.comfortable_decel {
+                // Нужно тормозить
+                -required_decel.min(params.max_decel)
+            } else {
+                // Можно продолжать движение
+                0.0
+            }
+        }
+        
+        VehicleTrafficState::Braking { target_speed, .. } => {
+            // Активное торможение до целевой скорости
+            let delta_v = *target_speed - vehicle.speed;
+            if delta_v < 0.0 {
+                delta_v.max(-params.max_decel * dt) / dt
+            } else {
+                0.0
+            }
+        }
+        
+        VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. } => {
+            // Полная остановка
+            if vehicle.speed > 0.01 {
+                -params.max_decel
+            } else {
+                0.0
+            }
+        }
+        
+        VehicleTrafficState::Accelerating => {
+            // Плавный старт
+            vehicle.max_accel * 0.8
+        }
+    }
+}
+```
+
+**Интеграция в move_vehicles:**
+
+```rust
+fn move_vehicles(
+    time: Res<Time>,
+    braking_params: Res<BrakingParams>,
+    mut q_vehicles: Query<(&mut Vehicle, &mut Transform, &VehicleTrafficState)>,
+    // ... остальные ресурсы
+) {
+    let dt = time.delta_secs();
+    
+    for (mut vehicle, mut transform, state) in q_vehicles.iter_mut() {
+        // 1. Рассчитать ускорение на основе состояния
+        let accel = compute_acceleration(&vehicle, state, &braking_params, dt);
+        
+        // 2. Обновить скорость
+        vehicle.speed = (vehicle.speed + accel * dt).clamp(0.0, vehicle.max_speed);
+        
+        // 3. Проверка блокировки движения
+        let can_move = match state {
+            VehicleTrafficState::Stopped { .. } | 
+            VehicleTrafficState::WaitingForGreen { .. } => false,
+            _ => true,
+        };
+        
+        if !can_move {
+            continue;  // Не двигаемся
+        }
+        
+        // 4. Обычная логика движения (advance progress, etc.)
+        let delta_progress = vehicle.speed * dt / TILE_SIZE;
+        vehicle.progress += delta_progress;
+        
+        // ... остальная логика (смена тайла, etc.)
+    }
+}
+```
+
+**Система очередей перед светофором:**
+
+```rust
+/// Обновление позиций в очереди
+fn update_traffic_queues(
+    mut q_vehicles: Query<(Entity, &Vehicle, &mut VehicleTrafficState)>,
+    q_lights: Query<&TrafficLight>,
+) {
+    // Группируем машины по светофорам
+    let mut queues: HashMap<TilePos, Vec<(Entity, f32)>> = HashMap::new();
+    
+    for (entity, vehicle, state) in q_vehicles.iter() {
+        if let VehicleTrafficState::Stopped { light_pos, .. } 
+             | VehicleTrafficState::Braking { light_pos, .. } 
+             | VehicleTrafficState::WaitingForGreen { light_pos } = state 
+        {
+            let distance = compute_distance_to_light(&vehicle.route, vehicle.progress, *light_pos);
+            queues.entry(*light_pos).or_default().push((entity, distance));
+        }
+    }
+    
+    // Сортируем по дистанции и назначаем позиции
+    for (light_pos, mut queue) in queues {
+        queue.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        
+        for (i, (entity, _)) in queue.iter().enumerate() {
+            if let Ok((_, _, mut state)) = q_vehicles.get_mut(*entity) {
+                if let VehicleTrafficState::Stopped { light_pos: pos, .. } = &mut *state {
+                    *state = VehicleTrafficState::Stopped {
+                        light_pos: *pos,
+                        queue_position: i as u8,
+                    };
+                }
+            }
+        }
+    }
+}
+
+/// Позиция остановки с учётом очереди
+fn compute_stop_position(
+    light_pos: TilePos,
+    queue_position: u8,
+) -> f32 {
+    // Стоп-линия + зазоры для машин впереди
+    STOP_LINE_OFFSET + (queue_position as f32) * (1.0 + QUEUE_GAP)
+}
+```
+
+**Диаграмма состояний машины:**
+
+```
+                    ┌─────────────┐
+                    │  FreeFlow   │◄────────────────────┐
+                    └──────┬──────┘                     │
+                           │ обнаружен светофор        │
+                           ▼                           │
+                    ┌─────────────┐                     │
+                    │ Approaching │                     │
+                    └──────┬──────┘                     │
+                           │                           │
+              ┌────────────┼────────────┐              │
+              │ красный    │            │ зелёный     │
+              ▼            │            ▼              │
+       ┌─────────────┐     │     ┌─────────────────┐   │
+       │   Braking   │     │     │    Crossing     │───┘
+       └──────┬──────┘     │     │  Intersection   │
+              │ v ≈ 0      │     └─────────────────┘
+              ▼            │            ▲
+       ┌─────────────┐     │            │
+       │   Stopped   │     │            │
+       └──────┬──────┘     │            │
+              │ зелёный    │            │
+              ▼            │            │
+       ┌─────────────┐     │            │
+       │WaitingFor   │     │            │
+       │   Green     │     │            │
+       └──────┬──────┘     │            │
+              │ загорелся  │            │
+              ▼            │            │
+       ┌─────────────┐     │            │
+       │Accelerating │─────┴────────────┘
+       └─────────────┘
+```
+
+**Визуализация стоп-линии:**
+
+```rust
+fn render_stop_lines(
+    mut commands: Commands,
+    cfg: Res<MapConfig>,
+    intersections: Res<IntersectionIndex>,
+    q_lights: Query<&TrafficLight>,
+) {
+    for light in q_lights.iter() {
+        let origin = map_origin(&cfg);
+        
+        // Определить все входы в перекрёсток
+        let entries = find_intersection_entries(&intersections, light.pos);
+        
+        for (entry_tile, entry_dir) in entries {
+            // Позиция стоп-линии
+            let line_pos = compute_stop_line_world_pos(entry_tile, entry_dir, &cfg, origin);
+            
+            // Цвет линии зависит от фазы
+            let color = if light.is_green(entry_dir) {
+                Color::srgba(0.2, 0.8, 0.2, 0.8)  // Зелёный
+            } else {
+                Color::srgba(0.9, 0.2, 0.2, 0.8)  // Красный
+            };
+            
+            // Рендер линии
+            commands.spawn((
+                Sprite::from_color(color, Vec2::new(cfg.tile_size * 0.8, 2.0)),
+                Transform::from_translation(Vec3::new(line_pos.x, line_pos.y, 7.0))
+                    .with_rotation(Quat::from_rotation_z(entry_dir.angle())),
+                StopLineVisual,
+            ));
+        }
+    }
+}
+```
+
+**Тестовые сценарии:**
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_vehicle_stops_at_red_light() {
+        // Setup: машина приближается к красному светофору
+        let mut vehicle = Vehicle {
+            speed: 10.0,
+            max_speed: 15.0,
+            progress: 0.0,
+            route: vec![TilePos::new(5, 10), TilePos::new(5, 11)], // Вверх к светофору
+            ..default()
+        };
+        
+        let light = TrafficLight {
+            pos: TilePos::new(5, 11),
+            phase: 1,  // E-W зелёный → N-S красный
+            ..default()
+        };
+        
+        // Act: симулируем несколько тиков
+        for _ in 0..100 {
+            let state = compute_vehicle_state(&vehicle, &light);
+            let accel = compute_acceleration(&vehicle, &state, &BrakingParams::default(), 0.1);
+            vehicle.speed = (vehicle.speed + accel * 0.1).max(0.0);
+            vehicle.progress += vehicle.speed * 0.1 / TILE_SIZE;
+        }
+        
+        // Assert: машина остановилась перед линией
+        assert!(vehicle.speed < 0.1, "Vehicle should have stopped");
+        assert!(vehicle.progress < 1.0 - STOP_LINE_OFFSET, "Vehicle should be before stop line");
+    }
+    
+    #[test]
+    fn test_vehicle_proceeds_on_green() {
+        // Setup: машина у зелёного светофора
+        let vehicle = Vehicle {
+            speed: 0.0,
+            route: vec![TilePos::new(5, 10), TilePos::new(5, 11)],
+            ..default()
+        };
+        
+        let light = TrafficLight {
+            pos: TilePos::new(5, 11),
+            phase: 0,  // N-S зелёный
+            ..default()
+        };
+        
+        // Act
+        let state = compute_vehicle_state(&vehicle, &light);
+        
+        // Assert
+        assert!(matches!(state, VehicleTrafficState::CrossingIntersection | VehicleTrafficState::Accelerating));
+    }
+    
+    #[test]
+    fn test_queue_ordering() {
+        // Setup: 3 машины перед светофором
+        let vehicles = vec![
+            (Entity::from_raw(1), 0.5),  // Ближе всего
+            (Entity::from_raw(2), 1.5),
+            (Entity::from_raw(3), 2.5),  // Дальше всего
+        ];
+        
+        // Act: сортировка очереди
+        let queue = sort_queue(vehicles);
+        
+        // Assert
+        assert_eq!(queue[0].0, Entity::from_raw(1));  // Первый
+        assert_eq!(queue[1].0, Entity::from_raw(2));  // Второй
+        assert_eq!(queue[2].0, Entity::from_raw(3));  // Третий
+    }
+}
+```
+
+**Сложность:** Высокая (много компонентов)  
+**Влияние:** Очень высокое (реалистичность симуляции, визуальное качество)
 
 #### 1.2 Учёт светофоров в pathfinding
 
@@ -1346,20 +1808,20 @@ fn vehicle_receives_signal(
 
 ## Сводная таблица улучшений
 
-| #   | Улучшение               | Приоритет      | Сложность     | Влияние | Зависимости |
-| --- | ----------------------- | -------------- | ------------- | ------- | ----------- |
-| 1.1 | Остановка на красный    | 🔴 High         | Средняя       | Высокое | —           |
-| 1.2 | Светофоры в pathfinding | 🔴 High         | Низкая        | Среднее | —           |
-| 2.1 | Жёлтый сигнал           | 🟡 Medium       | Низкая        | Среднее | —           |
-| 2.2 | Правила приоритета      | 🟡 Medium       | Средняя       | Высокое | 1.1         |
-| 2.3 | Стрелки светофора       | 🟡 Medium       | Средняя       | Среднее | 2.1         |
-| 3.1 | Адаптивные светофоры    | 🟢 Low          | Высокая       | Среднее | 1.1, 1.2    |
-| 3.2 | Координация светофоров  | 🟢 Low          | Высокая       | Среднее | 3.1         |
-| 3.3 | Круговое движение       | 🟢 Low          | Высокая       | Высокое | —           |
-| 3.4 | Пешеходные переходы     | 🟢 Low          | Средняя       | Низкое  | 2.1         |
-| 3.5 | Многоуровневые развязки | 🟢 Low          | Очень высокая | Высокое | —           |
-| 4.1 | ИИ-оптимизация          | 🔵 Experimental | Очень высокая | Среднее | 3.1         |
-| 4.2 | V2I коммуникация        | 🔵 Experimental | Высокая       | Низкое  | 1.1         |
+| #   | Улучшение               | Приоритет      | Сложность     | Влияние    | Зависимости |
+| --- | ----------------------- | -------------- | ------------- | ---------- | ----------- |
+| 1.1 | Остановка на красный    | 🔴 High         | Высокая       | Очень выс. | —           |
+| 1.2 | Светофоры в pathfinding | 🔴 High         | Низкая        | Среднее    | —           |
+| 2.1 | Жёлтый сигнал           | 🟡 Medium       | Низкая        | Среднее    | —           |
+| 2.2 | Правила приоритета      | 🟡 Medium       | Средняя       | Высокое    | 1.1         |
+| 2.3 | Стрелки светофора       | 🟡 Medium       | Средняя       | Среднее    | 2.1         |
+| 3.1 | Адаптивные светофоры    | 🟢 Low          | Высокая       | Среднее    | 1.1, 1.2    |
+| 3.2 | Координация светофоров  | 🟢 Low          | Высокая       | Среднее    | 3.1         |
+| 3.3 | Круговое движение       | 🟢 Low          | Высокая       | Высокое    | —           |
+| 3.4 | Пешеходные переходы     | 🟢 Low          | Средняя       | Низкое     | 2.1         |
+| 3.5 | Многоуровневые развязки | 🟢 Low          | Очень высокая | Высокое    | —           |
+| 4.1 | ИИ-оптимизация          | 🔵 Experimental | Очень высокая | Среднее    | 3.1         |
+| 4.2 | V2I коммуникация        | 🔵 Experimental | Высокая       | Низкое     | 1.1         |
 
 ---
 

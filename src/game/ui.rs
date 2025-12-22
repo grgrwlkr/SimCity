@@ -37,8 +37,19 @@ impl Plugin for UiPlugin {
             .add_systems(OnEnter(AppState::MainMenu), announce_main_menu)
             .add_systems(OnEnter(AppState::InGame), announce_ingame)
             .add_systems(OnEnter(AppState::Paused), announce_paused)
-            .add_systems(EguiPrimaryContextPass, top_bar_ui)
-            .add_systems(EguiPrimaryContextPass, inspector_ui.after(top_bar_ui))
+            .init_resource::<ShowShortcuts>()
+            .add_systems(EguiPrimaryContextPass, top_status_bar_ui)
+            .add_systems(
+                EguiPrimaryContextPass,
+                bottom_toolbar_ui.after(top_status_bar_ui),
+            )
+            .add_systems(
+                EguiPrimaryContextPass,
+                right_sidebar_ui.after(top_status_bar_ui),
+            )
+            .add_systems(EguiPrimaryContextPass, shortcuts_ui.after(right_sidebar_ui))
+            .add_systems(EguiPrimaryContextPass, inspector_ui.after(right_sidebar_ui))
+            .add_systems(Update, toggle_shortcuts.in_set(GameSet::Input))
             .add_systems(
                 EguiPrimaryContextPass,
                 building_popup_ui.after(inspector_ui),
@@ -336,257 +347,351 @@ fn update_window_title(
     }
 }
 
-fn top_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
+/// Compact top status bar with key metrics
+fn top_status_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
 
-    egui::TopBottomPanel::top("top_bar").show(&*ctx, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            ui.label("SimCity");
-            ui.separator();
-
-            // Sim speed
-            ui.label("Speed:");
-            for (label, speed) in [
-                ("Pause", SimSpeed::Paused),
-                ("1x", SimSpeed::X1),
-                ("2x", SimSpeed::X2),
-                ("4x", SimSpeed::X4),
-            ] {
-                ui.selectable_value(&mut p.ui_state.sim_speed, speed, label);
-            }
-
-            ui.separator();
-
-            // Money (keep it visible even when the status line wraps).
-            ui.label(format!("Day {}", p.city.day));
-            let money_color = if p.city.money < 0 {
-                egui::Color32::LIGHT_RED
-            } else {
-                egui::Color32::LIGHT_GREEN
-            };
-            ui.colored_label(money_color, format!("$ {}", p.city.money));
-
-            ui.separator();
-
-            // Tool selection
-            ui.label("Tool:");
-            let current_road_kind = match p.ui_state.tool {
-                ToolMode::Road(k) => k,
-                _ => RoadKind::TwoLane,
-            };
-
-            ui.selectable_value(
-                &mut p.ui_state.tool,
-                ToolMode::Road(current_road_kind),
-                "Road",
-            );
-
-            ui.label("Lanes:");
-            for (label, kind) in [
-                ("2", RoadKind::TwoLane),
-                ("4", RoadKind::FourLane),
-                ("6", RoadKind::SixLane),
-            ] {
-                let selected = matches!(p.ui_state.tool, ToolMode::Road(k) if k == kind);
-                let resp = ui.selectable_label(selected, label);
-                if resp.clicked() {
-                    p.ui_state.tool = ToolMode::Road(kind);
-                }
-            }
-
-            ui.selectable_value(&mut p.ui_state.tool, ToolMode::Residential, "R");
-            ui.selectable_value(&mut p.ui_state.tool, ToolMode::Commercial, "C");
-            ui.selectable_value(&mut p.ui_state.tool, ToolMode::Industrial, "I");
-            ui.selectable_value(&mut p.ui_state.tool, ToolMode::FireStation, "Fire");
-            ui.selectable_value(&mut p.ui_state.tool, ToolMode::PoliceStation, "Police");
-            ui.selectable_value(&mut p.ui_state.tool, ToolMode::Hospital, "Hospital");
-            ui.selectable_value(&mut p.ui_state.tool, ToolMode::Erase, "Erase");
-            ui.selectable_value(&mut p.ui_state.tool, ToolMode::Inspect, "Inspect");
-
-            ui.separator();
-
-            // Overlay selection (wired later; saved now)
-            ui.label("Overlay:");
-            for (label, overlay) in [
-                ("None", OverlayMode::None),
-                ("Water", OverlayMode::Water),
-                ("Height", OverlayMode::Height),
-                ("Zones", OverlayMode::Zones),
-                ("Roads", OverlayMode::Roads),
-                ("Traffic", OverlayMode::Traffic),
-                ("Path", OverlayMode::Path),
-                ("Service", OverlayMode::ServiceCoverage),
-            ] {
-                ui.selectable_value(&mut p.ui_state.overlay, overlay, label);
-            }
-
-            ui.separator();
-
-            // Map seed + generation
-            ui.label("Seed:");
-            ui.text_edit_singleline(&mut p.ui_state.seed_text);
-            let seed = p.ui_state.seed_text.trim().parse::<u64>().unwrap_or(1);
-            if ui.button("New Map").clicked() {
-                p.commands.write(GameCommand::GenerateMap { seed });
-                p.next_state.set(AppState::InGame);
-            }
-
-            ui.separator();
-
-            if matches!(p.state.get(), AppState::InGame | AppState::Paused) {
-                if ui.button("Spawn cars").clicked() {
-                    p.commands.write(GameCommand::SpawnDebugVehicles { count: 25 });
-                }
-                if ui.button("Clear cars").clicked() {
-                    p.commands.write(GameCommand::ClearVehicles);
-                }
-                if ui.button("Dump save").clicked() {
-                    p.commands.write(GameCommand::DumpSaveContract);
-                }
-                if ui.button("Save").clicked() {
-                    p.commands.write(GameCommand::SaveGame { slot: 1 });
-                }
-                if ui.button("Load").clicked() {
-                    p.commands.write(GameCommand::LoadGame { slot: 1 });
-                }
+    egui::TopBottomPanel::top("status_bar")
+        .exact_height(32.0)
+        .show(&*ctx, |ui| {
+            ui.horizontal_centered(|ui| {
+                // Money (color-coded: green/red)
+                let money_color = if p.city.money < 0 {
+                    egui::Color32::LIGHT_RED
+                } else {
+                    egui::Color32::LIGHT_GREEN
+                };
+                ui.colored_label(money_color, format!("💰 ${}", p.city.money));
                 ui.separator();
-            }
 
-            // Quick status line
-            ui.label(format!(
-                "Day {} | $ {} ( +{} / -{} ) | Pop {} | Emp {}/{} ({:.0}%) | Commute {:.0}s | Traffic {:.0}%/{:.0}% | Citizens {} | Vehicles {} | Buildings {} | Build {:?}",
-                p.city.day,
-                p.city.money,
-                p.city.last_income,
-                p.city.last_expense,
-                p.city.population,
-                p.metrics.employed,
-                p.metrics.unemployed,
-                (p.metrics.employment_rate * 100.0).clamp(0.0, 999.0),
-                p.metrics.avg_commute_secs.clamp(0.0, 9999.0),
-                (p.metrics.traffic_avg * 100.0).clamp(0.0, 999.0),
-                (p.metrics.traffic_max * 100.0).clamp(0.0, 999.0),
-                p.metrics.citizens,
-                p.metrics.vehicles,
-                p.metrics.buildings,
-                p.mode.selected
-            ));
+                // Population
+                ui.label(format!("👥 {}", p.city.population));
+                ui.separator();
 
+                // Day
+                ui.label(format!("📅 Day {}", p.city.day));
+                ui.separator();
+
+                // Time of day with icon
+                if matches!(p.state.get(), AppState::InGame | AppState::Paused)
+                    && let Some(cycle) = p.day_night.as_deref()
+                {
+                    let t = cycle.time_of_day.rem_euclid(1.0);
+                    let hours_f = ((t * 24.0) + 12.0) % 24.0;
+                    let mut hh = hours_f.floor() as u32;
+                    let mut mm = ((hours_f - (hh as f32)) * 60.0).round() as u32;
+                    if mm >= 60 {
+                        mm = 0;
+                        hh = (hh + 1) % 24;
+                    }
+
+                    let (time_icon, phase) = if t < 0.25 {
+                        ("🌤", "Day")
+                    } else if t < 0.5 {
+                        ("🌆", "Dusk")
+                    } else if t < 0.75 {
+                        ("🌙", "Night")
+                    } else {
+                        ("🌅", "Dawn")
+                    };
+
+                    ui.label(format!("{} {:02}:{:02} ({})", time_icon, hh, mm, phase));
+                    ui.separator();
+                }
+
+                // Sim speed (compact buttons)
+                ui.horizontal(|ui| {
+                    let resp =
+                        ui.selectable_value(&mut p.ui_state.sim_speed, SimSpeed::Paused, "⏸");
+                    resp.on_hover_text("Pause simulation");
+                    let resp = ui.selectable_value(&mut p.ui_state.sim_speed, SimSpeed::X1, "▶");
+                    resp.on_hover_text("Normal speed (1x)");
+                    let resp = ui.selectable_value(&mut p.ui_state.sim_speed, SimSpeed::X2, "▶▶");
+                    resp.on_hover_text("Fast speed (2x)");
+                    let resp = ui.selectable_value(&mut p.ui_state.sim_speed, SimSpeed::X4, "▶▶▶");
+                    resp.on_hover_text("Very fast speed (4x)");
+                });
+                ui.separator();
+
+                // Settings and save (right side)
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if matches!(p.state.get(), AppState::InGame | AppState::Paused) {
+                        if ui.button("💾").clicked() {
+                            p.commands.write(GameCommand::SaveGame { slot: 1 });
+                        }
+                    }
+                });
+            });
+        });
+}
+
+/// Bottom toolbar with categorized tools
+fn bottom_toolbar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+
+    egui::TopBottomPanel::bottom("toolbar")
+        .exact_height(48.0)
+        .show(&*ctx, |ui| {
+            ui.horizontal_centered(|ui| {
+                // Roads category
+                ui.menu_button("🛣 Roads", |ui| {
+                    for (label, kind) in [
+                        ("2-lane ($10)", RoadKind::TwoLane),
+                        ("4-lane ($30)", RoadKind::FourLane),
+                        ("6-lane ($60)", RoadKind::SixLane),
+                    ] {
+                        let resp = ui
+                            .button(label)
+                            .on_hover_text(tool_tooltip(ToolMode::Road(kind)));
+                        if resp.clicked() {
+                            p.ui_state.tool = ToolMode::Road(kind);
+                            ui.close();
+                        }
+                    }
+                });
+
+                // Zones category
+                ui.menu_button("🏠 Zones", |ui| {
+                    let resp = ui
+                        .button("Residential")
+                        .on_hover_text(tool_tooltip(ToolMode::Residential));
+                    if resp.clicked() {
+                        p.ui_state.tool = ToolMode::Residential;
+                        ui.close();
+                    }
+                    let resp = ui
+                        .button("Commercial")
+                        .on_hover_text(tool_tooltip(ToolMode::Commercial));
+                    if resp.clicked() {
+                        p.ui_state.tool = ToolMode::Commercial;
+                        ui.close();
+                    }
+                    let resp = ui
+                        .button("Industrial")
+                        .on_hover_text(tool_tooltip(ToolMode::Industrial));
+                    if resp.clicked() {
+                        p.ui_state.tool = ToolMode::Industrial;
+                        ui.close();
+                    }
+                });
+
+                // Buildings category
+                ui.menu_button("🏢 Buildings", |ui| {
+                    let resp = ui
+                        .button("🚒 Fire Station ($500)")
+                        .on_hover_text(tool_tooltip(ToolMode::FireStation));
+                    if resp.clicked() {
+                        p.ui_state.tool = ToolMode::FireStation;
+                        ui.close();
+                    }
+                    let resp = ui
+                        .button("🚔 Police Station ($400)")
+                        .on_hover_text(tool_tooltip(ToolMode::PoliceStation));
+                    if resp.clicked() {
+                        p.ui_state.tool = ToolMode::PoliceStation;
+                        ui.close();
+                    }
+                    let resp = ui
+                        .button("🏥 Hospital ($800)")
+                        .on_hover_text(tool_tooltip(ToolMode::Hospital));
+                    if resp.clicked() {
+                        p.ui_state.tool = ToolMode::Hospital;
+                        ui.close();
+                    }
+                });
+
+                // Overlays category
+                ui.menu_button("🗺 Overlays", |ui| {
+                    for (label, mode) in [
+                        ("None", OverlayMode::None),
+                        ("Water", OverlayMode::Water),
+                        ("Height", OverlayMode::Height),
+                        ("Zones", OverlayMode::Zones),
+                        ("Roads", OverlayMode::Roads),
+                        ("Traffic", OverlayMode::Traffic),
+                        ("Path", OverlayMode::Path),
+                        ("Service", OverlayMode::ServiceCoverage),
+                        ("Land Value", OverlayMode::LandValue),
+                        ("Pollution", OverlayMode::Pollution),
+                    ] {
+                        let resp = ui
+                            .selectable_label(p.ui_state.overlay == mode, label)
+                            .on_hover_text(overlay_tooltip(mode));
+                        if resp.clicked() {
+                            p.ui_state.overlay = mode;
+                        }
+                    }
+                });
+
+                ui.separator();
+
+                // Special tools
+                let is_erase = matches!(p.ui_state.tool, ToolMode::Erase);
+                let resp = ui
+                    .selectable_label(is_erase, "🗑 Erase")
+                    .on_hover_text(tool_tooltip(ToolMode::Erase));
+                if resp.clicked() {
+                    p.ui_state.tool = ToolMode::Erase;
+                }
+
+                let is_inspect = matches!(p.ui_state.tool, ToolMode::Inspect);
+                let resp = ui
+                    .selectable_label(is_inspect, "🔍 Inspect")
+                    .on_hover_text(tool_tooltip(ToolMode::Inspect));
+                if resp.clicked() {
+                    p.ui_state.tool = ToolMode::Inspect;
+                }
+
+                ui.separator();
+
+                // Map seed + generation
+                ui.label("Seed:");
+                ui.text_edit_singleline(&mut p.ui_state.seed_text);
+                let seed = p.ui_state.seed_text.trim().parse::<u64>().unwrap_or(1);
+                if ui.button("New Map").clicked() {
+                    p.commands.write(GameCommand::GenerateMap { seed });
+                    p.next_state.set(AppState::InGame);
+                }
+
+                if matches!(p.state.get(), AppState::InGame | AppState::Paused) {
+                    ui.separator();
+                    if ui.button("Spawn cars").clicked() {
+                        p.commands
+                            .write(GameCommand::SpawnDebugVehicles { count: 25 });
+                    }
+                    if ui.button("Clear cars").clicked() {
+                        p.commands.write(GameCommand::ClearVehicles);
+                    }
+                    if ui.button("Load").clicked() {
+                        p.commands.write(GameCommand::LoadGame { slot: 1 });
+                    }
+                }
+
+                // State control
+                match p.state.get() {
+                    AppState::MainMenu => {
+                        if !p.scenario_catalog.scenarios.is_empty() {
+                            let idx = p
+                                .scenario_selection
+                                .selected
+                                .min(p.scenario_catalog.scenarios.len() - 1);
+                            egui::ComboBox::from_label("Scenario")
+                                .selected_text(p.scenario_catalog.scenarios[idx].name.clone())
+                                .show_ui(ui, |ui| {
+                                    for (i, s) in p.scenario_catalog.scenarios.iter().enumerate() {
+                                        ui.selectable_value(
+                                            &mut p.scenario_selection.selected,
+                                            i,
+                                            &s.name,
+                                        );
+                                    }
+                                });
+                        }
+                        if ui.button("Start").clicked() {
+                            p.next_state.set(AppState::InGame);
+                        }
+                    }
+                    AppState::InGame => {
+                        if ui.button("Pause").clicked() {
+                            p.next_state.set(AppState::Paused);
+                        }
+                    }
+                    AppState::Paused => {
+                        if ui.button("Resume").clicked() {
+                            p.next_state.set(AppState::InGame);
+                        }
+                    }
+                }
+
+                // Current tool indicator (right side)
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let tool_text = match p.ui_state.tool {
+                        ToolMode::Road(k) => format!("Road {:?}", k),
+                        ToolMode::Residential => "Residential".to_string(),
+                        ToolMode::Commercial => "Commercial".to_string(),
+                        ToolMode::Industrial => "Industrial".to_string(),
+                        ToolMode::FireStation => "Fire Station".to_string(),
+                        ToolMode::PoliceStation => "Police Station".to_string(),
+                        ToolMode::Hospital => "Hospital".to_string(),
+                        ToolMode::Erase => "Erase".to_string(),
+                        ToolMode::Inspect => "Inspect".to_string(),
+                    };
+                    ui.label(format!("Selected: {}", tool_text));
+                });
+            });
+        });
+}
+
+/// Right sidebar with minimap, info panel, and statistics
+fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams) {
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+
+    if !matches!(p.state.get(), AppState::InGame | AppState::Paused) {
+        return;
+    }
+
+    egui::SidePanel::right("sidebar")
+        .exact_width(200.0)
+        .show(&*ctx, |ui| {
+            // Minimap (collapsible)
+            egui::CollapsingHeader::new("📍 Minimap")
+                .default_open(true)
+                .show(ui, |ui| {
+                    let Ok(window) = p.q_window.single() else {
+                        return;
+                    };
+                    let Ok((cam_tf, proj)) = p.q_camera.single() else {
+                        return;
+                    };
+                    render_minimap_in_sidebar(ui, &p.grid, &p.cfg, window, cam_tf, proj);
+                });
+
+            ui.separator();
+
+            // Info panel (depends on hovered/selected)
+            egui::CollapsingHeader::new("📊 Info")
+                .default_open(true)
+                .show(ui, |ui| {
+                    if let Some(tile) = p.hovered.tile {
+                        render_tile_info(ui, tile, &p.grid);
+                    } else {
+                        ui.label("Hover over a tile");
+                    }
+                });
+
+            ui.separator();
+
+            // City statistics (collapsible)
+            egui::CollapsingHeader::new("📈 Statistics")
+                .default_open(false)
+                .show(ui, |ui| {
+                    render_city_stats(ui, &p.metrics, &p.city);
+                });
+
+            ui.separator();
+
+            // Services status
+            egui::CollapsingHeader::new("🚒 Services")
+                .default_open(false)
+                .show(ui, |ui| {
+                    render_services_status(ui, &p.metrics);
+                });
+
+            ui.separator();
+
+            // Demand
+            ui.label("Demand (R/C/I):");
             ui.label(format!(
-                "Demand (R/C/I): {:+.2} / {:+.2} / {:+.2}",
+                "  {:+.2} / {:+.2} / {:+.2}",
                 p.metrics.demand_r, p.metrics.demand_c, p.metrics.demand_i
             ));
-            if let Some(name) = p.scenario_progress.active_name.as_deref()
-                && p.scenario_progress.objectives_total > 0
-            {
-                ui.label(format!(
-                    "Scenario: {} ({}/{})",
-                    name,
-                    p.scenario_progress.objectives_completed,
-                    p.scenario_progress.objectives_total
-                ));
-            }
-
-            if matches!(p.state.get(), AppState::InGame | AppState::Paused)
-                && let Some(cycle) = p.day_night.as_deref()
-            {
-                let t = cycle.time_of_day.rem_euclid(1.0);
-                // Map our brightness model (t=0 => brightest day, t=0.5 => darkest night) to a
-                // clock-like display where t=0 => 12:00 and t=0.5 => 00:00.
-                let hours_f = ((t * 24.0) + 12.0) % 24.0;
-                let mut hh = hours_f.floor() as u32;
-                let mut mm = ((hours_f - (hh as f32)) * 60.0).round() as u32;
-                if mm >= 60 {
-                    mm = 0;
-                    hh = (hh + 1) % 24;
-                }
-
-                let (phase, next_phase, next_t) = if t < 0.25 {
-                    ("Day", "Dusk", 0.25)
-                } else if t < 0.5 {
-                    ("Dusk", "Night", 0.5)
-                } else if t < 0.75 {
-                    ("Night", "Dawn", 0.75)
-                } else {
-                    ("Dawn", "Day", 1.0)
-                };
-                let remaining_sim_secs = ((next_t - t).max(0.0)) * cycle.day_length_secs.max(1.0);
-
-                ui.label(format!(
-                    "Time {:02}:{:02} ({}) | Next {} in {:.1}s",
-                    hh, mm, phase, next_phase, remaining_sim_secs
-                ));
-                ui.add(
-                    egui::ProgressBar::new(t)
-                        .desired_width(90.0)
-                        .text(format!("{:02}:{:02}", hh, mm)),
-                );
-            }
-
-            ui.separator();
-            ui.label("Emergency Services");
-            ui.label(format!(
-                "Fire: {} stations, {}/{} vehicles",
-                p.metrics.fire_stations, p.metrics.fire_vehicles.0, p.metrics.fire_vehicles.1
-            ));
-            ui.label(format!(
-                "Police: {} stations, {}/{} vehicles",
-                p.metrics.police_stations, p.metrics.police_vehicles.0, p.metrics.police_vehicles.1
-            ));
-            ui.label(format!(
-                "Medical: {} stations, {}/{} vehicles",
-                p.metrics.medical_stations, p.metrics.medical_vehicles.0, p.metrics.medical_vehicles.1
-            ));
-            ui.label(format!(
-                "Coverage (F/P/M): {:.0}% / {:.0}% / {:.0}%",
-                (p.metrics.service_cov_fire * 100.0).clamp(0.0, 100.0),
-                (p.metrics.service_cov_police * 100.0).clamp(0.0, 100.0),
-                (p.metrics.service_cov_medical * 100.0).clamp(0.0, 100.0),
-            ));
-            ui.label(format!(
-                "Active emergencies: {} | Resolved: {} | Failed: {}",
-                p.metrics.active_emergencies, p.metrics.emergencies_resolved, p.metrics.emergencies_failed
-            ));
-
-            // State control hints
-            match p.state.get() {
-                AppState::MainMenu => {
-                    if !p.scenario_catalog.scenarios.is_empty() {
-                        let idx = p
-                            .scenario_selection
-                            .selected
-                            .min(p.scenario_catalog.scenarios.len() - 1);
-                        egui::ComboBox::from_label("Scenario")
-                            .selected_text(p.scenario_catalog.scenarios[idx].name.clone())
-                            .show_ui(ui, |ui| {
-                                for (i, s) in p.scenario_catalog.scenarios.iter().enumerate() {
-                                    ui.selectable_value(
-                                        &mut p.scenario_selection.selected,
-                                        i,
-                                        &s.name,
-                                    );
-                                }
-                            });
-                    }
-                    if ui.button("Start").clicked() {
-                        p.next_state.set(AppState::InGame);
-                    }
-                }
-                AppState::InGame => {
-                    if ui.button("Pause").clicked() {
-                        p.next_state.set(AppState::Paused);
-                    }
-                }
-                AppState::Paused => {
-                    if ui.button("Resume").clicked() {
-                        p.next_state.set(AppState::InGame);
-                    }
-                }
-            }
         });
-    });
 }
 
 #[derive(SystemParam)]
@@ -604,12 +709,58 @@ struct TopBarParams<'w> {
     commands: MessageWriter<'w, GameCommand>,
 }
 
+#[derive(SystemParam)]
+struct RightSidebarParams<'w, 's> {
+    state: Res<'w, State<AppState>>,
+    hovered: Res<'w, HoveredTile>,
+    grid: Res<'w, MapGrid>,
+    cfg: Res<'w, MapConfig>,
+    city: Res<'w, City>,
+    metrics: Res<'w, UiMetrics>,
+    q_window: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
+    q_camera: Query<'w, 's, (&'static Transform, &'static Projection), With<MainCamera>>,
+}
+
 fn zone_label(z: ZoneKind) -> &'static str {
     match z {
         ZoneKind::None => "None",
         ZoneKind::Residential => "Residential",
         ZoneKind::Commercial => "Commercial",
         ZoneKind::Industrial => "Industrial",
+    }
+}
+
+/// Get tooltip text for a tool mode
+fn tool_tooltip(tool: ToolMode) -> &'static str {
+    match tool {
+        ToolMode::Road(RoadKind::None) => "No road selected",
+        ToolMode::Road(RoadKind::TwoLane) => "2-lane road ($10/tile)\nLocal street, 40 km/h",
+        ToolMode::Road(RoadKind::FourLane) => "4-lane road ($30/tile)\nCity road, 60 km/h",
+        ToolMode::Road(RoadKind::SixLane) => "6-lane road ($60/tile)\nHighway, 80 km/h",
+        ToolMode::Residential => "Residential zone (free)\nHouses for citizens",
+        ToolMode::Commercial => "Commercial zone (free)\nShops and offices",
+        ToolMode::Industrial => "Industrial zone (free)\nFactories and warehouses",
+        ToolMode::FireStation => "Fire station ($500)\nRadius: 20 tiles, 3 vehicles",
+        ToolMode::PoliceStation => "Police station ($400)\nRadius: 25 tiles, 4 vehicles",
+        ToolMode::Hospital => "Hospital ($800)\nRadius: 30 tiles, 2 vehicles",
+        ToolMode::Erase => "Erase tool\nRemove roads, zones, buildings",
+        ToolMode::Inspect => "Inspect tool\nView tile information",
+    }
+}
+
+/// Get tooltip text for an overlay mode
+fn overlay_tooltip(overlay: OverlayMode) -> &'static str {
+    match overlay {
+        OverlayMode::None => "Base map view\nTerrain, roads, zones, water",
+        OverlayMode::Water => "Water overlay\nShows water tiles",
+        OverlayMode::Height => "Height overlay\nShows terrain elevation",
+        OverlayMode::Zones => "Zones overlay\nShows R/C/I zoning",
+        OverlayMode::Roads => "Roads overlay\nShows road network",
+        OverlayMode::Traffic => "Traffic overlay\nShows congestion heatmap",
+        OverlayMode::Path => "Path overlay\nShows route preview",
+        OverlayMode::ServiceCoverage => "Service coverage overlay\nShows service station coverage",
+        OverlayMode::LandValue => "Land value overlay\nShows land value (red=low, green=high)",
+        OverlayMode::Pollution => "Pollution overlay\nShows pollution (green=clean, red=polluted)",
     }
 }
 
@@ -623,6 +774,8 @@ fn overlay_sources(o: OverlayMode) -> &'static str {
         OverlayMode::Traffic => "TrafficOccupancy.ema_heat + TrafficIndex",
         OverlayMode::Path => "Computed live: MapGrid roads + cursor start/end",
         OverlayMode::ServiceCoverage => "ServiceStation coverage (radius) + uncovered zones",
+        OverlayMode::LandValue => "LandValueIndex.values (0.0-1.0)",
+        OverlayMode::Pollution => "PollutionIndex.pollution (0.0-1.0)",
     }
 }
 
@@ -933,108 +1086,184 @@ fn minimap_ui(mut contexts: EguiContexts, p: MinimapParams) {
         return;
     };
 
-    let map_w = p.grid.width.max(1) as f32;
-    let map_h = p.grid.height.max(1) as f32;
-
     egui::Window::new("Mini-map")
         .default_pos(egui::pos2(window.width() - 220.0, 64.0))
         .resizable(false)
         .collapsible(true)
         .show(&*ctx, |ui| {
-            let size = 180.0;
-            let (rect, _resp) =
-                ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-
-            let painter = ui.painter_at(rect);
-
-            // Downsample for performance.
-            let samples_x = (p.grid.width as usize).clamp(1, 64);
-            let samples_y = (p.grid.height as usize).clamp(1, 64);
-            let step_x = (p.grid.width as f32 / samples_x as f32).max(1.0);
-            let step_y = (p.grid.height as f32 / samples_y as f32).max(1.0);
-            let px_w = size / samples_x as f32;
-            let px_h = size / samples_y as f32;
-
-            for sy in 0..samples_y {
-                for sx in 0..samples_x {
-                    let x = (sx as f32 * step_x).floor() as i32;
-                    let y = (sy as f32 * step_y).floor() as i32;
-                    let pos = TilePos { x, y };
-                    let Some(cell) = p.grid.get(pos) else {
-                        continue;
-                    };
-
-                    let color = if cell.water {
-                        Color::srgb(0.10, 0.30, 0.80)
-                    } else if let Some(b) = cell.building {
-                        b.color()
-                    } else if cell.road.is_some() {
-                        cell.road.kind.color()
-                    } else if let Some(k) = cell.zone.as_tile_kind() {
-                        k.color()
-                    } else {
-                        cell.terrain.color()
-                    };
-
-                    let min =
-                        egui::pos2(rect.min.x + sx as f32 * px_w, rect.min.y + sy as f32 * px_h);
-                    let max = egui::pos2(min.x + px_w + 0.5, min.y + px_h + 0.5);
-                    painter.rect_filled(
-                        egui::Rect::from_min_max(min, max),
-                        0.0,
-                        to_egui_color(color),
-                    );
-                }
-            }
-
-            // Camera viewport (2D ortho).
-            let (half_w, half_h) = match proj {
-                Projection::Orthographic(o) => {
-                    let w = (o.area.max.x - o.area.min.x).abs().max(1.0);
-                    let h = (o.area.max.y - o.area.min.y).abs().max(1.0);
-                    (w * 0.5, h * 0.5)
-                }
-                _ => (window.width() * 0.5, window.height() * 0.5),
-            };
-
-            let origin = map_origin(&p.cfg);
-            let cam = cam_tf.translation.truncate();
-            let min_world = cam - Vec2::new(half_w, half_h);
-            let max_world = cam + Vec2::new(half_w, half_h);
-
-            let world_to_tile_f = |w: Vec2| -> Vec2 {
-                let local = w - origin;
-                Vec2::new(local.x / p.cfg.tile_size, local.y / p.cfg.tile_size)
-            };
-
-            let t0 = world_to_tile_f(min_world);
-            let t1 = world_to_tile_f(max_world);
-            let min_tx = t0.x.clamp(0.0, map_w);
-            let min_ty = t0.y.clamp(0.0, map_h);
-            let max_tx = t1.x.clamp(0.0, map_w);
-            let max_ty = t1.y.clamp(0.0, map_h);
-
-            let to_px = |tx: f32, ty: f32| -> egui::Pos2 {
-                egui::pos2(
-                    rect.min.x + (tx / map_w) * size,
-                    rect.min.y + (ty / map_h) * size,
-                )
-            };
-
-            let rmin = to_px(min_tx, min_ty);
-            let rmax = to_px(max_tx, max_ty);
-            painter.rect_stroke(
-                egui::Rect::from_min_max(rmin, rmax),
-                0.0,
-                egui::Stroke::new(1.5, egui::Color32::WHITE),
-                egui::StrokeKind::Inside,
-            );
-
-            // Camera marker.
-            let cam_tile = world_to_tile_f(cam);
-            let cpos = to_px(cam_tile.x.clamp(0.0, map_w), cam_tile.y.clamp(0.0, map_h));
-            painter.circle_filled(cpos, 2.5, egui::Color32::YELLOW);
+            render_minimap_in_sidebar(ui, &p.grid, &p.cfg, window, cam_tf, proj);
         });
+}
+
+fn render_minimap_in_sidebar(
+    ui: &mut egui::Ui,
+    grid: &MapGrid,
+    cfg: &MapConfig,
+    window: &Window,
+    cam_tf: &Transform,
+    proj: &Projection,
+) {
+    let map_w = grid.width.max(1) as f32;
+    let map_h = grid.height.max(1) as f32;
+    let size = 180.0;
+    let (rect, _resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+
+    let painter = ui.painter_at(rect);
+
+    // Downsample for performance.
+    let samples_x = (grid.width as usize).clamp(1, 64);
+    let samples_y = (grid.height as usize).clamp(1, 64);
+    let step_x = (grid.width as f32 / samples_x as f32).max(1.0);
+    let step_y = (grid.height as f32 / samples_y as f32).max(1.0);
+    let px_w = size / samples_x as f32;
+    let px_h = size / samples_y as f32;
+
+    for sy in 0..samples_y {
+        for sx in 0..samples_x {
+            let x = (sx as f32 * step_x).floor() as i32;
+            let y = (sy as f32 * step_y).floor() as i32;
+            let pos = TilePos { x, y };
+            let Some(cell) = grid.get(pos) else {
+                continue;
+            };
+
+            let color = if cell.water {
+                Color::srgb(0.10, 0.30, 0.80)
+            } else if let Some(b) = cell.building {
+                b.color()
+            } else if cell.road.is_some() {
+                cell.road.kind.color()
+            } else if let Some(k) = cell.zone.as_tile_kind() {
+                k.color()
+            } else {
+                cell.terrain.color()
+            };
+
+            let min = egui::pos2(rect.min.x + sx as f32 * px_w, rect.min.y + sy as f32 * px_h);
+            let max = egui::pos2(min.x + px_w + 0.5, min.y + px_h + 0.5);
+            painter.rect_filled(
+                egui::Rect::from_min_max(min, max),
+                0.0,
+                to_egui_color(color),
+            );
+        }
+    }
+
+    // Camera viewport (2D ortho).
+    let (half_w, half_h) = match proj {
+        Projection::Orthographic(o) => {
+            let w = (o.area.max.x - o.area.min.x).abs().max(1.0);
+            let h = (o.area.max.y - o.area.min.y).abs().max(1.0);
+            (w * 0.5, h * 0.5)
+        }
+        _ => (window.width() * 0.5, window.height() * 0.5),
+    };
+
+    let origin = map_origin(cfg);
+    let cam = cam_tf.translation.truncate();
+    let min_world = cam - Vec2::new(half_w, half_h);
+    let max_world = cam + Vec2::new(half_w, half_h);
+
+    let world_to_tile_f = |w: Vec2| -> Vec2 {
+        let local = w - origin;
+        Vec2::new(local.x / cfg.tile_size, local.y / cfg.tile_size)
+    };
+
+    let t0 = world_to_tile_f(min_world);
+    let t1 = world_to_tile_f(max_world);
+    let min_tx = t0.x.clamp(0.0, map_w);
+    let min_ty = t0.y.clamp(0.0, map_h);
+    let max_tx = t1.x.clamp(0.0, map_w);
+    let max_ty = t1.y.clamp(0.0, map_h);
+
+    let to_px = |tx: f32, ty: f32| -> egui::Pos2 {
+        egui::pos2(
+            rect.min.x + (tx / map_w) * size,
+            rect.min.y + (ty / map_h) * size,
+        )
+    };
+
+    let rmin = to_px(min_tx, min_ty);
+    let rmax = to_px(max_tx, max_ty);
+    painter.rect_stroke(
+        egui::Rect::from_min_max(rmin, rmax),
+        0.0,
+        egui::Stroke::new(1.5, egui::Color32::WHITE),
+        egui::StrokeKind::Inside,
+    );
+
+    // Camera marker.
+    let cam_tile = world_to_tile_f(cam);
+    let cpos = to_px(cam_tile.x.clamp(0.0, map_w), cam_tile.y.clamp(0.0, map_h));
+    painter.circle_filled(cpos, 2.5, egui::Color32::YELLOW);
+}
+
+fn render_tile_info(ui: &mut egui::Ui, tile: TilePos, grid: &MapGrid) {
+    ui.label(format!("Tile: ({}, {})", tile.x, tile.y));
+
+    let Some(cell) = grid.get(tile) else {
+        ui.label("Out of bounds");
+        return;
+    };
+
+    ui.separator();
+    ui.label(format!("Height: {}", cell.height));
+    ui.label(format!("Water: {}", cell.water));
+    ui.label(format!("Terrain: {:?}", cell.terrain));
+    ui.label(format!("Road: {:?}", cell.road));
+    ui.label(format!("Zone: {}", zone_label(cell.zone)));
+    ui.label(format!("Building: {:?}", cell.building));
+}
+
+fn render_city_stats(ui: &mut egui::Ui, metrics: &UiMetrics, city: &City) {
+    ui.label(format!("Population: {}", city.population));
+    ui.label(format!("Money: ${}", city.money));
+    ui.label(format!("Income: +${}", city.last_income));
+    ui.label(format!("Expense: -${}", city.last_expense));
+    ui.separator();
+    ui.label(format!("Employed: {}", metrics.employed));
+    ui.label(format!("Unemployed: {}", metrics.unemployed));
+    ui.label(format!(
+        "Employment: {:.0}%",
+        metrics.employment_rate * 100.0
+    ));
+    ui.label(format!("Avg Commute: {:.0}s", metrics.avg_commute_secs));
+    ui.separator();
+    ui.label(format!("Traffic Avg: {:.0}%", metrics.traffic_avg * 100.0));
+    ui.label(format!("Traffic Max: {:.0}%", metrics.traffic_max * 100.0));
+    ui.separator();
+    ui.label(format!("Citizens: {}", metrics.citizens));
+    ui.label(format!("Vehicles: {}", metrics.vehicles));
+    ui.label(format!("Buildings: {}", metrics.buildings));
+}
+
+fn render_services_status(ui: &mut egui::Ui, metrics: &UiMetrics) {
+    ui.label(format!(
+        "🔴 Fire: {} stations, {}/{} vehicles",
+        metrics.fire_stations, metrics.fire_vehicles.0, metrics.fire_vehicles.1
+    ));
+    ui.label(format!(
+        "🔵 Police: {} stations, {}/{} vehicles",
+        metrics.police_stations, metrics.police_vehicles.0, metrics.police_vehicles.1
+    ));
+    ui.label(format!(
+        "🟢 Medical: {} stations, {}/{} vehicles",
+        metrics.medical_stations, metrics.medical_vehicles.0, metrics.medical_vehicles.1
+    ));
+    ui.separator();
+    ui.label(format!(
+        "Coverage: F {:.0}% / P {:.0}% / M {:.0}%",
+        metrics.service_cov_fire * 100.0,
+        metrics.service_cov_police * 100.0,
+        metrics.service_cov_medical * 100.0
+    ));
+    ui.separator();
+    ui.label(format!(
+        "Active emergencies: {}",
+        metrics.active_emergencies
+    ));
+    ui.label(format!("Resolved: {}", metrics.emergencies_resolved));
+    ui.label(format!("Failed: {}", metrics.emergencies_failed));
 }
 
 #[derive(SystemParam)]
@@ -1062,4 +1291,60 @@ fn map_origin(cfg: &MapConfig) -> Vec2 {
         -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
         -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
     )
+}
+
+/// Resource to control visibility of shortcuts panel
+#[derive(Resource, Default)]
+struct ShowShortcuts(bool);
+
+/// Toggle shortcuts panel with ? key
+fn toggle_shortcuts(keys: Res<ButtonInput<KeyCode>>, mut show: ResMut<ShowShortcuts>) {
+    // Toggle with ? key (Shift+/ on US keyboard)
+    if keys.just_pressed(KeyCode::Slash)
+        && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight))
+    {
+        show.0 = !show.0;
+    }
+}
+
+/// Keyboard shortcuts panel
+fn shortcuts_ui(mut contexts: EguiContexts, show: Res<ShowShortcuts>) {
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+
+    if !show.0 {
+        return;
+    }
+
+    egui::Window::new("Keyboard Shortcuts")
+        .collapsible(false)
+        .resizable(true)
+        .default_size(egui::vec2(400.0, 500.0))
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(&*ctx, |ui| {
+            ui.heading("Navigation");
+            ui.label("WASD / Arrow keys — Pan camera");
+            ui.label("Mouse wheel — Zoom");
+
+            ui.separator();
+            ui.heading("Tools");
+            ui.label("1 — Road tool (cycle 2/4/6 lanes)");
+            ui.label("2 — Residential zone");
+            ui.label("3 — Commercial zone");
+            ui.label("4 — Industrial zone");
+            ui.label("5 — Erase tool");
+
+            ui.separator();
+            ui.heading("Game");
+            ui.label("Space — Pause/Resume");
+            ui.label("Ctrl+S — Save game");
+            ui.label("Ctrl+L — Load game");
+            ui.label("Ctrl+Z — Undo");
+            ui.label("Ctrl+Y — Redo");
+            ui.label("Esc — Back to menu");
+
+            ui.separator();
+            ui.label("Press ? to toggle this panel");
+        });
 }

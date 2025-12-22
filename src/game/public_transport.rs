@@ -11,10 +11,11 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::time::Fixed;
 
+use crate::game::intersections::IntersectionIndex;
 use crate::game::map::{BuildingKind, MapConfig, MapGrid, TilePos};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
-use crate::game::traffic::{TrafficOccupancy, Vehicle};
+use crate::game::traffic::{TrafficOccupancy, Vehicle, VehicleTrafficState};
 use crate::game::transport::{
     PathCache, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph, find_road_path_cached,
 };
@@ -180,6 +181,7 @@ struct BusParams<'w, 's> {
     regions: Res<'w, RegionGraph>,
     path_cfg: Res<'w, PathfindingConfig>,
     path_cache: ResMut<'w, PathCache>,
+    intersections: Res<'w, IntersectionIndex>,
     pt_cfg: Res<'w, PublicTransportConfig>,
     pt: Res<'w, PublicTransportIndex>,
     commands: Commands<'w, 's>,
@@ -214,6 +216,7 @@ fn sync_bus_vehicle(mut p: BusParams) {
             regions: Some(&p.regions),
             traffic: &p.traffic,
             grid: &p.grid,
+            intersections: &p.intersections,
         };
         find_road_path_cached(&mut ctx, from, to)
     };
@@ -235,7 +238,10 @@ fn sync_bus_vehicle(mut p: BusParams) {
                     route,
                     progress: 0.0,
                     speed: p.pt_cfg.bus_speed,
+                    max_speed: p.pt_cfg.bus_speed,
+                    max_accel: 20.0,
                 },
+                VehicleTrafficState::FreeFlow,
                 BusVehicle { a, b, to_b: true },
             ));
         }
