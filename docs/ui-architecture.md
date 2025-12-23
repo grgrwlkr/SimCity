@@ -1312,11 +1312,28 @@ fn notification_ui(mut contexts: EguiContexts, mut notifs: ResMut<Notifications>
 
 // Использование:
 fn emit_notification(mut notifs: ResMut<Notifications>, time: Res<Time>) {
+    // Info - для обычных событий
     notifs.messages.push(Notification {
         text: "New residential building constructed!".to_string(),
         kind: NotificationKind::Info,
         created_at: time.elapsed_secs_f64(),
         duration: 5.0,
+    });
+    
+    // Achievement - для достижений (например, здание достигло максимального уровня)
+    notifs.messages.push(Notification {
+        text: "Building upgraded to level 3!".to_string(),
+        kind: NotificationKind::Achievement,
+        created_at: time.elapsed_secs_f64(),
+        duration: 5.0,
+    });
+    
+    // Error - для критических ошибок (например, emergency не удалось разрешить)
+    notifs.messages.push(Notification {
+        text: "Fire emergency failed - critical!".to_string(),
+        kind: NotificationKind::Error,
+        created_at: time.elapsed_secs_f64(),
+        duration: 7.0,
     });
 }
 ```
@@ -1704,12 +1721,13 @@ fn context_menu_ui(
 ### Выполненные улучшения (2025-01)
 
 1. ✅ **UI Redesign** — разделение на `top_status_bar_ui()`, `bottom_toolbar_ui()`, `right_sidebar_ui()`
-2. ✅ **Undo/Redo** — система `CommandHistory` с `UndoableCommand` enum
+2. ✅ **Undo/Redo** — система `CommandHistory` с `UndoableCommand` enum, методы `can_undo()` и `can_redo()` используются для отображения состояния кнопок в UI
 3. ✅ **Tooltips** — функция `tool_tooltip()` и `.on_hover_text()` для всех элементов
 4. ✅ **Shortcuts Panel** — панель с клавиатурными сокращениями (toggle по `?`)
-5. ✅ **Notifications** — система уведомлений о событиях (строительство, апгрейды, emergencies)
+5. ✅ **Notifications** — система уведомлений о событиях (строительство, апгрейды, emergencies), все варианты `NotificationKind` (Info, Warning, Error, Achievement) используются
 6. ✅ **UI Settings** — панель настроек с сохранением предпочтений
 7. ✅ **Improved Graphs** — улучшенные графики с hover tooltips
+8. ✅ **Debug Tools** — кнопка DumpSaveContract в UI для отладки сохранений
 
 ### Приоритетные улучшения (следующие шаги)
 
@@ -1729,5 +1747,5 @@ fn context_menu_ui(
 
 **Документ создан:** 2025-12-19  
 **Последнее обновление:** 2025-01  
-**Версия кодовой базы:** SimCity commit `62803a1`  
+**Версия кодовой базы:** SimCity commit `7a0d844`  
 **Модули:** `src/game/ui.rs`, `src/game/ui_state.rs`, `src/game/ui_settings.rs`, `src/game/notifications.rs`, `src/game/command_history.rs`, `src/game/camera.rs`, `src/game/commands.rs`

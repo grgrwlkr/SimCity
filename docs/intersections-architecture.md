@@ -906,6 +906,7 @@ pub enum VehicleTrafficState {
 pub const TRAFFIC_LIGHT_DETECTION_DISTANCE: f32 = 8.0;
 
 /// Безопасное расстояние между машинами в очереди (в тайлах)
+/// Safe distance between vehicles in queue (in tiles)
 pub const QUEUE_GAP: f32 = 0.3;
 
 /// Позиция стоп-линии относительно перекрёстка (0.0 = граница тайла)
@@ -919,7 +920,7 @@ pub struct BrakingParams {
     /// Максимальное замедление (экстренное)
     pub max_decel: f32,
     
-    /// Минимальная дистанция для начала торможения
+    /// Минимальная дистанция для начала торможения (используется в логике торможения)
     pub min_braking_distance: f32,
 }
 
@@ -935,6 +936,28 @@ impl Default for BrakingParams {
 ```
 
 **Основная логика:**
+
+`min_braking_distance` используется в `compute_acceleration()` для определения, когда начинать торможение при приближении к светофору:
+
+```rust
+VehicleTrafficState::Approaching { distance_to_stop, .. } => {
+    // Начинаем торможение только если ближе чем min_braking_distance
+    if *distance_to_stop < params.min_braking_distance {
+        // Smooth braking based on distance
+        let required_decel = (vehicle.speed * vehicle.speed) / (2.0 * distance_to_stop.max(0.1));
+        if required_decel > params.comfortable_decel {
+            -required_decel.min(params.max_decel)
+        } else {
+            0.0
+        }
+    } else {
+        // Слишком далеко - продолжаем с текущей скоростью
+        0.0
+    }
+}
+```
+
+**Дополнительная логика:**
 
 ```rust
 /// Система обновления состояния машины относительно светофоров
@@ -975,12 +998,23 @@ fn update_vehicle_traffic_state(
                 if let Some(light) = find_light_at(&q_lights, *light_pos) {
                     let entry_dir = compute_entry_direction(&vehicle.route, *light_pos);
                     
-                    if !light.is_green(entry_dir) {
-                        // Красный/жёлтый — начинаем торможение
+                    if light.is_red(entry_dir) {
+                        // Красный — начинаем торможение
                         *state = VehicleTrafficState::Braking {
                             light_pos: *light_pos,
                             target_speed: 0.0,
                         };
+                    } else if light.is_yellow(entry_dir) {
+                        // Жёлтый — тормозим если далеко, проезжаем если близко
+                        if *distance_to_stop > 2.0 {
+                            *state = VehicleTrafficState::Braking {
+                                light_pos: *light_pos,
+                                target_speed: 0.0,
+                            };
+                        } else {
+                            // Близко — проезжаем на жёлтый
+                            *state = VehicleTrafficState::CrossingIntersection;
+                        }
                     } else {
                         // Зелёный — можно ехать
                         *state = VehicleTrafficState::CrossingIntersection;
@@ -1188,6 +1222,9 @@ fn compute_stop_position(
 ) -> f32 {
     // Стоп-линия + зазоры для машин впереди
     STOP_LINE_OFFSET + (queue_position as f32) * (1.0 + QUEUE_GAP)
+    
+// QUEUE_GAP используется в update_traffic_queues() для расчёта позиций
+// в очереди и обеспечения безопасного расстояния между машинами
 }
 ```
 
@@ -1447,8 +1484,21 @@ impl TrafficLight {
         }
     }
     
-    pub fn is_yellow(&self) -> bool {
-        matches!(self.phase, LightPhase::NorthSouthYellow | LightPhase::EastWestYellow)
+    pub fn is_yellow(&self, dir: RoadDir) -> bool {
+        matches!(
+            (self.phase, dir),
+            (
+                LightPhase::NorthSouthYellow,
+                RoadDir::North | RoadDir::South
+            ) | (
+                LightPhase::EastWestYellow,
+                RoadDir::East | RoadDir::West
+            )
+        )
+    }
+    
+    pub fn is_red(&self, dir: RoadDir) -> bool {
+        !self.is_green(dir) && !self.is_yellow(dir)
     }
 }
 ```
@@ -1458,35 +1508,133 @@ impl TrafficLight {
 
 #### 2.2 Правила приоритета (Yield/Stop)
 
-**Описание:** На перекрёстках без светофора машины уступают по правилу "помеха справа".
+**Описание:** На перекрёстках без светофора машины уступают по правилу "помеха справа". Система автоматически назначает приоритеты на основе типа дорог вокруг перекрёстка.
 
 **Реализация:**
 
 ```rust
-#[derive(Component)]
-pub struct IntersectionPriority {
-    pub priority_type: PriorityType,
+#[derive(Component, Debug, Copy, Clone, Eq, PartialEq, Default)]
+pub enum IntersectionPriority {
+    /// No priority rules (default: right-of-way)
+    #[default]
+    None,
+    /// Yield sign - must yield to traffic from right
+    YieldSign,
+    /// Stop sign - must come to complete stop
+    StopSign,
+    /// Main road - has priority over side roads
+    MainRoad,
 }
 
-pub enum PriorityType {
-    None,           // Нет приоритета (по умолчанию)
-    YieldSign,      // Уступи дорогу
-    StopSign,       // Полная остановка
-    MainRoad,       // Главная дорога (не уступает)
+/// Marker component to store intersection position for priority lookup
+#[derive(Component)]
+pub struct IntersectionPriorityMarker {
+    pub pos: TilePos,
+    pub priority: IntersectionPriority,
+}
+
+// Автоматическое назначение приоритетов
+fn assign_intersection_priorities(
+    grid: Res<MapGrid>,
+    intersections: Res<IntersectionIndex>,
+    mut commands: Commands,
+    q_priorities: Query<Entity, With<IntersectionPriorityMarker>>,
+) {
+    // Удаляем старые приоритеты
+    for entity in q_priorities.iter() {
+        commands.entity(entity).despawn();
+    }
+    
+    // Для перекрёстков без светофоров назначаем приоритет на основе типа дорог
+    for y in 0..grid.height {
+        for x in 0..grid.width {
+            let pos = TilePos { x, y };
+            
+            // Пропускаем если есть светофор
+            if intersections.traffic_light_positions.contains(&pos) {
+                continue;
+            }
+            
+            // Проверяем если это перекрёсток (dir == None)
+            if let Some(cell) = grid.get(pos)
+                && cell.road.dir == RoadDir::None
+            {
+                // Проверяем окружающие дороги для определения приоритета
+                let mut max_lanes = 0u8;
+                let mut side_road_count = 0u8;
+                
+                for neighbor_pos in [/* соседние позиции */] {
+                    if let Some(neighbor_cell) = grid.get(neighbor_pos) {
+                        let lanes = neighbor_cell.road.kind.lanes();
+                        max_lanes = max_lanes.max(lanes);
+                        if lanes < 4 {
+                            side_road_count += 1;
+                        }
+                    }
+                }
+                
+                // Назначаем приоритет на основе конфигурации дорог
+                let priority = if max_lanes >= 6 {
+                    IntersectionPriority::MainRoad  // Шоссе
+                } else if side_road_count >= 2 {
+                    IntersectionPriority::StopSign   // Множество боковых дорог
+                } else if max_lanes >= 4 {
+                    IntersectionPriority::YieldSign   // Главная дорога
+                } else {
+                    IntersectionPriority::None        // Маленький перекрёсток
+                };
+                
+                // Создаём entity с компонентом приоритета
+                commands.spawn(IntersectionPriorityMarker { pos, priority });
+            }
+        }
+    }
 }
 
 // В move_vehicles:
 fn check_intersection_priority(
-    vehicle_pos: TilePos,
-    vehicle_dir: RoadDir,
-    intersection: &Intersection,
-    all_vehicles: &Query<&Vehicle>,
-) -> bool {
-    if intersection.has_traffic_light {
-        return true;  // Управляется светофором
-    }
-    
-    // Правило "помехи справа"
+    grid: Res<MapGrid>,
+    intersections: Res<IntersectionIndex>,
+    mut q_vehicles: Query<(Entity, &Vehicle, &mut VehicleTrafficState)>,
+    q_intersections: Query<&IntersectionPriorityMarker>,
+) {
+    for (_entity, vehicle, mut state) in q_vehicles.iter_mut() {
+        if !matches!(*state, VehicleTrafficState::FreeFlow) {
+            continue;
+        }
+        
+        if let Some(next_tile) = vehicle.route.first() {
+            let has_traffic_light = intersections.traffic_light_positions.contains(next_tile);
+            if has_traffic_light {
+                continue; // Управляется светофором
+            }
+            
+            // Ищем приоритет для этого перекрёстка
+            let mut found_priority = None;
+            for marker in q_intersections.iter() {
+                if marker.pos == *next_tile {
+                    found_priority = Some(marker.priority);
+                    break;
+                }
+            }
+            
+            // Применяем правила приоритета
+            match found_priority.unwrap_or(IntersectionPriority::None) {
+                IntersectionPriority::StopSign => {
+                    // Полная остановка
+                    *state = VehicleTrafficState::Approaching {
+                        light_pos: *next_tile,
+                        distance_to_stop: 1.0,
+                    };
+                }
+                IntersectionPriority::YieldSign => {
+                    // Уступить дорогу (для MVP просто замедление)
+                }
+                IntersectionPriority::MainRoad => {
+                    // Главная дорога - продолжать движение
+                }
+                IntersectionPriority::None => {
+                    // Правило "помехи справа" по умолчанию
     let right_dir = vehicle_dir.right();
     
     for other in all_vehicles.iter() {
@@ -1844,8 +1992,8 @@ fn vehicle_receives_signal(
 
 1. ✅ **Остановка машин на красный свет** — реализовано через `VehicleTrafficState` компонент
 2. ✅ **Учёт светофоров в A*** — добавлен penalty за задержку на перекрёстках
-3. ✅ **Жёлтый сигнал светофора** — добавлен `LightPhase` enum с жёлтой фазой
-4. ✅ **Правила приоритета** — добавлен `IntersectionPriority` компонент (yield/stop signs)
+3. ✅ **Жёлтый сигнал светофора** — добавлен `LightPhase` enum с жёлтой фазой, методы `is_yellow()` и `is_red()` используются в логике трафика
+4. ✅ **Правила приоритета** — добавлен `IntersectionPriority` enum и система автоматического назначения приоритетов `assign_intersection_priorities()`, все варианты (YieldSign, StopSign, MainRoad) используются
 
 ### Приоритетные улучшения (следующие шаги)
 
@@ -1863,5 +2011,5 @@ fn vehicle_receives_signal(
 
 **Документ создан:** 2025-12-19  
 **Последнее обновление:** 2025-01  
-**Версия кодовой базы:** SimCity commit `62803a1`  
+**Версия кодовой базы:** SimCity commit `7a0d844`  
 **Модуль:** `src/game/intersections.rs`
