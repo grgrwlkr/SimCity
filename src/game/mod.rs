@@ -29,6 +29,7 @@ mod sets;
 mod sim;
 mod sim_events;
 mod state;
+mod test_city;
 mod traffic;
 mod transport;
 mod trips;

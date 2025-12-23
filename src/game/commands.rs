@@ -31,9 +31,12 @@ pub enum GameCommand {
     /// M7: Load from `saves/slot{slot}.ron`.
     LoadGame { slot: u8 },
 
-    /// Spawn a number of debug vehicles on roads (M3 prototype).
-    SpawnDebugVehicles { count: u32 },
+    /// Place a traffic light at an intersection.
+    PlaceTrafficLight { pos: TilePos },
 
-    /// Despawn all vehicles (M3 prototype).
-    ClearVehicles,
+    /// Remove a traffic light from an intersection.
+    RemoveTrafficLight { pos: TilePos },
+
+    /// Load the test city with all building types and features.
+    LoadTestCity,
 }

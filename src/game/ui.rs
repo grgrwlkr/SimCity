@@ -433,6 +433,7 @@ fn top_status_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
                     crate::game::map::BuildTool::Road(kind) => format!("🛣 {:?}", kind),
                     crate::game::map::BuildTool::Zone(zone) => format!("🏘 {:?}", zone),
                     crate::game::map::BuildTool::PlaceBuilding(kind) => format!("🏢 {:?}", kind),
+                    crate::game::map::BuildTool::TrafficLight => "🚦 Traffic Light".to_string(),
                     crate::game::map::BuildTool::Erase => "🗑 Erase".to_string(),
                     crate::game::map::BuildTool::Inspect => "🔍 Inspect".to_string(),
                 };
@@ -566,6 +567,13 @@ fn bottom_toolbar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
                         p.ui_state.tool = ToolMode::Hospital;
                         ui.close();
                     }
+                    let resp = ui
+                        .button("🚦 Traffic Light (free)")
+                        .on_hover_text(tool_tooltip(ToolMode::TrafficLight));
+                    if resp.clicked() {
+                        p.ui_state.tool = ToolMode::TrafficLight;
+                        ui.close();
+                    }
                 });
 
                 // Overlays category
@@ -620,16 +628,13 @@ fn bottom_toolbar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
                     p.commands.write(GameCommand::GenerateMap { seed });
                     p.next_state.set(AppState::InGame);
                 }
+                if ui.button("Load Test City").clicked() {
+                    p.commands.write(GameCommand::LoadTestCity);
+                    p.next_state.set(AppState::InGame);
+                }
 
                 if matches!(p.state.get(), AppState::InGame | AppState::Paused) {
                     ui.separator();
-                    if ui.button("Spawn cars").clicked() {
-                        p.commands
-                            .write(GameCommand::SpawnDebugVehicles { count: 25 });
-                    }
-                    if ui.button("Clear cars").clicked() {
-                        p.commands.write(GameCommand::ClearVehicles);
-                    }
                     if ui.button("Load").clicked() {
                         p.commands.write(GameCommand::LoadGame { slot: 1 });
                     }
@@ -681,6 +686,7 @@ fn bottom_toolbar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
                         ToolMode::FireStation => "Fire Station".to_string(),
                         ToolMode::PoliceStation => "Police Station".to_string(),
                         ToolMode::Hospital => "Hospital".to_string(),
+                        ToolMode::TrafficLight => "Traffic Light".to_string(),
                         ToolMode::Erase => "Erase".to_string(),
                         ToolMode::Inspect => "Inspect".to_string(),
                     };
@@ -808,6 +814,7 @@ fn tool_tooltip(tool: ToolMode) -> &'static str {
         ToolMode::FireStation => "Fire station ($500)\nRadius: 20 tiles, 3 vehicles",
         ToolMode::PoliceStation => "Police station ($400)\nRadius: 25 tiles, 4 vehicles",
         ToolMode::Hospital => "Hospital ($800)\nRadius: 30 tiles, 2 vehicles",
+        ToolMode::TrafficLight => "Traffic light (free)\nPlace/remove at intersections",
         ToolMode::Erase => "Erase tool\nRemove roads, zones, buildings",
         ToolMode::Inspect => "Inspect tool\nView tile information",
     }

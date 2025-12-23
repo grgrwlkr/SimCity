@@ -12,12 +12,14 @@ use crate::game::buildings::Building;
 use crate::game::camera::MainCamera;
 use crate::game::command_history::{CommandHistory, UndoableCommand};
 use crate::game::commands::GameCommand;
+use crate::game::intersections::IntersectionIndex;
 use crate::game::land_value::LandValueIndex;
 use crate::game::pollution::PollutionIndex;
 use crate::game::roads::{RoadCell, RoadDir, RoadKind};
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
+use crate::game::test_city;
 use crate::game::traffic::TrafficConfig;
 use crate::game::transport::GraphVersion;
 use crate::game::ui_state::{OverlayMode, ToolMode, UiState};
@@ -487,6 +489,7 @@ pub enum BuildTool {
     Road(RoadKind),
     Zone(ZoneKind),
     PlaceBuilding(BuildingKind),
+    TrafficLight,
     Erase,
     Inspect,
 }
@@ -702,6 +705,7 @@ fn sync_build_mode_from_ui(ui: Res<UiState>, mut mode: ResMut<BuildMode>) {
         ToolMode::FireStation => BuildTool::PlaceBuilding(BuildingKind::FireStation),
         ToolMode::PoliceStation => BuildTool::PlaceBuilding(BuildingKind::PoliceStation),
         ToolMode::Hospital => BuildTool::PlaceBuilding(BuildingKind::Hospital),
+        ToolMode::TrafficLight => BuildTool::TrafficLight,
         ToolMode::Erase => BuildTool::Erase,
         ToolMode::Inspect => BuildTool::Inspect,
     };
@@ -804,6 +808,7 @@ struct CursorPaintParams<'w, 's> {
     mode: Res<'w, BuildMode>,
     zone_cache: Res<'w, ZonePlacementCache>,
     grid: Res<'w, MapGrid>,
+    intersections: Res<'w, IntersectionIndex>,
     q_window: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
     q_camera: Query<'w, 's, (&'static Camera, &'static GlobalTransform), With<MainCamera>>,
 }
@@ -930,6 +935,20 @@ fn cursor_paint_to_command(
                 return;
             }
             out.write(GameCommand::PlaceBuilding { pos: tile, kind });
+        }
+        BuildTool::TrafficLight => {
+            // Check if this is an intersection (dir == None)
+            if let Some(cell) = p.grid.get(tile)
+                && cell.road.is_some()
+                && cell.road.dir == RoadDir::None
+            {
+                // Check if already has a traffic light
+                if p.intersections.traffic_light_positions.contains(&tile) {
+                    out.write(GameCommand::RemoveTrafficLight { pos: tile });
+                } else {
+                    out.write(GameCommand::PlaceTrafficLight { pos: tile });
+                }
+            }
         }
         BuildTool::Erase => {
             out.write(GameCommand::EraseTile { pos: tile });
@@ -1312,6 +1331,7 @@ fn apply_game_commands_to_grid(
     mut graph_version: ResMut<GraphVersion>,
     mut roads_changed: ResMut<RoadsChangedThisFrame>,
     mut history: ResMut<CommandHistory>,
+    mut intersections: ResMut<IntersectionIndex>,
 ) {
     for cmd in cmd_reader.read() {
         match *cmd {
@@ -1522,12 +1542,19 @@ fn apply_game_commands_to_grid(
                 // Map regeneration can affect roads (and invalidates any cached paths).
                 graph_version.bump();
             }
+            GameCommand::LoadTestCity => {
+                test_city::generate_test_city(&mut grid, &cfg, &mut city, &mut intersections);
+                dirty.mark_all();
+                graph_version.bump();
+                roads_changed.0 = true;
+            }
             // Traffic commands are handled by TrafficPlugin.
-            GameCommand::SpawnDebugVehicles { .. }
-            | GameCommand::ClearVehicles
-            | GameCommand::DumpSaveContract
+            // Traffic light commands are handled by IntersectionsPlugin.
+            GameCommand::DumpSaveContract
             | GameCommand::SaveGame { .. }
-            | GameCommand::LoadGame { .. } => {}
+            | GameCommand::LoadGame { .. }
+            | GameCommand::PlaceTrafficLight { .. }
+            | GameCommand::RemoveTrafficLight { .. } => {}
         }
     }
 }

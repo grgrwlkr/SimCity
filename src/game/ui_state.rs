@@ -34,6 +34,7 @@ pub enum ToolMode {
     FireStation,
     PoliceStation,
     Hospital,
+    TrafficLight,
     Erase,
     Inspect,
 }

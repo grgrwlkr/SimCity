@@ -108,6 +108,9 @@ const QUEUE_GAP: f32 = 0.3;
 /// Stop line offset relative to intersection (0.0 = tile boundary)
 const STOP_LINE_OFFSET: f32 = 0.15;
 
+/// Minimum distance between vehicles (in tiles) to prevent collisions
+const MIN_VEHICLE_DISTANCE: f32 = 0.3;
+
 #[derive(Component, Debug, Copy, Clone)]
 struct TripPassenger {
     citizen: CitizenId,
@@ -159,12 +162,6 @@ impl Plugin for TrafficPlugin {
                 Update,
                 clear_vehicles
                     .in_set(GameSet::CommandApply)
-                    .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
-            )
-            .add_systems(
-                Update,
-                spawn_debug_vehicles
-                    .in_set(GameSet::GraphUpdate)
                     .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
             )
             // Simulation
@@ -243,100 +240,6 @@ fn reset_traffic_aggregates(mut occ: ResMut<TrafficOccupancy>, mut idx: ResMut<T
     occ.per_tick_vehicles.clear();
     occ.ema_heat.clear();
     *idx = TrafficIndex::default();
-}
-
-/// Spawn a batch of debug vehicles when GameCommand::SpawnDebugVehicles is received.
-fn spawn_debug_vehicles(
-    mut reader: bevy::ecs::message::MessageReader<GameCommand>,
-    mut p: SpawnDebugVehiclesParams,
-) {
-    for msg in reader.read() {
-        if let GameCommand::SpawnDebugVehicles { count } = msg {
-            let roads = collect_road_tiles(&p.grid);
-            if roads.len() < 2 {
-                continue;
-            }
-
-            let mut rng = rand::rng();
-
-            let mut spawned = 0u32;
-            let mut total = p.q_vehicles.iter().count();
-
-            for _ in 0..*count {
-                if total >= p.traffic_cfg.max_active_vehicles {
-                    break;
-                }
-                // Pick random start/goal from road tiles.
-                let start_i = rng.random_range(0..roads.len());
-                let mut goal_i = rng.random_range(0..roads.len());
-                if goal_i == start_i {
-                    goal_i = (goal_i + 1) % roads.len();
-                }
-                let start = roads[start_i];
-                let goal = roads[goal_i];
-
-                let mut ctx = PathfindingCtx {
-                    time_now_sec: p.time.elapsed_secs_f64(),
-                    cfg: &p.path_cfg,
-                    cache: &mut p.path_cache,
-                    graph: &p.graph,
-                    regions: Some(&p.regions),
-                    traffic: &p.traffic,
-                    grid: &p.grid,
-                    intersections: &p.intersections,
-                };
-
-                let route = find_road_path_cached(&mut ctx, start, goal);
-                // No fallback to astar_path - vehicles must follow lane rules.
-                if route.is_empty() {
-                    // Debug: log when no valid path is found
-                    // println!("[traffic] No valid path from {:?} to {:?}", start, goal);
-                    continue;
-                }
-
-                let world_pos = tile_to_world(&p.cfg, start);
-
-                let speed = 60.0 + rng.random_range(0.0..40.0);
-                p.commands.spawn((
-                    Sprite {
-                        color: Color::linear_rgb(1.0, 0.8, 0.1),
-                        custom_size: Some(Vec2::splat(p.cfg.tile_size * 0.6)),
-                        ..default()
-                    },
-                    Transform::from_xyz(world_pos.x, world_pos.y, 10.0),
-                    Vehicle {
-                        route,
-                        progress: 0.0,
-                        speed,
-                        max_speed: speed,
-                        max_accel: 20.0,
-                    },
-                    VehicleTrafficState::FreeFlow,
-                ));
-                spawned += 1;
-                total += 1;
-            }
-            if spawned > 0 {
-                debug!("Spawned {spawned} debug vehicles");
-            }
-        }
-    }
-}
-
-#[derive(SystemParam)]
-struct SpawnDebugVehiclesParams<'w, 's> {
-    commands: Commands<'w, 's>,
-    grid: Res<'w, MapGrid>,
-    cfg: Res<'w, MapConfig>,
-    time: Res<'w, Time>,
-    graph: Res<'w, RoadGraph>,
-    regions: Res<'w, RegionGraph>,
-    traffic: Res<'w, TrafficOccupancy>,
-    path_cfg: Res<'w, PathfindingConfig>,
-    path_cache: ResMut<'w, PathCache>,
-    intersections: Res<'w, IntersectionIndex>,
-    q_vehicles: Query<'w, 's, Entity, With<Vehicle>>,
-    traffic_cfg: Res<'w, TrafficConfig>,
 }
 
 fn spawn_trip_vehicles(
@@ -443,7 +346,7 @@ struct SpawnTripVehiclesParams<'w, 's> {
     traffic_cfg: Res<'w, TrafficConfig>,
 }
 
-/// Despawn all vehicles when GameCommand::ClearVehicles is received.
+/// Despawn all vehicles when GameCommand::GenerateMap is received.
 fn clear_vehicles(
     mut reader: bevy::ecs::message::MessageReader<GameCommand>,
     mut commands: Commands,
@@ -452,14 +355,11 @@ fn clear_vehicles(
     mut idx: ResMut<TrafficIndex>,
 ) {
     for msg in reader.read() {
-        if matches!(
-            msg,
-            GameCommand::ClearVehicles | GameCommand::GenerateMap { .. }
-        ) {
+        if matches!(msg, GameCommand::GenerateMap { .. }) {
             for entity in q_vehicles.iter() {
                 commands.entity(entity).despawn();
             }
-            // C) Traffic: reset derived aggregates when clearing vehicles / regenerating map.
+            // C) Traffic: reset derived aggregates when regenerating map.
             occ.per_tick_vehicles.clear();
             occ.ema_heat.clear();
             *idx = TrafficIndex::default();
@@ -472,22 +372,45 @@ fn clear_vehicles(
 fn move_vehicles(
     time: Res<Time<Fixed>>,
     cfg: Res<MapConfig>,
+    grid: Res<MapGrid>,
+    traffic: Res<TrafficOccupancy>,
     braking_params: Res<BrakingParams>,
     mut commands: Commands,
     mut finished: bevy::ecs::message::MessageWriter<TripFinished>,
-    mut q: Query<(
-        Entity,
-        &mut Vehicle,
-        &mut Transform,
-        &VehicleTrafficState,
-        Option<&TripPassenger>,
-        Option<&ServiceVehicle>,
-        Option<&BusVehicle>,
+    mut vehicles: ParamSet<(
+        Query<(
+            Entity,
+            &mut Vehicle,
+            &mut Transform,
+            &VehicleTrafficState,
+            Option<&TripPassenger>,
+            Option<&ServiceVehicle>,
+            Option<&BusVehicle>,
+        )>,
+        Query<
+            (Entity, &Vehicle, &Transform),
+            (With<Vehicle>, Without<ServiceVehicle>, Without<BusVehicle>),
+        >,
     )>,
 ) {
     let dt = time.delta_secs();
 
-    for (entity, mut v, mut tf, state, passenger, service_vehicle, bus_vehicle) in q.iter_mut() {
+    // Collect vehicle positions before iterating to avoid query conflicts
+    let vehicle_positions: Vec<(Entity, TilePos, f32)> = vehicles
+        .p1()
+        .iter()
+        .filter_map(|(entity, vehicle, _transform)| {
+            if vehicle.route.is_empty() {
+                return None;
+            }
+            let current_tile = vehicle.route[0];
+            Some((entity, current_tile, vehicle.progress))
+        })
+        .collect();
+
+    for (entity, mut v, mut tf, state, passenger, service_vehicle, bus_vehicle) in
+        vehicles.p0().iter_mut()
+    {
         if v.route.is_empty() {
             // Arrived – despawn trip vehicles, keep service vehicles (idle).
             if service_vehicle.is_none() && bus_vehicle.is_none() {
@@ -502,17 +425,74 @@ fn move_vehicles(
             continue;
         }
 
-        // Compute acceleration based on traffic state
-        let accel = compute_acceleration(&v, state, &braking_params, dt);
+        // Get current tile and check for congestion
+        let current_tile = v.route[0];
+        let effective_speed = if let Some(cell) = grid.get(current_tile)
+            && cell.road.is_some()
+        {
+            let capacity = cell.road.kind.capacity_per_lane_tile() as f32;
+            if let Some(tile_idx) = grid.idx(current_tile) {
+                let occupancy = traffic.per_tick_vehicles[tile_idx] as f32;
+                let congestion = (occupancy / capacity.max(1.0)).clamp(0.0, 1.0);
+                // Slow down based on congestion: speed = base_speed * (1 - 0.7 * congestion)
+                v.max_speed * (1.0 - 0.7 * congestion)
+            } else {
+                v.max_speed
+            }
+        } else {
+            v.max_speed
+        };
 
-        // Update speed
-        v.speed = (v.speed + accel * dt).clamp(0.0, v.max_speed);
+        // Check for leader vehicle (car following model) - use pre-collected positions
+        let leader_distance =
+            find_leader_vehicle_from_positions(entity, &v, &vehicle_positions, &grid, &cfg);
+
+        // Adjust acceleration based on leader distance
+        let mut accel = compute_acceleration(&v, state, &braking_params, dt);
+
+        if let Some(leader_dist) = leader_distance {
+            if leader_dist < MIN_VEHICLE_DISTANCE {
+                // Too close - brake hard
+                accel = -braking_params.max_decel;
+            } else if leader_dist < MIN_VEHICLE_DISTANCE * 2.0 {
+                // Close - brake smoothly
+                let required_decel =
+                    (v.speed * v.speed) / (2.0 * (leader_dist - MIN_VEHICLE_DISTANCE).max(0.1));
+                accel = accel.min(-required_decel.min(braking_params.max_decel));
+            }
+        }
+
+        // Update speed (clamp to effective speed considering congestion)
+        v.speed = (v.speed + accel * dt).clamp(0.0, effective_speed);
 
         // Check if movement is blocked
-        let can_move = !matches!(
+        let mut can_move = !matches!(
             state,
             VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. }
         );
+
+        // Check if next tile is occupied (prevent passing through)
+        if can_move && !v.route.is_empty() {
+            let next_tile = if v.progress >= 0.8 && v.route.len() > 1 {
+                v.route[1]
+            } else {
+                current_tile
+            };
+
+            if let Some(next_idx) = grid.idx(next_tile) {
+                // Check if next tile is too crowded
+                if let Some(cell) = grid.get(next_tile)
+                    && cell.road.is_some()
+                {
+                    let capacity = cell.road.kind.capacity_per_lane_tile() as u16;
+                    let occupancy = traffic.per_tick_vehicles[next_idx];
+                    // If next tile is at capacity and we're close, block movement
+                    if occupancy >= capacity && v.progress > 0.7 {
+                        can_move = false;
+                    }
+                }
+            }
+        }
 
         if !can_move {
             continue; // Don't move
@@ -1141,21 +1121,6 @@ fn cull_vehicle_lod(
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn collect_road_tiles(grid: &MapGrid) -> Vec<TilePos> {
-    let mut roads = Vec::new();
-    for y in 0..grid.height {
-        for x in 0..grid.width {
-            let pos = TilePos { x, y };
-            if let Some(cell) = grid.get(pos)
-                && cell.road.is_some()
-            {
-                roads.push(pos);
-            }
-        }
-    }
-    roads
-}
-
 fn desired_dir(from: TilePos, to: TilePos) -> RoadDir {
     let dx = to.x - from.x;
     let dy = to.y - from.y;
@@ -1224,6 +1189,59 @@ fn map_origin(cfg: &MapConfig) -> Vec2 {
     )
 }
 
+/// Find the distance to the leader vehicle ahead on the same lane/route.
+/// Returns None if no leader found, or Some(distance) in tiles.
+/// Uses pre-collected vehicle positions to avoid query conflicts.
+fn find_leader_vehicle_from_positions(
+    ego_entity: Entity,
+    ego_vehicle: &Vehicle,
+    vehicle_positions: &[(Entity, TilePos, f32)],
+    _grid: &MapGrid,
+    cfg: &MapConfig,
+) -> Option<f32> {
+    if ego_vehicle.route.is_empty() {
+        return None;
+    }
+
+    let ego_current_tile = ego_vehicle.route[0];
+    let ego_progress = ego_vehicle.progress;
+
+    let mut closest_leader: Option<(f32, f32)> = None; // (distance, route_position)
+
+    for (other_entity, other_current_tile, other_progress) in vehicle_positions.iter() {
+        if *other_entity == ego_entity {
+            continue;
+        }
+
+        // Simple check: if on same tile or next tile ahead
+        if *other_current_tile == ego_current_tile {
+            // Same tile - check progress
+            if *other_progress > ego_progress {
+                let distance = (*other_progress - ego_progress) * cfg.tile_size / cfg.tile_size;
+                if let Some((closest_dist, _)) = closest_leader {
+                    if distance < closest_dist {
+                        closest_leader = Some((distance, *other_progress));
+                    }
+                } else {
+                    closest_leader = Some((distance, *other_progress));
+                }
+            }
+        } else if ego_vehicle.route.len() > 1 && *other_current_tile == ego_vehicle.route[1] {
+            // Other vehicle is on next tile
+            let distance = (1.0 - ego_progress) + *other_progress;
+            if let Some((closest_dist, _)) = closest_leader {
+                if distance < closest_dist {
+                    closest_leader = Some((distance, 1.0 + *other_progress));
+                }
+            } else {
+                closest_leader = Some((distance, 1.0 + *other_progress));
+            }
+        }
+    }
+
+    closest_leader.map(|(dist, _)| dist)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1262,6 +1280,8 @@ mod tests {
                     route: Vec::new(),
                     progress: 0.0,
                     speed: 0.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
                 },
                 Transform::default(),
                 TripPassenger {

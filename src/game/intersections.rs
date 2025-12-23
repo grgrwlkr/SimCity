@@ -3,10 +3,13 @@
 //! Intersections are detected where multiple road directions meet.
 //! Players can manually place traffic lights at intersections.
 
+use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
 use std::collections::HashSet;
 
-use crate::game::map::{MapConfig, TilePos};
+use crate::game::commands::GameCommand;
+use crate::game::map::{MapConfig, MapGrid, TilePos};
+use crate::game::roads::RoadDir;
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::transport::GraphVersion;
@@ -21,6 +24,12 @@ impl Plugin for IntersectionsPlugin {
                 Update,
                 detect_intersections
                     .in_set(GameSet::GraphUpdate)
+                    .run_if(in_game_or_paused),
+            )
+            .add_systems(
+                Update,
+                handle_traffic_light_commands
+                    .in_set(GameSet::CommandApply)
                     .run_if(in_game_or_paused),
             )
             .add_systems(
@@ -326,4 +335,54 @@ fn map_origin(cfg: &MapConfig) -> Vec2 {
         -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
         -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
     )
+}
+
+/// Handle traffic light placement/removal commands.
+fn handle_traffic_light_commands(
+    mut reader: MessageReader<GameCommand>,
+    mut index: ResMut<IntersectionIndex>,
+    grid: Res<MapGrid>,
+    mut commands: Commands,
+    q_lights: Query<(Entity, &TrafficLight)>,
+) {
+    for cmd in reader.read() {
+        match cmd {
+            GameCommand::PlaceTrafficLight { pos } => {
+                // Check if this is an intersection (dir == None)
+                let Some(cell) = grid.get(*pos) else {
+                    continue;
+                };
+                if cell.road.dir != RoadDir::None {
+                    continue; // Not an intersection
+                }
+
+                // Check if already has a traffic light
+                if index.traffic_light_positions.contains(pos) {
+                    continue;
+                }
+
+                // Add to index
+                index.traffic_light_positions.insert(*pos);
+
+                // Spawn traffic light entity
+                commands.spawn(TrafficLight {
+                    pos: *pos,
+                    ..default()
+                });
+            }
+            GameCommand::RemoveTrafficLight { pos } => {
+                // Remove from index
+                index.traffic_light_positions.remove(pos);
+
+                // Despawn traffic light entity
+                for (entity, light) in q_lights.iter() {
+                    if light.pos == *pos {
+                        commands.entity(entity).despawn();
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
