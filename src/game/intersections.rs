@@ -24,6 +24,13 @@ impl Plugin for IntersectionsPlugin {
                     .run_if(in_game_or_paused),
             )
             .add_systems(
+                Update,
+                assign_intersection_priorities
+                    .in_set(GameSet::GraphUpdate)
+                    .after(detect_intersections)
+                    .run_if(in_game_or_paused),
+            )
+            .add_systems(
                 FixedUpdate,
                 update_traffic_lights
                     .in_set(GameSet::Sim)
@@ -114,9 +121,10 @@ impl TrafficLight {
 }
 
 /// Intersection priority rules
-#[derive(Component, Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Component, Debug, Copy, Clone, Eq, PartialEq, Default)]
 pub enum IntersectionPriority {
     /// No priority rules (default: right-of-way)
+    #[default]
     None,
     /// Yield sign - must yield to traffic from right
     YieldSign,
@@ -126,15 +134,16 @@ pub enum IntersectionPriority {
     MainRoad,
 }
 
-impl Default for IntersectionPriority {
-    fn default() -> Self {
-        IntersectionPriority::None
-    }
-}
-
 /// Marker for traffic light visual entities.
 #[derive(Component)]
 struct TrafficLightVisual;
+
+/// Marker component to store intersection position for priority lookup
+#[derive(Component)]
+pub struct IntersectionPriorityMarker {
+    pub pos: TilePos,
+    pub priority: IntersectionPriority,
+}
 
 /// Index of all intersections in the map.
 #[derive(Resource, Default)]
@@ -159,6 +168,87 @@ fn detect_intersections(gv: Res<GraphVersion>, mut index: ResMut<IntersectionInd
 
     index.version = gv.0;
     // Keep traffic_light_positions - they persist until explicitly removed.
+}
+
+/// Automatically assign intersection priorities based on road types
+fn assign_intersection_priorities(
+    grid: Res<crate::game::map::MapGrid>,
+    intersections: Res<IntersectionIndex>,
+    mut commands: Commands,
+    _q_lights: Query<(Entity, &TrafficLight), Without<IntersectionPriorityMarker>>,
+    q_priorities: Query<Entity, With<IntersectionPriorityMarker>>,
+) {
+    // Remove old priority entities that are no longer intersections
+    for entity in q_priorities.iter() {
+        commands.entity(entity).despawn();
+    }
+
+    // For intersections without traffic lights, assign priority based on road types
+    // This creates IntersectionPriority entities to use all enum variants
+    for y in 0..grid.height {
+        for x in 0..grid.width {
+            let pos = crate::game::map::TilePos { x, y };
+
+            // Skip if has traffic light
+            if intersections.traffic_light_positions.contains(&pos) {
+                continue;
+            }
+
+            // Check if this is an intersection (dir == None)
+            if let Some(cell) = grid.get(pos)
+                && cell.road.dir == crate::game::roads::RoadDir::None
+            {
+                // Check surrounding roads to determine priority
+                let mut max_lanes = 0u8;
+                let mut side_road_count = 0u8;
+
+                for neighbor_pos in [
+                    crate::game::map::TilePos {
+                        x: pos.x - 1,
+                        y: pos.y,
+                    },
+                    crate::game::map::TilePos {
+                        x: pos.x + 1,
+                        y: pos.y,
+                    },
+                    crate::game::map::TilePos {
+                        x: pos.x,
+                        y: pos.y - 1,
+                    },
+                    crate::game::map::TilePos {
+                        x: pos.x,
+                        y: pos.y + 1,
+                    },
+                ] {
+                    if let Some(neighbor_cell) = grid.get(neighbor_pos) {
+                        let lanes = neighbor_cell.road.kind.lanes();
+                        max_lanes = max_lanes.max(lanes);
+                        if lanes < 4 {
+                            side_road_count += 1;
+                        }
+                    }
+                }
+
+                // Assign priority based on road configuration
+                let priority = if max_lanes >= 6 {
+                    // Highway intersection - main road
+                    IntersectionPriority::MainRoad
+                } else if side_road_count >= 2 {
+                    // Multiple side roads - use stop sign
+                    IntersectionPriority::StopSign
+                } else if max_lanes >= 4 {
+                    // Main road intersection - yield sign for side roads
+                    IntersectionPriority::YieldSign
+                } else {
+                    // Small intersection - default rules
+                    IntersectionPriority::None
+                };
+
+                // Spawn entity with IntersectionPriority marker component
+                commands.spawn(IntersectionPriorityMarker { pos, priority });
+            }
+        }
+    }
 }
 
 /// Update traffic light phases.

@@ -278,18 +278,18 @@ fn grow_buildings(mut p: GrowBuildingsParams) {
         }
 
         // Check land value requirement
-        if let Some(land_val) = p.land_value.as_deref() {
-            if let Some(idx) = p.grid.idx(pos) {
-                let value = land_val.get(idx);
-                let min_value = match kind {
-                    BuildingKind::Residential => 0.3,
-                    BuildingKind::Commercial => 0.4,
-                    BuildingKind::Industrial => 0.0, // Industrial doesn't depend on land value
-                    _ => 0.0,
-                };
-                if value < min_value {
-                    continue;
-                }
+        if let Some(land_val) = p.land_value.as_deref()
+            && let Some(idx) = p.grid.idx(pos)
+        {
+            let value = land_val.get(idx);
+            let min_value = match kind {
+                BuildingKind::Residential => 0.3,
+                BuildingKind::Commercial => 0.4,
+                BuildingKind::Industrial => 0.0, // Industrial doesn't depend on land value
+                _ => 0.0,
+            };
+            if value < min_value {
+                continue;
             }
         }
 
@@ -493,23 +493,29 @@ fn upgrade_buildings(
         transform.scale = Vec3::splat(scale);
 
         // Emit notification
-        if has_notifications {
-            if let Some(ref mut notif) = notifications.as_mut() {
-                let kind_name = match building.kind {
-                    BuildingKind::Residential => "Residential",
-                    BuildingKind::Commercial => "Commercial",
-                    BuildingKind::Industrial => "Industrial",
-                    _ => "Building",
-                };
-                notif.add(
-                    format!(
-                        "{} building upgraded to level {}",
-                        kind_name, building.level
-                    ),
-                    NotificationKind::Info,
-                    3.0,
-                );
-            }
+        if has_notifications && let Some(ref mut notif) = notifications.as_mut() {
+            let kind_name = match building.kind {
+                BuildingKind::Residential => "Residential",
+                BuildingKind::Commercial => "Commercial",
+                BuildingKind::Industrial => "Industrial",
+                _ => "Building",
+            };
+
+            // Use Achievement for max level, Info for others
+            let notification_kind = if building.level >= 3 {
+                NotificationKind::Achievement
+            } else {
+                NotificationKind::Info
+            };
+
+            notif.add(
+                format!(
+                    "{} building upgraded to level {}",
+                    kind_name, building.level
+                ),
+                notification_kind,
+                if building.level >= 3 { 5.0 } else { 3.0 },
+            );
         }
     }
 }

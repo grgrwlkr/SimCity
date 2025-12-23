@@ -735,16 +735,18 @@ fn handle_undo_redo(
 ) {
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
 
-    if ctrl && keys.just_pressed(KeyCode::KeyZ) {
-        if let Some(cmd) = history.undo() {
-            commands.write(cmd.undo_command());
-        }
+    if ctrl
+        && keys.just_pressed(KeyCode::KeyZ)
+        && let Some(cmd) = history.undo()
+    {
+        commands.write(cmd.undo_command());
     }
 
-    if ctrl && keys.just_pressed(KeyCode::KeyY) {
-        if let Some(cmd) = history.redo() {
-            commands.write(cmd.redo_command());
-        }
+    if ctrl
+        && keys.just_pressed(KeyCode::KeyY)
+        && let Some(cmd) = history.redo()
+    {
+        commands.write(cmd.redo_command());
     }
 }
 
@@ -1530,39 +1532,42 @@ fn apply_game_commands_to_grid(
     }
 }
 
-fn sync_dirty_tiles_to_render(
-    ui: Res<UiState>,
-    cfg: Res<MapConfig>,
-    grid: Res<MapGrid>,
-    index: Res<MapIndex>,
-    land_value: Option<Res<LandValueIndex>>,
-    pollution: Option<Res<PollutionIndex>>,
-    mut dirty: ResMut<DirtyTiles>,
-    mut q_tiles: Query<(&mut Sprite, &mut TileKind)>,
-) {
-    let changed = dirty.drain();
+#[derive(SystemParam)]
+struct SyncDirtyTilesParams<'w, 's> {
+    ui: Res<'w, UiState>,
+    cfg: Res<'w, MapConfig>,
+    grid: Res<'w, MapGrid>,
+    index: Res<'w, MapIndex>,
+    land_value: Option<Res<'w, LandValueIndex>>,
+    pollution: Option<Res<'w, PollutionIndex>>,
+    dirty: ResMut<'w, DirtyTiles>,
+    q_tiles: Query<'w, 's, (&'static mut Sprite, &'static mut TileKind)>,
+}
+
+fn sync_dirty_tiles_to_render(mut p: SyncDirtyTilesParams) {
+    let changed = p.dirty.drain();
     if changed.is_empty() {
         return;
     }
 
     for idx in changed {
-        let x = (idx % (grid.width as usize)) as i32;
-        let y = (idx / (grid.width as usize)) as i32;
+        let x = (idx % (p.grid.width as usize)) as i32;
+        let y = (idx / (p.grid.width as usize)) as i32;
         let pos = TilePos { x, y };
 
-        let Some(&entity) = index.by_pos.get(&IVec2::new(x, y)) else {
+        let Some(&entity) = p.index.by_pos.get(&IVec2::new(x, y)) else {
             continue;
         };
-        let Ok((mut sprite, mut kind)) = q_tiles.get_mut(entity) else {
+        let Ok((mut sprite, mut kind)) = p.q_tiles.get_mut(entity) else {
             continue;
         };
 
-        let cell = grid.get(pos).unwrap_or_default();
-        let base_size = Vec2::splat(cfg.tile_size - 1.0);
+        let cell = p.grid.get(pos).unwrap_or_default();
+        let base_size = Vec2::splat(p.cfg.tile_size - 1.0);
 
         let base_terrain_or_zone = cell.zone.as_tile_kind().unwrap_or(cell.terrain);
 
-        let (effective_kind, color, size) = match ui.overlay {
+        let (effective_kind, color, size) = match p.ui.overlay {
             OverlayMode::Height => {
                 let t = (cell.height as f32) / 255.0;
                 let gray = Color::srgb(t, t, t);
@@ -1609,7 +1614,9 @@ fn sync_dirty_tiles_to_render(
             }
             OverlayMode::LandValue => {
                 // Land value overlay: red (low) to green (high)
-                if let Some(land_val) = land_value.as_deref() {
+                if let Some(land_val) = p.land_value.as_deref()
+                    && let Some(idx) = p.grid.idx(pos)
+                {
                     let value = land_val.get(idx);
                     // Gradient from red (0.0) to green (1.0)
                     let color = if value < 0.5 {
@@ -1646,7 +1653,9 @@ fn sync_dirty_tiles_to_render(
             }
             OverlayMode::Pollution => {
                 // Pollution overlay: green (clean) to red (polluted)
-                if let Some(poll) = pollution.as_deref() {
+                if let Some(poll) = p.pollution.as_deref()
+                    && let Some(idx) = p.grid.idx(pos)
+                {
                     let poll_value = poll.get(idx);
                     // Gradient from green (0.0) to red (1.0)
                     let color = if poll_value < 0.5 {

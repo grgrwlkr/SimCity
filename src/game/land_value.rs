@@ -74,18 +74,18 @@ fn compute_land_value(
             }
 
             // -0.4 * pollution for pollution impact
-            if let Some(poll) = pollution.as_deref() {
-                if let Some(idx) = grid.idx(pos) {
-                    let poll_value = poll.get(idx);
-                    value -= poll_value * 0.4;
-                }
+            if let Some(poll) = pollution.as_deref()
+                && let Some(idx) = grid.idx(pos)
+            {
+                let poll_value = poll.get(idx);
+                value -= poll_value * 0.4;
             }
 
             // -0.2 for high traffic
-            if let Some(traffic_idx) = traffic.as_deref() {
-                if traffic_idx.avg_congestion > 0.7 {
-                    value -= 0.2;
-                }
+            if let Some(traffic_idx) = traffic.as_deref()
+                && traffic_idx.avg_congestion > 0.7
+            {
+                value -= 0.2;
             }
 
             // Clamp to [0.0, 1.0]

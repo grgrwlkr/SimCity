@@ -862,61 +862,61 @@ fn astar_road_graph(
         if (mask & (1 << 0)) != 0 && idx > 0 {
             push_neighbor(
                 idx - 1,
-                step_cost_for_edge(
-                    idx,
-                    idx - 1,
-                    RoadDir::West,
+                step_cost_for_edge(StepCostParams {
+                    cur_idx: idx,
+                    next_idx: idx - 1,
+                    move_dir: RoadDir::West,
                     w,
-                    ctx.cfg,
-                    ctx.traffic,
-                    ctx.grid,
-                    ctx.intersections,
-                ),
+                    cfg: ctx.cfg,
+                    traffic: ctx.traffic,
+                    grid: ctx.grid,
+                    intersections: ctx.intersections,
+                }),
             );
         }
         if (mask & (1 << 1)) != 0 && idx + 1 < len {
             push_neighbor(
                 idx + 1,
-                step_cost_for_edge(
-                    idx,
-                    idx + 1,
-                    RoadDir::East,
+                step_cost_for_edge(StepCostParams {
+                    cur_idx: idx,
+                    next_idx: idx + 1,
+                    move_dir: RoadDir::East,
                     w,
-                    ctx.cfg,
-                    ctx.traffic,
-                    ctx.grid,
-                    ctx.intersections,
-                ),
+                    cfg: ctx.cfg,
+                    traffic: ctx.traffic,
+                    grid: ctx.grid,
+                    intersections: ctx.intersections,
+                }),
             );
         }
         if (mask & (1 << 2)) != 0 && idx >= w {
             push_neighbor(
                 idx - w,
-                step_cost_for_edge(
-                    idx,
-                    idx - w,
-                    RoadDir::South,
+                step_cost_for_edge(StepCostParams {
+                    cur_idx: idx,
+                    next_idx: idx - w,
+                    move_dir: RoadDir::South,
                     w,
-                    ctx.cfg,
-                    ctx.traffic,
-                    ctx.grid,
-                    ctx.intersections,
-                ),
+                    cfg: ctx.cfg,
+                    traffic: ctx.traffic,
+                    grid: ctx.grid,
+                    intersections: ctx.intersections,
+                }),
             );
         }
         if (mask & (1 << 3)) != 0 && idx + w < len {
             push_neighbor(
                 idx + w,
-                step_cost_for_edge(
-                    idx,
-                    idx + w,
-                    RoadDir::North,
+                step_cost_for_edge(StepCostParams {
+                    cur_idx: idx,
+                    next_idx: idx + w,
+                    move_dir: RoadDir::North,
                     w,
-                    ctx.cfg,
-                    ctx.traffic,
-                    ctx.grid,
-                    ctx.intersections,
-                ),
+                    cfg: ctx.cfg,
+                    traffic: ctx.traffic,
+                    grid: ctx.grid,
+                    intersections: ctx.intersections,
+                }),
             );
         }
     }
@@ -1028,16 +1028,28 @@ fn bfs_region_path(rg: &RegionGraph, start: usize, goal: usize) -> Option<Vec<us
     Some(path)
 }
 
-fn step_cost_for_edge(
+struct StepCostParams<'a> {
     cur_idx: usize,
     next_idx: usize,
     move_dir: RoadDir,
     w: usize,
-    cfg: &PathfindingConfig,
-    traffic: &TrafficOccupancy,
-    grid: &MapGrid,
-    intersections: &IntersectionIndex,
-) -> u32 {
+    cfg: &'a PathfindingConfig,
+    traffic: &'a TrafficOccupancy,
+    grid: &'a MapGrid,
+    intersections: &'a IntersectionIndex,
+}
+
+fn step_cost_for_edge(params: StepCostParams) -> u32 {
+    let StepCostParams {
+        cur_idx,
+        next_idx,
+        move_dir,
+        w,
+        cfg,
+        traffic,
+        grid,
+        intersections,
+    } = params;
     // Weight model (MVP):
     // travel_time = 1 / speed_limit
     // congestion_factor = 1 + k * congestion

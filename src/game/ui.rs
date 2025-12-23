@@ -415,12 +415,76 @@ fn top_status_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
                 });
                 ui.separator();
 
+                // Show scenario progress if in scenario mode
+                if p.scenario_progress.active_id.is_some() {
+                    let completion = if p.scenario_progress.objectives_total > 0 {
+                        (p.scenario_progress.objectives_completed as f32
+                            / p.scenario_progress.objectives_total as f32)
+                            * 100.0
+                    } else {
+                        0.0
+                    };
+                    ui.label(format!("📋 Scenario: {:.0}%", completion));
+                    ui.separator();
+                }
+
+                // Show current tool mode
+                let tool_name = match &p.mode.selected {
+                    crate::game::map::BuildTool::Road(kind) => format!("🛣 {:?}", kind),
+                    crate::game::map::BuildTool::Zone(zone) => format!("🏘 {:?}", zone),
+                    crate::game::map::BuildTool::PlaceBuilding(kind) => format!("🏢 {:?}", kind),
+                    crate::game::map::BuildTool::Erase => "🗑 Erase".to_string(),
+                    crate::game::map::BuildTool::Inspect => "🔍 Inspect".to_string(),
+                };
+                ui.label(tool_name);
+                ui.separator();
+
+                // Show traffic metrics if available
+                if p.metrics.traffic_avg > 0.0 {
+                    let traffic_color = if p.metrics.traffic_avg > 0.8 {
+                        egui::Color32::LIGHT_RED
+                    } else if p.metrics.traffic_avg > 0.5 {
+                        egui::Color32::YELLOW
+                    } else {
+                        egui::Color32::LIGHT_GREEN
+                    };
+                    ui.colored_label(
+                        traffic_color,
+                        format!("🚦 Traffic: {:.0}%", p.metrics.traffic_avg * 100.0),
+                    );
+                    ui.separator();
+                }
+
                 // Settings and save (right side)
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if matches!(p.state.get(), AppState::InGame | AppState::Paused) {
                         if ui.button("💾").clicked() {
                             p.commands.write(GameCommand::SaveGame { slot: 1 });
                         }
+
+                        // Debug: Dump save contract
+                        if ui
+                            .button("🔍")
+                            .on_hover_text("Dump save contract (debug)")
+                            .clicked()
+                        {
+                            p.commands.write(GameCommand::DumpSaveContract);
+                        }
+
+                        // Undo/Redo buttons
+                        let can_undo = p.history.as_deref().map(|h| h.can_undo()).unwrap_or(false);
+                        let can_redo = p.history.as_deref().map(|h| h.can_redo()).unwrap_or(false);
+
+                        ui.add_enabled_ui(can_redo, |ui| {
+                            if ui.button("↶").on_hover_text("Redo (Ctrl+Y)").clicked() {
+                                // Redo is handled by hotkey, but button provides visual feedback
+                            }
+                        });
+                        ui.add_enabled_ui(can_undo, |ui| {
+                            if ui.button("↷").on_hover_text("Undo (Ctrl+Z)").clicked() {
+                                // Undo is handled by hotkey, but button provides visual feedback
+                            }
+                        });
                     }
                 });
             });
@@ -706,6 +770,7 @@ struct TopBarParams<'w> {
     scenario_catalog: Res<'w, ScenarioCatalog>,
     scenario_selection: ResMut<'w, ScenarioSelection>,
     scenario_progress: Res<'w, ScenarioProgress>,
+    history: Option<Res<'w, crate::game::command_history::CommandHistory>>,
     commands: MessageWriter<'w, GameCommand>,
 }
 

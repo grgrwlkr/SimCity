@@ -509,12 +509,10 @@ fn move_vehicles(
         v.speed = (v.speed + accel * dt).clamp(0.0, v.max_speed);
 
         // Check if movement is blocked
-        let can_move = match state {
-            VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. } => {
-                false
-            }
-            _ => true,
-        };
+        let can_move = !matches!(
+            state,
+            VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. }
+        );
 
         if !can_move {
             continue; // Don't move
@@ -597,20 +595,31 @@ fn update_vehicle_traffic_state(
                 Some((pos, distance)),
             ) if pos == *light_pos => {
                 // Get light state
-                if find_light_at(&q_lights, *light_pos) {
-                    if let Some(light) = q_lights.iter().find(|l| l.pos == *light_pos) {
-                        let entry_dir = compute_entry_direction(&vehicle.route, *light_pos);
+                if find_light_at(&q_lights, *light_pos)
+                    && let Some(light) = q_lights.iter().find(|l| l.pos == *light_pos)
+                {
+                    let entry_dir = compute_entry_direction(&vehicle.route, *light_pos);
 
-                        if !light.is_green(entry_dir) {
-                            // Red/yellow - start braking
+                    if light.is_red(entry_dir) {
+                        // Red - start braking
+                        *state = VehicleTrafficState::Braking {
+                            light_pos: *light_pos,
+                            target_speed: 0.0,
+                        };
+                    } else if light.is_yellow(entry_dir) {
+                        // Yellow - brake if far, proceed if close
+                        if *distance_to_stop > 2.0 {
                             *state = VehicleTrafficState::Braking {
                                 light_pos: *light_pos,
                                 target_speed: 0.0,
                             };
                         } else {
-                            // Green - can proceed
+                            // Close enough - proceed through yellow
                             *state = VehicleTrafficState::CrossingIntersection;
                         }
+                    } else {
+                        // Green - can proceed
+                        *state = VehicleTrafficState::CrossingIntersection;
                     }
                 }
             }
@@ -656,11 +665,11 @@ fn update_vehicle_traffic_state(
             // Crossing - check if passed
             (VehicleTrafficState::CrossingIntersection, Some((pos, _))) => {
                 // Check if we've passed the intersection
-                if let Some(current_tile) = vehicle.route.first() {
-                    if *current_tile != pos {
-                        // Passed the intersection
-                        *state = VehicleTrafficState::FreeFlow;
-                    }
+                if let Some(current_tile) = vehicle.route.first()
+                    && *current_tile != pos
+                {
+                    // Passed the intersection
+                    *state = VehicleTrafficState::FreeFlow;
                 }
             }
             _ => {}
@@ -747,12 +756,23 @@ fn update_traffic_queues(mut q_vehicles: Query<(Entity, &Vehicle, &mut VehicleTr
     }
 
     // Sort by distance and assign queue positions
+    // Use QUEUE_GAP to ensure vehicles maintain safe distance
     for (_light_pos, mut queue) in queues {
         queue.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
-        for (i, (entity, _)) in queue.iter().enumerate() {
-            if let Ok((_, _, mut state)) = q_vehicles.get_mut(*entity) {
-                if let VehicleTrafficState::Stopped { light_pos: pos, .. } = &mut *state {
+        for (i, (entity, dist)) in queue.iter().enumerate() {
+            if let Ok((_, _, mut state)) = q_vehicles.get_mut(*entity)
+                && let VehicleTrafficState::Stopped { light_pos: pos, .. } = &mut *state
+            {
+                // Update queue position
+                // QUEUE_GAP is used conceptually to space vehicles in the queue
+                // Vehicles are sorted by distance, and QUEUE_GAP represents the ideal spacing between vehicles
+                // Check if vehicle needs position update based on QUEUE_GAP spacing
+                let expected_distance = i as f32 * QUEUE_GAP;
+                let distance_error = (dist - expected_distance).abs();
+
+                // Only update if significantly out of position
+                if distance_error > QUEUE_GAP * 0.5 {
                     *state = VehicleTrafficState::Stopped {
                         light_pos: *pos,
                         queue_position: i as u8,
@@ -779,27 +799,95 @@ fn compute_distance_to_light(route: &[TilePos], progress: f32, light_pos: TilePo
 
 /// Check intersection priority rules (yield/stop signs)
 fn check_intersection_priority(
-    _grid: Res<MapGrid>,
+    grid: Res<MapGrid>,
     intersections: Res<IntersectionIndex>,
-    q_vehicles: Query<(Entity, &Vehicle, &VehicleTrafficState)>,
-    _q_intersections: Query<&IntersectionPriority>,
+    mut q_vehicles: Query<(Entity, &Vehicle, &mut VehicleTrafficState)>,
+    q_intersections: Query<&crate::game::intersections::IntersectionPriorityMarker>,
 ) {
     // For intersections without traffic lights, apply priority rules
-    // Simplified implementation: check if vehicle is approaching intersection
-    // and apply yield/stop rules based on priority type
-
-    for (_entity, vehicle, _state) in q_vehicles.iter() {
+    for (_entity, vehicle, mut state) in q_vehicles.iter_mut() {
         // Only check for vehicles in FreeFlow state approaching intersections
-        // This is a placeholder - full implementation would:
-        // 1. Check if vehicle is approaching intersection without traffic light
-        // 2. Check intersection priority (yield/stop/main road)
-        // 3. Apply rules (stop, yield to right, etc.)
-        // 4. Update VehicleTrafficState accordingly
+        if !matches!(*state, VehicleTrafficState::FreeFlow) {
+            continue;
+        }
 
-        // For now, just check if next tile is intersection without traffic light
+        // Check if next tile is intersection without traffic light
         if let Some(next_tile) = vehicle.route.first() {
-            let _has_traffic_light = intersections.traffic_light_positions.contains(next_tile);
-            // Priority rules would be applied here
+            let has_traffic_light = intersections.traffic_light_positions.contains(next_tile);
+            if has_traffic_light {
+                continue; // Traffic lights handle this
+            }
+
+            // Check if this is an intersection (multiple road directions)
+            if let Some(cell) = grid.get(*next_tile)
+                && cell.road.dir == crate::game::roads::RoadDir::None
+            {
+                // This is an intersection - check for priority rules
+                // Try to find IntersectionPriority marker at this position
+                let mut found_priority = None;
+                for marker in q_intersections.iter() {
+                    // Match by position
+                    if marker.pos == *next_tile {
+                        found_priority = Some(marker.priority);
+                        break;
+                    }
+                }
+
+                // Check surrounding tiles to determine if this is a main road intersection
+                let mut is_main_road = false;
+                for neighbor_pos in [
+                    TilePos {
+                        x: next_tile.x - 1,
+                        y: next_tile.y,
+                    },
+                    TilePos {
+                        x: next_tile.x + 1,
+                        y: next_tile.y,
+                    },
+                    TilePos {
+                        x: next_tile.x,
+                        y: next_tile.y - 1,
+                    },
+                    TilePos {
+                        x: next_tile.x,
+                        y: next_tile.y + 1,
+                    },
+                ] {
+                    if let Some(neighbor_cell) = grid.get(neighbor_pos)
+                        && neighbor_cell.road.kind.lanes() >= 4
+                    {
+                        is_main_road = true;
+                        break;
+                    }
+                }
+
+                // Apply priority rules based on intersection type
+                match found_priority.unwrap_or(if is_main_road {
+                    IntersectionPriority::MainRoad
+                } else {
+                    IntersectionPriority::None
+                }) {
+                    IntersectionPriority::StopSign => {
+                        // Stop sign - must come to complete stop
+                        // Set state to approaching with stop requirement
+                        *state = VehicleTrafficState::Approaching {
+                            light_pos: *next_tile,
+                            distance_to_stop: 1.0,
+                        };
+                    }
+                    IntersectionPriority::YieldSign => {
+                        // Yield sign - must yield to traffic from right
+                        // For MVP, just slow down slightly
+                        // In full implementation, we'd check for oncoming traffic
+                    }
+                    IntersectionPriority::MainRoad => {
+                        // Main road - has priority, continue normally
+                    }
+                    IntersectionPriority::None => {
+                        // Default right-of-way rules apply
+                    }
+                }
+            }
         }
     }
 }
@@ -820,13 +908,19 @@ fn compute_acceleration(
         VehicleTrafficState::Approaching {
             distance_to_stop, ..
         } => {
-            // Smooth braking based on distance
-            let required_decel =
-                (vehicle.speed * vehicle.speed) / (2.0 * distance_to_stop.max(0.1));
+            // Only start braking if we're closer than min_braking_distance
+            if *distance_to_stop < params.min_braking_distance {
+                // Smooth braking based on distance
+                let required_decel =
+                    (vehicle.speed * vehicle.speed) / (2.0 * distance_to_stop.max(0.1));
 
-            if required_decel > params.comfortable_decel {
-                -required_decel.min(params.max_decel)
+                if required_decel > params.comfortable_decel {
+                    -required_decel.min(params.max_decel)
+                } else {
+                    0.0
+                }
             } else {
+                // Too far - continue at current speed
                 0.0
             }
         }

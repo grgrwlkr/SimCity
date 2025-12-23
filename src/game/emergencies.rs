@@ -596,7 +596,7 @@ fn resolve_emergencies(mut p: ResolveParams) {
                             );
                         }
                     } else {
-                        // Failed to resolve in time
+                        // Failed to resolve in time - this is an error
                         if let Some(ref mut notif) = p.notifications {
                             let kind_name = match emergency.kind {
                                 EmergencyKind::Fire => "Fire",
@@ -604,9 +604,9 @@ fn resolve_emergencies(mut p: ResolveParams) {
                                 EmergencyKind::Medical => "Medical",
                             };
                             notif.add(
-                                format!("{} emergency failed", kind_name),
-                                NotificationKind::Warning,
-                                5.0,
+                                format!("{} emergency failed - critical!", kind_name),
+                                NotificationKind::Error,
+                                7.0,
                             );
                         }
                     }

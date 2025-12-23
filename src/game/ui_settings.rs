@@ -8,17 +8,12 @@ use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 
 /// UI theme options
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize, Default)]
 pub enum UiTheme {
     Light,
     Dark,
+    #[default]
     Auto,
-}
-
-impl Default for UiTheme {
-    fn default() -> Self {
-        UiTheme::Auto
-    }
 }
 
 /// UI settings resource
