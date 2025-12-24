@@ -18,6 +18,30 @@ cargo run
 - **1/2/3/4**: выбор режима строительства (дорога/жильё/промка/трава)
 - **ЛКМ по тайлу**: построить выбранный тип (если хватает денег)
 
+### Профилирование (официальное Bevy)
+
+Bevy 0.17.x имеет **встроенные tracing-спаны** и официальные backend’ы профилирования:
+
+- **Tracy (рекомендуется)**:
+
+```bash
+# 1) в отдельном терминале запусти tracy-capture (или GUI для live capture)
+# 2) затем запусти игру:
+cargo run --release --features profile_tracy
+```
+
+- **Tracy + профилирование аллокаций** (больше overhead):
+
+```bash
+cargo run --release --features profile_tracy_memory
+```
+
+- **Chrome trace** (сохранит `.json` трейс-файл, открывается в Perfetto):
+
+```bash
+cargo run --release --features profile_chrome
+```
+
 ### Архитектура (куда добавлять логику)
 
 - `src/game/state.rs`: состояние приложения (`MainMenu / InGame / Paused`)

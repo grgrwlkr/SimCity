@@ -1,5 +1,4 @@
-use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::HashMap;
 
 use bevy::ecs::message::{MessageReader, MessageWriter};
 use bevy::ecs::system::SystemParam;
@@ -20,7 +19,7 @@ use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
 use crate::game::test_city;
-use crate::game::traffic::TrafficConfig;
+use crate::game::traffic::{Parked, TrafficConfig, Vehicle};
 use crate::game::transport::GraphVersion;
 use crate::game::ui_state::{OverlayMode, ToolMode, UiState};
 use crate::game::zone_placement::{ZonePlacementCache, can_zone_tile};
@@ -31,11 +30,11 @@ impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(MapConfig::default())
             .insert_resource(CommandHistory::new(100))
-            .add_systems(Startup, init_map_grid)
+            .init_gizmo_group::<RouteGizmos>()
+            .add_systems(Startup, (init_map_grid, configure_route_gizmos))
             .init_resource::<MapIndex>()
             .init_resource::<BuildMode>()
             .init_resource::<CursorPaintState>()
-            .init_resource::<PathPreview>()
             .init_resource::<RoadBuildState>()
             .init_resource::<RoadsChangedThisFrame>()
             .init_resource::<HoveredTile>()
@@ -60,7 +59,6 @@ impl Plugin for MapPlugin {
                     update_cursor_highlight,
                     update_hovered_tile,
                     cursor_paint_to_command,
-                    path_preview_input,
                 )
                     .in_set(GameSet::Input)
                     .run_if(in_game_or_paused),
@@ -101,7 +99,7 @@ impl Plugin for MapPlugin {
             )
             .add_systems(
                 Update,
-                path_preview_render
+                vehicle_routes_overlay_render
                     .in_set(GameSet::RenderSync)
                     .run_if(in_game_or_paused),
             )
@@ -497,18 +495,14 @@ pub enum BuildTool {
 #[derive(Component)]
 struct CursorHighlight;
 
-#[derive(Component)]
-struct OverlayEntity;
+/// Gizmo group for vehicle route overlays (Path overlay mode).
+#[derive(Default, Reflect, GizmoConfigGroup)]
+struct RouteGizmos {}
 
 #[derive(Resource, Default)]
 struct CursorPaintState {
     last_tile: Option<TilePos>,
     was_pressed: bool,
-}
-
-#[derive(Resource, Default)]
-struct PathPreview {
-    start: Option<TilePos>,
 }
 
 /// State for point-to-point road building.
@@ -527,6 +521,16 @@ struct RoadPreviewTile;
 /// Marker component for lane marking overlay entities.
 #[derive(Component)]
 struct LaneMarkingEntity;
+
+fn configure_route_gizmos(store: Option<ResMut<GizmoConfigStore>>) {
+    let Some(mut store) = store else {
+        return;
+    };
+    let (config, _) = store.config_mut::<RouteGizmos>();
+    config.enabled = true;
+    // Slightly thinner than default.
+    config.line.width = 1.0;
+}
 
 fn cleanup_ingame_entities(mut commands: Commands, q: Query<Entity, With<InGameEntity>>) {
     for e in &q {
@@ -1860,251 +1864,61 @@ fn cursor_tile(
     world_to_tile(cfg, world)
 }
 
-fn path_preview_input(
+/// Path overlay: draw the remaining planned routes for all active vehicles.
+///
+/// - Draws only the remaining route (no "already travelled" part) by starting at the vehicle's
+///   current interpolated transform position.
+/// - Updates automatically when routes are replanned.
+fn vehicle_routes_overlay_render(
     state: Res<State<AppState>>,
     ui: Res<UiState>,
-    buttons: Res<ButtonInput<MouseButton>>,
     cfg: Res<MapConfig>,
-    q_window: Query<&Window, With<PrimaryWindow>>,
-    q_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
-    mut preview: ResMut<PathPreview>,
+    mut gizmos: Gizmos<RouteGizmos>,
+    q_vehicles: Query<(&Vehicle, &Transform), Without<Parked>>,
 ) {
-    if *state.get() != AppState::InGame {
+    if !matches!(state.get(), AppState::InGame | AppState::Paused) {
         return;
     }
     if ui.overlay != OverlayMode::Path {
-        preview.start = None;
-        return;
-    }
-    if !buttons.just_pressed(MouseButton::Right) {
         return;
     }
 
-    let Ok(window) = q_window.single() else {
-        return;
-    };
-    let Ok((camera, cam_gt)) = q_camera.single() else {
-        return;
-    };
-    let Some(tile) = cursor_tile(&cfg, window, camera, cam_gt) else {
-        return;
-    };
+    // Route overlay color: visible but subtle.
+    let color = Color::srgba(1.0, 0.75, 0.20, 0.70);
+    let origin = map_origin(&cfg);
 
-    if preview.start == Some(tile) {
-        preview.start = None;
-    } else {
-        preview.start = Some(tile);
-    }
-}
+    // Guardrail to keep the overlay cheap when many vehicles are active.
+    const MAX_POINTS_PER_ROUTE: usize = 256;
 
-#[derive(SystemParam)]
-struct PathPreviewRenderParams<'w, 's> {
-    state: Res<'w, State<AppState>>,
-    ui: Res<'w, UiState>,
-    cfg: Res<'w, MapConfig>,
-    grid: Res<'w, MapGrid>,
-    q_window: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
-    q_camera: Query<'w, 's, (&'static Camera, &'static GlobalTransform), With<MainCamera>>,
-    commands: Commands<'w, 's>,
-    q_overlay: Query<'w, 's, Entity, With<OverlayEntity>>,
-    preview: Res<'w, PathPreview>,
-}
-
-fn path_preview_render(mut p: PathPreviewRenderParams) {
-    if *p.state.get() != AppState::InGame {
-        return;
-    }
-
-    // Clear old overlay entities
-    for e in &p.q_overlay {
-        p.commands.entity(e).despawn();
-    }
-
-    if p.ui.overlay != OverlayMode::Path {
-        return;
-    }
-    let Some(start) = p.preview.start else {
-        return;
-    };
-
-    let Ok(window) = p.q_window.single() else {
-        return;
-    };
-    let Ok((camera, cam_gt)) = p.q_camera.single() else {
-        return;
-    };
-    let Some(end) = cursor_tile(&p.cfg, window, camera, cam_gt) else {
-        return;
-    };
-
-    let path = astar_path(&p.grid, start, end);
-    if path.is_empty() {
-        return;
-    }
-
-    let origin = map_origin(&p.cfg);
-    for pos in path {
-        let z = 20.0;
-        let tile_world = origin
-            + Vec2::new(
-                pos.x as f32 * p.cfg.tile_size,
-                pos.y as f32 * p.cfg.tile_size,
-            );
-
-        p.commands.spawn((
-            Sprite::from_color(
-                Color::srgba(1.0, 0.95, 0.25, 0.30),
-                Vec2::splat(p.cfg.tile_size + 2.0),
-            ),
-            Transform::from_translation(Vec3::new(tile_world.x, tile_world.y, z)),
-            OverlayEntity,
-            InGameEntity,
-        ));
-
-        if pos == start || pos == end {
-            p.commands.spawn((
-                Sprite::from_color(
-                    Color::srgba(1.0, 0.35, 0.10, 0.45),
-                    Vec2::splat(p.cfg.tile_size + 3.0),
-                ),
-                Transform::from_translation(Vec3::new(tile_world.x, tile_world.y, z + 1.0)),
-                OverlayEntity,
-                InGameEntity,
-            ));
-        }
-    }
-}
-
-#[derive(Copy, Clone, Eq, PartialEq)]
-struct HeapState {
-    f: u32,
-    g: u32,
-    pos: TilePos,
-}
-
-impl Ord for HeapState {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // reverse for min-heap behavior
-        other
-            .f
-            .cmp(&self.f)
-            .then_with(|| other.g.cmp(&self.g))
-            .then_with(|| other.pos.y.cmp(&self.pos.y))
-            .then_with(|| other.pos.x.cmp(&self.pos.x))
-    }
-}
-impl PartialOrd for HeapState {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-/// A* pathfinding on road tiles. Returns empty vec if no path found.
-pub fn astar_path(grid: &MapGrid, start: TilePos, goal: TilePos) -> Vec<TilePos> {
-    if start == goal {
-        return vec![start];
-    }
-
-    let Some(start_i) = grid.idx(start) else {
-        return Vec::new();
-    };
-    let Some(goal_i) = grid.idx(goal) else {
-        return Vec::new();
-    };
-
-    let is_road = |pos: TilePos| -> bool {
-        grid.get(pos)
-            .is_some_and(|cell| !cell.water && cell.road.is_some())
-    };
-
-    if !is_road(start) || !is_road(goal) {
-        return Vec::new();
-    }
-
-    let w = grid.width as usize;
-    let h = grid.height as usize;
-    let len = w * h;
-
-    let mut came_from: Vec<Option<usize>> = vec![None; len];
-    let mut best_g: Vec<u32> = vec![u32::MAX; len];
-
-    let mut heap = BinaryHeap::<HeapState>::new();
-    best_g[start_i] = 0;
-    heap.push(HeapState {
-        g: 0,
-        f: manhattan(start, goal),
-        pos: start,
-    });
-
-    while let Some(HeapState { g, pos, .. }) = heap.pop() {
-        let Some(i) = grid.idx(pos) else {
-            continue;
-        };
-        if g != best_g[i] {
+    for (vehicle, tf) in q_vehicles.iter() {
+        // `route[0]` is the current tile. We draw from current *world position* to the remaining tiles.
+        if vehicle.route.len() < 2 {
             continue;
         }
 
-        if pos == goal {
-            // reconstruct
-            let mut out = Vec::new();
-            let mut cur = Some(goal_i);
-            while let Some(ci) = cur {
-                let x = (ci % w) as i32;
-                let y = (ci / w) as i32;
-                out.push(TilePos { x, y });
-                cur = came_from[ci];
+        let remaining_tiles = vehicle.route.len().saturating_sub(1);
+        let max_tiles = MAX_POINTS_PER_ROUTE.saturating_sub(1).max(1);
+        let stride = (remaining_tiles + max_tiles - 1) / max_tiles; // ceil-div, >= 1
+
+        let mut points = Vec::with_capacity(vehicle.route.len().min(MAX_POINTS_PER_ROUTE) + 1);
+        points.push(tf.translation.truncate());
+
+        for (i, pos) in vehicle.route.iter().enumerate().skip(1) {
+            // Always include the last tile, even when downsampling.
+            let is_last = i + 1 == vehicle.route.len();
+            let should_take = is_last || ((i - 1) % stride == 0);
+            if !should_take {
+                continue;
             }
-            out.reverse();
-            return out;
+
+            let w = origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size);
+            points.push(w);
         }
 
-        let neighbors = [
-            TilePos {
-                x: pos.x - 1,
-                y: pos.y,
-            },
-            TilePos {
-                x: pos.x + 1,
-                y: pos.y,
-            },
-            TilePos {
-                x: pos.x,
-                y: pos.y - 1,
-            },
-            TilePos {
-                x: pos.x,
-                y: pos.y + 1,
-            },
-        ];
-
-        for npos in neighbors {
-            if npos.x < 0 || npos.y < 0 || npos.x >= grid.width || npos.y >= grid.height {
-                continue;
-            }
-            if !is_road(npos) {
-                continue;
-            }
-            let Some(ni) = grid.idx(npos) else {
-                continue;
-            };
-            let ng = g.saturating_add(1);
-            if ng < best_g[ni] {
-                best_g[ni] = ng;
-                came_from[ni] = Some(i);
-                heap.push(HeapState {
-                    g: ng,
-                    f: ng.saturating_add(manhattan(npos, goal)),
-                    pos: npos,
-                });
-            }
+        if points.len() >= 2 {
+            gizmos.linestrip_2d(points, color);
         }
     }
-
-    Vec::new()
-}
-
-fn manhattan(a: TilePos, b: TilePos) -> u32 {
-    a.x.abs_diff(b.x) + a.y.abs_diff(b.y)
 }
 
 fn generate_map_into_grid(grid: &mut MapGrid, seed: u64) {

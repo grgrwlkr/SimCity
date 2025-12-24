@@ -17,6 +17,14 @@ serde = { version = "1", features = ["derive"] }
 # `cargo run --features dev`
 dev = ["bevy/dynamic_linking"]
 
+# Official Bevy profiling backends (built-in tracing spans):
+# - Tracy (recommended): `cargo run --release --features profile_tracy`
+# - Tracy + memory:      `cargo run --release --features profile_tracy_memory`
+# - Chrome trace:        `cargo run --release --features profile_chrome`
+profile_tracy = ["bevy/trace_tracy"]
+profile_tracy_memory = ["bevy/trace_tracy", "bevy/trace_tracy_memory"]
+profile_chrome = ["bevy/trace_chrome"]
+
 [profile.dev]
 opt-level = 1
 

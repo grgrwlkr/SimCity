@@ -3,6 +3,8 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
+use std::collections::VecDeque;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::game::buildings::Building;
 use crate::game::camera::MainCamera;
@@ -21,10 +23,12 @@ use crate::game::map::{
 use crate::game::roads::RoadKind;
 use crate::game::scenarios::{ScenarioCatalog, ScenarioProgress, ScenarioSelection};
 use crate::game::services::{ServiceCoverageIndex, ServiceStation};
+use crate::game::services::{ServiceVehicle, ServiceVehicleState};
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
-use crate::game::traffic::{TrafficIndex, Vehicle};
+use crate::game::traffic::{Parked, TrafficIndex, TrafficOccupancy, Vehicle, VehicleTrafficState};
+use crate::game::ui_settings::UiSettings;
 use crate::game::ui_state::{OverlayMode, SimSpeed, ToolMode, UiState};
 
 pub struct UiPlugin;
@@ -36,9 +40,17 @@ impl Plugin for UiPlugin {
             .init_resource::<UiHistory>()
             .add_systems(OnEnter(AppState::MainMenu), announce_main_menu)
             .add_systems(OnEnter(AppState::InGame), announce_ingame)
+            .add_systems(OnEnter(AppState::InGame), reset_debug_telemetry)
             .add_systems(OnEnter(AppState::Paused), announce_paused)
             .init_resource::<ShowShortcuts>()
+            .init_resource::<ShowStatsWindow>()
+            .init_resource::<DebugDumpUiState>()
+            .init_resource::<DebugTelemetry>()
             .add_systems(EguiPrimaryContextPass, top_status_bar_ui)
+            .add_systems(
+                EguiPrimaryContextPass,
+                debug_dump_ui.after(top_status_bar_ui),
+            )
             .add_systems(
                 EguiPrimaryContextPass,
                 bottom_toolbar_ui.after(top_status_bar_ui),
@@ -48,15 +60,16 @@ impl Plugin for UiPlugin {
                 right_sidebar_ui.after(top_status_bar_ui),
             )
             .add_systems(EguiPrimaryContextPass, shortcuts_ui.after(right_sidebar_ui))
-            .add_systems(EguiPrimaryContextPass, inspector_ui.after(right_sidebar_ui))
             .add_systems(Update, toggle_shortcuts.in_set(GameSet::Input))
-            .add_systems(
-                EguiPrimaryContextPass,
-                building_popup_ui.after(inspector_ui),
-            )
-            .add_systems(EguiPrimaryContextPass, minimap_ui.after(inspector_ui))
-            .add_systems(EguiPrimaryContextPass, stats_ui.after(minimap_ui))
+            .add_systems(EguiPrimaryContextPass, stats_ui.after(shortcuts_ui))
+            .add_systems(EguiPrimaryContextPass, building_popup_ui.after(stats_ui))
             .add_systems(Update, update_ui_metrics.in_set(GameSet::Ui))
+            .add_systems(
+                Update,
+                collect_debug_telemetry
+                    .after(update_ui_metrics)
+                    .in_set(GameSet::Ui),
+            )
             .add_systems(
                 Update,
                 update_ui_history
@@ -122,6 +135,96 @@ impl Default for UiHistory {
             samples: Vec::new(),
         }
     }
+}
+
+/// UI state + settings for building/copying debug dumps.
+#[derive(Resource, Debug, Clone)]
+struct DebugDumpUiState {
+    open: bool,
+    enabled: bool,
+    window_secs: f32,
+    interval_secs: f32,
+    max_dump_samples: usize,
+    include_hovered_tile: bool,
+    include_daily_history_days: usize,
+    copy_requested: bool,
+    save_requested: bool,
+    clear_requested: bool,
+    last_copy: Option<DebugDumpCopyInfo>,
+}
+
+#[derive(Debug, Copy, Clone, serde::Serialize)]
+struct DebugDumpCopyInfo {
+    at_t_real_s: f32,
+    chars: usize,
+    samples: usize,
+}
+
+impl Default for DebugDumpUiState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            enabled: true,
+            window_secs: 120.0,
+            interval_secs: 1.0,
+            max_dump_samples: 600,
+            include_hovered_tile: true,
+            include_daily_history_days: 30,
+            copy_requested: false,
+            save_requested: false,
+            clear_requested: false,
+            last_copy: None,
+        }
+    }
+}
+
+/// Rolling buffer of recent telemetry samples used for debugging/dumps.
+#[derive(Resource, Debug, Default)]
+struct DebugTelemetry {
+    t_real_s: f32,
+    last_sample_t_s: f32,
+    samples: VecDeque<DebugTelemetrySample>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct DebugTelemetrySample {
+    t_real_s: f32,
+    app_state: String,
+    sim_speed: String,
+    day: u32,
+    time_of_day: Option<f32>, // 0..1
+    money: i64,
+    population: u32,
+    traffic_avg: f32,
+    traffic_max: f32,
+    demand_r: f32,
+    demand_c: f32,
+    demand_i: f32,
+    active_emergencies: u32,
+    vehicles: VehicleAgg,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+struct VehicleAgg {
+    total: u32,
+    parked: u32,
+    no_route: u32,
+    zero_speed: u32,
+
+    free_flow: u32,
+    approaching: u32,
+    stopped: u32,
+    waiting: u32,
+    crossing: u32,
+    accelerating: u32,
+
+    service_at_station: u32,
+    service_en_route: u32,
+    service_on_scene: u32,
+    service_returning: u32,
+    service_returning_no_route: u32,
+    service_returning_parked: u32,
+    service_returning_zero_speed: u32,
 }
 
 fn update_ui_metrics(mut p: UiMetricsParams) {
@@ -294,6 +397,138 @@ fn update_ui_history(
     }
 }
 
+fn reset_debug_telemetry(mut telemetry: ResMut<DebugTelemetry>, mut ui: ResMut<DebugDumpUiState>) {
+    telemetry.samples.clear();
+    telemetry.t_real_s = 0.0;
+    telemetry.last_sample_t_s = 0.0;
+    ui.copy_requested = false;
+    ui.save_requested = false;
+    ui.clear_requested = false;
+    ui.last_copy = None;
+}
+
+fn collect_debug_telemetry(
+    time: Res<Time>,
+    state: Res<State<AppState>>,
+    ui_state: Res<UiState>,
+    city: Res<City>,
+    metrics: Res<UiMetrics>,
+    day_night: Option<Res<DayNightCycle>>,
+    cfg: Res<DebugDumpUiState>,
+    mut telemetry: ResMut<DebugTelemetry>,
+    q_vehicles: Query<(
+        &Vehicle,
+        &VehicleTrafficState,
+        Option<&Parked>,
+        Option<&ServiceVehicle>,
+    )>,
+) {
+    if !cfg.enabled {
+        return;
+    }
+
+    if !matches!(state.get(), AppState::InGame | AppState::Paused) {
+        telemetry.samples.clear();
+        telemetry.t_real_s = 0.0;
+        telemetry.last_sample_t_s = 0.0;
+        return;
+    }
+
+    telemetry.t_real_s += time.delta_secs();
+
+    let interval = cfg.interval_secs.clamp(0.1, 10.0);
+    let window = cfg.window_secs.clamp(10.0, 10_000.0);
+    let max_samples = ((window / interval).ceil() as usize).max(1) + 2;
+
+    let should_sample = telemetry.samples.is_empty()
+        || (telemetry.t_real_s - telemetry.last_sample_t_s) >= interval;
+    if !should_sample {
+        return;
+    }
+    telemetry.last_sample_t_s = telemetry.t_real_s;
+
+    let app_state = match state.get() {
+        AppState::MainMenu => "MainMenu",
+        AppState::InGame => "InGame",
+        AppState::Paused => "Paused",
+    }
+    .to_string();
+    let sim_speed = match ui_state.sim_speed {
+        SimSpeed::Paused => "Paused",
+        SimSpeed::X1 => "X1",
+        SimSpeed::X2 => "X2",
+        SimSpeed::X4 => "X4",
+    }
+    .to_string();
+
+    let time_of_day = day_night.as_deref().map(|c| c.time_of_day);
+
+    let mut vehicles = VehicleAgg::default();
+    for (vehicle, traffic_state, parked_comp, service) in q_vehicles.iter() {
+        vehicles.total += 1;
+        if parked_comp.is_some() {
+            vehicles.parked += 1;
+        }
+        if vehicle.route.is_empty() {
+            vehicles.no_route += 1;
+        }
+        if vehicle.speed < 0.1 {
+            vehicles.zero_speed += 1;
+        }
+
+        match traffic_state {
+            VehicleTrafficState::FreeFlow => vehicles.free_flow += 1,
+            VehicleTrafficState::Approaching { .. } => vehicles.approaching += 1,
+            VehicleTrafficState::Stopped { .. } => vehicles.stopped += 1,
+            VehicleTrafficState::WaitingForGreen { .. } => vehicles.waiting += 1,
+            VehicleTrafficState::CrossingIntersection => vehicles.crossing += 1,
+            VehicleTrafficState::Accelerating => vehicles.accelerating += 1,
+        }
+
+        if let Some(sv) = service {
+            match sv.state {
+                ServiceVehicleState::AtStation => vehicles.service_at_station += 1,
+                ServiceVehicleState::EnRoute => vehicles.service_en_route += 1,
+                ServiceVehicleState::OnScene => vehicles.service_on_scene += 1,
+                ServiceVehicleState::Returning => {
+                    vehicles.service_returning += 1;
+                    if vehicle.route.is_empty() {
+                        vehicles.service_returning_no_route += 1;
+                    }
+                    if parked_comp.is_some() {
+                        vehicles.service_returning_parked += 1;
+                    }
+                    if vehicle.speed < 0.1 {
+                        vehicles.service_returning_zero_speed += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    let t_real_s = telemetry.t_real_s;
+    telemetry.samples.push_back(DebugTelemetrySample {
+        t_real_s,
+        app_state,
+        sim_speed,
+        day: city.day,
+        time_of_day,
+        money: city.money,
+        population: city.population,
+        traffic_avg: metrics.traffic_avg,
+        traffic_max: metrics.traffic_max,
+        demand_r: metrics.demand_r,
+        demand_c: metrics.demand_c,
+        demand_i: metrics.demand_i,
+        active_emergencies: metrics.active_emergencies,
+        vehicles,
+    });
+
+    while telemetry.samples.len() > max_samples {
+        telemetry.samples.pop_front();
+    }
+}
+
 fn announce_main_menu() {
     info!("Main menu");
     info!("Controls:");
@@ -456,11 +691,48 @@ fn top_status_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
                     ui.separator();
                 }
 
+                // Demand (R/C/I)
+                if matches!(p.state.get(), AppState::InGame | AppState::Paused) {
+                    ui.label(format!(
+                        "Demand (R/C/I): {:+.2}/{:+.2}/{:+.2}",
+                        p.metrics.demand_r, p.metrics.demand_c, p.metrics.demand_i
+                    ))
+                    .on_hover_text("R=Residential, C=Commercial, I=Industrial");
+                    ui.separator();
+                }
+
                 // Settings and save (right side)
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if matches!(p.state.get(), AppState::InGame | AppState::Paused) {
                         if ui.button("💾").clicked() {
                             p.commands.write(GameCommand::SaveGame { slot: 1 });
+                        }
+
+                        if ui
+                            .button("📋")
+                            .on_hover_text(format!(
+                                "Copy debug dump to clipboard (F9)\nIncludes telemetry for the last {:.0}s",
+                                p.debug_dump.window_secs
+                            ))
+                            .clicked()
+                        {
+                            p.debug_dump.copy_requested = true;
+                        }
+
+                        let resp = ui
+                            .selectable_label(p.debug_dump.open, "🐞")
+                            .on_hover_text("Debug dump settings");
+                        if resp.clicked() {
+                            p.debug_dump.open = !p.debug_dump.open;
+                        }
+
+                        if p.ui_settings.show_stats {
+                            let resp = ui
+                                .selectable_label(p.show_stats_window.0, "📈")
+                                .on_hover_text("Toggle statistics window");
+                            if resp.clicked() {
+                                p.show_stats_window.0 = !p.show_stats_window.0;
+                            }
                         }
 
                         // Debug: Dump save contract
@@ -709,42 +981,136 @@ fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams) {
     egui::SidePanel::right("sidebar")
         .exact_width(200.0)
         .show(&*ctx, |ui| {
-            // Minimap (collapsible)
-            egui::CollapsingHeader::new("📍 Minimap")
-                .default_open(true)
-                .show(ui, |ui| {
-                    let Ok(window) = p.q_window.single() else {
-                        return;
-                    };
-                    let Ok((cam_tf, proj)) = p.q_camera.single() else {
-                        return;
-                    };
-                    render_minimap_in_sidebar(ui, &p.grid, &p.cfg, window, cam_tf, proj);
-                });
+            if p.ui_settings.show_minimap {
+                // Minimap (collapsible)
+                egui::CollapsingHeader::new("📍 Minimap")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        let Ok(window) = p.q_window.single() else {
+                            return;
+                        };
+                        let Ok((cam_tf, proj)) = p.q_camera.single() else {
+                            return;
+                        };
+                        render_minimap_in_sidebar(ui, &p.grid, &p.cfg, window, cam_tf, proj);
+                    });
 
-            ui.separator();
+                ui.separator();
+            }
 
             // Info panel (depends on hovered/selected)
             egui::CollapsingHeader::new("📊 Info")
                 .default_open(true)
                 .show(ui, |ui| {
-                    if let Some(tile) = p.hovered.tile {
-                        render_tile_info(ui, tile, &p.grid);
-                    } else {
+                    let Some(tile) = p.hovered.tile else {
                         ui.label("Hover over a tile");
-                    }
+                        return;
+                    };
+
+                    render_tile_info(ui, tile, &p.grid);
+
+                    // Inspector details (previously shown as a floating window)
+                    egui::CollapsingHeader::new("🔎 Inspector details")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            ui.label(format!(
+                                "Overlay source: {}",
+                                overlay_sources(p.ui_state.overlay)
+                            ));
+
+                            // Building entity (render)
+                            let mut b_found = None;
+                            for b in p.q_buildings.iter() {
+                                if b.pos == tile {
+                                    b_found = Some(*b);
+                                    break;
+                                }
+                            }
+                            if let Some(b) = b_found {
+                                ui.separator();
+                                ui.label("Building entity:");
+                                ui.label(format!("Kind: {:?}", b.kind));
+                                ui.label(format!(
+                                    "Capacity: residents {} / jobs {}",
+                                    b.capacity_residents, b.capacity_jobs
+                                ));
+                            }
+
+                            // Emergency at tile (if any).
+                            let mut emergency_found: Option<&Emergency> = None;
+                            for e in p.q_emergencies.iter() {
+                                if e.pos == tile {
+                                    emergency_found = Some(e);
+                                    break;
+                                }
+                            }
+                            if let Some(e) = emergency_found {
+                                ui.separator();
+                                ui.label("Emergency:");
+                                ui.label(format!("Kind: {:?}", e.kind));
+                                ui.label(format!("Severity: {:.2}", e.severity));
+                                ui.label(format!("Responded: {}", e.responded));
+                                ui.label(format!(
+                                    "Time remaining: {:.1}s",
+                                    e.time_remaining.max(0.0)
+                                ));
+                                ui.label(format!(
+                                    "Resolution: {:.0}%",
+                                    (e.resolution_progress.clamp(0.0, 1.0) * 100.0)
+                                ));
+                                ui.label(format!("Assigned vehicle: {:?}", e.assigned_vehicle));
+                            }
+
+                            // Vehicles on tile (by current route head).
+                            let mut vehicles = 0usize;
+                            let mut sample: Option<(usize, f32)> = None; // (route_len, progress)
+                            for (v, _traffic_state, _parked, _service) in p.q_vehicles.iter() {
+                                if v.route.first() == Some(&tile) {
+                                    vehicles += 1;
+                                    if sample.is_none() {
+                                        sample = Some((v.route.len(), v.progress));
+                                    }
+                                }
+                            }
+
+                            ui.separator();
+                            ui.label(format!("Vehicles on tile: {}", vehicles));
+                            if let Some((len, prog)) = sample {
+                                ui.label(format!(
+                                    "Sample vehicle: route_len {} progress {:.2}",
+                                    len, prog
+                                ));
+                            }
+
+                            // Citizens linked to tile (home or last_place).
+                            let mut home_c = 0usize;
+                            let mut place_c = 0usize;
+                            for c in p.q_citizens.iter() {
+                                if c.home == tile {
+                                    home_c += 1;
+                                }
+                                if c.last_place == tile {
+                                    place_c += 1;
+                                }
+                            }
+                            ui.separator();
+                            ui.label(format!("Citizens home here: {}", home_c));
+                            ui.label(format!("Citizens last_place here: {}", place_c));
+                        });
                 });
 
             ui.separator();
 
-            // City statistics (collapsible)
-            egui::CollapsingHeader::new("📈 Statistics")
-                .default_open(false)
-                .show(ui, |ui| {
-                    render_city_stats(ui, &p.metrics, &p.city);
-                });
+            if p.ui_settings.show_stats {
+                // City statistics (collapsible)
+                egui::CollapsingHeader::new("📈 Statistics")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        render_city_stats(ui, &p.metrics, &p.city);
+                    });
 
-            ui.separator();
+                ui.separator();
+            }
 
             // Services status
             egui::CollapsingHeader::new("🚒 Services")
@@ -755,18 +1121,150 @@ fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams) {
 
             ui.separator();
 
-            // Demand
-            ui.label("Demand (R/C/I):");
-            ui.label(format!(
-                "  {:+.2} / {:+.2} / {:+.2}",
-                p.metrics.demand_r, p.metrics.demand_c, p.metrics.demand_i
-            ));
+            // Vehicle Debug Info
+            egui::CollapsingHeader::new("🚗 Vehicle Debug")
+                .default_open(true)
+                .show(ui, |ui| {
+                    // Count vehicles by state
+                    let mut total = 0;
+                    let mut parked = 0;
+                    let mut free_flow = 0;
+                    let mut approaching = 0;
+                    let mut stopped = 0;
+                    let mut waiting = 0;
+                    let braking = 0;
+                    let mut crossing = 0;
+                    let mut accelerating = 0;
+                    let mut no_route = 0;
+                    let mut zero_speed = 0;
+                    let mut service_at_station = 0;
+                    let mut service_en_route = 0;
+                    let mut service_on_scene = 0;
+                    let mut service_returning = 0;
+                    let mut service_returning_no_route = 0;
+                    let mut service_returning_parked = 0;
+                    let mut service_returning_zero_spd = 0;
+
+                    for (vehicle, traffic_state, parked_comp, service) in p.q_vehicles.iter() {
+                        total += 1;
+                        if parked_comp.is_some() {
+                            parked += 1;
+                        }
+                        if vehicle.route.is_empty() {
+                            no_route += 1;
+                        }
+                        if vehicle.speed < 0.1 {
+                            zero_speed += 1;
+                        }
+                        match traffic_state {
+                            VehicleTrafficState::FreeFlow => free_flow += 1,
+                            VehicleTrafficState::Approaching { .. } => approaching += 1,
+                            VehicleTrafficState::Stopped { .. } => stopped += 1,
+                            VehicleTrafficState::WaitingForGreen { .. } => waiting += 1,
+                            VehicleTrafficState::CrossingIntersection => crossing += 1,
+                            VehicleTrafficState::Accelerating => accelerating += 1,
+                        }
+                        if let Some(sv) = service {
+                            match sv.state {
+                                ServiceVehicleState::AtStation => service_at_station += 1,
+                                ServiceVehicleState::EnRoute => service_en_route += 1,
+                                ServiceVehicleState::OnScene => service_on_scene += 1,
+                                ServiceVehicleState::Returning => {
+                                    service_returning += 1;
+                                    if vehicle.route.is_empty() {
+                                        service_returning_no_route += 1;
+                                    }
+                                    if parked_comp.is_some() {
+                                        service_returning_parked += 1;
+                                    }
+                                    if vehicle.speed < 0.1 {
+                                        service_returning_zero_spd += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    ui.label(format!("Total: {} (no_route: {})", total, no_route));
+                    ui.label(format!("  Parked: {}, ZeroSpd: {}", parked, zero_speed));
+                    ui.label(format!("  FreeFlow: {}", free_flow));
+                    ui.label(format!("  Approach: {}, Cross: {}", approaching, crossing));
+                    ui.label(format!("  Stopped: {}, Wait: {}", stopped, waiting));
+                    ui.label(format!("  Brake: {}, Accel: {}", braking, accelerating));
+                    ui.separator();
+                    ui.label("Service vehicles:");
+                    ui.label(format!(
+                        "  Station: {}, Route: {}",
+                        service_at_station, service_en_route
+                    ));
+                    ui.label(format!(
+                        "  OnScene: {}, Return: {}",
+                        service_on_scene, service_returning
+                    ));
+                    if service_returning > 0 {
+                        ui.label(format!(
+                            "    Ret details: noRoute:{}, parked:{}, zeroSpd:{}",
+                            service_returning_no_route,
+                            service_returning_parked,
+                            service_returning_zero_spd
+                        ));
+                    }
+
+                    // Show info for hovered tile
+                    if let Some(tile) = p.hovered.tile {
+                        ui.separator();
+                        ui.label(format!("Tile ({}, {}):", tile.x, tile.y));
+
+                        // Traffic occupancy
+                        if let Some(ref occ) = p.traffic_occ {
+                            if let Some(idx) = p.grid.idx(tile) {
+                                if idx < occ.per_tick_vehicles.len() {
+                                    ui.label(format!(
+                                        "  Occupancy: {}",
+                                        occ.per_tick_vehicles[idx]
+                                    ));
+                                }
+                            }
+                        }
+
+                        // Vehicles on this tile
+                        let mut on_tile = 0;
+                        let mut details = Vec::new();
+                        for (vehicle, traffic_state, parked_comp, service) in p.q_vehicles.iter() {
+                            if let Some(pos) = vehicle.route.first() {
+                                if *pos == tile {
+                                    on_tile += 1;
+                                    let parked_str = if parked_comp.is_some() { "P" } else { "" };
+                                    let service_str = service
+                                        .map(|s| format!("{:?}", s.state))
+                                        .unwrap_or_default();
+                                    let state_str = format!("{:?}", traffic_state);
+                                    let speed_str = format!("spd:{:.0}", vehicle.speed);
+                                    details.push(format!(
+                                        "  {} {} {} {}",
+                                        parked_str, service_str, state_str, speed_str
+                                    ));
+                                }
+                            }
+                        }
+                        ui.label(format!("  Vehicles: {}", on_tile));
+                        for d in details.iter().take(5) {
+                            ui.label(d);
+                        }
+                        if details.len() > 5 {
+                            ui.label(format!("  ... and {} more", details.len() - 5));
+                        }
+                    }
+                });
         });
 }
 
 #[derive(SystemParam)]
 struct TopBarParams<'w> {
     ui_state: ResMut<'w, UiState>,
+    ui_settings: Res<'w, UiSettings>,
+    show_stats_window: ResMut<'w, ShowStatsWindow>,
+    debug_dump: ResMut<'w, DebugDumpUiState>,
     state: Res<'w, State<AppState>>,
     next_state: ResMut<'w, NextState<AppState>>,
     city: Res<'w, City>,
@@ -783,13 +1281,29 @@ struct TopBarParams<'w> {
 #[derive(SystemParam)]
 struct RightSidebarParams<'w, 's> {
     state: Res<'w, State<AppState>>,
+    ui_state: Res<'w, UiState>,
+    ui_settings: Res<'w, UiSettings>,
     hovered: Res<'w, HoveredTile>,
     grid: Res<'w, MapGrid>,
     cfg: Res<'w, MapConfig>,
     city: Res<'w, City>,
     metrics: Res<'w, UiMetrics>,
+    traffic_occ: Option<Res<'w, TrafficOccupancy>>,
+    q_emergencies: Query<'w, 's, &'static Emergency>,
+    q_buildings: Query<'w, 's, &'static Building>,
+    q_citizens: Query<'w, 's, &'static Citizen>,
     q_window: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
     q_camera: Query<'w, 's, (&'static Transform, &'static Projection), With<MainCamera>>,
+    q_vehicles: Query<
+        'w,
+        's,
+        (
+            &'static Vehicle,
+            &'static VehicleTrafficState,
+            Option<&'static Parked>,
+            Option<&'static ServiceVehicle>,
+        ),
+    >,
 }
 
 fn zone_label(z: ZoneKind) -> &'static str {
@@ -829,7 +1343,7 @@ fn overlay_tooltip(overlay: OverlayMode) -> &'static str {
         OverlayMode::Zones => "Zones overlay\nShows R/C/I zoning",
         OverlayMode::Roads => "Roads overlay\nShows road network",
         OverlayMode::Traffic => "Traffic overlay\nShows congestion heatmap",
-        OverlayMode::Path => "Path overlay\nShows route preview",
+        OverlayMode::Path => "Path overlay\nShows active vehicle routes",
         OverlayMode::ServiceCoverage => "Service coverage overlay\nShows service station coverage",
         OverlayMode::LandValue => "Land value overlay\nShows land value (red=low, green=high)",
         OverlayMode::Pollution => "Pollution overlay\nShows pollution (green=clean, red=polluted)",
@@ -844,138 +1358,15 @@ fn overlay_sources(o: OverlayMode) -> &'static str {
         OverlayMode::Zones => "MapGrid.zone (+ road)",
         OverlayMode::Roads => "MapGrid.road",
         OverlayMode::Traffic => "TrafficOccupancy.ema_heat + TrafficIndex",
-        OverlayMode::Path => "Computed live: MapGrid roads + cursor start/end",
+        OverlayMode::Path => "Computed live: Vehicle routes (remaining) + Transform",
         OverlayMode::ServiceCoverage => "ServiceStation coverage (radius) + uncovered zones",
         OverlayMode::LandValue => "LandValueIndex.values (0.0-1.0)",
         OverlayMode::Pollution => "PollutionIndex.pollution (0.0-1.0)",
     }
 }
 
-fn inspector_ui(mut contexts: EguiContexts, p: InspectorParams) {
-    let Ok(ctx) = contexts.ctx_mut() else {
-        return;
-    };
-
-    if !matches!(p.state.get(), AppState::InGame | AppState::Paused) {
-        return;
-    }
-
-    let Some(tile) = p.hovered.tile else {
-        return;
-    };
-
-    egui::Window::new("Inspector")
-        .default_pos(egui::pos2(10.0, 64.0))
-        .resizable(true)
-        .show(&*ctx, |ui| {
-            ui.label(format!("Tile: ({}, {})", tile.x, tile.y));
-            ui.label(format!(
-                "Overlay source: {}",
-                overlay_sources(p.ui_state.overlay)
-            ));
-            ui.separator();
-
-            let Some(cell) = p.grid.get(tile) else {
-                ui.label("Out of bounds");
-                return;
-            };
-
-            ui.label(format!("Height: {}", cell.height));
-            ui.label(format!("Water: {}", cell.water));
-            ui.label(format!("Terrain: {:?}", cell.terrain));
-            ui.label(format!("Road: {:?}", cell.road));
-            ui.label(format!("Zone: {}", zone_label(cell.zone)));
-            ui.label(format!("Building (grid): {:?}", cell.building));
-
-            // Building entity (render)
-            let mut b_found = None;
-            for b in p.q_buildings.iter() {
-                if b.pos == tile {
-                    b_found = Some(*b);
-                    break;
-                }
-            }
-            if let Some(b) = b_found {
-                ui.separator();
-                ui.label("Building entity:");
-                ui.label(format!("Kind: {:?}", b.kind));
-                ui.label(format!(
-                    "Capacity: residents {} / jobs {}",
-                    b.capacity_residents, b.capacity_jobs
-                ));
-            }
-
-            // Emergency at tile (if any).
-            let mut emergency_found: Option<&Emergency> = None;
-            for e in p.q_emergencies.iter() {
-                if e.pos == tile {
-                    emergency_found = Some(e);
-                    break;
-                }
-            }
-            if let Some(e) = emergency_found {
-                ui.separator();
-                ui.label("Emergency:");
-                ui.label(format!("Kind: {:?}", e.kind));
-                ui.label(format!("Severity: {:.2}", e.severity));
-                ui.label(format!("Responded: {}", e.responded));
-                ui.label(format!("Time remaining: {:.1}s", e.time_remaining.max(0.0)));
-                ui.label(format!(
-                    "Resolution: {:.0}%",
-                    (e.resolution_progress.clamp(0.0, 1.0) * 100.0)
-                ));
-                ui.label(format!("Assigned vehicle: {:?}", e.assigned_vehicle));
-            }
-
-            // Vehicles on tile (by current route head).
-            let mut vehicles = 0usize;
-            let mut sample: Option<(usize, f32)> = None; // (route_len, progress)
-            for v in p.q_vehicles.iter() {
-                if v.route.first() == Some(&tile) {
-                    vehicles += 1;
-                    if sample.is_none() {
-                        sample = Some((v.route.len(), v.progress));
-                    }
-                }
-            }
-
-            ui.separator();
-            ui.label(format!("Vehicles on tile: {}", vehicles));
-            if let Some((len, prog)) = sample {
-                ui.label(format!(
-                    "Sample vehicle: route_len {} progress {:.2}",
-                    len, prog
-                ));
-            }
-
-            // Citizens linked to tile (home or last_place).
-            let mut home_c = 0usize;
-            let mut place_c = 0usize;
-            for c in p.q_citizens.iter() {
-                if c.home == tile {
-                    home_c += 1;
-                }
-                if c.last_place == tile {
-                    place_c += 1;
-                }
-            }
-            ui.separator();
-            ui.label(format!("Citizens home here: {}", home_c));
-            ui.label(format!("Citizens last_place here: {}", place_c));
-        });
-}
-
-#[derive(SystemParam)]
-struct InspectorParams<'w, 's> {
-    state: Res<'w, State<AppState>>,
-    ui_state: Res<'w, UiState>,
-    hovered: Res<'w, HoveredTile>,
-    grid: Res<'w, MapGrid>,
-    q_emergencies: Query<'w, 's, &'static Emergency>,
-    q_buildings: Query<'w, 's, &'static Building>,
-    q_vehicles: Query<'w, 's, &'static Vehicle>,
-    q_citizens: Query<'w, 's, &'static Citizen>,
-}
+// NOTE: The floating "Inspector" window was removed. The same details are available
+// from the right sidebar (Info → Inspector details).
 
 fn building_popup_ui(
     mut contexts: EguiContexts,
@@ -1062,16 +1453,32 @@ fn has_adjacent_road(grid: &MapGrid, pos: TilePos) -> bool {
     false
 }
 
-fn stats_ui(mut contexts: EguiContexts, state: Res<State<AppState>>, hist: Res<UiHistory>) {
+fn stats_ui(
+    mut contexts: EguiContexts,
+    state: Res<State<AppState>>,
+    hist: Res<UiHistory>,
+    ui_settings: Res<UiSettings>,
+    mut show: ResMut<ShowStatsWindow>,
+) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-    if !matches!(state.get(), AppState::InGame | AppState::Paused) {
+
+    if !matches!(state.get(), AppState::InGame | AppState::Paused) || !ui_settings.show_stats {
+        show.0 = false;
         return;
     }
 
+    if !show.0 {
+        return;
+    }
+
+    let mut open = show.0;
+
     egui::Window::new("Statistics")
-        .default_pos(egui::pos2(10.0, 420.0))
+        .open(&mut open)
+        .default_pos(egui::pos2(40.0, 64.0))
+        .default_size(egui::vec2(460.0, 340.0))
         .resizable(true)
         .show(&*ctx, |ui| {
             if hist.samples.is_empty() {
@@ -1100,6 +1507,508 @@ fn stats_ui(mut contexts: EguiContexts, state: Res<State<AppState>>, hist: Res<U
             draw_history_plot(ui, "Money", &money, egui::Color32::LIGHT_YELLOW);
             draw_history_plot(ui, "Traffic avg (%)", &traffic, egui::Color32::LIGHT_RED);
         });
+
+    show.0 = open;
+}
+
+fn debug_dump_ui(
+    mut contexts: EguiContexts,
+    state: Res<State<AppState>>,
+    ui_state: Res<UiState>,
+    city: Res<City>,
+    metrics: Res<UiMetrics>,
+    hist: Res<UiHistory>,
+    map_cfg: Res<MapConfig>,
+    grid: Res<MapGrid>,
+    hovered: Res<HoveredTile>,
+    day_night: Option<Res<DayNightCycle>>,
+    q_camera: Query<(&Transform, &Projection), With<MainCamera>>,
+    mut dump_ui: ResMut<DebugDumpUiState>,
+    mut telemetry: ResMut<DebugTelemetry>,
+) {
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+
+    // Hotkeys: F9 copies dump; F8 toggles the debug window.
+    if ctx.input(|i| i.key_pressed(egui::Key::F9)) {
+        dump_ui.copy_requested = true;
+    }
+    if ctx.input(|i| i.key_pressed(egui::Key::F8)) {
+        dump_ui.open = !dump_ui.open;
+    }
+
+    if dump_ui.open {
+        egui::Window::new("Debug Dump")
+            .default_pos(egui::pos2(60.0, 64.0))
+            .default_size(egui::vec2(420.0, 260.0))
+            .resizable(true)
+            .show(&*ctx, |ui| {
+                ui.label("Copy a structured game-state dump for debugging.");
+                ui.label("Hotkeys: F9 = copy dump, F8 = toggle this window.");
+                ui.separator();
+
+                ui.checkbox(&mut dump_ui.enabled, "Enable telemetry recording");
+
+                ui.add(
+                    egui::Slider::new(&mut dump_ui.window_secs, 10.0..=600.0)
+                        .text("Window (seconds)"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut dump_ui.interval_secs, 0.25..=5.0)
+                        .text("Sample interval (seconds)"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut dump_ui.max_dump_samples, 50..=2000)
+                        .text("Max samples in dump"),
+                );
+                ui.checkbox(
+                    &mut dump_ui.include_hovered_tile,
+                    "Include hovered tile context",
+                );
+                ui.add(
+                    egui::Slider::new(&mut dump_ui.include_daily_history_days, 0..=240)
+                        .text("Daily history (days)"),
+                );
+
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    if ui.button("📋 Copy dump (F9)").clicked() {
+                        dump_ui.copy_requested = true;
+                    }
+                    if ui.button("💾 Save dump to file").clicked() {
+                        dump_ui.save_requested = true;
+                    }
+                    if ui.button("🧹 Clear telemetry").clicked() {
+                        dump_ui.clear_requested = true;
+                    }
+                });
+
+                ui.separator();
+
+                ui.label(format!(
+                    "Telemetry buffer: {} samples (t≈{:.1}s)",
+                    telemetry.samples.len(),
+                    telemetry.t_real_s
+                ));
+
+                if let Some(last) = dump_ui.last_copy {
+                    ui.label(format!(
+                        "Last dump: {} chars, {} samples @ t={:.1}s",
+                        last.chars, last.samples, last.at_t_real_s
+                    ));
+                }
+
+                ui.separator();
+                ui.label("Paste the copied dump into chat for analysis.");
+            });
+    }
+
+    if dump_ui.clear_requested {
+        telemetry.samples.clear();
+        telemetry.t_real_s = 0.0;
+        telemetry.last_sample_t_s = 0.0;
+        dump_ui.clear_requested = false;
+    }
+
+    let want_dump = dump_ui.copy_requested || dump_ui.save_requested;
+    if !want_dump {
+        return;
+    }
+
+    // Build the dump and either copy it to clipboard, save to file, or both.
+    let dump = build_debug_dump(
+        &state,
+        &ui_state,
+        &city,
+        &metrics,
+        &hist,
+        &map_cfg,
+        &grid,
+        &hovered,
+        day_night.as_deref(),
+        q_camera.single().ok(),
+        &dump_ui,
+        &telemetry,
+    );
+
+    let pretty = ron::ser::PrettyConfig::new();
+    let dump_ron = ron::ser::to_string_pretty(&dump, pretty).unwrap_or_else(|e| {
+        format!(
+            "(dump_version: 1, error: \"failed to serialize dump: {:?}\")",
+            e
+        )
+    });
+
+    if dump_ui.copy_requested {
+        ctx.copy_text(dump_ron.clone());
+        dump_ui.last_copy = Some(DebugDumpCopyInfo {
+            at_t_real_s: telemetry.t_real_s,
+            chars: dump_ron.len(),
+            samples: dump.telemetry.samples.len(),
+        });
+        info!(
+            "Debug dump copied to clipboard ({} chars, {} samples)",
+            dump_ron.len(),
+            dump.telemetry.samples.len()
+        );
+    }
+
+    if dump_ui.save_requested {
+        let ts_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let dir = "debug_dumps";
+        if let Err(err) = std::fs::create_dir_all(dir) {
+            warn!("Failed to create {}: {}", dir, err);
+        } else {
+            let path = format!("{}/simcity_dump_{}.ron", dir, ts_ms);
+            match std::fs::write(&path, dump_ron.as_bytes()) {
+                Ok(_) => info!("Saved debug dump to {}", path),
+                Err(err) => warn!("Failed to save debug dump to {}: {}", path, err),
+            }
+        }
+    }
+
+    dump_ui.copy_requested = false;
+    dump_ui.save_requested = false;
+}
+
+#[derive(Debug, serde::Serialize)]
+struct DebugDump {
+    dump_version: u32,
+    generated_at_unix_ms: u64,
+
+    app_state: String,
+    sim_speed: String,
+    tool: String,
+    overlay: String,
+
+    map: DebugDumpMap,
+    camera: Option<DebugDumpCamera>,
+    hovered_tile: Option<DebugDumpHoveredTile>,
+
+    city: DebugDumpCity,
+    ui_metrics: DebugDumpUiMetrics,
+
+    telemetry: DebugDumpTelemetry,
+    daily_history: Vec<DebugDumpDailySample>,
+    notes: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct DebugDumpMap {
+    width: i32,
+    height: i32,
+    tile_size: f32,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct DebugDumpCamera {
+    translation: (f32, f32, f32),
+    projection: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct DebugDumpHoveredTile {
+    pos: (i32, i32),
+    overlay_source: String,
+    height: u8,
+    water: bool,
+    terrain: String,
+    road: String,
+    zone: String,
+    building: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct DebugDumpCity {
+    day: u32,
+    money: i64,
+    population: u32,
+    last_income: i64,
+    last_expense: i64,
+    happiness: f32,
+    time_of_day: Option<f32>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct DebugDumpUiMetrics {
+    citizens: usize,
+    vehicles: usize,
+    buildings: usize,
+    employed: usize,
+    unemployed: usize,
+    employment_rate: f32,
+    avg_commute_secs: f32,
+    traffic_avg: f32,
+    traffic_max: f32,
+    demand_r: f32,
+    demand_c: f32,
+    demand_i: f32,
+    active_emergencies: u32,
+    emergencies_resolved: u32,
+    emergencies_failed: u32,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct DebugDumpTelemetry {
+    window_secs: f32,
+    interval_secs: f32,
+    max_dump_samples: usize,
+    sample_stride: usize,
+    summary: DebugDumpTelemetrySummary,
+    samples: Vec<DebugTelemetrySample>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct DebugDumpTelemetrySummary {
+    t_span_s: f32,
+    money_delta: i64,
+    population_delta: i64,
+    traffic_avg_min: f32,
+    traffic_avg_max: f32,
+    vehicles_no_route_max: u32,
+    vehicles_zero_speed_max: u32,
+    emergencies_active_max: u32,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct DebugDumpDailySample {
+    day: u32,
+    population: u32,
+    money: i64,
+    traffic_avg: f32,
+}
+
+fn build_debug_dump(
+    state: &State<AppState>,
+    ui_state: &UiState,
+    city: &City,
+    metrics: &UiMetrics,
+    hist: &UiHistory,
+    map_cfg: &MapConfig,
+    grid: &MapGrid,
+    hovered: &HoveredTile,
+    day_night: Option<&DayNightCycle>,
+    camera: Option<(&Transform, &Projection)>,
+    dump_ui: &DebugDumpUiState,
+    telemetry: &DebugTelemetry,
+) -> DebugDump {
+    let app_state = match state.get() {
+        AppState::MainMenu => "MainMenu",
+        AppState::InGame => "InGame",
+        AppState::Paused => "Paused",
+    }
+    .to_string();
+
+    let sim_speed = match ui_state.sim_speed {
+        SimSpeed::Paused => "Paused",
+        SimSpeed::X1 => "X1",
+        SimSpeed::X2 => "X2",
+        SimSpeed::X4 => "X4",
+    }
+    .to_string();
+
+    let tool = format!("{:?}", ui_state.tool);
+    let overlay = format!("{:?}", ui_state.overlay);
+
+    let camera = camera.map(|(tf, proj)| DebugDumpCamera {
+        translation: (tf.translation.x, tf.translation.y, tf.translation.z),
+        projection: format!("{:?}", proj),
+    });
+
+    let hovered_tile = if dump_ui.include_hovered_tile {
+        hovered.tile.and_then(|pos| {
+            let cell = grid.get(pos)?;
+            Some(DebugDumpHoveredTile {
+                pos: (pos.x, pos.y),
+                overlay_source: overlay_sources(ui_state.overlay).to_string(),
+                height: cell.height,
+                water: cell.water,
+                terrain: format!("{:?}", cell.terrain),
+                road: format!("{:?}", cell.road),
+                zone: format!("{:?}", cell.zone),
+                building: format!("{:?}", cell.building),
+            })
+        })
+    } else {
+        None
+    };
+
+    // Telemetry: downsample if needed to keep dumps manageable.
+    let interval = dump_ui.interval_secs.clamp(0.1, 10.0);
+    let window = dump_ui.window_secs.clamp(10.0, 10_000.0);
+    let max_dump_samples = dump_ui.max_dump_samples.max(10);
+
+    let all_samples: Vec<DebugTelemetrySample> = telemetry.samples.iter().cloned().collect();
+    let stride = if all_samples.len() > max_dump_samples {
+        ((all_samples.len() + max_dump_samples - 1) / max_dump_samples).max(1)
+    } else {
+        1
+    };
+
+    let mut samples = Vec::new();
+    for (idx, s) in all_samples.iter().enumerate() {
+        if idx % stride == 0 || idx + 1 == all_samples.len() {
+            samples.push(s.clone());
+        }
+    }
+
+    let (summary, notes) = summarize_telemetry(&samples);
+
+    let daily_n = dump_ui.include_daily_history_days.min(hist.samples.len());
+    let daily_history = hist
+        .samples
+        .iter()
+        .rev()
+        .take(daily_n)
+        .rev()
+        .map(|s| DebugDumpDailySample {
+            day: s.day,
+            population: s.population,
+            money: s.money,
+            traffic_avg: s.traffic_avg,
+        })
+        .collect();
+
+    let generated_at_unix_ms_u128 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let generated_at_unix_ms = u64::try_from(generated_at_unix_ms_u128).unwrap_or(u64::MAX);
+
+    DebugDump {
+        dump_version: 1,
+        generated_at_unix_ms,
+        app_state,
+        sim_speed,
+        tool,
+        overlay,
+        map: DebugDumpMap {
+            width: map_cfg.width,
+            height: map_cfg.height,
+            tile_size: map_cfg.tile_size,
+        },
+        camera,
+        hovered_tile,
+        city: DebugDumpCity {
+            day: city.day,
+            money: city.money,
+            population: city.population,
+            last_income: city.last_income,
+            last_expense: city.last_expense,
+            happiness: city.happiness,
+            time_of_day: day_night.map(|c| c.time_of_day),
+        },
+        ui_metrics: DebugDumpUiMetrics {
+            citizens: metrics.citizens,
+            vehicles: metrics.vehicles,
+            buildings: metrics.buildings,
+            employed: metrics.employed,
+            unemployed: metrics.unemployed,
+            employment_rate: metrics.employment_rate,
+            avg_commute_secs: metrics.avg_commute_secs,
+            traffic_avg: metrics.traffic_avg,
+            traffic_max: metrics.traffic_max,
+            demand_r: metrics.demand_r,
+            demand_c: metrics.demand_c,
+            demand_i: metrics.demand_i,
+            active_emergencies: metrics.active_emergencies,
+            emergencies_resolved: metrics.emergencies_resolved,
+            emergencies_failed: metrics.emergencies_failed,
+        },
+        telemetry: DebugDumpTelemetry {
+            window_secs: window,
+            interval_secs: interval,
+            max_dump_samples,
+            sample_stride: stride,
+            summary,
+            samples,
+        },
+        daily_history,
+        notes,
+    }
+}
+
+fn summarize_telemetry(
+    samples: &[DebugTelemetrySample],
+) -> (DebugDumpTelemetrySummary, Vec<String>) {
+    let mut notes = Vec::new();
+    if samples.is_empty() {
+        return (
+            DebugDumpTelemetrySummary {
+                t_span_s: 0.0,
+                money_delta: 0,
+                population_delta: 0,
+                traffic_avg_min: 0.0,
+                traffic_avg_max: 0.0,
+                vehicles_no_route_max: 0,
+                vehicles_zero_speed_max: 0,
+                emergencies_active_max: 0,
+            },
+            vec!["No telemetry samples yet (wait a bit or reduce sample interval).".to_string()],
+        );
+    }
+
+    let first = &samples[0];
+    let last = &samples[samples.len() - 1];
+    let mut traffic_min = f32::INFINITY;
+    let mut traffic_max = f32::NEG_INFINITY;
+    let mut no_route_max = 0u32;
+    let mut zero_speed_max = 0u32;
+    let mut emergencies_max = 0u32;
+
+    for s in samples {
+        traffic_min = traffic_min.min(s.traffic_avg);
+        traffic_max = traffic_max.max(s.traffic_avg);
+        no_route_max = no_route_max.max(s.vehicles.no_route);
+        zero_speed_max = zero_speed_max.max(s.vehicles.zero_speed);
+        emergencies_max = emergencies_max.max(s.active_emergencies);
+    }
+
+    if no_route_max > 0 {
+        notes.push(format!(
+            "WARN: vehicles with no route observed (max={})",
+            no_route_max
+        ));
+    }
+    if traffic_max > 0.8 {
+        notes.push(format!(
+            "WARN: high traffic avg observed (max={:.2})",
+            traffic_max
+        ));
+    }
+    if emergencies_max > 0 {
+        notes.push(format!(
+            "INFO: active emergencies present in window (max={})",
+            emergencies_max
+        ));
+    }
+
+    (
+        DebugDumpTelemetrySummary {
+            t_span_s: (last.t_real_s - first.t_real_s).max(0.0),
+            money_delta: last.money - first.money,
+            population_delta: (last.population as i64) - (first.population as i64),
+            traffic_avg_min: if traffic_min.is_finite() {
+                traffic_min
+            } else {
+                0.0
+            },
+            traffic_avg_max: if traffic_max.is_finite() {
+                traffic_max
+            } else {
+                0.0
+            },
+            vehicles_no_route_max: no_route_max,
+            vehicles_zero_speed_max: zero_speed_max,
+            emergencies_active_max: emergencies_max,
+        },
+        notes,
+    )
 }
 
 fn draw_history_plot(ui: &mut egui::Ui, label: &str, values: &[f32], color: egui::Color32) {
@@ -1143,29 +2052,7 @@ fn draw_history_plot(ui: &mut egui::Ui, label: &str, values: &[f32], color: egui
     }
 }
 
-fn minimap_ui(mut contexts: EguiContexts, p: MinimapParams) {
-    let Ok(ctx) = contexts.ctx_mut() else {
-        return;
-    };
-    if !matches!(p.state.get(), AppState::InGame | AppState::Paused) {
-        return;
-    }
-
-    let Ok(window) = p.q_window.single() else {
-        return;
-    };
-    let Ok((cam_tf, proj)) = p.q_camera.single() else {
-        return;
-    };
-
-    egui::Window::new("Mini-map")
-        .default_pos(egui::pos2(window.width() - 220.0, 64.0))
-        .resizable(false)
-        .collapsible(true)
-        .show(&*ctx, |ui| {
-            render_minimap_in_sidebar(ui, &p.grid, &p.cfg, window, cam_tf, proj);
-        });
-}
+// NOTE: The floating "Mini-map" window was removed; minimap lives in the right sidebar.
 
 fn render_minimap_in_sidebar(
     ui: &mut egui::Ui,
@@ -1338,15 +2225,6 @@ fn render_services_status(ui: &mut egui::Ui, metrics: &UiMetrics) {
     ui.label(format!("Failed: {}", metrics.emergencies_failed));
 }
 
-#[derive(SystemParam)]
-struct MinimapParams<'w, 's> {
-    state: Res<'w, State<AppState>>,
-    cfg: Res<'w, MapConfig>,
-    grid: Res<'w, MapGrid>,
-    q_window: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
-    q_camera: Query<'w, 's, (&'static Transform, &'static Projection), With<MainCamera>>,
-}
-
 fn to_egui_color(c: Color) -> egui::Color32 {
     let s = c.to_srgba();
     let rgba = s.to_f32_array();
@@ -1364,6 +2242,10 @@ fn map_origin(cfg: &MapConfig) -> Vec2 {
         -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
     )
 }
+
+/// Resource to control visibility of statistics window
+#[derive(Resource, Default)]
+struct ShowStatsWindow(bool);
 
 /// Resource to control visibility of shortcuts panel
 #[derive(Resource, Default)]
