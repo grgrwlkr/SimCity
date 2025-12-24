@@ -413,11 +413,6 @@ fn rebuild_road_graph_inner(grid: &MapGrid, gv: &GraphVersion, graph: &mut RoadG
 
                         // For now, allow any valid lane. The turn logic should have ensured
                         // we only reach here from valid entry points.
-                        // DEBUG: Log allowed intersection exits
-                        println!(
-                            "[graph] ALLOW EXIT: ({},{}) -> ({},{}) lane_dir={:?}",
-                            cur_x, cur_y, next_x, next_y, nd
-                        );
                         mask |= 1 << bit;
                     }
                     return;
@@ -444,10 +439,6 @@ fn rebuild_road_graph_inner(grid: &MapGrid, gv: &GraphVersion, graph: &mut RoadG
 
                     // Straight: always allowed (moving in lane direction).
                     if move_dir == cd {
-                        println!(
-                            "[graph] ALLOW ENTER STRAIGHT: ({},{}) dir={:?} -> ({},{})",
-                            cur_x, cur_y, cd, next_x, next_y
-                        );
                         mask |= 1 << bit;
                         return;
                     }
@@ -459,10 +450,6 @@ fn rebuild_road_graph_inner(grid: &MapGrid, gv: &GraphVersion, graph: &mut RoadG
                         if (next.dir == RoadDir::None || next.dir == move_dir)
                             && lanes_on_same_road_side(cur, next)
                         {
-                            println!(
-                                "[graph] ALLOW ENTER LEFT: ({},{}) dir={:?} -> ({},{})",
-                                cur_x, cur_y, cd, next_x, next_y
-                            );
                             mask |= 1 << bit;
                             return;
                         }
@@ -475,10 +462,6 @@ fn rebuild_road_graph_inner(grid: &MapGrid, gv: &GraphVersion, graph: &mut RoadG
                         if (next.dir == RoadDir::None || next.dir == move_dir)
                             && lanes_on_same_road_side(cur, next)
                         {
-                            println!(
-                                "[graph] ALLOW ENTER RIGHT: ({},{}) dir={:?} -> ({},{})",
-                                cur_x, cur_y, cd, next_x, next_y
-                            );
                             mask |= 1 << bit;
                         }
                     }

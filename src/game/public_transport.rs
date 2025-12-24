@@ -50,6 +50,14 @@ pub struct PublicTransportConfig {
     pub wait_secs: f32,
     /// Visual bus speed (world units per second).
     pub bus_speed: f32,
+    /// If true, spawn a single visual bus vehicle (MVP/debug). Disabled by default to avoid
+    /// confusing it with regular traffic.
+    #[serde(default = "default_show_bus")]
+    pub show_bus: bool,
+}
+
+fn default_show_bus() -> bool {
+    false
 }
 
 impl Default for PublicTransportConfig {
@@ -58,6 +66,7 @@ impl Default for PublicTransportConfig {
             adoption_rate: 0.6,
             wait_secs: 2.0,
             bus_speed: 55.0,
+            show_bus: default_show_bus(),
         }
     }
 }
@@ -189,6 +198,14 @@ struct BusParams<'w, 's> {
 }
 
 fn sync_bus_vehicle(mut p: BusParams) {
+    // Visual bus is optional (MVP/debug). If disabled, ensure no bus entity exists.
+    if !p.pt_cfg.show_bus {
+        for (e, _, _) in p.q_bus.iter() {
+            p.commands.entity(e).despawn();
+        }
+        return;
+    }
+
     let (Some(a), Some(b)) = (p.pt.shuttle_a, p.pt.shuttle_b) else {
         // No network: despawn bus if it exists.
         for (e, _, _) in p.q_bus.iter() {

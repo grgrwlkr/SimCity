@@ -13,7 +13,7 @@ use crate::game::emergencies::Emergency;
 use crate::game::map::{BuildingKind, MapConfig, MapGrid, TilePos};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
-use crate::game::traffic::{Vehicle, VehicleTrafficState};
+use crate::game::traffic::{Parked, Vehicle, VehicleTrafficState};
 use crate::game::ui_state::{OverlayMode, UiState};
 
 pub struct ServicesPlugin;
@@ -222,8 +222,8 @@ pub(crate) fn spawn_service_vehicle(
     start_pos: TilePos,
 ) -> Entity {
     let world_pos = tile_to_world(cfg, start_pos);
-    let outer_size = cfg.tile_size * 0.6;
-    let inner_size = cfg.tile_size * 0.3;
+    let outer_size = cfg.tile_size * 0.5;
+    let inner_size = cfg.tile_size * 0.25;
 
     commands
         .spawn((
@@ -250,6 +250,8 @@ pub(crate) fn spawn_service_vehicle(
                 mission: None,
                 state: ServiceVehicleState::AtStation,
             },
+            // Start parked - offset to the side of the road
+            Parked { offset: 1.0 },
         ))
         .with_children(|parent| {
             parent.spawn((
@@ -268,11 +270,12 @@ pub(crate) fn spawn_service_vehicle(
 }
 
 fn park_returned_service_vehicles(
-    mut q_vehicles: Query<(&mut ServiceVehicle, &mut Vehicle)>,
+    mut commands: Commands,
+    mut q_vehicles: Query<(Entity, &mut ServiceVehicle, &mut Vehicle, Option<&Parked>)>,
     mut q_stations: Query<&mut ServiceStation>,
     q_emergencies: Query<Entity, With<Emergency>>,
 ) {
-    for (mut sv, mut vehicle) in q_vehicles.iter_mut() {
+    for (entity, mut sv, mut vehicle, parked) in q_vehicles.iter_mut() {
         // When a service vehicle finishes its route (either returning or due to missing mission),
         // snap it back to "parked at station" so it becomes dispatchable again.
         if sv.state == ServiceVehicleState::AtStation {
@@ -281,6 +284,10 @@ fn park_returned_service_vehicles(
                 vehicle.route = vec![sv.home_road];
             }
             vehicle.speed = 0.0;
+            // Ensure parked component is present
+            if parked.is_none() {
+                commands.entity(entity).insert(Parked { offset: 1.0 });
+            }
             continue;
         }
 
@@ -313,6 +320,9 @@ fn park_returned_service_vehicles(
         sv.mission = None;
         vehicle.speed = 0.0;
         vehicle.route = vec![sv.home_road];
+
+        // Add parked component - vehicle is now parked at station
+        commands.entity(entity).insert(Parked { offset: 1.0 });
 
         if let Ok(mut station) = q_stations.get_mut(sv.home_station) {
             // Return capacity, but don't exceed total.

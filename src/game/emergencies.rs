@@ -18,7 +18,7 @@ use crate::game::services::{ServiceKind, ServiceStation, ServiceVehicle, Service
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
-use crate::game::traffic::{TrafficOccupancy, Vehicle};
+use crate::game::traffic::{Parked, TrafficOccupancy, Vehicle};
 use crate::game::transport::{
     PathCache, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph, find_road_path_cached,
 };
@@ -42,13 +42,15 @@ impl Plugin for EmergenciesPlugin {
                     .chain()
                     .in_set(GameSet::Sim)
                     .run_if(in_state(AppState::InGame)),
-            )
-            .add_systems(
-                Update,
-                render_emergency_markers
-                    .in_set(GameSet::RenderSync)
-                    .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
             );
+
+        // Visual markers (render sync)
+        app.add_systems(
+            Update,
+            render_emergency_markers
+                .in_set(GameSet::RenderSync)
+                .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+        );
     }
 }
 
@@ -134,10 +136,10 @@ pub struct EmergencyManager {
 impl Default for EmergencyManager {
     fn default() -> Self {
         Self {
-            // Debug-friendly defaults: events should happen frequently enough to test UX.
-            spawn_timer: Timer::from_seconds(0.5, TimerMode::Repeating),
-            base_spawn_chance: 0.25,
-            max_active_emergencies: 25,
+            // Conservative defaults: emergencies are occasional and shouldn't overwhelm sim/UI.
+            spawn_timer: Timer::from_seconds(6.0, TimerMode::Repeating),
+            base_spawn_chance: 0.06,
+            max_active_emergencies: 8,
             stats: EmergencyStats::default(),
         }
     }
@@ -345,6 +347,7 @@ fn adjacent_road_any(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
 
 #[derive(SystemParam)]
 struct DispatchParams<'w, 's> {
+    commands: Commands<'w, 's>,
     grid: Res<'w, MapGrid>,
     time: Res<'w, Time<Fixed>>,
     path_cfg: Res<'w, PathfindingConfig>,
@@ -443,6 +446,9 @@ fn dispatch_emergency_vehicles(mut p: DispatchParams) {
             vehicle.route = route;
             vehicle.speed = sv.kind.vehicle_speed();
 
+            // Remove Parked component - vehicle is now active on the road
+            p.commands.entity(vehicle_entity).remove::<Parked>();
+
             if let Ok((_, mut station)) = p.q_stations.get_mut(station_entity) {
                 station.available_vehicles = station.available_vehicles.saturating_sub(1);
             }
@@ -470,6 +476,7 @@ fn update_emergency_timers(time: Res<Time<Fixed>>, ui: Res<UiState>, mut q: Quer
 
 #[derive(SystemParam)]
 struct ResolveParams<'w, 's> {
+    commands: Commands<'w, 's>,
     time: Res<'w, Time<Fixed>>,
     ui: Res<'w, UiState>,
     grid: Res<'w, MapGrid>,
@@ -531,6 +538,11 @@ fn resolve_emergencies(mut p: ResolveParams) {
                 if vehicle.route.is_empty() {
                     sv.state = ServiceVehicleState::OnScene;
                     emergency.responded = true;
+                    vehicle.speed = 0.0;
+                    // Park on scene - don't block traffic while resolving emergency
+                    p.commands
+                        .entity(vehicle_entity)
+                        .insert(Parked { offset: 1.0 });
 
                     // Emit notification
                     if let Some(ref mut notif) = p.notifications {
@@ -554,8 +566,9 @@ fn resolve_emergencies(mut p: ResolveParams) {
                     emergency.resolution_progress = 1.0;
                     emergency.resolved = true;
 
-                    // Send vehicle back to station.
+                    // Send vehicle back to station - remove Parked so it can drive
                     sv.state = ServiceVehicleState::Returning;
+                    p.commands.entity(vehicle_entity).remove::<Parked>();
                     let Some(station_pos) = p.q_stations.get(sv.home_station).ok().map(|s| s.pos)
                     else {
                         continue;
@@ -619,6 +632,10 @@ fn resolve_emergencies(mut p: ResolveParams) {
                     sv.mission = None;
                     vehicle.speed = 0.0;
                     vehicle.route = vec![sv.home_road];
+                    // Add Parked component - vehicle is now parked at station
+                    p.commands
+                        .entity(vehicle_entity)
+                        .insert(Parked { offset: 1.0 });
                     if let Ok(mut station) = p.q_stations.get_mut(sv.home_station) {
                         station.available_vehicles = station.available_vehicles.saturating_add(1);
                     }
