@@ -7,7 +7,7 @@ use rand::prelude::*;
 use crate::game::camera::MainCamera;
 use crate::game::commands::GameCommand;
 use crate::game::ids::CitizenId;
-use crate::game::intersections::{IntersectionIndex, IntersectionPriority};
+use crate::game::intersections::{IntersectionIndex, IntersectionKey, IntersectionPriority};
 use crate::game::map::{MapConfig, MapGrid, TilePos};
 use crate::game::public_transport::{
     BusVehicle, PendingTransitTrips, PendingTrip, PublicTransportConfig, PublicTransportIndex,
@@ -57,16 +57,22 @@ pub enum VehicleTrafficState {
     FreeFlow,
     /// Approaching a traffic light
     Approaching {
-        light_pos: TilePos,
+        intersection: IntersectionKey,
+        /// The first intersection tile on the route for this approach (used for stop-line distance).
+        stop_tile: TilePos,
         distance_to_stop: f32,
     },
     /// Stopped in queue
     Stopped {
-        light_pos: TilePos,
+        intersection: IntersectionKey,
+        stop_tile: TilePos,
         queue_position: u8,
     },
     /// Waiting for green light
-    WaitingForGreen { light_pos: TilePos },
+    WaitingForGreen {
+        intersection: IntersectionKey,
+        stop_tile: TilePos,
+    },
     /// Accelerating after green
     Accelerating,
     /// Crossing intersection
@@ -935,7 +941,7 @@ fn update_vehicle_traffic_state(
         let current_tile = vehicle.route.first().copied();
 
         // Find nearest traffic light on route (by index).
-        let Some((light_pos, distance_to_light_tile)) = find_traffic_light_ahead(
+        let Some((intersection_key, stop_tile, distance_to_light_tile)) = find_traffic_light_ahead(
             &vehicle.route,
             vehicle.progress,
             TRAFFIC_LIGHT_DETECTION_DISTANCE,
@@ -954,18 +960,21 @@ fn update_vehicle_traffic_state(
 
         // If we're already on the light tile (intersection), don't try to "stop" here – just clear it.
         // This prevents slow creeping/stopping inside the intersection.
-        if current_tile == Some(light_pos) {
+        if current_tile == Some(stop_tile) {
             *state = VehicleTrafficState::CrossingIntersection;
             continue;
         }
 
         // We only enforce "red/green" behavior if there is a TrafficLight entity.
-        let Some(light) = q_lights.iter().find(|l| l.pos == light_pos) else {
+        let Some(light) = q_lights
+            .iter()
+            .find(|l| l.intersection_key == intersection_key)
+        else {
             *state = VehicleTrafficState::FreeFlow;
             continue;
         };
 
-        let entry_dir = compute_entry_direction(&vehicle.route, light_pos);
+        let entry_dir = compute_entry_direction(&vehicle.route, stop_tile);
         if entry_dir == RoadDir::None {
             // Can't determine approach direction reliably – don't block.
             *state = VehicleTrafficState::FreeFlow;
@@ -988,7 +997,10 @@ fn update_vehicle_traffic_state(
             if can_go {
                 *state = VehicleTrafficState::Accelerating;
             } else {
-                *state = VehicleTrafficState::WaitingForGreen { light_pos };
+                *state = VehicleTrafficState::WaitingForGreen {
+                    intersection: intersection_key,
+                    stop_tile,
+                };
             }
             continue;
         }
@@ -997,13 +1009,15 @@ fn update_vehicle_traffic_state(
             // Once we reached the stop line, lock into a full stop (no creeping).
             if stop_distance <= 0.0 {
                 *state = VehicleTrafficState::Stopped {
-                    light_pos,
+                    intersection: intersection_key,
+                    stop_tile,
                     queue_position: 0,
                 };
             } else {
                 // Approach at normal speed; braking is computed from stop_distance.
                 *state = VehicleTrafficState::Approaching {
-                    light_pos,
+                    intersection: intersection_key,
+                    stop_tile,
                     distance_to_stop: stop_distance,
                 };
             }
@@ -1023,13 +1037,14 @@ fn find_traffic_light_ahead(
     progress: f32,
     max_distance: f32,
     intersections: &IntersectionIndex,
-) -> Option<(TilePos, f32)> {
+) -> Option<(IntersectionKey, TilePos, f32)> {
     // If we're already on a light tile, treat it as "at the light" so state machines can resolve.
     // Without this, we can get stuck in Approaching after entering the light tile.
     if let Some(first) = route.first()
-        && intersections.traffic_light_positions.contains(first)
+        && intersections.has_traffic_light_at(*first)
+        && let Some(key) = intersections.cluster_key_at(*first)
     {
-        return Some((*first, 0.0));
+        return Some((key, *first, 0.0));
     }
 
     let mut distance = 1.0 - progress; // Remaining distance to end of current tile
@@ -1039,8 +1054,10 @@ fn find_traffic_light_ahead(
             return None;
         }
 
-        if intersections.traffic_light_positions.contains(tile) {
-            return Some((*tile, distance));
+        if intersections.has_traffic_light_at(*tile)
+            && let Some(key) = intersections.cluster_key_at(*tile)
+        {
+            return Some((key, *tile, distance));
         }
 
         distance += 1.0;
@@ -1085,16 +1102,16 @@ fn update_traffic_queues(mut q_vehicles: Query<(Entity, &Vehicle, &mut VehicleTr
     let mut queues: HashMap<TilePos, Vec<(Entity, f32)>> = HashMap::new();
 
     for (entity, vehicle, state) in q_vehicles.iter() {
-        let light_pos = match state {
-            VehicleTrafficState::Stopped { light_pos, .. }
-            | VehicleTrafficState::WaitingForGreen { light_pos }
-            | VehicleTrafficState::Approaching { light_pos, .. } => *light_pos,
+        let stop_tile = match state {
+            VehicleTrafficState::Stopped { stop_tile, .. }
+            | VehicleTrafficState::WaitingForGreen { stop_tile, .. }
+            | VehicleTrafficState::Approaching { stop_tile, .. } => *stop_tile,
             _ => continue,
         };
 
         // Calculate distance to light
-        let dist = compute_distance_to_light(&vehicle.route, vehicle.progress, light_pos);
-        queues.entry(light_pos).or_default().push((entity, dist));
+        let dist = compute_distance_to_light(&vehicle.route, vehicle.progress, stop_tile);
+        queues.entry(stop_tile).or_default().push((entity, dist));
     }
 
     // Sort by distance and assign queue positions
@@ -1104,7 +1121,11 @@ fn update_traffic_queues(mut q_vehicles: Query<(Entity, &Vehicle, &mut VehicleTr
 
         for (i, (entity, dist)) in queue.iter().enumerate() {
             if let Ok((_, _, mut state)) = q_vehicles.get_mut(*entity)
-                && let VehicleTrafficState::Stopped { light_pos: pos, .. } = &mut *state
+                && let VehicleTrafficState::Stopped {
+                    intersection,
+                    stop_tile,
+                    ..
+                } = &mut *state
             {
                 // Update queue position
                 // QUEUE_GAP is used conceptually to space vehicles in the queue
@@ -1116,7 +1137,8 @@ fn update_traffic_queues(mut q_vehicles: Query<(Entity, &Vehicle, &mut VehicleTr
                 // Only update if significantly out of position
                 if distance_error > QUEUE_GAP * 0.5 {
                     *state = VehicleTrafficState::Stopped {
-                        light_pos: *pos,
+                        intersection: *intersection,
+                        stop_tile: *stop_tile,
                         queue_position: i as u8,
                     };
                 }
@@ -1164,7 +1186,7 @@ fn check_intersection_priority(
         };
 
         // Skip if has traffic light (lights handle priority).
-        let has_traffic_light = intersections.traffic_light_positions.contains(next_tile);
+        let has_traffic_light = intersections.has_traffic_light_at(*next_tile);
         if has_traffic_light {
             continue;
         }
@@ -1219,12 +1241,16 @@ fn check_intersection_priority(
                 IntersectionPriority::None
             }) {
                 IntersectionPriority::StopSign => {
+                    let Some(intersection_key) = intersections.cluster_key_at(*next_tile) else {
+                        continue;
+                    };
                     // Stop sign - must come to complete stop BEFORE intersection.
                     // Distance to stop line is remaining distance to end of current tile minus STOP_LINE_OFFSET.
                     let dist_to_intersection = 1.0 - vehicle.progress;
                     let dist_to_stop = (dist_to_intersection - STOP_LINE_OFFSET).max(0.0);
                     *state = VehicleTrafficState::Approaching {
-                        light_pos: *next_tile,
+                        intersection: intersection_key,
+                        stop_tile: *next_tile,
                         distance_to_stop: dist_to_stop,
                     };
                 }
@@ -1637,11 +1663,15 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .add_message::<TripFinished>()
+            .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(1.0 / 10.0))
             .insert_resource(MapConfig {
                 width: 8,
                 height: 8,
                 tile_size: 16.0,
             })
+            .insert_resource(MapGrid::new(8, 8))
+            .insert_resource(TrafficOccupancy::default())
+            .insert_resource(BrakingParams::default())
             .insert_resource(FinishCount::default())
             .add_systems(Update, (move_vehicles, count_trip_finished).chain());
 
@@ -1657,6 +1687,7 @@ mod tests {
                     max_accel: 20.0,
                 },
                 Transform::default(),
+                VehicleTrafficState::FreeFlow,
                 TripPassenger {
                     citizen,
                     purpose: TripPurpose::Work,

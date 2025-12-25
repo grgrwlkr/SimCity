@@ -947,7 +947,7 @@ fn cursor_paint_to_command(
                 && cell.road.dir == RoadDir::None
             {
                 // Check if already has a traffic light
-                if p.intersections.traffic_light_positions.contains(&tile) {
+                if p.intersections.has_traffic_light_at(tile) {
                     out.write(GameCommand::RemoveTrafficLight { pos: tile });
                 } else {
                     out.write(GameCommand::PlaceTrafficLight { pos: tile });
@@ -2047,10 +2047,16 @@ fn world_to_tile(cfg: &MapConfig, world: Vec2) -> Option<TilePos> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::command_history::CommandHistory;
     use crate::game::commands::GameCommand;
+    use crate::game::intersections::IntersectionIndex;
     use crate::game::roads::{RoadCell, RoadDir, RoadKind};
     use crate::game::sim::City;
-    use crate::game::transport::GraphVersion;
+    use crate::game::traffic::TrafficOccupancy;
+    use crate::game::transport::{
+        GraphVersion, PathCache, PathfindingConfig, PathfindingCtx, RoadGraph, find_road_path_cached,
+        rebuild_road_graph_inner,
+    };
     use bevy::app::App;
     use bevy::ecs::message::MessageWriter;
 
@@ -2070,7 +2076,7 @@ mod tests {
     }
 
     #[test]
-    fn astar_path_smoke_test_on_simple_line() {
+    fn road_path_smoke_test_on_simple_line() {
         let mut grid = MapGrid::new(5, 5);
         // Build a straight horizontal road from (0,2) to (4,2)
         for x in 0..5 {
@@ -2086,7 +2092,29 @@ mod tests {
             grid.set(pos, c);
         }
 
-        let path = astar_path(&grid, TilePos { x: 0, y: 2 }, TilePos { x: 4, y: 2 });
+        let gv = GraphVersion(1);
+        let mut graph = RoadGraph::default();
+        rebuild_road_graph_inner(&grid, &gv, &mut graph);
+
+        let cfg = PathfindingConfig::default();
+        let mut cache = PathCache::default();
+        let mut traffic = TrafficOccupancy::default();
+        traffic.per_tick_vehicles.resize(grid.len(), 0);
+        traffic.ema_heat.resize(grid.len(), 0.0);
+        let intersections = IntersectionIndex::default();
+
+        let mut ctx = PathfindingCtx {
+            time_now_sec: 0.0,
+            cfg: &cfg,
+            cache: &mut cache,
+            graph: &graph,
+            regions: None,
+            traffic: &traffic,
+            grid: &grid,
+            intersections: &intersections,
+        };
+
+        let path = find_road_path_cached(&mut ctx, TilePos { x: 0, y: 2 }, TilePos { x: 4, y: 2 });
         assert!(!path.is_empty());
         assert_eq!(path.first().copied(), Some(TilePos { x: 0, y: 2 }));
         assert_eq!(path.last().copied(), Some(TilePos { x: 4, y: 2 }));
@@ -2152,6 +2180,8 @@ mod tests {
             .insert_resource(City::default())
             .insert_resource(GraphVersion(1))
             .insert_resource(RoadsChangedThisFrame::default())
+            .insert_resource(CommandHistory::new(100))
+            .insert_resource(IntersectionIndex::default())
             .insert_resource(TestCommandOnce::default())
             .add_systems(
                 Update,
@@ -2190,6 +2220,8 @@ mod tests {
             .insert_resource(City::default())
             .insert_resource(GraphVersion(1))
             .insert_resource(RoadsChangedThisFrame::default())
+            .insert_resource(CommandHistory::new(100))
+            .insert_resource(IntersectionIndex::default())
             .insert_resource(TestCommandOnce::default())
             .add_systems(
                 Update,

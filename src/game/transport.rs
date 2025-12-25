@@ -200,7 +200,7 @@ fn rebuild_road_graph(grid: Res<MapGrid>, gv: Res<GraphVersion>, mut graph: ResM
     rebuild_road_graph_inner(&grid, &gv, &mut graph);
 }
 
-fn rebuild_road_graph_inner(grid: &MapGrid, gv: &GraphVersion, graph: &mut RoadGraph) {
+pub(crate) fn rebuild_road_graph_inner(grid: &MapGrid, gv: &GraphVersion, graph: &mut RoadGraph) {
     if graph.is_built_for(gv.0)
         && graph.width == grid.width as usize
         && graph.height == grid.height as usize
@@ -1087,7 +1087,7 @@ fn step_cost_for_edge(params: StepCostParams) -> u32 {
     // Traffic light penalty: average wait time (half cycle duration)
     let mut traffic_light_penalty = 0.0f32;
     let next_pos = idx_to_pos(next_idx, w);
-    if intersections.traffic_light_positions.contains(&next_pos) {
+    if intersections.has_traffic_light_at(next_pos) {
         // Average delay: half of a typical cycle (10s / 2 = 5s)
         // Convert to cost units (assuming 1.0 = 1 tile travel time)
         let avg_wait_secs = 5.0;

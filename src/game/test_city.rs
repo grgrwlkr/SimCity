@@ -31,7 +31,8 @@ pub fn generate_test_city(
     *grid = MapGrid::new(cfg.width, cfg.height);
 
     // Clear intersection traffic lights
-    intersections.traffic_light_positions.clear();
+    intersections.traffic_light_keys.clear();
+    intersections.traffic_lights.clear();
 
     let drive_on_right = true;
 
@@ -39,10 +40,7 @@ pub fn generate_test_city(
     // HELPER: Build a road segment from start to end (horizontal or vertical)
     // Uses the same logic as emit_road_commands in map/mod.rs
     // =========================================================================
-    let build_road_segment = |grid: &mut MapGrid,
-                              start: TilePos,
-                              end: TilePos,
-                              kind: RoadKind| {
+    let build_road_segment = |grid: &mut MapGrid, start: TilePos, end: TilePos, kind: RoadKind| {
         let dx = end.x - start.x;
         let dy = end.y - start.y;
 
@@ -80,26 +78,26 @@ pub fn generate_test_city(
         let perp = IVec2::new(-dir.y, dir.x);
 
         for pos in tiles {
-        for o in (-half)..half {
-            let lane = (o + half) as u8;
-            let lane_dir = if drive_on_right {
-                if (lane as i32) < half {
-                    road_dir
-                } else {
+            for o in (-half)..half {
+                let lane = (o + half) as u8;
+                let lane_dir = if drive_on_right {
+                    if (lane as i32) < half {
+                        road_dir
+                    } else {
+                        road_dir.opposite()
+                    }
+                } else if (lane as i32) < half {
                     road_dir.opposite()
-                }
-            } else if (lane as i32) < half {
-                road_dir.opposite()
-            } else {
-                road_dir
-            };
-            
-            let lane_pos = TilePos {
-                x: pos.x + perp.x * o,
-                y: pos.y + perp.y * o,
-            };
-            
-            if let Some(cell) = grid.get(lane_pos) {
+                } else {
+                    road_dir
+                };
+
+                let lane_pos = TilePos {
+                    x: pos.x + perp.x * o,
+                    y: pos.y + perp.y * o,
+                };
+
+                if let Some(cell) = grid.get(lane_pos) {
                     if cell.water {
                         continue;
                     }
@@ -111,28 +109,33 @@ pub fn generate_test_city(
                         && cell.road.dir != RoadDir::None
                         && matches!(
                             (cell.road.dir, lane_dir),
-                            (RoadDir::East | RoadDir::West, RoadDir::North | RoadDir::South)
-                                | (RoadDir::North | RoadDir::South, RoadDir::East | RoadDir::West)
+                            (
+                                RoadDir::East | RoadDir::West,
+                                RoadDir::North | RoadDir::South
+                            ) | (
+                                RoadDir::North | RoadDir::South,
+                                RoadDir::East | RoadDir::West
+                            )
                         );
 
-                    let final_dir = if is_intersection {
-                        RoadDir::None
-                    } else if cell.road.is_some() && cell.road.dir == RoadDir::None {
+                    let final_dir = if is_intersection
+                        || (cell.road.is_some() && cell.road.dir == RoadDir::None)
+                    {
                         RoadDir::None
                     } else {
                         lane_dir
                     };
 
-                cell.road = RoadCell {
-                    kind,
+                    cell.road = RoadCell {
+                        kind,
                         dir: final_dir,
-                    lane,
-                    flow: RoadFlow::TwoWay,
-                    lane_type: LaneType::Regular,
-                };
+                        lane,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    };
                     cell.zone = ZoneKind::None;
                     cell.building = None;
-                grid.set(lane_pos, cell);
+                    grid.set(lane_pos, cell);
                 }
             }
         }
@@ -182,7 +185,10 @@ pub fn generate_test_city(
     let highway_y = cfg.height / 2;
     build_road_segment(
         grid,
-        TilePos { x: 10, y: highway_y },
+        TilePos {
+            x: 10,
+            y: highway_y,
+        },
         TilePos {
             x: cfg.width - 10,
             y: highway_y,
@@ -277,6 +283,11 @@ pub fn generate_test_city(
     // =========================================================================
     // TRAFFIC LIGHTS: Place at major intersections
     // =========================================================================
+    // Build fresh intersection clusters for the generated grid, so we can place exactly
+    // one controller per logical intersection (cluster of `dir == None` tiles).
+    let (clusters, tile_to_intersection) =
+        crate::game::intersections::build_intersection_clusters(grid);
+
     let major_intersections = [
         // Highway x Arterial1
         TilePos {
@@ -316,10 +327,13 @@ pub fn generate_test_city(
                     x: pos.x + dx,
                     y: pos.y + dy,
                 };
-                if let Some(cell) = grid.get(check_pos) {
-                    if cell.road.is_some() && cell.road.dir == RoadDir::None {
-                        intersections.traffic_light_positions.insert(check_pos);
-                    }
+                if let Some(cell) = grid.get(check_pos)
+                    && cell.road.is_some()
+                    && cell.road.dir == RoadDir::None
+                    && let Some(id) = tile_to_intersection.get(&check_pos).copied()
+                    && let Some(cluster) = clusters.get(id.as_usize())
+                {
+                    intersections.traffic_light_keys.insert(cluster.key);
                 }
             }
         }
@@ -357,7 +371,7 @@ pub fn generate_test_city(
         for x in 15..(arterial1_x - 5) {
             let pos = TilePos { x, y };
             if can_zone(grid, pos) {
-            if let Some(cell) = grid.get(pos) {
+                if let Some(cell) = grid.get(pos) {
                     let mut cell = cell;
                     cell.zone = ZoneKind::Residential;
                     grid.set(pos, cell);
@@ -371,7 +385,7 @@ pub fn generate_test_city(
         for x in (arterial1_x + 5)..(arterial2_x - 5) {
             let pos = TilePos { x, y };
             if can_zone(grid, pos) {
-            if let Some(cell) = grid.get(pos) {
+                if let Some(cell) = grid.get(pos) {
                     let mut cell = cell;
                     cell.zone = ZoneKind::Residential;
                     grid.set(pos, cell);
@@ -385,7 +399,7 @@ pub fn generate_test_city(
         for x in 15..(cfg.width - 15) {
             let pos = TilePos { x, y };
             if can_zone(grid, pos) {
-            if let Some(cell) = grid.get(pos) {
+                if let Some(cell) = grid.get(pos) {
                     let mut cell = cell;
                     cell.zone = ZoneKind::Commercial;
                     grid.set(pos, cell);
@@ -399,7 +413,7 @@ pub fn generate_test_city(
         for x in (arterial2_x + 5)..(cfg.width - 40) {
             let pos = TilePos { x, y };
             if can_zone(grid, pos) {
-            if let Some(cell) = grid.get(pos) {
+                if let Some(cell) = grid.get(pos) {
                     let mut cell = cell;
                     cell.zone = ZoneKind::Commercial;
                     grid.set(pos, cell);
@@ -412,7 +426,7 @@ pub fn generate_test_city(
     // Lower-left
     for y in 10..(highway_y - 5) {
         for x in 15..(arterial1_x - 5) {
-                let pos = TilePos { x, y };
+            let pos = TilePos { x, y };
             if can_zone(grid, pos) {
                 if let Some(cell) = grid.get(pos) {
                     let mut cell = cell;
@@ -428,7 +442,7 @@ pub fn generate_test_city(
         for x in (arterial2_x + 5)..(cfg.width - 15) {
             let pos = TilePos { x, y };
             if can_zone(grid, pos) {
-            if let Some(cell) = grid.get(pos) {
+                if let Some(cell) = grid.get(pos) {
                     let mut cell = cell;
                     cell.zone = ZoneKind::Industrial;
                     grid.set(pos, cell);
@@ -442,52 +456,53 @@ pub fn generate_test_city(
     // =========================================================================
 
     // Helper to place a service building near a road
-    let place_service_building = |grid: &mut MapGrid, center: TilePos, kind: BuildingKind| -> bool {
-        // Search for a valid spot near the center
-        for radius in 0i32..10 {
-            for dy in -radius..=radius {
-                for dx in -radius..=radius {
-                    if dx.abs() != radius && dy.abs() != radius {
-                        continue;
-                    }
-                    let pos = TilePos {
-                        x: center.x + dx,
-                        y: center.y + dy,
-                    };
-                    let Some(cell) = grid.get(pos) else {
-                        continue;
-                    };
-                    if cell.water || cell.road.is_some() || cell.building.is_some() {
-                        continue;
-                    }
-                    // Check for adjacent road
-                    let mut has_road = false;
-                    for (ndx, ndy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                        let neighbor = TilePos {
-                            x: pos.x + ndx,
-                            y: pos.y + ndy,
+    let place_service_building =
+        |grid: &mut MapGrid, center: TilePos, kind: BuildingKind| -> bool {
+            // Search for a valid spot near the center
+            for radius in 0i32..10 {
+                for dy in -radius..=radius {
+                    for dx in -radius..=radius {
+                        if dx.abs() != radius && dy.abs() != radius {
+                            continue;
+                        }
+                        let pos = TilePos {
+                            x: center.x + dx,
+                            y: center.y + dy,
                         };
-                        if let Some(ncell) = grid.get(neighbor) {
-                            if ncell.road.is_some() {
-                                has_road = true;
-                                break;
+                        let Some(cell) = grid.get(pos) else {
+                            continue;
+                        };
+                        if cell.water || cell.road.is_some() || cell.building.is_some() {
+                            continue;
+                        }
+                        // Check for adjacent road
+                        let mut has_road = false;
+                        for (ndx, ndy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                            let neighbor = TilePos {
+                                x: pos.x + ndx,
+                                y: pos.y + ndy,
+                            };
+                            if let Some(ncell) = grid.get(neighbor) {
+                                if ncell.road.is_some() {
+                                    has_road = true;
+                                    break;
+                                }
                             }
                         }
+                        if !has_road {
+                            continue;
+                        }
+                        // Place the building
+                        let mut cell = cell;
+                        cell.building = Some(kind);
+                        cell.zone = ZoneKind::None;
+                        grid.set(pos, cell);
+                        return true;
                     }
-                    if !has_road {
-                        continue;
-                    }
-                    // Place the building
-                    let mut cell = cell;
-                    cell.building = Some(kind);
-            cell.zone = ZoneKind::None;
-                    grid.set(pos, cell);
-                    return true;
                 }
             }
-        }
-        false
-    };
+            false
+        };
 
     // Fire Station - near residential area (upper left)
     place_service_building(
@@ -553,8 +568,8 @@ pub fn generate_test_city(
                     let fy = y as f32 / 20.0;
                     let height = ((fx.sin() + fy.cos()) * 0.5 + 0.5) * 20.0;
                     // Add some variation near the lake (higher ground)
-                    let lake_dist = (((x - lake_center.x).pow(2) + (y - lake_center.y).pow(2)) as f32)
-                        .sqrt();
+                    let lake_dist =
+                        (((x - lake_center.x).pow(2) + (y - lake_center.y).pow(2)) as f32).sqrt();
                     let lake_height = if lake_dist < 20.0 {
                         (20.0 - lake_dist) * 0.5
                     } else {
