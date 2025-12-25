@@ -65,7 +65,8 @@ impl Default for PublicTransportConfig {
         Self {
             adoption_rate: 0.6,
             wait_secs: 2.0,
-            bus_speed: 55.0,
+            // Calibrated for traffic v2 scale (RoadKind speed limits treated as km/h).
+            bus_speed: 24.0,
             show_bus: default_show_bus(),
         }
     }

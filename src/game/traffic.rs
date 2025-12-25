@@ -35,6 +35,7 @@ pub struct Vehicle {
     /// Maximum speed for this vehicle.
     pub max_speed: f32,
     /// Maximum acceleration (world units per second squared).
+    #[allow(dead_code)]
     pub max_accel: f32,
 }
 
@@ -88,23 +89,7 @@ pub struct Parked {
     pub offset: f32,
 }
 
-/// Braking parameters for vehicles
-#[derive(Resource)]
-pub struct BrakingParams {
-    /// Comfortable deceleration (world units per second squared)
-    pub comfortable_decel: f32,
-    /// Maximum deceleration (emergency)
-    pub max_decel: f32,
-}
-
-impl Default for BrakingParams {
-    fn default() -> Self {
-        Self {
-            comfortable_decel: 30.0,
-            max_decel: 80.0,
-        }
-    }
-}
+// NOTE: v2 Stage B uses IDM params stored in `TrafficConfig` instead of a separate braking resource.
 
 /// Distance to detect traffic lights ahead (in tiles)
 const TRAFFIC_LIGHT_DETECTION_DISTANCE: f32 = 8.0;
@@ -114,9 +99,6 @@ const QUEUE_GAP: f32 = 0.3;
 
 /// Stop line offset relative to intersection (0.0 = tile boundary)
 const STOP_LINE_OFFSET: f32 = 0.15;
-
-/// Minimum distance between vehicles (in tiles) to prevent collisions
-const MIN_VEHICLE_DISTANCE: f32 = 0.3;
 
 /// After this many seconds without progressing, try to resolve a traffic jam.
 const STUCK_UTURN_SECS: f32 = 10.0;
@@ -133,6 +115,98 @@ const OPPOSITE_LANE_SEARCH_RADIUS: i32 = 2;
 /// Throttle new car spawns when congestion is extreme (keeps sim stable).
 const SPAWN_THROTTLE_MAX_CONG: f32 = 0.95;
 const SPAWN_THROTTLE_AVG_CONG: f32 = 0.85;
+
+// ---------------------------------------------------------------------------
+// IDM (Stage B): longitudinal dynamics (car-following)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Copy, Clone)]
+struct IdmParamsWorld {
+    /// Max accel (world units / s^2)
+    a: f32,
+    /// Comfortable decel (world units / s^2)
+    b: f32,
+    /// Hard decel clamp (world units / s^2)
+    b_max: f32,
+    /// Desired headway (seconds)
+    t_headway: f32,
+    /// Min gap (world units)
+    s0: f32,
+    /// Acceleration exponent delta
+    delta: f32,
+}
+
+fn world_per_meter(cfg: &MapConfig, traffic_cfg: &TrafficConfig) -> f32 {
+    let tile_m = traffic_cfg.tile_meters.max(0.1);
+    cfg.tile_size.max(0.1) / tile_m
+}
+
+fn kmh_to_world_speed(cfg: &MapConfig, traffic_cfg: &TrafficConfig, kmh: f32) -> f32 {
+    let mps = kmh.max(0.0) / 3.6;
+    mps * world_per_meter(cfg, traffic_cfg)
+}
+
+fn road_speed_limit_world(
+    cfg: &MapConfig,
+    traffic_cfg: &TrafficConfig,
+    tile: TilePos,
+    grid: &MapGrid,
+) -> f32 {
+    let Some(cell) = grid.get(tile) else {
+        return 0.0;
+    };
+    if cell.water || !cell.road.is_some() {
+        return 0.0;
+    }
+    // Treat RoadKind::speed_limit() as km/h (per traffic v2 spec).
+    kmh_to_world_speed(cfg, traffic_cfg, cell.road.kind.speed_limit())
+}
+
+fn idm_params_world(cfg: &MapConfig, traffic_cfg: &TrafficConfig) -> IdmParamsWorld {
+    let wpm = world_per_meter(cfg, traffic_cfg);
+    let a = traffic_cfg.idm_max_accel_mps2.max(0.0) * wpm;
+    let b = traffic_cfg.idm_comfortable_decel_mps2.max(0.0) * wpm;
+    let b_max = traffic_cfg.idm_max_decel_mps2.max(0.0) * wpm;
+    let s0 = traffic_cfg.idm_min_gap_m.max(0.0) * wpm;
+    let t_headway = traffic_cfg.idm_desired_headway_secs.max(0.0);
+    let delta = traffic_cfg.idm_delta.max(1.0);
+
+    IdmParamsWorld {
+        a: a.max(0.1),
+        b: b.max(0.1),
+        b_max: b_max.max(0.1).max(b.max(0.1)),
+        t_headway,
+        s0,
+        delta,
+    }
+}
+
+fn idm_accel_world(
+    v: f32,
+    v0: f32,
+    leader: Option<(f32, f32)>, // (gap_world, leader_speed)
+    params: &IdmParamsWorld,
+) -> f32 {
+    let v = v.max(0.0);
+    let v0 = v0.max(0.1);
+
+    let free_term = (v / v0).powf(params.delta);
+
+    let interaction_term = if let Some((gap, v_lead)) = leader {
+        let s = gap.max(0.1);
+        let dv = (v - v_lead).clamp(-v0 * 2.0, v0 * 2.0);
+        let sqrt_ab = (params.a * params.b).max(0.1).sqrt();
+        let mut s_star = params.s0 + v * params.t_headway;
+        s_star += (v * dv) / (2.0 * sqrt_ab);
+        s_star = s_star.max(params.s0);
+        (s_star / s).powi(2)
+    } else {
+        0.0
+    };
+
+    let a = params.a * (1.0 - free_term - interaction_term);
+    a.clamp(-params.b_max, params.a)
+}
 
 /// Per-vehicle jam detector (in fixed-time seconds).
 #[derive(Component, Debug, Clone, Copy)]
@@ -197,7 +271,6 @@ impl Plugin for TrafficPlugin {
         app.init_resource::<TrafficOccupancy>()
             .init_resource::<TrafficIndex>()
             .init_resource::<TrafficConfig>()
-            .init_resource::<BrakingParams>()
             .init_resource::<TrafficOverlayPool>()
             .add_systems(
                 OnEnter(AppState::MainMenu),
@@ -265,10 +338,64 @@ pub struct TrafficConfig {
     /// If true, traffic drives on the right (US/Russia). If false, drives on the left (UK/Japan).
     #[serde(default = "default_drive_on_right")]
     pub drive_on_right: bool,
+
+    // -----------------------------------------------------------------------
+    // Traffic v2 (Stage B): longitudinal dynamics tuning (IDM) + scale
+    // -----------------------------------------------------------------------
+    /// Meters per tile (simulation scale). See `docs/traffic-rewrite-v2.md` (T = 10m).
+    #[serde(default = "default_tile_meters")]
+    tile_meters: f32,
+
+    /// IDM desired time headway \(T\) (seconds).
+    #[serde(default = "default_idm_desired_headway_secs")]
+    idm_desired_headway_secs: f32,
+    /// IDM minimum gap \(s_0\) (meters).
+    #[serde(default = "default_idm_min_gap_m")]
+    idm_min_gap_m: f32,
+    /// IDM max acceleration \(a\) (m/s^2).
+    #[serde(default = "default_idm_max_accel_mps2")]
+    idm_max_accel_mps2: f32,
+    /// IDM comfortable deceleration \(b\) (m/s^2).
+    #[serde(default = "default_idm_comfortable_decel_mps2")]
+    idm_comfortable_decel_mps2: f32,
+    /// Hard clamp for braking (m/s^2).
+    #[serde(default = "default_idm_max_decel_mps2")]
+    idm_max_decel_mps2: f32,
+    /// IDM acceleration exponent \(\delta\).
+    #[serde(default = "default_idm_delta")]
+    idm_delta: f32,
 }
 
 fn default_drive_on_right() -> bool {
     true
+}
+
+fn default_tile_meters() -> f32 {
+    10.0
+}
+
+fn default_idm_desired_headway_secs() -> f32 {
+    1.4
+}
+
+fn default_idm_min_gap_m() -> f32 {
+    2.0
+}
+
+fn default_idm_max_accel_mps2() -> f32 {
+    1.6
+}
+
+fn default_idm_comfortable_decel_mps2() -> f32 {
+    2.2
+}
+
+fn default_idm_max_decel_mps2() -> f32 {
+    7.0
+}
+
+fn default_idm_delta() -> f32 {
+    4.0
 }
 
 impl Default for TrafficConfig {
@@ -278,6 +405,13 @@ impl Default for TrafficConfig {
             max_route_plans_per_tick: 64,
             heat_ema_decay: 0.92,
             drive_on_right: true,
+            tile_meters: default_tile_meters(),
+            idm_desired_headway_secs: default_idm_desired_headway_secs(),
+            idm_min_gap_m: default_idm_min_gap_m(),
+            idm_max_accel_mps2: default_idm_max_accel_mps2(),
+            idm_comfortable_decel_mps2: default_idm_comfortable_decel_mps2(),
+            idm_max_decel_mps2: default_idm_max_decel_mps2(),
+            idm_delta: default_idm_delta(),
         }
     }
 }
@@ -314,6 +448,9 @@ fn spawn_trip_vehicles(
 ) {
     let mut planned = 0usize;
     let mut total = p.q_vehicles.iter().count();
+    let idm = idm_params_world(&p.cfg, &p.traffic_cfg);
+    // Driver maximum (km/h). Actual speed is capped by per-road speed limits in `move_vehicles`.
+    let driver_max_speed_world = kmh_to_world_speed(&p.cfg, &p.traffic_cfg, 130.0);
     // If the network is already gridlocked, stop spawning new cars until it clears.
     let congested = p.traffic_idx.max_congestion >= SPAWN_THROTTLE_MAX_CONG
         || p.traffic_idx.avg_congestion >= SPAWN_THROTTLE_AVG_CONG;
@@ -373,7 +510,6 @@ fn spawn_trip_vehicles(
         }
 
         let world_pos = tile_to_world(&p.cfg, start);
-        let max_speed = 70.0;
         p.commands.spawn((
             Sprite {
                 color: Color::linear_rgb(0.95, 0.95, 0.95),
@@ -384,9 +520,9 @@ fn spawn_trip_vehicles(
             Vehicle {
                 route,
                 progress: 0.0,
-                speed: max_speed,
-                max_speed,
-                max_accel: 20.0,
+                speed: 0.0,
+                max_speed: driver_max_speed_world,
+                max_accel: idm.a,
             },
             VehicleTrafficState::FreeFlow,
             TripPassenger {
@@ -505,8 +641,7 @@ fn update_stuck_timers(
             continue;
         };
 
-        let progressed =
-            tile != stuck.last_tile || (v.progress - stuck.last_progress).abs() > 0.02;
+        let progressed = tile != stuck.last_tile || (v.progress - stuck.last_progress).abs() > 0.02;
 
         // Legitimate waiting at lights/stop signs shouldn't trigger jam resolution.
         if progressed
@@ -686,7 +821,7 @@ fn move_vehicles(
     cfg: Res<MapConfig>,
     grid: Res<MapGrid>,
     traffic: Res<TrafficOccupancy>,
-    braking_params: Res<BrakingParams>,
+    traffic_cfg: Res<TrafficConfig>,
     mut commands: Commands,
     mut finished: bevy::ecs::message::MessageWriter<TripFinished>,
     mut vehicles: ParamSet<(
@@ -702,53 +837,50 @@ fn move_vehicles(
             ),
             Without<Parked>,
         >,
-        Query<
-            (Entity, &Vehicle, &Transform),
-            (
-                With<Vehicle>,
-                Without<ServiceVehicle>,
-                Without<BusVehicle>,
-                Without<Parked>,
-            ),
-        >,
+        Query<(Entity, &Vehicle), (With<Vehicle>, Without<Parked>)>,
     )>,
 ) {
     let dt = time.delta_secs();
+    let idm = idm_params_world(&cfg, &traffic_cfg);
 
     // Collect vehicle positions before iterating to avoid query conflicts
-    let vehicle_positions: Vec<(Entity, TilePos, f32)> = vehicles
+    let vehicle_positions: Vec<(Entity, TilePos, f32, f32)> = vehicles
         .p1()
         .iter()
-        .filter_map(|(entity, vehicle, _transform)| {
+        .filter_map(|(entity, vehicle)| {
             if vehicle.route.is_empty() {
                 return None;
             }
             let current_tile = vehicle.route[0];
-            Some((entity, current_tile, vehicle.progress))
+            Some((entity, current_tile, vehicle.progress, vehicle.speed))
         })
         .collect();
 
     // Build a per-tile ordering so leader detection is O(N log N) instead of O(N^2).
-    let mut by_tile: std::collections::HashMap<TilePos, Vec<(Entity, f32)>> =
+    let mut by_tile: std::collections::HashMap<TilePos, Vec<(Entity, f32, f32)>> =
         std::collections::HashMap::new();
-    for (e, t, p) in vehicle_positions.iter().copied() {
-        by_tile.entry(t).or_default().push((e, p));
+    for (e, t, p, spd) in vehicle_positions.iter().copied() {
+        by_tile.entry(t).or_default().push((e, p, spd));
     }
     for list in by_tile.values_mut() {
         list.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     }
-    // For each vehicle, distance to next vehicle on the same tile (if any).
-    let mut leader_same_tile: std::collections::HashMap<Entity, f32> = std::collections::HashMap::new();
-    // For each tile, the progress of the earliest vehicle (closest to the start of the tile).
-    let mut tile_min_progress: std::collections::HashMap<TilePos, f32> = std::collections::HashMap::new();
+
+    // For each vehicle, leader on the same tile (gap + leader speed).
+    let mut leader_same_tile: std::collections::HashMap<Entity, (f32, f32)> =
+        std::collections::HashMap::new();
+    // For each tile, the earliest vehicle (closest to the start of the tile): (progress, speed).
+    let mut tile_min_progress: std::collections::HashMap<TilePos, (f32, f32)> =
+        std::collections::HashMap::new();
     for (tile, list) in by_tile.iter() {
-        if let Some((_, min_p)) = list.first() {
-            tile_min_progress.insert(*tile, *min_p);
+        if let Some((_, min_p, min_spd)) = list.first() {
+            tile_min_progress.insert(*tile, (*min_p, *min_spd));
         }
         for w in list.windows(2) {
-            let (ego_e, ego_p) = w[0];
-            let (_lead_e, lead_p) = w[1];
-            leader_same_tile.insert(ego_e, (lead_p - ego_p).max(0.0));
+            let (ego_e, ego_p, _ego_v) = w[0];
+            let (_lead_e, lead_p, lead_v) = w[1];
+            let gap_world = ((lead_p - ego_p).max(0.0)) * cfg.tile_size.max(0.1);
+            leader_same_tile.insert(ego_e, (gap_world, lead_v));
         }
     }
 
@@ -769,100 +901,68 @@ fn move_vehicles(
             continue;
         }
 
-        // Get current tile and check for congestion
+        // --- Desired speed from speed limits (RoadKind.speed_limit() is treated as km/h).
         let current_tile = v.route[0];
-        let effective_speed = if let Some(cell) = grid.get(current_tile)
-            && cell.road.is_some()
-        {
-            let capacity = cell.road.kind.capacity_per_lane_tile() as f32;
-            if let Some(tile_idx) = grid.idx(current_tile) {
-                let occupancy = traffic.per_tick_vehicles[tile_idx] as f32;
-                let congestion = (occupancy / capacity.max(1.0)).clamp(0.0, 1.0);
-                // Slow down based on congestion: speed = base_speed * (1 - 0.7 * congestion)
-                v.max_speed * (1.0 - 0.7 * congestion)
-            } else {
-                v.max_speed
-            }
-        } else {
-            v.max_speed
-        };
+        let speed_limit_world = road_speed_limit_world(&cfg, &traffic_cfg, current_tile, &grid);
+        let v0 = speed_limit_world.min(v.max_speed).max(0.0);
 
-        // Check for leader vehicle (car following model).
-        let mut leader_distance = leader_same_tile.get(&entity).copied();
+        // --- Leader detection (tile-local) + virtual leaders (stop lines / blocked next tile).
+        let mut leader: Option<(f32, f32)> = leader_same_tile.get(&entity).copied();
         if v.route.len() > 1 {
             let next_tile = v.route[1];
-            if let Some(min_p) = tile_min_progress.get(&next_tile).copied() {
-                let dist = (1.0 - v.progress) + min_p;
-                leader_distance = Some(match leader_distance {
-                    Some(d) => d.min(dist),
-                    None => dist,
+            if let Some((min_p, lead_v)) = tile_min_progress.get(&next_tile).copied() {
+                let gap_tiles = (1.0 - v.progress) + min_p;
+                let gap_world = gap_tiles.max(0.0) * cfg.tile_size.max(0.1);
+                leader = Some(match leader {
+                    Some((g, gv)) if g <= gap_world => (g, gv),
+                    _ => (gap_world, lead_v),
                 });
             }
         }
 
-        // Adjust acceleration based on leader distance
-        // NOTE: many traffic-distance values are in "tiles", while speed is in world units/sec.
-        // We pass tile_size so braking math can convert distances correctly.
-        let mut accel = compute_acceleration(&v, state, &braking_params, cfg.tile_size);
-
-        if let Some(leader_dist) = leader_distance {
-            if leader_dist < MIN_VEHICLE_DISTANCE {
-                // Too close - brake hard
-                accel = -braking_params.max_decel;
-            } else if leader_dist < MIN_VEHICLE_DISTANCE * 2.0 {
-                // Close - brake smoothly
-                // leader_dist is in tiles; convert to world units for v^2/(2d).
-                let leader_dist_world =
-                    (leader_dist - MIN_VEHICLE_DISTANCE).max(0.1) * cfg.tile_size.max(1.0);
-                let required_decel = (v.speed * v.speed) / (2.0 * leader_dist_world);
-                accel = accel.min(-required_decel.min(braking_params.max_decel));
-            }
+        // Virtual leader: stop line (traffic lights/stop signs).
+        if let VehicleTrafficState::Approaching {
+            distance_to_stop, ..
+        } = state
+        {
+            let gap_world = distance_to_stop.max(0.0) * cfg.tile_size.max(0.1);
+            let stop_leader = (gap_world, 0.0);
+            leader = Some(match leader {
+                Some((g, gv)) if g <= stop_leader.0 => (g, gv),
+                _ => stop_leader,
+            });
         }
 
-        // Update speed (clamp to effective speed considering congestion)
-        v.speed = (v.speed + accel * dt).clamp(0.0, effective_speed);
-
-        // Check if movement is blocked
-        let mut can_move = !matches!(
+        // If we are explicitly stopped / waiting, pin speed to zero and don't advance.
+        let can_advance = !matches!(
             state,
             VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. }
         );
+        if !can_advance {
+            v.speed = 0.0;
+        } else {
+            // Virtual leader: next tile blocked by capacity or "don't block the box".
+            let mut blocked_next = false;
+            if v.route.len() > 1 {
+                let next_tile = v.route[1];
 
-        // Check if NEXT tile is occupied (prevent entering full tiles)
-        // Only check when we're about to transition to the next tile
-        if can_move && v.route.len() > 1 && v.progress >= 0.7 {
-            let next_tile = v.route[1];
-
-            if let Some(next_idx) = grid.idx(next_tile) {
-                // Check if next tile is too crowded
-                if let Some(cell) = grid.get(next_tile)
-                    && cell.road.is_some()
+                if let Some(next_idx) = grid.idx(next_tile)
+                    && let Some(next_cell) = grid.get(next_tile)
+                    && next_cell.road.is_some()
+                    && next_idx < traffic.per_tick_vehicles.len()
                 {
-                    let capacity = cell.road.kind.capacity_per_lane_tile();
-                    let occupancy = traffic.per_tick_vehicles[next_idx];
-                    // If next tile is at capacity, block movement until it clears
-                    if occupancy >= capacity {
-                        can_move = false;
+                    let cap = next_cell.road.kind.capacity_per_lane_tile();
+                    let occ = traffic.per_tick_vehicles[next_idx];
+                    if occ >= cap {
+                        blocked_next = true;
                     }
                 }
-            }
 
-            // "Don't block the box": if we're about to enter an intersection tile,
-            // also ensure there is room to exit the intersection. Otherwise we can deadlock the grid.
-            if can_move
-                && matches!(
-                    grid.get(next_tile).map(|c| c.road.dir),
-                    Some(RoadDir::None)
-                )
-            {
-                // Look ahead for the first non-intersection road tile (limit scan to keep it cheap).
-                let exit_tile = v
-                    .route
-                    .iter()
-                    .copied()
-                    .skip(2)
-                    .take(6)
-                    .find(|t| {
+                // "Don't block the box": entering intersection requires free space to exit.
+                if !blocked_next
+                    && matches!(grid.get(next_tile).map(|c| c.road.dir), Some(RoadDir::None))
+                {
+                    let exit_tile = v.route.iter().copied().skip(2).take(6).find(|t| {
                         if let Some(c) = grid.get(*t)
                             && c.road.is_some()
                         {
@@ -872,27 +972,55 @@ fn move_vehicles(
                         }
                     });
 
-                if let Some(exit_tile) = exit_tile
-                    && let Some(exit_idx) = grid.idx(exit_tile)
-                    && let Some(exit_cell) = grid.get(exit_tile)
-                    && exit_cell.road.is_some()
-                {
-                    let cap = exit_cell.road.kind.capacity_per_lane_tile();
-                    let occ = traffic.per_tick_vehicles[exit_idx];
-                    if occ >= cap {
-                        can_move = false;
+                    if let Some(exit_tile) = exit_tile
+                        && let Some(exit_idx) = grid.idx(exit_tile)
+                        && let Some(exit_cell) = grid.get(exit_tile)
+                        && exit_cell.road.is_some()
+                        && exit_idx < traffic.per_tick_vehicles.len()
+                    {
+                        let cap = exit_cell.road.kind.capacity_per_lane_tile();
+                        let occ = traffic.per_tick_vehicles[exit_idx];
+                        if occ >= cap {
+                            blocked_next = true;
+                        }
                     }
                 }
             }
-        }
 
-        if !can_move {
-            continue; // Don't move
-        }
+            if blocked_next {
+                let gap_world = (1.0 - v.progress).max(0.0) * cfg.tile_size.max(0.1);
+                let block_leader = (gap_world, 0.0);
+                leader = Some(match leader {
+                    Some((g, gv)) if g <= block_leader.0 => (g, gv),
+                    _ => block_leader,
+                });
+            }
 
-        // Distance to advance this frame.
-        let dist = v.speed * dt;
-        v.progress += dist / cfg.tile_size;
+            // IDM speed update.
+            if v0 > 0.0 {
+                let accel = idm_accel_world(v.speed, v0, leader, &idm);
+                v.speed = (v.speed + accel * dt).clamp(0.0, v0);
+            } else {
+                v.speed = 0.0;
+            }
+
+            // Advance along the current tile.
+            let dprog = (v.speed * dt) / cfg.tile_size.max(0.1);
+
+            // If the next tile is blocked, clamp progress just before the boundary.
+            // This keeps the vehicle from "teleporting" into a full tile in a single tick.
+            if v.route.len() > 1 && blocked_next {
+                let stop_before = 0.001;
+                let max_p = 1.0 - stop_before;
+                let next_p = (v.progress + dprog).min(max_p);
+                v.progress = next_p;
+                if (max_p - v.progress).abs() < 1e-6 {
+                    v.speed = 0.0;
+                }
+            } else {
+                v.progress += dprog;
+            }
+        }
 
         while v.progress >= 1.0 && !v.route.is_empty() {
             v.progress -= 1.0;
@@ -986,8 +1114,8 @@ fn update_vehicle_traffic_state(
 
         let can_go = light.is_green(entry_dir)
             || (light.is_yellow(entry_dir) && distance_to_light_tile <= 2.0);
-        let must_stop = light.is_red(entry_dir)
-            || (light.is_yellow(entry_dir) && distance_to_light_tile > 2.0);
+        let must_stop =
+            light.is_red(entry_dir) || (light.is_yellow(entry_dir) && distance_to_light_tile > 2.0);
 
         // If we were stopped/waiting, only release on green.
         if matches!(
@@ -1268,49 +1396,6 @@ fn check_intersection_priority(
     }
 }
 
-/// Compute acceleration based on traffic state
-fn compute_acceleration(
-    vehicle: &Vehicle,
-    state: &VehicleTrafficState,
-    params: &BrakingParams,
-    tile_size: f32,
-) -> f32 {
-    match state {
-        VehicleTrafficState::FreeFlow | VehicleTrafficState::CrossingIntersection => {
-            // Accelerate to max speed
-            let delta_v = vehicle.max_speed - vehicle.speed;
-            (delta_v * 2.0).clamp(-params.max_decel, vehicle.max_accel)
-        }
-        VehicleTrafficState::Approaching {
-            distance_to_stop, ..
-        } => {
-            // Approach controller: choose a target speed that allows a comfortable stop at the stop line.
-            // NOTE: distance_to_stop is in tiles; convert to world units.
-            //
-            // We use v_target = min(v_max, sqrt(2 * a_comfort * d)) so that
-            // required_decel = v^2/(2d) stays <= a_comfort.
-            let dist_world = distance_to_stop.max(0.0) * tile_size.max(1.0);
-            let target_speed = (2.0 * params.comfortable_decel.max(0.0) * dist_world)
-                .sqrt()
-                .min(vehicle.max_speed);
-            let delta_v = target_speed - vehicle.speed;
-            (delta_v * 2.0).clamp(-params.max_decel, vehicle.max_accel)
-        }
-        VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. } => {
-            // Full stop
-            if vehicle.speed > 0.01 {
-                -params.max_decel
-            } else {
-                0.0
-            }
-        }
-        VehicleTrafficState::Accelerating => {
-            // Smooth start
-            vehicle.max_accel * 0.8
-        }
-    }
-}
-
 /// Update the occupancy map based on current vehicle positions.
 fn update_traffic_occupancy(
     grid: Res<MapGrid>,
@@ -1437,8 +1522,7 @@ fn render_traffic_overlay(
                     continue;
                 }
 
-                let world =
-                    origin + Vec2::new(x as f32 * cfg.tile_size, y as f32 * cfg.tile_size);
+                let world = origin + Vec2::new(x as f32 * cfg.tile_size, y as f32 * cfg.tile_size);
 
                 let e = commands
                     .spawn((
@@ -1663,7 +1747,9 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .add_message::<TripFinished>()
-            .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(1.0 / 10.0))
+            .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+                1.0 / 10.0,
+            ))
             .insert_resource(MapConfig {
                 width: 8,
                 height: 8,
@@ -1671,7 +1757,7 @@ mod tests {
             })
             .insert_resource(MapGrid::new(8, 8))
             .insert_resource(TrafficOccupancy::default())
-            .insert_resource(BrakingParams::default())
+            .insert_resource(TrafficConfig::default())
             .insert_resource(FinishCount::default())
             .add_systems(Update, (move_vehicles, count_trip_finished).chain());
 

@@ -31,7 +31,7 @@ impl RoadKind {
         }
     }
 
-    /// Speed limit (arbitrary units, used by routing weights).
+    /// Speed limit in **km/h** (also used by routing weights).
     pub fn speed_limit(self) -> f32 {
         match self {
             RoadKind::None => 0.0,
