@@ -117,6 +117,23 @@ const SPAWN_THROTTLE_MAX_CONG: f32 = 0.95;
 const SPAWN_THROTTLE_AVG_CONG: f32 = 0.85;
 
 // ---------------------------------------------------------------------------
+// Stage C (initial): lane-change heuristics (keep-right + overtake) with guardrails
+// ---------------------------------------------------------------------------
+
+/// Minimum time between lane changes for a vehicle (seconds).
+const LANE_CHANGE_COOLDOWN_SECS: f32 = 1.5;
+/// How long we keep the "overtaking" intent before trying to return right (seconds).
+const OVERTAKE_HOLD_SECS: f32 = 3.0;
+/// Guardrail: max number of lane-change reroutes per tick.
+const MAX_LANE_CHANGES_PER_TICK: usize = 24;
+/// Disable lane changes when an intersection is close ahead on the route.
+const LANE_CHANGE_INTERSECTION_LOOKAHEAD: usize = 6;
+/// Trigger overtake if a slow leader is within this distance (in tiles, along-route approximation).
+const OVERTAKE_LOOKAHEAD_TILES: f32 = 2.0;
+/// Leader is considered "slow" if below this fraction of our desired speed.
+const OVERTAKE_LEADER_SPEED_RATIO: f32 = 0.85;
+
+// ---------------------------------------------------------------------------
 // IDM (Stage B): longitudinal dynamics (car-following)
 // ---------------------------------------------------------------------------
 
@@ -223,6 +240,18 @@ struct Yielding {
     remaining_secs: f32,
 }
 
+/// Prevents frequent lane-change oscillations.
+#[derive(Component, Debug, Clone, Copy)]
+struct LaneChangeCooldown {
+    remaining_secs: f32,
+}
+
+/// Marker state to prefer staying left briefly while overtaking, then returning right.
+#[derive(Component, Debug, Clone, Copy)]
+struct Overtaking {
+    remaining_secs: f32,
+}
+
 #[derive(Component, Debug, Copy, Clone)]
 struct TripPassenger {
     citizen: CitizenId,
@@ -291,7 +320,13 @@ impl Plugin for TrafficPlugin {
                     update_traffic_queues.after(update_vehicle_traffic_state),
                     check_intersection_priority.after(update_traffic_queues),
                     spawn_trip_vehicles,
-                    move_vehicles.after(check_intersection_priority),
+                    tick_lane_change_cooldowns,
+                    tick_overtaking,
+                    plan_lane_changes
+                        .after(check_intersection_priority)
+                        .after(spawn_trip_vehicles)
+                        .before(move_vehicles),
+                    move_vehicles.after(plan_lane_changes),
                 )
                     .in_set(GameSet::Sim)
                     .run_if(in_state(AppState::InGame)),
@@ -811,6 +846,386 @@ fn resolve_stuck_vehicles(
             stuck.yield_count = stuck.yield_count.saturating_add(1);
             handled += 1;
         }
+    }
+}
+
+fn tick_lane_change_cooldowns(
+    time: Res<Time<Fixed>>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut LaneChangeCooldown)>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut cd) in q.iter_mut() {
+        cd.remaining_secs -= dt;
+        if cd.remaining_secs <= 0.0 {
+            commands.entity(e).remove::<LaneChangeCooldown>();
+        }
+    }
+}
+
+fn tick_overtaking(time: Res<Time<Fixed>>, mut commands: Commands, mut q: Query<(Entity, &mut Overtaking)>) {
+    let dt = time.delta_secs();
+    for (e, mut ov) in q.iter_mut() {
+        ov.remaining_secs -= dt;
+        if ov.remaining_secs <= 0.0 {
+            commands.entity(e).remove::<Overtaking>();
+        }
+    }
+}
+
+fn route_has_near_intersection(route: &[TilePos], grid: &MapGrid) -> bool {
+    for t in route.iter().skip(1).take(LANE_CHANGE_INTERSECTION_LOOKAHEAD) {
+        if let Some(c) = grid.get(*t)
+            && c.road.is_some()
+            && c.road.dir == RoadDir::None
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn lane_change_target(grid: &MapGrid, current: TilePos, move_dir: RoadDir) -> Option<TilePos> {
+    let Some(cur_cell) = grid.get(current) else {
+        return None;
+    };
+    if cur_cell.water || !cur_cell.road.is_some() || cur_cell.road.dir == RoadDir::None {
+        return None;
+    }
+
+    let delta = move_dir.delta();
+    let target = TilePos {
+        x: current.x + delta.x,
+        y: current.y + delta.y,
+    };
+    let Some(next_cell) = grid.get(target) else {
+        return None;
+    };
+    if next_cell.water || !next_cell.road.is_some() {
+        return None;
+    }
+
+    let cur = cur_cell.road;
+    let next = next_cell.road;
+
+    if next.dir != cur.dir {
+        return None;
+    }
+    if next.kind != cur.kind || next.lanes_total() != cur.lanes_total() {
+        return None;
+    }
+    if next.lane.abs_diff(cur.lane) != 1 {
+        return None;
+    }
+
+    Some(target)
+}
+
+fn lane_change_safe_progress(
+    target: TilePos,
+    ego_progress: f32,
+    by_tile: &std::collections::HashMap<TilePos, Vec<(Entity, f32, f32)>>,
+    reserved: &std::collections::HashMap<TilePos, Vec<f32>>,
+    min_gap_progress: f32,
+) -> bool {
+    if let Some(list) = by_tile.get(&target) {
+        for (_, p, _) in list.iter().copied() {
+            if (p - ego_progress).abs() < min_gap_progress {
+                return false;
+            }
+        }
+    }
+    if let Some(list) = reserved.get(&target) {
+        for p in list.iter().copied() {
+            if (p - ego_progress).abs() < min_gap_progress {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn find_leader_ahead(
+    ego: (TilePos, f32),
+    route: &[TilePos],
+    by_tile: &std::collections::HashMap<TilePos, Vec<(Entity, f32, f32)>>,
+) -> Option<(f32, f32)> {
+    let (tile, progress) = ego;
+    let list = by_tile.get(&tile)?;
+    // On the same tile: nearest vehicle with higher progress.
+    let mut best: Option<(f32, f32)> = None; // (gap_tiles, lead_speed)
+    for (_, p, v) in list.iter().copied() {
+        if p > progress {
+            let g = p - progress;
+            if best.is_none() || g < best.unwrap().0 {
+                best = Some((g, v));
+            }
+        }
+    }
+    // On the next tile: earliest vehicle.
+    if route.len() > 1 {
+        let next_tile = route[1];
+        if let Some(next_list) = by_tile.get(&next_tile)
+            && let Some((_, min_p, lead_v)) = next_list.first().copied()
+        {
+            let g = (1.0 - progress) + min_p;
+            if best.is_none() || g < best.unwrap().0 {
+                best = Some((g, lead_v));
+            }
+        }
+    }
+    best
+}
+
+fn plan_lane_changes(
+    time: Res<Time<Fixed>>,
+    cfg: Res<MapConfig>,
+    grid: Res<MapGrid>,
+    graph: Res<RoadGraph>,
+    regions: Res<RegionGraph>,
+    traffic: Res<TrafficOccupancy>,
+    path_cfg: Res<PathfindingConfig>,
+    mut path_cache: ResMut<PathCache>,
+    intersections: Res<IntersectionIndex>,
+    traffic_cfg: Res<TrafficConfig>,
+    mut commands: Commands,
+    mut vehicles: ParamSet<(
+        Query<
+            (
+                Entity,
+                &Vehicle,
+                &VehicleTrafficState,
+                Option<&LaneChangeCooldown>,
+                Option<&Overtaking>,
+                Option<&ServiceVehicle>,
+                Option<&BusVehicle>,
+            ),
+            Without<Parked>,
+        >,
+        Query<(Entity, &mut Vehicle), Without<Parked>>,
+    )>,
+) {
+    // Build a per-tile ordering for leader detection and lane safety checks.
+    let mut by_tile: std::collections::HashMap<TilePos, Vec<(Entity, f32, f32)>> =
+        std::collections::HashMap::new();
+    for (e, v, ..) in vehicles.p0().iter() {
+        if let Some(&tile) = v.route.first() {
+            by_tile
+                .entry(tile)
+                .or_default()
+                .push((e, v.progress.clamp(0.0, 1.0), v.speed.max(0.0)));
+        }
+    }
+    for list in by_tile.values_mut() {
+        list.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    }
+
+    let idm = idm_params_world(&cfg, &traffic_cfg);
+    let min_gap_progress = (idm.s0 / cfg.tile_size.max(0.1)).clamp(0.12, 0.45);
+
+    // A small "reservation" map to avoid multiple vehicles committing into the same
+    // target lane position range in a single tick.
+    let mut reserved: std::collections::HashMap<TilePos, Vec<f32>> = std::collections::HashMap::new();
+
+    // Collect desires first (so we can prioritize), then apply with a guardrail limit.
+    #[derive(Debug)]
+    struct Desire {
+        e: Entity,
+        target: TilePos,
+        priority: u8,
+        ego_tile: TilePos,
+        ego_progress: f32,
+        goal: TilePos,
+    }
+    let mut desires = Vec::<Desire>::new();
+
+    for (e, v, state, cooldown, overtaking, service_vehicle, bus_vehicle) in vehicles.p0().iter() {
+        if cooldown.is_some() {
+            continue;
+        }
+        if service_vehicle.is_some() || bus_vehicle.is_some() {
+            continue;
+        }
+        if v.route.len() < 2 {
+            continue;
+        }
+
+        // Don't lane change inside/near intersections.
+        let ego_tile = v.route[0];
+        if route_has_near_intersection(&v.route, &grid) {
+            continue;
+        }
+        let Some(ego_cell) = grid.get(ego_tile) else {
+            continue;
+        };
+        if ego_cell.water || !ego_cell.road.is_some() || ego_cell.road.dir == RoadDir::None {
+            continue;
+        }
+
+        // Do not change lanes while stopped/waiting/approaching a stop line.
+        if matches!(
+            *state,
+            VehicleTrafficState::Approaching { .. }
+                | VehicleTrafficState::Stopped { .. }
+                | VehicleTrafficState::WaitingForGreen { .. }
+                | VehicleTrafficState::CrossingIntersection
+        ) {
+            continue;
+        }
+
+        let dir = ego_cell.road.dir;
+        let goal = *v.route.last().unwrap_or(&ego_tile);
+        if goal == ego_tile {
+            continue;
+        }
+
+        let v0 = road_speed_limit_world(&cfg, &traffic_cfg, ego_tile, &grid).min(v.max_speed);
+        if v0 <= 0.0 {
+            continue;
+        }
+
+        // Candidate adjacent lanes.
+        let left_target = lane_change_target(&grid, ego_tile, dir.left());
+        let right_target = lane_change_target(&grid, ego_tile, dir.right());
+
+        // Leader heuristics (for overtake decision).
+        let leader = find_leader_ahead((ego_tile, v.progress), &v.route, &by_tile);
+
+        let mut want_left = false;
+        let mut want_right = false;
+
+        // Overtake: move left if a slow leader is close.
+        if let (Some(_lt), Some((gap_tiles, lead_speed))) = (left_target, leader) {
+            if gap_tiles <= OVERTAKE_LOOKAHEAD_TILES
+                && lead_speed < v0 * OVERTAKE_LEADER_SPEED_RATIO
+                && v.speed < v0 * 0.95
+            {
+                want_left = true;
+            }
+        }
+
+        // Return right after overtaking, or keep-right when cruising.
+        if right_target.is_some() {
+            if let Some(ov) = overtaking {
+                // If we're overtaking but not currently blocked, start returning right in the second half.
+                if ov.remaining_secs <= (OVERTAKE_HOLD_SECS * 0.5)
+                    && leader.map_or(true, |(_, lead_v)| lead_v >= v0 * 0.95)
+                {
+                    want_right = true;
+                }
+            } else {
+                // Keep-right when not actively overtaking and not slowed.
+                if leader.map_or(true, |(_, lead_v)| lead_v >= v0 * 0.95) {
+                    want_right = true;
+                }
+            }
+        }
+
+        // Build a desire (priority: overtake-left > return-right > keep-right).
+        if want_left {
+            if let Some(target) = left_target {
+                desires.push(Desire {
+                    e,
+                    target,
+                    priority: 2,
+                    ego_tile,
+                    ego_progress: v.progress,
+                    goal,
+                });
+            }
+        } else if want_right {
+            if let Some(target) = right_target {
+                desires.push(Desire {
+                    e,
+                    target,
+                    priority: if overtaking.is_some() { 1 } else { 0 },
+                    ego_tile,
+                    ego_progress: v.progress,
+                    goal,
+                });
+            }
+        }
+    }
+
+    // Highest priority first (stable tie-breaker by entity id).
+    desires.sort_by(|a, b| {
+        b.priority
+            .cmp(&a.priority)
+            .then_with(|| a.e.to_bits().cmp(&b.e.to_bits()))
+    });
+
+    let mut done = 0usize;
+    let mut ctx = PathfindingCtx {
+        time_now_sec: time.elapsed_secs_f64(),
+        cfg: &path_cfg,
+        cache: &mut path_cache,
+        graph: &graph,
+        regions: Some(&regions),
+        traffic: &traffic,
+        grid: &grid,
+        intersections: &intersections,
+    };
+
+    for d in desires {
+        if done >= MAX_LANE_CHANGES_PER_TICK {
+            break;
+        }
+
+        // Capacity check (coarse).
+        if let Some(ti) = grid.idx(d.target)
+            && let Some(cell) = grid.get(d.target)
+            && cell.road.is_some()
+            && ti < traffic.per_tick_vehicles.len()
+        {
+            let cap = cell.road.kind.capacity_per_lane_tile();
+            if traffic.per_tick_vehicles[ti] >= cap {
+                continue;
+            }
+        } else {
+            continue;
+        }
+
+        // Safe gap check (fine-ish, based on progress ranges).
+        if !lane_change_safe_progress(d.target, d.ego_progress, &by_tile, &reserved, min_gap_progress) {
+            continue;
+        }
+
+        // Re-route from the target lane to the goal, then prepend current tile as the lane-change step.
+        let current = d.ego_tile;
+        let goal = d.goal;
+        let route_from_target = find_road_path_cached(&mut ctx, d.target, goal);
+        if route_from_target.is_empty() {
+            continue;
+        }
+        if route_from_target.get(1).copied() == Some(current) {
+            // Avoid immediate ping-pong.
+            continue;
+        }
+
+        if let Ok((_e, mut v)) = vehicles.p1().get_mut(d.e) {
+            // Keep current tile; insert lane-change as the first step.
+            let mut new_route = Vec::with_capacity(route_from_target.len() + 1);
+            new_route.push(current);
+            new_route.extend(route_from_target);
+            v.route = new_route;
+        } else {
+            continue;
+        }
+
+        // Reserve this position on the target tile to avoid same-tick overlaps.
+        reserved.entry(d.target).or_default().push(d.ego_progress);
+
+        // Apply cooldown + overtake marker if we moved left.
+        commands.entity(d.e).insert(LaneChangeCooldown {
+            remaining_secs: LANE_CHANGE_COOLDOWN_SECS,
+        });
+        if d.priority >= 2 {
+            commands.entity(d.e).insert(Overtaking {
+                remaining_secs: OVERTAKE_HOLD_SECS,
+            });
+        }
+
+        done += 1;
     }
 }
 
