@@ -7,7 +7,9 @@ use rand::prelude::*;
 use crate::game::camera::MainCamera;
 use crate::game::commands::GameCommand;
 use crate::game::ids::CitizenId;
-use crate::game::intersections::{IntersectionIndex, IntersectionKey, IntersectionPriority};
+use crate::game::intersections::{
+    IntersectionId, IntersectionIndex, IntersectionKey, IntersectionPriority,
+};
 use crate::game::map::{MapConfig, MapGrid, TilePos};
 use crate::game::public_transport::{
     BusVehicle, PendingTransitTrips, PendingTrip, PublicTransportConfig, PublicTransportIndex,
@@ -100,18 +102,13 @@ const QUEUE_GAP: f32 = 0.3;
 /// Stop line offset relative to intersection (0.0 = tile boundary)
 const STOP_LINE_OFFSET: f32 = 0.15;
 
-/// After this many seconds without progressing, try to resolve a traffic jam.
-const STUCK_UTURN_SECS: f32 = 10.0;
-/// After this many seconds without progressing, temporarily yield (become non-blocking) to break deadlocks.
-const STUCK_YIELD_SECS: f32 = 15.0;
-/// How long a yielding vehicle stays non-blocking.
-const YIELD_DURATION_SECS: f32 = 4.0;
+/// After this many seconds without progressing, try to resolve a traffic jam (reroute).
+/// (v2 policy: avoid "cheat" behavior by default; only intervene after a long timeout.)
+const STUCK_REROUTE_SECS: f32 = 60.0;
+/// After this many seconds without progressing, despawn non-service trip vehicles as an emergency guardrail.
+const STUCK_DESPAWN_SECS: f32 = 180.0;
 /// Maximum number of unstuck operations per tick (guardrail).
 const MAX_UNSTUCK_PER_TICK: usize = 8;
-/// Maximum yields before we despawn trip vehicles (prevents unbounded gridlock/lag).
-const MAX_YIELDS_BEFORE_DESPAWN: u8 = 3;
-/// Search radius (in tiles) for an opposite-direction lane to perform an in-place U-turn.
-const OPPOSITE_LANE_SEARCH_RADIUS: i32 = 2;
 /// Throttle new car spawns when congestion is extreme (keeps sim stable).
 const SPAWN_THROTTLE_MAX_CONG: f32 = 0.95;
 const SPAWN_THROTTLE_AVG_CONG: f32 = 0.85;
@@ -231,13 +228,6 @@ struct StuckTimer {
     secs: f32,
     last_tile: TilePos,
     last_progress: f32,
-    yield_count: u8,
-}
-
-/// Temporary "yield" state: vehicle pulls aside (non-blocking) to break a deadlock.
-#[derive(Component, Debug, Clone, Copy)]
-struct Yielding {
-    remaining_secs: f32,
 }
 
 /// Prevents frequent lane-change oscillations.
@@ -250,6 +240,30 @@ struct LaneChangeCooldown {
 #[derive(Component, Debug, Clone, Copy)]
 struct Overtaking {
     remaining_secs: f32,
+}
+
+// ---------------------------------------------------------------------------
+// Stage D (initial): intersection admission via coarse reservations
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum ReservationState {
+    /// Reserved but the vehicle is still on the approach tile.
+    Approaching,
+    /// Vehicle is inside the intersection cluster.
+    Inside,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct IntersectionReservation {
+    vehicle: Entity,
+    state: ReservationState,
+    created_at_sec: f64,
+}
+
+#[derive(Resource, Default)]
+struct IntersectionReservations {
+    by_intersection: std::collections::HashMap<IntersectionId, IntersectionReservation>,
 }
 
 #[derive(Component, Debug, Copy, Clone)]
@@ -301,6 +315,7 @@ impl Plugin for TrafficPlugin {
             .init_resource::<TrafficIndex>()
             .init_resource::<TrafficConfig>()
             .init_resource::<TrafficOverlayPool>()
+            .init_resource::<IntersectionReservations>()
             .add_systems(
                 OnEnter(AppState::MainMenu),
                 (cleanup_traffic_entities, reset_traffic_aggregates),
@@ -326,7 +341,11 @@ impl Plugin for TrafficPlugin {
                         .after(check_intersection_priority)
                         .after(spawn_trip_vehicles)
                         .before(move_vehicles),
-                    move_vehicles.after(plan_lane_changes),
+                    plan_intersection_reservations
+                        .after(plan_lane_changes)
+                        .before(move_vehicles),
+                    move_vehicles.after(plan_intersection_reservations),
+                    cleanup_intersection_reservations.after(move_vehicles),
                 )
                     .in_set(GameSet::Sim)
                     .run_if(in_state(AppState::InGame)),
@@ -336,7 +355,6 @@ impl Plugin for TrafficPlugin {
                 FixedUpdate,
                 (
                     init_stuck_timers,
-                    tick_yielding.before(move_vehicles),
                     update_stuck_timers.after(move_vehicles),
                     resolve_stuck_vehicles.after(update_stuck_timers),
                 )
@@ -623,45 +641,7 @@ fn init_stuck_timers(
             secs: 0.0,
             last_tile: tile,
             last_progress: v.progress,
-            yield_count: 0,
         });
-    }
-}
-
-fn tick_yielding(
-    time: Res<Time<Fixed>>,
-    mut commands: Commands,
-    mut q: Query<
-        (
-            Entity,
-            &mut Yielding,
-            &mut Vehicle,
-            &mut VehicleTrafficState,
-            Option<&mut StuckTimer>,
-        ),
-        With<Parked>,
-    >,
-) {
-    let dt = time.delta_secs();
-    for (e, mut yielding, mut v, mut state, stuck) in q.iter_mut() {
-        yielding.remaining_secs -= dt;
-        v.speed = 0.0;
-        if yielding.remaining_secs > 0.0 {
-            continue;
-        }
-
-        // Return to traffic.
-        commands.entity(e).remove::<Yielding>();
-        commands.entity(e).remove::<Parked>();
-        *state = VehicleTrafficState::FreeFlow;
-
-        if let Some(mut stuck) = stuck {
-            stuck.secs = 0.0;
-            if let Some(tile) = v.route.first().copied() {
-                stuck.last_tile = tile;
-                stuck.last_progress = v.progress;
-            }
-        }
     }
 }
 
@@ -695,51 +675,9 @@ fn update_stuck_timers(
     }
 }
 
-fn find_opposite_lane_tile(grid: &MapGrid, current: TilePos) -> Option<TilePos> {
-    let cell = grid.get(current)?;
-    let road = cell.road;
-    if !road.is_some() || road.dir == RoadDir::None {
-        return None;
-    }
-    let opposite = road.dir.opposite();
-    if opposite == RoadDir::None {
-        return None;
-    }
-
-    let mut best: Option<(i32, TilePos)> = None;
-    for dy in -OPPOSITE_LANE_SEARCH_RADIUS..=OPPOSITE_LANE_SEARCH_RADIUS {
-        for dx in -OPPOSITE_LANE_SEARCH_RADIUS..=OPPOSITE_LANE_SEARCH_RADIUS {
-            if dx == 0 && dy == 0 {
-                continue;
-            }
-            let pos = TilePos {
-                x: current.x + dx,
-                y: current.y + dy,
-            };
-            let Some(c) = grid.get(pos) else {
-                continue;
-            };
-            if c.water || !c.road.is_some() {
-                continue;
-            }
-            if c.road.dir != opposite {
-                continue;
-            }
-
-            let dist = dx.abs() + dy.abs();
-            match best {
-                Some((best_dist, _)) if dist >= best_dist => {}
-                _ => best = Some((dist, pos)),
-            }
-        }
-    }
-
-    best.map(|(_, p)| p)
-}
-
 fn resolve_stuck_vehicles(
     time: Res<Time<Fixed>>,
-    cfg: Res<MapConfig>,
+    _cfg: Res<MapConfig>,
     grid: Res<MapGrid>,
     graph: Res<RoadGraph>,
     regions: Res<RegionGraph>,
@@ -753,7 +691,6 @@ fn resolve_stuck_vehicles(
         (
             Entity,
             &mut Vehicle,
-            &mut Transform,
             &VehicleTrafficState,
             Option<&TripPassenger>,
             Option<&ServiceVehicle>,
@@ -776,9 +713,7 @@ fn resolve_stuck_vehicles(
         intersections: &intersections,
     };
 
-    for (e, mut v, mut tf, state, passenger, service_vehicle, bus_vehicle, mut stuck) in
-        q.iter_mut()
-    {
+    for (e, mut v, state, passenger, service_vehicle, bus_vehicle, mut stuck) in q.iter_mut() {
         if handled >= MAX_UNSTUCK_PER_TICK {
             break;
         }
@@ -792,58 +727,40 @@ fn resolve_stuck_vehicles(
         ) {
             continue;
         }
-        if stuck.secs < STUCK_UTURN_SECS {
+        if stuck.secs < STUCK_REROUTE_SECS {
             continue;
         }
 
         let current = v.route[0];
         let goal = *v.route.last().unwrap_or(&current);
 
-        // 1) Try an in-place U-turn: hop to the nearest opposite-direction lane tile and re-route.
-        if let Some(alt_start) = find_opposite_lane_tile(&grid, current) {
-            let route = find_road_path_cached(&mut ctx, alt_start, goal);
-            if !route.is_empty() {
-                v.route = route;
-                v.progress = 0.0;
-                v.speed = v.speed.min(v.max_speed * 0.5);
-                let wp = tile_to_world(&cfg, alt_start);
-                tf.translation.x = wp.x;
-                tf.translation.y = wp.y;
+        // 1) Emergency re-route: try to find an alternative path to the same goal.
+        let route = find_road_path_cached(&mut ctx, current, goal);
+        if !route.is_empty() && route != v.route {
+            v.route = route;
+            v.progress = 0.0;
+            v.speed = v.speed.min(v.max_speed * 0.5);
 
-                stuck.secs = 0.0;
-                stuck.last_tile = alt_start;
-                stuck.last_progress = 0.0;
-                handled += 1;
-                continue;
-            }
+            stuck.secs = 0.0;
+            stuck.last_tile = current;
+            stuck.last_progress = 0.0;
+            handled += 1;
+            continue;
         }
 
-        // 2) If still stuck for longer, temporarily yield (become non-blocking) to break deadlocks.
-        if stuck.secs >= STUCK_YIELD_SECS {
-            // After repeated yields, despawn trip vehicles to avoid unbounded gridlock/lag.
-            if service_vehicle.is_none()
-                && bus_vehicle.is_none()
-                && passenger.is_some()
-                && stuck.yield_count >= MAX_YIELDS_BEFORE_DESPAWN
-            {
-                if let Some(p) = passenger {
-                    finished.write(TripFinished {
-                        citizen: p.citizen,
-                        purpose: p.purpose,
-                    });
-                }
-                commands.entity(e).despawn();
-                handled += 1;
-                continue;
+        // 2) Last-resort guardrail: despawn non-service trip vehicles after a very long time stuck.
+        if stuck.secs >= STUCK_DESPAWN_SECS
+            && service_vehicle.is_none()
+            && bus_vehicle.is_none()
+            && passenger.is_some()
+        {
+            if let Some(p) = passenger {
+                finished.write(TripFinished {
+                    citizen: p.citizen,
+                    purpose: p.purpose,
+                });
             }
-
-            commands.entity(e).insert(Parked { offset: 1.0 });
-            commands.entity(e).insert(Yielding {
-                remaining_secs: YIELD_DURATION_SECS,
-            });
-            v.speed = 0.0;
-            stuck.secs = 0.0;
-            stuck.yield_count = stuck.yield_count.saturating_add(1);
+            commands.entity(e).despawn();
             handled += 1;
         }
     }
@@ -863,7 +780,11 @@ fn tick_lane_change_cooldowns(
     }
 }
 
-fn tick_overtaking(time: Res<Time<Fixed>>, mut commands: Commands, mut q: Query<(Entity, &mut Overtaking)>) {
+fn tick_overtaking(
+    time: Res<Time<Fixed>>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut Overtaking)>,
+) {
     let dt = time.delta_secs();
     for (e, mut ov) in q.iter_mut() {
         ov.remaining_secs -= dt;
@@ -874,7 +795,11 @@ fn tick_overtaking(time: Res<Time<Fixed>>, mut commands: Commands, mut q: Query<
 }
 
 fn route_has_near_intersection(route: &[TilePos], grid: &MapGrid) -> bool {
-    for t in route.iter().skip(1).take(LANE_CHANGE_INTERSECTION_LOOKAHEAD) {
+    for t in route
+        .iter()
+        .skip(1)
+        .take(LANE_CHANGE_INTERSECTION_LOOKAHEAD)
+    {
         if let Some(c) = grid.get(*t)
             && c.road.is_some()
             && c.road.dir == RoadDir::None
@@ -1010,10 +935,11 @@ fn plan_lane_changes(
         std::collections::HashMap::new();
     for (e, v, ..) in vehicles.p0().iter() {
         if let Some(&tile) = v.route.first() {
-            by_tile
-                .entry(tile)
-                .or_default()
-                .push((e, v.progress.clamp(0.0, 1.0), v.speed.max(0.0)));
+            by_tile.entry(tile).or_default().push((
+                e,
+                v.progress.clamp(0.0, 1.0),
+                v.speed.max(0.0),
+            ));
         }
     }
     for list in by_tile.values_mut() {
@@ -1025,7 +951,8 @@ fn plan_lane_changes(
 
     // A small "reservation" map to avoid multiple vehicles committing into the same
     // target lane position range in a single tick.
-    let mut reserved: std::collections::HashMap<TilePos, Vec<f32>> = std::collections::HashMap::new();
+    let mut reserved: std::collections::HashMap<TilePos, Vec<f32>> =
+        std::collections::HashMap::new();
 
     // Collect desires first (so we can prioritize), then apply with a guardrail limit.
     #[derive(Debug)]
@@ -1186,7 +1113,13 @@ fn plan_lane_changes(
         }
 
         // Safe gap check (fine-ish, based on progress ranges).
-        if !lane_change_safe_progress(d.target, d.ego_progress, &by_tile, &reserved, min_gap_progress) {
+        if !lane_change_safe_progress(
+            d.target,
+            d.ego_progress,
+            &by_tile,
+            &reserved,
+            min_gap_progress,
+        ) {
             continue;
         }
 
@@ -1229,6 +1162,204 @@ fn plan_lane_changes(
     }
 }
 
+fn dir_between_adjacent(from: TilePos, to: TilePos) -> RoadDir {
+    let dx = to.x - from.x;
+    let dy = to.y - from.y;
+    match (dx, dy) {
+        (1, 0) => RoadDir::East,
+        (-1, 0) => RoadDir::West,
+        (0, 1) => RoadDir::North,
+        (0, -1) => RoadDir::South,
+        _ => RoadDir::None,
+    }
+}
+
+fn is_intersection_tile(grid: &MapGrid, pos: TilePos) -> bool {
+    if let Some(c) = grid.get(pos)
+        && c.road.is_some()
+    {
+        c.road.dir == RoadDir::None
+    } else {
+        false
+    }
+}
+
+fn plan_intersection_reservations(
+    time: Res<Time<Fixed>>,
+    grid: Res<MapGrid>,
+    intersections: Res<IntersectionIndex>,
+    mut reservations: ResMut<IntersectionReservations>,
+    q_lights: Query<&crate::game::intersections::TrafficLight>,
+    q_vehicles: Query<(Entity, &Vehicle, &VehicleTrafficState), Without<Parked>>,
+) {
+    let now = time.elapsed_secs_f64();
+
+    // Build a small lookup of controllers by intersection id.
+    let mut lights_by_id =
+        std::collections::HashMap::<IntersectionId, crate::game::intersections::TrafficLight>::new(
+        );
+    for l in q_lights.iter() {
+        lights_by_id.insert(l.intersection_id, l.clone());
+    }
+
+    // Ensure any vehicle currently inside an intersection cluster owns a reservation (safety net).
+    for (e, v, _) in q_vehicles.iter() {
+        let Some(&cur) = v.route.first() else {
+            continue;
+        };
+        if !is_intersection_tile(&grid, cur) {
+            continue;
+        }
+        let Some(id) = intersections.intersection_id_at(cur) else {
+            continue;
+        };
+        reservations
+            .by_intersection
+            .entry(id)
+            .or_insert(IntersectionReservation {
+                vehicle: e,
+                state: ReservationState::Inside,
+                created_at_sec: now,
+            });
+    }
+
+    // Pick one approaching vehicle per free intersection.
+    #[derive(Copy, Clone)]
+    struct Best {
+        dist_to_entry: f32,
+        vehicle: Entity,
+    }
+    let mut best_by_intersection = std::collections::HashMap::<IntersectionId, Best>::new();
+
+    for (e, v, state) in q_vehicles.iter() {
+        if v.route.len() < 2 {
+            continue;
+        }
+        // Don't reserve for vehicles that are explicitly stopped/waiting at red.
+        if matches!(
+            *state,
+            VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. }
+        ) {
+            continue;
+        }
+
+        let cur = v.route[0];
+        if is_intersection_tile(&grid, cur) {
+            continue;
+        }
+        let next = v.route[1];
+        if !is_intersection_tile(&grid, next) {
+            continue;
+        }
+
+        let Some(id) = intersections.intersection_id_at(next) else {
+            continue;
+        };
+        if reservations.by_intersection.contains_key(&id) {
+            continue;
+        }
+
+        // If there is a traffic light controller, only admit on green.
+        if intersections.traffic_lights.contains(&id) {
+            let Some(light) = lights_by_id.get(&id) else {
+                continue;
+            };
+            let dir = dir_between_adjacent(cur, next);
+            if dir == RoadDir::None {
+                continue;
+            }
+            if !light.is_green(dir) {
+                continue;
+            }
+        }
+
+        let dist = (1.0 - v.progress).clamp(0.0, 1.0);
+        let cand = Best {
+            dist_to_entry: dist,
+            vehicle: e,
+        };
+
+        best_by_intersection
+            .entry(id)
+            .and_modify(|b| {
+                if cand.dist_to_entry < b.dist_to_entry
+                    || (cand.dist_to_entry == b.dist_to_entry
+                        && cand.vehicle.to_bits() < b.vehicle.to_bits())
+                {
+                    *b = cand;
+                }
+            })
+            .or_insert(cand);
+    }
+
+    for (id, best) in best_by_intersection {
+        reservations.by_intersection.insert(
+            id,
+            IntersectionReservation {
+                vehicle: best.vehicle,
+                state: ReservationState::Approaching,
+                created_at_sec: now,
+            },
+        );
+    }
+}
+
+fn cleanup_intersection_reservations(
+    time: Res<Time<Fixed>>,
+    intersections: Res<IntersectionIndex>,
+    mut reservations: ResMut<IntersectionReservations>,
+    q_vehicles: Query<&Vehicle>,
+) {
+    let now = time.elapsed_secs_f64();
+    let timeout_secs = 6.0;
+
+    let mut to_remove = Vec::<IntersectionId>::new();
+    for (id, r) in reservations.by_intersection.iter_mut() {
+        let Ok(v) = q_vehicles.get(r.vehicle) else {
+            to_remove.push(*id);
+            continue;
+        };
+        if v.route.is_empty() {
+            to_remove.push(*id);
+            continue;
+        }
+
+        let cur = v.route[0];
+        let cur_id = intersections.intersection_id_at(cur);
+        if cur_id == Some(*id) {
+            r.state = ReservationState::Inside;
+        }
+
+        match r.state {
+            ReservationState::Approaching => {
+                // Vehicle rerouted away: drop.
+                let next_id = v
+                    .route
+                    .get(1)
+                    .and_then(|t| intersections.intersection_id_at(*t));
+                if next_id != Some(*id) {
+                    to_remove.push(*id);
+                    continue;
+                }
+                // If it doesn't enter within a small time budget, release to avoid deadlocks.
+                if now - r.created_at_sec > timeout_secs {
+                    to_remove.push(*id);
+                }
+            }
+            ReservationState::Inside => {
+                // Release once the vehicle exits the intersection cluster.
+                if cur_id != Some(*id) {
+                    to_remove.push(*id);
+                }
+            }
+        }
+    }
+
+    for id in to_remove {
+        reservations.by_intersection.remove(&id);
+    }
+}
+
 /// Move vehicles along their routes.
 #[allow(clippy::type_complexity)]
 fn move_vehicles(
@@ -1237,6 +1368,8 @@ fn move_vehicles(
     grid: Res<MapGrid>,
     traffic: Res<TrafficOccupancy>,
     traffic_cfg: Res<TrafficConfig>,
+    intersections: Res<IntersectionIndex>,
+    reservations: Res<IntersectionReservations>,
     mut commands: Commands,
     mut finished: bevy::ecs::message::MessageWriter<TripFinished>,
     mut vehicles: ParamSet<(
@@ -1358,8 +1491,26 @@ fn move_vehicles(
         } else {
             // Virtual leader: next tile blocked by capacity or "don't block the box".
             let mut blocked_next = false;
+            let mut blocked_next_is_intersection = false;
             if v.route.len() > 1 {
                 let next_tile = v.route[1];
+                let current_is_intersection = is_intersection_tile(&grid, current_tile);
+                let next_is_intersection = is_intersection_tile(&grid, next_tile);
+
+                // Intersection admission (Stage D): require a reservation to enter an intersection tile.
+                if next_is_intersection && !current_is_intersection {
+                    blocked_next_is_intersection = true;
+                    let ok = if let Some(id) = intersections.intersection_id_at(next_tile)
+                        && let Some(r) = reservations.by_intersection.get(&id)
+                    {
+                        r.vehicle == entity
+                    } else {
+                        false
+                    };
+                    if !ok {
+                        blocked_next = true;
+                    }
+                }
 
                 if let Some(next_idx) = grid.idx(next_tile)
                     && let Some(next_cell) = grid.get(next_tile)
@@ -1374,9 +1525,7 @@ fn move_vehicles(
                 }
 
                 // "Don't block the box": entering intersection requires free space to exit.
-                if !blocked_next
-                    && matches!(grid.get(next_tile).map(|c| c.road.dir), Some(RoadDir::None))
-                {
+                if !blocked_next && next_is_intersection {
                     let exit_tile = v.route.iter().copied().skip(2).take(6).find(|t| {
                         if let Some(c) = grid.get(*t)
                             && c.road.is_some()
@@ -1403,7 +1552,13 @@ fn move_vehicles(
             }
 
             if blocked_next {
-                let gap_world = (1.0 - v.progress).max(0.0) * cfg.tile_size.max(0.1);
+                let gap_tiles = if blocked_next_is_intersection {
+                    // Stop line is slightly before the intersection boundary.
+                    (1.0 - v.progress - STOP_LINE_OFFSET).max(0.0)
+                } else {
+                    (1.0 - v.progress).max(0.0)
+                };
+                let gap_world = gap_tiles * cfg.tile_size.max(0.1);
                 let block_leader = (gap_world, 0.0);
                 leader = Some(match leader {
                     Some((g, gv)) if g <= block_leader.0 => (g, gv),
@@ -1426,7 +1581,11 @@ fn move_vehicles(
             // This keeps the vehicle from "teleporting" into a full tile in a single tick.
             if v.route.len() > 1 && blocked_next {
                 let stop_before = 0.001;
-                let max_p = 1.0 - stop_before;
+                let max_p = if blocked_next_is_intersection {
+                    (1.0 - STOP_LINE_OFFSET - stop_before).max(0.0)
+                } else {
+                    1.0 - stop_before
+                };
                 let next_p = (v.progress + dprog).min(max_p);
                 v.progress = next_p;
                 if (max_p - v.progress).abs() < 1e-6 {
@@ -1478,8 +1637,18 @@ fn update_vehicle_traffic_state(
     _grid: Res<MapGrid>,
     intersections: Res<IntersectionIndex>,
     q_lights: Query<&crate::game::intersections::TrafficLight>,
+    q_priorities: Query<&crate::game::intersections::IntersectionPriorityMarker>,
     mut q_vehicles: Query<(&Vehicle, &mut VehicleTrafficState)>,
 ) {
+    // We only need to distinguish StopSign-driven stops from light-driven stops.
+    // If a light gets removed while vehicles are stopped at it, we must release them.
+    let mut stop_sign_tiles = std::collections::HashSet::<TilePos>::new();
+    for m in q_priorities.iter() {
+        if m.priority == IntersectionPriority::StopSign {
+            stop_sign_tiles.insert(m.pos);
+        }
+    }
+
     for (vehicle, mut state) in q_vehicles.iter_mut() {
         let current_tile = vehicle.route.first().copied();
 
@@ -1491,13 +1660,24 @@ fn update_vehicle_traffic_state(
             &intersections,
         ) else {
             // No traffic light ahead – leave non-light logic (e.g. stop signs) to other systems.
-            // We only clear *light-driven* waiting states here.
-            if matches!(
-                *state,
-                VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. }
-            ) {
-                *state = VehicleTrafficState::FreeFlow;
-            }
+            // We clear *light-driven* states here, but keep stop-sign stops.
+            //
+            // Important: if a traffic light is removed while a vehicle is in Stopped/WaitingForGreen,
+            // `has_traffic_light_at(stop_tile)` becomes false. Without this guard, vehicles would
+            // remain stuck indefinitely.
+            match *state {
+                VehicleTrafficState::WaitingForGreen { .. } => {
+                    // Stop signs never use WaitingForGreen.
+                    *state = VehicleTrafficState::FreeFlow;
+                }
+                VehicleTrafficState::Stopped { stop_tile, .. }
+                | VehicleTrafficState::Approaching { stop_tile, .. } => {
+                    if !stop_sign_tiles.contains(&stop_tile) {
+                        *state = VehicleTrafficState::FreeFlow;
+                    }
+                }
+                _ => {}
+            };
             continue;
         };
 
@@ -1718,9 +1898,15 @@ fn check_intersection_priority(
 ) {
     // For intersections without traffic lights, apply priority rules
     for (_entity, vehicle, mut state) in q_vehicles.iter_mut() {
-        // Only check for vehicles in FreeFlow state approaching intersections
-        if !matches!(*state, VehicleTrafficState::FreeFlow) {
+        let Some(current_tile) = vehicle.route.first().copied() else {
             continue;
+        };
+
+        // Clear transient state after leaving intersection tiles so other rule systems can apply again.
+        if matches!(*state, VehicleTrafficState::CrossingIntersection)
+            && !is_intersection_tile(&grid, current_tile)
+        {
+            *state = VehicleTrafficState::FreeFlow;
         }
 
         // Check the NEXT tile (route[1]) so rules apply *before* entering the intersection.
@@ -1734,10 +1920,13 @@ fn check_intersection_priority(
             continue;
         }
 
+        // Only apply stop/yield rules on the approach tile (not once we're already inside).
+        if is_intersection_tile(&grid, current_tile) {
+            continue;
+        }
+
         // Check if this is an intersection (dir == None)
-        if let Some(cell) = grid.get(*next_tile)
-            && cell.road.dir == crate::game::roads::RoadDir::None
-        {
+        if is_intersection_tile(&grid, *next_tile) {
             // This is an intersection - check for priority rules
             // Try to find IntersectionPriority marker at this position
             let mut found_priority = None;
@@ -1791,11 +1980,30 @@ fn check_intersection_priority(
                     // Distance to stop line is remaining distance to end of current tile minus STOP_LINE_OFFSET.
                     let dist_to_intersection = 1.0 - vehicle.progress;
                     let dist_to_stop = (dist_to_intersection - STOP_LINE_OFFSET).max(0.0);
-                    *state = VehicleTrafficState::Approaching {
-                        intersection: intersection_key,
-                        stop_tile: *next_tile,
-                        distance_to_stop: dist_to_stop,
-                    };
+                    if dist_to_stop <= 0.0 {
+                        // First tick at the stop line: lock to a full stop (no creeping).
+                        // Next tick, we'll release to Cross/FreeFlow so the vehicle can enter (subject to admission).
+                        if matches!(
+                            *state,
+                            VehicleTrafficState::Stopped { stop_tile, .. }
+                                if stop_tile == *next_tile
+                        ) {
+                            *state = VehicleTrafficState::CrossingIntersection;
+                        } else {
+                            *state = VehicleTrafficState::Stopped {
+                                intersection: intersection_key,
+                                stop_tile: *next_tile,
+                                queue_position: 0,
+                            };
+                        }
+                    } else {
+                        // Update distance every tick so IDM braking sees a decreasing gap.
+                        *state = VehicleTrafficState::Approaching {
+                            intersection: intersection_key,
+                            stop_tile: *next_tile,
+                            distance_to_stop: dist_to_stop,
+                        };
+                    }
                 }
                 IntersectionPriority::YieldSign => {
                     // Yield sign - MVP: keep FreeFlow (could slow slightly later).
@@ -2173,6 +2381,8 @@ mod tests {
             .insert_resource(MapGrid::new(8, 8))
             .insert_resource(TrafficOccupancy::default())
             .insert_resource(TrafficConfig::default())
+            .insert_resource(IntersectionIndex::default())
+            .insert_resource(IntersectionReservations::default())
             .insert_resource(FinishCount::default())
             .add_systems(Update, (move_vehicles, count_trip_finished).chain());
 
