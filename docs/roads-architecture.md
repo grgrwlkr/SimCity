@@ -1627,3 +1627,4 @@ fn smart_road_maintenance(...) {
 **Документ создан:** 2025-12-19  
 **Версия кодовой базы:** SimCity commit `gpt...origin/gpt`  
 **Модули:** `src/game/roads.rs`, `src/game/map/mod.rs`, `src/game/transport.rs`
+

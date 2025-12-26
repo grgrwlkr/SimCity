@@ -1818,3 +1818,4 @@ fn update_vehicles(
 **Документ создан:** 2025-12-19  
 **Версия кодовой базы:** SimCity commit `gpt...origin/gpt`  
 **Модули:** `src/game/traffic.rs`, `src/game/transport.rs`, `src/game/roads.rs`, `src/game/trips.rs`
+
