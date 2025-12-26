@@ -2054,8 +2054,8 @@ mod tests {
     use crate::game::sim::City;
     use crate::game::traffic::TrafficOccupancy;
     use crate::game::transport::{
-        GraphVersion, PathCache, PathfindingConfig, PathfindingCtx, RoadGraph, find_road_path_cached,
-        rebuild_road_graph_inner,
+        GraphVersion, PathCache, PathfindingConfig, PathfindingCtx, RoadGraph,
+        find_road_path_cached, rebuild_road_graph_inner,
     };
     use bevy::app::App;
     use bevy::ecs::message::MessageWriter;

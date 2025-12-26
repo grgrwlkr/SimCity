@@ -28,21 +28,20 @@ pub struct EmergenciesPlugin;
 
 impl Plugin for EmergenciesPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<EmergencyManager>()
-            .add_systems(
-                FixedUpdate,
-                (
-                    spawn_emergencies,
-                    dispatch_emergency_vehicles,
-                    update_emergency_timers,
-                    resolve_emergencies,
-                    apply_emergency_consequences,
-                    cleanup_resolved_emergencies,
-                )
-                    .chain()
-                    .in_set(GameSet::Sim)
-                    .run_if(in_state(AppState::InGame)),
-            );
+        app.init_resource::<EmergencyManager>().add_systems(
+            FixedUpdate,
+            (
+                spawn_emergencies,
+                dispatch_emergency_vehicles,
+                update_emergency_timers,
+                resolve_emergencies,
+                apply_emergency_consequences,
+                cleanup_resolved_emergencies,
+            )
+                .chain()
+                .in_set(GameSet::Sim)
+                .run_if(in_state(AppState::InGame)),
+        );
 
         // Visual markers (render sync)
         app.add_systems(
