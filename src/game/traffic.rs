@@ -1574,6 +1574,7 @@ fn is_intersection_tile(grid: &MapGrid, pos: TilePos) -> bool {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn plan_intersection_reservations(
     time: Res<Time<Fixed>>,
     grid: Res<MapGrid>,
@@ -1581,6 +1582,7 @@ fn plan_intersection_reservations(
     traffic_cfg: Res<TrafficConfig>,
     mut reservations: ResMut<IntersectionReservations>,
     q_lights: Query<&crate::game::intersections::TrafficLight>,
+    q_pedestrians: Query<&crate::game::pedestrians::PedestrianTile>,
     q_vehicles: Query<(Entity, &Vehicle, &VehicleTrafficState), Without<Parked>>,
 ) {
     let now = time.elapsed_secs_f64();
@@ -1591,6 +1593,16 @@ fn plan_intersection_reservations(
         );
     for l in q_lights.iter() {
         lights_by_id.insert(l.intersection_id, l.clone());
+    }
+
+    // Conservative MVP: if any pedestrian is currently inside an intersection cluster, block
+    // right-turn-on-red admission for that intersection.
+    let mut intersections_with_peds =
+        std::collections::HashSet::<crate::game::intersections::IntersectionId>::new();
+    for crate::game::pedestrians::PedestrianTile(tile) in q_pedestrians.iter() {
+        if let Some(id) = intersections.intersection_id_at(*tile) {
+            intersections_with_peds.insert(id);
+        }
     }
 
     // Ensure any vehicle currently inside an intersection cluster owns a reservation (safety net).
@@ -1699,6 +1711,11 @@ fn plan_intersection_reservations(
                     dir.left()
                 };
                 if exit_dir != allowed_turn_dir {
+                    continue;
+                }
+
+                // Yield to pedestrians: do not release a right-on-red while a pedestrian is in the box.
+                if intersections_with_peds.contains(&id) {
                     continue;
                 }
 
@@ -2822,6 +2839,7 @@ mod tests {
     use crate::game::ids::CitizenId;
     use crate::game::intersections::IntersectionPriorityMarker;
     use crate::game::intersections::LightPhase;
+    use crate::game::pedestrians::PedestrianTile;
     use crate::game::roads::{LaneType, RoadCell, RoadFlow, RoadKind};
     use crate::game::trips::TripPurpose;
     use bevy::app::App;
@@ -3206,6 +3224,149 @@ mod tests {
         assert_eq!(
             app.world().get::<VehicleTrafficState>(ego).copied(),
             Some(VehicleTrafficState::Accelerating)
+        );
+    }
+
+    #[test]
+    fn right_turn_on_red_is_blocked_by_pedestrian_in_intersection() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+                1.0 / 10.0,
+            ))
+            .insert_resource(MapConfig {
+                width: 3,
+                height: 3,
+                tile_size: 16.0,
+            })
+            .insert_resource(TrafficConfig::default())
+            .insert_resource({
+                let mut grid = MapGrid::new(3, 3);
+
+                let approach = TilePos { x: 1, y: 0 };
+                let intersection_tile = TilePos { x: 1, y: 1 };
+                let exit = TilePos { x: 2, y: 1 };
+
+                for (pos, dir) in [
+                    (approach, RoadDir::North),
+                    (intersection_tile, RoadDir::None),
+                    (exit, RoadDir::East),
+                ] {
+                    let Some(mut cell) = grid.get(pos) else {
+                        continue;
+                    };
+                    cell.road = RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    };
+                    grid.set(pos, cell);
+                }
+
+                grid
+            })
+            .insert_resource({
+                let intersection_tile = TilePos { x: 1, y: 1 };
+                let id = IntersectionId(0);
+                let key = IntersectionKey {
+                    aabb_min: intersection_tile,
+                    aabb_max: intersection_tile,
+                    tile_count: 1,
+                    tiles_hash: 123,
+                };
+
+                let mut idx = IntersectionIndex::default();
+                idx.clusters
+                    .push(crate::game::intersections::IntersectionCluster {
+                        id,
+                        key,
+                        tiles: vec![intersection_tile],
+                        aabb_min: intersection_tile,
+                        aabb_max: intersection_tile,
+                        centroid_tile: intersection_tile,
+                    });
+                idx.tile_to_intersection.insert(intersection_tile, id);
+                idx.traffic_lights.insert(id);
+                idx
+            })
+            .insert_resource(IntersectionReservations::default())
+            .add_systems(Update, plan_intersection_reservations);
+
+        let intersection_tile = TilePos { x: 1, y: 1 };
+        let key = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .cluster_key_at(intersection_tile)
+            .unwrap();
+        let id = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .intersection_id_at(intersection_tile)
+            .unwrap();
+
+        // Red for North/South, green for East/West.
+        app.world_mut()
+            .spawn(crate::game::intersections::TrafficLight {
+                intersection_id: id,
+                intersection_key: key,
+                pos: intersection_tile,
+                phase: LightPhase::EastWestGreen,
+                phase_timer: 10.0,
+                green_duration: 10.0,
+                yellow_duration: 3.0,
+                all_red_duration: 1.0,
+            });
+
+        let approach = TilePos { x: 1, y: 0 };
+        let exit = TilePos { x: 2, y: 1 };
+
+        let ego = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![approach, intersection_tile, exit],
+                    progress: 1.0 - STOP_LINE_OFFSET,
+                    speed: 0.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                VehicleTrafficState::WaitingForGreen {
+                    intersection: key,
+                    stop_tile: intersection_tile,
+                },
+            ))
+            .id();
+
+        // Pedestrian currently inside the intersection cluster.
+        app.world_mut().spawn(PedestrianTile(intersection_tile));
+
+        app.update();
+        assert!(
+            app.world()
+                .resource::<IntersectionReservations>()
+                .by_intersection
+                .get(&id)
+                .is_none()
+        );
+
+        // Once the pedestrian is gone, right-on-red can be admitted.
+        let ped_entity = {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<Entity, With<PedestrianTile>>();
+            q.iter(world).next().unwrap()
+        };
+        app.world_mut().entity_mut(ped_entity).despawn();
+
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<IntersectionReservations>()
+                .by_intersection
+                .get(&id)
+                .map(|r| r.vehicle),
+            Some(ego)
         );
     }
 }

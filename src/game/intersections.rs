@@ -484,7 +484,9 @@ fn assign_intersection_priorities(
                         y: pos.y + 1,
                     },
                 ] {
-                    if let Some(neighbor_cell) = grid.get(neighbor_pos) {
+                    if let Some(neighbor_cell) = grid.get(neighbor_pos)
+                        && neighbor_cell.road.is_some()
+                    {
                         let lanes = neighbor_cell.road.kind.lanes();
                         max_lanes = max_lanes.max(lanes);
                         if lanes < 4 {
@@ -773,10 +775,12 @@ mod tests {
         let (clusters, tile_map) = build_intersection_clusters(&grid);
         assert_eq!(clusters.len(), 1);
 
-        let mut idx = IntersectionIndex::default();
-        idx.version = 1;
-        idx.clusters = clusters;
-        idx.tile_to_intersection = tile_map;
+        let mut idx = IntersectionIndex {
+            version: 1,
+            clusters,
+            tile_to_intersection: tile_map,
+            ..Default::default()
+        };
 
         let id = idx.intersection_id_at(TilePos { x: 1, y: 1 }).unwrap();
         idx.traffic_lights.insert(id);

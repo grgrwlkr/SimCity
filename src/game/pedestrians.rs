@@ -304,6 +304,11 @@ struct WalkTripPassenger {
     purpose: crate::game::trips::TripPurpose,
 }
 
+/// Current pedestrian tile (for other systems to observe pedestrian position without peeking into
+/// the internal route state).
+#[derive(Component, Debug, Copy, Clone, Eq, PartialEq)]
+pub struct PedestrianTile(pub TilePos);
+
 #[derive(Component, Debug, Clone)]
 pub struct Pedestrian {
     route: Vec<TilePos>,
@@ -342,11 +347,12 @@ fn spawn_walkers(
         if route.is_empty() {
             continue;
         }
+        let start_tile = route[0];
 
         let tile_meters = p.traffic_cfg.tile_meters().max(0.1);
         let speed_world = (p.ped_cfg.walk_speed_mps.max(0.1) * p.cfg.tile_size) / tile_meters;
 
-        let world = tile_to_world(&p.cfg, route[0]);
+        let world = tile_to_world(&p.cfg, start_tile);
         p.commands.spawn((
             Sprite::from_color(
                 Color::srgb(0.95, 0.55, 0.10),
@@ -359,6 +365,7 @@ fn spawn_walkers(
                 progress: 0.0,
                 speed_world,
             },
+            PedestrianTile(start_tile),
             WalkTripPassenger {
                 citizen: msg.citizen,
                 purpose: msg.purpose,
@@ -367,19 +374,38 @@ fn spawn_walkers(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn move_walkers(
     time: Res<Time<Fixed>>,
     cfg: Res<MapConfig>,
+    grid: Res<MapGrid>,
+    intersections: Option<Res<crate::game::intersections::IntersectionIndex>>,
+    q_lights: Query<&crate::game::intersections::TrafficLight>,
     mut finished: bevy::ecs::message::MessageWriter<TripFinished>,
     mut commands: Commands,
-    mut q: Query<(Entity, &mut Pedestrian, &mut Transform, &WalkTripPassenger)>,
+    mut q: Query<(
+        Entity,
+        &mut Pedestrian,
+        &mut PedestrianTile,
+        &mut Transform,
+        &WalkTripPassenger,
+    )>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
         return;
     }
 
-    for (e, mut ped, mut tf, passenger) in q.iter_mut() {
+    // Build a small lookup of controllers by intersection id.
+    let mut lights_by_id = std::collections::HashMap::<
+        crate::game::intersections::IntersectionId,
+        crate::game::intersections::TrafficLight,
+    >::new();
+    for l in q_lights.iter() {
+        lights_by_id.insert(l.intersection_id, l.clone());
+    }
+
+    for (e, mut ped, mut ped_tile, mut tf, passenger) in q.iter_mut() {
         if ped.route_idx + 1 >= ped.route.len() {
             finished.write(TripFinished {
                 citizen: passenger.citizen,
@@ -390,8 +416,30 @@ fn move_walkers(
         }
 
         let a = ped.route[ped.route_idx];
+        *ped_tile = PedestrianTile(a);
 
         let seg_len = cfg.tile_size.max(0.001);
+        let b = ped.route[ped.route_idx + 1];
+
+        // If we're about to enter an intersection tile controlled by a traffic light,
+        // only start crossing when the current phase allows this pedestrian direction.
+        if is_intersection_tile(&grid, b)
+            && let Some(intersections) = intersections.as_deref()
+            && let Some(id) = intersections.intersection_id_at(b)
+            && intersections.traffic_lights.contains(&id)
+            && let Some(light) = lights_by_id.get(&id)
+        {
+            let dir = dir_between_adjacent(a, b);
+            if !ped_can_enter_intersection(dir, light) {
+                // Wait at the curb.
+                ped.progress = 0.0;
+                let world = tile_to_world(&cfg, a);
+                tf.translation.x = world.x;
+                tf.translation.y = world.y;
+                continue;
+            }
+        }
+
         ped.progress += (ped.speed_world * dt) / seg_len;
 
         while ped.progress >= 1.0 && ped.route_idx + 1 < ped.route.len() {
@@ -413,11 +461,51 @@ fn move_walkers(
 
         let a = ped.route[ped.route_idx];
         let b = ped.route[ped.route_idx + 1];
+        *ped_tile = PedestrianTile(a);
         let aw = tile_to_world(&cfg, a);
         let bw = tile_to_world(&cfg, b);
         let world = aw.lerp(bw, ped.progress.clamp(0.0, 1.0));
         tf.translation.x = world.x;
         tf.translation.y = world.y;
+    }
+}
+
+fn is_intersection_tile(grid: &MapGrid, pos: TilePos) -> bool {
+    if let Some(c) = grid.get(pos)
+        && c.road.is_some()
+    {
+        c.road.dir == RoadDir::None
+    } else {
+        false
+    }
+}
+
+fn dir_between_adjacent(from: TilePos, to: TilePos) -> RoadDir {
+    let dx = to.x - from.x;
+    let dy = to.y - from.y;
+    match (dx, dy) {
+        (1, 0) => RoadDir::East,
+        (-1, 0) => RoadDir::West,
+        (0, 1) => RoadDir::North,
+        (0, -1) => RoadDir::South,
+        _ => RoadDir::None,
+    }
+}
+
+fn ped_can_enter_intersection(
+    dir: RoadDir,
+    light: &crate::game::intersections::TrafficLight,
+) -> bool {
+    match dir {
+        // Walking north/south means crossing the E-W roadway, which is safe when N-S traffic has green.
+        RoadDir::North | RoadDir::South => {
+            light.phase == crate::game::intersections::LightPhase::NorthSouthGreen
+        }
+        // Walking east/west means crossing the N-S roadway, which is safe when E-W traffic has green.
+        RoadDir::East | RoadDir::West => {
+            light.phase == crate::game::intersections::LightPhase::EastWestGreen
+        }
+        RoadDir::None => false,
     }
 }
 
@@ -464,4 +552,143 @@ fn map_origin(cfg: &MapConfig) -> Vec2 {
         -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
         -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::intersections::{
+        IntersectionId, IntersectionIndex, IntersectionKey, LightPhase,
+    };
+    use std::time::Duration;
+
+    #[test]
+    fn pedestrian_waits_for_allowed_phase_before_entering_intersection() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<TripFinished>()
+            .insert_resource(Time::<Fixed>::from_seconds(1.0 / 10.0))
+            .insert_resource(MapConfig {
+                width: 3,
+                height: 3,
+                tile_size: 16.0,
+            })
+            .insert_resource({
+                let mut grid = MapGrid::new(3, 3);
+                let intersection_tile = TilePos { x: 1, y: 1 };
+                if let Some(mut cell) = grid.get(intersection_tile) {
+                    cell.road = crate::game::roads::RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir: RoadDir::None,
+                        lane: 0,
+                        flow: crate::game::roads::RoadFlow::TwoWay,
+                        lane_type: crate::game::roads::LaneType::Regular,
+                    };
+                    grid.set(intersection_tile, cell);
+                }
+                grid
+            })
+            .insert_resource({
+                let intersection_tile = TilePos { x: 1, y: 1 };
+                let id = IntersectionId(0);
+                let key = IntersectionKey {
+                    aabb_min: intersection_tile,
+                    aabb_max: intersection_tile,
+                    tile_count: 1,
+                    tiles_hash: 123,
+                };
+                let mut idx = IntersectionIndex::default();
+                idx.tile_to_intersection.insert(intersection_tile, id);
+                idx.traffic_lights.insert(id);
+                idx.clusters
+                    .push(crate::game::intersections::IntersectionCluster {
+                        id,
+                        key,
+                        tiles: vec![intersection_tile],
+                        aabb_min: intersection_tile,
+                        aabb_max: intersection_tile,
+                        centroid_tile: intersection_tile,
+                    });
+                idx
+            })
+            .add_systems(Update, move_walkers);
+
+        let intersection_tile = TilePos { x: 1, y: 1 };
+        let id = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .intersection_id_at(intersection_tile)
+            .unwrap();
+        let key = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .cluster_key_at(intersection_tile)
+            .unwrap();
+
+        // Phase blocks N/S walking.
+        let light_entity = app
+            .world_mut()
+            .spawn(crate::game::intersections::TrafficLight {
+                intersection_id: id,
+                intersection_key: key,
+                pos: intersection_tile,
+                phase: LightPhase::EastWestGreen,
+                phase_timer: 10.0,
+                green_duration: 10.0,
+                yellow_duration: 3.0,
+                all_red_duration: 1.0,
+            })
+            .id();
+
+        let a = TilePos { x: 1, y: 0 };
+        let b = intersection_tile;
+        let c = TilePos { x: 1, y: 2 };
+
+        let ped = app
+            .world_mut()
+            .spawn((
+                Pedestrian {
+                    route: vec![a, b, c],
+                    route_idx: 0,
+                    progress: 0.0,
+                    // Ensure it would enter the intersection in a single tick if allowed, but not
+                    // finish the whole route and despawn.
+                    speed_world: 240.0,
+                },
+                PedestrianTile(a),
+                Transform::default(),
+                WalkTripPassenger {
+                    citizen: crate::game::ids::CitizenId(1),
+                    purpose: crate::game::trips::TripPurpose::Work,
+                },
+            ))
+            .id();
+
+        app.world_mut()
+            .resource_mut::<Time<Fixed>>()
+            .advance_by(Duration::from_secs_f32(0.1));
+        app.update();
+
+        assert_eq!(
+            app.world().get::<PedestrianTile>(ped).copied(),
+            Some(PedestrianTile(a))
+        );
+
+        // Switch to NS green: walking north is allowed now.
+        app.world_mut()
+            .entity_mut(light_entity)
+            .get_mut::<crate::game::intersections::TrafficLight>()
+            .unwrap()
+            .phase = LightPhase::NorthSouthGreen;
+
+        app.world_mut()
+            .resource_mut::<Time<Fixed>>()
+            .advance_by(Duration::from_secs_f32(0.1));
+        app.update();
+
+        assert_eq!(
+            app.world().get::<PedestrianTile>(ped).copied(),
+            Some(PedestrianTile(intersection_tile))
+        );
+    }
 }

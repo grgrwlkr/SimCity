@@ -23,11 +23,19 @@ impl Plugin for BuildingsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BuildingTuning>()
             .init_resource::<BuildingGrowthClock>()
+            .init_resource::<BuildingUpgradeClock>()
             .init_resource::<BuildingGrowthRng>()
-            .add_systems(OnEnter(AppState::MainMenu), cleanup_buildings)
+            .add_systems(
+                OnEnter(AppState::MainMenu),
+                (cleanup_buildings, reset_building_upgrade_clock),
+            )
             .add_systems(
                 OnEnter(AppState::InGame),
-                (seed_growth_rng_from_map, apply_building_tuning),
+                (
+                    seed_growth_rng_from_map,
+                    apply_building_tuning,
+                    reset_building_upgrade_clock,
+                ),
             )
             .add_systems(
                 Update,
@@ -89,6 +97,11 @@ struct BuildingGrowthClock {
 }
 
 #[derive(Resource)]
+struct BuildingUpgradeClock {
+    timer: Timer,
+}
+
+#[derive(Resource)]
 struct BuildingGrowthRng {
     rng: StdRng,
 }
@@ -109,9 +122,26 @@ impl Default for BuildingGrowthClock {
     }
 }
 
+impl Default for BuildingUpgradeClock {
+    fn default() -> Self {
+        Self {
+            timer: Timer::from_seconds(5.0, TimerMode::Repeating),
+        }
+    }
+}
+
 fn apply_building_tuning(tuning: Res<BuildingTuning>, mut clock: ResMut<BuildingGrowthClock>) {
     let secs = tuning.growth_period_secs.max(0.05);
     clock.timer = Timer::from_seconds(secs, TimerMode::Repeating);
+}
+
+fn reset_building_upgrade_timer(clock: &mut BuildingUpgradeClock) {
+    clock.timer = Timer::from_seconds(5.0, TimerMode::Repeating);
+}
+
+fn reset_building_upgrade_clock(mut clock: ResMut<BuildingUpgradeClock>) {
+    // Keep deterministic behavior across sessions (MainMenu -> InGame, new map, load).
+    reset_building_upgrade_timer(&mut clock);
 }
 
 fn cleanup_buildings(mut commands: Commands, q: Query<Entity, With<Building>>) {
@@ -402,15 +432,24 @@ fn seed_growth_rng_from_map(seed: Res<MapSeed>, mut rng: ResMut<BuildingGrowthRn
 fn reset_growth_rng_on_new_map(
     mut reader: MessageReader<GameCommand>,
     mut rng: ResMut<BuildingGrowthRng>,
+    mut upgrade_clock: ResMut<BuildingUpgradeClock>,
 ) {
     for msg in reader.read() {
-        if let GameCommand::GenerateMap { seed } = msg {
-            rng.rng = StdRng::seed_from_u64(seed ^ 0xB11D_1A95_5EED_u64);
+        match msg {
+            GameCommand::GenerateMap { seed } => {
+                rng.rng = StdRng::seed_from_u64(seed ^ 0xB11D_1A95_5EED_u64);
+                reset_building_upgrade_timer(&mut upgrade_clock);
+            }
+            GameCommand::LoadGame { .. } => {
+                reset_building_upgrade_timer(&mut upgrade_clock);
+            }
+            _ => {}
         }
     }
 }
 
 /// Upgrade buildings based on demand and conditions
+#[allow(clippy::too_many_arguments)]
 fn upgrade_buildings(
     time: Res<Time<Fixed>>,
     ui: Res<UiState>,
@@ -418,6 +457,7 @@ fn upgrade_buildings(
     mut rng: ResMut<BuildingGrowthRng>,
     mut city: ResMut<City>,
     mut notifications: Option<ResMut<Notifications>>,
+    mut upgrade_clock: ResMut<BuildingUpgradeClock>,
     mut q_buildings: Query<(&mut Building, &mut Transform, &mut Sprite)>,
 ) {
     let speed = ui.sim_speed.multiplier();
@@ -425,18 +465,13 @@ fn upgrade_buildings(
         return;
     }
 
-    // Check for upgrades periodically (every 5 seconds)
-    let upgrade_period = 5.0;
     let dt = time.delta_secs() * speed.clamp(0.0, 8.0);
 
-    // Simple timer: upgrade check every upgrade_period seconds
-    static mut LAST_UPGRADE_CHECK: f32 = 0.0;
-    unsafe {
-        LAST_UPGRADE_CHECK += dt;
-        if LAST_UPGRADE_CHECK < upgrade_period {
-            return;
-        }
-        LAST_UPGRADE_CHECK = 0.0;
+    upgrade_clock
+        .timer
+        .tick(std::time::Duration::from_secs_f32(dt.max(0.0)));
+    if !upgrade_clock.timer.just_finished() {
+        return;
     }
 
     // Check if notifications are available once
