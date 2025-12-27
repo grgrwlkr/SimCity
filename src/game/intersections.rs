@@ -460,6 +460,7 @@ fn assign_intersection_priorities(
 
             // Check if this is an intersection (dir == None)
             if let Some(cell) = grid.get(pos)
+                && cell.road.is_some()
                 && cell.road.dir == crate::game::roads::RoadDir::None
             {
                 // Check surrounding roads to determine priority

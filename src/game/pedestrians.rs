@@ -10,7 +10,7 @@ use crate::game::map::{MapConfig, MapGrid, TilePos};
 use crate::game::roads::{RoadDir, RoadKind};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
-use crate::game::traffic::TrafficConfig;
+use crate::game::traffic::{IntersectionReservations, Parked, TrafficConfig, Vehicle};
 use crate::game::transport::GraphVersion;
 use crate::game::trips::{TripFinished, TripMode, TripRequested};
 
@@ -157,6 +157,67 @@ impl PedestrianGraph {
         }
         out.reverse();
         out
+    }
+
+    /// Returns a shortest path, but treats `avoid` as blocked (even if walkable).
+    pub fn shortest_path_avoid(
+        &self,
+        start: TilePos,
+        goal: TilePos,
+        avoid: TilePos,
+    ) -> Option<Vec<TilePos>> {
+        let (Some(start_i), Some(goal_i)) = (self.idx(start), self.idx(goal)) else {
+            return None;
+        };
+        let Some(avoid_i) = self.idx(avoid) else {
+            return Some(self.shortest_path(start, goal));
+        };
+
+        if !self.walkable.get(start_i).copied().unwrap_or(false)
+            || !self.walkable.get(goal_i).copied().unwrap_or(false)
+        {
+            return None;
+        }
+        if start_i == avoid_i || goal_i == avoid_i {
+            return None;
+        }
+
+        let len = self.walkable.len();
+        let mut prev: Vec<Option<usize>> = vec![None; len];
+        let mut q = VecDeque::new();
+
+        prev[start_i] = Some(start_i);
+        q.push_back(start_i);
+
+        while let Some(i) = q.pop_front() {
+            if i == goal_i {
+                break;
+            }
+            for n in self.neighbors_idx(i) {
+                if n == avoid_i {
+                    continue;
+                }
+                if prev[n].is_some() {
+                    continue;
+                }
+                prev[n] = Some(i);
+                q.push_back(n);
+            }
+        }
+
+        prev[goal_i]?;
+
+        let mut out = Vec::<TilePos>::new();
+        let mut cur = goal_i;
+        loop {
+            out.push(self.pos(cur));
+            if cur == start_i {
+                break;
+            }
+            cur = prev[cur].unwrap_or(start_i);
+        }
+        out.reverse();
+        Some(out)
     }
 
     fn idx(&self, pos: TilePos) -> Option<usize> {
@@ -315,7 +376,18 @@ pub struct Pedestrian {
     route_idx: usize,
     progress: f32,
     speed_world: f32,
+    goal: TilePos,
+    wait_blocked_secs: f32,
+    reroute_attempts: u8,
 }
+
+// Doc defaults.
+const PED_WAIT_REROUTE_SECS: f32 = 60.0;
+const PED_WAIT_REROUTE_MAX_ATTEMPTS: u8 = 3;
+
+// Conservative MVP: if a vehicle is within this many tiles of entering the intersection,
+// pedestrians will not step into the intersection tile (uncontrolled).
+const PED_UNCONTROLLED_SAFE_GAP_TILES: f32 = 0.35;
 
 #[derive(SystemParam)]
 struct SpawnWalkersParams<'w, 's> {
@@ -348,6 +420,7 @@ fn spawn_walkers(
             continue;
         }
         let start_tile = route[0];
+        let goal_tile = *route.last().unwrap_or(&start_tile);
 
         let tile_meters = p.traffic_cfg.tile_meters().max(0.1);
         let speed_world = (p.ped_cfg.walk_speed_mps.max(0.1) * p.cfg.tile_size) / tile_meters;
@@ -364,6 +437,9 @@ fn spawn_walkers(
                 route_idx: 0,
                 progress: 0.0,
                 speed_world,
+                goal: goal_tile,
+                wait_blocked_secs: 0.0,
+                reroute_attempts: 0,
             },
             PedestrianTile(start_tile),
             WalkTripPassenger {
@@ -380,7 +456,10 @@ fn move_walkers(
     cfg: Res<MapConfig>,
     grid: Res<MapGrid>,
     intersections: Option<Res<crate::game::intersections::IntersectionIndex>>,
+    reservations: Option<Res<IntersectionReservations>>,
+    q_vehicles: Query<(Entity, &Vehicle), Without<Parked>>,
     q_lights: Query<&crate::game::intersections::TrafficLight>,
+    graph: Res<PedestrianGraph>,
     mut finished: bevy::ecs::message::MessageWriter<TripFinished>,
     mut commands: Commands,
     mut q: Query<(
@@ -421,6 +500,9 @@ fn move_walkers(
         let seg_len = cfg.tile_size.max(0.001);
         let b = ped.route[ped.route_idx + 1];
 
+        let mut blocked = false;
+        let mut reroute_avoid: Option<TilePos> = None;
+
         // If we're about to enter an intersection tile controlled by a traffic light,
         // only start crossing when the current phase allows this pedestrian direction.
         if is_intersection_tile(&grid, b)
@@ -431,14 +513,49 @@ fn move_walkers(
         {
             let dir = dir_between_adjacent(a, b);
             if !ped_can_enter_intersection(dir, light) {
-                // Wait at the curb.
-                ped.progress = 0.0;
-                let world = tile_to_world(&cfg, a);
-                tf.translation.x = world.x;
-                tf.translation.y = world.y;
-                continue;
+                blocked = true;
+            }
+        } else if is_intersection_tile(&grid, b) {
+            // Uncontrolled intersection: wait for a safe window.
+            if let Some(intersections) = intersections.as_deref()
+                && let Some(id) = intersections.intersection_id_at(b)
+                && !intersections.traffic_lights.contains(&id)
+                && !ped_can_enter_uncontrolled(id, b, reservations.as_deref(), &q_vehicles)
+            {
+                blocked = true;
+                reroute_avoid = Some(b);
             }
         }
+
+        if blocked {
+            // Wait at the curb.
+            ped.progress = 0.0;
+            ped.wait_blocked_secs = (ped.wait_blocked_secs + dt).min(10_000.0);
+
+            // Reroute if stuck too long at an uncontrolled crossing.
+            if let Some(avoid) = reroute_avoid
+                && ped.wait_blocked_secs >= PED_WAIT_REROUTE_SECS
+                && ped.reroute_attempts < PED_WAIT_REROUTE_MAX_ATTEMPTS
+            {
+                ped.wait_blocked_secs = 0.0;
+                ped.reroute_attempts = ped.reroute_attempts.saturating_add(1);
+
+                if let Some(new_route) = graph.shortest_path_avoid(a, ped.goal, avoid) {
+                    ped.route = new_route;
+                    ped.route_idx = 0;
+                    ped.progress = 0.0;
+                    *ped_tile = PedestrianTile(a);
+                }
+            }
+
+            let world = tile_to_world(&cfg, a);
+            tf.translation.x = world.x;
+            tf.translation.y = world.y;
+            continue;
+        }
+
+        // Reset wait timer once we're moving.
+        ped.wait_blocked_secs = 0.0;
 
         ped.progress += (ped.speed_world * dt) / seg_len;
 
@@ -509,6 +626,37 @@ fn ped_can_enter_intersection(
     }
 }
 
+fn ped_can_enter_uncontrolled(
+    id: crate::game::intersections::IntersectionId,
+    intersection_tile: TilePos,
+    reservations: Option<&IntersectionReservations>,
+    q_vehicles: &Query<(Entity, &Vehicle), Without<Parked>>,
+) -> bool {
+    // If any vehicle holds a reservation for this intersection, do not enter.
+    if let Some(res) = reservations
+        && res.is_reserved(id)
+    {
+        return false;
+    }
+
+    // If a vehicle is very close to entering this intersection (next tile is this intersection),
+    // do not enter.
+    for (_e, v) in q_vehicles.iter() {
+        if v.route.len() < 2 {
+            continue;
+        }
+        if v.route[1] != intersection_tile {
+            continue;
+        }
+        let dist_to_entry_tiles = (1.0 - v.progress).clamp(0.0, 1.0);
+        if dist_to_entry_tiles <= PED_UNCONTROLLED_SAFE_GAP_TILES {
+            return false;
+        }
+    }
+
+    true
+}
+
 fn nearest_walkable(graph: &PedestrianGraph, grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
     // Check pos itself first, then 4-neighbors.
     let candidates = [
@@ -568,6 +716,12 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .add_message::<TripFinished>()
             .insert_resource(Time::<Fixed>::from_seconds(1.0 / 10.0))
+            .insert_resource(PedestrianGraph {
+                version: 0,
+                width: 3,
+                height: 3,
+                walkable: vec![true; 9],
+            })
             .insert_resource(MapConfig {
                 width: 3,
                 height: 3,
@@ -654,6 +808,9 @@ mod tests {
                     // Ensure it would enter the intersection in a single tick if allowed, but not
                     // finish the whole route and despawn.
                     speed_world: 240.0,
+                    goal: c,
+                    wait_blocked_secs: 0.0,
+                    reroute_attempts: 0,
                 },
                 PedestrianTile(a),
                 Transform::default(),
@@ -690,5 +847,231 @@ mod tests {
             app.world().get::<PedestrianTile>(ped).copied(),
             Some(PedestrianTile(intersection_tile))
         );
+    }
+
+    #[test]
+    fn pedestrian_waits_for_safe_gap_on_uncontrolled_intersection() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<TripFinished>()
+            .insert_resource(Time::<Fixed>::from_seconds(1.0 / 10.0))
+            .insert_resource(PedestrianGraph {
+                version: 0,
+                width: 3,
+                height: 3,
+                walkable: vec![true; 9],
+            })
+            .insert_resource(MapConfig {
+                width: 3,
+                height: 3,
+                tile_size: 16.0,
+            })
+            .insert_resource({
+                let mut grid = MapGrid::new(3, 3);
+                let intersection_tile = TilePos { x: 1, y: 1 };
+                if let Some(mut cell) = grid.get(intersection_tile) {
+                    cell.road = crate::game::roads::RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir: RoadDir::None,
+                        lane: 0,
+                        flow: crate::game::roads::RoadFlow::TwoWay,
+                        lane_type: crate::game::roads::LaneType::Regular,
+                    };
+                    grid.set(intersection_tile, cell);
+                }
+                grid
+            })
+            .insert_resource({
+                let intersection_tile = TilePos { x: 1, y: 1 };
+                let id = IntersectionId(0);
+                let key = IntersectionKey {
+                    aabb_min: intersection_tile,
+                    aabb_max: intersection_tile,
+                    tile_count: 1,
+                    tiles_hash: 123,
+                };
+                let mut idx = IntersectionIndex::default();
+                idx.tile_to_intersection.insert(intersection_tile, id);
+                idx.clusters
+                    .push(crate::game::intersections::IntersectionCluster {
+                        id,
+                        key,
+                        tiles: vec![intersection_tile],
+                        aabb_min: intersection_tile,
+                        aabb_max: intersection_tile,
+                        centroid_tile: intersection_tile,
+                    });
+                idx
+            })
+            .insert_resource(IntersectionReservations::default())
+            .add_systems(Update, move_walkers);
+
+        let a = TilePos { x: 1, y: 0 };
+        let intersection_tile = TilePos { x: 1, y: 1 };
+        let c = TilePos { x: 1, y: 2 };
+
+        // Vehicle is very close to entering: blocks pedestrian.
+        let veh = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![a, intersection_tile, c],
+                    progress: 0.9,
+                    speed: 5.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                crate::game::traffic::VehicleTrafficState::FreeFlow,
+            ))
+            .id();
+
+        let ped = app
+            .world_mut()
+            .spawn((
+                Pedestrian {
+                    route: vec![a, intersection_tile, c],
+                    route_idx: 0,
+                    progress: 0.0,
+                    speed_world: 240.0,
+                    goal: c,
+                    wait_blocked_secs: 0.0,
+                    reroute_attempts: 0,
+                },
+                PedestrianTile(a),
+                Transform::default(),
+                WalkTripPassenger {
+                    citizen: crate::game::ids::CitizenId(1),
+                    purpose: crate::game::trips::TripPurpose::Work,
+                },
+            ))
+            .id();
+
+        app.world_mut()
+            .resource_mut::<Time<Fixed>>()
+            .advance_by(Duration::from_secs_f32(0.1));
+        app.update();
+        assert_eq!(
+            app.world().get::<PedestrianTile>(ped).copied(),
+            Some(PedestrianTile(a))
+        );
+
+        // Remove vehicle: now safe to enter.
+        app.world_mut().entity_mut(veh).despawn();
+
+        app.world_mut()
+            .resource_mut::<Time<Fixed>>()
+            .advance_by(Duration::from_secs_f32(0.1));
+        app.update();
+        assert_eq!(
+            app.world().get::<PedestrianTile>(ped).copied(),
+            Some(PedestrianTile(intersection_tile))
+        );
+    }
+
+    #[test]
+    fn pedestrian_reroutes_after_long_wait_at_uncontrolled_intersection() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<TripFinished>()
+            .insert_resource(Time::<Fixed>::from_seconds(1.0 / 10.0))
+            .insert_resource(PedestrianGraph {
+                version: 0,
+                width: 3,
+                height: 2,
+                walkable: vec![true; 6],
+            })
+            .insert_resource(MapConfig {
+                width: 3,
+                height: 2,
+                tile_size: 16.0,
+            })
+            .insert_resource({
+                let mut grid = MapGrid::new(3, 2);
+                // Mark (1,0) as the intersection tile we will avoid.
+                let intersection_tile = TilePos { x: 1, y: 0 };
+                if let Some(mut cell) = grid.get(intersection_tile) {
+                    cell.road = crate::game::roads::RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir: RoadDir::None,
+                        lane: 0,
+                        flow: crate::game::roads::RoadFlow::TwoWay,
+                        lane_type: crate::game::roads::LaneType::Regular,
+                    };
+                    grid.set(intersection_tile, cell);
+                }
+                grid
+            })
+            .insert_resource({
+                let intersection_tile = TilePos { x: 1, y: 0 };
+                let id = IntersectionId(0);
+                let key = IntersectionKey {
+                    aabb_min: intersection_tile,
+                    aabb_max: intersection_tile,
+                    tile_count: 1,
+                    tiles_hash: 123,
+                };
+                let mut idx = IntersectionIndex::default();
+                idx.tile_to_intersection.insert(intersection_tile, id);
+                idx.clusters
+                    .push(crate::game::intersections::IntersectionCluster {
+                        id,
+                        key,
+                        tiles: vec![intersection_tile],
+                        aabb_min: intersection_tile,
+                        aabb_max: intersection_tile,
+                        centroid_tile: intersection_tile,
+                    });
+                idx
+            })
+            .insert_resource(IntersectionReservations::default())
+            .add_systems(Update, move_walkers);
+
+        let start = TilePos { x: 0, y: 0 };
+        let avoid = TilePos { x: 1, y: 0 };
+        let goal = TilePos { x: 2, y: 0 };
+
+        // Keep the crossing blocked by keeping a vehicle close to entry.
+        let _veh = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![start, avoid, goal],
+                    progress: 0.9,
+                    speed: 5.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                crate::game::traffic::VehicleTrafficState::FreeFlow,
+            ))
+            .id();
+
+        let ped = app
+            .world_mut()
+            .spawn((
+                Pedestrian {
+                    route: vec![start, avoid, goal],
+                    route_idx: 0,
+                    progress: 0.0,
+                    speed_world: 240.0,
+                    goal,
+                    wait_blocked_secs: PED_WAIT_REROUTE_SECS,
+                    reroute_attempts: 0,
+                },
+                PedestrianTile(start),
+                Transform::default(),
+                WalkTripPassenger {
+                    citizen: crate::game::ids::CitizenId(1),
+                    purpose: crate::game::trips::TripPurpose::Work,
+                },
+            ))
+            .id();
+
+        app.world_mut()
+            .resource_mut::<Time<Fixed>>()
+            .advance_by(Duration::from_secs_f32(0.1));
+        app.update();
+
+        let p = app.world().get::<Pedestrian>(ped).unwrap();
+        assert_ne!(p.route.get(1).copied(), Some(avoid));
     }
 }

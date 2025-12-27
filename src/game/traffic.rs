@@ -293,8 +293,14 @@ struct IntersectionReservation {
 }
 
 #[derive(Resource, Default)]
-struct IntersectionReservations {
+pub(crate) struct IntersectionReservations {
     by_intersection: std::collections::HashMap<IntersectionId, IntersectionReservation>,
+}
+
+impl IntersectionReservations {
+    pub(crate) fn is_reserved(&self, id: IntersectionId) -> bool {
+        self.by_intersection.contains_key(&id)
+    }
 }
 
 #[derive(Component, Debug, Copy, Clone)]
@@ -1596,7 +1602,7 @@ fn plan_intersection_reservations(
     }
 
     // Conservative MVP: if any pedestrian is currently inside an intersection cluster, block
-    // right-turn-on-red admission for that intersection.
+    // new vehicle admission for that intersection (drivers yield to pedestrians in the box).
     let mut intersections_with_peds =
         std::collections::HashSet::<crate::game::intersections::IntersectionId>::new();
     for crate::game::pedestrians::PedestrianTile(tile) in q_pedestrians.iter() {
@@ -1656,6 +1662,9 @@ fn plan_intersection_reservations(
         let Some(id) = intersections.intersection_id_at(next) else {
             continue;
         };
+        if intersections_with_peds.contains(&id) {
+            continue;
+        }
         if reservations.by_intersection.contains_key(&id) {
             continue;
         }
@@ -1711,11 +1720,6 @@ fn plan_intersection_reservations(
                     dir.left()
                 };
                 if exit_dir != allowed_turn_dir {
-                    continue;
-                }
-
-                // Yield to pedestrians: do not release a right-on-red while a pedestrian is in the box.
-                if intersections_with_peds.contains(&id) {
                     continue;
                 }
 
@@ -3344,11 +3348,10 @@ mod tests {
 
         app.update();
         assert!(
-            app.world()
+            !app.world()
                 .resource::<IntersectionReservations>()
                 .by_intersection
-                .get(&id)
-                .is_none()
+                .contains_key(&id)
         );
 
         // Once the pedestrian is gone, right-on-red can be admitted.
