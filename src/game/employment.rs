@@ -14,9 +14,9 @@ use crate::game::traffic::TrafficOccupancy;
 use bevy::ecs::system::SystemParam;
 
 use crate::game::intersections::IntersectionIndex;
-use crate::game::roads::RoadDir;
 use crate::game::transport::{
-    PathCache, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph, find_road_path_cached,
+    PathCache, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph, adjacent_road_towards,
+    find_road_path_cached,
 };
 
 pub struct EmploymentPlugin;
@@ -238,60 +238,4 @@ fn compute_employment_stats(
     } else {
         0.0
     };
-}
-
-fn desired_dir(from: TilePos, to: TilePos) -> RoadDir {
-    let dx = to.x - from.x;
-    let dy = to.y - from.y;
-    if dx.abs() >= dy.abs() {
-        if dx >= 0 {
-            RoadDir::East
-        } else {
-            RoadDir::West
-        }
-    } else if dy >= 0 {
-        RoadDir::North
-    } else {
-        RoadDir::South
-    }
-}
-
-fn adjacent_road_towards(grid: &MapGrid, pos: TilePos, target: TilePos) -> Option<TilePos> {
-    let want = desired_dir(pos, target);
-    let mut best_any = None;
-
-    // Check pos itself first, then 4-neighbors.
-    let candidates = [
-        pos,
-        TilePos {
-            x: pos.x - 1,
-            y: pos.y,
-        },
-        TilePos {
-            x: pos.x + 1,
-            y: pos.y,
-        },
-        TilePos {
-            x: pos.x,
-            y: pos.y - 1,
-        },
-        TilePos {
-            x: pos.x,
-            y: pos.y + 1,
-        },
-    ];
-
-    for cpos in candidates {
-        if let Some(cell) = grid.get(cpos)
-            && !cell.water
-            && cell.road.is_some()
-        {
-            best_any = best_any.or(Some(cpos));
-            if cell.road.dir == want {
-                return Some(cpos);
-            }
-        }
-    }
-
-    best_any
 }

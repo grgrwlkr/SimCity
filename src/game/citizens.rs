@@ -1,6 +1,7 @@
 //! M5: Citizens micro-agents (MVP) + Trips -> Vehicles.
 
 use bevy::ecs::message::{MessageReader, MessageWriter};
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::time::Fixed;
 use rand::prelude::*;
@@ -9,9 +10,13 @@ use std::collections::HashMap;
 use crate::game::buildings::Building;
 use crate::game::ids::{CitizenIdComp, CitizenIdGen};
 use crate::game::map::{BuildingKind, MapGrid, TilePos};
+use crate::game::pedestrians::{PedestrianConfig, PedestrianGraph};
+use crate::game::public_transport::{PublicTransportConfig, PublicTransportIndex};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
-use crate::game::trips::{TripFinished, TripPurpose, TripRequested};
+use crate::game::traffic::TrafficConfig;
+use crate::game::transport::adjacent_road_towards;
+use crate::game::trips::{TripFinished, TripMode, TripPurpose, TripRequested};
 
 pub struct CitizensPlugin;
 
@@ -46,6 +51,11 @@ pub struct Citizen {
     pub state: CitizenState,
     /// The last non-home place we travelled to (work or shop).
     pub last_place: TilePos,
+    /// Trip mode for the current "tour" (home -> ... -> home). `None` means no active tour.
+    pub tour_mode: Option<TripMode>,
+    /// Where the citizen's car is currently parked (TilePos of a building).
+    /// Used to prevent "car from pocket" behavior.
+    pub car_parked_at: TilePos,
     /// When to evaluate next action while in a stable state (home/work/shop).
     pub decision_timer: Timer,
     /// Shopping desire timer (MVP).
@@ -137,6 +147,8 @@ fn spawn_citizens_from_residential(
                     home: b.pos,
                     state: CitizenState::AtHome,
                     last_place: b.pos,
+                    tour_mode: None,
+                    car_parked_at: b.pos,
                     decision_timer: decision.clone(),
                     shopping_need: shopping_need.clone(),
                     work_stay: work_stay.clone(),
@@ -160,6 +172,7 @@ fn citizen_trip_planner(
     mut q_citizens: Query<(&CitizenIdComp, &mut Citizen, &CitizenWorkplace)>,
     mut shopping: ResMut<ShoppingDemandStats>,
     mut out: MessageWriter<TripRequested>,
+    p: CitizenTripPlannerParams,
 ) {
     // Pre-collect possible shopping destinations (commercial buildings).
     let mut shops = Vec::<TilePos>::new();
@@ -193,15 +206,22 @@ fn citizen_trip_planner(
 
         match c.state {
             CitizenState::AtHome => {
+                // Tours always start at home.
+                c.tour_mode = None;
+                c.car_parked_at = c.home;
+
                 // Prefer shopping if need timer triggers.
                 if c.shopping_need.just_finished() {
                     shopping.demand_events = shopping.demand_events.saturating_add(1);
                     if let Some(&shop) = shops.choose(&mut rng) {
+                        let mode = choose_tour_mode(&p, &mut rng, c.home, shop);
+                        c.tour_mode = Some(mode);
                         out.write(TripRequested {
                             citizen: id.0,
                             from: c.home,
                             to: shop,
                             purpose: TripPurpose::Shop,
+                            mode,
                         });
                         c.state = CitizenState::ToShop;
                         c.last_place = shop;
@@ -217,11 +237,14 @@ fn citizen_trip_planner(
                 let Some(work) = wp.workplace else {
                     continue;
                 };
+                let mode = choose_tour_mode(&p, &mut rng, c.home, work);
+                c.tour_mode = Some(mode);
                 out.write(TripRequested {
                     citizen: id.0,
                     from: c.home,
                     to: work,
                     purpose: TripPurpose::Work,
+                    mode,
                 });
                 c.state = CitizenState::ToWork;
                 c.last_place = work;
@@ -233,11 +256,13 @@ fn citizen_trip_planner(
                 if !c.work_stay.is_finished() {
                     continue;
                 }
+                let mode = c.tour_mode.unwrap_or(TripMode::Car);
                 out.write(TripRequested {
                     citizen: id.0,
                     from: c.last_place,
                     to: c.home,
                     purpose: TripPurpose::ReturnHome,
+                    mode,
                 });
                 c.state = CitizenState::ToHome;
                 c.trip_departed_at_sec = Some(time.elapsed_secs_f64());
@@ -248,11 +273,13 @@ fn citizen_trip_planner(
                 if !c.shop_stay.is_finished() {
                     continue;
                 }
+                let mode = c.tour_mode.unwrap_or(TripMode::Car);
                 out.write(TripRequested {
                     citizen: id.0,
                     from: c.last_place,
                     to: c.home,
                     purpose: TripPurpose::ReturnHome,
+                    mode,
                 });
                 c.state = CitizenState::ToHome;
                 c.trip_departed_at_sec = Some(time.elapsed_secs_f64());
@@ -267,6 +294,83 @@ fn citizen_trip_planner(
     } else {
         0.0
     };
+}
+
+#[derive(SystemParam)]
+struct CitizenTripPlannerParams<'w> {
+    grid: Res<'w, MapGrid>,
+    ped_graph: Res<'w, PedestrianGraph>,
+    ped_cfg: Res<'w, PedestrianConfig>,
+    traffic_cfg: Res<'w, TrafficConfig>,
+    pt: Res<'w, PublicTransportIndex>,
+    pt_cfg: Res<'w, PublicTransportConfig>,
+}
+
+fn choose_tour_mode(
+    p: &CitizenTripPlannerParams,
+    rng: &mut impl rand::Rng,
+    from: TilePos,
+    to: TilePos,
+) -> TripMode {
+    // 1) WalkTour if pedestrian path exists and <= 800m.
+    let tile_meters = p.traffic_cfg.tile_meters().max(0.1);
+    if let (Some(a), Some(b)) = (
+        nearest_ped_node(&p.ped_graph, &p.grid, from),
+        nearest_ped_node(&p.ped_graph, &p.grid, to),
+    ) && let Some(steps) = p.ped_graph.shortest_path_steps(a, b)
+    {
+        let dist_m = (steps as f32) * tile_meters;
+        if dist_m <= p.ped_cfg.walk_tour_max_m.max(0.0) {
+            return TripMode::Walk;
+        }
+    }
+
+    // 2) TransitTour (existing feature): only if both endpoints are stops.
+    let can_transit = adjacent_road_towards(&p.grid, from, to)
+        .is_some_and(|s| p.pt.stops.contains(&s))
+        && adjacent_road_towards(&p.grid, to, from).is_some_and(|g| p.pt.stops.contains(&g));
+    if can_transit {
+        let prob = p.pt_cfg.adoption_rate.clamp(0.0, 1.0);
+        if rng.random_range(0.0..1.0) <= prob {
+            return TripMode::Transit;
+        }
+    }
+
+    // 3) Default.
+    TripMode::Car
+}
+
+fn nearest_ped_node(graph: &PedestrianGraph, grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
+    // Check pos itself first, then 4-neighbors.
+    let candidates = [
+        pos,
+        TilePos {
+            x: pos.x - 1,
+            y: pos.y,
+        },
+        TilePos {
+            x: pos.x + 1,
+            y: pos.y,
+        },
+        TilePos {
+            x: pos.x,
+            y: pos.y - 1,
+        },
+        TilePos {
+            x: pos.x,
+            y: pos.y + 1,
+        },
+    ];
+
+    for cpos in candidates {
+        if let Some(cell) = grid.get(cpos)
+            && !cell.water
+            && graph.is_walkable(cpos)
+        {
+            return Some(cpos);
+        }
+    }
+    None
 }
 
 fn handle_trip_finished(
@@ -308,13 +412,22 @@ fn handle_trip_finished(
                 TripPurpose::Work => {
                     c.state = CitizenState::AtWork;
                     c.work_stay.reset();
+                    if c.tour_mode == Some(TripMode::Car) {
+                        c.car_parked_at = c.last_place;
+                    }
                 }
                 TripPurpose::Shop => {
                     c.state = CitizenState::AtShop;
                     c.shop_stay.reset();
+                    if c.tour_mode == Some(TripMode::Car) {
+                        c.car_parked_at = c.last_place;
+                    }
                 }
                 TripPurpose::ReturnHome => {
                     c.state = CitizenState::AtHome;
+                    // Tour ends at home.
+                    c.tour_mode = None;
+                    c.car_parked_at = c.home;
                 }
             }
 

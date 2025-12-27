@@ -58,6 +58,66 @@ impl GraphVersion {
     }
 }
 
+/// Pick a nearby road tile for spawning/routing from a building tile.
+///
+/// Tries `pos` first, then its 4-neighbors, preferring a road tile whose `RoadDir`
+/// points roughly towards `target`. Falls back to "any adjacent road".
+pub fn adjacent_road_towards(grid: &MapGrid, pos: TilePos, target: TilePos) -> Option<TilePos> {
+    let want = desired_dir(pos, target);
+    let mut best_any = None;
+
+    // Check pos itself first, then 4-neighbors.
+    let candidates = [
+        pos,
+        TilePos {
+            x: pos.x - 1,
+            y: pos.y,
+        },
+        TilePos {
+            x: pos.x + 1,
+            y: pos.y,
+        },
+        TilePos {
+            x: pos.x,
+            y: pos.y - 1,
+        },
+        TilePos {
+            x: pos.x,
+            y: pos.y + 1,
+        },
+    ];
+
+    for cpos in candidates {
+        if let Some(cell) = grid.get(cpos)
+            && !cell.water
+            && cell.road.is_some()
+        {
+            best_any = best_any.or(Some(cpos));
+            if cell.road.dir == want {
+                return Some(cpos);
+            }
+        }
+    }
+
+    best_any
+}
+
+fn desired_dir(from: TilePos, to: TilePos) -> RoadDir {
+    let dx = to.x - from.x;
+    let dy = to.y - from.y;
+    if dx.abs() >= dy.abs() {
+        if dx >= 0 {
+            RoadDir::East
+        } else {
+            RoadDir::West
+        }
+    } else if dy >= 0 {
+        RoadDir::North
+    } else {
+        RoadDir::South
+    }
+}
+
 /// Compact road graph: per-tile bitmask of connected road neighbors + list of road nodes.
 #[derive(Resource, Debug, Default, Clone)]
 pub struct RoadGraph {

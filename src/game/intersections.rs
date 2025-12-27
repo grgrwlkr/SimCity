@@ -91,8 +91,11 @@ pub struct IntersectionKey {
 pub struct IntersectionCluster {
     pub id: IntersectionId,
     pub key: IntersectionKey,
+    #[allow(dead_code)]
     pub tiles: Vec<TilePos>,
+    #[allow(dead_code)]
     pub aabb_min: TilePos,
+    #[allow(dead_code)]
     pub aabb_max: TilePos,
     /// Representative tile for visuals (not used for driving logic).
     pub centroid_tile: TilePos,

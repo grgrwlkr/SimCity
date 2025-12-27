@@ -2,7 +2,6 @@
 
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
-use rand::prelude::*;
 
 use crate::game::camera::MainCamera;
 use crate::game::commands::GameCommand;
@@ -19,9 +18,10 @@ use crate::game::services::ServiceVehicle;
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::transport::{
-    PathCache, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph, find_road_path_cached,
+    PathCache, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph, adjacent_road_towards,
+    find_road_path_cached,
 };
-use crate::game::trips::{TripFinished, TripRequested};
+use crate::game::trips::{TripFinished, TripMode, TripRequested};
 use crate::game::ui_state::{OverlayMode, UiState};
 use bevy::window::PrimaryWindow;
 
@@ -78,8 +78,11 @@ pub enum VehicleTrafficState {
     },
     /// Accelerating after green
     Accelerating,
-    /// Crossing intersection
-    CrossingIntersection,
+    /// Crossing (or admitted to) a specific logical intersection cluster.
+    ///
+    /// This state is used both when a vehicle is already inside the intersection tiles (`dir=None`)
+    /// and when it has been released from a stop line and is about to enter the cluster.
+    CrossingIntersection { intersection: IntersectionKey },
 }
 
 /// Marker component for parked vehicles.
@@ -318,7 +321,11 @@ impl Plugin for TrafficPlugin {
             .init_resource::<IntersectionReservations>()
             .add_systems(
                 OnEnter(AppState::MainMenu),
-                (cleanup_traffic_entities, reset_traffic_aggregates),
+                (
+                    cleanup_traffic_entities,
+                    reset_traffic_aggregates,
+                    reset_intersection_reservations,
+                ),
             )
             // Commands (should respond even when paused)
             .add_systems(
@@ -419,6 +426,13 @@ pub struct TrafficConfig {
     idm_delta: f32,
 }
 
+impl TrafficConfig {
+    /// Simulation scale: meters per tile (Traffic v2 convention).
+    pub fn tile_meters(&self) -> f32 {
+        self.tile_meters
+    }
+}
+
 fn default_drive_on_right() -> bool {
     true
 }
@@ -495,6 +509,10 @@ fn reset_traffic_aggregates(mut occ: ResMut<TrafficOccupancy>, mut idx: ResMut<T
     *idx = TrafficIndex::default();
 }
 
+fn reset_intersection_reservations(mut reservations: ResMut<IntersectionReservations>) {
+    reservations.by_intersection.clear();
+}
+
 fn spawn_trip_vehicles(
     mut reader: bevy::ecs::message::MessageReader<TripRequested>,
     mut p: SpawnTripVehiclesParams,
@@ -508,13 +526,17 @@ fn spawn_trip_vehicles(
     let congested = p.traffic_idx.max_congestion >= SPAWN_THROTTLE_MAX_CONG
         || p.traffic_idx.avg_congestion >= SPAWN_THROTTLE_AVG_CONG;
     for msg in reader.read() {
-        if congested {
-            break;
+        // Walk trips are handled by `PedestriansPlugin`.
+        if msg.mode == TripMode::Walk {
+            continue;
         }
         if planned >= p.traffic_cfg.max_route_plans_per_tick {
             break;
         }
-        if total >= p.traffic_cfg.max_active_vehicles {
+        if msg.mode == TripMode::Car && congested {
+            break;
+        }
+        if msg.mode == TripMode::Car && total >= p.traffic_cfg.max_active_vehicles {
             break;
         }
         let Some(start) = adjacent_road_towards(&p.grid, msg.from, msg.to) else {
@@ -540,27 +562,25 @@ fn spawn_trip_vehicles(
             continue;
         }
 
-        // Public transport (MVP): if both endpoints are bus stops, optionally satisfy the trip
-        // without spawning an individual car.
-        if let (Some(pt), Some(pt_cfg), Some(pending)) =
-            (p.pt.as_deref(), p.pt_cfg.as_deref(), p.pt_pending.as_mut())
+        // Public transport (MVP): mode is chosen by citizens (tour-based).
+        if msg.mode == TripMode::Transit
+            && let (Some(pt), Some(pt_cfg), Some(pending)) =
+                (p.pt.as_deref(), p.pt_cfg.as_deref(), p.pt_pending.as_mut())
             && pt.stops.contains(&start)
             && pt.stops.contains(&goal)
         {
-            let mut rng = rand::rng();
-            if rng.random_range(0.0..1.0) <= pt_cfg.adoption_rate.clamp(0.0, 1.0) {
-                let dist_world = (route.len() as f32) * p.cfg.tile_size;
-                let travel_secs =
-                    (dist_world / pt_cfg.bus_speed.max(1.0)) + pt_cfg.wait_secs.max(0.0);
-                pending.trips.push(PendingTrip {
-                    citizen: msg.citizen,
-                    purpose: msg.purpose,
-                    remaining_secs: travel_secs,
-                });
-                planned += 1;
-                continue;
-            }
+            let dist_world = (route.len() as f32) * p.cfg.tile_size;
+            let travel_secs = (dist_world / pt_cfg.bus_speed.max(1.0)) + pt_cfg.wait_secs.max(0.0);
+            pending.trips.push(PendingTrip {
+                citizen: msg.citizen,
+                purpose: msg.purpose,
+                remaining_secs: travel_secs,
+            });
+            planned += 1;
+            continue;
         }
+        // If `mode == Transit` but transit isn't possible, fall through and spawn a car so the trip
+        // can still complete.
 
         let world_pos = tile_to_world(&p.cfg, start);
         p.commands.spawn((
@@ -615,6 +635,7 @@ fn clear_vehicles(
     q_vehicles: Query<Entity, With<Vehicle>>,
     mut occ: ResMut<TrafficOccupancy>,
     mut idx: ResMut<TrafficIndex>,
+    mut reservations: ResMut<IntersectionReservations>,
 ) {
     for msg in reader.read() {
         if matches!(msg, GameCommand::GenerateMap { .. }) {
@@ -625,10 +646,12 @@ fn clear_vehicles(
             occ.per_tick_vehicles.clear();
             occ.ema_heat.clear();
             *idx = TrafficIndex::default();
+            reservations.by_intersection.clear();
         }
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn init_stuck_timers(
     mut commands: Commands,
     q: Query<(Entity, &Vehicle), (With<Vehicle>, Without<StuckTimer>)>,
@@ -675,6 +698,7 @@ fn update_stuck_timers(
     }
 }
 
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn resolve_stuck_vehicles(
     time: Res<Time<Fixed>>,
     _cfg: Res<MapConfig>,
@@ -811,9 +835,7 @@ fn route_has_near_intersection(route: &[TilePos], grid: &MapGrid) -> bool {
 }
 
 fn lane_change_target(grid: &MapGrid, current: TilePos, move_dir: RoadDir) -> Option<TilePos> {
-    let Some(cur_cell) = grid.get(current) else {
-        return None;
-    };
+    let cur_cell = grid.get(current)?;
     if cur_cell.water || !cur_cell.road.is_some() || cur_cell.road.dir == RoadDir::None {
         return None;
     }
@@ -823,9 +845,7 @@ fn lane_change_target(grid: &MapGrid, current: TilePos, move_dir: RoadDir) -> Op
         x: current.x + delta.x,
         y: current.y + delta.y,
     };
-    let Some(next_cell) = grid.get(target) else {
-        return None;
-    };
+    let next_cell = grid.get(target)?;
     if next_cell.water || !next_cell.road.is_some() {
         return None;
     }
@@ -902,6 +922,7 @@ fn find_leader_ahead(
     best
 }
 
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn plan_lane_changes(
     time: Res<Time<Fixed>>,
     cfg: Res<MapConfig>,
@@ -995,7 +1016,7 @@ fn plan_lane_changes(
             VehicleTrafficState::Approaching { .. }
                 | VehicleTrafficState::Stopped { .. }
                 | VehicleTrafficState::WaitingForGreen { .. }
-                | VehicleTrafficState::CrossingIntersection
+                | VehicleTrafficState::CrossingIntersection { .. }
         ) {
             continue;
         }
@@ -1022,13 +1043,12 @@ fn plan_lane_changes(
         let mut want_right = false;
 
         // Overtake: move left if a slow leader is close.
-        if let (Some(_lt), Some((gap_tiles, lead_speed))) = (left_target, leader) {
-            if gap_tiles <= OVERTAKE_LOOKAHEAD_TILES
-                && lead_speed < v0 * OVERTAKE_LEADER_SPEED_RATIO
-                && v.speed < v0 * 0.95
-            {
-                want_left = true;
-            }
+        if let (Some(_lt), Some((gap_tiles, lead_speed))) = (left_target, leader)
+            && gap_tiles <= OVERTAKE_LOOKAHEAD_TILES
+            && lead_speed < v0 * OVERTAKE_LEADER_SPEED_RATIO
+            && v.speed < v0 * 0.95
+        {
+            want_left = true;
         }
 
         // Return right after overtaking, or keep-right when cruising.
@@ -1036,13 +1056,13 @@ fn plan_lane_changes(
             if let Some(ov) = overtaking {
                 // If we're overtaking but not currently blocked, start returning right in the second half.
                 if ov.remaining_secs <= (OVERTAKE_HOLD_SECS * 0.5)
-                    && leader.map_or(true, |(_, lead_v)| lead_v >= v0 * 0.95)
+                    && leader.is_none_or(|(_, lead_v)| lead_v >= v0 * 0.95)
                 {
                     want_right = true;
                 }
             } else {
                 // Keep-right when not actively overtaking and not slowed.
-                if leader.map_or(true, |(_, lead_v)| lead_v >= v0 * 0.95) {
+                if leader.is_none_or(|(_, lead_v)| lead_v >= v0 * 0.95) {
                     want_right = true;
                 }
             }
@@ -1060,17 +1080,15 @@ fn plan_lane_changes(
                     goal,
                 });
             }
-        } else if want_right {
-            if let Some(target) = right_target {
-                desires.push(Desire {
-                    e,
-                    target,
-                    priority: if overtaking.is_some() { 1 } else { 0 },
-                    ego_tile,
-                    ego_progress: v.progress,
-                    goal,
-                });
-            }
+        } else if want_right && let Some(target) = right_target {
+            desires.push(Desire {
+                e,
+                target,
+                priority: if overtaking.is_some() { 1 } else { 0 },
+                ego_tile,
+                ego_progress: v.progress,
+                goal,
+            });
         }
     }
 
@@ -1361,7 +1379,7 @@ fn cleanup_intersection_reservations(
 }
 
 /// Move vehicles along their routes.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn move_vehicles(
     time: Res<Time<Fixed>>,
     cfg: Res<MapConfig>,
@@ -1684,7 +1702,9 @@ fn update_vehicle_traffic_state(
         // If we're already on the light tile (intersection), don't try to "stop" here – just clear it.
         // This prevents slow creeping/stopping inside the intersection.
         if current_tile == Some(stop_tile) {
-            *state = VehicleTrafficState::CrossingIntersection;
+            *state = VehicleTrafficState::CrossingIntersection {
+                intersection: intersection_key,
+            };
             continue;
         }
 
@@ -1748,7 +1768,9 @@ fn update_vehicle_traffic_state(
             // Green (or close yellow) – proceed through intersection.
             // If we were previously braking/approaching, clear it to avoid slow crawling.
             if matches!(*state, VehicleTrafficState::Approaching { .. }) {
-                *state = VehicleTrafficState::CrossingIntersection;
+                *state = VehicleTrafficState::CrossingIntersection {
+                    intersection: intersection_key,
+                };
             }
         }
     }
@@ -1902,20 +1924,35 @@ fn check_intersection_priority(
             continue;
         };
 
-        // Clear transient state after leaving intersection tiles so other rule systems can apply again.
-        if matches!(*state, VehicleTrafficState::CrossingIntersection)
-            && !is_intersection_tile(&grid, current_tile)
-        {
-            *state = VehicleTrafficState::FreeFlow;
+        let next_tile = vehicle.route.get(1).copied();
+
+        // Clear transient state once we're no longer in (or immediately before) the *same* intersection.
+        //
+        // Important: stop signs release vehicles on the approach tile (still not `dir=None`), so we
+        // must not clear CrossingIntersection until the vehicle actually enters the cluster.
+        if let VehicleTrafficState::CrossingIntersection { intersection } = *state {
+            let still_related = if is_intersection_tile(&grid, current_tile) {
+                intersections.cluster_key_at(current_tile) == Some(intersection)
+            } else if let Some(nt) = next_tile
+                && is_intersection_tile(&grid, nt)
+            {
+                intersections.cluster_key_at(nt) == Some(intersection)
+            } else {
+                false
+            };
+
+            if !still_related {
+                *state = VehicleTrafficState::FreeFlow;
+            }
         }
 
         // Check the NEXT tile (route[1]) so rules apply *before* entering the intersection.
-        let Some(next_tile) = vehicle.route.get(1) else {
+        let Some(next_tile) = next_tile else {
             continue;
         };
 
         // Skip if has traffic light (lights handle priority).
-        let has_traffic_light = intersections.has_traffic_light_at(*next_tile);
+        let has_traffic_light = intersections.has_traffic_light_at(next_tile);
         if has_traffic_light {
             continue;
         }
@@ -1926,13 +1963,13 @@ fn check_intersection_priority(
         }
 
         // Check if this is an intersection (dir == None)
-        if is_intersection_tile(&grid, *next_tile) {
+        if is_intersection_tile(&grid, next_tile) {
             // This is an intersection - check for priority rules
             // Try to find IntersectionPriority marker at this position
             let mut found_priority = None;
             for marker in q_intersections.iter() {
                 // Match by position
-                if marker.pos == *next_tile {
+                if marker.pos == next_tile {
                     found_priority = Some(marker.priority);
                     break;
                 }
@@ -1973,9 +2010,20 @@ fn check_intersection_priority(
                 IntersectionPriority::None
             }) {
                 IntersectionPriority::StopSign => {
-                    let Some(intersection_key) = intersections.cluster_key_at(*next_tile) else {
+                    let Some(intersection_key) = intersections.cluster_key_at(next_tile) else {
                         continue;
                     };
+                    // If we've already been released for this intersection, don't re-apply stop sign
+                    // logic while still on the approach tile. Otherwise we'd oscillate between
+                    // Stopped <-> CrossingIntersection and move at half speed.
+                    if matches!(
+                        *state,
+                        VehicleTrafficState::CrossingIntersection { intersection }
+                            if intersection == intersection_key
+                    ) {
+                        continue;
+                    }
+
                     // Stop sign - must come to complete stop BEFORE intersection.
                     // Distance to stop line is remaining distance to end of current tile minus STOP_LINE_OFFSET.
                     let dist_to_intersection = 1.0 - vehicle.progress;
@@ -1986,13 +2034,15 @@ fn check_intersection_priority(
                         if matches!(
                             *state,
                             VehicleTrafficState::Stopped { stop_tile, .. }
-                                if stop_tile == *next_tile
+                                if stop_tile == next_tile
                         ) {
-                            *state = VehicleTrafficState::CrossingIntersection;
+                            *state = VehicleTrafficState::CrossingIntersection {
+                                intersection: intersection_key,
+                            };
                         } else {
                             *state = VehicleTrafficState::Stopped {
                                 intersection: intersection_key,
-                                stop_tile: *next_tile,
+                                stop_tile: next_tile,
                                 queue_position: 0,
                             };
                         }
@@ -2000,7 +2050,7 @@ fn check_intersection_priority(
                         // Update distance every tick so IDM braking sees a decreasing gap.
                         *state = VehicleTrafficState::Approaching {
                             intersection: intersection_key,
-                            stop_tile: *next_tile,
+                            stop_tile: next_tile,
                             distance_to_stop: dist_to_stop,
                         };
                     }
@@ -2280,62 +2330,6 @@ fn update_parked_vehicle_positions(
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn desired_dir(from: TilePos, to: TilePos) -> RoadDir {
-    let dx = to.x - from.x;
-    let dy = to.y - from.y;
-    if dx.abs() >= dy.abs() {
-        if dx >= 0 {
-            RoadDir::East
-        } else {
-            RoadDir::West
-        }
-    } else if dy >= 0 {
-        RoadDir::North
-    } else {
-        RoadDir::South
-    }
-}
-
-fn adjacent_road_towards(grid: &MapGrid, pos: TilePos, target: TilePos) -> Option<TilePos> {
-    let want = desired_dir(pos, target);
-    let mut best_any = None;
-
-    // Check pos itself first, then 4-neighbors.
-    let candidates = [
-        pos,
-        TilePos {
-            x: pos.x - 1,
-            y: pos.y,
-        },
-        TilePos {
-            x: pos.x + 1,
-            y: pos.y,
-        },
-        TilePos {
-            x: pos.x,
-            y: pos.y - 1,
-        },
-        TilePos {
-            x: pos.x,
-            y: pos.y + 1,
-        },
-    ];
-
-    for cpos in candidates {
-        if let Some(cell) = grid.get(cpos)
-            && !cell.water
-            && cell.road.is_some()
-        {
-            best_any = best_any.or(Some(cpos));
-            if cell.road.dir == want {
-                return Some(cpos);
-            }
-        }
-    }
-
-    best_any
-}
-
 fn tile_to_world(cfg: &MapConfig, pos: TilePos) -> Vec2 {
     let origin = map_origin(cfg);
     origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size)
@@ -2352,6 +2346,8 @@ fn map_origin(cfg: &MapConfig) -> Vec2 {
 mod tests {
     use super::*;
     use crate::game::ids::CitizenId;
+    use crate::game::intersections::IntersectionPriorityMarker;
+    use crate::game::roads::{LaneType, RoadCell, RoadFlow, RoadKind};
     use crate::game::trips::TripPurpose;
     use bevy::app::App;
     use bevy::ecs::message::MessageReader;
@@ -2410,5 +2406,115 @@ mod tests {
 
         assert_eq!(app.world().resource::<FinishCount>().0, 1);
         assert!(app.world().get_entity(vehicle).is_err());
+    }
+
+    #[test]
+    fn stop_sign_release_does_not_oscillate_crossing_state() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(MapConfig {
+                width: 3,
+                height: 1,
+                tile_size: 16.0,
+            })
+            .insert_resource({
+                let mut grid = MapGrid::new(3, 1);
+
+                let approach = TilePos { x: 0, y: 0 };
+                let intersection_tile = TilePos { x: 1, y: 0 };
+                let exit = TilePos { x: 2, y: 0 };
+
+                for (pos, dir) in [
+                    (approach, RoadDir::East),
+                    (intersection_tile, RoadDir::None),
+                    (exit, RoadDir::East),
+                ] {
+                    let Some(mut cell) = grid.get(pos) else {
+                        continue;
+                    };
+                    cell.road = RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    };
+                    grid.set(pos, cell);
+                }
+
+                grid
+            })
+            .insert_resource({
+                let intersection_tile = TilePos { x: 1, y: 0 };
+                let id = IntersectionId(0);
+                let key = IntersectionKey {
+                    aabb_min: intersection_tile,
+                    aabb_max: intersection_tile,
+                    tile_count: 1,
+                    tiles_hash: 1,
+                };
+
+                let mut idx = IntersectionIndex::default();
+                idx.clusters
+                    .push(crate::game::intersections::IntersectionCluster {
+                        id,
+                        key,
+                        tiles: vec![intersection_tile],
+                        aabb_min: intersection_tile,
+                        aabb_max: intersection_tile,
+                        centroid_tile: intersection_tile,
+                    });
+                idx.tile_to_intersection.insert(intersection_tile, id);
+                idx
+            })
+            .add_systems(Update, check_intersection_priority);
+
+        let approach = TilePos { x: 0, y: 0 };
+        let intersection_tile = TilePos { x: 1, y: 0 };
+        let exit = TilePos { x: 2, y: 0 };
+        let key = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .cluster_key_at(intersection_tile)
+            .unwrap();
+
+        // Place a stop sign marker on the intersection tile.
+        app.world_mut().spawn(IntersectionPriorityMarker {
+            pos: intersection_tile,
+            priority: IntersectionPriority::StopSign,
+        });
+
+        // Vehicle is sitting right at the stop line (dist_to_stop == 0) and has already stopped.
+        let vehicle = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![approach, intersection_tile, exit],
+                    progress: 1.0,
+                    speed: 0.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                VehicleTrafficState::Stopped {
+                    intersection: key,
+                    stop_tile: intersection_tile,
+                    queue_position: 0,
+                },
+            ))
+            .id();
+
+        // Tick 1: released to CrossingIntersection.
+        app.update();
+        assert_eq!(
+            app.world().get::<VehicleTrafficState>(vehicle).copied(),
+            Some(VehicleTrafficState::CrossingIntersection { intersection: key })
+        );
+
+        // Tick 2: must stay in CrossingIntersection while still on the approach tile (no oscillation).
+        app.update();
+        assert_eq!(
+            app.world().get::<VehicleTrafficState>(vehicle).copied(),
+            Some(VehicleTrafficState::CrossingIntersection { intersection: key })
+        );
     }
 }

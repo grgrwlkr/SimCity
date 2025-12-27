@@ -78,4 +78,3 @@ fn compute_pollution(
         }
     }
 }
-

@@ -18,6 +18,7 @@ mod intersections;
 mod land_value;
 mod map;
 mod notifications;
+mod pedestrians;
 mod persistence;
 mod persistence_contract;
 mod pollution;
@@ -94,6 +95,7 @@ impl Plugin for GamePlugin {
                 zone_placement::ZonePlacementPlugin,
                 sim::SimPlugin,
                 traffic::TrafficPlugin,
+                pedestrians::PedestriansPlugin,
                 intersections::IntersectionsPlugin,
                 land_value::LandValuePlugin,
                 notifications::NotificationsPlugin,

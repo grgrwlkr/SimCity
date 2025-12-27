@@ -1898,7 +1898,7 @@ fn vehicle_routes_overlay_render(
 
         let remaining_tiles = vehicle.route.len().saturating_sub(1);
         let max_tiles = MAX_POINTS_PER_ROUTE.saturating_sub(1).max(1);
-        let stride = (remaining_tiles + max_tiles - 1) / max_tiles; // ceil-div, >= 1
+        let stride = remaining_tiles.div_ceil(max_tiles); // >= 1
 
         let mut points = Vec::with_capacity(vehicle.route.len().min(MAX_POINTS_PER_ROUTE) + 1);
         points.push(tf.translation.truncate());

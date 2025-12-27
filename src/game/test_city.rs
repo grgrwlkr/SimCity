@@ -357,10 +357,10 @@ pub fn generate_test_city(
                 x: pos.x + dx,
                 y: pos.y + dy,
             };
-            if let Some(ncell) = grid.get(neighbor) {
-                if ncell.road.is_some() {
-                    return true;
-                }
+            if let Some(ncell) = grid.get(neighbor)
+                && ncell.road.is_some()
+            {
+                return true;
             }
         }
         false
@@ -370,12 +370,12 @@ pub fn generate_test_city(
     for y in (highway_y + 5)..(cfg.height - 15) {
         for x in 15..(arterial1_x - 5) {
             let pos = TilePos { x, y };
-            if can_zone(grid, pos) {
-                if let Some(cell) = grid.get(pos) {
-                    let mut cell = cell;
-                    cell.zone = ZoneKind::Residential;
-                    grid.set(pos, cell);
-                }
+            if can_zone(grid, pos)
+                && let Some(cell) = grid.get(pos)
+            {
+                let mut cell = cell;
+                cell.zone = ZoneKind::Residential;
+                grid.set(pos, cell);
             }
         }
     }
@@ -384,12 +384,12 @@ pub fn generate_test_city(
     for y in 10..(highway_y - 5) {
         for x in (arterial1_x + 5)..(arterial2_x - 5) {
             let pos = TilePos { x, y };
-            if can_zone(grid, pos) {
-                if let Some(cell) = grid.get(pos) {
-                    let mut cell = cell;
-                    cell.zone = ZoneKind::Residential;
-                    grid.set(pos, cell);
-                }
+            if can_zone(grid, pos)
+                && let Some(cell) = grid.get(pos)
+            {
+                let mut cell = cell;
+                cell.zone = ZoneKind::Residential;
+                grid.set(pos, cell);
             }
         }
     }
@@ -398,12 +398,12 @@ pub fn generate_test_city(
     for y in (highway_y - 8)..(highway_y + 8) {
         for x in 15..(cfg.width - 15) {
             let pos = TilePos { x, y };
-            if can_zone(grid, pos) {
-                if let Some(cell) = grid.get(pos) {
-                    let mut cell = cell;
-                    cell.zone = ZoneKind::Commercial;
-                    grid.set(pos, cell);
-                }
+            if can_zone(grid, pos)
+                && let Some(cell) = grid.get(pos)
+            {
+                let mut cell = cell;
+                cell.zone = ZoneKind::Commercial;
+                grid.set(pos, cell);
             }
         }
     }
@@ -412,12 +412,12 @@ pub fn generate_test_city(
     for y in (highway_y + 5)..(cfg.height - 40) {
         for x in (arterial2_x + 5)..(cfg.width - 40) {
             let pos = TilePos { x, y };
-            if can_zone(grid, pos) {
-                if let Some(cell) = grid.get(pos) {
-                    let mut cell = cell;
-                    cell.zone = ZoneKind::Commercial;
-                    grid.set(pos, cell);
-                }
+            if can_zone(grid, pos)
+                && let Some(cell) = grid.get(pos)
+            {
+                let mut cell = cell;
+                cell.zone = ZoneKind::Commercial;
+                grid.set(pos, cell);
             }
         }
     }
@@ -427,12 +427,12 @@ pub fn generate_test_city(
     for y in 10..(highway_y - 5) {
         for x in 15..(arterial1_x - 5) {
             let pos = TilePos { x, y };
-            if can_zone(grid, pos) {
-                if let Some(cell) = grid.get(pos) {
-                    let mut cell = cell;
-                    cell.zone = ZoneKind::Industrial;
-                    grid.set(pos, cell);
-                }
+            if can_zone(grid, pos)
+                && let Some(cell) = grid.get(pos)
+            {
+                let mut cell = cell;
+                cell.zone = ZoneKind::Industrial;
+                grid.set(pos, cell);
             }
         }
     }
@@ -441,12 +441,12 @@ pub fn generate_test_city(
     for y in 10..(highway_y - 5) {
         for x in (arterial2_x + 5)..(cfg.width - 15) {
             let pos = TilePos { x, y };
-            if can_zone(grid, pos) {
-                if let Some(cell) = grid.get(pos) {
-                    let mut cell = cell;
-                    cell.zone = ZoneKind::Industrial;
-                    grid.set(pos, cell);
-                }
+            if can_zone(grid, pos)
+                && let Some(cell) = grid.get(pos)
+            {
+                let mut cell = cell;
+                cell.zone = ZoneKind::Industrial;
+                grid.set(pos, cell);
             }
         }
     }
@@ -482,11 +482,11 @@ pub fn generate_test_city(
                                 x: pos.x + ndx,
                                 y: pos.y + ndy,
                             };
-                            if let Some(ncell) = grid.get(neighbor) {
-                                if ncell.road.is_some() {
-                                    has_road = true;
-                                    break;
-                                }
+                            if let Some(ncell) = grid.get(neighbor)
+                                && ncell.road.is_some()
+                            {
+                                has_road = true;
+                                break;
                             }
                         }
                         if !has_road {

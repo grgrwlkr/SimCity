@@ -115,4 +115,3 @@ fn notification_ui(
             }
         });
 }
-

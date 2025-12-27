@@ -10,6 +10,13 @@ pub enum TripPurpose {
     ReturnHome,
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum TripMode {
+    Walk,
+    Car,
+    Transit,
+}
+
 /// Command-like message emitted by simulation (citizens) and consumed by transport (traffic).
 #[derive(Message, Debug, Copy, Clone)]
 pub struct TripRequested {
@@ -17,6 +24,7 @@ pub struct TripRequested {
     pub from: TilePos,
     pub to: TilePos,
     pub purpose: TripPurpose,
+    pub mode: TripMode,
 }
 
 /// Completion message emitted by transport (traffic) and consumed by simulation (citizens).

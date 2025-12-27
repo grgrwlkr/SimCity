@@ -118,4 +118,3 @@ fn settings_ui(
             ui.label("Press F10 to toggle this panel");
         });
 }
-

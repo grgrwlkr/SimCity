@@ -407,6 +407,7 @@ fn reset_debug_telemetry(mut telemetry: ResMut<DebugTelemetry>, mut ui: ResMut<D
     ui.last_copy = None;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_debug_telemetry(
     time: Res<Time>,
     state: Res<State<AppState>>,
@@ -481,7 +482,7 @@ fn collect_debug_telemetry(
             VehicleTrafficState::Approaching { .. } => vehicles.approaching += 1,
             VehicleTrafficState::Stopped { .. } => vehicles.stopped += 1,
             VehicleTrafficState::WaitingForGreen { .. } => vehicles.waiting += 1,
-            VehicleTrafficState::CrossingIntersection => vehicles.crossing += 1,
+            VehicleTrafficState::CrossingIntersection { .. } => vehicles.crossing += 1,
             VehicleTrafficState::Accelerating => vehicles.accelerating += 1,
         }
 
@@ -1161,7 +1162,7 @@ fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams) {
                             VehicleTrafficState::Approaching { .. } => approaching += 1,
                             VehicleTrafficState::Stopped { .. } => stopped += 1,
                             VehicleTrafficState::WaitingForGreen { .. } => waiting += 1,
-                            VehicleTrafficState::CrossingIntersection => crossing += 1,
+                            VehicleTrafficState::CrossingIntersection { .. } => crossing += 1,
                             VehicleTrafficState::Accelerating => accelerating += 1,
                         }
                         if let Some(sv) = service {
@@ -1216,35 +1217,31 @@ fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams) {
                         ui.label(format!("Tile ({}, {}):", tile.x, tile.y));
 
                         // Traffic occupancy
-                        if let Some(ref occ) = p.traffic_occ {
-                            if let Some(idx) = p.grid.idx(tile) {
-                                if idx < occ.per_tick_vehicles.len() {
-                                    ui.label(format!(
-                                        "  Occupancy: {}",
-                                        occ.per_tick_vehicles[idx]
-                                    ));
-                                }
-                            }
+                        if let Some(ref occ) = p.traffic_occ
+                            && let Some(idx) = p.grid.idx(tile)
+                            && idx < occ.per_tick_vehicles.len()
+                        {
+                            ui.label(format!("  Occupancy: {}", occ.per_tick_vehicles[idx]));
                         }
 
                         // Vehicles on this tile
                         let mut on_tile = 0;
                         let mut details = Vec::new();
                         for (vehicle, traffic_state, parked_comp, service) in p.q_vehicles.iter() {
-                            if let Some(pos) = vehicle.route.first() {
-                                if *pos == tile {
-                                    on_tile += 1;
-                                    let parked_str = if parked_comp.is_some() { "P" } else { "" };
-                                    let service_str = service
-                                        .map(|s| format!("{:?}", s.state))
-                                        .unwrap_or_default();
-                                    let state_str = format!("{:?}", traffic_state);
-                                    let speed_str = format!("spd:{:.0}", vehicle.speed);
-                                    details.push(format!(
-                                        "  {} {} {} {}",
-                                        parked_str, service_str, state_str, speed_str
-                                    ));
-                                }
+                            if let Some(pos) = vehicle.route.first()
+                                && *pos == tile
+                            {
+                                on_tile += 1;
+                                let parked_str = if parked_comp.is_some() { "P" } else { "" };
+                                let service_str = service
+                                    .map(|s| format!("{:?}", s.state))
+                                    .unwrap_or_default();
+                                let state_str = format!("{:?}", traffic_state);
+                                let speed_str = format!("spd:{:.0}", vehicle.speed);
+                                details.push(format!(
+                                    "  {} {} {} {}",
+                                    parked_str, service_str, state_str, speed_str
+                                ));
                             }
                         }
                         ui.label(format!("  Vehicles: {}", on_tile));
@@ -1511,6 +1508,7 @@ fn stats_ui(
     show.0 = open;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn debug_dump_ui(
     mut contexts: EguiContexts,
     state: Res<State<AppState>>,
@@ -1783,6 +1781,7 @@ struct DebugDumpDailySample {
     traffic_avg: f32,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_debug_dump(
     state: &State<AppState>,
     ui_state: &UiState,
@@ -1845,7 +1844,7 @@ fn build_debug_dump(
 
     let all_samples: Vec<DebugTelemetrySample> = telemetry.samples.iter().cloned().collect();
     let stride = if all_samples.len() > max_dump_samples {
-        ((all_samples.len() + max_dump_samples - 1) / max_dump_samples).max(1)
+        all_samples.len().div_ceil(max_dump_samples)
     } else {
         1
     };

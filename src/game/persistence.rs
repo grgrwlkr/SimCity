@@ -373,6 +373,12 @@ fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParam
                     home: c.home,
                     state: c.state,
                     last_place: c.last_place,
+                    tour_mode: None,
+                    car_parked_at: if c.state == crate::game::citizens::CitizenState::AtHome {
+                        c.home
+                    } else {
+                        c.last_place
+                    },
                     // Timers will be randomized by the regular spawn system; for load we keep
                     // deterministic timers (fixed) to keep behavior stable.
                     decision_timer: Timer::from_seconds(2.0, TimerMode::Repeating),

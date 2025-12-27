@@ -125,4 +125,3 @@ fn has_adjacent_road(grid: &MapGrid, pos: TilePos) -> bool {
     }
     false
 }
-
