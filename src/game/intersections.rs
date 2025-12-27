@@ -106,8 +106,12 @@ pub struct IntersectionCluster {
 pub enum LightPhase {
     NorthSouthGreen,
     NorthSouthYellow,
+    /// All directions red; clearance interval before switching to East/West green.
+    AllRedToEastWest,
     EastWestGreen,
     EastWestYellow,
+    /// All directions red; clearance interval before switching to North/South green.
+    AllRedToNorthSouth,
 }
 
 /// Traffic light component for intersection entities.
@@ -127,6 +131,8 @@ pub struct TrafficLight {
     pub green_duration: f32,
     /// Duration of yellow phase (seconds).
     pub yellow_duration: f32,
+    /// Duration of all-red clearance phase (seconds).
+    pub all_red_duration: f32,
 }
 
 impl Default for TrafficLight {
@@ -144,6 +150,7 @@ impl Default for TrafficLight {
             phase_timer: 10.0,
             green_duration: 10.0,
             yellow_duration: 3.0,
+            all_red_duration: 1.0,
         }
     }
 }
@@ -180,6 +187,13 @@ impl TrafficLight {
     /// Check if the light is red for a given direction (not green and not yellow)
     pub fn is_red(&self, dir: crate::game::roads::RoadDir) -> bool {
         !self.is_green(dir) && !self.is_yellow(dir)
+    }
+
+    pub fn is_all_red(&self) -> bool {
+        matches!(
+            self.phase,
+            LightPhase::AllRedToEastWest | LightPhase::AllRedToNorthSouth
+        )
     }
 }
 
@@ -516,6 +530,10 @@ fn update_traffic_lights(time: Res<Time>, mut q_lights: Query<&mut TrafficLight>
                     LightPhase::NorthSouthYellow
                 }
                 LightPhase::NorthSouthYellow => {
+                    light.phase_timer = light.all_red_duration;
+                    LightPhase::AllRedToEastWest
+                }
+                LightPhase::AllRedToEastWest => {
                     light.phase_timer = light.green_duration;
                     LightPhase::EastWestGreen
                 }
@@ -524,6 +542,10 @@ fn update_traffic_lights(time: Res<Time>, mut q_lights: Query<&mut TrafficLight>
                     LightPhase::EastWestYellow
                 }
                 LightPhase::EastWestYellow => {
+                    light.phase_timer = light.all_red_duration;
+                    LightPhase::AllRedToNorthSouth
+                }
+                LightPhase::AllRedToNorthSouth => {
                     light.phase_timer = light.green_duration;
                     LightPhase::NorthSouthGreen
                 }
@@ -560,6 +582,9 @@ fn render_traffic_lights(
             }
             LightPhase::NorthSouthYellow | LightPhase::EastWestYellow => {
                 Color::srgba(0.9, 0.9, 0.2, 0.8) // Yellow
+            }
+            LightPhase::AllRedToEastWest | LightPhase::AllRedToNorthSouth => {
+                Color::srgba(0.9, 0.2, 0.2, 0.8) // Red
             }
         };
 
@@ -687,6 +712,8 @@ fn sync_traffic_light_entities(
 mod tests {
     use super::*;
     use crate::game::roads::{LaneType, RoadCell, RoadDir, RoadFlow, RoadKind};
+    use bevy::app::App;
+    use bevy::prelude::{MinimalPlugins, Update};
 
     fn set_intersection_tile(grid: &mut MapGrid, pos: TilePos) {
         let Some(mut cell) = grid.get(pos) else {
@@ -757,5 +784,56 @@ mod tests {
         assert!(idx.has_traffic_light_at(TilePos { x: 1, y: 1 }));
         assert!(idx.has_traffic_light_at(TilePos { x: 1, y: 2 }));
         assert!(!idx.has_traffic_light_at(TilePos { x: 0, y: 0 }));
+    }
+
+    #[test]
+    fn traffic_light_includes_all_red_clearance() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_systems(Update, update_traffic_lights);
+
+        let e = app
+            .world_mut()
+            .spawn(TrafficLight {
+                phase: LightPhase::NorthSouthGreen,
+                phase_timer: 0.0, // force transition
+                green_duration: 10.0,
+                yellow_duration: 3.0,
+                all_red_duration: 1.0,
+                ..default()
+            })
+            .id();
+
+        // NS Green -> NS Yellow
+        app.update();
+        {
+            let light = app.world().get::<TrafficLight>(e).unwrap();
+            assert_eq!(light.phase, LightPhase::NorthSouthYellow);
+            assert_eq!(light.phase_timer, 3.0);
+        }
+
+        // NS Yellow -> All red
+        app.world_mut()
+            .get_mut::<TrafficLight>(e)
+            .unwrap()
+            .phase_timer = 0.0;
+        app.update();
+        {
+            let light = app.world().get::<TrafficLight>(e).unwrap();
+            assert_eq!(light.phase, LightPhase::AllRedToEastWest);
+            assert_eq!(light.phase_timer, 1.0);
+        }
+
+        // All red -> EW Green
+        app.world_mut()
+            .get_mut::<TrafficLight>(e)
+            .unwrap()
+            .phase_timer = 0.0;
+        app.update();
+        {
+            let light = app.world().get::<TrafficLight>(e).unwrap();
+            assert_eq!(light.phase, LightPhase::EastWestGreen);
+            assert_eq!(light.phase_timer, 10.0);
+        }
     }
 }

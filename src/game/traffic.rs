@@ -1578,6 +1578,7 @@ fn plan_intersection_reservations(
     time: Res<Time<Fixed>>,
     grid: Res<MapGrid>,
     intersections: Res<IntersectionIndex>,
+    traffic_cfg: Res<TrafficConfig>,
     mut reservations: ResMut<IntersectionReservations>,
     q_lights: Query<&crate::game::intersections::TrafficLight>,
     q_vehicles: Query<(Entity, &Vehicle, &VehicleTrafficState), Without<Parked>>,
@@ -1616,6 +1617,7 @@ fn plan_intersection_reservations(
     // Pick one approaching vehicle per free intersection.
     #[derive(Copy, Clone)]
     struct Best {
+        priority: u8,
         dist_to_entry: f32,
         vehicle: Entity,
     }
@@ -1625,13 +1627,10 @@ fn plan_intersection_reservations(
         if v.route.len() < 2 {
             continue;
         }
-        // Don't reserve for vehicles that are explicitly stopped/waiting at red.
-        if matches!(
+        let stopped_or_waiting = matches!(
             *state,
             VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. }
-        ) {
-            continue;
-        }
+        );
 
         let cur = v.route[0];
         if is_intersection_tile(&grid, cur) {
@@ -1649,7 +1648,9 @@ fn plan_intersection_reservations(
             continue;
         }
 
-        // If there is a traffic light controller, only admit on green.
+        let mut priority = 1u8;
+
+        // If there is a traffic light controller, only admit on green/yellow (or right-on-red).
         if intersections.traffic_lights.contains(&id) {
             let Some(light) = lights_by_id.get(&id) else {
                 continue;
@@ -1658,13 +1659,59 @@ fn plan_intersection_reservations(
             if dir == RoadDir::None {
                 continue;
             }
-            if !light.is_green(dir) {
-                continue;
+
+            // Admit on green or yellow. (Yellow handling in `update_vehicle_traffic_state` allows
+            // proceeding when it's too late to stop; at the stop line this is always the case.)
+            if light.is_green(dir) || light.is_yellow(dir) {
+                // Don't reserve for vehicles that are explicitly stopped/waiting at a red.
+                if stopped_or_waiting {
+                    continue;
+                }
+                priority = 2;
+            } else {
+                // Right turn on red (near-side turn only), after coming to a stop.
+                if !stopped_or_waiting {
+                    continue;
+                }
+                // Do not allow during all-red clearance.
+                if light.is_all_red() {
+                    continue;
+                }
+
+                // Only if the vehicle is stopped for THIS stop tile.
+                let stopped_for_this = matches!(
+                    *state,
+                    VehicleTrafficState::Stopped { stop_tile, .. }
+                        | VehicleTrafficState::WaitingForGreen { stop_tile, .. }
+                        if stop_tile == next
+                );
+                if !stopped_for_this {
+                    continue;
+                }
+
+                let exit_dir = compute_exit_direction(&v.route, &grid, next);
+                if exit_dir == RoadDir::None {
+                    continue;
+                }
+                let allowed_turn_dir = if traffic_cfg.drive_on_right {
+                    dir.right()
+                } else {
+                    dir.left()
+                };
+                if exit_dir != allowed_turn_dir {
+                    continue;
+                }
+
+                priority = 1;
             }
+        } else if stopped_or_waiting {
+            // For uncontrolled intersections, don't reserve for stopped vehicles.
+            continue;
         }
 
         let dist = (1.0 - v.progress).clamp(0.0, 1.0);
         let cand = Best {
+            priority,
             dist_to_entry: dist,
             vehicle: e,
         };
@@ -1672,9 +1719,11 @@ fn plan_intersection_reservations(
         best_by_intersection
             .entry(id)
             .and_modify(|b| {
-                if cand.dist_to_entry < b.dist_to_entry
-                    || (cand.dist_to_entry == b.dist_to_entry
-                        && cand.vehicle.to_bits() < b.vehicle.to_bits())
+                if cand.priority > b.priority
+                    || (cand.priority == b.priority
+                        && (cand.dist_to_entry < b.dist_to_entry
+                            || (cand.dist_to_entry == b.dist_to_entry
+                                && cand.vehicle.to_bits() < b.vehicle.to_bits())))
                 {
                     *b = cand;
                 }
@@ -2032,14 +2081,16 @@ fn move_vehicles(
 }
 
 /// Update vehicle traffic state relative to traffic lights
+#[allow(clippy::too_many_arguments)]
 fn update_vehicle_traffic_state(
     _time: Res<Time<Fixed>>,
-    _cfg: Res<MapConfig>,
-    _grid: Res<MapGrid>,
+    traffic_cfg: Res<TrafficConfig>,
+    grid: Res<MapGrid>,
     intersections: Res<IntersectionIndex>,
+    reservations: Res<IntersectionReservations>,
     q_lights: Query<&crate::game::intersections::TrafficLight>,
     q_priorities: Query<&crate::game::intersections::IntersectionPriorityMarker>,
-    mut q_vehicles: Query<(&Vehicle, &mut VehicleTrafficState)>,
+    mut q_vehicles: Query<(Entity, &Vehicle, &mut VehicleTrafficState)>,
 ) {
     // We only need to distinguish StopSign-driven stops from light-driven stops.
     // If a light gets removed while vehicles are stopped at it, we must release them.
@@ -2050,7 +2101,7 @@ fn update_vehicle_traffic_state(
         }
     }
 
-    for (vehicle, mut state) in q_vehicles.iter_mut() {
+    for (entity, vehicle, mut state) in q_vehicles.iter_mut() {
         let current_tile = vehicle.route.first().copied();
 
         // Find nearest traffic light on route (by index).
@@ -2110,10 +2161,30 @@ fn update_vehicle_traffic_state(
         // Distance to the stop line (not to the intersection tile itself).
         let stop_distance = (distance_to_light_tile - STOP_LINE_OFFSET).max(0.0);
 
-        let can_go = light.is_green(entry_dir)
+        let mut can_go = light.is_green(entry_dir)
             || (light.is_yellow(entry_dir) && distance_to_light_tile <= 2.0);
-        let must_stop =
+        let mut must_stop =
             light.is_red(entry_dir) || (light.is_yellow(entry_dir) && distance_to_light_tile > 2.0);
+
+        // Right turn on red (near-side turn): if we already own a reservation for this intersection,
+        // allow proceeding even while the light is red (but not during all-red clearance).
+        if light.is_red(entry_dir)
+            && !light.is_all_red()
+            && let Some(id) = intersections.intersection_id_at(stop_tile)
+            && let Some(r) = reservations.by_intersection.get(&id)
+            && r.vehicle == entity
+        {
+            let exit_dir = compute_exit_direction(&vehicle.route, &grid, stop_tile);
+            let allowed_turn_dir = if traffic_cfg.drive_on_right {
+                entry_dir.right()
+            } else {
+                entry_dir.left()
+            };
+            if exit_dir != RoadDir::None && exit_dir == allowed_turn_dir {
+                can_go = true;
+                must_stop = false;
+            }
+        }
 
         // If we were stopped/waiting, only release on green.
         if matches!(
@@ -2220,6 +2291,26 @@ fn compute_entry_direction(route: &[TilePos], intersection_pos: TilePos) -> Road
     }
 
     RoadDir::None
+}
+
+fn compute_exit_direction(
+    route: &[TilePos],
+    grid: &MapGrid,
+    first_intersection_tile: TilePos,
+) -> RoadDir {
+    let Some(start_i) = route.iter().position(|t| *t == first_intersection_tile) else {
+        return RoadDir::None;
+    };
+    let mut i = start_i;
+    while i < route.len() && is_intersection_tile(grid, route[i]) {
+        i += 1;
+    }
+    if i == 0 || i >= route.len() {
+        return RoadDir::None;
+    }
+    let last_intersection = route[i - 1];
+    let exit_tile = route[i];
+    dir_between_adjacent(last_intersection, exit_tile)
 }
 
 /// Update traffic queues before traffic lights
@@ -2730,6 +2821,7 @@ mod tests {
     use super::*;
     use crate::game::ids::CitizenId;
     use crate::game::intersections::IntersectionPriorityMarker;
+    use crate::game::intersections::LightPhase;
     use crate::game::roads::{LaneType, RoadCell, RoadFlow, RoadKind};
     use crate::game::trips::TripPurpose;
     use bevy::app::App;
@@ -2983,5 +3075,137 @@ mod tests {
 
         assert!(app.world().get::<LaneChangeCooldown>(ego).is_some());
         assert!(app.world().get::<OvertakeOncoming>(ego).is_some());
+    }
+
+    #[test]
+    fn right_turn_on_red_releases_when_reserved() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+                1.0 / 10.0,
+            ))
+            .insert_resource(MapConfig {
+                width: 3,
+                height: 3,
+                tile_size: 16.0,
+            })
+            .insert_resource(TrafficConfig::default())
+            .insert_resource({
+                let mut grid = MapGrid::new(3, 3);
+
+                let approach = TilePos { x: 1, y: 0 };
+                let intersection_tile = TilePos { x: 1, y: 1 };
+                let exit = TilePos { x: 2, y: 1 };
+
+                for (pos, dir) in [
+                    (approach, RoadDir::North),
+                    (intersection_tile, RoadDir::None),
+                    (exit, RoadDir::East),
+                ] {
+                    let Some(mut cell) = grid.get(pos) else {
+                        continue;
+                    };
+                    cell.road = RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    };
+                    grid.set(pos, cell);
+                }
+
+                grid
+            })
+            .insert_resource({
+                let intersection_tile = TilePos { x: 1, y: 1 };
+                let id = IntersectionId(0);
+                let key = IntersectionKey {
+                    aabb_min: intersection_tile,
+                    aabb_max: intersection_tile,
+                    tile_count: 1,
+                    tiles_hash: 123,
+                };
+
+                let mut idx = IntersectionIndex::default();
+                idx.clusters
+                    .push(crate::game::intersections::IntersectionCluster {
+                        id,
+                        key,
+                        tiles: vec![intersection_tile],
+                        aabb_min: intersection_tile,
+                        aabb_max: intersection_tile,
+                        centroid_tile: intersection_tile,
+                    });
+                idx.tile_to_intersection.insert(intersection_tile, id);
+                idx.traffic_lights.insert(id);
+                idx
+            })
+            .insert_resource(IntersectionReservations::default())
+            .add_systems(Update, update_vehicle_traffic_state);
+
+        let intersection_tile = TilePos { x: 1, y: 1 };
+        let key = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .cluster_key_at(intersection_tile)
+            .unwrap();
+        let id = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .intersection_id_at(intersection_tile)
+            .unwrap();
+
+        // Red for North/South, green for East/West.
+        app.world_mut()
+            .spawn(crate::game::intersections::TrafficLight {
+                intersection_id: id,
+                intersection_key: key,
+                pos: intersection_tile,
+                phase: LightPhase::EastWestGreen,
+                phase_timer: 10.0,
+                green_duration: 10.0,
+                yellow_duration: 3.0,
+                all_red_duration: 1.0,
+            });
+
+        let approach = TilePos { x: 1, y: 0 };
+        let exit = TilePos { x: 2, y: 1 };
+
+        let ego = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![approach, intersection_tile, exit],
+                    progress: 1.0 - STOP_LINE_OFFSET,
+                    speed: 0.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                VehicleTrafficState::WaitingForGreen {
+                    intersection: key,
+                    stop_tile: intersection_tile,
+                },
+            ))
+            .id();
+
+        // Pre-own a reservation so the right-on-red policy can release us.
+        app.world_mut()
+            .resource_mut::<IntersectionReservations>()
+            .by_intersection
+            .insert(
+                id,
+                IntersectionReservation {
+                    vehicle: ego,
+                    state: ReservationState::Approaching,
+                    created_at_sec: 0.0,
+                },
+            );
+
+        app.update();
+        assert_eq!(
+            app.world().get::<VehicleTrafficState>(ego).copied(),
+            Some(VehicleTrafficState::Accelerating)
+        );
     }
 }
