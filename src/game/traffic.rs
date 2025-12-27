@@ -13,7 +13,7 @@ use crate::game::map::{MapConfig, MapGrid, TilePos};
 use crate::game::public_transport::{
     BusVehicle, PendingTransitTrips, PendingTrip, PublicTransportConfig, PublicTransportIndex,
 };
-use crate::game::roads::RoadDir;
+use crate::game::roads::{RoadDir, RoadKind};
 use crate::game::services::ServiceVehicle;
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
@@ -104,6 +104,8 @@ const QUEUE_GAP: f32 = 0.3;
 
 /// Stop line offset relative to intersection (0.0 = tile boundary)
 const STOP_LINE_OFFSET: f32 = 0.15;
+/// Numerical epsilon for "at stop line" checks (in tile fractions).
+const STOP_LINE_EPS_TILES: f32 = 1e-3;
 
 /// After this many seconds without progressing, try to resolve a traffic jam (reroute).
 /// (v2 policy: avoid "cheat" behavior by default; only intervene after a long timeout.)
@@ -132,6 +134,23 @@ const LANE_CHANGE_INTERSECTION_LOOKAHEAD: usize = 6;
 const OVERTAKE_LOOKAHEAD_TILES: f32 = 2.0;
 /// Leader is considered "slow" if below this fraction of our desired speed.
 const OVERTAKE_LEADER_SPEED_RATIO: f32 = 0.85;
+
+// ---------------------------------------------------------------------------
+// Stage F (initial): oncoming-lane overtakes on TwoLane (1+1) with strict guardrails
+// ---------------------------------------------------------------------------
+
+/// How far ahead (in tiles) the oncoming lane must be clear to start an oncoming overtake.
+const ONCOMING_OVERTAKE_CLEAR_TILES: usize = 14;
+/// Don't start an oncoming overtake if an intersection is close ahead on the route.
+const ONCOMING_OVERTAKE_INTERSECTION_LOOKAHEAD: usize = 14;
+/// Minimum number of forward tiles to stay in the oncoming lane once we pull out.
+const ONCOMING_OVERTAKE_MIN_PASS_TILES: usize = 3;
+/// Maximum number of forward tiles to stay in the oncoming lane once we pull out.
+const ONCOMING_OVERTAKE_MAX_PASS_TILES: usize = 6;
+/// Cooldown after starting an oncoming overtake (seconds).
+const ONCOMING_OVERTAKE_COOLDOWN_SECS: f32 = 4.0;
+/// Guardrail: max number of oncoming overtakes planned per tick.
+const MAX_ONCOMING_OVERTAKES_PER_TICK: usize = 8;
 
 // ---------------------------------------------------------------------------
 // IDM (Stage B): longitudinal dynamics (car-following)
@@ -245,6 +264,15 @@ struct Overtaking {
     remaining_secs: f32,
 }
 
+/// Marker state for the "overtake oncoming lane" maneuver (TwoLane 1+1).
+///
+/// This is a **local tactic** (not part of routing). While present, we suppress normal lane-change
+/// planning to avoid oscillations.
+#[derive(Component, Debug, Clone, Copy)]
+struct OvertakeOncoming {
+    remaining_secs: f32,
+}
+
 // ---------------------------------------------------------------------------
 // Stage D (initial): intersection admission via coarse reservations
 // ---------------------------------------------------------------------------
@@ -344,12 +372,17 @@ impl Plugin for TrafficPlugin {
                     spawn_trip_vehicles,
                     tick_lane_change_cooldowns,
                     tick_overtaking,
+                    tick_overtake_oncoming,
                     plan_lane_changes
                         .after(check_intersection_priority)
                         .after(spawn_trip_vehicles)
                         .before(move_vehicles),
-                    plan_intersection_reservations
+                    plan_oncoming_overtakes
                         .after(plan_lane_changes)
+                        .before(plan_intersection_reservations)
+                        .before(move_vehicles),
+                    plan_intersection_reservations
+                        .after(plan_oncoming_overtakes)
                         .before(move_vehicles),
                     move_vehicles.after(plan_intersection_reservations),
                     cleanup_intersection_reservations.after(move_vehicles),
@@ -818,12 +851,22 @@ fn tick_overtaking(
     }
 }
 
-fn route_has_near_intersection(route: &[TilePos], grid: &MapGrid) -> bool {
-    for t in route
-        .iter()
-        .skip(1)
-        .take(LANE_CHANGE_INTERSECTION_LOOKAHEAD)
-    {
+fn tick_overtake_oncoming(
+    time: Res<Time<Fixed>>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut OvertakeOncoming)>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut ov) in q.iter_mut() {
+        ov.remaining_secs -= dt;
+        if ov.remaining_secs <= 0.0 {
+            commands.entity(e).remove::<OvertakeOncoming>();
+        }
+    }
+}
+
+fn route_has_near_intersection_n(route: &[TilePos], grid: &MapGrid, lookahead: usize) -> bool {
+    for t in route.iter().skip(1).take(lookahead) {
         if let Some(c) = grid.get(*t)
             && c.road.is_some()
             && c.road.dir == RoadDir::None
@@ -832,6 +875,10 @@ fn route_has_near_intersection(route: &[TilePos], grid: &MapGrid) -> bool {
         }
     }
     false
+}
+
+fn route_has_near_intersection(route: &[TilePos], grid: &MapGrid) -> bool {
+    route_has_near_intersection_n(route, grid, LANE_CHANGE_INTERSECTION_LOOKAHEAD)
 }
 
 fn lane_change_target(grid: &MapGrid, current: TilePos, move_dir: RoadDir) -> Option<TilePos> {
@@ -864,6 +911,46 @@ fn lane_change_target(grid: &MapGrid, current: TilePos, move_dir: RoadDir) -> Op
     }
 
     Some(target)
+}
+
+fn oncoming_lane_offset(grid: &MapGrid, current: TilePos, travel_dir: RoadDir) -> Option<IVec2> {
+    let cur_cell = grid.get(current)?;
+    if cur_cell.water || !cur_cell.road.is_some() || cur_cell.road.dir == RoadDir::None {
+        return None;
+    }
+    let cur = cur_cell.road;
+    if cur.kind != RoadKind::TwoLane {
+        return None;
+    }
+
+    // Oncoming lane is one tile to the left or right (perpendicular), same road kind/lane count,
+    // adjacent lane index, and opposite `dir`.
+    for side in [travel_dir.left(), travel_dir.right()] {
+        let d = side.delta();
+        let t = TilePos {
+            x: current.x + d.x,
+            y: current.y + d.y,
+        };
+        let Some(cell) = grid.get(t) else {
+            continue;
+        };
+        if cell.water || !cell.road.is_some() || cell.road.dir == RoadDir::None {
+            continue;
+        }
+        let next = cell.road;
+        if next.kind != cur.kind || next.lanes_total() != cur.lanes_total() {
+            continue;
+        }
+        if next.lane.abs_diff(cur.lane) != 1 {
+            continue;
+        }
+        if next.dir != travel_dir.opposite() {
+            continue;
+        }
+        return Some(d);
+    }
+
+    None
 }
 
 fn lane_change_safe_progress(
@@ -922,6 +1009,45 @@ fn find_leader_ahead(
     best
 }
 
+fn find_leader_ahead_entity(
+    ego_e: Entity,
+    ego: (TilePos, f32),
+    route: &[TilePos],
+    by_tile: &std::collections::HashMap<TilePos, Vec<(Entity, f32, f32)>>,
+) -> Option<(Entity, f32, f32)> {
+    let (tile, progress) = ego;
+    let list = by_tile.get(&tile)?;
+
+    let mut best: Option<(Entity, f32, f32)> = None; // (entity, gap_tiles, lead_speed)
+    for (e, p, v) in list.iter().copied() {
+        if e == ego_e {
+            continue;
+        }
+        if p > progress {
+            let g = p - progress;
+            if best.is_none() || g < best.unwrap().1 {
+                best = Some((e, g, v));
+            }
+        }
+    }
+
+    // On the next tile: earliest vehicle (closest to entry).
+    if route.len() > 1 {
+        let next_tile = route[1];
+        if let Some(next_list) = by_tile.get(&next_tile)
+            && let Some((e, min_p, lead_v)) = next_list.first().copied()
+            && e != ego_e
+        {
+            let g = (1.0 - progress) + min_p;
+            if best.is_none() || g < best.unwrap().1 {
+                best = Some((e, g, lead_v));
+            }
+        }
+    }
+
+    best
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn plan_lane_changes(
     time: Res<Time<Fixed>>,
@@ -943,6 +1069,7 @@ fn plan_lane_changes(
                 &VehicleTrafficState,
                 Option<&LaneChangeCooldown>,
                 Option<&Overtaking>,
+                Option<&OvertakeOncoming>,
                 Option<&ServiceVehicle>,
                 Option<&BusVehicle>,
             ),
@@ -987,8 +1114,13 @@ fn plan_lane_changes(
     }
     let mut desires = Vec::<Desire>::new();
 
-    for (e, v, state, cooldown, overtaking, service_vehicle, bus_vehicle) in vehicles.p0().iter() {
+    for (e, v, state, cooldown, overtaking, oncoming, service_vehicle, bus_vehicle) in
+        vehicles.p0().iter()
+    {
         if cooldown.is_some() {
+            continue;
+        }
+        if oncoming.is_some() {
             continue;
         }
         if service_vehicle.is_some() || bus_vehicle.is_some() {
@@ -1177,6 +1309,246 @@ fn plan_lane_changes(
         }
 
         done += 1;
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn plan_oncoming_overtakes(
+    cfg: Res<MapConfig>,
+    grid: Res<MapGrid>,
+    traffic_cfg: Res<TrafficConfig>,
+    mut commands: Commands,
+    mut vehicles: ParamSet<(
+        Query<
+            (
+                Entity,
+                &Vehicle,
+                &VehicleTrafficState,
+                Option<&LaneChangeCooldown>,
+                Option<&Overtaking>,
+                Option<&OvertakeOncoming>,
+                Option<&ServiceVehicle>,
+                Option<&BusVehicle>,
+            ),
+            Without<Parked>,
+        >,
+        Query<(Entity, &mut Vehicle), Without<Parked>>,
+    )>,
+) {
+    // Build a per-tile ordering for leader + oncoming-lane occupancy checks.
+    let mut by_tile: std::collections::HashMap<TilePos, Vec<(Entity, f32, f32)>> =
+        std::collections::HashMap::new();
+    for (e, v, ..) in vehicles.p0().iter() {
+        if let Some(&tile) = v.route.first() {
+            by_tile.entry(tile).or_default().push((
+                e,
+                v.progress.clamp(0.0, 1.0),
+                v.speed.max(0.0),
+            ));
+        }
+    }
+    for list in by_tile.values_mut() {
+        list.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    }
+
+    #[derive(Copy, Clone)]
+    struct Plan {
+        e: Entity,
+        offset: IVec2,
+        pass_tiles: usize,
+    }
+
+    let mut plans = Vec::<Plan>::new();
+
+    for (e, v, state, cooldown, overtaking, oncoming, service_vehicle, bus_vehicle) in
+        vehicles.p0().iter()
+    {
+        if plans.len() >= MAX_ONCOMING_OVERTAKES_PER_TICK {
+            break;
+        }
+        if cooldown.is_some() || overtaking.is_some() || oncoming.is_some() {
+            continue;
+        }
+        if service_vehicle.is_some() || bus_vehicle.is_some() {
+            continue;
+        }
+        if v.route.len() < 2 {
+            continue;
+        }
+
+        // Never start close to intersections (safety).
+        if route_has_near_intersection_n(&v.route, &grid, ONCOMING_OVERTAKE_INTERSECTION_LOOKAHEAD)
+        {
+            continue;
+        }
+
+        // Do not start while stopped/waiting/approaching a stop line.
+        if matches!(
+            *state,
+            VehicleTrafficState::Approaching { .. }
+                | VehicleTrafficState::Stopped { .. }
+                | VehicleTrafficState::WaitingForGreen { .. }
+                | VehicleTrafficState::CrossingIntersection { .. }
+        ) {
+            continue;
+        }
+
+        let ego_tile = v.route[0];
+        let Some(ego_cell) = grid.get(ego_tile) else {
+            continue;
+        };
+        if ego_cell.water || !ego_cell.road.is_some() || ego_cell.road.dir == RoadDir::None {
+            continue;
+        }
+        let ego_road = ego_cell.road;
+        if ego_road.kind != RoadKind::TwoLane {
+            continue;
+        }
+        let dir = ego_road.dir;
+
+        let v0 = road_speed_limit_world(&cfg, &traffic_cfg, ego_tile, &grid).min(v.max_speed);
+        if v0 <= 0.0 {
+            continue;
+        }
+
+        // Only attempt if we have a close, slow leader and we're not already near our desired speed.
+        let Some((_lead_e, gap_tiles, lead_speed)) =
+            find_leader_ahead_entity(e, (ego_tile, v.progress), &v.route, &by_tile)
+        else {
+            continue;
+        };
+        if gap_tiles > OVERTAKE_LOOKAHEAD_TILES {
+            continue;
+        }
+        if lead_speed >= v0 * OVERTAKE_LEADER_SPEED_RATIO {
+            continue;
+        }
+        if v.speed >= v0 * 0.95 {
+            continue;
+        }
+
+        // Determine the oncoming lane offset (perpendicular) at the current position.
+        let Some(offset) = oncoming_lane_offset(&grid, ego_tile, dir) else {
+            continue;
+        };
+
+        // Pick a short, conservative pass length based on the current gap.
+        let pass_tiles = ((gap_tiles + 1.5).ceil() as usize).clamp(
+            ONCOMING_OVERTAKE_MIN_PASS_TILES,
+            ONCOMING_OVERTAKE_MAX_PASS_TILES,
+        );
+        if v.route.len() <= pass_tiles + 1 {
+            continue;
+        }
+
+        // Validate straight TwoLane segment and matching oncoming tiles for the planned range.
+        let mut ok = true;
+        for i in 0..=pass_tiles {
+            let base = v.route[i];
+            let Some(c) = grid.get(base) else {
+                ok = false;
+                break;
+            };
+            if c.water || !c.road.is_some() || c.road.dir != dir || c.road.kind != RoadKind::TwoLane
+            {
+                ok = false;
+                break;
+            }
+
+            let on = TilePos {
+                x: base.x + offset.x,
+                y: base.y + offset.y,
+            };
+            let Some(oc) = grid.get(on) else {
+                ok = false;
+                break;
+            };
+            if oc.water
+                || !oc.road.is_some()
+                || oc.road.dir != dir.opposite()
+                || oc.road.kind != RoadKind::TwoLane
+            {
+                ok = false;
+                break;
+            }
+        }
+        if !ok {
+            continue;
+        }
+
+        // Conservative safety: require the oncoming lane to be completely clear for a large distance.
+        let fwd = dir.delta();
+        for j in 0..ONCOMING_OVERTAKE_CLEAR_TILES {
+            let t = TilePos {
+                x: ego_tile.x + offset.x + fwd.x * j as i32,
+                y: ego_tile.y + offset.y + fwd.y * j as i32,
+            };
+            let Some(c) = grid.get(t) else {
+                ok = false;
+                break;
+            };
+            if c.water || !c.road.is_some() || c.road.dir == RoadDir::None {
+                ok = false;
+                break;
+            }
+            if let Some(list) = by_tile.get(&t)
+                && !list.is_empty()
+            {
+                ok = false;
+                break;
+            }
+        }
+        if !ok {
+            continue;
+        }
+
+        plans.push(Plan {
+            e,
+            offset,
+            pass_tiles,
+        });
+    }
+
+    // Apply route rewrites in a second pass to satisfy the borrow checker.
+    let mut q_mut = vehicles.p1();
+    for p in plans {
+        let Ok((_ent, mut vv)) = q_mut.get_mut(p.e) else {
+            continue;
+        };
+
+        // Pull out to oncoming lane, move forward for `pass_tiles`, return.
+        let current = vv.route[0];
+        let mut new_route = Vec::with_capacity(vv.route.len() + p.pass_tiles + 2);
+        new_route.push(current);
+
+        // Pull out to oncoming lane at current position.
+        new_route.push(TilePos {
+            x: current.x + p.offset.x,
+            y: current.y + p.offset.y,
+        });
+
+        // Advance oncoming lane in parallel to the current route.
+        for i in 1..=p.pass_tiles {
+            let base = vv.route[i];
+            new_route.push(TilePos {
+                x: base.x + p.offset.x,
+                y: base.y + p.offset.y,
+            });
+        }
+
+        // Return to our lane at the same longitudinal position.
+        new_route.push(vv.route[p.pass_tiles]);
+
+        // Continue with the original route after the return tile.
+        new_route.extend(vv.route.iter().copied().skip(p.pass_tiles + 1));
+        vv.route = new_route;
+
+        commands.entity(p.e).insert(LaneChangeCooldown {
+            remaining_secs: ONCOMING_OVERTAKE_COOLDOWN_SECS,
+        });
+        commands.entity(p.e).insert(OvertakeOncoming {
+            remaining_secs: ONCOMING_OVERTAKE_COOLDOWN_SECS,
+        });
     }
 }
 
@@ -1491,7 +1863,10 @@ fn move_vehicles(
             distance_to_stop, ..
         } = state
         {
-            let gap_world = distance_to_stop.max(0.0) * cfg.tile_size.max(0.1);
+            // IDM keeps a standstill gap of `s0` to a leader. For a virtual stop-line leader we want
+            // the vehicle to come to rest *at* the stop line, not `s0` behind it. Achieve that by
+            // shifting the virtual leader forward by `s0`.
+            let gap_world = distance_to_stop.max(0.0) * cfg.tile_size.max(0.1) + idm.s0;
             let stop_leader = (gap_world, 0.0);
             leader = Some(match leader {
                 Some((g, gv)) if g <= stop_leader.0 => (g, gv),
@@ -1576,7 +1951,12 @@ fn move_vehicles(
                 } else {
                     (1.0 - v.progress).max(0.0)
                 };
-                let gap_world = gap_tiles * cfg.tile_size.max(0.1);
+                // Same logic as stop-line leader above: for an intersection admission block, shift
+                // the virtual leader forward by `s0` so the vehicle can reach the stop line.
+                let mut gap_world = gap_tiles * cfg.tile_size.max(0.1);
+                if blocked_next_is_intersection {
+                    gap_world += idm.s0;
+                }
                 let block_leader = (gap_world, 0.0);
                 leader = Some(match leader {
                     Some((g, gv)) if g <= block_leader.0 => (g, gv),
@@ -1600,13 +1980,16 @@ fn move_vehicles(
             if v.route.len() > 1 && blocked_next {
                 let stop_before = 0.001;
                 let max_p = if blocked_next_is_intersection {
-                    (1.0 - STOP_LINE_OFFSET - stop_before).max(0.0)
+                    // For intersections, clamp to the stop line exactly (not "just before"),
+                    // otherwise stop-sign / light logic can get stuck in Approaching with a tiny
+                    // positive `distance_to_stop` and never transition to Stopped/Crossing.
+                    (1.0 - STOP_LINE_OFFSET).max(0.0)
                 } else {
                     1.0 - stop_before
                 };
                 let next_p = (v.progress + dprog).min(max_p);
                 v.progress = next_p;
-                if (max_p - v.progress).abs() < 1e-6 {
+                if v.progress >= max_p - 1e-6 {
                     v.speed = 0.0;
                 }
             } else {
@@ -1750,7 +2133,7 @@ fn update_vehicle_traffic_state(
 
         if must_stop {
             // Once we reached the stop line, lock into a full stop (no creeping).
-            if stop_distance <= 0.0 {
+            if stop_distance <= STOP_LINE_EPS_TILES {
                 *state = VehicleTrafficState::Stopped {
                     intersection: intersection_key,
                     stop_tile,
@@ -2028,7 +2411,7 @@ fn check_intersection_priority(
                     // Distance to stop line is remaining distance to end of current tile minus STOP_LINE_OFFSET.
                     let dist_to_intersection = 1.0 - vehicle.progress;
                     let dist_to_stop = (dist_to_intersection - STOP_LINE_OFFSET).max(0.0);
-                    if dist_to_stop <= 0.0 {
+                    if dist_to_stop <= STOP_LINE_EPS_TILES {
                         // First tick at the stop line: lock to a full stop (no creeping).
                         // Next tick, we'll release to Cross/FreeFlow so the vehicle can enter (subject to admission).
                         if matches!(
@@ -2516,5 +2899,89 @@ mod tests {
             app.world().get::<VehicleTrafficState>(vehicle).copied(),
             Some(VehicleTrafficState::CrossingIntersection { intersection: key })
         );
+    }
+
+    #[test]
+    fn oncoming_overtake_rewrites_route_on_two_lane() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(MapConfig {
+                width: 20,
+                height: 2,
+                tile_size: 16.0,
+            })
+            .insert_resource({
+                let mut grid = MapGrid::new(20, 2);
+                for x in 0..20 {
+                    // Our lane (eastbound)
+                    let p0 = TilePos { x, y: 0 };
+                    let Some(mut c0) = grid.get(p0) else {
+                        continue;
+                    };
+                    c0.road = RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir: RoadDir::East,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    };
+                    grid.set(p0, c0);
+
+                    // Oncoming lane (westbound)
+                    let p1 = TilePos { x, y: 1 };
+                    let Some(mut c1) = grid.get(p1) else {
+                        continue;
+                    };
+                    c1.road = RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir: RoadDir::West,
+                        lane: 1,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    };
+                    grid.set(p1, c1);
+                }
+                grid
+            })
+            .insert_resource(TrafficConfig::default())
+            .add_systems(Update, plan_oncoming_overtakes);
+
+        // Leader occupies the next tile, moving slowly.
+        app.world_mut().spawn((
+            Vehicle {
+                route: (1..20).map(|x| TilePos { x, y: 0 }).collect(),
+                progress: 0.0,
+                speed: 2.0,
+                max_speed: 60.0,
+                max_accel: 20.0,
+            },
+            VehicleTrafficState::FreeFlow,
+        ));
+
+        // Ego vehicle behind, wants to pass.
+        let ego = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: (0..20).map(|x| TilePos { x, y: 0 }).collect(),
+                    progress: 0.0,
+                    speed: 5.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                VehicleTrafficState::FreeFlow,
+            ))
+            .id();
+
+        app.update();
+
+        let v = app.world().get::<Vehicle>(ego).unwrap();
+        assert_eq!(v.route[0], TilePos { x: 0, y: 0 });
+        assert_eq!(v.route[1], TilePos { x: 0, y: 1 }); // pull out
+        assert_eq!(v.route[2], TilePos { x: 1, y: 1 }); // oncoming forward
+        assert_eq!(v.route[5], TilePos { x: 3, y: 0 }); // return to our lane (pass_tiles=3)
+
+        assert!(app.world().get::<LaneChangeCooldown>(ego).is_some());
+        assert!(app.world().get::<OvertakeOncoming>(ego).is_some());
     }
 }
