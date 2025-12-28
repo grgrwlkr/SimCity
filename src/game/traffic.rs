@@ -107,6 +107,9 @@ const STOP_LINE_OFFSET: f32 = 0.15;
 /// Numerical epsilon for "at stop line" checks (in tile fractions).
 const STOP_LINE_EPS_TILES: f32 = 1e-3;
 
+/// Target speed cap while performing a right turn on red (doc: <= 15 km/h).
+const RIGHT_ON_RED_TURN_MAX_KMH: f32 = 15.0;
+
 /// After this many seconds without progressing, try to resolve a traffic jam (reroute).
 /// (v2 policy: avoid "cheat" behavior by default; only intervene after a long timeout.)
 const STUCK_REROUTE_SECS: f32 = 60.0;
@@ -252,6 +255,13 @@ struct StuckTimer {
     last_progress: f32,
 }
 
+/// Marker for vehicles currently performing a right turn on red.
+/// While present, we clamp their speed to a low "turn speed" until they exit the intersection.
+#[derive(Component, Debug, Clone, Copy)]
+struct RightTurnOnRed {
+    intersection_id: IntersectionId,
+}
+
 /// Prevents frequent lane-change oscillations.
 #[derive(Component, Debug, Clone, Copy)]
 struct LaneChangeCooldown {
@@ -391,6 +401,7 @@ impl Plugin for TrafficPlugin {
                         .after(plan_oncoming_overtakes)
                         .before(move_vehicles),
                     move_vehicles.after(plan_intersection_reservations),
+                    cleanup_right_on_red_markers.after(move_vehicles),
                     cleanup_intersection_reservations.after(move_vehicles),
                 )
                     .in_set(GameSet::Sim)
@@ -1820,6 +1831,30 @@ fn cleanup_intersection_reservations(
     }
 }
 
+fn cleanup_right_on_red_markers(
+    intersections: Res<IntersectionIndex>,
+    mut commands: Commands,
+    q: Query<(Entity, &Vehicle, &RightTurnOnRed), Without<Parked>>,
+) {
+    for (e, v, ror) in q.iter() {
+        let Some(&cur) = v.route.first() else {
+            commands.entity(e).remove::<RightTurnOnRed>();
+            continue;
+        };
+        let cur_id = intersections.intersection_id_at(cur);
+        let next_id = v
+            .route
+            .get(1)
+            .and_then(|t| intersections.intersection_id_at(*t));
+
+        let in_or_approaching =
+            cur_id == Some(ror.intersection_id) || next_id == Some(ror.intersection_id);
+        if !in_or_approaching {
+            commands.entity(e).remove::<RightTurnOnRed>();
+        }
+    }
+}
+
 /// Move vehicles along their routes.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn move_vehicles(
@@ -1839,6 +1874,7 @@ fn move_vehicles(
                 &mut Vehicle,
                 &mut Transform,
                 &VehicleTrafficState,
+                Option<&RightTurnOnRed>,
                 Option<&TripPassenger>,
                 Option<&ServiceVehicle>,
                 Option<&BusVehicle>,
@@ -1892,7 +1928,7 @@ fn move_vehicles(
         }
     }
 
-    for (entity, mut v, mut tf, state, passenger, service_vehicle, bus_vehicle) in
+    for (entity, mut v, mut tf, state, ror, passenger, service_vehicle, bus_vehicle) in
         vehicles.p0().iter_mut()
     {
         if v.route.is_empty() {
@@ -1912,7 +1948,19 @@ fn move_vehicles(
         // --- Desired speed from speed limits (RoadKind.speed_limit() is treated as km/h).
         let current_tile = v.route[0];
         let speed_limit_world = road_speed_limit_world(&cfg, &traffic_cfg, current_tile, &grid);
-        let v0 = speed_limit_world.min(v.max_speed).max(0.0);
+        let mut v0 = speed_limit_world.min(v.max_speed).max(0.0);
+        if let Some(ror) = ror.copied() {
+            let cap = kmh_to_world_speed(&cfg, &traffic_cfg, RIGHT_ON_RED_TURN_MAX_KMH);
+            // Clamp while we're in the intersection cluster OR still on the approach tile to it.
+            let cur_id = intersections.intersection_id_at(current_tile);
+            let next_id = v
+                .route
+                .get(1)
+                .and_then(|t| intersections.intersection_id_at(*t));
+            if cur_id == Some(ror.intersection_id) || next_id == Some(ror.intersection_id) {
+                v0 = v0.min(cap);
+            }
+        }
 
         // --- Leader detection (tile-local) + virtual leaders (stop lines / blocked next tile).
         let mut leader: Option<(f32, f32)> = leader_same_tile.get(&entity).copied();
@@ -2109,6 +2157,7 @@ fn update_vehicle_traffic_state(
     grid: Res<MapGrid>,
     intersections: Res<IntersectionIndex>,
     reservations: Res<IntersectionReservations>,
+    mut commands: Commands,
     q_lights: Query<&crate::game::intersections::TrafficLight>,
     q_priorities: Query<&crate::game::intersections::IntersectionPriorityMarker>,
     mut q_vehicles: Query<(Entity, &Vehicle, &mut VehicleTrafficState)>,
@@ -2189,6 +2238,8 @@ fn update_vehicle_traffic_state(
 
         // Right turn on red (near-side turn): if we already own a reservation for this intersection,
         // allow proceeding even while the light is red (but not during all-red clearance).
+        let mut is_right_on_red = false;
+        let mut right_on_red_intersection_id: Option<IntersectionId> = None;
         if light.is_red(entry_dir)
             && !light.is_all_red()
             && let Some(id) = intersections.intersection_id_at(stop_tile)
@@ -2204,6 +2255,8 @@ fn update_vehicle_traffic_state(
             if exit_dir != RoadDir::None && exit_dir == allowed_turn_dir {
                 can_go = true;
                 must_stop = false;
+                is_right_on_red = true;
+                right_on_red_intersection_id = Some(id);
             }
         }
 
@@ -2214,6 +2267,15 @@ fn update_vehicle_traffic_state(
         ) {
             if can_go {
                 *state = VehicleTrafficState::Accelerating;
+                if is_right_on_red {
+                    if let Some(id) = right_on_red_intersection_id {
+                        commands.entity(entity).insert(RightTurnOnRed {
+                            intersection_id: id,
+                        });
+                    }
+                } else {
+                    commands.entity(entity).remove::<RightTurnOnRed>();
+                }
             } else {
                 *state = VehicleTrafficState::WaitingForGreen {
                     intersection: intersection_key,
@@ -3371,5 +3433,144 @@ mod tests {
                 .map(|r| r.vehicle),
             Some(ego)
         );
+    }
+
+    #[test]
+    fn right_turn_on_red_speed_is_capped_to_turn_speed() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<TripFinished>()
+            .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+                1.0 / 10.0,
+            ))
+            .insert_resource(MapConfig {
+                width: 3,
+                height: 3,
+                tile_size: 16.0,
+            })
+            .insert_resource(MapGrid::new(3, 3))
+            .insert_resource(TrafficOccupancy::default())
+            .insert_resource(TrafficConfig::default())
+            .insert_resource(IntersectionReservations::default())
+            .insert_resource({
+                let intersection_tile = TilePos { x: 1, y: 1 };
+                let id = IntersectionId(0);
+                let key = IntersectionKey {
+                    aabb_min: intersection_tile,
+                    aabb_max: intersection_tile,
+                    tile_count: 1,
+                    tiles_hash: 123,
+                };
+
+                let mut idx = IntersectionIndex::default();
+                idx.clusters
+                    .push(crate::game::intersections::IntersectionCluster {
+                        id,
+                        key,
+                        tiles: vec![intersection_tile],
+                        aabb_min: intersection_tile,
+                        aabb_max: intersection_tile,
+                        centroid_tile: intersection_tile,
+                    });
+                idx.tile_to_intersection.insert(intersection_tile, id);
+                idx.traffic_lights.insert(id);
+                idx
+            })
+            .add_systems(
+                Update,
+                (update_vehicle_traffic_state, move_vehicles).chain(),
+            );
+
+        let approach = TilePos { x: 1, y: 0 };
+        let intersection_tile = TilePos { x: 1, y: 1 };
+        let exit = TilePos { x: 2, y: 1 };
+
+        // Set up road cells so speed limit is > 15 km/h.
+        {
+            let mut grid = app.world_mut().resource_mut::<MapGrid>();
+            for (pos, dir) in [
+                (approach, RoadDir::North),
+                (intersection_tile, RoadDir::None),
+                (exit, RoadDir::East),
+            ] {
+                let Some(mut cell) = grid.get(pos) else {
+                    continue;
+                };
+                cell.road = RoadCell {
+                    kind: RoadKind::TwoLane,
+                    dir,
+                    lane: 0,
+                    flow: RoadFlow::TwoWay,
+                    lane_type: LaneType::Regular,
+                };
+                grid.set(pos, cell);
+            }
+        }
+
+        let key = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .cluster_key_at(intersection_tile)
+            .unwrap();
+        let id = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .intersection_id_at(intersection_tile)
+            .unwrap();
+
+        // Red for North/South, green for East/West (so right-on-red is applicable for a North approach).
+        app.world_mut()
+            .spawn(crate::game::intersections::TrafficLight {
+                intersection_id: id,
+                intersection_key: key,
+                pos: intersection_tile,
+                phase: LightPhase::EastWestGreen,
+                phase_timer: 10.0,
+                green_duration: 10.0,
+                yellow_duration: 3.0,
+                all_red_duration: 1.0,
+            });
+
+        let ego = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![approach, intersection_tile, exit],
+                    progress: 1.0 - STOP_LINE_OFFSET,
+                    speed: 999.0, // absurdly high, should be clamped
+                    max_speed: 999.0,
+                    max_accel: 20.0,
+                },
+                Transform::default(),
+                VehicleTrafficState::WaitingForGreen {
+                    intersection: key,
+                    stop_tile: intersection_tile,
+                },
+            ))
+            .id();
+
+        // Pre-own a reservation so right-on-red can release us.
+        app.world_mut()
+            .resource_mut::<IntersectionReservations>()
+            .by_intersection
+            .insert(
+                id,
+                IntersectionReservation {
+                    vehicle: ego,
+                    state: ReservationState::Approaching,
+                    created_at_sec: 0.0,
+                },
+            );
+
+        app.update();
+
+        assert!(app.world().get::<RightTurnOnRed>(ego).is_some());
+        let v = app.world().get::<Vehicle>(ego).unwrap();
+        let cap = kmh_to_world_speed(
+            &app.world().resource::<MapConfig>(),
+            &app.world().resource::<TrafficConfig>(),
+            RIGHT_ON_RED_TURN_MAX_KMH,
+        );
+        assert!(v.speed <= cap + 1e-3);
     }
 }

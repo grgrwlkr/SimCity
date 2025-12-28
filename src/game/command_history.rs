@@ -84,25 +84,27 @@ pub enum UndoableCommand {
 
 impl UndoableCommand {
     /// Create an undo command (reverses the original command).
-    pub fn undo_command(&self) -> crate::game::commands::GameCommand {
+    pub fn undo_commands(&self) -> Vec<crate::game::commands::GameCommand> {
+        use crate::game::commands::GameCommand;
+
         match self {
             UndoableCommand::SetRoad { pos, old, .. } => {
-                crate::game::commands::GameCommand::SetRoad {
+                vec![GameCommand::SetRoad {
                     pos: *pos,
                     road: *old,
-                }
+                }]
             }
             UndoableCommand::SetZone { pos, old, .. } => {
-                crate::game::commands::GameCommand::SetZone {
+                vec![GameCommand::SetZone {
                     pos: *pos,
                     zone: *old,
-                }
+                }]
             }
             UndoableCommand::PlaceBuilding { pos, old, .. } => {
                 if let Some(kind) = *old {
-                    crate::game::commands::GameCommand::PlaceBuilding { pos: *pos, kind }
+                    vec![GameCommand::PlaceBuilding { pos: *pos, kind }]
                 } else {
-                    crate::game::commands::GameCommand::EraseTile { pos: *pos }
+                    vec![GameCommand::EraseTile { pos: *pos }]
                 }
             }
             UndoableCommand::EraseTile {
@@ -111,28 +113,32 @@ impl UndoableCommand {
                 old_zone,
                 old_building,
             } => {
-                // Restore the tile by applying the old values
-                // We'll need to send multiple commands or handle this specially
-                // For now, we'll restore building if it existed, otherwise restore road/zone
-                if let Some(building) = *old_building {
-                    crate::game::commands::GameCommand::PlaceBuilding {
-                        pos: *pos,
-                        kind: building,
-                    }
-                } else if old_road.is_some() {
-                    crate::game::commands::GameCommand::SetRoad {
+                // Restore all captured layers. Order matters:
+                // 1) road, 2) zone, 3) building.
+                //
+                // Buildings (R/C/I) rely on `cell.zone == expected_zone`; if we restore the building
+                // without also restoring the zone, `despawn_invalid_buildings` will immediately
+                // despawn it on the next tick.
+                let mut out = Vec::<GameCommand>::new();
+                if old_road.is_some() {
+                    out.push(GameCommand::SetRoad {
                         pos: *pos,
                         road: *old_road,
-                    }
-                } else if *old_zone != ZoneKind::None {
-                    crate::game::commands::GameCommand::SetZone {
+                    });
+                }
+                if *old_zone != ZoneKind::None {
+                    out.push(GameCommand::SetZone {
                         pos: *pos,
                         zone: *old_zone,
-                    }
-                } else {
-                    // Nothing to restore
-                    crate::game::commands::GameCommand::EraseTile { pos: *pos }
+                    });
                 }
+                if let Some(kind) = *old_building {
+                    out.push(GameCommand::PlaceBuilding { pos: *pos, kind });
+                }
+                if out.is_empty() {
+                    out.push(GameCommand::EraseTile { pos: *pos });
+                }
+                out
             }
         }
     }
@@ -161,6 +167,37 @@ impl UndoableCommand {
             UndoableCommand::EraseTile { pos, .. } => {
                 crate::game::commands::GameCommand::EraseTile { pos: *pos }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn erase_tile_undo_restores_zone_then_building() {
+        let cmd = UndoableCommand::EraseTile {
+            pos: TilePos { x: 1, y: 2 },
+            old_road: RoadCell::default(),
+            old_zone: ZoneKind::Residential,
+            old_building: Some(BuildingKind::Residential),
+        };
+        let cmds = cmd.undo_commands();
+        assert_eq!(cmds.len(), 2);
+        match cmds[0] {
+            crate::game::commands::GameCommand::SetZone { pos, zone } => {
+                assert_eq!(pos, TilePos { x: 1, y: 2 });
+                assert_eq!(zone, ZoneKind::Residential);
+            }
+            _ => panic!("expected SetZone first"),
+        }
+        match cmds[1] {
+            crate::game::commands::GameCommand::PlaceBuilding { pos, kind } => {
+                assert_eq!(pos, TilePos { x: 1, y: 2 });
+                assert_eq!(kind, BuildingKind::Residential);
+            }
+            _ => panic!("expected PlaceBuilding second"),
         }
     }
 }

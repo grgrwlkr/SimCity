@@ -309,7 +309,10 @@ fn rebuild_pedestrian_graph(
             let walk = if cell.road.is_some() {
                 cell.road.dir == RoadDir::None
             } else {
-                is_sidewalk_tile(&grid, pos)
+                // "Corner" nodes: allow standing/walking right next to intersection clusters
+                // even when the adjacent road is a SixLane highway. This enables crossing highways
+                // at intersections while still preventing walking along highway segments.
+                is_corner_near_intersection(&grid, pos) || is_sidewalk_tile(&grid, pos)
             };
             if walk && let Some(i) = grid.idx(pos) {
                 graph.walkable[i] = true;
@@ -341,6 +344,38 @@ fn is_sidewalk_tile(grid: &MapGrid, pos: TilePos) -> bool {
         if let Some(ncell) = grid.get(npos)
             && !ncell.water
             && road_provides_sidewalk(ncell.road)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_corner_near_intersection(grid: &MapGrid, pos: TilePos) -> bool {
+    // If a non-road tile is directly adjacent to an intersection tile (dir=None),
+    // treat it as walkable "corner" space.
+    for npos in [
+        TilePos {
+            x: pos.x - 1,
+            y: pos.y,
+        },
+        TilePos {
+            x: pos.x + 1,
+            y: pos.y,
+        },
+        TilePos {
+            x: pos.x,
+            y: pos.y - 1,
+        },
+        TilePos {
+            x: pos.x,
+            y: pos.y + 1,
+        },
+    ] {
+        if let Some(ncell) = grid.get(npos)
+            && !ncell.water
+            && ncell.road.is_some()
+            && ncell.road.dir == RoadDir::None
         {
             return true;
         }
@@ -520,7 +555,14 @@ fn move_walkers(
             if let Some(intersections) = intersections.as_deref()
                 && let Some(id) = intersections.intersection_id_at(b)
                 && !intersections.traffic_lights.contains(&id)
-                && !ped_can_enter_uncontrolled(id, b, reservations.as_deref(), &q_vehicles)
+                && !ped_can_enter_uncontrolled(
+                    id,
+                    b,
+                    reservations.as_deref(),
+                    cfg.tile_size,
+                    ped.speed_world,
+                    &q_vehicles,
+                )
             {
                 blocked = true;
                 reroute_avoid = Some(b);
@@ -630,6 +672,8 @@ fn ped_can_enter_uncontrolled(
     id: crate::game::intersections::IntersectionId,
     intersection_tile: TilePos,
     reservations: Option<&IntersectionReservations>,
+    tile_size: f32,
+    ped_speed_world: f32,
     q_vehicles: &Query<(Entity, &Vehicle), Without<Parked>>,
 ) -> bool {
     // If any vehicle holds a reservation for this intersection, do not enter.
@@ -639,8 +683,7 @@ fn ped_can_enter_uncontrolled(
         return false;
     }
 
-    // If a vehicle is very close to entering this intersection (next tile is this intersection),
-    // do not enter.
+    // If a vehicle is about to enter this intersection, do not enter unless there's enough time.
     for (_e, v) in q_vehicles.iter() {
         if v.route.len() < 2 {
             continue;
@@ -649,8 +692,23 @@ fn ped_can_enter_uncontrolled(
             continue;
         }
         let dist_to_entry_tiles = (1.0 - v.progress).clamp(0.0, 1.0);
+
+        // Fallback guardrail: extremely close -> don't step in.
         if dist_to_entry_tiles <= PED_UNCONTROLLED_SAFE_GAP_TILES {
             return false;
+        }
+
+        // Time-to-entry vs time-to-cross check (doc: wait for a safe window).
+        let v_speed = v.speed.max(0.0);
+        if v_speed > 0.1 {
+            let dist_world = dist_to_entry_tiles * tile_size.max(0.001);
+            let t_entry = dist_world / v_speed;
+
+            let t_cross = tile_size.max(0.001) / ped_speed_world.max(0.1);
+            let safety_margin = 0.5;
+            if t_entry <= t_cross + safety_margin {
+                return false;
+            }
         }
     }
 
@@ -1073,5 +1131,72 @@ mod tests {
 
         let p = app.world().get::<Pedestrian>(ped).unwrap();
         assert_ne!(p.route.get(1).copied(), Some(avoid));
+    }
+
+    #[test]
+    fn sixlane_has_no_sidewalks_but_intersection_corners_are_walkable() {
+        // Grid:
+        // - SixLane eastbound lane tile at (0,0)
+        // - Intersection tile (dir=None) at (0,1)
+        // - Candidate corner tile at (1,1) adjacent to intersection -> should be walkable
+        // - Tile (1,0) adjacent only to SixLane segment -> should NOT be walkable
+        let mut grid = MapGrid::new(3, 3);
+
+        let sixlane = TilePos { x: 0, y: 0 };
+        if let Some(mut cell) = grid.get(sixlane) {
+            cell.road = crate::game::roads::RoadCell {
+                kind: RoadKind::SixLane,
+                dir: RoadDir::East,
+                lane: 0,
+                flow: crate::game::roads::RoadFlow::TwoWay,
+                lane_type: crate::game::roads::LaneType::Regular,
+            };
+            grid.set(sixlane, cell);
+        }
+
+        let intersection = TilePos { x: 0, y: 1 };
+        if let Some(mut cell) = grid.get(intersection) {
+            cell.road = crate::game::roads::RoadCell {
+                kind: RoadKind::SixLane,
+                dir: RoadDir::None,
+                lane: 0,
+                flow: crate::game::roads::RoadFlow::TwoWay,
+                lane_type: crate::game::roads::LaneType::Regular,
+            };
+            grid.set(intersection, cell);
+        }
+
+        // Build pedestrian graph for this grid.
+        let mut graph = PedestrianGraph::default();
+        let gv = GraphVersion(1);
+        // mimic system rebuild (minimal)
+        graph.version = gv.0;
+        graph.width = 3;
+        graph.height = 3;
+        graph.walkable = vec![false; grid.len()];
+        for y in 0..grid.height {
+            for x in 0..grid.width {
+                let pos = TilePos { x, y };
+                let Some(cell) = grid.get(pos) else { continue };
+                if cell.water {
+                    continue;
+                }
+                let walk = if cell.road.is_some() {
+                    cell.road.dir == RoadDir::None
+                } else {
+                    is_corner_near_intersection(&grid, pos) || is_sidewalk_tile(&grid, pos)
+                };
+                if walk && let Some(i) = grid.idx(pos) {
+                    graph.walkable[i] = true;
+                }
+            }
+        }
+
+        let corner = TilePos { x: 1, y: 1 };
+        let near_sixlane_only = TilePos { x: 1, y: 0 };
+
+        assert!(graph.is_walkable(intersection));
+        assert!(graph.is_walkable(corner));
+        assert!(!graph.is_walkable(near_sixlane_only));
     }
 }

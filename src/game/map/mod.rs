@@ -747,7 +747,9 @@ fn handle_undo_redo(
         && keys.just_pressed(KeyCode::KeyZ)
         && let Some(cmd) = history.undo()
     {
-        commands.write(cmd.undo_command());
+        for c in cmd.undo_commands() {
+            commands.write(c);
+        }
     }
 
     if ctrl
