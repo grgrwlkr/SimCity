@@ -239,6 +239,8 @@ pub struct IntersectionIndex {
 
     /// Internal dirty flag to reconcile ECS entities after changes.
     lights_dirty: bool,
+    /// Internal dirty flag to recompute `IntersectionPriorityMarker` entities after changes.
+    priorities_dirty: bool,
 }
 
 fn reset_intersections(mut index: ResMut<IntersectionIndex>) {
@@ -248,6 +250,7 @@ fn reset_intersections(mut index: ResMut<IntersectionIndex>) {
     index.traffic_light_keys.clear();
     index.traffic_lights.clear();
     index.lights_dirty = true;
+    index.priorities_dirty = true;
 }
 
 impl IntersectionIndex {
@@ -300,6 +303,7 @@ fn detect_intersections(
     index.traffic_light_keys = next_keys;
     index.traffic_lights = next_ids;
     index.lights_dirty = true;
+    index.priorities_dirty = true;
 }
 
 pub(crate) fn build_intersection_clusters(
@@ -438,10 +442,15 @@ fn compute_intersection_key(
 /// Automatically assign intersection priorities based on road types
 fn assign_intersection_priorities(
     grid: Res<crate::game::map::MapGrid>,
-    intersections: Res<IntersectionIndex>,
+    mut intersections: ResMut<IntersectionIndex>,
     mut commands: Commands,
     q_priorities: Query<Entity, With<IntersectionPriorityMarker>>,
 ) {
+    if !intersections.priorities_dirty {
+        return;
+    }
+    intersections.priorities_dirty = false;
+
     // Remove old priority entities that are no longer intersections
     for entity in q_priorities.iter() {
         commands.entity(entity).despawn();
@@ -640,6 +649,7 @@ fn handle_traffic_light_commands(
                     index.traffic_lights.insert(cid);
                 }
                 index.lights_dirty = true;
+                index.priorities_dirty = true;
             }
             GameCommand::RemoveTrafficLight { pos } => {
                 let Some(id) = index.intersection_id_at(*pos) else {
@@ -654,6 +664,7 @@ fn handle_traffic_light_commands(
                 if index.traffic_light_keys.remove(&key) {
                     index.traffic_lights.remove(&cid);
                     index.lights_dirty = true;
+                    index.priorities_dirty = true;
                 }
             }
             _ => {}
