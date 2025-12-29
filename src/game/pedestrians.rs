@@ -552,9 +552,13 @@ fn move_walkers(
         let mut blocked = false;
         let mut reroute_avoid: Option<TilePos> = None;
 
-        // If we're about to enter an intersection tile controlled by a traffic light,
+        // If we're about to ENTER an intersection tile controlled by a traffic light,
         // only start crossing when the current phase allows this pedestrian direction.
+        //
+        // If we're already inside the intersection cluster (`a` is an intersection tile),
+        // always allow continuing so we never strand a pedestrian mid-crossing.
         if is_intersection_tile(&grid, b)
+            && !is_intersection_tile(&grid, a)
             && let Some(intersections) = intersections.as_deref()
             && let Some(id) = intersections.intersection_id_at(b)
             && intersections.traffic_lights.contains(&id)
@@ -564,7 +568,7 @@ fn move_walkers(
             if !ped_can_enter_intersection(dir, light) {
                 blocked = true;
             }
-        } else if is_intersection_tile(&grid, b) {
+        } else if is_intersection_tile(&grid, b) && !is_intersection_tile(&grid, a) {
             // Uncontrolled intersection: wait for a safe window.
             if let Some(intersections) = intersections.as_deref()
                 && let Some(id) = intersections.intersection_id_at(b)
@@ -1064,6 +1068,147 @@ mod tests {
         assert_eq!(
             app.world().get::<PedestrianTile>(ped).copied(),
             Some(PedestrianTile(intersection_tile))
+        );
+    }
+
+    #[test]
+    fn pedestrian_can_finish_crossing_inside_signalized_intersection_after_phase_changes() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<TripFinished>()
+            .insert_resource(Time::<Fixed>::from_seconds(1.0 / 10.0))
+            .insert_resource(PedestrianConfig::default())
+            .insert_resource(PedestrianGraph {
+                version: 0,
+                width: 3,
+                height: 4,
+                walkable: vec![true; 12],
+            })
+            .insert_resource(MapConfig {
+                width: 3,
+                height: 4,
+                tile_size: 16.0,
+            })
+            .insert_resource({
+                let mut grid = MapGrid::new(3, 4);
+                // Two-tile intersection cluster at (1,1) and (1,2).
+                for p in [TilePos { x: 1, y: 1 }, TilePos { x: 1, y: 2 }] {
+                    if let Some(mut cell) = grid.get(p) {
+                        cell.road = crate::game::roads::RoadCell {
+                            kind: RoadKind::TwoLane,
+                            dir: RoadDir::None,
+                            lane: 0,
+                            flow: crate::game::roads::RoadFlow::TwoWay,
+                            lane_type: crate::game::roads::LaneType::Regular,
+                        };
+                        grid.set(p, cell);
+                    }
+                }
+                grid
+            })
+            .insert_resource({
+                let id = IntersectionId(0);
+                let key = IntersectionKey {
+                    aabb_min: TilePos { x: 1, y: 1 },
+                    aabb_max: TilePos { x: 1, y: 2 },
+                    tile_count: 2,
+                    tiles_hash: 123,
+                };
+                let mut idx = IntersectionIndex::default();
+                idx.tile_to_intersection.insert(TilePos { x: 1, y: 1 }, id);
+                idx.tile_to_intersection.insert(TilePos { x: 1, y: 2 }, id);
+                idx.traffic_lights.insert(id);
+                idx.clusters
+                    .push(crate::game::intersections::IntersectionCluster {
+                        id,
+                        key,
+                        tiles: vec![TilePos { x: 1, y: 1 }, TilePos { x: 1, y: 2 }],
+                        aabb_min: TilePos { x: 1, y: 1 },
+                        aabb_max: TilePos { x: 1, y: 2 },
+                        centroid_tile: TilePos { x: 1, y: 1 },
+                    });
+                idx
+            })
+            .insert_resource(IntersectionReservations::default())
+            .add_systems(Update, move_walkers);
+
+        let id = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .intersection_id_at(TilePos { x: 1, y: 1 })
+            .unwrap();
+        let key = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .cluster_key_at(TilePos { x: 1, y: 1 })
+            .unwrap();
+
+        let light = app
+            .world_mut()
+            .spawn(crate::game::intersections::TrafficLight {
+                intersection_id: id,
+                intersection_key: key,
+                pos: TilePos { x: 1, y: 1 },
+                phase: LightPhase::NorthSouthGreen,
+                phase_timer: 10.0,
+                green_duration: 10.0,
+                yellow_duration: 3.0,
+                all_red_duration: 1.0,
+            })
+            .id();
+
+        let a = TilePos { x: 1, y: 0 };
+        let i1 = TilePos { x: 1, y: 1 };
+        let i2 = TilePos { x: 1, y: 2 };
+        let c = TilePos { x: 1, y: 3 };
+
+        let ped = app
+            .world_mut()
+            .spawn((
+                Pedestrian {
+                    route: vec![a, i1, i2, c],
+                    route_idx: 0,
+                    progress: 0.0,
+                    // Fast enough to enter the first intersection tile in one tick, but not so fast
+                    // that we skip through the whole intersection and despawn before assertions.
+                    speed_world: 165.0,
+                    goal: c,
+                    wait_blocked_secs: 0.0,
+                    reroute_attempts: 0,
+                },
+                PedestrianTile(a),
+                Transform::default(),
+                WalkTripPassenger {
+                    citizen: crate::game::ids::CitizenId(1),
+                    purpose: crate::game::trips::TripPurpose::Work,
+                },
+            ))
+            .id();
+
+        // Tick: enter first intersection tile.
+        app.world_mut()
+            .resource_mut::<Time<Fixed>>()
+            .advance_by(Duration::from_secs_f32(0.1));
+        app.update();
+        assert_eq!(
+            app.world().get::<PedestrianTile>(ped).copied(),
+            Some(PedestrianTile(i1))
+        );
+
+        // Phase changes to blocking (E/W green). Pedestrian must still continue inside intersection.
+        app.world_mut()
+            .entity_mut(light)
+            .get_mut::<crate::game::intersections::TrafficLight>()
+            .unwrap()
+            .phase = LightPhase::EastWestGreen;
+
+        app.world_mut()
+            .resource_mut::<Time<Fixed>>()
+            .advance_by(Duration::from_secs_f32(0.1));
+        app.update();
+        assert_eq!(
+            app.world().get::<PedestrianTile>(ped).copied(),
+            Some(PedestrianTile(i2))
         );
     }
 
