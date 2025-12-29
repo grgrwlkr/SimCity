@@ -94,20 +94,33 @@ pub struct ServiceStation {
 }
 
 /// Derived read model: how many zoned buildings are covered by services.
-#[derive(Resource, Debug, Default, Copy, Clone)]
+#[derive(Resource, Debug, Default, Clone)]
 pub struct ServiceCoverageIndex {
     pub fire: f32,    // 0..1
     pub police: f32,  // 0..1
     pub medical: f32, // 0..1
     pub buildings_total: u32,
+    /// Bitmask per tile: 1=Fire, 2=Police, 4=Medical
+    pub coverage_map: Vec<u8>,
 }
 
 impl ServiceCoverageIndex {
-    pub fn overall(self) -> f32 {
+    pub const MASK_FIRE: u8 = 1 << 0;
+    pub const MASK_POLICE: u8 = 1 << 1;
+    pub const MASK_MEDICAL: u8 = 1 << 2;
+
+    pub fn overall(&self) -> f32 {
         if self.buildings_total == 0 {
             return 0.0;
         }
         ((self.fire + self.police + self.medical) / 3.0).clamp(0.0, 1.0)
+    }
+
+    pub fn is_covered(&self, idx: usize, mask: u8) -> bool {
+        self.coverage_map
+            .get(idx)
+            .map(|&v| (v & mask) != 0)
+            .unwrap_or(false)
     }
 }
 
@@ -335,68 +348,93 @@ fn park_returned_service_vehicles(
 }
 
 fn compute_service_coverage_index(grid: Res<MapGrid>, mut out: ResMut<ServiceCoverageIndex>) {
-    let mut buildings = Vec::<TilePos>::new();
-    let mut fire = Vec::<TilePos>::new();
-    let mut police = Vec::<TilePos>::new();
-    let mut medical = Vec::<TilePos>::new();
-
-    for y in 0..grid.height {
-        for x in 0..grid.width {
-            let pos = TilePos { x, y };
-            let Some(cell) = grid.get(pos) else {
-                continue;
-            };
-            if cell.water {
-                continue;
-            }
-
-            match cell.building {
-                Some(
-                    BuildingKind::Residential | BuildingKind::Commercial | BuildingKind::Industrial,
-                ) => {
-                    buildings.push(pos);
-                }
-                Some(BuildingKind::FireStation) => fire.push(pos),
-                Some(BuildingKind::PoliceStation) => police.push(pos),
-                Some(BuildingKind::Hospital) => medical.push(pos),
-                None => {}
-            }
-        }
+    let len = grid.len();
+    if out.coverage_map.len() != len {
+        out.coverage_map.clear();
+        out.coverage_map.resize(len, 0);
     }
+    out.coverage_map.fill(0);
 
-    let total = buildings.len() as u32;
-    if total == 0 {
-        *out = ServiceCoverageIndex::default();
-        return;
-    }
+    let mut buildings_total = 0u32;
+    let mut covered_fire = 0u32;
+    let mut covered_police = 0u32;
+    let mut covered_medical = 0u32;
 
-    let ratio = |stations: &[TilePos], radius: i32| -> f32 {
-        if stations.is_empty() || radius <= 0 {
-            return 0.0;
-        }
-        let mut covered = 0u32;
-        for bpos in buildings.iter().copied() {
-            if stations
-                .iter()
-                .copied()
-                .any(|spos| (bpos.x - spos.x).abs() + (bpos.y - spos.y).abs() <= radius)
-            {
-                covered += 1;
-            }
-        }
-        (covered as f32) / (total as f32)
-    };
-
+    // 1. Paint coverage map from stations
     let fire_r = BuildingKind::FireStation.service_radius().unwrap_or(0) as i32;
     let police_r = BuildingKind::PoliceStation.service_radius().unwrap_or(0) as i32;
     let medical_r = BuildingKind::Hospital.service_radius().unwrap_or(0) as i32;
 
-    *out = ServiceCoverageIndex {
-        fire: ratio(&fire, fire_r),
-        police: ratio(&police, police_r),
-        medical: ratio(&medical, medical_r),
-        buildings_total: total,
-    };
+    for y in 0..grid.height {
+        for x in 0..grid.width {
+            let pos = TilePos { x, y };
+            let Some(cell) = grid.get(pos) else { continue };
+
+            // Collect stations
+            if let Some(kind) = cell.building {
+                let (radius, mask) = match kind {
+                    BuildingKind::FireStation => (fire_r, ServiceCoverageIndex::MASK_FIRE),
+                    BuildingKind::PoliceStation => (police_r, ServiceCoverageIndex::MASK_POLICE),
+                    BuildingKind::Hospital => (medical_r, ServiceCoverageIndex::MASK_MEDICAL),
+                    _ => continue,
+                };
+
+                // Paint Manhattan distance diamond
+                for dy in -radius..=radius {
+                    let max_dx = radius - dy.abs();
+                    for dx in -max_dx..=max_dx {
+                        let tpos = TilePos {
+                            x: x + dx,
+                            y: y + dy,
+                        };
+                        if let Some(idx) = grid.idx(tpos) {
+                            out.coverage_map[idx] |= mask;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Count coverage statistics for zoned buildings
+    for y in 0..grid.height {
+        for x in 0..grid.width {
+            let pos = TilePos { x, y };
+            let Some(cell) = grid.get(pos) else { continue };
+
+            if matches!(
+                cell.building,
+                Some(
+                    BuildingKind::Residential | BuildingKind::Commercial | BuildingKind::Industrial
+                )
+            ) {
+                buildings_total += 1;
+                if let Some(idx) = grid.idx(pos) {
+                    let mask = out.coverage_map[idx];
+                    if (mask & ServiceCoverageIndex::MASK_FIRE) != 0 {
+                        covered_fire += 1;
+                    }
+                    if (mask & ServiceCoverageIndex::MASK_POLICE) != 0 {
+                        covered_police += 1;
+                    }
+                    if (mask & ServiceCoverageIndex::MASK_MEDICAL) != 0 {
+                        covered_medical += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    out.buildings_total = buildings_total;
+    if buildings_total > 0 {
+        out.fire = (covered_fire as f32) / (buildings_total as f32);
+        out.police = (covered_police as f32) / (buildings_total as f32);
+        out.medical = (covered_medical as f32) / (buildings_total as f32);
+    } else {
+        out.fire = 0.0;
+        out.police = 0.0;
+        out.medical = 0.0;
+    }
 }
 
 fn render_service_coverage_overlay(

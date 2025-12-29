@@ -69,8 +69,17 @@ fn compute_land_value(
 
             // +0.1 for each service (Fire/Police/Medical)
             if let Some(coverage) = service_coverage.as_deref() {
-                let service_bonus = (coverage.fire + coverage.police + coverage.medical) / 3.0;
-                value += service_bonus * 0.3;
+                let mut service_bonus = 0.0;
+                if coverage.is_covered(idx, ServiceCoverageIndex::MASK_FIRE) {
+                    service_bonus += 0.1;
+                }
+                if coverage.is_covered(idx, ServiceCoverageIndex::MASK_POLICE) {
+                    service_bonus += 0.1;
+                }
+                if coverage.is_covered(idx, ServiceCoverageIndex::MASK_MEDICAL) {
+                    service_bonus += 0.1;
+                }
+                value += service_bonus;
             }
 
             // -0.4 * pollution for pollution impact
@@ -124,4 +133,44 @@ fn has_adjacent_road(grid: &MapGrid, pos: TilePos) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn land_value_uses_per_tile_service_coverage() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+
+        let grid = MapGrid::new(3, 1);
+
+        let covered = TilePos { x: 0, y: 0 };
+        let uncovered = TilePos { x: 2, y: 0 };
+        let covered_idx = grid.idx(covered).unwrap();
+        let uncovered_idx = grid.idx(uncovered).unwrap();
+
+        let mut coverage = ServiceCoverageIndex::default();
+        coverage.buildings_total = 1;
+        coverage.fire = 1.0;
+        coverage.police = 1.0;
+        coverage.medical = 1.0;
+        coverage.coverage_map = vec![0; grid.len()];
+        coverage.coverage_map[covered_idx] = ServiceCoverageIndex::MASK_FIRE
+            | ServiceCoverageIndex::MASK_POLICE
+            | ServiceCoverageIndex::MASK_MEDICAL;
+
+        app.insert_resource(grid);
+        app.insert_resource(coverage);
+        app.insert_resource(LandValueIndex::default());
+        app.add_systems(Update, compute_land_value);
+        app.update();
+
+        let land_value = app.world().resource::<LandValueIndex>();
+        assert!(
+            land_value.values[covered_idx] > land_value.values[uncovered_idx],
+            "covered tile should get higher land value than uncovered tile"
+        );
+    }
 }
