@@ -2014,3 +2014,4 @@ fn vehicle_receives_signal(
 **Версия кодовой базы:** SimCity commit `7a0d844`  
 **Модуль:** `src/game/intersections.rs`
 
+

@@ -1018,3 +1018,4 @@ if cur.dir == next.dir && lanes_on_same_road_side(cur, next) {
 **Версия кодовой базы:** SimCity commit `gpt...origin/gpt`  
 **Охват:** 20 модулей (включая ui.rs, ui_state.rs, camera.rs), 60+ систем, 17+ критических зависимостей
 
+

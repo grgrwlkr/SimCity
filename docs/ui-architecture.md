@@ -1750,3 +1750,4 @@ fn context_menu_ui(
 **Версия кодовой базы:** SimCity commit `7a0d844`  
 **Модули:** `src/game/ui.rs`, `src/game/ui_state.rs`, `src/game/ui_settings.rs`, `src/game/notifications.rs`, `src/game/command_history.rs`, `src/game/camera.rs`, `src/game/commands.rs`
 
+

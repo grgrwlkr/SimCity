@@ -1755,3 +1755,4 @@ pub struct BuildingModelLoader {
 **Версия кодовой базы:** SimCity commit `7a0d844`  
 **Модули:** `src/game/buildings.rs`, `src/game/zone_placement.rs`, `src/game/demand.rs`, `src/game/employment.rs`, `src/game/services.rs`, `src/game/land_value.rs`, `src/game/pollution.rs`
 
+
