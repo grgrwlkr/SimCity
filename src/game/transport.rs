@@ -291,6 +291,15 @@ pub(crate) fn rebuild_road_graph_inner(grid: &MapGrid, gv: &GraphVersion, graph:
         let Some(cur) = road_at_idx(idx) else {
             continue;
         };
+
+        // One-way roads: ignore lane tiles that don't match the one-way direction.
+        // This prevents pathfinding from using the "opposite" carriageway tiles on one-way segments.
+        if let crate::game::roads::RoadFlow::OneWay(one_way_dir) = cur.flow
+            && cur.dir != RoadDir::None
+            && cur.dir != one_way_dir
+        {
+            continue;
+        }
         graph.road_indices.push(idx);
 
         let x = idx % w;
@@ -314,26 +323,19 @@ pub(crate) fn rebuild_road_graph_inner(grid: &MapGrid, gv: &GraphVersion, graph:
                 return;
             };
 
-            // Check one-way road restrictions
-            match next.flow {
-                crate::game::roads::RoadFlow::OneWay(one_way_dir) => {
-                    // For one-way roads, only allow movement in the specified direction
-                    // Block movement if we're trying to go against the one-way direction
-                    if move_dir != one_way_dir && move_dir != one_way_dir.opposite() {
-                        // Allow only if we're moving in the one-way direction
-                        // or if it's an intersection (dir == None)
-                        if next.dir != RoadDir::None && move_dir != one_way_dir {
-                            return;
-                        }
-                    }
-                }
-                crate::game::roads::RoadFlow::TwoWay => {
-                    // Two-way roads allow movement in both directions (existing logic)
-                }
+            // One-way roads: reject entering lane tiles that don't match the one-way direction.
+            // NOTE: do NOT gate on `move_dir` (lane changes are perpendicular moves).
+            if let crate::game::roads::RoadFlow::OneWay(one_way_dir) = next.flow
+                && next.dir != RoadDir::None
+                && next.dir != one_way_dir
+            {
+                return;
             }
 
-            // Check lane type restrictions for turns
-            if next.dir == RoadDir::None {
+            // Check lane type restrictions for turn-lane entry.
+            // IMPORTANT: apply this only when entering an intersection tile from a lane tile.
+            // (Intersection tiles themselves may keep default lane_type values and shouldn't affect circulation.)
+            if cur.dir != RoadDir::None && next.dir == RoadDir::None {
                 // At intersection - check if lane type allows this movement
                 let is_left_turn = move_dir == cur.dir.left();
                 let is_right_turn = move_dir == cur.dir.right();
@@ -1291,6 +1293,242 @@ mod tests {
         assert!(
             !path.contains(&TilePos { x: 2, y: 0 }),
             "Expected path to avoid congested tile (2,0)"
+        );
+    }
+
+    #[test]
+    fn lane_type_left_turn_only_allows_only_left_entry_into_intersection() {
+        // Lane tile at (1,1) going North, surrounded by intersection tiles on North/West/East.
+        let mut grid = MapGrid::new(3, 3);
+        let lane = TilePos { x: 1, y: 1 };
+
+        let mut c = grid.get(lane).unwrap_or_default();
+        c.water = false;
+        c.road = RoadCell {
+            kind: RoadKind::TwoLane,
+            dir: RoadDir::North,
+            lane: 0,
+            flow: crate::game::roads::RoadFlow::TwoWay,
+            lane_type: crate::game::roads::LaneType::LeftTurnOnly,
+        };
+        grid.set(lane, c);
+
+        for pos in [
+            TilePos { x: 1, y: 2 },
+            TilePos { x: 0, y: 1 },
+            TilePos { x: 2, y: 1 },
+        ] {
+            let mut ic = grid.get(pos).unwrap_or_default();
+            ic.water = false;
+            ic.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                dir: RoadDir::None,
+                lane: 0,
+                flow: crate::game::roads::RoadFlow::TwoWay,
+                lane_type: crate::game::roads::LaneType::Regular,
+            };
+            grid.set(pos, ic);
+        }
+
+        let gv = GraphVersion(1);
+        let mut graph = RoadGraph::default();
+        rebuild_road_graph_inner(&grid, &gv, &mut graph);
+
+        let idx = grid.idx(lane).unwrap();
+        let mask = graph.edges[idx];
+
+        // W=bit0, E=bit1, S=bit2, N=bit3
+        assert_ne!(
+            mask & (1 << 0),
+            0,
+            "left turn should be allowed (West entry)"
+        );
+        assert_eq!(mask & (1 << 1), 0, "right entry should be blocked");
+        assert_eq!(mask & (1 << 3), 0, "straight entry should be blocked");
+    }
+
+    #[test]
+    fn lane_type_right_turn_only_allows_only_right_entry_into_intersection() {
+        let mut grid = MapGrid::new(3, 3);
+        let lane = TilePos { x: 1, y: 1 };
+
+        let mut c = grid.get(lane).unwrap_or_default();
+        c.water = false;
+        c.road = RoadCell {
+            kind: RoadKind::TwoLane,
+            dir: RoadDir::North,
+            lane: 0,
+            flow: crate::game::roads::RoadFlow::TwoWay,
+            lane_type: crate::game::roads::LaneType::RightTurnOnly,
+        };
+        grid.set(lane, c);
+
+        for pos in [
+            TilePos { x: 1, y: 2 },
+            TilePos { x: 0, y: 1 },
+            TilePos { x: 2, y: 1 },
+        ] {
+            let mut ic = grid.get(pos).unwrap_or_default();
+            ic.water = false;
+            ic.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                dir: RoadDir::None,
+                lane: 0,
+                flow: crate::game::roads::RoadFlow::TwoWay,
+                lane_type: crate::game::roads::LaneType::Regular,
+            };
+            grid.set(pos, ic);
+        }
+
+        let gv = GraphVersion(1);
+        let mut graph = RoadGraph::default();
+        rebuild_road_graph_inner(&grid, &gv, &mut graph);
+
+        let idx = grid.idx(lane).unwrap();
+        let mask = graph.edges[idx];
+
+        assert_eq!(mask & (1 << 0), 0, "left entry should be blocked");
+        assert_ne!(
+            mask & (1 << 1),
+            0,
+            "right turn should be allowed (East entry)"
+        );
+        assert_eq!(mask & (1 << 3), 0, "straight entry should be blocked");
+    }
+
+    #[test]
+    fn lane_type_straight_only_allows_only_straight_entry_into_intersection() {
+        let mut grid = MapGrid::new(3, 3);
+        let lane = TilePos { x: 1, y: 1 };
+
+        let mut c = grid.get(lane).unwrap_or_default();
+        c.water = false;
+        c.road = RoadCell {
+            kind: RoadKind::TwoLane,
+            dir: RoadDir::North,
+            lane: 0,
+            flow: crate::game::roads::RoadFlow::TwoWay,
+            lane_type: crate::game::roads::LaneType::StraightOnly,
+        };
+        grid.set(lane, c);
+
+        for pos in [
+            TilePos { x: 1, y: 2 },
+            TilePos { x: 0, y: 1 },
+            TilePos { x: 2, y: 1 },
+        ] {
+            let mut ic = grid.get(pos).unwrap_or_default();
+            ic.water = false;
+            ic.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                dir: RoadDir::None,
+                lane: 0,
+                flow: crate::game::roads::RoadFlow::TwoWay,
+                lane_type: crate::game::roads::LaneType::Regular,
+            };
+            grid.set(pos, ic);
+        }
+
+        let gv = GraphVersion(1);
+        let mut graph = RoadGraph::default();
+        rebuild_road_graph_inner(&grid, &gv, &mut graph);
+
+        let idx = grid.idx(lane).unwrap();
+        let mask = graph.edges[idx];
+
+        assert_eq!(mask & (1 << 0), 0, "left entry should be blocked");
+        assert_eq!(mask & (1 << 1), 0, "right entry should be blocked");
+        assert_ne!(
+            mask & (1 << 3),
+            0,
+            "straight should be allowed (North entry)"
+        );
+    }
+
+    #[test]
+    fn one_way_ignores_opposite_direction_lane_tiles() {
+        // Three adjacent tiles, all marked one-way East:
+        // - left tile is incorrectly "West" dir (should be ignored)
+        // - middle/right tiles are "East" dir (valid)
+        // The middle one should have a usable outgoing edge to the right.
+        let mut grid = MapGrid::new(3, 1);
+
+        let west_lane = TilePos { x: 0, y: 0 };
+        let east_lane_mid = TilePos { x: 1, y: 0 };
+        let east_lane_end = TilePos { x: 2, y: 0 };
+
+        for (pos, dir) in [
+            (west_lane, RoadDir::West),
+            (east_lane_mid, RoadDir::East),
+            (east_lane_end, RoadDir::East),
+        ] {
+            let mut c = grid.get(pos).unwrap_or_default();
+            c.water = false;
+            c.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                dir,
+                lane: 0,
+                flow: crate::game::roads::RoadFlow::OneWay(RoadDir::East),
+                lane_type: crate::game::roads::LaneType::Regular,
+            };
+            grid.set(pos, c);
+        }
+
+        let gv = GraphVersion(1);
+        let mut graph = RoadGraph::default();
+        rebuild_road_graph_inner(&grid, &gv, &mut graph);
+
+        let idx_bad = grid.idx(west_lane).unwrap();
+        let idx_ok = grid.idx(east_lane_mid).unwrap();
+
+        assert_eq!(
+            graph.edges[idx_bad], 0,
+            "opposite-direction lane should be ignored"
+        );
+        assert_ne!(
+            graph.edges[idx_ok], 0,
+            "valid one-way lane should remain usable"
+        );
+    }
+
+    #[test]
+    fn one_way_allows_lane_change_between_same_direction_lanes() {
+        // Two parallel eastbound lanes (y=0 and y=1), both one-way East.
+        // Ensure lane-change edge is not blocked by one-way logic (perpendicular move).
+        let mut grid = MapGrid::new(1, 2);
+
+        for y in 0..2 {
+            let pos = TilePos { x: 0, y };
+            let mut c = grid.get(pos).unwrap_or_default();
+            c.water = false;
+            c.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                dir: RoadDir::East,
+                lane: y as u8,
+                flow: crate::game::roads::RoadFlow::OneWay(RoadDir::East),
+                lane_type: crate::game::roads::LaneType::Regular,
+            };
+            grid.set(pos, c);
+        }
+
+        let gv = GraphVersion(1);
+        let mut graph = RoadGraph::default();
+        rebuild_road_graph_inner(&grid, &gv, &mut graph);
+
+        let idx0 = grid.idx(TilePos { x: 0, y: 0 }).unwrap();
+        let idx1 = grid.idx(TilePos { x: 0, y: 1 }).unwrap();
+
+        // From y=0 to y=1 is a North move (bit3).
+        assert_ne!(
+            graph.edges[idx0] & (1 << 3),
+            0,
+            "lane-change across one-way lanes should be allowed"
+        );
+        // From y=1 to y=0 is a South move (bit2).
+        assert_ne!(
+            graph.edges[idx1] & (1 << 2),
+            0,
+            "lane-change across one-way lanes should be allowed"
         );
     }
 }

@@ -94,6 +94,14 @@ pub struct Parked {
     pub offset: f32,
 }
 
+/// A persistent, citizen-owned car entity (CarTour Variant B).
+///
+/// Owned cars are parked (`Parked`) when not actively driving and re-used for future car legs.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct CarOwner {
+    pub citizen: crate::game::ids::CitizenId,
+}
+
 // NOTE: v2 Stage B uses IDM params stored in `TrafficConfig` instead of a separate braking resource.
 
 /// Distance to detect traffic lights ahead (in tiles)
@@ -284,7 +292,7 @@ struct OvertakeOncoming {
 }
 
 // ---------------------------------------------------------------------------
-// Stage D (initial): intersection admission via coarse reservations
+// Stage D (next): intersection admission via conflict-zone reservations (coarse bitmask)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -295,21 +303,56 @@ enum ReservationState {
     Inside,
 }
 
+/// Conflict zones within an intersection cluster (coarse approximation).
+///
+/// This is a pragmatic step towards doc 5.4 / 7.4: allow non-conflicting maneuvers to proceed in
+/// parallel without implementing full connector geometry yet.
+type ConflictMask = u32;
+
+const ZONE_CENTER: ConflictMask = 1 << 0;
+const ZONE_NW: ConflictMask = 1 << 1;
+const ZONE_NE: ConflictMask = 1 << 2;
+const ZONE_SW: ConflictMask = 1 << 3;
+const ZONE_SE: ConflictMask = 1 << 4;
+const ZONE_ALL: ConflictMask = ZONE_CENTER | ZONE_NW | ZONE_NE | ZONE_SW | ZONE_SE;
+
 #[derive(Debug, Copy, Clone)]
 struct IntersectionReservation {
     vehicle: Entity,
     state: ReservationState,
     created_at_sec: f64,
+    zones: ConflictMask,
 }
 
 #[derive(Resource, Default)]
 pub(crate) struct IntersectionReservations {
-    by_intersection: std::collections::HashMap<IntersectionId, IntersectionReservation>,
+    by_intersection: std::collections::HashMap<IntersectionId, Vec<IntersectionReservation>>,
 }
 
 impl IntersectionReservations {
     pub(crate) fn is_reserved(&self, id: IntersectionId) -> bool {
-        self.by_intersection.contains_key(&id)
+        self.by_intersection.get(&id).is_some_and(|v| !v.is_empty())
+    }
+
+    pub(crate) fn is_reserved_by(&self, id: IntersectionId, vehicle: Entity) -> bool {
+        self.by_intersection
+            .get(&id)
+            .is_some_and(|rs| rs.iter().any(|r| r.vehicle == vehicle))
+    }
+
+    fn occupied_mask(&self, id: IntersectionId, except: Option<Entity>) -> ConflictMask {
+        self.by_intersection
+            .get(&id)
+            .map(|rs| {
+                rs.iter()
+                    .filter(|r| except.is_none_or(|e| r.vehicle != e))
+                    .fold(0u32, |acc, r| acc | r.zones)
+            })
+            .unwrap_or(0)
+    }
+
+    fn can_reserve(&self, id: IntersectionId, vehicle: Entity, zones: ConflictMask) -> bool {
+        (self.occupied_mask(id, Some(vehicle)) & zones) == 0
     }
 }
 
@@ -589,7 +632,19 @@ fn spawn_trip_vehicles(
         if msg.mode == TripMode::Car && total >= p.traffic_cfg.max_active_vehicles {
             break;
         }
-        let Some(start) = adjacent_road_towards(&p.grid, msg.from, msg.to) else {
+        // CarTour "no car from pocket": if this is a car trip, spawn the vehicle near the
+        // citizen's currently parked car location (building tile), not necessarily `from`.
+        let mut spawn_from = msg.from;
+        if msg.mode == TripMode::Car {
+            for (cid, c) in p.q_citizens.iter() {
+                if cid.0 == msg.citizen {
+                    spawn_from = c.car_parked_at;
+                    break;
+                }
+            }
+        }
+
+        let Some(start) = adjacent_road_towards(&p.grid, spawn_from, msg.to) else {
             continue;
         };
         let Some(goal) = adjacent_road_towards(&p.grid, msg.to, msg.from) else {
@@ -632,8 +687,48 @@ fn spawn_trip_vehicles(
         // If `mode == Transit` but transit isn't possible, fall through and spawn a car so the trip
         // can still complete.
 
+        // CarTour Variant B: if the citizen already has a parked car entity, re-use it.
+        if msg.mode == TripMode::Car {
+            let mut reused = false;
+            for (e, owner, mut v, mut tf) in p.q_parked_cars.iter_mut() {
+                if owner.citizen != msg.citizen {
+                    continue;
+                }
+
+                let world_pos = tile_to_world(&p.cfg, start);
+                v.route = route.clone();
+                v.progress = 0.0;
+                v.speed = 0.0;
+                v.max_speed = driver_max_speed_world;
+                v.max_accel = idm.a;
+
+                tf.translation.x = world_pos.x;
+                tf.translation.y = world_pos.y;
+                tf.translation.z = 10.0;
+
+                p.commands
+                    .entity(e)
+                    .remove::<Parked>()
+                    .remove::<RightTurnOnRed>()
+                    .insert((
+                        VehicleTrafficState::FreeFlow,
+                        TripPassenger {
+                            citizen: msg.citizen,
+                            purpose: msg.purpose,
+                        },
+                    ));
+                planned += 1;
+                total += 1;
+                reused = true;
+                break;
+            }
+            if reused {
+                continue;
+            }
+        }
+
         let world_pos = tile_to_world(&p.cfg, start);
-        p.commands.spawn((
+        let mut e = p.commands.spawn((
             Sprite {
                 color: Color::linear_rgb(0.95, 0.95, 0.95),
                 custom_size: Some(Vec2::splat(p.cfg.tile_size * 0.55)),
@@ -653,6 +748,11 @@ fn spawn_trip_vehicles(
                 purpose: msg.purpose,
             },
         ));
+        if msg.mode == TripMode::Car {
+            e.insert(CarOwner {
+                citizen: msg.citizen,
+            });
+        }
         planned += 1;
         total += 1;
     }
@@ -674,7 +774,26 @@ struct SpawnTripVehiclesParams<'w, 's> {
     pt_cfg: Option<Res<'w, PublicTransportConfig>>,
     pt: Option<Res<'w, PublicTransportIndex>>,
     pt_pending: Option<ResMut<'w, PendingTransitTrips>>,
-    q_vehicles: Query<'w, 's, Entity, With<Vehicle>>,
+    q_citizens: Query<
+        'w,
+        's,
+        (
+            &'static crate::game::ids::CitizenIdComp,
+            &'static crate::game::citizens::Citizen,
+        ),
+    >,
+    q_vehicles: Query<'w, 's, Entity, (With<Vehicle>, Without<Parked>)>,
+    q_parked_cars: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static CarOwner,
+            &'static mut Vehicle,
+            &'static mut Transform,
+        ),
+        With<Parked>,
+    >,
     traffic_cfg: Res<'w, TrafficConfig>,
 }
 
@@ -1591,6 +1710,58 @@ fn is_intersection_tile(grid: &MapGrid, pos: TilePos) -> bool {
     }
 }
 
+fn right_turn_zone(entry_dir: RoadDir) -> ConflictMask {
+    match entry_dir {
+        RoadDir::North => ZONE_SE, // coming from South, turning to East uses SE corner
+        RoadDir::East => ZONE_SW,  // coming from West, turning to South uses SW corner
+        RoadDir::South => ZONE_NW, // coming from North, turning to West uses NW corner
+        RoadDir::West => ZONE_NE,  // coming from East, turning to North uses NE corner
+        RoadDir::None => ZONE_CENTER,
+    }
+}
+
+fn left_turn_zone(entry_dir: RoadDir) -> ConflictMask {
+    // Conservative: left turns occupy the center (they sweep across).
+    // This keeps safety while still allowing multiple right turns in different corners.
+    let _ = entry_dir;
+    ZONE_CENTER
+}
+
+fn straight_zone(_entry_dir: RoadDir) -> ConflictMask {
+    ZONE_CENTER
+}
+
+fn reservation_zones_for_maneuver(
+    traffic_cfg: &TrafficConfig,
+    entry_dir: RoadDir,
+    exit_dir: RoadDir,
+) -> Option<ConflictMask> {
+    if entry_dir == RoadDir::None || exit_dir == RoadDir::None {
+        return None;
+    }
+    if exit_dir == entry_dir {
+        return Some(straight_zone(entry_dir));
+    }
+    let right = if traffic_cfg.drive_on_right {
+        entry_dir.right()
+    } else {
+        entry_dir.left()
+    };
+    let left = if traffic_cfg.drive_on_right {
+        entry_dir.left()
+    } else {
+        entry_dir.right()
+    };
+    if exit_dir == right {
+        return Some(right_turn_zone(entry_dir));
+    }
+    if exit_dir == left {
+        return Some(left_turn_zone(entry_dir));
+    }
+    // U-turn / unknown: be conservative.
+    Some(ZONE_CENTER)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn plan_intersection_reservations(
     time: Res<Time<Fixed>>,
@@ -1633,24 +1804,28 @@ fn plan_intersection_reservations(
         let Some(id) = intersections.intersection_id_at(cur) else {
             continue;
         };
-        reservations
-            .by_intersection
-            .entry(id)
-            .or_insert(IntersectionReservation {
+        let rs = reservations.by_intersection.entry(id).or_default();
+        if !rs.iter().any(|r| r.vehicle == e) {
+            rs.push(IntersectionReservation {
                 vehicle: e,
                 state: ReservationState::Inside,
                 created_at_sec: now,
+                zones: ZONE_ALL,
             });
+        }
     }
 
-    // Pick one approaching vehicle per free intersection.
+    // Greedy admission: allow multiple approaching vehicles per intersection as long as their
+    // conflict zones don't overlap (coarse safety).
     #[derive(Copy, Clone)]
     struct Best {
         priority: u8,
         dist_to_entry: f32,
         vehicle: Entity,
+        zones: ConflictMask,
     }
-    let mut best_by_intersection = std::collections::HashMap::<IntersectionId, Best>::new();
+    let mut candidates_by_intersection =
+        std::collections::HashMap::<IntersectionId, Vec<Best>>::new();
 
     for (e, v, state) in q_vehicles.iter() {
         if v.route.len() < 2 {
@@ -1676,7 +1851,16 @@ fn plan_intersection_reservations(
         if intersections_with_peds.contains(&id) {
             continue;
         }
-        if reservations.by_intersection.contains_key(&id) {
+        // Must have a non-conflicting zone set.
+        let entry_dir = dir_between_adjacent(cur, next);
+        if entry_dir == RoadDir::None {
+            continue;
+        }
+        let exit_dir = compute_exit_direction(&v.route, &grid, next);
+        let Some(zones) = reservation_zones_for_maneuver(&traffic_cfg, entry_dir, exit_dir) else {
+            continue;
+        };
+        if !reservations.can_reserve(id, e, zones) {
             continue;
         }
 
@@ -1687,10 +1871,7 @@ fn plan_intersection_reservations(
             let Some(light) = lights_by_id.get(&id) else {
                 continue;
             };
-            let dir = dir_between_adjacent(cur, next);
-            if dir == RoadDir::None {
-                continue;
-            }
+            let dir = entry_dir;
 
             // Admit on green or yellow. (Yellow handling in `update_vehicle_traffic_state` allows
             // proceeding when it's too late to stop; at the stop line this is always the case.)
@@ -1721,10 +1902,6 @@ fn plan_intersection_reservations(
                     continue;
                 }
 
-                let exit_dir = compute_exit_direction(&v.route, &grid, next);
-                if exit_dir == RoadDir::None {
-                    continue;
-                }
                 let allowed_turn_dir = if traffic_cfg.drive_on_right {
                     dir.right()
                 } else {
@@ -1746,32 +1923,42 @@ fn plan_intersection_reservations(
             priority,
             dist_to_entry: dist,
             vehicle: e,
+            zones,
         };
 
-        best_by_intersection
-            .entry(id)
-            .and_modify(|b| {
-                if cand.priority > b.priority
-                    || (cand.priority == b.priority
-                        && (cand.dist_to_entry < b.dist_to_entry
-                            || (cand.dist_to_entry == b.dist_to_entry
-                                && cand.vehicle.to_bits() < b.vehicle.to_bits())))
-                {
-                    *b = cand;
-                }
-            })
-            .or_insert(cand);
+        candidates_by_intersection.entry(id).or_default().push(cand);
     }
 
-    for (id, best) in best_by_intersection {
-        reservations.by_intersection.insert(
-            id,
-            IntersectionReservation {
-                vehicle: best.vehicle,
-                state: ReservationState::Approaching,
-                created_at_sec: now,
-            },
-        );
+    const MAX_NEW_RES_PER_INTERSECTION_PER_TICK: usize = 2;
+    for (id, mut cands) in candidates_by_intersection {
+        // sort by priority, then distance, then stable entity id
+        cands.sort_by(|a, b| {
+            b.priority
+                .cmp(&a.priority)
+                .then_with(|| a.dist_to_entry.total_cmp(&b.dist_to_entry))
+                .then_with(|| a.vehicle.to_bits().cmp(&b.vehicle.to_bits()))
+        });
+
+        let mut added = 0usize;
+        for cand in cands {
+            if added >= MAX_NEW_RES_PER_INTERSECTION_PER_TICK {
+                break;
+            }
+            if !reservations.can_reserve(id, cand.vehicle, cand.zones) {
+                continue;
+            }
+            reservations
+                .by_intersection
+                .entry(id)
+                .or_default()
+                .push(IntersectionReservation {
+                    vehicle: cand.vehicle,
+                    state: ReservationState::Approaching,
+                    created_at_sec: now,
+                    zones: cand.zones,
+                });
+            added += 1;
+        }
     }
 }
 
@@ -1784,50 +1971,55 @@ fn cleanup_intersection_reservations(
     let now = time.elapsed_secs_f64();
     let timeout_secs = 6.0;
 
-    let mut to_remove = Vec::<IntersectionId>::new();
-    for (id, r) in reservations.by_intersection.iter_mut() {
-        let Ok(v) = q_vehicles.get(r.vehicle) else {
-            to_remove.push(*id);
+    // Snapshot keys to avoid borrowing issues while mutating.
+    let ids: Vec<IntersectionId> = reservations.by_intersection.keys().copied().collect();
+    for id in ids {
+        let Some(list) = reservations.by_intersection.get_mut(&id) else {
             continue;
         };
-        if v.route.is_empty() {
-            to_remove.push(*id);
-            continue;
-        }
 
-        let cur = v.route[0];
-        let cur_id = intersections.intersection_id_at(cur);
-        if cur_id == Some(*id) {
-            r.state = ReservationState::Inside;
-        }
+        list.retain_mut(|r| {
+            let Ok(v) = q_vehicles.get(r.vehicle) else {
+                return false;
+            };
+            if v.route.is_empty() {
+                return false;
+            }
 
-        match r.state {
-            ReservationState::Approaching => {
-                // Vehicle rerouted away: drop.
-                let next_id = v
-                    .route
-                    .get(1)
-                    .and_then(|t| intersections.intersection_id_at(*t));
-                if next_id != Some(*id) {
-                    to_remove.push(*id);
-                    continue;
+            let cur = v.route[0];
+            let cur_id = intersections.intersection_id_at(cur);
+            if cur_id == Some(id) {
+                r.state = ReservationState::Inside;
+            }
+
+            match r.state {
+                ReservationState::Approaching => {
+                    // Vehicle rerouted away: drop.
+                    let next_id = v
+                        .route
+                        .get(1)
+                        .and_then(|t| intersections.intersection_id_at(*t));
+                    if next_id != Some(id) {
+                        return false;
+                    }
+                    // If it doesn't enter within a small time budget, release to avoid deadlocks.
+                    if now - r.created_at_sec > timeout_secs {
+                        return false;
+                    }
                 }
-                // If it doesn't enter within a small time budget, release to avoid deadlocks.
-                if now - r.created_at_sec > timeout_secs {
-                    to_remove.push(*id);
+                ReservationState::Inside => {
+                    // Release once the vehicle exits the intersection cluster.
+                    if cur_id != Some(id) {
+                        return false;
+                    }
                 }
             }
-            ReservationState::Inside => {
-                // Release once the vehicle exits the intersection cluster.
-                if cur_id != Some(*id) {
-                    to_remove.push(*id);
-                }
-            }
-        }
-    }
+            true
+        });
 
-    for id in to_remove {
-        reservations.by_intersection.remove(&id);
+        if list.is_empty() {
+            reservations.by_intersection.remove(&id);
+        }
     }
 }
 
@@ -1876,6 +2068,7 @@ fn move_vehicles(
                 &VehicleTrafficState,
                 Option<&RightTurnOnRed>,
                 Option<&TripPassenger>,
+                Option<&CarOwner>,
                 Option<&ServiceVehicle>,
                 Option<&BusVehicle>,
             ),
@@ -1928,7 +2121,7 @@ fn move_vehicles(
         }
     }
 
-    for (entity, mut v, mut tf, state, ror, passenger, service_vehicle, bus_vehicle) in
+    for (entity, mut v, mut tf, state, ror, passenger, car_owner, service_vehicle, bus_vehicle) in
         vehicles.p0().iter_mut()
     {
         if v.route.is_empty() {
@@ -2011,10 +2204,8 @@ fn move_vehicles(
                 // Intersection admission (Stage D): require a reservation to enter an intersection tile.
                 if next_is_intersection && !current_is_intersection {
                     blocked_next_is_intersection = true;
-                    let ok = if let Some(id) = intersections.intersection_id_at(next_tile)
-                        && let Some(r) = reservations.by_intersection.get(&id)
-                    {
-                        r.vehicle == entity
+                    let ok = if let Some(id) = intersections.intersection_id_at(next_tile) {
+                        reservations.is_reserved_by(id, entity)
                     } else {
                         false
                     };
@@ -2115,9 +2306,10 @@ fn move_vehicles(
             }
         }
 
+        let mut last_tile_for_arrival = v.route.first().copied().unwrap_or(TilePos { x: 0, y: 0 });
         while v.progress >= 1.0 && !v.route.is_empty() {
             v.progress -= 1.0;
-            v.route.remove(0);
+            last_tile_for_arrival = v.route.remove(0);
         }
 
         if v.route.is_empty() {
@@ -2128,7 +2320,19 @@ fn move_vehicles(
                         purpose: p.purpose,
                     });
                 }
-                commands.entity(entity).despawn();
+                // CarTour Variant B: keep citizen-owned cars parked instead of despawning them.
+                if car_owner.is_some() && passenger.is_some() {
+                    v.route = vec![last_tile_for_arrival];
+                    v.progress = 0.0;
+                    v.speed = 0.0;
+                    commands
+                        .entity(entity)
+                        .insert((Parked { offset: 1.0 }, VehicleTrafficState::FreeFlow))
+                        .remove::<TripPassenger>()
+                        .remove::<RightTurnOnRed>();
+                } else {
+                    commands.entity(entity).despawn();
+                }
             }
             continue;
         }
@@ -2262,8 +2466,7 @@ fn update_vehicle_traffic_state(
         if light.is_red(entry_dir)
             && !light.is_all_red()
             && let Some(id) = intersections.intersection_id_at(stop_tile)
-            && let Some(r) = reservations.by_intersection.get(&id)
-            && r.vehicle == entity
+            && reservations.is_reserved_by(id, entity)
         {
             let exit_dir = compute_exit_direction(&vehicle.route, &grid, stop_tile);
             let allowed_turn_dir = if traffic_cfg.drive_on_right {
@@ -2921,11 +3124,13 @@ fn map_origin(cfg: &MapConfig) -> Vec2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::citizens::Citizen;
     use crate::game::ids::CitizenId;
+    use crate::game::ids::CitizenIdComp;
     use crate::game::intersections::IntersectionPriorityMarker;
     use crate::game::intersections::LightPhase;
     use crate::game::pedestrians::PedestrianTile;
-    use crate::game::roads::{LaneType, RoadCell, RoadFlow, RoadKind};
+    use crate::game::roads::{LaneType, RoadCell, RoadDir, RoadFlow, RoadKind};
     use crate::game::trips::TripPurpose;
     use bevy::app::App;
     use bevy::ecs::message::MessageReader;
@@ -3298,11 +3503,12 @@ mod tests {
             .by_intersection
             .insert(
                 id,
-                IntersectionReservation {
+                vec![IntersectionReservation {
                     vehicle: ego,
                     state: ReservationState::Approaching,
                     created_at_sec: 0.0,
-                },
+                    zones: ZONE_ALL,
+                }],
             );
 
         app.update();
@@ -3449,9 +3655,262 @@ mod tests {
                 .resource::<IntersectionReservations>()
                 .by_intersection
                 .get(&id)
-                .map(|r| r.vehicle),
-            Some(ego)
+                .and_then(|rs| rs.first().map(|r| r.vehicle)),
+            Some(ego),
         );
+    }
+
+    #[test]
+    fn intersection_conflict_zones_allow_two_non_conflicting_right_turns() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+                1.0 / 10.0,
+            ))
+            .insert_resource(MapConfig {
+                width: 3,
+                height: 3,
+                tile_size: 16.0,
+            })
+            .insert_resource(TrafficConfig::default())
+            .insert_resource({
+                let mut grid = MapGrid::new(3, 3);
+                let intersection_tile = TilePos { x: 1, y: 1 };
+                let road_tiles = [
+                    TilePos { x: 1, y: 0 },
+                    TilePos { x: 2, y: 1 },
+                    TilePos { x: 1, y: 2 },
+                ];
+
+                for pos in road_tiles {
+                    if let Some(mut cell) = grid.get(pos) {
+                        cell.road = RoadCell {
+                            kind: RoadKind::TwoLane,
+                            dir: RoadDir::East,
+                            lane: 0,
+                            flow: RoadFlow::TwoWay,
+                            lane_type: LaneType::Regular,
+                        };
+                        grid.set(pos, cell);
+                    }
+                }
+                if let Some(mut cell) = grid.get(intersection_tile) {
+                    cell.road = RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir: RoadDir::None,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    };
+                    grid.set(intersection_tile, cell);
+                }
+                grid
+            })
+            .insert_resource({
+                let intersection_tile = TilePos { x: 1, y: 1 };
+                let id = IntersectionId(0);
+                let key = IntersectionKey {
+                    aabb_min: intersection_tile,
+                    aabb_max: intersection_tile,
+                    tile_count: 1,
+                    tiles_hash: 123,
+                };
+
+                let mut idx = IntersectionIndex::default();
+                idx.clusters
+                    .push(crate::game::intersections::IntersectionCluster {
+                        id,
+                        key,
+                        tiles: vec![intersection_tile],
+                        aabb_min: intersection_tile,
+                        aabb_max: intersection_tile,
+                        centroid_tile: intersection_tile,
+                    });
+                idx.tile_to_intersection.insert(intersection_tile, id);
+                idx
+            })
+            .insert_resource(IntersectionReservations::default())
+            .add_systems(Update, plan_intersection_reservations);
+
+        let intersection_tile = TilePos { x: 1, y: 1 };
+        let id = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .intersection_id_at(intersection_tile)
+            .unwrap();
+
+        // Car A: approach from south, right turn to east => zones SE.
+        let a = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![
+                        TilePos { x: 1, y: 0 },
+                        intersection_tile,
+                        TilePos { x: 2, y: 1 },
+                    ],
+                    progress: 0.9,
+                    speed: 1.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                VehicleTrafficState::FreeFlow,
+            ))
+            .id();
+
+        // Car B: approach from east, right turn to north => zones NE.
+        let b = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![
+                        TilePos { x: 2, y: 1 },
+                        intersection_tile,
+                        TilePos { x: 1, y: 2 },
+                    ],
+                    progress: 0.9,
+                    speed: 1.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                VehicleTrafficState::FreeFlow,
+            ))
+            .id();
+
+        app.update();
+
+        let rs = app
+            .world()
+            .resource::<IntersectionReservations>()
+            .by_intersection
+            .get(&id)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(rs.len(), 2);
+        assert!(rs.iter().any(|r| r.vehicle == a));
+        assert!(rs.iter().any(|r| r.vehicle == b));
+    }
+
+    #[test]
+    fn intersection_conflict_zones_block_two_conflicting_right_turns() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+                1.0 / 10.0,
+            ))
+            .insert_resource(MapConfig {
+                width: 3,
+                height: 3,
+                tile_size: 16.0,
+            })
+            .insert_resource(TrafficConfig::default())
+            .insert_resource({
+                let mut grid = MapGrid::new(3, 3);
+                let intersection_tile = TilePos { x: 1, y: 1 };
+                for pos in [TilePos { x: 1, y: 0 }, TilePos { x: 2, y: 1 }] {
+                    if let Some(mut cell) = grid.get(pos) {
+                        cell.road = RoadCell {
+                            kind: RoadKind::TwoLane,
+                            dir: RoadDir::East,
+                            lane: 0,
+                            flow: RoadFlow::TwoWay,
+                            lane_type: LaneType::Regular,
+                        };
+                        grid.set(pos, cell);
+                    }
+                }
+                if let Some(mut cell) = grid.get(intersection_tile) {
+                    cell.road = RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir: RoadDir::None,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    };
+                    grid.set(intersection_tile, cell);
+                }
+                grid
+            })
+            .insert_resource({
+                let intersection_tile = TilePos { x: 1, y: 1 };
+                let id = IntersectionId(0);
+                let key = IntersectionKey {
+                    aabb_min: intersection_tile,
+                    aabb_max: intersection_tile,
+                    tile_count: 1,
+                    tiles_hash: 123,
+                };
+
+                let mut idx = IntersectionIndex::default();
+                idx.clusters
+                    .push(crate::game::intersections::IntersectionCluster {
+                        id,
+                        key,
+                        tiles: vec![intersection_tile],
+                        aabb_min: intersection_tile,
+                        aabb_max: intersection_tile,
+                        centroid_tile: intersection_tile,
+                    });
+                idx.tile_to_intersection.insert(intersection_tile, id);
+                idx
+            })
+            .insert_resource(IntersectionReservations::default())
+            .add_systems(Update, plan_intersection_reservations);
+
+        let intersection_tile = TilePos { x: 1, y: 1 };
+        let id = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .intersection_id_at(intersection_tile)
+            .unwrap();
+
+        // Two vehicles doing the same right-turn (same entry_dir => same corner zone) -> conflict.
+        let a = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![
+                        TilePos { x: 1, y: 0 },
+                        intersection_tile,
+                        TilePos { x: 2, y: 1 },
+                    ],
+                    progress: 0.9,
+                    speed: 1.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                VehicleTrafficState::FreeFlow,
+            ))
+            .id();
+        let b = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![
+                        TilePos { x: 1, y: 0 },
+                        intersection_tile,
+                        TilePos { x: 2, y: 1 },
+                    ],
+                    progress: 0.8,
+                    speed: 1.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                VehicleTrafficState::FreeFlow,
+            ))
+            .id();
+
+        app.update();
+
+        let rs = app
+            .world()
+            .resource::<IntersectionReservations>()
+            .by_intersection
+            .get(&id)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(rs.len(), 1);
+        assert!(rs[0].vehicle == a || rs[0].vehicle == b);
     }
 
     #[test]
@@ -3574,11 +4033,12 @@ mod tests {
             .by_intersection
             .insert(
                 id,
-                IntersectionReservation {
+                vec![IntersectionReservation {
                     vehicle: ego,
                     state: ReservationState::Approaching,
                     created_at_sec: 0.0,
-                },
+                    zones: ZONE_ALL,
+                }],
             );
 
         app.update();
@@ -3719,5 +4179,292 @@ mod tests {
             app.world().get::<VehicleTrafficState>(ego).copied(),
             Some(VehicleTrafficState::CrossingIntersection { intersection: key })
         );
+    }
+
+    #[test]
+    fn car_trip_spawns_from_citizen_car_parked_at_not_from() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<TripRequested>();
+
+        let cfg = MapConfig {
+            width: 3,
+            height: 3,
+            tile_size: 16.0,
+        };
+
+        let grid = {
+            let mut grid = MapGrid::new(3, 3);
+            // Two road tiles:
+            // - (1,0) adjacent to `from` (0,0)
+            // - (1,2) adjacent to `car_parked_at` (0,2) and `to` (2,2)
+            for pos in [TilePos { x: 1, y: 0 }, TilePos { x: 1, y: 2 }] {
+                let Some(mut cell) = grid.get(pos) else {
+                    continue;
+                };
+                cell.road = RoadCell {
+                    kind: RoadKind::TwoLane,
+                    dir: RoadDir::East,
+                    lane: 0,
+                    flow: RoadFlow::TwoWay,
+                    lane_type: LaneType::Regular,
+                };
+                grid.set(pos, cell);
+            }
+            grid
+        };
+
+        let graph = {
+            let mut graph = RoadGraph::default();
+            let gv = crate::game::transport::GraphVersion(1);
+            crate::game::transport::rebuild_road_graph_inner(&grid, &gv, &mut graph);
+            graph
+        };
+
+        app.insert_resource(Time::<Fixed>::from_seconds(1.0 / 10.0))
+            .insert_resource(cfg)
+            .insert_resource(grid)
+            .insert_resource(graph)
+            .insert_resource(RegionGraph::default())
+            .insert_resource(PathfindingConfig {
+                enable_hierarchical: false,
+                ..Default::default()
+            })
+            .insert_resource(PathCache::default())
+            .insert_resource(TrafficOccupancy::default())
+            .insert_resource(TrafficIndex::default())
+            .insert_resource(TrafficConfig::default())
+            .insert_resource(IntersectionIndex::default())
+            .add_systems(Update, spawn_trip_vehicles);
+
+        // Citizen's car is parked at "work" building (0,2), but trip is requested from (0,0).
+        let cid = crate::game::ids::CitizenId(1);
+        app.world_mut().spawn((
+            CitizenIdComp(cid),
+            Citizen {
+                home: TilePos { x: 0, y: 0 },
+                state: crate::game::citizens::CitizenState::AtHome,
+                last_place: TilePos { x: 0, y: 0 },
+                tour_mode: Some(TripMode::Car),
+                car_parked_at: TilePos { x: 0, y: 2 },
+                decision_timer: Timer::from_seconds(1.0, TimerMode::Repeating),
+                shopping_need: Timer::from_seconds(1.0, TimerMode::Repeating),
+                work_stay: Timer::from_seconds(1.0, TimerMode::Once),
+                shop_stay: Timer::from_seconds(1.0, TimerMode::Once),
+                trip_departed_at_sec: None,
+                trip_purpose: None,
+            },
+            crate::game::citizens::CitizenWorkplace::default(),
+        ));
+
+        app.world_mut()
+            .resource_mut::<bevy::ecs::message::Messages<TripRequested>>()
+            .write(TripRequested {
+                citizen: cid,
+                from: TilePos { x: 0, y: 0 },
+                to: TilePos { x: 2, y: 2 },
+                purpose: crate::game::trips::TripPurpose::Work,
+                mode: TripMode::Car,
+            });
+
+        app.update();
+
+        // Ensure the spawned vehicle starts on the road adjacent to car_parked_at, i.e. (1,2).
+        let world_pos = tile_to_world(&app.world().resource::<MapConfig>(), TilePos { x: 1, y: 2 });
+        let mut q = app
+            .world_mut()
+            .query_filtered::<&Transform, With<Vehicle>>();
+        let t = q.iter(app.world()).next().expect("vehicle spawned");
+        assert!((t.translation.x - world_pos.x).abs() < 1e-3);
+        assert!((t.translation.y - world_pos.y).abs() < 1e-3);
+    }
+
+    #[test]
+    fn owned_car_is_parked_on_arrival_not_despawned() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<TripFinished>()
+            .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+                1.0 / 10.0,
+            ))
+            .insert_resource(MapConfig {
+                width: 3,
+                height: 3,
+                tile_size: 16.0,
+            })
+            .insert_resource({
+                let mut grid = MapGrid::new(3, 3);
+                let tile = TilePos { x: 1, y: 1 };
+                if let Some(mut cell) = grid.get(tile) {
+                    cell.road = RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir: RoadDir::East,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    };
+                    grid.set(tile, cell);
+                }
+                grid
+            })
+            .insert_resource(TrafficOccupancy::default())
+            .insert_resource(TrafficConfig::default())
+            .insert_resource(IntersectionIndex::default())
+            .insert_resource(IntersectionReservations::default())
+            .insert_resource(FinishCount::default())
+            .add_systems(Update, (move_vehicles, count_trip_finished).chain());
+
+        let tile = TilePos { x: 1, y: 1 };
+        let citizen = CitizenId(7);
+        let car = app
+            .world_mut()
+            .spawn((
+                Sprite::default(),
+                Vehicle {
+                    route: vec![tile],
+                    progress: 1.0, // will be consumed -> arrival
+                    speed: 0.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                Transform::default(),
+                VehicleTrafficState::FreeFlow,
+                CarOwner { citizen },
+                TripPassenger {
+                    citizen,
+                    purpose: TripPurpose::Work,
+                },
+            ))
+            .id();
+
+        app.update();
+
+        assert_eq!(app.world().resource::<FinishCount>().0, 1);
+        assert!(
+            app.world().get_entity(car).is_ok(),
+            "car should not despawn"
+        );
+        assert!(
+            app.world().get::<Parked>(car).is_some(),
+            "car should be parked"
+        );
+        assert!(
+            app.world().get::<TripPassenger>(car).is_none(),
+            "trip marker removed"
+        );
+        let v = app.world().get::<Vehicle>(car).unwrap();
+        assert_eq!(v.route.first().copied(), Some(tile));
+        assert_eq!(v.speed, 0.0);
+    }
+
+    #[test]
+    fn parked_owned_car_is_reused_for_next_car_trip() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<TripRequested>();
+
+        let cfg = MapConfig {
+            width: 3,
+            height: 3,
+            tile_size: 16.0,
+        };
+
+        let grid = {
+            let mut grid = MapGrid::new(3, 3);
+            // Road tile adjacent to car_parked_at (0,2) and to-destination building (2,2).
+            let road = TilePos { x: 1, y: 2 };
+            if let Some(mut cell) = grid.get(road) {
+                cell.road = RoadCell {
+                    kind: RoadKind::TwoLane,
+                    dir: RoadDir::East,
+                    lane: 0,
+                    flow: RoadFlow::TwoWay,
+                    lane_type: LaneType::Regular,
+                };
+                grid.set(road, cell);
+            }
+            grid
+        };
+
+        let graph = {
+            let mut graph = RoadGraph::default();
+            let gv = crate::game::transport::GraphVersion(1);
+            crate::game::transport::rebuild_road_graph_inner(&grid, &gv, &mut graph);
+            graph
+        };
+
+        app.insert_resource(Time::<Fixed>::from_seconds(1.0 / 10.0))
+            .insert_resource(cfg)
+            .insert_resource(grid)
+            .insert_resource(graph)
+            .insert_resource(RegionGraph::default())
+            .insert_resource(PathfindingConfig {
+                enable_hierarchical: false,
+                ..Default::default()
+            })
+            .insert_resource(PathCache::default())
+            .insert_resource(TrafficOccupancy::default())
+            .insert_resource(TrafficIndex::default())
+            .insert_resource(TrafficConfig::default())
+            .insert_resource(IntersectionIndex::default())
+            .add_systems(Update, spawn_trip_vehicles);
+
+        let citizen = CitizenId(9);
+        app.world_mut().spawn((
+            CitizenIdComp(citizen),
+            Citizen {
+                home: TilePos { x: 0, y: 0 },
+                state: crate::game::citizens::CitizenState::AtHome,
+                last_place: TilePos { x: 0, y: 0 },
+                tour_mode: Some(TripMode::Car),
+                car_parked_at: TilePos { x: 0, y: 2 },
+                decision_timer: Timer::from_seconds(1.0, TimerMode::Repeating),
+                shopping_need: Timer::from_seconds(1.0, TimerMode::Repeating),
+                work_stay: Timer::from_seconds(1.0, TimerMode::Once),
+                shop_stay: Timer::from_seconds(1.0, TimerMode::Once),
+                trip_departed_at_sec: None,
+                trip_purpose: None,
+            },
+            crate::game::citizens::CitizenWorkplace::default(),
+        ));
+
+        let road = TilePos { x: 1, y: 2 };
+        let car = app
+            .world_mut()
+            .spawn((
+                Sprite::default(),
+                Vehicle {
+                    route: vec![road],
+                    progress: 0.0,
+                    speed: 0.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                Transform::default(),
+                VehicleTrafficState::FreeFlow,
+                CarOwner { citizen },
+                Parked { offset: 1.0 },
+            ))
+            .id();
+
+        app.world_mut()
+            .resource_mut::<bevy::ecs::message::Messages<TripRequested>>()
+            .write(TripRequested {
+                citizen,
+                from: TilePos { x: 0, y: 0 },
+                to: TilePos { x: 2, y: 2 },
+                purpose: crate::game::trips::TripPurpose::Work,
+                mode: TripMode::Car,
+            });
+
+        app.update();
+
+        // Still exactly one car entity, now active (unparked) and carrying the trip marker.
+        let mut q = app.world_mut().query_filtered::<Entity, With<Vehicle>>();
+        let cars: Vec<Entity> = q.iter(app.world()).collect();
+        assert_eq!(cars.len(), 1);
+        assert_eq!(cars[0], car);
+        assert!(app.world().get::<Parked>(car).is_none());
+        assert!(app.world().get::<TripPassenger>(car).is_some());
     }
 }
