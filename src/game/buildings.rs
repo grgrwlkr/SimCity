@@ -19,6 +19,19 @@ use crate::game::ui_state::UiState;
 
 pub struct BuildingsPlugin;
 
+// ---------------------------------------------------------------------------
+// Visual scaling (buildings)
+// ---------------------------------------------------------------------------
+// We want building visuals to grow with level. The Sprite uses a base size of `tile_size` and the
+// Transform scale encodes the level-dependent factor (so we don't double-apply scaling).
+const BUILDING_LEVEL1_SCALE: f32 = 0.75;
+const BUILDING_LEVEL_SCALE_STEP: f32 = 0.15; // lvl2=0.90, lvl3=1.05
+
+fn building_visual_scale(level: u8) -> f32 {
+    let lvl = level.clamp(1, 3) as f32;
+    BUILDING_LEVEL1_SCALE + (lvl - 1.0) * BUILDING_LEVEL_SCALE_STEP
+}
+
 impl Plugin for BuildingsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BuildingTuning>()
@@ -404,6 +417,8 @@ fn spawn_building_entity(
 ) {
     let origin = map_origin(cfg);
     let world = origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size);
+    let mut tf = Transform::from_translation(Vec3::new(world.x, world.y, 8.0));
+    tf.scale = Vec3::splat(building_visual_scale(1));
 
     commands.spawn((
         Building {
@@ -413,8 +428,8 @@ fn spawn_building_entity(
             capacity_residents: kind.capacity_residents_for_level(1),
             capacity_jobs: kind.capacity_jobs_for_level(1),
         },
-        Sprite::from_color(kind.color(), Vec2::splat(cfg.tile_size * 0.75)),
-        Transform::from_translation(Vec3::new(world.x, world.y, 8.0)),
+        Sprite::from_color(kind.color(), Vec2::splat(cfg.tile_size)),
+        tf,
     ));
 }
 
@@ -458,6 +473,7 @@ fn upgrade_buildings(
     mut city: ResMut<City>,
     mut notifications: Option<ResMut<Notifications>>,
     mut upgrade_clock: ResMut<BuildingUpgradeClock>,
+    cfg: Res<MapConfig>,
     mut q_buildings: Query<(&mut Building, &mut Transform, &mut Sprite)>,
 ) {
     let speed = ui.sim_speed.multiplier();
@@ -477,7 +493,7 @@ fn upgrade_buildings(
     // Check if notifications are available once
     let has_notifications = notifications.is_some();
 
-    for (mut building, mut transform, _sprite) in q_buildings.iter_mut() {
+    for (mut building, mut transform, mut sprite) in q_buildings.iter_mut() {
         // Only upgrade residential, commercial, and industrial buildings
         if !matches!(
             building.kind,
@@ -523,9 +539,10 @@ fn upgrade_buildings(
             city.population = city.population.saturating_add(delta as u32);
         }
 
-        // Visual change: scale sprite based on level
-        let scale = 0.75 + (building.level as f32 - 1.0) * 0.15; // 0.75, 0.90, 1.05
-        transform.scale = Vec3::splat(scale);
+        // Visual change: size grows with level.
+        // Sprite size is based on tile_size; Transform scale carries the level factor.
+        sprite.custom_size = Some(Vec2::splat(cfg.tile_size));
+        transform.scale = Vec3::splat(building_visual_scale(building.level));
 
         // Emit notification
         if has_notifications && let Some(ref mut notif) = notifications.as_mut() {
@@ -552,5 +569,24 @@ fn upgrade_buildings(
                 if building.level >= 3 { 5.0 } else { 3.0 },
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn building_visual_scale_is_monotonic_and_matches_doc_values() {
+        assert!((building_visual_scale(1) - 0.75).abs() < 1e-6);
+        assert!((building_visual_scale(2) - 0.90).abs() < 1e-6);
+        assert!((building_visual_scale(3) - 1.05).abs() < 1e-6);
+
+        assert!(building_visual_scale(1) < building_visual_scale(2));
+        assert!(building_visual_scale(2) < building_visual_scale(3));
+
+        // Clamp behavior
+        assert_eq!(building_visual_scale(0), building_visual_scale(1));
+        assert_eq!(building_visual_scale(99), building_visual_scale(3));
     }
 }

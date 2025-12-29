@@ -261,6 +261,7 @@ struct StuckTimer {
     secs: f32,
     last_tile: TilePos,
     last_progress: f32,
+    uturn_attempted: bool,
 }
 
 /// Marker for vehicles currently performing a right turn on red.
@@ -833,6 +834,7 @@ fn init_stuck_timers(
             secs: 0.0,
             last_tile: tile,
             last_progress: v.progress,
+            uturn_attempted: false,
         });
     }
 }
@@ -845,6 +847,7 @@ fn update_stuck_timers(
     for (v, state, mut stuck) in q.iter_mut() {
         let Some(tile) = v.route.first().copied() else {
             stuck.secs = 0.0;
+            stuck.uturn_attempted = false;
             continue;
         };
 
@@ -858,6 +861,7 @@ fn update_stuck_timers(
             )
         {
             stuck.secs = 0.0;
+            stuck.uturn_attempted = false;
         } else {
             stuck.secs += dt;
         }
@@ -937,11 +941,72 @@ fn resolve_stuck_vehicles(
             stuck.secs = 0.0;
             stuck.last_tile = current;
             stuck.last_progress = 0.0;
+            stuck.uturn_attempted = false;
             handled += 1;
             continue;
         }
 
-        // 2) Last-resort guardrail: despawn non-service trip vehicles after a very long time stuck.
+        // 2) Safety U-turn (doc open question #3): if we are at a dead end on a TwoLane (1+1),
+        // try to pull into the adjacent oncoming lane tile and re-route from there.
+        //
+        // This is a conservative jam-recovery tactic, used only after re-routing fails, and only
+        // once per stuck episode.
+        if stuck.secs >= STUCK_REROUTE_SECS
+            && !stuck.uturn_attempted
+            && route.is_empty()
+            && let Some(cur_cell) = grid.get(current)
+            && cur_cell.road.is_some()
+            && cur_cell.road.dir != RoadDir::None
+        {
+            let dir = cur_cell.road.dir;
+            let front = TilePos {
+                x: current.x + dir.delta().x,
+                y: current.y + dir.delta().y,
+            };
+            let has_forward = grid.get(front).is_some_and(|c| {
+                !c.water
+                    && c.road.is_some()
+                    && c.road.dir == dir
+                    && c.road.kind == cur_cell.road.kind
+            });
+
+            if !has_forward
+                && cur_cell.road.kind == RoadKind::TwoLane
+                && let Some(off) = oncoming_lane_offset(&grid, current, dir)
+            {
+                let uturn_tile = TilePos {
+                    x: current.x + off.x,
+                    y: current.y + off.y,
+                };
+
+                let is_empty = grid.idx(uturn_tile).is_some_and(|idx| {
+                    traffic.per_tick_vehicles.get(idx).copied().unwrap_or(0) == 0
+                });
+                if is_empty {
+                    let from_uturn = find_road_path_cached(&mut ctx, uturn_tile, goal);
+                    if !from_uturn.is_empty() {
+                        let mut next_route = Vec::with_capacity(from_uturn.len() + 1);
+                        next_route.push(current);
+                        next_route.extend(from_uturn);
+
+                        v.route = next_route;
+                        v.progress = 0.0;
+                        v.speed = 0.0;
+
+                        stuck.secs = 0.0;
+                        stuck.last_tile = current;
+                        stuck.last_progress = 0.0;
+                        stuck.uturn_attempted = false;
+                        handled += 1;
+                        continue;
+                    }
+                }
+            }
+
+            stuck.uturn_attempted = true;
+        }
+
+        // 3) Last-resort guardrail: despawn non-service trip vehicles after a very long time stuck.
         if stuck.secs >= STUCK_DESPAWN_SECS
             && service_vehicle.is_none()
             && bus_vehicle.is_none()
@@ -1727,8 +1792,19 @@ fn left_turn_zone(entry_dir: RoadDir) -> ConflictMask {
     ZONE_CENTER
 }
 
-fn straight_zone(_entry_dir: RoadDir) -> ConflictMask {
-    ZONE_CENTER
+fn straight_zone(entry_dir: RoadDir) -> ConflictMask {
+    // Approximate "keep right" straight-through paths by assigning them to the corresponding side
+    // of the intersection, so that opposite-direction straights can proceed in parallel.
+    //
+    // This is still a coarse model, but it improves throughput while keeping perpendicular
+    // straights conflicting.
+    match entry_dir {
+        RoadDir::North => ZONE_NE | ZONE_SE, // northbound (from South): use east side
+        RoadDir::East => ZONE_SW | ZONE_SE,  // eastbound (from West): use south side
+        RoadDir::South => ZONE_NW | ZONE_SW, // southbound (from North): use west side
+        RoadDir::West => ZONE_NW | ZONE_NE,  // westbound (from East): use north side
+        RoadDir::None => ZONE_CENTER,
+    }
 }
 
 fn reservation_zones_for_maneuver(
@@ -1767,6 +1843,7 @@ fn plan_intersection_reservations(
     time: Res<Time<Fixed>>,
     grid: Res<MapGrid>,
     intersections: Res<IntersectionIndex>,
+    traffic: Res<TrafficOccupancy>,
     traffic_cfg: Res<TrafficConfig>,
     mut reservations: ResMut<IntersectionReservations>,
     q_lights: Query<&crate::game::intersections::TrafficLight>,
@@ -1823,6 +1900,7 @@ fn plan_intersection_reservations(
         dist_to_entry: f32,
         vehicle: Entity,
         zones: ConflictMask,
+        is_right_on_red: bool,
     }
     let mut candidates_by_intersection =
         std::collections::HashMap::<IntersectionId, Vec<Best>>::new();
@@ -1857,6 +1935,30 @@ fn plan_intersection_reservations(
             continue;
         }
         let exit_dir = compute_exit_direction(&v.route, &grid, next);
+        // Don't block the box: only admit if the planned exit lane tile has space.
+        let exit_tile = v.route.iter().position(|t| *t == next).and_then(|start_i| {
+            let mut i = start_i;
+            while i < v.route.len() && is_intersection_tile(&grid, v.route[i]) {
+                i += 1;
+            }
+            v.route.get(i).copied()
+        });
+        if let Some(exit_tile) = exit_tile
+            && let Some(exit_cell) = grid.get(exit_tile)
+            && exit_cell.road.is_some()
+            && exit_cell.road.dir != RoadDir::None
+            && let Some(exit_idx) = grid.idx(exit_tile)
+        {
+            let cap = exit_cell.road.kind.capacity_per_lane_tile();
+            let occ = traffic
+                .per_tick_vehicles
+                .get(exit_idx)
+                .copied()
+                .unwrap_or(0);
+            if occ >= cap {
+                continue;
+            }
+        }
         let Some(zones) = reservation_zones_for_maneuver(&traffic_cfg, entry_dir, exit_dir) else {
             continue;
         };
@@ -1865,6 +1967,7 @@ fn plan_intersection_reservations(
         }
 
         let mut priority = 1u8;
+        let mut is_right_on_red = false;
 
         // If there is a traffic light controller, only admit on green/yellow (or right-on-red).
         if intersections.traffic_lights.contains(&id) {
@@ -1912,6 +2015,7 @@ fn plan_intersection_reservations(
                 }
 
                 priority = 1;
+                is_right_on_red = true;
             }
         } else if stopped_or_waiting {
             // For uncontrolled intersections, don't reserve for stopped vehicles.
@@ -1924,6 +2028,7 @@ fn plan_intersection_reservations(
             dist_to_entry: dist,
             vehicle: e,
             zones,
+            is_right_on_red,
         };
 
         candidates_by_intersection.entry(id).or_default().push(cand);
@@ -1943,6 +2048,13 @@ fn plan_intersection_reservations(
         for cand in cands {
             if added >= MAX_NEW_RES_PER_INTERSECTION_PER_TICK {
                 break;
+            }
+            // Right turn on red is a yield-maneuver: only allow it when the intersection is clear.
+            //
+            // With our current coarse conflict-mask model, "non-overlapping zones" is not enough to
+            // guarantee a safe merge against the conflicting green flow, so we gate it strictly.
+            if cand.is_right_on_red && reservations.is_reserved(id) {
+                continue;
             }
             if !reservations.can_reserve(id, cand.vehicle, cand.zones) {
                 continue;
@@ -3519,6 +3631,105 @@ mod tests {
     }
 
     #[test]
+    fn stuck_dead_end_uturn_rewrites_route_on_two_lane() {
+        use crate::game::transport::{
+            GraphVersion, PathCache, PathfindingConfig, RegionGraph, RoadGraph,
+            rebuild_road_graph_inner,
+        };
+
+        let mut grid = MapGrid::new(2, 2);
+        for x in 0..2 {
+            // Eastbound lane (dead end at x=1)
+            let p0 = TilePos { x, y: 0 };
+            let Some(mut c0) = grid.get(p0) else {
+                continue;
+            };
+            c0.water = false;
+            c0.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                dir: RoadDir::East,
+                lane: 0,
+                flow: RoadFlow::TwoWay,
+                lane_type: LaneType::Regular,
+            };
+            grid.set(p0, c0);
+
+            // Westbound lane
+            let p1 = TilePos { x, y: 1 };
+            let Some(mut c1) = grid.get(p1) else {
+                continue;
+            };
+            c1.water = false;
+            c1.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                dir: RoadDir::West,
+                lane: 1,
+                flow: RoadFlow::TwoWay,
+                lane_type: LaneType::Regular,
+            };
+            grid.set(p1, c1);
+        }
+
+        let gv = GraphVersion(1);
+        let mut graph = RoadGraph::default();
+        rebuild_road_graph_inner(&grid, &gv, &mut graph);
+
+        let mut occ = TrafficOccupancy::default();
+        occ.per_tick_vehicles.resize(grid.len(), 0);
+        occ.ema_heat.resize(grid.len(), 0.0);
+
+        let mut cfg = PathfindingConfig::default();
+        cfg.enable_hierarchical = false;
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<TripFinished>()
+            .insert_resource(Time::<Fixed>::from_seconds(1.0 / 10.0))
+            .insert_resource(MapConfig {
+                width: 2,
+                height: 2,
+                tile_size: 16.0,
+            })
+            .insert_resource(grid)
+            .insert_resource(graph)
+            .insert_resource(RegionGraph::default())
+            .insert_resource(cfg)
+            .insert_resource(PathCache::default())
+            .insert_resource(IntersectionIndex::default())
+            .insert_resource(occ)
+            .add_systems(Update, resolve_stuck_vehicles);
+
+        let current = TilePos { x: 1, y: 0 };
+        let goal = TilePos { x: 0, y: 1 };
+        let e = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![current, goal],
+                    progress: 0.0,
+                    speed: 0.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                VehicleTrafficState::FreeFlow,
+                StuckTimer {
+                    secs: STUCK_REROUTE_SECS,
+                    last_tile: current,
+                    last_progress: 0.0,
+                    uturn_attempted: false,
+                },
+            ))
+            .id();
+
+        app.update();
+
+        let v = app.world().get::<Vehicle>(e).unwrap();
+        assert_eq!(v.route[0], current);
+        assert_eq!(v.route[1], TilePos { x: 1, y: 1 });
+        assert_eq!(v.route[2], goal);
+    }
+
+    #[test]
     fn right_turn_on_red_is_blocked_by_pedestrian_in_intersection() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
@@ -3583,6 +3794,7 @@ mod tests {
                 idx
             })
             .insert_resource(IntersectionReservations::default())
+            .insert_resource(TrafficOccupancy::default())
             .add_systems(Update, plan_intersection_reservations);
 
         let intersection_tile = TilePos { x: 1, y: 1 };
@@ -3661,6 +3873,144 @@ mod tests {
     }
 
     #[test]
+    fn right_turn_on_red_is_only_admitted_when_intersection_is_clear() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+                1.0 / 10.0,
+            ))
+            .insert_resource(MapConfig {
+                width: 3,
+                height: 3,
+                tile_size: 16.0,
+            })
+            .insert_resource(TrafficConfig::default())
+            .insert_resource({
+                let mut grid = MapGrid::new(3, 3);
+
+                let approach = TilePos { x: 1, y: 0 };
+                let intersection_tile = TilePos { x: 1, y: 1 };
+                let exit = TilePos { x: 2, y: 1 };
+
+                for (pos, dir) in [
+                    (approach, RoadDir::North),
+                    (intersection_tile, RoadDir::None),
+                    (exit, RoadDir::East),
+                ] {
+                    let Some(mut cell) = grid.get(pos) else {
+                        continue;
+                    };
+                    cell.road = RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    };
+                    grid.set(pos, cell);
+                }
+
+                grid
+            })
+            .insert_resource({
+                let intersection_tile = TilePos { x: 1, y: 1 };
+                let id = IntersectionId(0);
+                let key = IntersectionKey {
+                    aabb_min: intersection_tile,
+                    aabb_max: intersection_tile,
+                    tile_count: 1,
+                    tiles_hash: 123,
+                };
+
+                let mut idx = IntersectionIndex::default();
+                idx.clusters
+                    .push(crate::game::intersections::IntersectionCluster {
+                        id,
+                        key,
+                        tiles: vec![intersection_tile],
+                        aabb_min: intersection_tile,
+                        aabb_max: intersection_tile,
+                        centroid_tile: intersection_tile,
+                    });
+                idx.tile_to_intersection.insert(intersection_tile, id);
+                idx.traffic_lights.insert(id);
+                idx
+            })
+            .insert_resource(TrafficOccupancy::default())
+            .insert_resource(IntersectionReservations::default())
+            .add_systems(Update, plan_intersection_reservations);
+
+        let intersection_tile = TilePos { x: 1, y: 1 };
+        let key = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .cluster_key_at(intersection_tile)
+            .unwrap();
+        let id = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .intersection_id_at(intersection_tile)
+            .unwrap();
+
+        // Red for North/South, green for East/West.
+        app.world_mut()
+            .spawn(crate::game::intersections::TrafficLight {
+                intersection_id: id,
+                intersection_key: key,
+                pos: intersection_tile,
+                phase: LightPhase::EastWestGreen,
+                phase_timer: 10.0,
+                green_duration: 10.0,
+                yellow_duration: 3.0,
+                all_red_duration: 1.0,
+            });
+
+        let approach = TilePos { x: 1, y: 0 };
+        let exit = TilePos { x: 2, y: 1 };
+        let ego = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![approach, intersection_tile, exit],
+                    progress: 1.0 - STOP_LINE_OFFSET,
+                    speed: 0.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                VehicleTrafficState::WaitingForGreen {
+                    intersection: key,
+                    stop_tile: intersection_tile,
+                },
+            ))
+            .id();
+
+        // Another reservation exists, but it does NOT conflict by zones (NW vs SE).
+        let other = app.world_mut().spawn_empty().id();
+        app.world_mut()
+            .resource_mut::<IntersectionReservations>()
+            .by_intersection
+            .insert(
+                id,
+                vec![IntersectionReservation {
+                    vehicle: other,
+                    state: ReservationState::Approaching,
+                    created_at_sec: 0.0,
+                    zones: ZONE_NW,
+                }],
+            );
+
+        app.update();
+
+        let rs = app
+            .world()
+            .resource::<IntersectionReservations>()
+            .by_intersection
+            .get(&id)
+            .unwrap();
+        assert!(rs.iter().all(|r| r.vehicle != ego));
+    }
+
+    #[test]
     fn intersection_conflict_zones_allow_two_non_conflicting_right_turns() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
@@ -3730,6 +4080,7 @@ mod tests {
                 idx
             })
             .insert_resource(IntersectionReservations::default())
+            .insert_resource(TrafficOccupancy::default())
             .add_systems(Update, plan_intersection_reservations);
 
         let intersection_tile = TilePos { x: 1, y: 1 };
@@ -3767,6 +4118,136 @@ mod tests {
                         TilePos { x: 2, y: 1 },
                         intersection_tile,
                         TilePos { x: 1, y: 2 },
+                    ],
+                    progress: 0.9,
+                    speed: 1.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                VehicleTrafficState::FreeFlow,
+            ))
+            .id();
+
+        app.update();
+
+        let rs = app
+            .world()
+            .resource::<IntersectionReservations>()
+            .by_intersection
+            .get(&id)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(rs.len(), 2);
+        assert!(rs.iter().any(|r| r.vehicle == a));
+        assert!(rs.iter().any(|r| r.vehicle == b));
+    }
+
+    #[test]
+    fn intersection_conflict_zones_allow_two_opposite_straights() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+                1.0 / 10.0,
+            ))
+            .insert_resource(MapConfig {
+                width: 3,
+                height: 3,
+                tile_size: 16.0,
+            })
+            .insert_resource(TrafficConfig::default())
+            .insert_resource({
+                let mut grid = MapGrid::new(3, 3);
+                let intersection_tile = TilePos { x: 1, y: 1 };
+
+                for (pos, dir) in [
+                    (TilePos { x: 1, y: 0 }, RoadDir::North),
+                    (TilePos { x: 1, y: 2 }, RoadDir::South),
+                ] {
+                    if let Some(mut cell) = grid.get(pos) {
+                        cell.road = RoadCell {
+                            kind: RoadKind::TwoLane,
+                            dir,
+                            lane: 0,
+                            flow: RoadFlow::TwoWay,
+                            lane_type: LaneType::Regular,
+                        };
+                        grid.set(pos, cell);
+                    }
+                }
+                if let Some(mut cell) = grid.get(intersection_tile) {
+                    cell.road = RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir: RoadDir::None,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    };
+                    grid.set(intersection_tile, cell);
+                }
+                grid
+            })
+            .insert_resource({
+                let intersection_tile = TilePos { x: 1, y: 1 };
+                let id = IntersectionId(0);
+                let key = IntersectionKey {
+                    aabb_min: intersection_tile,
+                    aabb_max: intersection_tile,
+                    tile_count: 1,
+                    tiles_hash: 123,
+                };
+
+                let mut idx = IntersectionIndex::default();
+                idx.clusters
+                    .push(crate::game::intersections::IntersectionCluster {
+                        id,
+                        key,
+                        tiles: vec![intersection_tile],
+                        aabb_min: intersection_tile,
+                        aabb_max: intersection_tile,
+                        centroid_tile: intersection_tile,
+                    });
+                idx.tile_to_intersection.insert(intersection_tile, id);
+                idx
+            })
+            .insert_resource(IntersectionReservations::default())
+            .insert_resource(TrafficOccupancy::default())
+            .add_systems(Update, plan_intersection_reservations);
+
+        let intersection_tile = TilePos { x: 1, y: 1 };
+        let id = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .intersection_id_at(intersection_tile)
+            .unwrap();
+
+        // Car A: south -> north straight (zones NE|SE).
+        let a = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![
+                        TilePos { x: 1, y: 0 },
+                        intersection_tile,
+                        TilePos { x: 1, y: 2 },
+                    ],
+                    progress: 0.9,
+                    speed: 1.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                VehicleTrafficState::FreeFlow,
+            ))
+            .id();
+
+        // Car B: north -> south straight (zones NW|SW).
+        let b = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![
+                        TilePos { x: 1, y: 2 },
+                        intersection_tile,
+                        TilePos { x: 1, y: 0 },
                     ],
                     progress: 0.9,
                     speed: 1.0,
@@ -3855,6 +4336,7 @@ mod tests {
                 idx
             })
             .insert_resource(IntersectionReservations::default())
+            .insert_resource(TrafficOccupancy::default())
             .add_systems(Update, plan_intersection_reservations);
 
         let intersection_tile = TilePos { x: 1, y: 1 };
