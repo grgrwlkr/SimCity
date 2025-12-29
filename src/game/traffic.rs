@@ -3778,8 +3778,10 @@ mod tests {
         occ.per_tick_vehicles.resize(grid.len(), 0);
         occ.ema_heat.resize(grid.len(), 0.0);
 
-        let mut cfg = PathfindingConfig::default();
-        cfg.enable_hierarchical = false;
+        let cfg = PathfindingConfig {
+            enable_hierarchical: false,
+            ..Default::default()
+        };
 
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
@@ -4997,8 +4999,8 @@ mod tests {
         assert!(app.world().get::<RightTurnOnRed>(ego).is_some());
         let v = app.world().get::<Vehicle>(ego).unwrap();
         let cap = kmh_to_world_speed(
-            &app.world().resource::<MapConfig>(),
-            &app.world().resource::<TrafficConfig>(),
+            app.world().resource::<MapConfig>(),
+            app.world().resource::<TrafficConfig>(),
             RIGHT_ON_RED_TURN_MAX_KMH,
         );
         assert!(v.speed <= cap + 1e-3);
@@ -5221,7 +5223,7 @@ mod tests {
         app.update();
 
         // Ensure the spawned vehicle starts on the road adjacent to car_parked_at, i.e. (1,2).
-        let world_pos = tile_to_world(&app.world().resource::<MapConfig>(), TilePos { x: 1, y: 2 });
+        let world_pos = tile_to_world(app.world().resource::<MapConfig>(), TilePos { x: 1, y: 2 });
         let mut q = app
             .world_mut()
             .query_filtered::<&Transform, With<Vehicle>>();
