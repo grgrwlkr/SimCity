@@ -1,0 +1,12 @@
+(
+    // Doc defaults
+    walk_speed_mps: 1.4,
+    walk_tour_max_m: 800.0,
+
+    // Uncontrolled crossings
+    wait_reroute_secs: 60.0,
+    wait_reroute_max_attempts: 3,
+    uncontrolled_safety_margin_secs: 0.5,
+    uncontrolled_min_gap_tiles: 0.35,
+)
+

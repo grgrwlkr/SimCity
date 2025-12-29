@@ -2154,6 +2154,7 @@ fn move_vehicles(
 fn update_vehicle_traffic_state(
     _time: Res<Time<Fixed>>,
     traffic_cfg: Res<TrafficConfig>,
+    cfg: Res<MapConfig>,
     grid: Res<MapGrid>,
     intersections: Res<IntersectionIndex>,
     reservations: Res<IntersectionReservations>,
@@ -2231,10 +2232,28 @@ fn update_vehicle_traffic_state(
         // Distance to the stop line (not to the intersection tile itself).
         let stop_distance = (distance_to_light_tile - STOP_LINE_OFFSET).max(0.0);
 
-        let mut can_go = light.is_green(entry_dir)
-            || (light.is_yellow(entry_dir) && distance_to_light_tile <= 2.0);
-        let mut must_stop =
-            light.is_red(entry_dir) || (light.is_yellow(entry_dir) && distance_to_light_tile > 2.0);
+        // Yellow decision: if it's already too late to stop comfortably, proceed.
+        // Otherwise treat yellow like red (prepare to stop at the stop line).
+        //
+        // This avoids the brittle "within N tiles" heuristic and produces more realistic behavior.
+        let is_yellow = light.is_yellow(entry_dir);
+        let too_late_to_stop = if is_yellow {
+            let dist_to_stop_world = stop_distance * cfg.tile_size;
+            let wpm = world_per_meter(&cfg, &traffic_cfg);
+            let b_world = traffic_cfg.idm_comfortable_decel_mps2.max(0.0) * wpm;
+            if b_world <= 0.0 {
+                true
+            } else {
+                let v = vehicle.speed.max(0.0);
+                let stopping_dist_world = (v * v) / (2.0 * b_world);
+                stopping_dist_world > dist_to_stop_world
+            }
+        } else {
+            false
+        };
+
+        let mut can_go = light.is_green(entry_dir) || (is_yellow && too_late_to_stop);
+        let mut must_stop = light.is_red(entry_dir) || (is_yellow && !too_late_to_stop);
 
         // Right turn on red (near-side turn): if we already own a reservation for this intersection,
         // allow proceeding even while the light is red (but not during all-red clearance).
@@ -3572,5 +3591,133 @@ mod tests {
             RIGHT_ON_RED_TURN_MAX_KMH,
         );
         assert!(v.speed <= cap + 1e-3);
+    }
+
+    #[test]
+    fn yellow_allows_proceeding_if_too_late_to_stop_comfortably() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+                1.0 / 10.0,
+            ))
+            .insert_resource(MapConfig {
+                width: 6,
+                height: 6,
+                tile_size: 16.0,
+            })
+            .insert_resource(TrafficConfig::default())
+            .insert_resource({
+                let mut grid = MapGrid::new(6, 6);
+
+                let t0 = TilePos { x: 2, y: 0 };
+                let t1 = TilePos { x: 2, y: 1 };
+                let t2 = TilePos { x: 2, y: 2 };
+                let intersection_tile = TilePos { x: 2, y: 3 };
+                let exit = TilePos { x: 3, y: 3 };
+
+                for (pos, dir) in [
+                    (t0, RoadDir::North),
+                    (t1, RoadDir::North),
+                    (t2, RoadDir::North),
+                    (intersection_tile, RoadDir::None),
+                    (exit, RoadDir::East),
+                ] {
+                    let Some(mut cell) = grid.get(pos) else {
+                        continue;
+                    };
+                    cell.road = RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    };
+                    grid.set(pos, cell);
+                }
+
+                grid
+            })
+            .insert_resource({
+                let intersection_tile = TilePos { x: 2, y: 3 };
+                let id = IntersectionId(0);
+                let key = IntersectionKey {
+                    aabb_min: intersection_tile,
+                    aabb_max: intersection_tile,
+                    tile_count: 1,
+                    tiles_hash: 123,
+                };
+
+                let mut idx = IntersectionIndex::default();
+                idx.clusters
+                    .push(crate::game::intersections::IntersectionCluster {
+                        id,
+                        key,
+                        tiles: vec![intersection_tile],
+                        aabb_min: intersection_tile,
+                        aabb_max: intersection_tile,
+                        centroid_tile: intersection_tile,
+                    });
+                idx.tile_to_intersection.insert(intersection_tile, id);
+                idx.traffic_lights.insert(id);
+                idx
+            })
+            .insert_resource(IntersectionReservations::default())
+            .add_systems(Update, update_vehicle_traffic_state);
+
+        let intersection_tile = TilePos { x: 2, y: 3 };
+        let key = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .cluster_key_at(intersection_tile)
+            .unwrap();
+        let id = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .intersection_id_at(intersection_tile)
+            .unwrap();
+
+        // Yellow for North/South.
+        app.world_mut()
+            .spawn(crate::game::intersections::TrafficLight {
+                intersection_id: id,
+                intersection_key: key,
+                pos: intersection_tile,
+                phase: LightPhase::NorthSouthYellow,
+                phase_timer: 3.0,
+                green_duration: 10.0,
+                yellow_duration: 3.0,
+                all_red_duration: 1.0,
+            });
+
+        let ego = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![
+                        TilePos { x: 2, y: 0 },
+                        TilePos { x: 2, y: 1 },
+                        TilePos { x: 2, y: 2 },
+                        intersection_tile,
+                        TilePos { x: 3, y: 3 },
+                    ],
+                    progress: 0.0,
+                    speed: 100.0, // fast enough that stopping comfortably is impossible in ~3 tiles
+                    max_speed: 999.0,
+                    max_accel: 20.0,
+                },
+                VehicleTrafficState::Approaching {
+                    intersection: key,
+                    stop_tile: intersection_tile,
+                    distance_to_stop: 999.0,
+                },
+            ))
+            .id();
+
+        app.update();
+
+        assert_eq!(
+            app.world().get::<VehicleTrafficState>(ego).copied(),
+            Some(VehicleTrafficState::CrossingIntersection { intersection: key })
+        );
     }
 }

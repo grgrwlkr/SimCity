@@ -46,6 +46,14 @@ pub struct PedestrianConfig {
     pub walk_speed_mps: f32,
     /// Max length for a WalkTour (meters). Doc default: 800 m.
     pub walk_tour_max_m: f32,
+    /// If a pedestrian is blocked at an uncontrolled crossing for this long, reroute.
+    pub wait_reroute_secs: f32,
+    /// Max number of reroute attempts for a single pedestrian.
+    pub wait_reroute_max_attempts: u8,
+    /// Uncontrolled crossing: additional safety margin added to time-to-cross window.
+    pub uncontrolled_safety_margin_secs: f32,
+    /// Uncontrolled crossing: hard minimum gap to a vehicle entering the intersection (tiles).
+    pub uncontrolled_min_gap_tiles: f32,
 }
 
 impl Default for PedestrianConfig {
@@ -53,6 +61,10 @@ impl Default for PedestrianConfig {
         Self {
             walk_speed_mps: 1.4,
             walk_tour_max_m: 800.0,
+            wait_reroute_secs: 60.0,
+            wait_reroute_max_attempts: 3,
+            uncontrolled_safety_margin_secs: 0.5,
+            uncontrolled_min_gap_tiles: 0.35,
         }
     }
 }
@@ -166,19 +178,27 @@ impl PedestrianGraph {
         goal: TilePos,
         avoid: TilePos,
     ) -> Option<Vec<TilePos>> {
+        self.shortest_path_blocked(start, goal, |p| p == avoid)
+    }
+
+    /// Returns a shortest path while treating any `blocked(pos) == true` tile as impassable.
+    pub fn shortest_path_blocked(
+        &self,
+        start: TilePos,
+        goal: TilePos,
+        mut blocked: impl FnMut(TilePos) -> bool,
+    ) -> Option<Vec<TilePos>> {
+        if blocked(start) || blocked(goal) {
+            return None;
+        }
+
         let (Some(start_i), Some(goal_i)) = (self.idx(start), self.idx(goal)) else {
             return None;
-        };
-        let Some(avoid_i) = self.idx(avoid) else {
-            return Some(self.shortest_path(start, goal));
         };
 
         if !self.walkable.get(start_i).copied().unwrap_or(false)
             || !self.walkable.get(goal_i).copied().unwrap_or(false)
         {
-            return None;
-        }
-        if start_i == avoid_i || goal_i == avoid_i {
             return None;
         }
 
@@ -194,10 +214,11 @@ impl PedestrianGraph {
                 break;
             }
             for n in self.neighbors_idx(i) {
-                if n == avoid_i {
+                if prev[n].is_some() {
                     continue;
                 }
-                if prev[n].is_some() {
+                let p = self.pos(n);
+                if blocked(p) {
                     continue;
                 }
                 prev[n] = Some(i);
@@ -416,14 +437,6 @@ pub struct Pedestrian {
     reroute_attempts: u8,
 }
 
-// Doc defaults.
-const PED_WAIT_REROUTE_SECS: f32 = 60.0;
-const PED_WAIT_REROUTE_MAX_ATTEMPTS: u8 = 3;
-
-// Conservative MVP: if a vehicle is within this many tiles of entering the intersection,
-// pedestrians will not step into the intersection tile (uncontrolled).
-const PED_UNCONTROLLED_SAFE_GAP_TILES: f32 = 0.35;
-
 #[derive(SystemParam)]
 struct SpawnWalkersParams<'w, 's> {
     commands: Commands<'w, 's>,
@@ -490,6 +503,7 @@ fn move_walkers(
     time: Res<Time<Fixed>>,
     cfg: Res<MapConfig>,
     grid: Res<MapGrid>,
+    ped_cfg: Res<PedestrianConfig>,
     intersections: Option<Res<crate::game::intersections::IntersectionIndex>>,
     reservations: Option<Res<IntersectionReservations>>,
     q_vehicles: Query<(Entity, &Vehicle), Without<Parked>>,
@@ -559,8 +573,9 @@ fn move_walkers(
                     id,
                     b,
                     reservations.as_deref(),
-                    cfg.tile_size,
                     ped.speed_world,
+                    &cfg,
+                    &ped_cfg,
                     &q_vehicles,
                 )
             {
@@ -576,13 +591,35 @@ fn move_walkers(
 
             // Reroute if stuck too long at an uncontrolled crossing.
             if let Some(avoid) = reroute_avoid
-                && ped.wait_blocked_secs >= PED_WAIT_REROUTE_SECS
-                && ped.reroute_attempts < PED_WAIT_REROUTE_MAX_ATTEMPTS
+                && ped.wait_blocked_secs >= ped_cfg.wait_reroute_secs.max(0.0)
+                && ped.reroute_attempts < ped_cfg.wait_reroute_max_attempts
             {
                 ped.wait_blocked_secs = 0.0;
                 ped.reroute_attempts = ped.reroute_attempts.saturating_add(1);
 
-                if let Some(new_route) = graph.shortest_path_avoid(a, ped.goal, avoid) {
+                // Attempt 1: avoid the blocked intersection tile only.
+                // Attempt 2+: avoid all uncontrolled intersections to prefer signalized crossings.
+                let prefer_signalized = ped.reroute_attempts >= 2;
+                let mut new_route = graph.shortest_path_avoid(a, ped.goal, avoid);
+                if prefer_signalized
+                    && new_route.is_none()
+                    && let Some(intersections) = intersections.as_deref()
+                {
+                    new_route = graph.shortest_path_blocked(a, ped.goal, |p| {
+                        if p == avoid {
+                            return true;
+                        }
+                        if !is_intersection_tile(&grid, p) {
+                            return false;
+                        }
+                        let Some(id) = intersections.intersection_id_at(p) else {
+                            return false;
+                        };
+                        !intersections.traffic_lights.contains(&id)
+                    });
+                }
+
+                if let Some(new_route) = new_route {
                     ped.route = new_route;
                     ped.route_idx = 0;
                     ped.progress = 0.0;
@@ -672,8 +709,9 @@ fn ped_can_enter_uncontrolled(
     id: crate::game::intersections::IntersectionId,
     intersection_tile: TilePos,
     reservations: Option<&IntersectionReservations>,
-    tile_size: f32,
     ped_speed_world: f32,
+    cfg: &MapConfig,
+    ped_cfg: &PedestrianConfig,
     q_vehicles: &Query<(Entity, &Vehicle), Without<Parked>>,
 ) -> bool {
     // If any vehicle holds a reservation for this intersection, do not enter.
@@ -694,18 +732,19 @@ fn ped_can_enter_uncontrolled(
         let dist_to_entry_tiles = (1.0 - v.progress).clamp(0.0, 1.0);
 
         // Fallback guardrail: extremely close -> don't step in.
-        if dist_to_entry_tiles <= PED_UNCONTROLLED_SAFE_GAP_TILES {
+        if dist_to_entry_tiles <= ped_cfg.uncontrolled_min_gap_tiles.max(0.0) {
             return false;
         }
 
         // Time-to-entry vs time-to-cross check (doc: wait for a safe window).
         let v_speed = v.speed.max(0.0);
         if v_speed > 0.1 {
-            let dist_world = dist_to_entry_tiles * tile_size.max(0.001);
+            let tile_size = cfg.tile_size.max(0.001);
+            let dist_world = dist_to_entry_tiles * tile_size;
             let t_entry = dist_world / v_speed;
 
-            let t_cross = tile_size.max(0.001) / ped_speed_world.max(0.1);
-            let safety_margin = 0.5;
+            let t_cross = tile_size / ped_speed_world.max(0.1);
+            let safety_margin = ped_cfg.uncontrolled_safety_margin_secs.max(0.0);
             if t_entry <= t_cross + safety_margin {
                 return false;
             }
@@ -774,6 +813,7 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .add_message::<TripFinished>()
             .insert_resource(Time::<Fixed>::from_seconds(1.0 / 10.0))
+            .insert_resource(PedestrianConfig::default())
             .insert_resource(PedestrianGraph {
                 version: 0,
                 width: 3,
@@ -913,6 +953,7 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .add_message::<TripFinished>()
             .insert_resource(Time::<Fixed>::from_seconds(1.0 / 10.0))
+            .insert_resource(PedestrianConfig::default())
             .insert_resource(PedestrianGraph {
                 version: 0,
                 width: 3,
@@ -1032,6 +1073,7 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .add_message::<TripFinished>()
             .insert_resource(Time::<Fixed>::from_seconds(1.0 / 10.0))
+            .insert_resource(PedestrianConfig::default())
             .insert_resource(PedestrianGraph {
                 version: 0,
                 width: 3,
@@ -1112,7 +1154,7 @@ mod tests {
                     progress: 0.0,
                     speed_world: 240.0,
                     goal,
-                    wait_blocked_secs: PED_WAIT_REROUTE_SECS,
+                    wait_blocked_secs: PedestrianConfig::default().wait_reroute_secs,
                     reroute_attempts: 0,
                 },
                 PedestrianTile(start),

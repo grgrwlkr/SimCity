@@ -13,6 +13,7 @@ use crate::game::day_night::DayNightCycle;
 use crate::game::economy::EconomyConfig;
 use crate::game::employment::EmploymentConfig;
 use crate::game::map::MapConfig;
+use crate::game::pedestrians::PedestrianConfig;
 use crate::game::public_transport::PublicTransportConfig;
 use crate::game::traffic::TrafficConfig;
 use crate::game::transport::PathfindingConfig;
@@ -35,6 +36,7 @@ fn load_configs_from_ron(mut commands: Commands) {
     load::<PublicTransportConfig>("assets/config/public_transport.ron", &mut commands);
     load::<DayNightCycle>("assets/config/day_night.ron", &mut commands);
     load::<CustomBuildingRegistry>("assets/config/custom_buildings.ron", &mut commands);
+    load::<PedestrianConfig>("assets/config/pedestrians.ron", &mut commands);
 }
 
 fn load<T>(path: &str, commands: &mut Commands)
@@ -88,6 +90,7 @@ mod tests {
         parse_required::<PublicTransportConfig>("assets/config/public_transport.ron");
         parse_required::<DayNightCycle>("assets/config/day_night.ron");
         parse_required::<CustomBuildingRegistry>("assets/config/custom_buildings.ron");
+        parse_required::<PedestrianConfig>("assets/config/pedestrians.ron");
 
         parse_required::<Vec<Scenario>>("assets/scenarios/scenarios.ron");
     }
