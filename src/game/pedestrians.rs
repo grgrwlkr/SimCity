@@ -426,6 +426,17 @@ struct WalkTripPassenger {
 #[derive(Component, Debug, Copy, Clone, Eq, PartialEq)]
 pub struct PedestrianTile(pub TilePos);
 
+/// While present, indicates the pedestrian is currently crossing an intersection and which
+/// *axis* their movement uses. This is used by vehicle admission to yield to pedestrians for
+/// conflicting turn maneuvers without blocking the whole intersection.
+#[derive(Component, Debug, Copy, Clone, Eq, PartialEq)]
+pub struct PedestrianCrossing {
+    pub intersection_id: crate::game::intersections::IntersectionId,
+    /// True if pedestrian movement is along North/South (crossing the E-W roadway),
+    /// false if along East/West (crossing the N-S roadway).
+    pub axis_ns: bool,
+}
+
 #[derive(Component, Debug, Clone)]
 pub struct Pedestrian {
     route: Vec<TilePos>,
@@ -545,6 +556,10 @@ fn move_walkers(
 
         let a = ped.route[ped.route_idx];
         *ped_tile = PedestrianTile(a);
+        // Remove crossing marker when outside intersection.
+        if !is_intersection_tile(&grid, a) {
+            commands.entity(e).remove::<PedestrianCrossing>();
+        }
 
         let seg_len = cfg.tile_size.max(0.001);
         let b = ped.route[ped.route_idx + 1];
@@ -635,6 +650,20 @@ fn move_walkers(
             tf.translation.x = world.x;
             tf.translation.y = world.y;
             continue;
+        }
+
+        // If we are about to enter an intersection tile, mark the crossing axis for other systems.
+        if is_intersection_tile(&grid, b)
+            && !is_intersection_tile(&grid, a)
+            && let Some(intersections) = intersections.as_deref()
+            && let Some(id) = intersections.intersection_id_at(b)
+        {
+            let dir = dir_between_adjacent(a, b);
+            let axis_ns = matches!(dir, RoadDir::North | RoadDir::South);
+            commands.entity(e).insert(PedestrianCrossing {
+                intersection_id: id,
+                axis_ns,
+            });
         }
 
         // Reset wait timer once we're moving.
