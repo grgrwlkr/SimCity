@@ -173,6 +173,11 @@ impl TrafficSpatialIndex {
     }
 
     #[inline]
+    pub fn tile_count(&self, tile_idx: usize) -> u32 {
+        self.counts.get(tile_idx).copied().unwrap_or(0)
+    }
+
+    #[inline]
     pub fn tile_min_progress_speed(&self, tile_idx: usize) -> Option<(f32, f32)> {
         let count = *self.counts.get(tile_idx)? as usize;
         if count == 0 {
@@ -190,6 +195,16 @@ impl TrafficSpatialIndex {
         }
         let start = *self.offsets.get(tile_idx)? as usize;
         self.entries.get(start).copied()
+    }
+
+    pub fn tile_entries(&self, tile_idx: usize) -> Option<&[VehicleTileEntry]> {
+        let count = *self.counts.get(tile_idx)? as usize;
+        if count == 0 {
+            return Some(&[]);
+        }
+        let start = *self.offsets.get(tile_idx)? as usize;
+        let end = start + count;
+        self.entries.get(start..end)
     }
 
     #[inline]

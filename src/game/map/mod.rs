@@ -2126,8 +2126,7 @@ mod tests {
         let cfg = PathfindingConfig::default();
         let mut cache = PathCache::default();
         let mut traffic = TrafficOccupancy::default();
-        traffic.per_tick_vehicles.resize(grid.len(), 0);
-        traffic.ema_heat.resize(grid.len(), 0.0);
+        traffic.ensure_len(grid.len());
         let intersections = IntersectionIndex::default();
 
         let mut ctx = PathfindingCtx {

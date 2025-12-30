@@ -3,7 +3,6 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
-use crate::game::camera::MainCamera;
 use crate::game::commands::GameCommand;
 use crate::game::ids::CitizenId;
 use crate::game::intersections::{
@@ -14,19 +13,22 @@ use crate::game::public_transport::{
     BusVehicle, PendingTransitTrips, PendingTrip, PublicTransportConfig, PublicTransportIndex,
 };
 use crate::game::roads::{RoadDir, RoadKind};
-use crate::game::services::ServiceVehicle;
+use crate::game::services::{ServiceVehicle, ServiceVehicleState};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
+use crate::game::telemetry::{VehicleAgg, VehicleAggSnapshot};
 use crate::game::transport::{
     PathCache, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph, adjacent_road_towards,
     find_road_path_cached,
 };
 use crate::game::trips::{TripFinished, TripMode, TripRequested};
 use crate::game::ui_state::{OverlayMode, UiState};
-use bevy::window::PrimaryWindow;
 
 mod traffic_spatial_index;
-use traffic_spatial_index::TrafficSpatialIndex;
+pub(crate) use traffic_spatial_index::TrafficSpatialIndex;
+
+mod parked_tile_index;
+pub(crate) use parked_tile_index::ParkedVehicleTileIndex;
 
 /// Vehicle entity – stores route and visual offset.
 #[derive(Component)]
@@ -109,9 +111,6 @@ pub struct CarOwner {
 
 /// Distance to detect traffic lights ahead (in tiles)
 const TRAFFIC_LIGHT_DETECTION_DISTANCE: f32 = 8.0;
-
-/// Safe distance between vehicles in queue (in tiles)
-const QUEUE_GAP: f32 = 0.3;
 
 /// Stop line offset relative to intersection (0.0 = tile boundary)
 const STOP_LINE_OFFSET: f32 = 0.15;
@@ -371,12 +370,64 @@ struct TripPassenger {
 /// **Semantics (punt C):**
 /// - `per_tick_vehicles[idx]`: number of vehicles currently occupying the road tile at the end of
 ///   the latest fixed sim tick (not "cumulative visits").
-/// - `ema_heat[idx]`: exponentially-smoothed view of `per_tick_vehicles` for visualization.
+/// - `heat(idx)`: exponentially-smoothed view of `per_tick_vehicles` for visualization.
 ///   This is what the Traffic overlay uses.
 #[derive(Resource, Default)]
 pub struct TrafficOccupancy {
     pub per_tick_vehicles: Vec<u16>,
-    pub ema_heat: Vec<f32>,
+    /// Indices touched in the *latest* occupancy build; used to clear `per_tick_vehicles`
+    /// without an O(grid) fill every tick.
+    touched: Vec<usize>,
+    /// Heat values stored in a scaled form to avoid an O(grid) decay every tick.
+    ///
+    /// The actual heat is `ema_scaled[i] * ema_global`.
+    ema_scaled: Vec<f32>,
+    /// Global decay multiplier applied to all heat values.
+    ema_global: f32,
+    /// Max over `ema_scaled` (monotonic between renormalizations), used to compute max heat in O(1).
+    max_scaled: f32,
+}
+
+impl TrafficOccupancy {
+    pub fn heat_idx(&self, idx: usize) -> f32 {
+        self.ema_scaled.get(idx).copied().unwrap_or(0.0) * self.ema_global
+    }
+
+    pub fn max_heat(&self) -> f32 {
+        self.max_scaled * self.ema_global
+    }
+
+    pub(crate) fn ensure_len(&mut self, len: usize) {
+        if self.per_tick_vehicles.len() != len {
+            self.per_tick_vehicles.clear();
+            self.per_tick_vehicles.resize(len, 0);
+            self.touched.clear();
+        }
+        if self.ema_scaled.len() != len {
+            self.ema_scaled.clear();
+            self.ema_scaled.resize(len, 0.0);
+            self.ema_global = 1.0;
+            self.max_scaled = 0.0;
+        }
+        if self.ema_global <= 0.0 || !self.ema_global.is_finite() {
+            self.ema_global = 1.0;
+        }
+        if !self.max_scaled.is_finite() {
+            self.max_scaled = 0.0;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_heat_for_test(&mut self, heat: Vec<f32>) {
+        self.ensure_len(heat.len());
+        self.ema_scaled = heat;
+        self.ema_global = 1.0;
+        self.max_scaled = self
+            .ema_scaled
+            .iter()
+            .copied()
+            .fold(0.0f32, |a, b| a.max(b));
+    }
 }
 
 /// Aggregated traffic metrics for UI/economy.
@@ -401,6 +452,48 @@ struct TrafficOverlayPool {
     grid_len: usize,
 }
 
+/// Cached per-tile road capacities and total road tile count.
+///
+/// This avoids scanning the whole map each fixed tick when updating `TrafficIndex`.
+#[derive(Resource, Default)]
+struct TrafficRoadCache {
+    grid_len: usize,
+    map_edit_version: u64,
+    capacity_per_tile: Vec<u16>, // 0 for non-road/non-driveable tiles
+    road_tiles: u32,
+}
+
+impl TrafficRoadCache {
+    fn ensure_built(&mut self, grid: &MapGrid, edit_v: Option<u64>) {
+        let len = grid.len();
+        let need_rebuild = self.grid_len != len
+            || self.capacity_per_tile.len() != len
+            || edit_v.is_some_and(|v| v != self.map_edit_version);
+        if !need_rebuild {
+            return;
+        }
+
+        self.grid_len = len;
+        self.map_edit_version = edit_v.unwrap_or(self.map_edit_version);
+        self.capacity_per_tile.clear();
+        self.capacity_per_tile.resize(len, 0);
+        self.road_tiles = 0;
+
+        for y in 0..grid.height {
+            for x in 0..grid.width {
+                let pos = TilePos { x, y };
+                let Some(idx) = grid.idx(pos) else { continue };
+                let Some(cell) = grid.get(pos) else { continue };
+                if cell.water || !cell.road.is_some() {
+                    continue;
+                }
+                self.road_tiles = self.road_tiles.saturating_add(1);
+                self.capacity_per_tile[idx] = cell.road.kind.capacity_per_lane_tile();
+            }
+        }
+    }
+}
+
 pub struct TrafficPlugin;
 
 impl Plugin for TrafficPlugin {
@@ -411,6 +504,9 @@ impl Plugin for TrafficPlugin {
             .init_resource::<TrafficOverlayPool>()
             .init_resource::<IntersectionReservations>()
             .init_resource::<TrafficSpatialIndex>()
+            .init_resource::<VehicleAggSnapshot>()
+            .init_resource::<ParkedVehicleTileIndex>()
+            .init_resource::<TrafficRoadCache>()
             .add_systems(
                 OnEnter(AppState::MainMenu),
                 (
@@ -431,8 +527,7 @@ impl Plugin for TrafficPlugin {
                 FixedUpdate,
                 (
                     update_vehicle_traffic_state,
-                    update_traffic_queues.after(update_vehicle_traffic_state),
-                    check_intersection_priority.after(update_traffic_queues),
+                    check_intersection_priority.after(update_vehicle_traffic_state),
                     spawn_trip_vehicles,
                     tick_lane_change_cooldowns,
                     tick_overtaking,
@@ -478,19 +573,22 @@ impl Plugin for TrafficPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                update_traffic_occupancy
+                (update_traffic_occupancy, update_parked_vehicle_positions)
+                    .chain()
                     .in_set(GameSet::PostSim)
                     .run_if(in_state(AppState::InGame)),
             )
             // Rendering
+            .add_systems(Update, render_traffic_overlay.in_set(GameSet::RenderSync))
+            // Keep parked visuals consistent when editing roads while paused.
             .add_systems(
                 Update,
-                (
-                    render_traffic_overlay,
-                    cull_vehicle_lod,
-                    update_parked_vehicle_positions,
-                )
-                    .in_set(GameSet::RenderSync),
+                update_parked_vehicle_positions
+                    .in_set(GameSet::RenderSync)
+                    .run_if(
+                        in_state(AppState::Paused)
+                            .and(resource_changed::<crate::game::map::MapEditVersion>),
+                    ),
             );
     }
 }
@@ -613,7 +711,10 @@ fn cleanup_traffic_entities(
 
 fn reset_traffic_aggregates(mut occ: ResMut<TrafficOccupancy>, mut idx: ResMut<TrafficIndex>) {
     occ.per_tick_vehicles.clear();
-    occ.ema_heat.clear();
+    occ.touched.clear();
+    occ.ema_scaled.clear();
+    occ.ema_global = 1.0;
+    occ.max_scaled = 0.0;
     *idx = TrafficIndex::default();
 }
 
@@ -705,7 +806,7 @@ fn spawn_trip_vehicles(
         // CarTour Variant B: if the citizen already has a parked car entity, re-use it.
         if msg.mode == TripMode::Car {
             let mut reused = false;
-            for (e, owner, mut v, mut tf) in p.q_parked_cars.iter_mut() {
+            for (e, owner, mut v, mut tf, mut sprite) in p.q_parked_cars.iter_mut() {
                 if owner.citizen != msg.citizen {
                     continue;
                 }
@@ -720,6 +821,10 @@ fn spawn_trip_vehicles(
                 tf.translation.x = world_pos.x;
                 tf.translation.y = world_pos.y;
                 tf.translation.z = 10.0;
+
+                // Restore "active vehicle" visuals (parked vehicles are smaller + translucent).
+                sprite.custom_size = Some(Vec2::splat(p.cfg.tile_size * 0.55));
+                sprite.color = Color::linear_rgb(0.95, 0.95, 0.95);
 
                 p.commands
                     .entity(e)
@@ -806,6 +911,7 @@ struct SpawnTripVehiclesParams<'w, 's> {
             &'static CarOwner,
             &'static mut Vehicle,
             &'static mut Transform,
+            &'static mut Sprite,
         ),
         With<Parked>,
     >,
@@ -828,7 +934,10 @@ fn clear_vehicles(
             }
             // C) Traffic: reset derived aggregates when regenerating map.
             occ.per_tick_vehicles.clear();
-            occ.ema_heat.clear();
+            occ.touched.clear();
+            occ.ema_scaled.clear();
+            occ.ema_global = 1.0;
+            occ.max_scaled = 0.0;
             *idx = TrafficIndex::default();
             reservations.by_intersection.clear();
         }
@@ -1231,14 +1340,14 @@ fn plan_lane_changes(
         >,
         Query<(Entity, &mut Vehicle), Without<Parked>>,
     )>,
+    mut reserved: Local<std::collections::HashMap<TilePos, Vec<f32>>>,
 ) {
     let idm = idm_params_world(&cfg, &traffic_cfg);
     let min_gap_progress = (idm.s0 / cfg.tile_size.max(0.1)).clamp(0.12, 0.45);
 
     // A small "reservation" map to avoid multiple vehicles committing into the same
     // target lane position range in a single tick.
-    let mut reserved: std::collections::HashMap<TilePos, Vec<f32>> =
-        std::collections::HashMap::new();
+    reserved.clear();
 
     // Collect desires first (so we can prioritize), then apply with a guardrail limit.
     #[derive(Debug)]
@@ -1779,6 +1888,15 @@ fn reservation_zones_for_maneuver(
     Some(ZONE_CENTER)
 }
 
+#[derive(Copy, Clone)]
+struct IntersectionReservationCandidate {
+    priority: u8,
+    dist_to_entry: f32,
+    vehicle: Entity,
+    zones: ConflictMask,
+    is_right_on_red: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn plan_intersection_reservations(
     time: Res<Time<Fixed>>,
@@ -1790,13 +1908,20 @@ fn plan_intersection_reservations(
     q_lights: Query<&crate::game::intersections::TrafficLight>,
     q_pedestrians: Query<&crate::game::pedestrians::PedestrianCrossing>,
     q_vehicles: Query<(Entity, &Vehicle, &VehicleTrafficState), Without<Parked>>,
+    mut lights_by_id: Local<
+        std::collections::HashMap<IntersectionId, crate::game::intersections::TrafficLight>,
+    >,
+    mut ped_axis_mask: Local<
+        std::collections::HashMap<crate::game::intersections::IntersectionId, u8>,
+    >,
+    mut candidates_by_intersection: Local<
+        std::collections::HashMap<IntersectionId, Vec<IntersectionReservationCandidate>>,
+    >,
 ) {
     let now = time.elapsed_secs_f64();
 
     // Build a small lookup of controllers by intersection id.
-    let mut lights_by_id =
-        std::collections::HashMap::<IntersectionId, crate::game::intersections::TrafficLight>::new(
-        );
+    lights_by_id.clear();
     for l in q_lights.iter() {
         lights_by_id.insert(l.intersection_id, l.clone());
     }
@@ -1804,8 +1929,7 @@ fn plan_intersection_reservations(
     // Pedestrian crossings inside intersections (axis-specific):
     // - axis_ns=true: pedestrian moves N/S (crossing E-W roadway)
     // - axis_ns=false: pedestrian moves E/W (crossing N-S roadway)
-    let mut ped_axis_mask =
-        std::collections::HashMap::<crate::game::intersections::IntersectionId, u8>::new();
+    ped_axis_mask.clear();
     for p in q_pedestrians.iter() {
         let m = ped_axis_mask.entry(p.intersection_id).or_insert(0);
         if p.axis_ns {
@@ -1813,6 +1937,11 @@ fn plan_intersection_reservations(
         } else {
             *m |= 1 << 1;
         }
+    }
+
+    // Reuse candidate buffers across ticks.
+    for v in candidates_by_intersection.values_mut() {
+        v.clear();
     }
 
     // Ensure any vehicle currently inside an intersection cluster owns a reservation (safety net).
@@ -1839,17 +1968,6 @@ fn plan_intersection_reservations(
 
     // Greedy admission: allow multiple approaching vehicles per intersection as long as their
     // conflict zones don't overlap (coarse safety).
-    #[derive(Copy, Clone)]
-    struct Best {
-        priority: u8,
-        dist_to_entry: f32,
-        vehicle: Entity,
-        zones: ConflictMask,
-        is_right_on_red: bool,
-    }
-    let mut candidates_by_intersection =
-        std::collections::HashMap::<IntersectionId, Vec<Best>>::new();
-
     for (e, v, state) in q_vehicles.iter() {
         if v.route.len() < 2 {
             continue;
@@ -2003,7 +2121,7 @@ fn plan_intersection_reservations(
         }
 
         let dist = (1.0 - v.progress).clamp(0.0, 1.0);
-        let cand = Best {
+        let cand = IntersectionReservationCandidate {
             priority,
             dist_to_entry: dist,
             vehicle: e,
@@ -2015,7 +2133,10 @@ fn plan_intersection_reservations(
     }
 
     const MAX_NEW_RES_PER_INTERSECTION_PER_TICK: usize = 2;
-    for (id, mut cands) in candidates_by_intersection {
+    for (&id, cands) in candidates_by_intersection.iter_mut() {
+        if cands.is_empty() {
+            continue;
+        }
         // sort by priority, then distance, then stable entity id
         cands.sort_by(|a, b| {
             b.priority
@@ -2025,7 +2146,7 @@ fn plan_intersection_reservations(
         });
 
         let mut added = 0usize;
-        for cand in cands {
+        for cand in cands.iter().copied() {
             if added >= MAX_NEW_RES_PER_INTERSECTION_PER_TICK {
                 break;
             }
@@ -2151,8 +2272,12 @@ fn move_vehicles(
     reservations: Res<IntersectionReservations>,
     q_pedestrians: Query<&crate::game::pedestrians::PedestrianCrossing>,
     spatial: Res<TrafficSpatialIndex>,
+    mut vehicle_agg: ResMut<VehicleAggSnapshot>,
     mut commands: Commands,
     mut finished: bevy::ecs::message::MessageWriter<TripFinished>,
+    mut ped_axis_mask: Local<
+        std::collections::HashMap<crate::game::intersections::IntersectionId, u8>,
+    >,
     mut vehicles: Query<
         (
             Entity,
@@ -2171,10 +2296,12 @@ fn move_vehicles(
     let dt = time.delta_secs();
     let idm = idm_params_world(&cfg, &traffic_cfg);
 
+    // Update telemetry counters for active (non-parked) vehicles while we already iterate them.
+    vehicle_agg.active = VehicleAgg::default();
+
     // Snapshot pedestrian crossings by intersection id (axis-specific).
     // bit0 = axis_ns, bit1 = axis_ew
-    let mut ped_axis_mask =
-        std::collections::HashMap::<crate::game::intersections::IntersectionId, u8>::new();
+    ped_axis_mask.clear();
     for p in q_pedestrians.iter() {
         let m = ped_axis_mask.entry(p.intersection_id).or_insert(0);
         if p.axis_ns {
@@ -2187,6 +2314,57 @@ fn move_vehicles(
     for (entity, mut v, mut tf, state, ror, passenger, car_owner, service_vehicle, bus_vehicle) in
         vehicles.iter_mut()
     {
+        // --- Telemetry (cheap counters).
+        {
+            let a = &mut vehicle_agg.active;
+            a.total = a.total.saturating_add(1);
+            if v.route.is_empty() {
+                a.no_route = a.no_route.saturating_add(1);
+            }
+            if v.speed < 0.1 {
+                a.zero_speed = a.zero_speed.saturating_add(1);
+            }
+            match state {
+                VehicleTrafficState::FreeFlow => a.free_flow = a.free_flow.saturating_add(1),
+                VehicleTrafficState::Approaching { .. } => {
+                    a.approaching = a.approaching.saturating_add(1)
+                }
+                VehicleTrafficState::Stopped { .. } => a.stopped = a.stopped.saturating_add(1),
+                VehicleTrafficState::WaitingForGreen { .. } => {
+                    a.waiting = a.waiting.saturating_add(1)
+                }
+                VehicleTrafficState::CrossingIntersection { .. } => {
+                    a.crossing = a.crossing.saturating_add(1)
+                }
+                VehicleTrafficState::Accelerating => {
+                    a.accelerating = a.accelerating.saturating_add(1)
+                }
+            }
+            if let Some(sv) = service_vehicle {
+                match sv.state {
+                    ServiceVehicleState::AtStation => {
+                        a.service_at_station = a.service_at_station.saturating_add(1)
+                    }
+                    ServiceVehicleState::EnRoute => {
+                        a.service_en_route = a.service_en_route.saturating_add(1)
+                    }
+                    ServiceVehicleState::OnScene => {
+                        a.service_on_scene = a.service_on_scene.saturating_add(1)
+                    }
+                    ServiceVehicleState::Returning => {
+                        a.service_returning = a.service_returning.saturating_add(1);
+                        if v.route.is_empty() {
+                            a.service_returning_no_route =
+                                a.service_returning_no_route.saturating_add(1);
+                        }
+                        if v.speed < 0.1 {
+                            a.service_returning_zero_speed =
+                                a.service_returning_zero_speed.saturating_add(1);
+                        }
+                    }
+                }
+            }
+        }
         if v.route.is_empty() {
             // Arrived – despawn trip vehicles, keep service vehicles (idle).
             if service_vehicle.is_none() && bus_vehicle.is_none() {
@@ -2479,10 +2657,23 @@ fn update_vehicle_traffic_state(
     q_lights: Query<&crate::game::intersections::TrafficLight>,
     q_priorities: Query<&crate::game::intersections::IntersectionPriorityMarker>,
     mut q_vehicles: Query<(Entity, &Vehicle, &mut VehicleTrafficState)>,
+    mut light_by_key: Local<
+        std::collections::HashMap<
+            crate::game::intersections::IntersectionKey,
+            crate::game::intersections::TrafficLight,
+        >,
+    >,
+    mut stop_sign_tiles: Local<std::collections::HashSet<TilePos>>,
 ) {
+    // Build light index once per tick (O(lights)) instead of scanning all lights per vehicle.
+    light_by_key.clear();
+    for l in q_lights.iter() {
+        light_by_key.insert(l.intersection_key, l.clone());
+    }
+
     // We only need to distinguish StopSign-driven stops from light-driven stops.
     // If a light gets removed while vehicles are stopped at it, we must release them.
-    let mut stop_sign_tiles = std::collections::HashSet::<TilePos>::new();
+    stop_sign_tiles.clear();
     for m in q_priorities.iter() {
         if m.priority == IntersectionPriority::StopSign {
             stop_sign_tiles.insert(m.pos);
@@ -2531,10 +2722,7 @@ fn update_vehicle_traffic_state(
         }
 
         // We only enforce "red/green" behavior if there is a TrafficLight entity.
-        let Some(light) = q_lights
-            .iter()
-            .find(|l| l.intersection_key == intersection_key)
-        else {
+        let Some(light) = light_by_key.get(&intersection_key) else {
             *state = VehicleTrafficState::FreeFlow;
             continue;
         };
@@ -2731,78 +2919,6 @@ fn compute_exit_direction(
     dir_between_adjacent(last_intersection, exit_tile)
 }
 
-/// Update traffic queues before traffic lights
-fn update_traffic_queues(mut q_vehicles: Query<(Entity, &Vehicle, &mut VehicleTrafficState)>) {
-    use std::collections::HashMap;
-
-    // Group vehicles by traffic light
-    let mut queues: HashMap<TilePos, Vec<(Entity, f32)>> = HashMap::new();
-
-    for (entity, vehicle, state) in q_vehicles.iter() {
-        let stop_tile = match state {
-            VehicleTrafficState::Stopped { stop_tile, .. }
-            | VehicleTrafficState::WaitingForGreen { stop_tile, .. }
-            | VehicleTrafficState::Approaching { stop_tile, .. } => *stop_tile,
-            _ => continue,
-        };
-
-        // Calculate distance to light
-        let dist = compute_distance_to_light(&vehicle.route, vehicle.progress, stop_tile);
-        queues.entry(stop_tile).or_default().push((entity, dist));
-    }
-
-    // Sort by distance and assign queue positions
-    // Use QUEUE_GAP to ensure vehicles maintain safe distance
-    for (_light_pos, mut queue) in queues {
-        queue.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-
-        for (i, (entity, dist)) in queue.iter().enumerate() {
-            if let Ok((_, _, mut state)) = q_vehicles.get_mut(*entity)
-                && let VehicleTrafficState::Stopped {
-                    intersection,
-                    stop_tile,
-                    ..
-                } = &mut *state
-            {
-                // Update queue position
-                // QUEUE_GAP is used conceptually to space vehicles in the queue
-                // Vehicles are sorted by distance, and QUEUE_GAP represents the ideal spacing between vehicles
-                // Check if vehicle needs position update based on QUEUE_GAP spacing
-                let expected_distance = i as f32 * QUEUE_GAP;
-                let distance_error = (dist - expected_distance).abs();
-
-                // Only update if significantly out of position
-                if distance_error > QUEUE_GAP * 0.5 {
-                    *state = VehicleTrafficState::Stopped {
-                        intersection: *intersection,
-                        stop_tile: *stop_tile,
-                        queue_position: i as u8,
-                    };
-                }
-            }
-        }
-    }
-}
-
-/// Compute distance to traffic light along route
-fn compute_distance_to_light(route: &[TilePos], progress: f32, light_pos: TilePos) -> f32 {
-    if let Some(first) = route.first()
-        && *first == light_pos
-    {
-        return 0.0;
-    }
-    let mut distance = 1.0 - progress;
-
-    for tile in route.iter().skip(1) {
-        if *tile == light_pos {
-            return distance;
-        }
-        distance += 1.0;
-    }
-
-    distance
-}
-
 /// Check intersection priority rules (yield/stop signs)
 fn check_intersection_priority(
     grid: Res<MapGrid>,
@@ -2966,20 +3082,21 @@ fn update_traffic_occupancy(
     grid: Res<MapGrid>,
     mut occ: ResMut<TrafficOccupancy>,
     mut idx: ResMut<TrafficIndex>,
+    mut roads: ResMut<TrafficRoadCache>,
     q: Query<&Vehicle, Without<Parked>>,
     cfg: Res<TrafficConfig>,
+    edit_v: Option<Res<crate::game::map::MapEditVersion>>,
 ) {
-    // Ensure vectors match grid size.
     let len = grid.len();
-    if occ.per_tick_vehicles.len() != len {
-        occ.per_tick_vehicles.clear();
-        occ.per_tick_vehicles.resize(len, 0);
-    } else {
-        occ.per_tick_vehicles.fill(0);
-    }
-    if occ.ema_heat.len() != len {
-        occ.ema_heat.clear();
-        occ.ema_heat.resize(len, 0.0);
+    occ.ensure_len(len);
+    roads.ensure_built(&grid, edit_v.as_deref().map(|v| v.0));
+
+    // Clear last tick's counts without an O(grid) fill.
+    let mut touched = std::mem::take(&mut occ.touched);
+    for i in touched.drain(..) {
+        if i < occ.per_tick_vehicles.len() {
+            occ.per_tick_vehicles[i] = 0;
+        }
     }
 
     // Count occupancy at end-of-tick. Skip parked vehicles - they don't block traffic.
@@ -2989,51 +3106,81 @@ fn update_traffic_occupancy(
         {
             // saturate at u16::MAX; capacity is small in MVP anyway.
             occ.per_tick_vehicles[idx] = occ.per_tick_vehicles[idx].saturating_add(1);
+            if occ.per_tick_vehicles[idx] == 1 {
+                touched.push(idx);
+            }
         }
     }
 
-    // Update EMA heatmap (for overlay) and compute TrafficIndex.
-    let mut road_tiles = 0u32;
+    // Compute TrafficIndex exactly from touched road tiles (untouched road tiles have 0 congestion).
     let mut vehicles_on_roads = 0u32;
     let mut sum_cong = 0.0f32;
     let mut max_cong = 0.0f32;
 
-    let decay = cfg.heat_ema_decay.clamp(0.0, 0.999);
-
-    for y in 0..grid.height {
-        for x in 0..grid.width {
-            let pos = TilePos { x, y };
-            let Some(ti) = grid.idx(pos) else { continue };
-            let Some(cell) = grid.get(pos) else { continue };
-            if cell.water || !cell.road.is_some() {
-                continue;
-            }
-            road_tiles += 1;
-
-            let c = occ.per_tick_vehicles[ti] as f32;
-            vehicles_on_roads = vehicles_on_roads.saturating_add(occ.per_tick_vehicles[ti] as u32);
-
-            let cap = (cell.road.kind.capacity_per_lane_tile() as f32).max(1.0);
-            let cong = (c / cap).clamp(0.0, 1.0);
-            sum_cong += cong;
-            if cong > max_cong {
-                max_cong = cong;
-            }
-
-            // EMA: keep a smooth overlay.
-            occ.ema_heat[ti] = occ.ema_heat[ti] * decay + c * (1.0 - decay);
+    for &ti in touched.iter() {
+        let cap = roads.capacity_per_tile.get(ti).copied().unwrap_or(0) as f32;
+        if cap <= 0.0 {
+            continue;
+        }
+        let c_u16 = occ.per_tick_vehicles[ti];
+        vehicles_on_roads = vehicles_on_roads.saturating_add(c_u16 as u32);
+        let cong = ((c_u16 as f32) / cap).clamp(0.0, 1.0);
+        sum_cong += cong;
+        if cong > max_cong {
+            max_cong = cong;
         }
     }
 
-    idx.road_tiles = road_tiles;
+    idx.road_tiles = roads.road_tiles;
     idx.vehicles_on_roads = vehicles_on_roads;
-    if road_tiles > 0 {
-        idx.avg_congestion = sum_cong / (road_tiles as f32);
+    if roads.road_tiles > 0 {
+        idx.avg_congestion = sum_cong / (roads.road_tiles as f32);
         idx.max_congestion = max_cong;
     } else {
         idx.avg_congestion = 0.0;
         idx.max_congestion = 0.0;
     }
+
+    // Update scaled EMA heatmap in O(touched) time.
+    let decay = cfg.heat_ema_decay.clamp(0.0, 0.999);
+    if decay <= 0.0 {
+        // Degenerate mode: no smoothing, heat == current occupancy.
+        occ.ema_scaled.fill(0.0);
+        occ.max_scaled = 0.0;
+        for &ti in touched.iter() {
+            let v = occ.per_tick_vehicles[ti] as f32;
+            occ.ema_scaled[ti] = v;
+            if v > occ.max_scaled {
+                occ.max_scaled = v;
+            }
+        }
+        occ.ema_global = 1.0;
+    } else {
+        occ.ema_global *= decay;
+        if occ.ema_global < 1e-20 {
+            // Renormalize periodically to avoid float overflow in `ema_scaled`.
+            let g = occ.ema_global;
+            for v in occ.ema_scaled.iter_mut() {
+                *v *= g;
+            }
+            occ.max_scaled *= g;
+            occ.ema_global = 1.0;
+        }
+
+        let inv_g = 1.0 / occ.ema_global.max(1e-30);
+        let k = (1.0 - decay) * inv_g;
+        for &ti in touched.iter() {
+            let c = occ.per_tick_vehicles[ti] as f32;
+            let new = occ.ema_scaled[ti] + c * k;
+            occ.ema_scaled[ti] = new;
+            if new > occ.max_scaled {
+                occ.max_scaled = new;
+            }
+        }
+    }
+
+    // Persist touched list for next tick clearing.
+    occ.touched = touched;
 }
 
 /// Render traffic overlay on road tiles.
@@ -3057,16 +3204,11 @@ fn render_traffic_overlay(
         return;
     }
 
-    if occ.ema_heat.len() != grid.len() {
+    if occ.per_tick_vehicles.len() != grid.len() {
         return;
     }
 
-    let max_heat = occ
-        .ema_heat
-        .iter()
-        .copied()
-        .fold(0.0f32, |a, b| a.max(b))
-        .max(0.001);
+    let max_heat = occ.max_heat().max(0.001);
 
     let origin = map_origin(&cfg);
 
@@ -3110,76 +3252,38 @@ fn render_traffic_overlay(
         let Ok(mut sprite) = q_sprites.get_mut(e) else {
             continue;
         };
-        let heat = (occ.ema_heat[idx] / max_heat).clamp(0.0, 1.0);
+        let heat = (occ.heat_idx(idx) / max_heat).clamp(0.0, 1.0);
         sprite.color = Color::linear_rgb(heat, 1.0 - heat, 0.0);
-    }
-}
-
-/// Simple vehicle LOD: hide vehicles outside the camera viewport.
-fn cull_vehicle_lod(
-    cfg: Res<MapConfig>,
-    q_window: Query<&Window, With<PrimaryWindow>>,
-    q_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
-    mut q_vehicles: Query<(&Transform, &mut Visibility), With<Vehicle>>,
-) {
-    let Ok(window) = q_window.single() else {
-        return;
-    };
-    let Ok((camera, cam_gt)) = q_camera.single() else {
-        return;
-    };
-
-    let viewport = camera
-        .logical_viewport_size()
-        .unwrap_or(Vec2::new(window.width(), window.height()))
-        .max(Vec2::ONE);
-    let corners = [
-        Vec2::new(0.0, 0.0),
-        Vec2::new(viewport.x, 0.0),
-        Vec2::new(0.0, viewport.y),
-        Vec2::new(viewport.x, viewport.y),
-    ];
-
-    let mut min = Vec2::splat(f32::INFINITY);
-    let mut max = Vec2::splat(f32::NEG_INFINITY);
-    for c in corners {
-        let Ok(w) = camera.viewport_to_world_2d(cam_gt, c) else {
-            // If we can't compute bounds, keep everything visible.
-            for (_, mut vis) in q_vehicles.iter_mut() {
-                *vis = Visibility::Visible;
-            }
-            return;
-        };
-        min = min.min(w);
-        max = max.max(w);
-    }
-
-    let margin = cfg.tile_size * 4.0;
-    let min = min - Vec2::splat(margin);
-    let max = max + Vec2::splat(margin);
-
-    for (tf, mut vis) in q_vehicles.iter_mut() {
-        let p = tf.translation.truncate();
-        let inside = p.x >= min.x && p.x <= max.x && p.y >= min.y && p.y <= max.y;
-        *vis = if inside {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        };
     }
 }
 
 /// Update visual positions of parked vehicles.
 /// Parked vehicles are offset to the side of the road so they don't visually block traffic.
+#[allow(clippy::type_complexity)]
 fn update_parked_vehicle_positions(
     cfg: Res<MapConfig>,
     grid: Res<MapGrid>,
-    mut q_parked: Query<(&Vehicle, &Parked, &mut Transform, &mut Sprite)>,
+    mut vehicle_agg: ResMut<VehicleAggSnapshot>,
+    mut parked_index: ResMut<ParkedVehicleTileIndex>,
+    mut q_parked: Query<(
+        &Vehicle,
+        &VehicleTrafficState,
+        &Parked,
+        Option<&ServiceVehicle>,
+        &mut Transform,
+        &mut Sprite,
+    )>,
 ) {
-    for (vehicle, parked, mut tf, mut sprite) in q_parked.iter_mut() {
+    vehicle_agg.parked = VehicleAgg::default();
+    parked_index.begin_frame(grid.len());
+
+    for (vehicle, traffic_state, parked, service, mut tf, mut sprite) in q_parked.iter_mut() {
         let Some(tile) = vehicle.route.first().copied() else {
             continue;
         };
+        if let Some(tile_idx) = grid.idx(tile) {
+            parked_index.bump(tile_idx);
+        }
         let Some(cell) = grid.get(tile) else {
             continue;
         };
@@ -3215,6 +3319,60 @@ fn update_parked_vehicle_positions(
 
         tf.translation.x = base_world.x + offset.x;
         tf.translation.y = base_world.y + offset.y;
+
+        // --- Telemetry (parked vehicle counters).
+        {
+            let a = &mut vehicle_agg.parked;
+            a.total = a.total.saturating_add(1);
+            a.parked = a.parked.saturating_add(1);
+            if vehicle.route.is_empty() {
+                a.no_route = a.no_route.saturating_add(1);
+            }
+            if vehicle.speed < 0.1 {
+                a.zero_speed = a.zero_speed.saturating_add(1);
+            }
+            match traffic_state {
+                VehicleTrafficState::FreeFlow => a.free_flow = a.free_flow.saturating_add(1),
+                VehicleTrafficState::Approaching { .. } => {
+                    a.approaching = a.approaching.saturating_add(1)
+                }
+                VehicleTrafficState::Stopped { .. } => a.stopped = a.stopped.saturating_add(1),
+                VehicleTrafficState::WaitingForGreen { .. } => {
+                    a.waiting = a.waiting.saturating_add(1)
+                }
+                VehicleTrafficState::CrossingIntersection { .. } => {
+                    a.crossing = a.crossing.saturating_add(1)
+                }
+                VehicleTrafficState::Accelerating => {
+                    a.accelerating = a.accelerating.saturating_add(1)
+                }
+            }
+            if let Some(sv) = service {
+                match sv.state {
+                    ServiceVehicleState::AtStation => {
+                        a.service_at_station = a.service_at_station.saturating_add(1)
+                    }
+                    ServiceVehicleState::EnRoute => {
+                        a.service_en_route = a.service_en_route.saturating_add(1)
+                    }
+                    ServiceVehicleState::OnScene => {
+                        a.service_on_scene = a.service_on_scene.saturating_add(1)
+                    }
+                    ServiceVehicleState::Returning => {
+                        a.service_returning = a.service_returning.saturating_add(1);
+                        a.service_returning_parked = a.service_returning_parked.saturating_add(1);
+                        if vehicle.route.is_empty() {
+                            a.service_returning_no_route =
+                                a.service_returning_no_route.saturating_add(1);
+                        }
+                        if vehicle.speed < 0.1 {
+                            a.service_returning_zero_speed =
+                                a.service_returning_zero_speed.saturating_add(1);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -3275,6 +3433,8 @@ mod tests {
             .insert_resource(IntersectionIndex::default())
             .insert_resource(IntersectionReservations::default())
             .insert_resource(TrafficSpatialIndex::default())
+            .insert_resource(VehicleAggSnapshot::default())
+            .insert_resource(ParkedVehicleTileIndex::default())
             .insert_resource(FinishCount::default())
             .add_systems(
                 Update,
@@ -3688,8 +3848,7 @@ mod tests {
         rebuild_road_graph_inner(&grid, &gv, &mut graph);
 
         let mut occ = TrafficOccupancy::default();
-        occ.per_tick_vehicles.resize(grid.len(), 0);
-        occ.ema_heat.resize(grid.len(), 0.0);
+        occ.ensure_len(grid.len());
 
         let cfg = PathfindingConfig {
             enable_hierarchical: false,
@@ -4341,6 +4500,8 @@ mod tests {
             .insert_resource(TrafficOccupancy::default())
             .insert_resource(IntersectionReservations::default())
             .insert_resource(TrafficSpatialIndex::default())
+            .insert_resource(VehicleAggSnapshot::default())
+            .insert_resource(ParkedVehicleTileIndex::default())
             .add_systems(Update, (build_traffic_spatial_index, move_vehicles).chain());
 
         let approach = TilePos { x: 1, y: 0 };
@@ -4798,6 +4959,8 @@ mod tests {
             .insert_resource(TrafficConfig::default())
             .insert_resource(IntersectionReservations::default())
             .insert_resource(TrafficSpatialIndex::default())
+            .insert_resource(VehicleAggSnapshot::default())
+            .insert_resource(ParkedVehicleTileIndex::default())
             .insert_resource({
                 let intersection_tile = TilePos { x: 1, y: 1 };
                 let id = IntersectionId(0);
@@ -5185,6 +5348,8 @@ mod tests {
             .insert_resource(IntersectionIndex::default())
             .insert_resource(IntersectionReservations::default())
             .insert_resource(TrafficSpatialIndex::default())
+            .insert_resource(VehicleAggSnapshot::default())
+            .insert_resource(ParkedVehicleTileIndex::default())
             .insert_resource(FinishCount::default())
             .add_systems(
                 Update,

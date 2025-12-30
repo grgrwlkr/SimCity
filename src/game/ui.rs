@@ -22,12 +22,14 @@ use crate::game::map::{
 };
 use crate::game::roads::RoadKind;
 use crate::game::scenarios::{ScenarioCatalog, ScenarioProgress, ScenarioSelection};
+use crate::game::services::ServiceVehicle;
 use crate::game::services::{ServiceCoverageIndex, ServiceStation};
-use crate::game::services::{ServiceVehicle, ServiceVehicleState};
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
+use crate::game::telemetry::{VehicleAgg, VehicleAggSnapshot};
 use crate::game::traffic::{Parked, TrafficIndex, TrafficOccupancy, Vehicle, VehicleTrafficState};
+use crate::game::traffic::{ParkedVehicleTileIndex, TrafficSpatialIndex};
 use crate::game::ui_settings::UiSettings;
 use crate::game::ui_state::{OverlayMode, SimSpeed, ToolMode, UiState};
 
@@ -220,29 +222,6 @@ struct DebugTelemetrySample {
     demand_i: f32,
     active_emergencies: u32,
     vehicles: VehicleAgg,
-}
-
-#[derive(Debug, Clone, Default, serde::Serialize)]
-struct VehicleAgg {
-    total: u32,
-    parked: u32,
-    no_route: u32,
-    zero_speed: u32,
-
-    free_flow: u32,
-    approaching: u32,
-    stopped: u32,
-    waiting: u32,
-    crossing: u32,
-    accelerating: u32,
-
-    service_at_station: u32,
-    service_en_route: u32,
-    service_on_scene: u32,
-    service_returning: u32,
-    service_returning_no_route: u32,
-    service_returning_parked: u32,
-    service_returning_zero_speed: u32,
 }
 
 #[derive(SystemParam)]
@@ -482,12 +461,7 @@ fn collect_debug_telemetry(
     day_night: Option<Res<DayNightCycle>>,
     cfg: Res<DebugDumpUiState>,
     mut telemetry: ResMut<DebugTelemetry>,
-    q_vehicles: Query<(
-        &Vehicle,
-        &VehicleTrafficState,
-        Option<&Parked>,
-        Option<&ServiceVehicle>,
-    )>,
+    vehicle_agg: Option<Res<VehicleAggSnapshot>>,
 ) {
     if !cfg.enabled {
         return;
@@ -529,48 +503,11 @@ fn collect_debug_telemetry(
 
     let time_of_day = day_night.as_deref().map(|c| c.time_of_day);
 
-    let mut vehicles = VehicleAgg::default();
-    for (vehicle, traffic_state, parked_comp, service) in q_vehicles.iter() {
-        vehicles.total += 1;
-        if parked_comp.is_some() {
-            vehicles.parked += 1;
-        }
-        if vehicle.route.is_empty() {
-            vehicles.no_route += 1;
-        }
-        if vehicle.speed < 0.1 {
-            vehicles.zero_speed += 1;
-        }
-
-        match traffic_state {
-            VehicleTrafficState::FreeFlow => vehicles.free_flow += 1,
-            VehicleTrafficState::Approaching { .. } => vehicles.approaching += 1,
-            VehicleTrafficState::Stopped { .. } => vehicles.stopped += 1,
-            VehicleTrafficState::WaitingForGreen { .. } => vehicles.waiting += 1,
-            VehicleTrafficState::CrossingIntersection { .. } => vehicles.crossing += 1,
-            VehicleTrafficState::Accelerating => vehicles.accelerating += 1,
-        }
-
-        if let Some(sv) = service {
-            match sv.state {
-                ServiceVehicleState::AtStation => vehicles.service_at_station += 1,
-                ServiceVehicleState::EnRoute => vehicles.service_en_route += 1,
-                ServiceVehicleState::OnScene => vehicles.service_on_scene += 1,
-                ServiceVehicleState::Returning => {
-                    vehicles.service_returning += 1;
-                    if vehicle.route.is_empty() {
-                        vehicles.service_returning_no_route += 1;
-                    }
-                    if parked_comp.is_some() {
-                        vehicles.service_returning_parked += 1;
-                    }
-                    if vehicle.speed < 0.1 {
-                        vehicles.service_returning_zero_speed += 1;
-                    }
-                }
-            }
-        }
-    }
+    // Vehicle stats: use snapshot built by traffic systems (no full-world scan here).
+    let vehicles = vehicle_agg
+        .as_deref()
+        .map(|s| s.combined())
+        .unwrap_or_default();
 
     let t_real_s = telemetry.t_real_s;
     telemetry.samples.push_back(DebugTelemetrySample {
@@ -1128,15 +1065,26 @@ fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams) {
                             }
 
                             // Vehicles on tile (by current route head).
-                            let mut vehicles = 0usize;
+                            let tile_idx = p.grid.idx(tile);
+                            let active_on_tile = tile_idx
+                                .and_then(|i| p.spatial.as_deref().map(|s| s.tile_count(i)))
+                                .unwrap_or(0);
+                            let parked_on_tile = tile_idx
+                                .and_then(|i| p.parked_index.as_deref().map(|s| s.count(i)))
+                                .unwrap_or(0);
+                            let vehicles = (active_on_tile + parked_on_tile) as usize;
+
+                            // Sample from active vehicles only (O(1) lookup).
                             let mut sample: Option<(usize, f32)> = None; // (route_len, progress)
-                            for (v, _traffic_state, _parked, _service) in p.q_vehicles.iter() {
-                                if v.route.first() == Some(&tile) {
-                                    vehicles += 1;
-                                    if sample.is_none() {
-                                        sample = Some((v.route.len(), v.progress));
-                                    }
-                                }
+                            if let (Some(i), Some(spatial)) = (tile_idx, p.spatial.as_deref())
+                                && let Some(e) = spatial.tile_first(i)
+                            {
+                                let route_len = p
+                                    .q_vehicle_by_entity
+                                    .get(e.entity)
+                                    .map(|v| v.route.len())
+                                    .unwrap_or(0);
+                                sample = Some((route_len, e.progress));
                             }
 
                             ui.separator();
@@ -1191,88 +1139,41 @@ fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams) {
             egui::CollapsingHeader::new("🚗 Vehicle Debug")
                 .default_open(true)
                 .show(ui, |ui| {
-                    // Count vehicles by state
-                    let mut total = 0;
-                    let mut parked = 0;
-                    let mut free_flow = 0;
-                    let mut approaching = 0;
-                    let mut stopped = 0;
-                    let mut waiting = 0;
                     let braking = 0;
-                    let mut crossing = 0;
-                    let mut accelerating = 0;
-                    let mut no_route = 0;
-                    let mut zero_speed = 0;
-                    let mut service_at_station = 0;
-                    let mut service_en_route = 0;
-                    let mut service_on_scene = 0;
-                    let mut service_returning = 0;
-                    let mut service_returning_no_route = 0;
-                    let mut service_returning_parked = 0;
-                    let mut service_returning_zero_spd = 0;
+                    let agg = p
+                        .vehicle_agg
+                        .as_deref()
+                        .map(|s| s.combined())
+                        .unwrap_or_default();
 
-                    for (vehicle, traffic_state, parked_comp, service) in p.q_vehicles.iter() {
-                        total += 1;
-                        if parked_comp.is_some() {
-                            parked += 1;
-                        }
-                        if vehicle.route.is_empty() {
-                            no_route += 1;
-                        }
-                        if vehicle.speed < 0.1 {
-                            zero_speed += 1;
-                        }
-                        match traffic_state {
-                            VehicleTrafficState::FreeFlow => free_flow += 1,
-                            VehicleTrafficState::Approaching { .. } => approaching += 1,
-                            VehicleTrafficState::Stopped { .. } => stopped += 1,
-                            VehicleTrafficState::WaitingForGreen { .. } => waiting += 1,
-                            VehicleTrafficState::CrossingIntersection { .. } => crossing += 1,
-                            VehicleTrafficState::Accelerating => accelerating += 1,
-                        }
-                        if let Some(sv) = service {
-                            match sv.state {
-                                ServiceVehicleState::AtStation => service_at_station += 1,
-                                ServiceVehicleState::EnRoute => service_en_route += 1,
-                                ServiceVehicleState::OnScene => service_on_scene += 1,
-                                ServiceVehicleState::Returning => {
-                                    service_returning += 1;
-                                    if vehicle.route.is_empty() {
-                                        service_returning_no_route += 1;
-                                    }
-                                    if parked_comp.is_some() {
-                                        service_returning_parked += 1;
-                                    }
-                                    if vehicle.speed < 0.1 {
-                                        service_returning_zero_spd += 1;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    ui.label(format!("Total: {} (no_route: {})", total, no_route));
-                    ui.label(format!("  Parked: {}, ZeroSpd: {}", parked, zero_speed));
-                    ui.label(format!("  FreeFlow: {}", free_flow));
-                    ui.label(format!("  Approach: {}, Cross: {}", approaching, crossing));
-                    ui.label(format!("  Stopped: {}, Wait: {}", stopped, waiting));
-                    ui.label(format!("  Brake: {}, Accel: {}", braking, accelerating));
+                    ui.label(format!("Total: {} (no_route: {})", agg.total, agg.no_route));
+                    ui.label(format!(
+                        "  Parked: {}, ZeroSpd: {}",
+                        agg.parked, agg.zero_speed
+                    ));
+                    ui.label(format!("  FreeFlow: {}", agg.free_flow));
+                    ui.label(format!(
+                        "  Approach: {}, Cross: {}",
+                        agg.approaching, agg.crossing
+                    ));
+                    ui.label(format!("  Stopped: {}, Wait: {}", agg.stopped, agg.waiting));
+                    ui.label(format!("  Brake: {}, Accel: {}", braking, agg.accelerating));
                     ui.separator();
                     ui.label("Service vehicles:");
                     ui.label(format!(
                         "  Station: {}, Route: {}",
-                        service_at_station, service_en_route
+                        agg.service_at_station, agg.service_en_route
                     ));
                     ui.label(format!(
                         "  OnScene: {}, Return: {}",
-                        service_on_scene, service_returning
+                        agg.service_on_scene, agg.service_returning
                     ));
-                    if service_returning > 0 {
+                    if agg.service_returning > 0 {
                         ui.label(format!(
                             "    Ret details: noRoute:{}, parked:{}, zeroSpd:{}",
-                            service_returning_no_route,
-                            service_returning_parked,
-                            service_returning_zero_spd
+                            agg.service_returning_no_route,
+                            agg.service_returning_parked,
+                            agg.service_returning_zero_speed
                         ));
                     }
 
@@ -1290,31 +1191,40 @@ fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams) {
                         }
 
                         // Vehicles on this tile
-                        let mut on_tile = 0;
-                        let mut details = Vec::new();
-                        for (vehicle, traffic_state, parked_comp, service) in p.q_vehicles.iter() {
-                            if let Some(pos) = vehicle.route.first()
-                                && *pos == tile
-                            {
-                                on_tile += 1;
-                                let parked_str = if parked_comp.is_some() { "P" } else { "" };
+                        let tile_idx = p.grid.idx(tile);
+                        let active_on_tile = tile_idx
+                            .and_then(|i| p.spatial.as_deref().map(|s| s.tile_count(i)))
+                            .unwrap_or(0);
+                        let parked_on_tile = tile_idx
+                            .and_then(|i| p.parked_index.as_deref().map(|s| s.count(i)))
+                            .unwrap_or(0);
+                        let total_on_tile = active_on_tile + parked_on_tile;
+
+                        ui.label(format!(
+                            "  Vehicles: {} (active {}, parked {})",
+                            total_on_tile, active_on_tile, parked_on_tile
+                        ));
+
+                        // Show up to N active vehicle details (no full scan).
+                        if let (Some(i), Some(spatial)) = (tile_idx, p.spatial.as_deref())
+                            && let Some(entries) = spatial.tile_entries(i)
+                        {
+                            for e in entries.iter().take(5) {
+                                let Ok((vehicle, traffic_state, service)) =
+                                    p.q_vehicle_details_active.get(e.entity)
+                                else {
+                                    continue;
+                                };
                                 let service_str = service
                                     .map(|s| format!("{:?}", s.state))
                                     .unwrap_or_default();
                                 let state_str = format!("{:?}", traffic_state);
                                 let speed_str = format!("spd:{:.0}", vehicle.speed);
-                                details.push(format!(
-                                    "  {} {} {} {}",
-                                    parked_str, service_str, state_str, speed_str
-                                ));
+                                ui.label(format!("  {} {} {}", service_str, state_str, speed_str));
                             }
-                        }
-                        ui.label(format!("  Vehicles: {}", on_tile));
-                        for d in details.iter().take(5) {
-                            ui.label(d);
-                        }
-                        if details.len() > 5 {
-                            ui.label(format!("  ... and {} more", details.len() - 5));
+                            if entries.len() > 5 {
+                                ui.label(format!("  ... and {} more active", entries.len() - 5));
+                            }
                         }
                     }
                 });
@@ -1356,15 +1266,19 @@ struct RightSidebarParams<'w, 's> {
     q_citizens: Query<'w, 's, &'static Citizen>,
     q_window: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
     q_camera: Query<'w, 's, (&'static Transform, &'static Projection), With<MainCamera>>,
-    q_vehicles: Query<
+    vehicle_agg: Option<Res<'w, VehicleAggSnapshot>>,
+    spatial: Option<Res<'w, TrafficSpatialIndex>>,
+    parked_index: Option<Res<'w, ParkedVehicleTileIndex>>,
+    q_vehicle_by_entity: Query<'w, 's, &'static Vehicle, Without<Parked>>,
+    q_vehicle_details_active: Query<
         'w,
         's,
         (
             &'static Vehicle,
             &'static VehicleTrafficState,
-            Option<&'static Parked>,
             Option<&'static ServiceVehicle>,
         ),
+        Without<Parked>,
     >,
 }
 
@@ -1419,7 +1333,7 @@ fn overlay_sources(o: OverlayMode) -> &'static str {
         OverlayMode::Height => "MapGrid.height",
         OverlayMode::Zones => "MapGrid.zone (+ road)",
         OverlayMode::Roads => "MapGrid.road",
-        OverlayMode::Traffic => "TrafficOccupancy.ema_heat + TrafficIndex",
+        OverlayMode::Traffic => "TrafficOccupancy::heat_idx + TrafficIndex",
         OverlayMode::Path => "Computed live: Vehicle routes (remaining) + Transform",
         OverlayMode::ServiceCoverage => "ServiceStation coverage (radius) + uncovered zones",
         OverlayMode::LandValue => "LandValueIndex.values (0.0-1.0)",

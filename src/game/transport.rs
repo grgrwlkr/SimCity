@@ -1430,8 +1430,7 @@ mod tests {
 
         // Congest tiles (1,0) and (2,0) to push the route onto y=1.
         let mut traffic = TrafficOccupancy::default();
-        traffic.per_tick_vehicles.resize(grid.len(), 0);
-        traffic.ema_heat.resize(grid.len(), 0.0);
+        traffic.ensure_len(grid.len());
         let idx_10 = grid.idx(TilePos { x: 1, y: 0 }).unwrap();
         let idx_20 = grid.idx(TilePos { x: 2, y: 0 }).unwrap();
         traffic.per_tick_vehicles[idx_10] = 6;

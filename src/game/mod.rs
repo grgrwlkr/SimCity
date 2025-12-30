@@ -30,6 +30,7 @@ mod sets;
 mod sim;
 mod sim_events;
 mod state;
+mod telemetry;
 mod test_city;
 mod traffic;
 mod transport;

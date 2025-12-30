@@ -4,7 +4,7 @@
 
 Этот документ фиксирует **потенциальные причины просадок производительности** в текущем состоянии проекта и даёт **план реорганизации модулей/систем** под масштабирование (вплоть до очень больших чисел агентов).
 
-- **Ограничение**: в рамках аудита **код не меняем** — только анализ и план.
+- **Важно**: документ “живой” — он фиксирует **и аудит**, и **фактически внедрённые оптимизации** (Done/реализовано в коде).
 - **Стратегическое требование**: **только агентная модель** (каждая машина — агент со своим состоянием; мы не заменяем агентов макро-агрегатами/потоками).
 - **Цель “1,000,000 машин”**: должна быть возможность иметь **1,000,000 машин одновременно на карте** и иметь возможность **показать их на экране**.
 - **Правило качества кода**: целевая структура проекта — **файлы ≤ 500 строк** (в идеале 200–400), тесты — в отдельных модулях/файлах.
@@ -153,7 +153,7 @@ ECS даёт выигрыши, когда:
 Даже если оптимизировать отдельные функции, останутся фундаментальные ограничения:
 
 - **Entity-per-vehicle + per-frame системные проходы O(N)**  
-  Пример: `cull_vehicle_lod()` в `src/game/traffic.rs` итерирует все `Vehicle` каждый кадр.
+  Пример (исторически): `cull_vehicle_lod()` в `src/game/traffic.rs` итерировал все `Vehicle` каждый кадр (**Done: удалено**), но фундаментальная проблема “1M entity-per-agent” остаётся.
 
 - **Память и маршруты**  
   `Vehicle { route: Vec<TilePos> }`: миллион `Vec` + маршруты = огромная память и churn при перепланировании.
@@ -192,7 +192,7 @@ ECS даёт выигрыши, когда:
 - `state_machine.rs` — `update_vehicle_traffic_state`, очереди/стопы/приоритеты
 - `stuck.rs` — `init/update/resolve_stuck_vehicles`
 - `occupancy.rs` — `TrafficOccupancy`, `TrafficIndex`, `update_traffic_occupancy`
-- `render.rs` — `render_traffic_overlay`, `cull_vehicle_lod`, `update_parked_vehicle_positions`
+- `render.rs` — `render_traffic_overlay`, `update_parked_vehicle_positions`
 - `tests/` — вынести хвост тестов из `traffic.rs` в отдельные файлы
 
 #### `src/game/ui/`
@@ -226,7 +226,8 @@ ECS даёт выигрыши, когда:
 ### Traffic lights: индекс вместо линейного `find()`
 
 Сейчас `update_vehicle_traffic_state()` делает `q_lights.iter().find(...)` для каждой машины.  
-Нужно (планово): ресурс `TrafficLightIndex { by_key: HashMap<IntersectionKey, Entity/TrafficLight> }`, обновляемый при изменениях.
+**Done (реализовано в коде):** внутри `update_vehicle_traffic_state` построение `Local<HashMap<IntersectionKey, TrafficLight>>` **1× за тик** вместо per-vehicle `find()`.  
+Дальше (планово): вынести это в отдельный ресурс `TrafficLightIndex` (обновлять по изменениям, а не per tick).
 
 ### Pedestrians: заменить BFS “на запрос” на батч/кэш/эвристику
 
@@ -716,7 +717,7 @@ cargo run --release --features profile_tracy
 |    1 | Pedestrians | Убрать BFS+аллокации `dist=vec![..len..]` на каждый запрос                                       | `PedestrianGraph::shortest_path_steps()` (`src/game/pedestrians.rs`) | Пики CPU/аллокаций при росте граждан              | Algorithm/Data layout | P0       | M      | M    | Tracy: исчезают spikes; 10k граждан без GC/аллока-пиков             |
 |    2 | Citizens    | Не вызывать “дорогие” проверки пешего маршрута при каждом решении                                | `choose_tour_mode()` (`src/game/citizens.rs`)                        | BFS в горячем выборе режима                       | Scheduling/Algorithm  | P0       | S–M    | L    | Стабильный `FixedUpdate` при 1k–10k citizens                        |
 |    3 | Traffic     | Убрать дублирующее построение `HashMap by_tile` в нескольких системах                            | `plan_lane_changes()`, `move_vehicles()` (`src/game/traffic.rs`)     | Повторная работа/аллокации каждый тик             | Data layout           | P0       | M      | M    | Tracy: снижение времени `traffic::Sim` на N=10k/100k                |
-|    4 | Traffic     | Кэшировать “светофор по ключу” вместо `iter().find()`                                            | `update_vehicle_traffic_state()` (`src/game/traffic.rs`)             | Потенциальное O(vehicles×lights)                  | Data layout           | P1       | S      | L    | Время системы растёт ~O(N), не O(N×M)                               |
+|    4 | Traffic     | **DONE:** кэшировать “светофор по ключу” вместо `iter().find()`                                   | `update_vehicle_traffic_state()` (`src/game/traffic.rs`)             | Потенциальное O(vehicles×lights)                  | Data layout           | P1       | S      | L    | Время системы растёт ~O(N), не O(N×M)                               |
 |    5 | Traffic     | Разделить данные и логику: `Vehicle` без `Vec route`; `PathHandle` + `PathPool`                  | `Vehicle` (`src/game/traffic.rs`) + transport/path                   | 1M `Vec` = память+churn                           | Data layout           | P1       | L      | H    | Память на 100k–1M авто не взрывается; меньше аллокаций/клонирований |
 |    6 | Pathfinding | Очередь запросов + budget per tick; async задачи                                                 | transport/pathfinding                                                | Нельзя планировать путь “сразу” для массы агентов | Scheduling/Tooling    | P1       | L      | M    | 100k запросов не стопорят сим; latency bounded                      |
 |    7 | Traffic     | Перейти на lane/segment модель (lane-index) для O(1) leader                                      | traffic+transport                                                    | HashMap+sort не выживет на 1M                     | Algorithm/Data layout | P2       | XL     | H    | 1M авто: время тика ~O(N) с малым коэффициентом                     |
@@ -728,7 +729,7 @@ cargo run --release --features profile_tracy
 |   13 | Map         | Chunked tile rendering уже есть: расширить на оверлеи                                            | `map/mod.rs`                                                         | Оверлеи не должны спавнить по тайлу               | Rendering             | P1       | M      | M    | Overlay cost bounded O(changed)                                     |
 |   14 | PostSim     | Перевести пересчёты карты на “по событию” (GraphVersion/DirtyTiles)                              | land_value/pollution/services/public_transport                       | Полный проход по карте 10 Гц                      | Scheduling            | P1       | M      | M    | Постсим не растёт линейно с картой при отсутствии изменений         |
 |   15 | PostSim     | Частоты: часть read-model пересчитывать реже (DayAdvanced)                                       | economy/demand/land_value/etc                                        | 10 Гц может быть избыточно                        | Scheduling            | P1       | S      | L    | Уменьшение времени PostSim без регресса геймплея                    |
-|   16 | Traffic     | Убрать `cull_vehicle_lod()` как проход по всем авто каждый кадр; заменить на render-side culling | `traffic.rs` render sync                                             | O(N) per frame при 1M                             | Rendering             | P2       | L      | M    | `Update::RenderSync` не O(N) по авто                                |
+|   16 | Traffic     | **DONE:** убрать `cull_vehicle_lod()` (O(N)/frame). Next: instancing / chunked visibility index  | `traffic.rs` render sync                                             | O(N) per frame при 1M                             | Rendering             | P2       | L      | M    | `Update::RenderSync` не O(N) по авто                                |
 |   17 | Debug       | Телеметрия не должна итерировать всех авто                                                       | `collect_debug_telemetry()` (`src/game/ui.rs`)                       | O(N) сборки в Update                              | Scheduling            | P0       | S      | L    | Debug off: cost ~0; Debug on: бюджет/лимит                          |
 |   18 | Traffic     | Уменьшить ветвления/сложность в `move_vehicles` через ранние “fast paths”                        | `move_vehicles`                                                      | Большая функция, много логики                     | Algorithm             | P1       | M      | M    | снижение инструкции/ветвлений, рост throughput                      |
 |   19 | Transport   | Предварительно вычислять часто нужные “adjacent road endpoints”                                  | `adjacent_road_towards` usages                                       | Повторные grid-lookups                            | Data layout           | P1       | M      | M    | снижение времени pathfinding prep                                   |

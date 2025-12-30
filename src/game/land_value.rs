@@ -51,10 +51,7 @@ fn compute_land_value(
 
     // Base value
     let base_value = 0.5;
-    let max_heat = traffic
-        .as_deref()
-        .and_then(|t| t.ema_heat.iter().copied().reduce(f32::max))
-        .unwrap_or(0.0);
+    let max_heat = traffic.as_deref().map(|t| t.max_heat()).unwrap_or(0.0);
 
     // Compute for each tile
     for y in 0..grid.height {
@@ -95,7 +92,7 @@ fn compute_land_value(
             }
 
             // -0.2 for locally high traffic (nearby congested road tiles).
-            // Uses per-tile `TrafficOccupancy.ema_heat` (not city-wide averages).
+            // Uses per-tile `TrafficOccupancy::heat_idx` (not city-wide averages).
             if let Some(occ) = traffic.as_deref()
                 && max_heat > 0.0
             {
@@ -176,7 +173,7 @@ fn local_traffic_heat(occ: &TrafficOccupancy, grid: &MapGrid, pos: TilePos) -> f
         let Some(idx) = grid.idx(p) else {
             continue;
         };
-        best = best.max(occ.ema_heat.get(idx).copied().unwrap_or(0.0));
+        best = best.max(occ.heat_idx(idx));
     }
     best
 }
@@ -242,10 +239,10 @@ mod tests {
             }
         }
 
-        let occ = TrafficOccupancy {
-            per_tick_vehicles: vec![0; 3],
-            ema_heat: vec![10.0, 1.0, 1.0], // only left tile is "congested"
-        };
+        let mut occ = TrafficOccupancy::default();
+        occ.ensure_len(grid.len());
+        // only left tile is "congested"
+        occ.set_heat_for_test(vec![10.0, 1.0, 1.0]);
 
         app.insert_resource(grid);
         app.insert_resource(occ);
