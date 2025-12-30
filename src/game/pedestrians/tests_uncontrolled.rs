@@ -77,6 +77,7 @@ fn pedestrian_waits_for_safe_gap_on_uncontrolled_intersection() {
         .spawn((
             Vehicle {
                 route: vec![a, intersection_tile, c],
+                route_idx: 0,
                 progress: 0.9,
                 speed: 5.0,
                 max_speed: 60.0,
@@ -200,6 +201,7 @@ fn pedestrian_reroutes_after_long_wait_at_uncontrolled_intersection() {
         .spawn((
             Vehicle {
                 route: vec![start, avoid, goal],
+                route_idx: 0,
                 progress: 0.9,
                 speed: 5.0,
                 max_speed: 60.0,

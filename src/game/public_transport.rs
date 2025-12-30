@@ -254,6 +254,7 @@ fn sync_bus_vehicle(mut p: BusParams) {
                 Transform::from_xyz(world.x, world.y, 11.0),
                 Vehicle {
                     route,
+                    route_idx: 0,
                     progress: 0.0,
                     speed: p.pt_cfg.bus_speed,
                     max_speed: p.pt_cfg.bus_speed,
@@ -272,13 +273,14 @@ fn sync_bus_vehicle(mut p: BusParams) {
                 bv.b = b;
                 bv.to_b = true;
                 v.route = plan_route(a, b);
+                v.route_idx = 0;
                 v.progress = 0.0;
                 v.speed = p.pt_cfg.bus_speed;
                 return;
             }
 
-            // When the route is empty, we arrived to an endpoint; plan the return leg.
-            if v.route.is_empty() {
+            // When the route is finished, we arrived to an endpoint; plan the return leg.
+            if v.route_idx >= v.route.len() {
                 if bv.to_b {
                     bv.to_b = false;
                     v.route = plan_route(b, a);
@@ -286,6 +288,7 @@ fn sync_bus_vehicle(mut p: BusParams) {
                     bv.to_b = true;
                     v.route = plan_route(a, b);
                 }
+                v.route_idx = 0;
                 v.progress = 0.0;
                 v.speed = p.pt_cfg.bus_speed;
             }

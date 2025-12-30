@@ -33,9 +33,11 @@ pub(crate) use parked_tile_index::ParkedVehicleTileIndex;
 /// Vehicle entity – stores route and visual offset.
 #[derive(Component)]
 pub struct Vehicle {
-    /// A* route as list of tile positions (from current towards goal).
+    /// A* route as list of tile positions (full path).
     pub route: Vec<TilePos>,
-    /// 0 = at start, 1 = at route[0]; interpolated smoothly.
+    /// Current index into `route` (so we never `remove(0)` / shift the Vec).
+    pub route_idx: usize,
+    /// 0 = at current tile start, 1 = at next tile boundary; interpolated smoothly.
     pub progress: f32,
     /// World units per second.
     pub speed: f32,
@@ -50,6 +52,7 @@ impl Default for Vehicle {
     fn default() -> Self {
         Self {
             route: Vec::new(),
+            route_idx: 0,
             progress: 0.0,
             speed: 0.0,
             max_speed: 60.0, // Default speed
@@ -439,6 +442,12 @@ pub struct TrafficIndex {
     pub avg_congestion: f32,
     /// Max congestion in [0..1] across road tiles.
     pub max_congestion: f32,
+    /// Where `max_congestion` occurred (if any road tiles were touched).
+    pub max_congestion_tile: Option<TilePos>,
+    /// Vehicles on `max_congestion_tile` at end of tick.
+    pub max_congestion_tile_vehicles: u16,
+    /// Capacity on `max_congestion_tile` (0 if unknown/non-road).
+    pub max_congestion_tile_capacity: u16,
 }
 
 /// Marker for road tile overlays that show traffic heat.
@@ -494,6 +503,31 @@ impl TrafficRoadCache {
     }
 }
 
+/// O(1) lookup for persistent citizen-owned cars (CarTour Variant B).
+///
+/// Read model: "which car entity belongs to this citizen".
+#[derive(Resource, Default)]
+struct CarOwnerIndex {
+    by_citizen: std::collections::HashMap<CitizenId, Entity>,
+    by_entity: std::collections::HashMap<Entity, CitizenId>,
+}
+
+impl CarOwnerIndex {
+    fn clear(&mut self) {
+        self.by_citizen.clear();
+        self.by_entity.clear();
+    }
+}
+
+/// Counts of vehicle entities maintained incrementally (no full-world scans).
+#[derive(Resource, Debug, Default)]
+struct TrafficVehicleCounts {
+    /// Vehicles without `Parked`.
+    active: u32,
+    /// Per-vehicle parked flag, so despawns can decrement the right counter without queries.
+    parked_flag: std::collections::HashMap<Entity, bool>,
+}
+
 pub struct TrafficPlugin;
 
 impl Plugin for TrafficPlugin {
@@ -507,6 +541,8 @@ impl Plugin for TrafficPlugin {
             .init_resource::<VehicleAggSnapshot>()
             .init_resource::<ParkedVehicleTileIndex>()
             .init_resource::<TrafficRoadCache>()
+            .init_resource::<CarOwnerIndex>()
+            .init_resource::<TrafficVehicleCounts>()
             .add_systems(
                 OnEnter(AppState::MainMenu),
                 (
@@ -526,6 +562,7 @@ impl Plugin for TrafficPlugin {
             .add_systems(
                 FixedUpdate,
                 (
+                    track_car_owner_index,
                     update_vehicle_traffic_state,
                     check_intersection_priority.after(update_vehicle_traffic_state),
                     spawn_trip_vehicles,
@@ -559,6 +596,13 @@ impl Plugin for TrafficPlugin {
                 )
                     .in_set(GameSet::Sim)
                     .run_if(in_state(AppState::InGame)),
+            )
+            // Keep derived counts in sync (including while paused) without any full-world queries.
+            .add_systems(
+                Update,
+                track_vehicle_counts
+                    .in_set(GameSet::CommandApply)
+                    .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
             )
             // Jam recovery (run in sim; uses last tick's occupancy/graph state).
             .add_systems(
@@ -698,6 +742,8 @@ fn cleanup_traffic_entities(
     q_vehicles: Query<Entity, With<Vehicle>>,
     q_overlay: Query<Entity, With<TrafficOverlayTile>>,
     mut overlay_pool: ResMut<TrafficOverlayPool>,
+    mut car_owner_index: ResMut<CarOwnerIndex>,
+    mut counts: ResMut<TrafficVehicleCounts>,
 ) {
     for e in q_vehicles.iter() {
         commands.entity(e).despawn();
@@ -707,6 +753,8 @@ fn cleanup_traffic_entities(
     }
     overlay_pool.entries.clear();
     overlay_pool.grid_len = 0;
+    car_owner_index.clear();
+    *counts = TrafficVehicleCounts::default();
 }
 
 fn reset_traffic_aggregates(mut occ: ResMut<TrafficOccupancy>, mut idx: ResMut<TrafficIndex>) {
@@ -727,7 +775,11 @@ fn spawn_trip_vehicles(
     mut p: SpawnTripVehiclesParams,
 ) {
     let mut planned = 0usize;
-    let mut total = p.q_vehicles.iter().count();
+    let mut total = p
+        .vehicle_counts
+        .as_deref()
+        .map(|c| c.active as usize)
+        .unwrap_or_else(|| p.q_vehicles.iter().count());
     let idm = idm_params_world(&p.cfg, &p.traffic_cfg);
     // Driver maximum (km/h). Actual speed is capped by per-road speed limits in `move_vehicles`.
     let driver_max_speed_world = kmh_to_world_speed(&p.cfg, &p.traffic_cfg, 130.0);
@@ -751,13 +803,10 @@ fn spawn_trip_vehicles(
         // CarTour "no car from pocket": if this is a car trip, spawn the vehicle near the
         // citizen's currently parked car location (building tile), not necessarily `from`.
         let mut spawn_from = msg.from;
-        if msg.mode == TripMode::Car {
-            for (cid, c) in p.q_citizens.iter() {
-                if cid.0 == msg.citizen {
-                    spawn_from = c.car_parked_at;
-                    break;
-                }
-            }
+        if msg.mode == TripMode::Car
+            && let Some(at) = msg.car_parked_at
+        {
+            spawn_from = at;
         }
 
         let Some(start) = adjacent_road_towards(&p.grid, spawn_from, msg.to) else {
@@ -806,13 +855,29 @@ fn spawn_trip_vehicles(
         // CarTour Variant B: if the citizen already has a parked car entity, re-use it.
         if msg.mode == TripMode::Car {
             let mut reused = false;
-            for (e, owner, mut v, mut tf, mut sprite) in p.q_parked_cars.iter_mut() {
-                if owner.citizen != msg.citizen {
-                    continue;
-                }
 
+            // Fast path: O(1) lookup by citizen id (when index is present).
+            let mut reuse_e = p
+                .car_owner_index
+                .as_deref()
+                .and_then(|idx| idx.by_citizen.get(&msg.citizen).copied());
+
+            // Fallback: linear scan (mostly for minimal tests where the index isn't present).
+            if reuse_e.is_none() {
+                for (e, owner, ..) in p.q_parked_cars.iter_mut() {
+                    if owner.citizen == msg.citizen {
+                        reuse_e = Some(e);
+                        break;
+                    }
+                }
+            }
+
+            if let Some(e) = reuse_e
+                && let Ok((_e, _owner, mut v, mut tf, mut sprite)) = p.q_parked_cars.get_mut(e)
+            {
                 let world_pos = tile_to_world(&p.cfg, start);
                 v.route = route.clone();
+                v.route_idx = 0;
                 v.progress = 0.0;
                 v.speed = 0.0;
                 v.max_speed = driver_max_speed_world;
@@ -840,7 +905,6 @@ fn spawn_trip_vehicles(
                 planned += 1;
                 total += 1;
                 reused = true;
-                break;
             }
             if reused {
                 continue;
@@ -857,6 +921,7 @@ fn spawn_trip_vehicles(
             Transform::from_xyz(world_pos.x, world_pos.y, 10.0),
             Vehicle {
                 route,
+                route_idx: 0,
                 progress: 0.0,
                 speed: 0.0,
                 max_speed: driver_max_speed_world,
@@ -894,14 +959,8 @@ struct SpawnTripVehiclesParams<'w, 's> {
     pt_cfg: Option<Res<'w, PublicTransportConfig>>,
     pt: Option<Res<'w, PublicTransportIndex>>,
     pt_pending: Option<ResMut<'w, PendingTransitTrips>>,
-    q_citizens: Query<
-        'w,
-        's,
-        (
-            &'static crate::game::ids::CitizenIdComp,
-            &'static crate::game::citizens::Citizen,
-        ),
-    >,
+    car_owner_index: Option<Res<'w, CarOwnerIndex>>,
+    vehicle_counts: Option<Res<'w, TrafficVehicleCounts>>,
     q_vehicles: Query<'w, 's, Entity, (With<Vehicle>, Without<Parked>)>,
     q_parked_cars: Query<
         'w,
@@ -918,7 +977,74 @@ struct SpawnTripVehiclesParams<'w, 's> {
     traffic_cfg: Res<'w, TrafficConfig>,
 }
 
+fn track_car_owner_index(
+    mut idx: ResMut<CarOwnerIndex>,
+    q_added: Query<(Entity, &CarOwner), Added<CarOwner>>,
+    mut removed: RemovedComponents<CarOwner>,
+) {
+    for (e, owner) in q_added.iter() {
+        idx.by_entity.insert(e, owner.citizen);
+        idx.by_citizen.insert(owner.citizen, e);
+    }
+    for e in removed.read() {
+        let Some(cid) = idx.by_entity.remove(&e) else {
+            continue;
+        };
+        if idx.by_citizen.get(&cid).copied() == Some(e) {
+            idx.by_citizen.remove(&cid);
+        }
+    }
+}
+
+fn track_vehicle_counts(
+    mut counts: ResMut<TrafficVehicleCounts>,
+    q_added_vehicle: Query<Entity, Added<Vehicle>>,
+    q_added_parked: Query<Entity, Added<Parked>>,
+    mut removed_vehicle: RemovedComponents<Vehicle>,
+    mut removed_parked: RemovedComponents<Parked>,
+) {
+    // New vehicles start as active (not parked) unless they also get `Parked` this tick.
+    for e in q_added_vehicle.iter() {
+        counts.active = counts.active.saturating_add(1);
+        counts.parked_flag.insert(e, false);
+    }
+
+    // Parked added: active--.
+    for e in q_added_parked.iter() {
+        if let Some(flag) = counts.parked_flag.get_mut(&e)
+            && !*flag
+        {
+            *flag = true;
+            counts.active = counts.active.saturating_sub(1);
+        }
+    }
+
+    // If a vehicle despawned, drop its flag and decrement active only if it wasn't parked.
+    let removed_vehicles: Vec<Entity> = removed_vehicle.read().collect();
+    for e in removed_vehicles.iter() {
+        let Some(was_parked) = counts.parked_flag.remove(e) else {
+            continue;
+        };
+        if !was_parked {
+            counts.active = counts.active.saturating_sub(1);
+        }
+    }
+
+    // Parked removed (unparked): active++ (unless the vehicle was despawned in the same tick).
+    for e in removed_parked.read() {
+        if removed_vehicles.contains(&e) {
+            continue;
+        }
+        if let Some(flag) = counts.parked_flag.get_mut(&e)
+            && *flag
+        {
+            *flag = false;
+            counts.active = counts.active.saturating_add(1);
+        }
+    }
+}
 /// Despawn all vehicles when GameCommand::GenerateMap is received.
+#[allow(clippy::too_many_arguments)]
 fn clear_vehicles(
     mut reader: bevy::ecs::message::MessageReader<GameCommand>,
     mut commands: Commands,
@@ -926,6 +1052,8 @@ fn clear_vehicles(
     mut occ: ResMut<TrafficOccupancy>,
     mut idx: ResMut<TrafficIndex>,
     mut reservations: ResMut<IntersectionReservations>,
+    mut car_owner_index: ResMut<CarOwnerIndex>,
+    mut counts: ResMut<TrafficVehicleCounts>,
 ) {
     for msg in reader.read() {
         if matches!(msg, GameCommand::GenerateMap { .. }) {
@@ -940,6 +1068,8 @@ fn clear_vehicles(
             occ.max_scaled = 0.0;
             *idx = TrafficIndex::default();
             reservations.by_intersection.clear();
+            car_owner_index.clear();
+            *counts = TrafficVehicleCounts::default();
         }
     }
 }
@@ -950,7 +1080,7 @@ fn init_stuck_timers(
     q: Query<(Entity, &Vehicle), (With<Vehicle>, Without<StuckTimer>)>,
 ) {
     for (e, v) in q.iter() {
-        let Some(tile) = v.route.first().copied() else {
+        let Some(tile) = v.route.get(v.route_idx).copied() else {
             continue;
         };
         commands.entity(e).insert(StuckTimer {
@@ -968,7 +1098,7 @@ fn update_stuck_timers(
 ) {
     let dt = time.delta_secs();
     for (v, state, mut stuck) in q.iter_mut() {
-        let Some(tile) = v.route.first().copied() else {
+        let Some(tile) = v.route.get(v.route_idx).copied() else {
             stuck.secs = 0.0;
             stuck.uturn_attempted = false;
             continue;
@@ -1037,7 +1167,7 @@ fn resolve_stuck_vehicles(
         if handled >= MAX_UNSTUCK_PER_TICK {
             break;
         }
-        if v.route.is_empty() {
+        if v.route_idx >= v.route.len() {
             stuck.secs = 0.0;
             continue;
         }
@@ -1051,13 +1181,16 @@ fn resolve_stuck_vehicles(
             continue;
         }
 
-        let current = v.route[0];
+        let Some(&current) = v.route.get(v.route_idx) else {
+            continue;
+        };
         let goal = *v.route.last().unwrap_or(&current);
 
         // 1) Emergency re-route: try to find an alternative path to the same goal.
         let route = find_road_path_cached(&mut ctx, current, goal);
         if !route.is_empty() && route != v.route {
             v.route = route;
+            v.route_idx = 0;
             v.progress = 0.0;
             v.speed = v.speed.min(v.max_speed * 0.5);
 
@@ -1113,6 +1246,7 @@ fn resolve_stuck_vehicles(
                         next_route.extend(from_uturn);
 
                         v.route = next_route;
+                        v.route_idx = 0;
                         v.progress = 0.0;
                         v.speed = 0.0;
 
@@ -1373,13 +1507,15 @@ fn plan_lane_changes(
         if service_vehicle.is_some() || bus_vehicle.is_some() {
             continue;
         }
-        if v.route.len() < 2 {
+        if v.route_idx + 1 >= v.route.len() {
             continue;
         }
 
         // Don't lane change inside/near intersections.
-        let ego_tile = v.route[0];
-        if route_has_near_intersection(&v.route, &grid) {
+        let Some(&ego_tile) = v.route.get(v.route_idx) else {
+            continue;
+        };
+        if route_has_near_intersection(&v.route[v.route_idx..], &grid) {
             continue;
         }
         let Some(ego_cell) = grid.get(ego_tile) else {
@@ -1539,6 +1675,7 @@ fn plan_lane_changes(
             new_route.push(current);
             new_route.extend(route_from_target);
             v.route = new_route;
+            v.route_idx = 0;
         } else {
             continue;
         }
@@ -1623,13 +1760,16 @@ fn plan_oncoming_overtakes(
         if service_vehicle.is_some() || bus_vehicle.is_some() {
             continue;
         }
-        if v.route.len() < 2 {
+        if v.route_idx + 1 >= v.route.len() {
             continue;
         }
 
         // Never start close to intersections (safety).
-        if route_has_near_intersection_n(&v.route, &grid, ONCOMING_OVERTAKE_INTERSECTION_LOOKAHEAD)
-        {
+        if route_has_near_intersection_n(
+            &v.route[v.route_idx..],
+            &grid,
+            ONCOMING_OVERTAKE_INTERSECTION_LOOKAHEAD,
+        ) {
             continue;
         }
 
@@ -1644,7 +1784,9 @@ fn plan_oncoming_overtakes(
             continue;
         }
 
-        let ego_tile = v.route[0];
+        let Some(&ego_tile) = v.route.get(v.route_idx) else {
+            continue;
+        };
         let Some(ego_cell) = grid.get(ego_tile) else {
             continue;
         };
@@ -1664,7 +1806,7 @@ fn plan_oncoming_overtakes(
 
         // Only attempt if we have a close, slow leader and we're not already near our desired speed.
         let Some((_lead_e, gap_tiles, lead_speed)) =
-            spatial.leader_ahead_entity(&grid, e, ego_tile, v.progress, &v.route)
+            spatial.leader_ahead_entity(&grid, e, ego_tile, v.progress, &v.route[v.route_idx..])
         else {
             continue;
         };
@@ -1768,8 +1910,11 @@ fn plan_oncoming_overtakes(
         };
 
         // Pull out to oncoming lane, move forward for `pass_tiles`, return.
-        let current = vv.route[0];
-        let mut new_route = Vec::with_capacity(vv.route.len() + p.pass_tiles + 2);
+        let Some(&current) = vv.route.get(vv.route_idx) else {
+            continue;
+        };
+        let rem = &vv.route[vv.route_idx..];
+        let mut new_route = Vec::with_capacity(rem.len() + p.pass_tiles + 2);
         new_route.push(current);
 
         // Pull out to oncoming lane at current position.
@@ -1780,7 +1925,9 @@ fn plan_oncoming_overtakes(
 
         // Advance oncoming lane in parallel to the current route.
         for i in 1..=p.pass_tiles {
-            let base = vv.route[i];
+            let Some(&base) = rem.get(i) else {
+                break;
+            };
             new_route.push(TilePos {
                 x: base.x + p.offset.x,
                 y: base.y + p.offset.y,
@@ -1788,11 +1935,14 @@ fn plan_oncoming_overtakes(
         }
 
         // Return to our lane at the same longitudinal position.
-        new_route.push(vv.route[p.pass_tiles]);
+        if let Some(&return_base) = rem.get(p.pass_tiles) {
+            new_route.push(return_base);
+        }
 
         // Continue with the original route after the return tile.
-        new_route.extend(vv.route.iter().copied().skip(p.pass_tiles + 1));
+        new_route.extend(rem.iter().copied().skip(p.pass_tiles + 1));
         vv.route = new_route;
+        vv.route_idx = 0;
 
         commands.entity(p.e).insert(LaneChangeCooldown {
             remaining_secs: ONCOMING_OVERTAKE_COOLDOWN_SECS,
@@ -1946,7 +2096,7 @@ fn plan_intersection_reservations(
 
     // Ensure any vehicle currently inside an intersection cluster owns a reservation (safety net).
     for (e, v, _) in q_vehicles.iter() {
-        let Some(&cur) = v.route.first() else {
+        let Some(&cur) = v.route.get(v.route_idx) else {
             continue;
         };
         if !is_intersection_tile(&grid, cur) {
@@ -1969,7 +2119,7 @@ fn plan_intersection_reservations(
     // Greedy admission: allow multiple approaching vehicles per intersection as long as their
     // conflict zones don't overlap (coarse safety).
     for (e, v, state) in q_vehicles.iter() {
-        if v.route.len() < 2 {
+        if v.route_idx + 1 >= v.route.len() {
             continue;
         }
         let stopped_or_waiting = matches!(
@@ -1977,11 +2127,13 @@ fn plan_intersection_reservations(
             VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. }
         );
 
-        let cur = v.route[0];
+        let Some(&cur) = v.route.get(v.route_idx) else {
+            continue;
+        };
         if is_intersection_tile(&grid, cur) {
             continue;
         }
-        let next = v.route[1];
+        let next = v.route[v.route_idx + 1];
         if !is_intersection_tile(&grid, next) {
             continue;
         }
@@ -1994,7 +2146,7 @@ fn plan_intersection_reservations(
         if entry_dir == RoadDir::None {
             continue;
         }
-        let exit_dir = compute_exit_direction(&v.route, &grid, next);
+        let exit_dir = compute_exit_direction(&v.route[v.route_idx..], &grid, next);
 
         // Yield to pedestrians: block only maneuvers that conflict with the currently-crossing axis.
         //
@@ -2034,12 +2186,13 @@ fn plan_intersection_reservations(
             }
         }
         // Don't block the box: only admit if the planned exit lane tile has space.
-        let exit_tile = v.route.iter().position(|t| *t == next).and_then(|start_i| {
+        let rem = &v.route[v.route_idx..];
+        let exit_tile = rem.iter().position(|t| *t == next).and_then(|start_i| {
             let mut i = start_i;
-            while i < v.route.len() && is_intersection_tile(&grid, v.route[i]) {
+            while i < rem.len() && is_intersection_tile(&grid, rem[i]) {
                 i += 1;
             }
-            v.route.get(i).copied()
+            rem.get(i).copied()
         });
         if let Some(exit_tile) = exit_tile
             && let Some(exit_cell) = grid.get(exit_tile)
@@ -2195,11 +2348,13 @@ fn cleanup_intersection_reservations(
             let Ok(v) = q_vehicles.get(r.vehicle) else {
                 return false;
             };
-            if v.route.is_empty() {
+            if v.route_idx >= v.route.len() {
                 return false;
             }
 
-            let cur = v.route[0];
+            let Some(&cur) = v.route.get(v.route_idx) else {
+                return false;
+            };
             let cur_id = intersections.intersection_id_at(cur);
             if cur_id == Some(id) {
                 r.state = ReservationState::Inside;
@@ -2210,7 +2365,7 @@ fn cleanup_intersection_reservations(
                     // Vehicle rerouted away: drop.
                     let next_id = v
                         .route
-                        .get(1)
+                        .get(v.route_idx + 1)
                         .and_then(|t| intersections.intersection_id_at(*t));
                     if next_id != Some(id) {
                         return false;
@@ -2242,14 +2397,14 @@ fn cleanup_right_on_red_markers(
     q: Query<(Entity, &Vehicle, &RightTurnOnRed), Without<Parked>>,
 ) {
     for (e, v, ror) in q.iter() {
-        let Some(&cur) = v.route.first() else {
+        let Some(&cur) = v.route.get(v.route_idx) else {
             commands.entity(e).remove::<RightTurnOnRed>();
             continue;
         };
         let cur_id = intersections.intersection_id_at(cur);
         let next_id = v
             .route
-            .get(1)
+            .get(v.route_idx + 1)
             .and_then(|t| intersections.intersection_id_at(*t));
 
         let in_or_approaching =
@@ -2318,7 +2473,7 @@ fn move_vehicles(
         {
             let a = &mut vehicle_agg.active;
             a.total = a.total.saturating_add(1);
-            if v.route.is_empty() {
+            if v.route_idx >= v.route.len() {
                 a.no_route = a.no_route.saturating_add(1);
             }
             if v.speed < 0.1 {
@@ -2353,7 +2508,7 @@ fn move_vehicles(
                     }
                     ServiceVehicleState::Returning => {
                         a.service_returning = a.service_returning.saturating_add(1);
-                        if v.route.is_empty() {
+                        if v.route_idx >= v.route.len() {
                             a.service_returning_no_route =
                                 a.service_returning_no_route.saturating_add(1);
                         }
@@ -2365,7 +2520,7 @@ fn move_vehicles(
                 }
             }
         }
-        if v.route.is_empty() {
+        if v.route_idx >= v.route.len() {
             // Arrived – despawn trip vehicles, keep service vehicles (idle).
             if service_vehicle.is_none() && bus_vehicle.is_none() {
                 if let Some(p) = passenger {
@@ -2380,7 +2535,7 @@ fn move_vehicles(
         }
 
         // --- Desired speed from speed limits (RoadKind.speed_limit() is treated as km/h).
-        let current_tile = v.route[0];
+        let current_tile = v.route[v.route_idx];
         let speed_limit_world = road_speed_limit_world(&cfg, &traffic_cfg, current_tile, &grid);
         let mut v0 = speed_limit_world.min(v.max_speed).max(0.0);
         if let Some(ror) = ror.copied() {
@@ -2389,7 +2544,7 @@ fn move_vehicles(
             let cur_id = intersections.intersection_id_at(current_tile);
             let next_id = v
                 .route
-                .get(1)
+                .get(v.route_idx + 1)
                 .and_then(|t| intersections.intersection_id_at(*t));
             if cur_id == Some(ror.intersection_id) || next_id == Some(ror.intersection_id) {
                 v0 = v0.min(cap);
@@ -2398,8 +2553,8 @@ fn move_vehicles(
 
         // --- Leader detection (tile-local) + virtual leaders (stop lines / blocked next tile).
         let mut leader: Option<(f32, f32)> = spatial.leader_same_tile(entity);
-        if v.route.len() > 1 {
-            let next_tile = v.route[1];
+        if v.route_idx + 1 < v.route.len() {
+            let next_tile = v.route[v.route_idx + 1];
             if let Some(next_idx) = grid.idx(next_tile)
                 && let Some((min_p, lead_v)) = spatial.tile_min_progress_speed(next_idx)
             {
@@ -2439,8 +2594,8 @@ fn move_vehicles(
             // Virtual leader: next tile blocked by capacity or "don't block the box".
             let mut blocked_next = false;
             let mut blocked_next_is_intersection = false;
-            if v.route.len() > 1 {
-                let next_tile = v.route[1];
+            if v.route_idx + 1 < v.route.len() {
+                let next_tile = v.route[v.route_idx + 1];
                 let current_is_intersection = is_intersection_tile(&grid, current_tile);
                 let next_is_intersection = is_intersection_tile(&grid, next_tile);
 
@@ -2577,7 +2732,7 @@ fn move_vehicles(
 
             // If the next tile is blocked, clamp progress just before the boundary.
             // This keeps the vehicle from "teleporting" into a full tile in a single tick.
-            if v.route.len() > 1 && blocked_next {
+            if v.route_idx + 1 < v.route.len() && blocked_next {
                 let stop_before = 0.001;
                 let max_p = if blocked_next_is_intersection {
                     // For intersections, clamp to the stop line exactly (not "just before"),
@@ -2597,13 +2752,18 @@ fn move_vehicles(
             }
         }
 
-        let mut last_tile_for_arrival = v.route.first().copied().unwrap_or(TilePos { x: 0, y: 0 });
-        while v.progress >= 1.0 && !v.route.is_empty() {
+        let mut last_tile_for_arrival = v
+            .route
+            .get(v.route_idx)
+            .copied()
+            .unwrap_or(TilePos { x: 0, y: 0 });
+        while v.progress >= 1.0 && v.route_idx < v.route.len() {
             v.progress -= 1.0;
-            last_tile_for_arrival = v.route.remove(0);
+            last_tile_for_arrival = v.route[v.route_idx];
+            v.route_idx = v.route_idx.saturating_add(1);
         }
 
-        if v.route.is_empty() {
+        if v.route_idx >= v.route.len() {
             if service_vehicle.is_none() && bus_vehicle.is_none() {
                 if let Some(p) = passenger {
                     finished.write(TripFinished {
@@ -2614,6 +2774,7 @@ fn move_vehicles(
                 // CarTour Variant B: keep citizen-owned cars parked instead of despawning them.
                 if car_owner.is_some() && passenger.is_some() {
                     v.route = vec![last_tile_for_arrival];
+                    v.route_idx = 0;
                     v.progress = 0.0;
                     v.speed = 0.0;
                     commands
@@ -2629,11 +2790,13 @@ fn move_vehicles(
         }
 
         // Lerp between current tile and next.
-        let curr = v.route[0];
-        let next = if v.route.len() > 1 {
-            v.route[1]
+        let Some(&curr) = v.route.get(v.route_idx) else {
+            continue;
+        };
+        let next = if v.route_idx + 1 < v.route.len() {
+            v.route[v.route_idx + 1]
         } else {
-            v.route[0]
+            curr
         };
 
         let curr_world = tile_to_world(&cfg, curr);
@@ -2681,11 +2844,23 @@ fn update_vehicle_traffic_state(
     }
 
     for (entity, vehicle, mut state) in q_vehicles.iter_mut() {
-        let current_tile = vehicle.route.first().copied();
+        let route = vehicle.route.get(vehicle.route_idx..).unwrap_or(&[]);
+        let current_tile = route.first().copied();
+        if route.is_empty() {
+            // No remaining route: leave non-light systems to handle completion/parking.
+            if matches!(
+                *state,
+                VehicleTrafficState::Approaching { .. }
+                    | VehicleTrafficState::WaitingForGreen { .. }
+            ) {
+                *state = VehicleTrafficState::FreeFlow;
+            }
+            continue;
+        }
 
         // Find nearest traffic light on route (by index).
         let Some((intersection_key, stop_tile, distance_to_light_tile)) = find_traffic_light_ahead(
-            &vehicle.route,
+            route,
             vehicle.progress,
             TRAFFIC_LIGHT_DETECTION_DISTANCE,
             &intersections,
@@ -2727,7 +2902,7 @@ fn update_vehicle_traffic_state(
             continue;
         };
 
-        let entry_dir = compute_entry_direction(&vehicle.route, stop_tile);
+        let entry_dir = compute_entry_direction(route, stop_tile);
         if entry_dir == RoadDir::None {
             // Can't determine approach direction reliably – don't block.
             *state = VehicleTrafficState::FreeFlow;
@@ -2925,14 +3100,22 @@ fn check_intersection_priority(
     intersections: Res<IntersectionIndex>,
     mut q_vehicles: Query<(Entity, &Vehicle, &mut VehicleTrafficState)>,
     q_intersections: Query<&crate::game::intersections::IntersectionPriorityMarker>,
+    mut priority_by_tile: Local<std::collections::HashMap<TilePos, IntersectionPriority>>,
 ) {
+    // Build a cheap lookup once per tick (O(markers)) instead of scanning all markers per vehicle.
+    priority_by_tile.clear();
+    for m in q_intersections.iter() {
+        priority_by_tile.insert(m.pos, m.priority);
+    }
+
     // For intersections without traffic lights, apply priority rules
     for (_entity, vehicle, mut state) in q_vehicles.iter_mut() {
-        let Some(current_tile) = vehicle.route.first().copied() else {
+        let route = vehicle.route.get(vehicle.route_idx..).unwrap_or(&[]);
+        let Some(current_tile) = route.first().copied() else {
             continue;
         };
 
-        let next_tile = vehicle.route.get(1).copied();
+        let next_tile = route.get(1).copied();
 
         // Clear transient state once we're no longer in (or immediately before) the *same* intersection.
         //
@@ -2973,41 +3156,37 @@ fn check_intersection_priority(
         // Check if this is an intersection (dir == None)
         if is_intersection_tile(&grid, next_tile) {
             // This is an intersection - check for priority rules
-            // Try to find IntersectionPriority marker at this position
-            let mut found_priority = None;
-            for marker in q_intersections.iter() {
-                // Match by position
-                if marker.pos == next_tile {
-                    found_priority = Some(marker.priority);
-                    break;
-                }
-            }
+            // Fast lookup for explicit priorities computed in `IntersectionsPlugin`.
+            let found_priority = priority_by_tile.get(&next_tile).copied();
 
-            // Check surrounding tiles to determine if this is a main road intersection
+            // Fallback heuristic (mostly for minimal test worlds where the intersections plugin
+            // isn't present): classify "main road" by adjacent lane count.
             let mut is_main_road = false;
-            for neighbor_pos in [
-                TilePos {
-                    x: next_tile.x - 1,
-                    y: next_tile.y,
-                },
-                TilePos {
-                    x: next_tile.x + 1,
-                    y: next_tile.y,
-                },
-                TilePos {
-                    x: next_tile.x,
-                    y: next_tile.y - 1,
-                },
-                TilePos {
-                    x: next_tile.x,
-                    y: next_tile.y + 1,
-                },
-            ] {
-                if let Some(neighbor_cell) = grid.get(neighbor_pos)
-                    && neighbor_cell.road.kind.lanes() >= 4
-                {
-                    is_main_road = true;
-                    break;
+            if found_priority.is_none() {
+                for neighbor_pos in [
+                    TilePos {
+                        x: next_tile.x - 1,
+                        y: next_tile.y,
+                    },
+                    TilePos {
+                        x: next_tile.x + 1,
+                        y: next_tile.y,
+                    },
+                    TilePos {
+                        x: next_tile.x,
+                        y: next_tile.y - 1,
+                    },
+                    TilePos {
+                        x: next_tile.x,
+                        y: next_tile.y + 1,
+                    },
+                ] {
+                    if let Some(neighbor_cell) = grid.get(neighbor_pos)
+                        && neighbor_cell.road.kind.lanes() >= 4
+                    {
+                        is_main_road = true;
+                        break;
+                    }
                 }
             }
 
@@ -3101,7 +3280,7 @@ fn update_traffic_occupancy(
 
     // Count occupancy at end-of-tick. Skip parked vehicles - they don't block traffic.
     for vehicle in q.iter() {
-        if let Some(pos) = vehicle.route.first()
+        if let Some(pos) = vehicle.route.get(vehicle.route_idx)
             && let Some(idx) = grid.idx(*pos)
         {
             // saturate at u16::MAX; capacity is small in MVP anyway.
@@ -3116,6 +3295,9 @@ fn update_traffic_occupancy(
     let mut vehicles_on_roads = 0u32;
     let mut sum_cong = 0.0f32;
     let mut max_cong = 0.0f32;
+    let mut max_tile: Option<usize> = None;
+    let mut max_tile_vehicles: u16 = 0;
+    let mut max_tile_cap: u16 = 0;
 
     for &ti in touched.iter() {
         let cap = roads.capacity_per_tile.get(ti).copied().unwrap_or(0) as f32;
@@ -3128,6 +3310,9 @@ fn update_traffic_occupancy(
         sum_cong += cong;
         if cong > max_cong {
             max_cong = cong;
+            max_tile = Some(ti);
+            max_tile_vehicles = c_u16;
+            max_tile_cap = roads.capacity_per_tile.get(ti).copied().unwrap_or(0);
         }
     }
 
@@ -3140,6 +3325,13 @@ fn update_traffic_occupancy(
         idx.avg_congestion = 0.0;
         idx.max_congestion = 0.0;
     }
+
+    idx.max_congestion_tile = max_tile.map(|ti| TilePos {
+        x: (ti % (grid.width as usize)) as i32,
+        y: (ti / (grid.width as usize)) as i32,
+    });
+    idx.max_congestion_tile_vehicles = max_tile_vehicles;
+    idx.max_congestion_tile_capacity = max_tile_cap;
 
     // Update scaled EMA heatmap in O(touched) time.
     let decay = cfg.heat_ema_decay.clamp(0.0, 0.999);
@@ -3278,7 +3470,7 @@ fn update_parked_vehicle_positions(
     parked_index.begin_frame(grid.len());
 
     for (vehicle, traffic_state, parked, service, mut tf, mut sprite) in q_parked.iter_mut() {
-        let Some(tile) = vehicle.route.first().copied() else {
+        let Some(tile) = vehicle.route.get(vehicle.route_idx).copied() else {
             continue;
         };
         if let Some(tile_idx) = grid.idx(tile) {
@@ -3325,7 +3517,7 @@ fn update_parked_vehicle_positions(
             let a = &mut vehicle_agg.parked;
             a.total = a.total.saturating_add(1);
             a.parked = a.parked.saturating_add(1);
-            if vehicle.route.is_empty() {
+            if vehicle.route_idx >= vehicle.route.len() {
                 a.no_route = a.no_route.saturating_add(1);
             }
             if vehicle.speed < 0.1 {
@@ -3361,7 +3553,7 @@ fn update_parked_vehicle_positions(
                     ServiceVehicleState::Returning => {
                         a.service_returning = a.service_returning.saturating_add(1);
                         a.service_returning_parked = a.service_returning_parked.saturating_add(1);
-                        if vehicle.route.is_empty() {
+                        if vehicle.route_idx >= vehicle.route.len() {
                             a.service_returning_no_route =
                                 a.service_returning_no_route.saturating_add(1);
                         }
@@ -3452,6 +3644,7 @@ mod tests {
             .spawn((
                 Vehicle {
                     route: Vec::new(),
+                    route_idx: 0,
                     progress: 0.0,
                     speed: 0.0,
                     max_speed: 60.0,
@@ -3554,6 +3747,7 @@ mod tests {
             .spawn((
                 Vehicle {
                     route: vec![approach, intersection_tile, exit],
+                    route_idx: 0,
                     progress: 1.0,
                     speed: 0.0,
                     max_speed: 60.0,
@@ -3635,6 +3829,7 @@ mod tests {
         app.world_mut().spawn((
             Vehicle {
                 route: (1..20).map(|x| TilePos { x, y: 0 }).collect(),
+                route_idx: 0,
                 progress: 0.0,
                 speed: 2.0,
                 max_speed: 60.0,
@@ -3649,6 +3844,7 @@ mod tests {
             .spawn((
                 Vehicle {
                     route: (0..20).map(|x| TilePos { x, y: 0 }).collect(),
+                    route_idx: 0,
                     progress: 0.0,
                     speed: 5.0,
                     max_speed: 60.0,
@@ -3770,6 +3966,7 @@ mod tests {
             .spawn((
                 Vehicle {
                     route: vec![approach, intersection_tile, exit],
+                    route_idx: 0,
                     progress: 1.0 - STOP_LINE_OFFSET,
                     speed: 0.0,
                     max_speed: 60.0,
@@ -3880,6 +4077,7 @@ mod tests {
             .spawn((
                 Vehicle {
                     route: vec![current, goal],
+                    route_idx: 0,
                     progress: 0.0,
                     speed: 0.0,
                     max_speed: 60.0,
@@ -4006,6 +4204,7 @@ mod tests {
             .spawn((
                 Vehicle {
                     route: vec![approach, intersection_tile, exit],
+                    route_idx: 0,
                     progress: 1.0 - STOP_LINE_OFFSET,
                     speed: 0.0,
                     max_speed: 60.0,
@@ -4147,6 +4346,7 @@ mod tests {
             .spawn((
                 Vehicle {
                     route: vec![approach, intersection_tile, exit],
+                    route_idx: 0,
                     progress: 1.0 - STOP_LINE_OFFSET,
                     speed: 0.0,
                     max_speed: 60.0,
@@ -4267,6 +4467,7 @@ mod tests {
                         intersection_tile,
                         TilePos { x: 2, y: 1 },
                     ],
+                    route_idx: 0,
                     progress: 0.9,
                     speed: 1.0,
                     max_speed: 60.0,
@@ -4390,6 +4591,7 @@ mod tests {
                         intersection_tile,
                         TilePos { x: 0, y: 1 },
                     ],
+                    route_idx: 0,
                     progress: 0.9,
                     speed: 1.0,
                     max_speed: 60.0,
@@ -4518,6 +4720,7 @@ mod tests {
             .spawn((
                 Vehicle {
                     route: vec![approach, intersection_tile, exit],
+                    route_idx: 0,
                     progress: 1.0 - STOP_LINE_OFFSET,
                     speed: 5.0,
                     max_speed: 60.0,
@@ -4552,7 +4755,7 @@ mod tests {
 
         // Vehicle must not enter the intersection tile.
         let v = app.world().get::<Vehicle>(ego).unwrap();
-        assert_eq!(v.route.first().copied(), Some(approach));
+        assert_eq!(v.route.get(v.route_idx).copied(), Some(approach));
         assert!(v.progress <= 1.0 - STOP_LINE_OFFSET + 1e-6);
     }
 
@@ -4646,6 +4849,7 @@ mod tests {
                         intersection_tile,
                         TilePos { x: 2, y: 1 },
                     ],
+                    route_idx: 0,
                     progress: 0.9,
                     speed: 1.0,
                     max_speed: 60.0,
@@ -4665,6 +4869,7 @@ mod tests {
                         intersection_tile,
                         TilePos { x: 1, y: 2 },
                     ],
+                    route_idx: 0,
                     progress: 0.9,
                     speed: 1.0,
                     max_speed: 60.0,
@@ -4776,6 +4981,7 @@ mod tests {
                         intersection_tile,
                         TilePos { x: 1, y: 2 },
                     ],
+                    route_idx: 0,
                     progress: 0.9,
                     speed: 1.0,
                     max_speed: 60.0,
@@ -4795,6 +5001,7 @@ mod tests {
                         intersection_tile,
                         TilePos { x: 1, y: 0 },
                     ],
+                    route_idx: 0,
                     progress: 0.9,
                     speed: 1.0,
                     max_speed: 60.0,
@@ -4902,6 +5109,7 @@ mod tests {
                         intersection_tile,
                         TilePos { x: 2, y: 1 },
                     ],
+                    route_idx: 0,
                     progress: 0.9,
                     speed: 1.0,
                     max_speed: 60.0,
@@ -4919,6 +5127,7 @@ mod tests {
                         intersection_tile,
                         TilePos { x: 2, y: 1 },
                     ],
+                    route_idx: 0,
                     progress: 0.8,
                     speed: 1.0,
                     max_speed: 60.0,
@@ -5050,6 +5259,7 @@ mod tests {
             .spawn((
                 Vehicle {
                     route: vec![approach, intersection_tile, exit],
+                    route_idx: 0,
                     progress: 1.0 - STOP_LINE_OFFSET,
                     speed: 999.0, // absurdly high, should be clamped
                     max_speed: 999.0,
@@ -5196,6 +5406,7 @@ mod tests {
                         intersection_tile,
                         TilePos { x: 3, y: 3 },
                     ],
+                    route_idx: 0,
                     progress: 0.0,
                     speed: 100.0, // fast enough that stopping comfortably is impossible in ~3 tiles
                     max_speed: 999.0,
@@ -5298,6 +5509,7 @@ mod tests {
             .write(TripRequested {
                 citizen: cid,
                 from: TilePos { x: 0, y: 0 },
+                car_parked_at: Some(TilePos { x: 0, y: 2 }),
                 to: TilePos { x: 2, y: 2 },
                 purpose: crate::game::trips::TripPurpose::Work,
                 mode: TripMode::Car,
@@ -5369,6 +5581,7 @@ mod tests {
                 Sprite::default(),
                 Vehicle {
                     route: vec![tile],
+                    route_idx: 0,
                     progress: 1.0, // will be consumed -> arrival
                     speed: 0.0,
                     max_speed: 60.0,
@@ -5400,7 +5613,7 @@ mod tests {
             "trip marker removed"
         );
         let v = app.world().get::<Vehicle>(car).unwrap();
-        assert_eq!(v.route.first().copied(), Some(tile));
+        assert_eq!(v.route.get(v.route_idx).copied(), Some(tile));
         assert_eq!(v.speed, 0.0);
     }
 
@@ -5482,6 +5695,7 @@ mod tests {
                 Sprite::default(),
                 Vehicle {
                     route: vec![road],
+                    route_idx: 0,
                     progress: 0.0,
                     speed: 0.0,
                     max_speed: 60.0,
@@ -5499,6 +5713,7 @@ mod tests {
             .write(TripRequested {
                 citizen,
                 from: TilePos { x: 0, y: 0 },
+                car_parked_at: Some(TilePos { x: 0, y: 2 }),
                 to: TilePos { x: 2, y: 2 },
                 purpose: crate::game::trips::TripPurpose::Work,
                 mode: TripMode::Car,

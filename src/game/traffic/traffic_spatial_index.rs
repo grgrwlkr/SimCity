@@ -36,6 +36,11 @@ pub struct TrafficSpatialIndex {
 }
 
 impl TrafficSpatialIndex {
+    #[inline]
+    pub fn is_built_for_len(&self, len: usize) -> bool {
+        self.grid_len == len && self.counts.len() == len && self.offsets.len() == len
+    }
+
     pub fn rebuild(
         &mut self,
         cfg: &MapConfig,
@@ -67,7 +72,7 @@ impl TrafficSpatialIndex {
 
         // Pass 1: count vehicles per tile, track touched tiles.
         for (_e, v) in q_vehicles.iter() {
-            let Some(&tile) = v.route.first() else {
+            let Some(&tile) = v.route.get(v.route_idx) else {
                 continue;
             };
             let Some(idx) = grid.idx(tile) else {
@@ -112,7 +117,7 @@ impl TrafficSpatialIndex {
 
         // Pass 2: fill per-tile buckets into the flat array.
         for (e, v) in q_vehicles.iter() {
-            let Some(&tile) = v.route.first() else {
+            let Some(&tile) = v.route.get(v.route_idx) else {
                 continue;
             };
             let Some(idx) = grid.idx(tile) else {

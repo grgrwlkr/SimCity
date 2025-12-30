@@ -26,21 +26,44 @@ use crate::game::ui_state::UiState;
 
 pub struct EmergenciesPlugin;
 
+/// O(1) lookup of emergencies by tile for UI/inspector/debug.
+#[derive(Resource, Default)]
+pub(crate) struct EmergencyEntityIndex {
+    by_pos: std::collections::HashMap<TilePos, Entity>,
+    by_entity: std::collections::HashMap<Entity, TilePos>,
+}
+
+impl EmergencyEntityIndex {
+    pub(crate) fn get(&self, pos: TilePos) -> Option<Entity> {
+        self.by_pos.get(&pos).copied()
+    }
+}
+
 impl Plugin for EmergenciesPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<EmergencyManager>().add_systems(
-            FixedUpdate,
-            (
-                spawn_emergencies,
-                dispatch_emergency_vehicles,
-                update_emergency_timers,
-                resolve_emergencies,
-                apply_emergency_consequences,
-                cleanup_resolved_emergencies,
-            )
-                .chain()
-                .in_set(GameSet::Sim)
-                .run_if(in_state(AppState::InGame)),
+        app.init_resource::<EmergencyManager>()
+            .init_resource::<EmergencyEntityIndex>()
+            .add_systems(
+                FixedUpdate,
+                (
+                    spawn_emergencies,
+                    dispatch_emergency_vehicles,
+                    update_emergency_timers,
+                    resolve_emergencies,
+                    apply_emergency_consequences,
+                    cleanup_resolved_emergencies,
+                )
+                    .chain()
+                    .in_set(GameSet::Sim)
+                    .run_if(in_state(AppState::InGame)),
+            );
+
+        // Maintain cheap tile->emergency lookup for UI (no per-frame scans).
+        app.add_systems(
+            Update,
+            track_emergency_index
+                .in_set(GameSet::CommandApply)
+                .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
         );
 
         // Visual markers (render sync)
@@ -50,6 +73,25 @@ impl Plugin for EmergenciesPlugin {
                 .in_set(GameSet::RenderSync)
                 .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
         );
+    }
+}
+
+fn track_emergency_index(
+    mut idx: ResMut<EmergencyEntityIndex>,
+    q_added: Query<(Entity, &Emergency), Added<Emergency>>,
+    mut removed: RemovedComponents<Emergency>,
+) {
+    for (e, em) in q_added.iter() {
+        idx.by_pos.insert(em.pos, e);
+        idx.by_entity.insert(e, em.pos);
+    }
+    for e in removed.read() {
+        let Some(pos) = idx.by_entity.remove(&e) else {
+            continue;
+        };
+        if idx.by_pos.get(&pos).copied() == Some(e) {
+            idx.by_pos.remove(&pos);
+        }
     }
 }
 
@@ -437,12 +479,17 @@ fn dispatch_emergency_vehicles(mut p: DispatchParams) {
             emergency.assigned_vehicle = Some(vehicle_entity);
 
             // Build route from the vehicle's parked lane tile if possible.
-            let from = vehicle.route.first().copied().unwrap_or(sv.home_road);
+            let from = vehicle
+                .route
+                .get(vehicle.route_idx)
+                .copied()
+                .unwrap_or(sv.home_road);
             let mut route = find_path_with_fallback(&mut ctx, &p.grid, from, emergency_road);
             if route.is_empty() && from != station_road {
                 route = find_path_with_fallback(&mut ctx, &p.grid, station_road, emergency_road);
             }
             vehicle.route = route;
+            vehicle.route_idx = 0;
             vehicle.speed = sv.kind.vehicle_speed();
 
             // Remove Parked component - vehicle is now active on the road
@@ -534,7 +581,7 @@ fn resolve_emergencies(mut p: ResolveParams) {
 
         match sv.state {
             ServiceVehicleState::EnRoute => {
-                if vehicle.route.is_empty() {
+                if vehicle.route_idx >= vehicle.route.len() {
                     sv.state = ServiceVehicleState::OnScene;
                     emergency.responded = true;
                     vehicle.speed = 0.0;
@@ -625,12 +672,13 @@ fn resolve_emergencies(mut p: ResolveParams) {
                 }
             }
             ServiceVehicleState::Returning => {
-                if vehicle.route.is_empty() {
+                if vehicle.route_idx >= vehicle.route.len() {
                     // Back at station.
                     sv.state = ServiceVehicleState::AtStation;
                     sv.mission = None;
                     vehicle.speed = 0.0;
                     vehicle.route = vec![sv.home_road];
+                    vehicle.route_idx = 0;
                     // Add Parked component - vehicle is now parked at station
                     p.commands
                         .entity(vehicle_entity)

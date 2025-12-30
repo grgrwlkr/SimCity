@@ -22,6 +22,11 @@ pub enum TripMode {
 pub struct TripRequested {
     pub citizen: CitizenId,
     pub from: TilePos,
+    /// For car trips: where the citizen's car is currently parked (building tile).
+    ///
+    /// This is carried in the message to avoid a hot-path lookup of `Citizen` state inside
+    /// `spawn_trip_vehicles` (keeps trip spawning O(1) w.r.t. citizen count).
+    pub car_parked_at: Option<TilePos>,
     pub to: TilePos,
     pub purpose: TripPurpose,
     pub mode: TripMode,

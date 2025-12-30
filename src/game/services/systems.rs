@@ -104,6 +104,7 @@ pub(crate) fn spawn_service_vehicle(
                 // Keep a "parked" tile so dispatch can build a route from the correct lane tile.
                 // Speed 0 keeps the vehicle stationary.
                 route: vec![start_pos],
+                route_idx: 0,
                 progress: 0.0,
                 speed: 0.0,
                 max_speed: kind.vehicle_speed(),
@@ -147,8 +148,9 @@ pub(crate) fn park_returned_service_vehicles(
         // snap it back to "parked at station" so it becomes dispatchable again.
         if sv.state == ServiceVehicleState::AtStation {
             // Ensure a stable parked representation.
-            if vehicle.route.is_empty() {
+            if vehicle.route.is_empty() || vehicle.route_idx >= vehicle.route.len() {
                 vehicle.route = vec![sv.home_road];
+                vehicle.route_idx = 0;
             }
             vehicle.speed = 0.0;
             // Ensure parked component is present
@@ -172,7 +174,7 @@ pub(crate) fn park_returned_service_vehicles(
             }
         }
 
-        if !vehicle.route.is_empty() {
+        if vehicle.route_idx < vehicle.route.len() {
             continue;
         }
 
@@ -187,6 +189,7 @@ pub(crate) fn park_returned_service_vehicles(
         sv.mission = None;
         vehicle.speed = 0.0;
         vehicle.route = vec![sv.home_road];
+        vehicle.route_idx = 0;
 
         // Add parked component - vehicle is now parked at station
         commands.entity(entity).insert(Parked { offset: 1.0 });

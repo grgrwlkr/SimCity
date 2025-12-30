@@ -159,8 +159,14 @@ impl Default for LastOverlayMode {
 }
 
 #[derive(Resource, Default)]
-struct BuildingEntityIndex {
+pub(crate) struct BuildingEntityIndex {
     by_pos: HashMap<TilePos, Entity>,
+}
+
+impl BuildingEntityIndex {
+    pub(crate) fn get(&self, pos: TilePos) -> Option<Entity> {
+        self.by_pos.get(&pos).copied()
+    }
 }
 
 #[derive(Resource, serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -1902,6 +1908,7 @@ fn vehicle_routes_overlay_render(
     cfg: Res<MapConfig>,
     mut gizmos: Gizmos<RouteGizmos>,
     q_vehicles: Query<(&Vehicle, &Transform), Without<Parked>>,
+    mut scratch: Local<Vec<Vec2>>,
 ) {
     if !matches!(state.get(), AppState::InGame | AppState::Paused) {
         return;
@@ -1914,36 +1921,46 @@ fn vehicle_routes_overlay_render(
     let color = Color::srgba(1.0, 0.75, 0.20, 0.70);
     let origin = map_origin(&cfg);
 
-    // Guardrail to keep the overlay cheap when many vehicles are active.
+    // Guardrails to keep the overlay cheap when many vehicles are active.
+    //
+    // Rendering 1M routes is not feasible; cap work per frame strictly.
+    const MAX_ROUTES_PER_FRAME: usize = 256;
     const MAX_POINTS_PER_ROUTE: usize = 256;
 
+    let mut drawn = 0usize;
     for (vehicle, tf) in q_vehicles.iter() {
-        // `route[0]` is the current tile. We draw from current *world position* to the remaining tiles.
-        if vehicle.route.len() < 2 {
+        if drawn >= MAX_ROUTES_PER_FRAME {
+            break;
+        }
+        // We draw from current *world position* to the remaining tiles.
+        if vehicle.route_idx + 1 >= vehicle.route.len() {
             continue;
         }
 
-        let remaining_tiles = vehicle.route.len().saturating_sub(1);
+        let remaining_tiles = vehicle.route.len().saturating_sub(vehicle.route_idx + 1);
         let max_tiles = MAX_POINTS_PER_ROUTE.saturating_sub(1).max(1);
         let stride = remaining_tiles.div_ceil(max_tiles); // >= 1
 
-        let mut points = Vec::with_capacity(vehicle.route.len().min(MAX_POINTS_PER_ROUTE) + 1);
-        points.push(tf.translation.truncate());
+        scratch.clear();
+        scratch.reserve(remaining_tiles.min(MAX_POINTS_PER_ROUTE) + 1);
+        scratch.push(tf.translation.truncate());
 
-        for (i, pos) in vehicle.route.iter().enumerate().skip(1) {
+        for (i, pos) in vehicle.route.iter().enumerate().skip(vehicle.route_idx + 1) {
             // Always include the last tile, even when downsampling.
             let is_last = i + 1 == vehicle.route.len();
-            let should_take = is_last || ((i - 1) % stride == 0);
+            let rel_i = i.saturating_sub(vehicle.route_idx + 1);
+            let should_take = is_last || (rel_i % stride == 0);
             if !should_take {
                 continue;
             }
 
             let w = origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size);
-            points.push(w);
+            scratch.push(w);
         }
 
-        if points.len() >= 2 {
-            gizmos.linestrip_2d(points, color);
+        if scratch.len() >= 2 {
+            gizmos.linestrip_2d(scratch.iter().copied(), color);
+            drawn += 1;
         }
     }
 }

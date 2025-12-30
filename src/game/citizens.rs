@@ -219,6 +219,11 @@ fn citizen_trip_planner(
                         out.write(TripRequested {
                             citizen: id.0,
                             from: c.home,
+                            car_parked_at: if mode == TripMode::Car {
+                                Some(c.car_parked_at)
+                            } else {
+                                None
+                            },
                             to: shop,
                             purpose: TripPurpose::Shop,
                             mode,
@@ -242,6 +247,11 @@ fn citizen_trip_planner(
                 out.write(TripRequested {
                     citizen: id.0,
                     from: c.home,
+                    car_parked_at: if mode == TripMode::Car {
+                        Some(c.car_parked_at)
+                    } else {
+                        None
+                    },
                     to: work,
                     purpose: TripPurpose::Work,
                     mode,
@@ -260,6 +270,11 @@ fn citizen_trip_planner(
                 out.write(TripRequested {
                     citizen: id.0,
                     from: c.last_place,
+                    car_parked_at: if mode == TripMode::Car {
+                        Some(c.car_parked_at)
+                    } else {
+                        None
+                    },
                     to: c.home,
                     purpose: TripPurpose::ReturnHome,
                     mode,
@@ -277,6 +292,11 @@ fn citizen_trip_planner(
                 out.write(TripRequested {
                     citizen: id.0,
                     from: c.last_place,
+                    car_parked_at: if mode == TripMode::Car {
+                        Some(c.car_parked_at)
+                    } else {
+                        None
+                    },
                     to: c.home,
                     purpose: TripPurpose::ReturnHome,
                     mode,

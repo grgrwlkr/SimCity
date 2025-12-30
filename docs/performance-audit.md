@@ -102,16 +102,31 @@ ECS даёт выигрыши, когда:
 Почему это не масштабируется:
 - При росте N (машин) такие паттерны быстро превращаются в “потолок”.
 
+### 2.1) `Vehicle.route.remove(0)` (O(route_len) сдвиг Vec) на каждом пересечённом тайле
+
+**Done (реализовано в коде):**
+- В `Vehicle` добавлено поле `route_idx`, и симуляция больше не делает `route.remove(0)` при движении.
+- Все системы, которые читают “текущий/следующий тайл”, используют remaining-slice `route[route_idx..]`.
+
+Почему это критично для 1M:
+- `remove(0)` на `Vec` — это memmove, то есть **O(length)**. При длинных маршрутах получается скрытая квадратичность по работе на машину.
+
 ### 3) `OverlayMode::Path`: отрисовка маршрутов всех машин каждый кадр (аллокации + gizmos)
 
 Файл: `src/game/map/mod.rs`: `vehicle_routes_overlay_render()`
 
 Проблема:
-- При активном `OverlayMode::Path` на **каждую машину** создаётся `Vec<Vec2>` точек и рисуется `gizmos.linestrip_2d`.
+Исторически при активном `OverlayMode::Path` на **каждую машину** создавался `Vec<Vec2>` точек и рисовался `gizmos.linestrip_2d` (per-frame O(N) + аллокации).
+
+**Done (реализовано в коде):**
+- `vehicle_routes_overlay_render()` теперь:
+  - строго ограничивает работу per frame: **`MAX_ROUTES_PER_FRAME`**,
+  - ограничивает точки: **`MAX_POINTS_PER_ROUTE`**,
+  - использует `Local<Vec<Vec2>>` scratch и передаёт итератор (`scratch.iter().copied()`), чтобы **не аллоцировать Vec на каждую машину**.
 
 Следствие:
-- Это постоянная нагрузка в `Update`, не связанная с сим-частотой.
-- Даже небольшое количество машин может давать ощутимую нагрузку при длинных маршрутах.
+- Это постоянная нагрузка в `Update`, не связанная с сим-частотой, но теперь она **жёстко bounded** (не растёт с N).
+- Даже при 100k–1M машин overlay не должен “убивать кадр”, но будет показывать **только часть** маршрутов (по лимиту).
 
 ### 4) Оверлеи, которые пересоздают сущности каждый кадр (spawn/despawn churn)
 
@@ -139,7 +154,7 @@ ECS даёт выигрыши, когда:
 Файл: `src/game/ui.rs`
 
 Проблема:
-- `update_ui_metrics()` делает `q_vehicles.iter().count()`, `q_citizens.iter().count()`, `q_buildings.iter().count()` каждый кадр.
+- Исторически `update_ui_metrics()` делал `q_vehicles.iter().count()`, `q_citizens.iter().count()`, `q_buildings.iter().count()` каждый кадр.
 - Sidebar/Inspector делает линейные поиски по `q_buildings/q_emergencies/q_vehicles/q_citizens` для hovered tile.
 
 Следствие:
@@ -229,6 +244,12 @@ ECS даёт выигрыши, когда:
 **Done (реализовано в коде):** внутри `update_vehicle_traffic_state` построение `Local<HashMap<IntersectionKey, TrafficLight>>` **1× за тик** вместо per-vehicle `find()`.  
 Дальше (планово): вынести это в отдельный ресурс `TrafficLightIndex` (обновлять по изменениям, а не per tick).
 
+### Traffic spawn: убрать линейные проходы по citizen/parked car
+
+**Done (реализовано в коде):**
+- `TripRequested` теперь несёт `car_parked_at: Option<TilePos>` (CarTour “no car from pocket”), чтобы `spawn_trip_vehicles` не искал гражданина через перебор Query.
+- Для реюза “личной машины” добавлен `CarOwnerIndex` (O(1) lookup citizen → car entity) вместо скана всех припаркованных машин.
+
 ### Pedestrians: заменить BFS “на запрос” на батч/кэш/эвристику
 
 **Сделано (реализовано в коде):**
@@ -236,6 +257,7 @@ ECS даёт выигрыши, когда:
 - `PedestrianGraph`/пешеходный BFS вынесены из монолита и оптимизированы через `PedestrianRoutingScratch` (переиспользуемые буферы + bounded BFS).
 - `citizens` выбирает `Walk` через `shortest_path_steps_bounded` (без аллокаций на запрос и с лимитом по max steps).
 - `spawn_walkers` и reroute используют bounded построение маршрута, чтобы BFS не “убежал” на всю карту.
+- Нерегулируемые перекрёстки: `ped_can_enter_uncontrolled` больше не делает `O(vehicles)` перебор, а использует `TrafficSpatialIndex` (проверка только ближайших подходов).
 
 ### PostSim по карте: “по событию” и/или “по чанкам”
 
@@ -377,6 +399,7 @@ ECS даёт выигрыши, когда:
 Что попадает в dump (высокоуровнево):
 - **Контекст**: `app_state`, `sim_speed`, `tool`, `overlay`, карта (`width/height/tile_size`), камера, (опционально) hovered tile.
 - **UI агрегаты**: население/день/деньги, traffic avg/max, demand R/C/I, статистика занятости, emergencies.
+- **Локализация “пика” трафика**: `ui_metrics.traffic_max_tile` (+ `traffic_max_tile_vehicles`, `traffic_max_tile_capacity`) — координаты тайла, где наблюдался `traffic_max`, и сколько там машин/капацитет. Это помогает быстро понять “где именно узкое место”, когда `traffic_avg` маленький, а `traffic_max` = 1.0.
 - **Telemetry**:
   - `telemetry.summary`: min/max за окно, deltas, max “плохих” счётчиков (например `vehicles_no_route_max`, `vehicles_zero_speed_max`).
   - `telemetry.samples[]`: временной ряд “срезов” (шаг `interval_secs`) с агрегатами по состояниям машин (free_flow/approaching/stopped/… + service states).

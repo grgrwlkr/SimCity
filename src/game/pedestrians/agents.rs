@@ -116,65 +116,78 @@ pub(super) fn spawn_walkers(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[derive(SystemParam)]
+pub(crate) struct MoveWalkersParams<'w, 's> {
+    cfg: Res<'w, MapConfig>,
+    grid: Res<'w, MapGrid>,
+    ped_cfg: Res<'w, PedestrianConfig>,
+    traffic_cfg: Res<'w, TrafficConfig>,
+    intersections: Option<Res<'w, crate::game::intersections::IntersectionIndex>>,
+    reservations: Option<Res<'w, IntersectionReservations>>,
+    q_lights: Query<'w, 's, &'static crate::game::intersections::TrafficLight>,
+    spatial: Option<Res<'w, crate::game::traffic::TrafficSpatialIndex>>,
+    q_vehicles: Query<'w, 's, (Entity, &'static Vehicle), Without<Parked>>,
+    q_vehicle_by_entity: Query<'w, 's, &'static Vehicle, Without<Parked>>,
+    graph: Res<'w, PedestrianGraph>,
+    routing: ResMut<'w, PedestrianRoutingScratch>,
+    finished: bevy::ecs::message::MessageWriter<'w, TripFinished>,
+    commands: Commands<'w, 's>,
+    q: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static mut Pedestrian,
+            &'static mut PedestrianTile,
+            &'static mut Transform,
+            &'static WalkTripPassenger,
+        ),
+    >,
+}
+
 pub(crate) fn move_walkers(
     time: Res<Time<Fixed>>,
-    cfg: Res<MapConfig>,
-    grid: Res<MapGrid>,
-    ped_cfg: Res<PedestrianConfig>,
-    traffic_cfg: Res<TrafficConfig>,
-    intersections: Option<Res<crate::game::intersections::IntersectionIndex>>,
-    reservations: Option<Res<IntersectionReservations>>,
-    q_vehicles: Query<(Entity, &Vehicle), Without<Parked>>,
-    q_lights: Query<&crate::game::intersections::TrafficLight>,
-    graph: Res<PedestrianGraph>,
-    mut routing: ResMut<PedestrianRoutingScratch>,
-    mut finished: bevy::ecs::message::MessageWriter<TripFinished>,
-    mut commands: Commands,
-    mut q: Query<(
-        Entity,
-        &mut Pedestrian,
-        &mut PedestrianTile,
-        &mut Transform,
-        &WalkTripPassenger,
-    )>,
+    mut p: MoveWalkersParams,
+    mut lights_by_id: Local<
+        std::collections::HashMap<
+            crate::game::intersections::IntersectionId,
+            crate::game::intersections::TrafficLight,
+        >,
+    >,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
         return;
     }
 
-    let tile_meters = traffic_cfg.tile_meters().max(0.1);
-    let max_m = ped_cfg.walk_tour_max_m.max(0.0);
+    let tile_meters = p.traffic_cfg.tile_meters().max(0.1);
+    let max_m = p.ped_cfg.walk_tour_max_m.max(0.0);
     let max_steps = ((max_m / tile_meters).ceil().min(4096.0)) as u32;
 
-    // Build a small lookup of controllers by intersection id.
-    let mut lights_by_id = std::collections::HashMap::<
-        crate::game::intersections::IntersectionId,
-        crate::game::intersections::TrafficLight,
-    >::new();
-    for l in q_lights.iter() {
+    // Build a small lookup of controllers by intersection id (reuse buffers).
+    lights_by_id.clear();
+    for l in p.q_lights.iter() {
         lights_by_id.insert(l.intersection_id, l.clone());
     }
 
-    for (e, mut ped, mut ped_tile, mut tf, passenger) in q.iter_mut() {
+    for (e, mut ped, mut ped_tile, mut tf, passenger) in p.q.iter_mut() {
         if ped.route_idx + 1 >= ped.route.len() {
-            finished.write(TripFinished {
+            p.finished.write(TripFinished {
                 citizen: passenger.citizen,
                 purpose: passenger.purpose,
             });
-            commands.entity(e).despawn();
+            p.commands.entity(e).despawn();
             continue;
         }
 
         let a = ped.route[ped.route_idx];
         *ped_tile = PedestrianTile(a);
         // Remove crossing marker when outside intersection.
-        if !is_intersection_tile(&grid, a) {
-            commands.entity(e).remove::<PedestrianCrossing>();
+        if !is_intersection_tile(&p.grid, a) {
+            p.commands.entity(e).remove::<PedestrianCrossing>();
         }
 
-        let seg_len = cfg.tile_size.max(0.001);
+        let seg_len = p.cfg.tile_size.max(0.001);
         let b = ped.route[ped.route_idx + 1];
 
         let mut blocked = false;
@@ -185,9 +198,9 @@ pub(crate) fn move_walkers(
         //
         // If we're already inside the intersection cluster (`a` is an intersection tile),
         // always allow continuing so we never strand a pedestrian mid-crossing.
-        if is_intersection_tile(&grid, b)
-            && !is_intersection_tile(&grid, a)
-            && let Some(intersections) = intersections.as_deref()
+        if is_intersection_tile(&p.grid, b)
+            && !is_intersection_tile(&p.grid, a)
+            && let Some(intersections) = p.intersections.as_deref()
             && let Some(id) = intersections.intersection_id_at(b)
             && intersections.traffic_lights.contains(&id)
             && let Some(light) = lights_by_id.get(&id)
@@ -196,19 +209,22 @@ pub(crate) fn move_walkers(
             if !ped_can_enter_intersection(dir, light) {
                 blocked = true;
             }
-        } else if is_intersection_tile(&grid, b) && !is_intersection_tile(&grid, a) {
+        } else if is_intersection_tile(&p.grid, b) && !is_intersection_tile(&p.grid, a) {
             // Uncontrolled intersection: wait for a safe window.
-            if let Some(intersections) = intersections.as_deref()
+            if let Some(intersections) = p.intersections.as_deref()
                 && let Some(id) = intersections.intersection_id_at(b)
                 && !intersections.traffic_lights.contains(&id)
                 && !ped_can_enter_uncontrolled(
                     id,
                     b,
-                    reservations.as_deref(),
+                    p.reservations.as_deref(),
                     ped.speed_world,
-                    &cfg,
-                    &ped_cfg,
-                    &q_vehicles,
+                    &p.cfg,
+                    &p.ped_cfg,
+                    &p.grid,
+                    p.spatial.as_deref(),
+                    &p.q_vehicles,
+                    &p.q_vehicle_by_entity,
                 )
             {
                 blocked = true;
@@ -223,8 +239,8 @@ pub(crate) fn move_walkers(
 
             // Reroute if stuck too long at an uncontrolled crossing.
             if let Some(avoid) = reroute_avoid
-                && ped.wait_blocked_secs >= ped_cfg.wait_reroute_secs.max(0.0)
-                && ped.reroute_attempts < ped_cfg.wait_reroute_max_attempts
+                && ped.wait_blocked_secs >= p.ped_cfg.wait_reroute_secs.max(0.0)
+                && ped.reroute_attempts < p.ped_cfg.wait_reroute_max_attempts
             {
                 ped.wait_blocked_secs = 0.0;
                 ped.reroute_attempts = ped.reroute_attempts.saturating_add(1);
@@ -232,25 +248,26 @@ pub(crate) fn move_walkers(
                 // Attempt 1: avoid the blocked intersection tile only.
                 // Attempt 2+: avoid all uncontrolled intersections to prefer signalized crossings.
                 let prefer_signalized = ped.reroute_attempts >= 2;
-                let mut new_route =
-                    routing.shortest_path_avoid_bounded(&graph, a, ped.goal, avoid, max_steps);
+                let mut new_route = p
+                    .routing
+                    .shortest_path_avoid_bounded(&p.graph, a, ped.goal, avoid, max_steps);
                 if prefer_signalized
                     && new_route.is_none()
-                    && let Some(intersections) = intersections.as_deref()
+                    && let Some(intersections) = p.intersections.as_deref()
                 {
-                    new_route = routing.shortest_path_blocked_bounded(
-                        &graph,
+                    new_route = p.routing.shortest_path_blocked_bounded(
+                        &p.graph,
                         a,
                         ped.goal,
                         max_steps,
-                        |p| {
-                            if p == avoid {
+                        |pos| {
+                            if pos == avoid {
                                 return true;
                             }
-                            if !is_intersection_tile(&grid, p) {
+                            if !is_intersection_tile(&p.grid, pos) {
                                 return false;
                             }
-                            let Some(id) = intersections.intersection_id_at(p) else {
+                            let Some(id) = intersections.intersection_id_at(pos) else {
                                 return false;
                             };
                             !intersections.traffic_lights.contains(&id)
@@ -266,21 +283,21 @@ pub(crate) fn move_walkers(
                 }
             }
 
-            let world = tile_to_world(&cfg, a);
+            let world = tile_to_world(&p.cfg, a);
             tf.translation.x = world.x;
             tf.translation.y = world.y;
             continue;
         }
 
         // If we are about to enter an intersection tile, mark the crossing axis for other systems.
-        if is_intersection_tile(&grid, b)
-            && !is_intersection_tile(&grid, a)
-            && let Some(intersections) = intersections.as_deref()
+        if is_intersection_tile(&p.grid, b)
+            && !is_intersection_tile(&p.grid, a)
+            && let Some(intersections) = p.intersections.as_deref()
             && let Some(id) = intersections.intersection_id_at(b)
         {
             let dir = dir_between_adjacent(a, b);
             let axis_ns = matches!(dir, RoadDir::North | RoadDir::South);
-            commands.entity(e).insert(PedestrianCrossing {
+            p.commands.entity(e).insert(PedestrianCrossing {
                 intersection_id: id,
                 axis_ns,
             });
@@ -297,22 +314,22 @@ pub(crate) fn move_walkers(
         }
 
         if ped.route_idx + 1 >= ped.route.len() {
-            let world = tile_to_world(&cfg, *ped.route.last().unwrap_or(&a));
+            let world = tile_to_world(&p.cfg, *ped.route.last().unwrap_or(&a));
             tf.translation.x = world.x;
             tf.translation.y = world.y;
-            finished.write(TripFinished {
+            p.finished.write(TripFinished {
                 citizen: passenger.citizen,
                 purpose: passenger.purpose,
             });
-            commands.entity(e).despawn();
+            p.commands.entity(e).despawn();
             continue;
         }
 
         let a = ped.route[ped.route_idx];
         let b = ped.route[ped.route_idx + 1];
         *ped_tile = PedestrianTile(a);
-        let aw = tile_to_world(&cfg, a);
-        let bw = tile_to_world(&cfg, b);
+        let aw = tile_to_world(&p.cfg, a);
+        let bw = tile_to_world(&p.cfg, b);
         let world = aw.lerp(bw, ped.progress.clamp(0.0, 1.0));
         tf.translation.x = world.x;
         tf.translation.y = world.y;
@@ -358,6 +375,7 @@ fn ped_can_enter_intersection(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ped_can_enter_uncontrolled(
     id: crate::game::intersections::IntersectionId,
     intersection_tile: TilePos,
@@ -365,7 +383,10 @@ fn ped_can_enter_uncontrolled(
     ped_speed_world: f32,
     cfg: &MapConfig,
     ped_cfg: &PedestrianConfig,
+    grid: &MapGrid,
+    spatial: Option<&crate::game::traffic::TrafficSpatialIndex>,
     q_vehicles: &Query<(Entity, &Vehicle), Without<Parked>>,
+    q_vehicle_by_entity: &Query<&Vehicle, Without<Parked>>,
 ) -> bool {
     // If any vehicle holds a reservation for this intersection, do not enter.
     if let Some(res) = reservations
@@ -374,12 +395,76 @@ fn ped_can_enter_uncontrolled(
         return false;
     }
 
-    // If a vehicle is about to enter this intersection, do not enter unless there's enough time.
+    // Fast path: use `TrafficSpatialIndex` to check only the closest-to-entry vehicle on each
+    // approach tile (O(1) per pedestrian instead of O(vehicles)).
+    if let Some(spatial) = spatial
+        && spatial.is_built_for_len(grid.len())
+    {
+        let tile_size = cfg.tile_size.max(0.001);
+        let min_gap_tiles = ped_cfg.uncontrolled_min_gap_tiles.max(0.0);
+        let t_cross = tile_size / ped_speed_world.max(0.1);
+        let safety_margin = ped_cfg.uncontrolled_safety_margin_secs.max(0.0);
+
+        for approach in [
+            TilePos {
+                x: intersection_tile.x - 1,
+                y: intersection_tile.y,
+            },
+            TilePos {
+                x: intersection_tile.x + 1,
+                y: intersection_tile.y,
+            },
+            TilePos {
+                x: intersection_tile.x,
+                y: intersection_tile.y - 1,
+            },
+            TilePos {
+                x: intersection_tile.x,
+                y: intersection_tile.y + 1,
+            },
+        ] {
+            let Some(approach_idx) = grid.idx(approach) else {
+                continue;
+            };
+            let Some(entries) = spatial.tile_entries(approach_idx) else {
+                continue;
+            };
+            let Some(front) = entries.last().copied() else {
+                continue;
+            };
+
+            // Confirm this vehicle is actually approaching THIS intersection tile.
+            let Ok(v) = q_vehicle_by_entity.get(front.entity) else {
+                continue;
+            };
+            if v.route_idx + 1 >= v.route.len() || v.route[v.route_idx + 1] != intersection_tile {
+                continue;
+            }
+
+            let dist_to_entry_tiles = (1.0 - front.progress).clamp(0.0, 1.0);
+            if dist_to_entry_tiles <= min_gap_tiles {
+                return false;
+            }
+
+            let v_speed = front.speed.max(0.0);
+            if v_speed > 0.1 {
+                let dist_world = dist_to_entry_tiles * tile_size;
+                let t_entry = dist_world / v_speed;
+                if t_entry <= t_cross + safety_margin {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    // Fallback path (mostly for minimal test worlds): scan all vehicles.
     for (_e, v) in q_vehicles.iter() {
         if v.route.len() < 2 {
             continue;
         }
-        if v.route[1] != intersection_tile {
+        if v.route_idx + 1 >= v.route.len() || v.route[v.route_idx + 1] != intersection_tile {
             continue;
         }
         let dist_to_entry_tiles = (1.0 - v.progress).clamp(0.0, 1.0);

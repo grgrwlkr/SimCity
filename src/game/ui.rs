@@ -100,6 +100,9 @@ struct UiMetrics {
     avg_commute_secs: f32,
     traffic_avg: f32,
     traffic_max: f32,
+    traffic_max_tile: Option<TilePos>,
+    traffic_max_tile_vehicles: u16,
+    traffic_max_tile_capacity: u16,
 
     demand_r: f32,
     demand_c: f32,
@@ -285,6 +288,9 @@ fn update_ui_metrics(mut p: UiMetricsParams) {
         p.metrics.avg_commute_secs = 0.0;
         p.metrics.traffic_avg = 0.0;
         p.metrics.traffic_max = 0.0;
+        p.metrics.traffic_max_tile = None;
+        p.metrics.traffic_max_tile_vehicles = 0;
+        p.metrics.traffic_max_tile_capacity = 0;
 
         p.metrics.demand_r = 0.0;
         p.metrics.demand_c = 0.0;
@@ -326,9 +332,15 @@ fn update_ui_metrics(mut p: UiMetricsParams) {
     if let Some(t) = p.traffic.as_deref() {
         p.metrics.traffic_avg = t.avg_congestion;
         p.metrics.traffic_max = t.max_congestion;
+        p.metrics.traffic_max_tile = t.max_congestion_tile;
+        p.metrics.traffic_max_tile_vehicles = t.max_congestion_tile_vehicles;
+        p.metrics.traffic_max_tile_capacity = t.max_congestion_tile_capacity;
     } else {
         p.metrics.traffic_avg = 0.0;
         p.metrics.traffic_max = 0.0;
+        p.metrics.traffic_max_tile = None;
+        p.metrics.traffic_max_tile_vehicles = 0;
+        p.metrics.traffic_max_tile_capacity = 0;
     }
 
     if let Some(d) = p.demand.as_deref() {
@@ -971,8 +983,19 @@ fn bottom_toolbar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
         });
 }
 
+#[derive(Default)]
+struct InspectorCitizenCache {
+    tile: Option<TilePos>,
+    home_c: usize,
+    place_c: usize,
+}
+
 /// Right sidebar with minimap, info panel, and statistics
-fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams) {
+fn right_sidebar_ui(
+    mut contexts: EguiContexts,
+    p: RightSidebarParams,
+    mut citizen_cache: Local<InspectorCitizenCache>,
+) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
@@ -1022,13 +1045,12 @@ fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams) {
                             ));
 
                             // Building entity (render)
-                            let mut b_found = None;
-                            for b in p.q_buildings.iter() {
-                                if b.pos == tile {
-                                    b_found = Some(*b);
-                                    break;
-                                }
-                            }
+                            let b_found = p
+                                .building_index
+                                .as_deref()
+                                .and_then(|idx| idx.get(tile))
+                                .and_then(|e| p.q_buildings.get(e).ok().copied())
+                                .or_else(|| p.q_buildings.iter().find(|b| b.pos == tile).copied());
                             if let Some(b) = b_found {
                                 ui.separator();
                                 ui.label("Building entity:");
@@ -1040,13 +1062,12 @@ fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams) {
                             }
 
                             // Emergency at tile (if any).
-                            let mut emergency_found: Option<&Emergency> = None;
-                            for e in p.q_emergencies.iter() {
-                                if e.pos == tile {
-                                    emergency_found = Some(e);
-                                    break;
-                                }
-                            }
+                            let emergency_found = p
+                                .emergency_index
+                                .as_deref()
+                                .and_then(|idx| idx.get(tile))
+                                .and_then(|e| p.q_emergencies.get(e).ok())
+                                .or_else(|| p.q_emergencies.iter().find(|e| e.pos == tile));
                             if let Some(e) = emergency_found {
                                 ui.separator();
                                 ui.label("Emergency:");
@@ -1097,19 +1118,25 @@ fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams) {
                             }
 
                             // Citizens linked to tile (home or last_place).
-                            let mut home_c = 0usize;
-                            let mut place_c = 0usize;
-                            for c in p.q_citizens.iter() {
-                                if c.home == tile {
-                                    home_c += 1;
-                                }
-                                if c.last_place == tile {
-                                    place_c += 1;
+                            if citizen_cache.tile != Some(tile) {
+                                citizen_cache.tile = Some(tile);
+                                citizen_cache.home_c = 0;
+                                citizen_cache.place_c = 0;
+                                for c in p.q_citizens.iter() {
+                                    if c.home == tile {
+                                        citizen_cache.home_c += 1;
+                                    }
+                                    if c.last_place == tile {
+                                        citizen_cache.place_c += 1;
+                                    }
                                 }
                             }
                             ui.separator();
-                            ui.label(format!("Citizens home here: {}", home_c));
-                            ui.label(format!("Citizens last_place here: {}", place_c));
+                            ui.label(format!("Citizens home here: {}", citizen_cache.home_c));
+                            ui.label(format!(
+                                "Citizens last_place here: {}",
+                                citizen_cache.place_c
+                            ));
                         });
                 });
 
@@ -1261,6 +1288,8 @@ struct RightSidebarParams<'w, 's> {
     city: Res<'w, City>,
     metrics: Res<'w, UiMetrics>,
     traffic_occ: Option<Res<'w, TrafficOccupancy>>,
+    building_index: Option<Res<'w, crate::game::map::BuildingEntityIndex>>,
+    emergency_index: Option<Res<'w, crate::game::emergencies::EmergencyEntityIndex>>,
     q_emergencies: Query<'w, 's, &'static Emergency>,
     q_buildings: Query<'w, 's, &'static Building>,
     q_citizens: Query<'w, 's, &'static Citizen>,
@@ -1334,7 +1363,9 @@ fn overlay_sources(o: OverlayMode) -> &'static str {
         OverlayMode::Zones => "MapGrid.zone (+ road)",
         OverlayMode::Roads => "MapGrid.road",
         OverlayMode::Traffic => "TrafficOccupancy::heat_idx + TrafficIndex",
-        OverlayMode::Path => "Computed live: Vehicle routes (remaining) + Transform",
+        OverlayMode::Path => {
+            "Computed live: Vehicle routes (remaining) + Transform\nCapped per frame for performance"
+        }
         OverlayMode::ServiceCoverage => "ServiceStation coverage (radius) + uncovered zones",
         OverlayMode::LandValue => "LandValueIndex.values (0.0-1.0)",
         OverlayMode::Pollution => "PollutionIndex.pollution (0.0-1.0)",
@@ -1722,6 +1753,9 @@ struct DebugDumpUiMetrics {
     avg_commute_secs: f32,
     traffic_avg: f32,
     traffic_max: f32,
+    traffic_max_tile: Option<(i32, i32)>,
+    traffic_max_tile_vehicles: u16,
+    traffic_max_tile_capacity: u16,
     demand_r: f32,
     demand_c: f32,
     demand_i: f32,
@@ -1891,6 +1925,9 @@ fn build_debug_dump(
             avg_commute_secs: metrics.avg_commute_secs,
             traffic_avg: metrics.traffic_avg,
             traffic_max: metrics.traffic_max,
+            traffic_max_tile: metrics.traffic_max_tile.map(|t| (t.x, t.y)),
+            traffic_max_tile_vehicles: metrics.traffic_max_tile_vehicles,
+            traffic_max_tile_capacity: metrics.traffic_max_tile_capacity,
             demand_r: metrics.demand_r,
             demand_c: metrics.demand_c,
             demand_i: metrics.demand_i,
