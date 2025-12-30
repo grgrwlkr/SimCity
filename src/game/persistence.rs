@@ -14,7 +14,9 @@ use crate::game::citizens::{Citizen, CitizenWorkplace};
 use crate::game::commands::GameCommand;
 use crate::game::emergencies::{Emergency, EmergencyManager, EmergencyStats};
 use crate::game::ids::{CitizenIdComp, CitizenIdGen};
-use crate::game::map::{MapCell, MapConfig, MapGrid, MapSeed, TilePos, spawn_building_entity};
+use crate::game::map::{
+    MapCell, MapConfig, MapEditVersion, MapGrid, MapSeed, TilePos, spawn_building_entity,
+};
 use crate::game::persistence_contract::{
     CitizenSnapshotV1, MapGridV1, MapTileV1, SaveGameV1, SaveGameV2, ServiceStationSnapshot,
 };
@@ -256,6 +258,7 @@ struct LoadParams<'w, 's> {
     emergency_manager: Option<ResMut<'w, EmergencyManager>>,
     dirty: ResMut<'w, crate::game::map::DirtyTiles>,
     graph_version: ResMut<'w, GraphVersion>,
+    map_edit_version: ResMut<'w, MapEditVersion>,
     q_buildings: Query<'w, 's, Entity, With<Building>>,
     q_vehicles: Query<'w, 's, Entity, With<Vehicle>>,
     q_vehicle_markers: Query<'w, 's, Entity, With<ServiceVehicleMarker>>,
@@ -397,6 +400,7 @@ fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParam
         // Mark map as dirty so render sync updates tiles; bump graph.
         p.dirty.mark_all();
         p.graph_version.bump();
+        p.map_edit_version.bump();
 
         info!(
             "Loaded game from {} (citizens={}, money={}, day={})",

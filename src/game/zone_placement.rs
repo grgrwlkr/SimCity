@@ -15,6 +15,7 @@ pub struct ZonePlacementPlugin;
 impl Plugin for ZonePlacementPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ZonePlacementCache>()
+            .init_resource::<ZonePlacementOverlayPool>()
             .add_systems(
                 Update,
                 update_zone_placement_cache
@@ -117,39 +118,110 @@ fn update_zone_placement_cache(
 #[derive(Component)]
 struct ZonePlacementOverlayTile;
 
+#[derive(Resource, Default)]
+struct ZonePlacementOverlayPool {
+    entries: Vec<Entity>,
+    last_enabled: bool,
+    last_graph_version: u64,
+    last_cfg_w: i32,
+    last_cfg_h: i32,
+    last_tile_size: f32,
+}
+
 fn render_zone_placement_overlay(
     ui: Res<UiState>,
     cfg: Res<MapConfig>,
     cache: Res<ZonePlacementCache>,
+    mut pool: ResMut<ZonePlacementOverlayPool>,
     mut commands: Commands,
-    existing: Query<Entity, With<ZonePlacementOverlayTile>>,
+    mut q_tiles: Query<
+        (&mut Sprite, &mut Transform, &mut Visibility),
+        With<ZonePlacementOverlayTile>,
+    >,
 ) {
-    // Clear old overlay tiles.
-    for e in existing.iter() {
-        commands.entity(e).despawn();
-    }
-
     // Show only for zone tools.
-    if !matches!(
+    let enabled = matches!(
         ui.tool,
         ToolMode::Residential | ToolMode::Commercial | ToolMode::Industrial
-    ) {
+    );
+
+    // If disabled, just hide existing pooled tiles (no despawn churn).
+    if !enabled {
+        if pool.last_enabled {
+            for &e in pool.entries.iter() {
+                if let Ok((_s, _t, mut v)) = q_tiles.get_mut(e) {
+                    *v = Visibility::Hidden;
+                }
+            }
+            pool.last_enabled = false;
+        }
+        return;
+    }
+
+    let cache_version = cache.graph_version;
+    let cfg_changed = pool.last_cfg_w != cfg.width
+        || pool.last_cfg_h != cfg.height
+        || (pool.last_tile_size - cfg.tile_size).abs() > f32::EPSILON;
+    let needs_rebuild =
+        !pool.last_enabled || pool.last_graph_version != cache_version || cfg_changed;
+    if !needs_rebuild {
         return;
     }
 
     let origin = map_origin(&cfg);
-    for pos in &cache.valid_positions {
-        let world = origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size);
-        commands.spawn((
-            ZonePlacementOverlayTile,
-            Sprite {
-                color: Color::srgba(0.2, 0.8, 0.2, 0.25),
-                custom_size: Some(Vec2::splat(cfg.tile_size)),
-                ..default()
-            },
-            Transform::from_xyz(world.x, world.y, 3.0),
-        ));
+    let needed = cache.valid_positions.len();
+    if pool.entries.len() < needed {
+        let to_add = needed - pool.entries.len();
+        pool.entries.reserve(to_add);
+        for _ in 0..to_add {
+            let e = commands
+                .spawn((
+                    ZonePlacementOverlayTile,
+                    Sprite {
+                        color: Color::srgba(0.2, 0.8, 0.2, 0.25),
+                        custom_size: Some(Vec2::splat(cfg.tile_size)),
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, 0.0, 3.0),
+                    Visibility::Hidden,
+                ))
+                .id();
+            pool.entries.push(e);
+        }
     }
+
+    // Assign visible overlay tiles to the cached positions.
+    let mut i = 0usize;
+    for pos in &cache.valid_positions {
+        if i >= pool.entries.len() {
+            break;
+        }
+        let e = pool.entries[i];
+        if let Ok((mut sprite, mut tf, mut vis)) = q_tiles.get_mut(e) {
+            sprite.color = Color::srgba(0.2, 0.8, 0.2, 0.25);
+            sprite.custom_size = Some(Vec2::splat(cfg.tile_size));
+            let world =
+                origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size);
+            tf.translation.x = world.x;
+            tf.translation.y = world.y;
+            tf.translation.z = 3.0;
+            *vis = Visibility::Visible;
+        }
+        i += 1;
+    }
+
+    // Hide any unused pooled entities.
+    for &e in pool.entries[i..].iter() {
+        if let Ok((_s, _t, mut vis)) = q_tiles.get_mut(e) {
+            *vis = Visibility::Hidden;
+        }
+    }
+
+    pool.last_enabled = true;
+    pool.last_graph_version = cache_version;
+    pool.last_cfg_w = cfg.width;
+    pool.last_cfg_h = cfg.height;
+    pool.last_tile_size = cfg.tile_size;
 }
 
 fn map_origin(cfg: &MapConfig) -> Vec2 {

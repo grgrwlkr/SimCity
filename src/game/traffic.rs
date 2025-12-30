@@ -25,6 +25,9 @@ use crate::game::trips::{TripFinished, TripMode, TripRequested};
 use crate::game::ui_state::{OverlayMode, UiState};
 use bevy::window::PrimaryWindow;
 
+mod traffic_spatial_index;
+use traffic_spatial_index::TrafficSpatialIndex;
+
 /// Vehicle entity – stores route and visual offset.
 #[derive(Component)]
 pub struct Vehicle {
@@ -407,6 +410,7 @@ impl Plugin for TrafficPlugin {
             .init_resource::<TrafficConfig>()
             .init_resource::<TrafficOverlayPool>()
             .init_resource::<IntersectionReservations>()
+            .init_resource::<TrafficSpatialIndex>()
             .add_systems(
                 OnEnter(AppState::MainMenu),
                 (
@@ -433,9 +437,19 @@ impl Plugin for TrafficPlugin {
                     tick_lane_change_cooldowns,
                     tick_overtaking,
                     tick_overtake_oncoming,
+                    build_traffic_spatial_index_pre_lane_changes
+                        .after(check_intersection_priority)
+                        .after(spawn_trip_vehicles)
+                        .after(tick_overtake_oncoming)
+                        .before(plan_lane_changes),
                     plan_lane_changes
                         .after(check_intersection_priority)
                         .after(spawn_trip_vehicles)
+                        .before(move_vehicles),
+                    build_traffic_spatial_index
+                        .after(plan_lane_changes)
+                        .before(plan_oncoming_overtakes)
+                        .before(plan_intersection_reservations)
                         .before(move_vehicles),
                     plan_oncoming_overtakes
                         .after(plan_lane_changes)
@@ -1157,16 +1171,15 @@ fn oncoming_lane_offset(grid: &MapGrid, current: TilePos, travel_dir: RoadDir) -
 fn lane_change_safe_progress(
     target: TilePos,
     ego_progress: f32,
-    by_tile: &std::collections::HashMap<TilePos, Vec<(Entity, f32, f32)>>,
+    grid: &MapGrid,
+    spatial: &TrafficSpatialIndex,
     reserved: &std::collections::HashMap<TilePos, Vec<f32>>,
     min_gap_progress: f32,
 ) -> bool {
-    if let Some(list) = by_tile.get(&target) {
-        for (_, p, _) in list.iter().copied() {
-            if (p - ego_progress).abs() < min_gap_progress {
-                return false;
-            }
-        }
+    if let Some(ti) = grid.idx(target)
+        && spatial.tile_has_progress_within(ti, ego_progress, min_gap_progress)
+    {
+        return false;
     }
     if let Some(list) = reserved.get(&target) {
         for p in list.iter().copied() {
@@ -1181,72 +1194,11 @@ fn lane_change_safe_progress(
 fn find_leader_ahead(
     ego: (TilePos, f32),
     route: &[TilePos],
-    by_tile: &std::collections::HashMap<TilePos, Vec<(Entity, f32, f32)>>,
+    grid: &MapGrid,
+    spatial: &TrafficSpatialIndex,
 ) -> Option<(f32, f32)> {
     let (tile, progress) = ego;
-    let list = by_tile.get(&tile)?;
-    // On the same tile: nearest vehicle with higher progress.
-    let mut best: Option<(f32, f32)> = None; // (gap_tiles, lead_speed)
-    for (_, p, v) in list.iter().copied() {
-        if p > progress {
-            let g = p - progress;
-            if best.is_none() || g < best.unwrap().0 {
-                best = Some((g, v));
-            }
-        }
-    }
-    // On the next tile: earliest vehicle.
-    if route.len() > 1 {
-        let next_tile = route[1];
-        if let Some(next_list) = by_tile.get(&next_tile)
-            && let Some((_, min_p, lead_v)) = next_list.first().copied()
-        {
-            let g = (1.0 - progress) + min_p;
-            if best.is_none() || g < best.unwrap().0 {
-                best = Some((g, lead_v));
-            }
-        }
-    }
-    best
-}
-
-fn find_leader_ahead_entity(
-    ego_e: Entity,
-    ego: (TilePos, f32),
-    route: &[TilePos],
-    by_tile: &std::collections::HashMap<TilePos, Vec<(Entity, f32, f32)>>,
-) -> Option<(Entity, f32, f32)> {
-    let (tile, progress) = ego;
-    let list = by_tile.get(&tile)?;
-
-    let mut best: Option<(Entity, f32, f32)> = None; // (entity, gap_tiles, lead_speed)
-    for (e, p, v) in list.iter().copied() {
-        if e == ego_e {
-            continue;
-        }
-        if p > progress {
-            let g = p - progress;
-            if best.is_none() || g < best.unwrap().1 {
-                best = Some((e, g, v));
-            }
-        }
-    }
-
-    // On the next tile: earliest vehicle (closest to entry).
-    if route.len() > 1 {
-        let next_tile = route[1];
-        if let Some(next_list) = by_tile.get(&next_tile)
-            && let Some((e, min_p, lead_v)) = next_list.first().copied()
-            && e != ego_e
-        {
-            let g = (1.0 - progress) + min_p;
-            if best.is_none() || g < best.unwrap().1 {
-                best = Some((e, g, lead_v));
-            }
-        }
-    }
-
-    best
+    spatial.leader_ahead(grid, tile, progress, route)
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -1261,6 +1213,7 @@ fn plan_lane_changes(
     mut path_cache: ResMut<PathCache>,
     intersections: Res<IntersectionIndex>,
     traffic_cfg: Res<TrafficConfig>,
+    spatial: Res<TrafficSpatialIndex>,
     mut commands: Commands,
     mut vehicles: ParamSet<(
         Query<
@@ -1279,22 +1232,6 @@ fn plan_lane_changes(
         Query<(Entity, &mut Vehicle), Without<Parked>>,
     )>,
 ) {
-    // Build a per-tile ordering for leader detection and lane safety checks.
-    let mut by_tile: std::collections::HashMap<TilePos, Vec<(Entity, f32, f32)>> =
-        std::collections::HashMap::new();
-    for (e, v, ..) in vehicles.p0().iter() {
-        if let Some(&tile) = v.route.first() {
-            by_tile.entry(tile).or_default().push((
-                e,
-                v.progress.clamp(0.0, 1.0),
-                v.speed.max(0.0),
-            ));
-        }
-    }
-    for list in by_tile.values_mut() {
-        list.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-    }
-
     let idm = idm_params_world(&cfg, &traffic_cfg);
     let min_gap_progress = (idm.s0 / cfg.tile_size.max(0.1)).clamp(0.12, 0.45);
 
@@ -1370,7 +1307,7 @@ fn plan_lane_changes(
         let right_target = lane_change_target(&grid, ego_tile, dir.right());
 
         // Leader heuristics (for overtake decision).
-        let leader = find_leader_ahead((ego_tile, v.progress), &v.route, &by_tile);
+        let leader = find_leader_ahead((ego_tile, v.progress), &v.route, &grid, &spatial);
 
         let mut want_left = false;
         let mut want_right = false;
@@ -1467,7 +1404,8 @@ fn plan_lane_changes(
         if !lane_change_safe_progress(
             d.target,
             d.ego_progress,
-            &by_tile,
+            &grid,
+            &spatial,
             &reserved,
             min_gap_progress,
         ) {
@@ -1513,11 +1451,30 @@ fn plan_lane_changes(
     }
 }
 
+fn build_traffic_spatial_index_pre_lane_changes(
+    cfg: Res<MapConfig>,
+    grid: Res<MapGrid>,
+    q_vehicles: Query<(Entity, &Vehicle), Without<Parked>>,
+    mut index: ResMut<TrafficSpatialIndex>,
+) {
+    index.rebuild(&cfg, &grid, &q_vehicles);
+}
+
+fn build_traffic_spatial_index(
+    cfg: Res<MapConfig>,
+    grid: Res<MapGrid>,
+    q_vehicles: Query<(Entity, &Vehicle), Without<Parked>>,
+    mut index: ResMut<TrafficSpatialIndex>,
+) {
+    index.rebuild(&cfg, &grid, &q_vehicles);
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn plan_oncoming_overtakes(
     cfg: Res<MapConfig>,
     grid: Res<MapGrid>,
     traffic_cfg: Res<TrafficConfig>,
+    spatial: Res<TrafficSpatialIndex>,
     mut commands: Commands,
     mut vehicles: ParamSet<(
         Query<
@@ -1536,22 +1493,6 @@ fn plan_oncoming_overtakes(
         Query<(Entity, &mut Vehicle), Without<Parked>>,
     )>,
 ) {
-    // Build a per-tile ordering for leader + oncoming-lane occupancy checks.
-    let mut by_tile: std::collections::HashMap<TilePos, Vec<(Entity, f32, f32)>> =
-        std::collections::HashMap::new();
-    for (e, v, ..) in vehicles.p0().iter() {
-        if let Some(&tile) = v.route.first() {
-            by_tile.entry(tile).or_default().push((
-                e,
-                v.progress.clamp(0.0, 1.0),
-                v.speed.max(0.0),
-            ));
-        }
-    }
-    for list in by_tile.values_mut() {
-        list.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-    }
-
     #[derive(Copy, Clone)]
     struct Plan {
         e: Entity,
@@ -1614,7 +1555,7 @@ fn plan_oncoming_overtakes(
 
         // Only attempt if we have a close, slow leader and we're not already near our desired speed.
         let Some((_lead_e, gap_tiles, lead_speed)) =
-            find_leader_ahead_entity(e, (ego_tile, v.progress), &v.route, &by_tile)
+            spatial.leader_ahead_entity(&grid, e, ego_tile, v.progress, &v.route)
         else {
             continue;
         };
@@ -1634,7 +1575,7 @@ fn plan_oncoming_overtakes(
         };
 
         // Pick a short, conservative pass length based on the current gap.
-        let pass_tiles = ((gap_tiles + 1.5).ceil() as usize).clamp(
+        let pass_tiles = ((gap_tiles + 1.5_f32).ceil() as usize).clamp(
             ONCOMING_OVERTAKE_MIN_PASS_TILES,
             ONCOMING_OVERTAKE_MAX_PASS_TILES,
         );
@@ -1692,8 +1633,8 @@ fn plan_oncoming_overtakes(
                 ok = false;
                 break;
             }
-            if let Some(list) = by_tile.get(&t)
-                && !list.is_empty()
+            if let Some(ti) = grid.idx(t)
+                && spatial.tile_has_any(ti)
             {
                 ok = false;
                 break;
@@ -2209,25 +2150,23 @@ fn move_vehicles(
     intersections: Res<IntersectionIndex>,
     reservations: Res<IntersectionReservations>,
     q_pedestrians: Query<&crate::game::pedestrians::PedestrianCrossing>,
+    spatial: Res<TrafficSpatialIndex>,
     mut commands: Commands,
     mut finished: bevy::ecs::message::MessageWriter<TripFinished>,
-    mut vehicles: ParamSet<(
-        Query<
-            (
-                Entity,
-                &mut Vehicle,
-                &mut Transform,
-                &VehicleTrafficState,
-                Option<&RightTurnOnRed>,
-                Option<&TripPassenger>,
-                Option<&CarOwner>,
-                Option<&ServiceVehicle>,
-                Option<&BusVehicle>,
-            ),
-            Without<Parked>,
-        >,
-        Query<(Entity, &Vehicle), (With<Vehicle>, Without<Parked>)>,
-    )>,
+    mut vehicles: Query<
+        (
+            Entity,
+            &mut Vehicle,
+            &mut Transform,
+            &VehicleTrafficState,
+            Option<&RightTurnOnRed>,
+            Option<&TripPassenger>,
+            Option<&CarOwner>,
+            Option<&ServiceVehicle>,
+            Option<&BusVehicle>,
+        ),
+        Without<Parked>,
+    >,
 ) {
     let dt = time.delta_secs();
     let idm = idm_params_world(&cfg, &traffic_cfg);
@@ -2245,49 +2184,8 @@ fn move_vehicles(
         }
     }
 
-    // Collect vehicle positions before iterating to avoid query conflicts
-    let vehicle_positions: Vec<(Entity, TilePos, f32, f32)> = vehicles
-        .p1()
-        .iter()
-        .filter_map(|(entity, vehicle)| {
-            if vehicle.route.is_empty() {
-                return None;
-            }
-            let current_tile = vehicle.route[0];
-            Some((entity, current_tile, vehicle.progress, vehicle.speed))
-        })
-        .collect();
-
-    // Build a per-tile ordering so leader detection is O(N log N) instead of O(N^2).
-    let mut by_tile: std::collections::HashMap<TilePos, Vec<(Entity, f32, f32)>> =
-        std::collections::HashMap::new();
-    for (e, t, p, spd) in vehicle_positions.iter().copied() {
-        by_tile.entry(t).or_default().push((e, p, spd));
-    }
-    for list in by_tile.values_mut() {
-        list.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-    }
-
-    // For each vehicle, leader on the same tile (gap + leader speed).
-    let mut leader_same_tile: std::collections::HashMap<Entity, (f32, f32)> =
-        std::collections::HashMap::new();
-    // For each tile, the earliest vehicle (closest to the start of the tile): (progress, speed).
-    let mut tile_min_progress: std::collections::HashMap<TilePos, (f32, f32)> =
-        std::collections::HashMap::new();
-    for (tile, list) in by_tile.iter() {
-        if let Some((_, min_p, min_spd)) = list.first() {
-            tile_min_progress.insert(*tile, (*min_p, *min_spd));
-        }
-        for w in list.windows(2) {
-            let (ego_e, ego_p, _ego_v) = w[0];
-            let (_lead_e, lead_p, lead_v) = w[1];
-            let gap_world = ((lead_p - ego_p).max(0.0)) * cfg.tile_size.max(0.1);
-            leader_same_tile.insert(ego_e, (gap_world, lead_v));
-        }
-    }
-
     for (entity, mut v, mut tf, state, ror, passenger, car_owner, service_vehicle, bus_vehicle) in
-        vehicles.p0().iter_mut()
+        vehicles.iter_mut()
     {
         if v.route.is_empty() {
             // Arrived – despawn trip vehicles, keep service vehicles (idle).
@@ -2321,11 +2219,13 @@ fn move_vehicles(
         }
 
         // --- Leader detection (tile-local) + virtual leaders (stop lines / blocked next tile).
-        let mut leader: Option<(f32, f32)> = leader_same_tile.get(&entity).copied();
+        let mut leader: Option<(f32, f32)> = spatial.leader_same_tile(entity);
         if v.route.len() > 1 {
             let next_tile = v.route[1];
-            if let Some((min_p, lead_v)) = tile_min_progress.get(&next_tile).copied() {
-                let gap_tiles = (1.0 - v.progress) + min_p;
+            if let Some(next_idx) = grid.idx(next_tile)
+                && let Some((min_p, lead_v)) = spatial.tile_min_progress_speed(next_idx)
+            {
+                let gap_tiles = (1.0_f32 - v.progress) + min_p;
                 let gap_world = gap_tiles.max(0.0) * cfg.tile_size.max(0.1);
                 leader = Some(match leader {
                     Some((g, gv)) if g <= gap_world => (g, gv),
@@ -3374,8 +3274,17 @@ mod tests {
             .insert_resource(TrafficConfig::default())
             .insert_resource(IntersectionIndex::default())
             .insert_resource(IntersectionReservations::default())
+            .insert_resource(TrafficSpatialIndex::default())
             .insert_resource(FinishCount::default())
-            .add_systems(Update, (move_vehicles, count_trip_finished).chain());
+            .add_systems(
+                Update,
+                (
+                    build_traffic_spatial_index,
+                    move_vehicles,
+                    count_trip_finished,
+                )
+                    .chain(),
+            );
 
         let citizen = CitizenId(42);
         let vehicle = app
@@ -3556,7 +3465,11 @@ mod tests {
                 grid
             })
             .insert_resource(TrafficConfig::default())
-            .add_systems(Update, plan_oncoming_overtakes);
+            .insert_resource(TrafficSpatialIndex::default())
+            .add_systems(
+                Update,
+                (build_traffic_spatial_index, plan_oncoming_overtakes).chain(),
+            );
 
         // Leader occupies the next tile, moving slowly.
         app.world_mut().spawn((
@@ -4427,7 +4340,8 @@ mod tests {
             })
             .insert_resource(TrafficOccupancy::default())
             .insert_resource(IntersectionReservations::default())
-            .add_systems(Update, move_vehicles);
+            .insert_resource(TrafficSpatialIndex::default())
+            .add_systems(Update, (build_traffic_spatial_index, move_vehicles).chain());
 
         let approach = TilePos { x: 1, y: 0 };
         let intersection_tile = TilePos { x: 1, y: 1 };
@@ -4883,6 +4797,7 @@ mod tests {
             .insert_resource(TrafficOccupancy::default())
             .insert_resource(TrafficConfig::default())
             .insert_resource(IntersectionReservations::default())
+            .insert_resource(TrafficSpatialIndex::default())
             .insert_resource({
                 let intersection_tile = TilePos { x: 1, y: 1 };
                 let id = IntersectionId(0);
@@ -4909,7 +4824,12 @@ mod tests {
             })
             .add_systems(
                 Update,
-                (update_vehicle_traffic_state, move_vehicles).chain(),
+                (
+                    update_vehicle_traffic_state,
+                    build_traffic_spatial_index,
+                    move_vehicles,
+                )
+                    .chain(),
             );
 
         let approach = TilePos { x: 1, y: 0 };
@@ -5264,8 +5184,17 @@ mod tests {
             .insert_resource(TrafficConfig::default())
             .insert_resource(IntersectionIndex::default())
             .insert_resource(IntersectionReservations::default())
+            .insert_resource(TrafficSpatialIndex::default())
             .insert_resource(FinishCount::default())
-            .add_systems(Update, (move_vehicles, count_trip_finished).chain());
+            .add_systems(
+                Update,
+                (
+                    build_traffic_spatial_index,
+                    move_vehicles,
+                    count_trip_finished,
+                )
+                    .chain(),
+            );
 
         let tile = TilePos { x: 1, y: 1 };
         let citizen = CitizenId(7);

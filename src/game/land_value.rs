@@ -199,6 +199,7 @@ mod tests {
         let uncovered_idx = grid.idx(uncovered).unwrap();
 
         let mut coverage = ServiceCoverageIndex {
+            version: 0,
             fire: 1.0,
             police: 1.0,
             medical: 1.0,

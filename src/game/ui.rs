@@ -46,6 +46,7 @@ impl Plugin for UiPlugin {
             .init_resource::<ShowStatsWindow>()
             .init_resource::<DebugDumpUiState>()
             .init_resource::<DebugTelemetry>()
+            .init_resource::<UiEntityCounts>()
             .add_systems(EguiPrimaryContextPass, top_status_bar_ui)
             .add_systems(
                 EguiPrimaryContextPass,
@@ -63,6 +64,12 @@ impl Plugin for UiPlugin {
             .add_systems(Update, toggle_shortcuts.in_set(GameSet::Input))
             .add_systems(EguiPrimaryContextPass, stats_ui.after(shortcuts_ui))
             .add_systems(EguiPrimaryContextPass, building_popup_ui.after(stats_ui))
+            .add_systems(
+                Update,
+                track_ui_entity_counts
+                    .before(update_ui_metrics)
+                    .in_set(GameSet::Ui),
+            )
             .add_systems(Update, update_ui_metrics.in_set(GameSet::Ui))
             .add_systems(
                 Update,
@@ -110,6 +117,17 @@ struct UiMetrics {
     active_emergencies: u32,
     emergencies_resolved: u32,
     emergencies_failed: u32,
+}
+
+/// Cached entity counts used by UI.
+///
+/// These are updated incrementally via Added/RemovedComponents to avoid full-world scans each frame.
+#[derive(Resource, Default, Debug, Clone, Copy)]
+struct UiEntityCounts {
+    citizens: usize,
+    vehicles: usize,
+    buildings: usize,
+    emergencies: usize,
 }
 
 #[derive(Resource, Debug, Clone)]
@@ -227,6 +245,56 @@ struct VehicleAgg {
     service_returning_zero_speed: u32,
 }
 
+#[derive(SystemParam)]
+struct UiEntityCountTrackParams<'w, 's> {
+    q_added_citizens: Query<'w, 's, (), Added<Citizen>>,
+    removed_citizens: RemovedComponents<'w, 's, Citizen>,
+    q_added_vehicles: Query<'w, 's, (), Added<Vehicle>>,
+    removed_vehicles: RemovedComponents<'w, 's, Vehicle>,
+    q_added_buildings: Query<'w, 's, (), Added<Building>>,
+    removed_buildings: RemovedComponents<'w, 's, Building>,
+    q_added_emergencies: Query<'w, 's, (), Added<Emergency>>,
+    removed_emergencies: RemovedComponents<'w, 's, Emergency>,
+}
+
+fn track_ui_entity_counts(
+    state: Res<State<AppState>>,
+    mut counts: ResMut<UiEntityCounts>,
+    mut p: UiEntityCountTrackParams,
+) {
+    counts.citizens = counts
+        .citizens
+        .saturating_add(p.q_added_citizens.iter().count());
+    counts.citizens = counts
+        .citizens
+        .saturating_sub(p.removed_citizens.read().count());
+
+    counts.vehicles = counts
+        .vehicles
+        .saturating_add(p.q_added_vehicles.iter().count());
+    counts.vehicles = counts
+        .vehicles
+        .saturating_sub(p.removed_vehicles.read().count());
+
+    counts.buildings = counts
+        .buildings
+        .saturating_add(p.q_added_buildings.iter().count());
+    counts.buildings = counts
+        .buildings
+        .saturating_sub(p.removed_buildings.read().count());
+
+    counts.emergencies = counts
+        .emergencies
+        .saturating_add(p.q_added_emergencies.iter().count());
+    counts.emergencies = counts
+        .emergencies
+        .saturating_sub(p.removed_emergencies.read().count());
+
+    if !matches!(state.get(), AppState::InGame | AppState::Paused) {
+        *counts = UiEntityCounts::default();
+    }
+}
+
 fn update_ui_metrics(mut p: UiMetricsParams) {
     if !matches!(p.state.get(), AppState::InGame | AppState::Paused) {
         p.metrics.citizens = 0;
@@ -257,9 +325,9 @@ fn update_ui_metrics(mut p: UiMetricsParams) {
         p.metrics.emergencies_failed = 0;
         return;
     }
-    p.metrics.citizens = p.q_citizens.iter().count();
-    p.metrics.vehicles = p.q_vehicles.iter().count();
-    p.metrics.buildings = p.q_buildings.iter().count();
+    p.metrics.citizens = p.counts.citizens;
+    p.metrics.vehicles = p.counts.vehicles;
+    p.metrics.buildings = p.counts.buildings;
     if let Some(e) = p.employment.as_deref() {
         p.metrics.employed = e.employed;
         p.metrics.unemployed = e.unemployed;
@@ -340,7 +408,7 @@ fn update_ui_metrics(mut p: UiMetricsParams) {
         p.metrics.service_cov_medical = 0.0;
     }
 
-    p.metrics.active_emergencies = p.q_emergencies.iter().count() as u32;
+    p.metrics.active_emergencies = p.counts.emergencies.min(u32::MAX as usize) as u32;
     if let Some(m) = p.emergency_manager.as_deref() {
         p.metrics.emergencies_resolved = m.stats.resolved_in_time;
         p.metrics.emergencies_failed = m.stats.failed_responses;
@@ -354,17 +422,14 @@ fn update_ui_metrics(mut p: UiMetricsParams) {
 struct UiMetricsParams<'w, 's> {
     state: Res<'w, State<AppState>>,
     metrics: ResMut<'w, UiMetrics>,
+    counts: Res<'w, UiEntityCounts>,
     employment: Option<Res<'w, EmploymentStats>>,
     traffic: Option<Res<'w, TrafficIndex>>,
     commute: Option<Res<'w, CommuteStats>>,
     demand: Option<Res<'w, RciDemand>>,
     service_coverage: Option<Res<'w, ServiceCoverageIndex>>,
     emergency_manager: Option<Res<'w, EmergencyManager>>,
-    q_citizens: Query<'w, 's, Entity, With<Citizen>>,
-    q_vehicles: Query<'w, 's, Entity, With<Vehicle>>,
-    q_buildings: Query<'w, 's, Entity, With<Building>>,
     q_stations: Query<'w, 's, &'static ServiceStation>,
-    q_emergencies: Query<'w, 's, Entity, With<Emergency>>,
 }
 
 fn update_ui_history(

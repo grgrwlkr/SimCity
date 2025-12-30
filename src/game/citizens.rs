@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use crate::game::buildings::Building;
 use crate::game::ids::{CitizenIdComp, CitizenIdGen};
 use crate::game::map::{BuildingKind, MapGrid, TilePos};
-use crate::game::pedestrians::{PedestrianConfig, PedestrianGraph};
+use crate::game::pedestrians::{PedestrianConfig, PedestrianGraph, PedestrianRoutingScratch};
 use crate::game::public_transport::{PublicTransportConfig, PublicTransportIndex};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
@@ -172,7 +172,7 @@ fn citizen_trip_planner(
     mut q_citizens: Query<(&CitizenIdComp, &mut Citizen, &CitizenWorkplace)>,
     mut shopping: ResMut<ShoppingDemandStats>,
     mut out: MessageWriter<TripRequested>,
-    p: CitizenTripPlannerParams,
+    mut p: CitizenTripPlannerParams,
 ) {
     // Pre-collect possible shopping destinations (commercial buildings).
     let mut shops = Vec::<TilePos>::new();
@@ -214,7 +214,7 @@ fn citizen_trip_planner(
                 if c.shopping_need.just_finished() {
                     shopping.demand_events = shopping.demand_events.saturating_add(1);
                     if let Some(&shop) = shops.choose(&mut rng) {
-                        let mode = choose_tour_mode(&p, &mut rng, c.home, shop);
+                        let mode = choose_tour_mode(&mut p, &mut rng, c.home, shop);
                         c.tour_mode = Some(mode);
                         out.write(TripRequested {
                             citizen: id.0,
@@ -237,7 +237,7 @@ fn citizen_trip_planner(
                 let Some(work) = wp.workplace else {
                     continue;
                 };
-                let mode = choose_tour_mode(&p, &mut rng, c.home, work);
+                let mode = choose_tour_mode(&mut p, &mut rng, c.home, work);
                 c.tour_mode = Some(mode);
                 out.write(TripRequested {
                     citizen: id.0,
@@ -300,6 +300,7 @@ fn citizen_trip_planner(
 struct CitizenTripPlannerParams<'w> {
     grid: Res<'w, MapGrid>,
     ped_graph: Res<'w, PedestrianGraph>,
+    ped_routing: ResMut<'w, PedestrianRoutingScratch>,
     ped_cfg: Res<'w, PedestrianConfig>,
     traffic_cfg: Res<'w, TrafficConfig>,
     pt: Res<'w, PublicTransportIndex>,
@@ -307,20 +308,24 @@ struct CitizenTripPlannerParams<'w> {
 }
 
 fn choose_tour_mode(
-    p: &CitizenTripPlannerParams,
+    p: &mut CitizenTripPlannerParams,
     rng: &mut impl rand::Rng,
     from: TilePos,
     to: TilePos,
 ) -> TripMode {
     // 1) WalkTour if pedestrian path exists and <= 800m.
     let tile_meters = p.traffic_cfg.tile_meters().max(0.1);
+    let max_m = p.ped_cfg.walk_tour_max_m.max(0.0);
+    let max_steps = (max_m / tile_meters).floor().max(0.0) as u32;
     if let (Some(a), Some(b)) = (
         nearest_ped_node(&p.ped_graph, &p.grid, from),
         nearest_ped_node(&p.ped_graph, &p.grid, to),
-    ) && let Some(steps) = p.ped_graph.shortest_path_steps(a, b)
+    ) && let Some(steps) =
+        p.ped_routing
+            .shortest_path_steps_bounded(&p.ped_graph, a, b, max_steps)
     {
         let dist_m = (steps as f32) * tile_meters;
-        if dist_m <= p.ped_cfg.walk_tour_max_m.max(0.0) {
+        if dist_m <= max_m {
             return TripMode::Walk;
         }
     }

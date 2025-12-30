@@ -24,6 +24,23 @@ use crate::game::transport::GraphVersion;
 use crate::game::ui_state::{OverlayMode, ToolMode, UiState};
 use crate::game::zone_placement::{ZonePlacementCache, can_zone_tile};
 
+/// Bumps on any edit to the map grid content (roads/zones/buildings/erase/regenerate/load).
+///
+/// Unlike `GraphVersion`, this is NOT "topology only" and should not be used to rebuild
+/// transport graphs. It exists to let expensive whole-map read models (service coverage, etc.)
+/// recompute only when the underlying map content actually changed.
+#[derive(Resource, Debug, Default, Copy, Clone)]
+pub struct MapEditVersion(pub u64);
+
+impl MapEditVersion {
+    pub fn bump(&mut self) {
+        self.0 = self.0.wrapping_add(1);
+        if self.0 == 0 {
+            self.0 = 1;
+        }
+    }
+}
+
 pub struct MapPlugin;
 
 impl Plugin for MapPlugin {
@@ -37,6 +54,7 @@ impl Plugin for MapPlugin {
             .init_resource::<CursorPaintState>()
             .init_resource::<RoadBuildState>()
             .init_resource::<RoadsChangedThisFrame>()
+            .init_resource::<MapEditVersion>()
             .init_resource::<HoveredTile>()
             .init_resource::<LastOverlayMode>()
             .init_resource::<BuildingEntityIndex>()
@@ -1335,6 +1353,7 @@ fn apply_game_commands_to_grid(
     mut dirty: ResMut<DirtyTiles>,
     mut city: ResMut<City>,
     mut graph_version: ResMut<GraphVersion>,
+    mut map_edit_version: ResMut<MapEditVersion>,
     mut roads_changed: ResMut<RoadsChangedThisFrame>,
     mut history: ResMut<CommandHistory>,
     mut intersections: ResMut<IntersectionIndex>,
@@ -1429,6 +1448,7 @@ fn apply_game_commands_to_grid(
                 grid.set(pos, cell);
                 dirty.mark(idx);
                 roads_changed.0 = true;
+                map_edit_version.bump();
 
                 // B) Transport: bump road graph version when road topology changes.
                 graph_version.bump();
@@ -1464,6 +1484,7 @@ fn apply_game_commands_to_grid(
                 cell.building = None;
                 grid.set(pos, cell);
                 dirty.mark(idx);
+                map_edit_version.bump();
             }
             GameCommand::PlaceBuilding { pos, kind } => {
                 let Some(idx) = grid.idx(pos) else {
@@ -1506,6 +1527,7 @@ fn apply_game_commands_to_grid(
                 cell.zone = ZoneKind::None;
                 grid.set(pos, cell);
                 dirty.mark(idx);
+                map_edit_version.bump();
 
                 let _ = spawn_building_entity(&mut commands, &cfg, pos, kind);
             }
@@ -1537,6 +1559,7 @@ fn apply_game_commands_to_grid(
                 cell.building = None;
                 grid.set(pos, cell);
                 dirty.mark(idx);
+                map_edit_version.bump();
                 if road_changed {
                     graph_version.bump();
                 }
@@ -1545,12 +1568,14 @@ fn apply_game_commands_to_grid(
                 seed.0 = new_seed;
                 generate_map_into_grid(&mut grid, new_seed);
                 dirty.mark_all();
+                map_edit_version.bump();
                 // Map regeneration can affect roads (and invalidates any cached paths).
                 graph_version.bump();
             }
             GameCommand::LoadTestCity => {
                 test_city::generate_test_city(&mut grid, &cfg, &mut city, &mut intersections);
                 dirty.mark_all();
+                map_edit_version.bump();
                 graph_version.bump();
                 roads_changed.0 = true;
             }
@@ -2181,6 +2206,7 @@ mod tests {
             .insert_resource(DirtyTiles::new(64))
             .insert_resource(City::default())
             .insert_resource(GraphVersion(1))
+            .insert_resource(MapEditVersion::default())
             .insert_resource(RoadsChangedThisFrame::default())
             .insert_resource(CommandHistory::new(100))
             .insert_resource(IntersectionIndex::default())
@@ -2221,6 +2247,7 @@ mod tests {
             .insert_resource(DirtyTiles::new(64))
             .insert_resource(City::default())
             .insert_resource(GraphVersion(1))
+            .insert_resource(MapEditVersion::default())
             .insert_resource(RoadsChangedThisFrame::default())
             .insert_resource(CommandHistory::new(100))
             .insert_resource(IntersectionIndex::default())

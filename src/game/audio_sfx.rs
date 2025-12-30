@@ -6,6 +6,7 @@
 use bevy::asset::AssetServer;
 use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
+use std::path::Path;
 
 use crate::game::commands::GameCommand;
 use crate::game::sets::GameSet;
@@ -28,19 +29,39 @@ impl Plugin for AudioSfxPlugin {
 
 #[derive(Resource, Default)]
 struct AudioSfx {
-    build: Handle<AudioSource>,
-    erase: Handle<AudioSource>,
+    build: Option<Handle<AudioSource>>,
+    erase: Option<Handle<AudioSource>>,
 }
 
 fn load_sfx(asset_server: Res<AssetServer>, mut sfx: ResMut<AudioSfx>) {
-    // These files are optional; if missing, Bevy will log and playback will be silent.
-    sfx.build = asset_server.load("sfx/build.ogg");
-    sfx.erase = asset_server.load("sfx/erase.ogg");
+    // These files are optional. We check for existence to avoid Bevy asset-server ERROR logs on startup.
+    let build_path = Path::new("assets/sfx/build.ogg");
+    if build_path.exists() {
+        sfx.build = Some(asset_server.load("sfx/build.ogg"));
+    } else {
+        sfx.build = None;
+        info!("SFX disabled (missing {})", build_path.display());
+    }
+
+    let erase_path = Path::new("assets/sfx/erase.ogg");
+    if erase_path.exists() {
+        sfx.erase = Some(asset_server.load("sfx/erase.ogg"));
+    } else {
+        sfx.erase = None;
+        info!("SFX disabled (missing {})", erase_path.display());
+    }
 }
 
-fn play_once(commands: &mut Commands, handle: Handle<AudioSource>) {
+fn play_once(commands: &mut Commands, handle: &Handle<AudioSource>) {
     // Bevy 0.17 audio playback uses an entity with AudioPlayer + PlaybackSettings.
-    commands.spawn((AudioPlayer::new(handle), PlaybackSettings::DESPAWN));
+    commands.spawn((AudioPlayer::new(handle.clone()), PlaybackSettings::DESPAWN));
+}
+
+fn play_once_opt(commands: &mut Commands, handle: Option<&Handle<AudioSource>>) {
+    let Some(handle) = handle else {
+        return;
+    };
+    play_once(commands, handle);
 }
 
 fn play_sfx_on_commands(
@@ -58,13 +79,13 @@ fn play_sfx_on_commands(
             | GameCommand::SetZone { .. }
             | GameCommand::PlaceBuilding { .. } => {
                 if !played_build {
-                    play_once(&mut commands, sfx.build.clone());
+                    play_once_opt(&mut commands, sfx.build.as_ref());
                     played_build = true;
                 }
             }
             GameCommand::EraseTile { .. } => {
                 if !played_erase {
-                    play_once(&mut commands, sfx.erase.clone());
+                    play_once_opt(&mut commands, sfx.erase.as_ref());
                     played_erase = true;
                 }
             }
