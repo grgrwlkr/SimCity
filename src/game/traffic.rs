@@ -115,12 +115,27 @@ pub struct CarOwner {
 /// Distance to detect traffic lights ahead (in tiles)
 const TRAFFIC_LIGHT_DETECTION_DISTANCE: f32 = 8.0;
 
+/// Vehicle sprite size in tile units (square).
+///
+/// IMPORTANT: Our movement uses the vehicle center point, and rendering uses `Transform` at that
+/// center. To ensure the *entire* vehicle stays behind the stop line (not visually overlapping the
+/// intersection), stop-line math must account for half of this size.
+const VEHICLE_VISUAL_SIZE_TILES: f32 = 0.55;
+const VEHICLE_HALF_TILES: f32 = VEHICLE_VISUAL_SIZE_TILES * 0.5;
+
+/// Extra margin before the intersection boundary for the vehicle bumper (tile units).
+const STOP_LINE_MARGIN_TILES: f32 = 0.05;
+
+/// In our kinematic model `progress` is the fraction between tile centers (0.0 = current center,
+/// 1.0 = next center). Therefore the tile boundary is at `progress == 0.5`.
+const TILE_CENTER_TO_EDGE_TILES: f32 = 0.5;
+
 /// Stop line offset relative to the intersection boundary (in tile fractions).
 ///
 /// Important invariant for gameplay correctness: the stop line is always located on the
 /// **approach tile** (a normal road tile), i.e. vehicles must stop before they enter the
 /// intersection cluster tiles (`dir=None`).
-const STOP_LINE_OFFSET: f32 = 0.15;
+const STOP_LINE_OFFSET: f32 = VEHICLE_HALF_TILES + STOP_LINE_MARGIN_TILES;
 /// Speed threshold (in tile fractions per second) for "snap to stopped" state at the stop line.
 /// This avoids abrupt halts when a vehicle reaches the stop line with a non-trivial residual speed
 /// due to coarse fixed-timestep integration.
@@ -330,12 +345,55 @@ const ZONE_SW: ConflictMask = 1 << 3;
 const ZONE_SE: ConflictMask = 1 << 4;
 const ZONE_ALL: ConflictMask = ZONE_CENTER | ZONE_NW | ZONE_NE | ZONE_SW | ZONE_SE;
 
+/// Movement type through an intersection cluster.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+enum ManeuverKind {
+    Straight,
+    RightTurn,
+    LeftTurn,
+    Other,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+struct StreamKey {
+    entry: RoadDir,
+    exit: RoadDir,
+}
+
+fn maneuver_kind(traffic_cfg: &TrafficConfig, entry: RoadDir, exit: RoadDir) -> ManeuverKind {
+    if entry == RoadDir::None || exit == RoadDir::None {
+        return ManeuverKind::Other;
+    }
+    if exit == entry {
+        return ManeuverKind::Straight;
+    }
+    let right = if traffic_cfg.drive_on_right {
+        entry.right()
+    } else {
+        entry.left()
+    };
+    let left = if traffic_cfg.drive_on_right {
+        entry.left()
+    } else {
+        entry.right()
+    };
+    if exit == right {
+        return ManeuverKind::RightTurn;
+    }
+    if exit == left {
+        return ManeuverKind::LeftTurn;
+    }
+    ManeuverKind::Other
+}
+
 #[derive(Debug, Copy, Clone)]
 struct IntersectionReservation {
     vehicle: Entity,
     state: ReservationState,
     created_at_sec: f64,
     zones: ConflictMask,
+    stream: StreamKey,
+    maneuver: ManeuverKind,
 }
 
 #[derive(Resource, Default)]
@@ -354,19 +412,51 @@ impl IntersectionReservations {
             .is_some_and(|rs| rs.iter().any(|r| r.vehicle == vehicle))
     }
 
-    fn occupied_mask(&self, id: IntersectionId, except: Option<Entity>) -> ConflictMask {
-        self.by_intersection
-            .get(&id)
-            .map(|rs| {
-                rs.iter()
-                    .filter(|r| except.is_none_or(|e| r.vehicle != e))
-                    .fold(0u32, |acc, r| acc | r.zones)
-            })
-            .unwrap_or(0)
-    }
+    fn can_reserve(
+        &self,
+        id: IntersectionId,
+        vehicle: Entity,
+        zones: ConflictMask,
+        stream: StreamKey,
+        maneuver: ManeuverKind,
+    ) -> bool {
+        let Some(rs) = self.by_intersection.get(&id) else {
+            return true;
+        };
 
-    fn can_reserve(&self, id: IntersectionId, vehicle: Entity, zones: ConflictMask) -> bool {
-        (self.occupied_mask(id, Some(vehicle)) & zones) == 0
+        for r in rs.iter() {
+            if r.vehicle == vehicle {
+                continue;
+            }
+            if (r.zones & zones) == 0 {
+                continue;
+            }
+
+            // Unlimited "platooning" for the same flow: if the maneuver and lane-path are the same
+            // (same entry->exit, therefore same zone path), allow multiple vehicles concurrently.
+            if r.stream == stream {
+                continue;
+            }
+
+            // Right turns are merges, not crossings: allow right-turning traffic to coexist with
+            // the straight flow coming from the **same entry direction** (same approach road),
+            // even if our coarse zone approximation overlaps.
+            //
+            // This matches the user's desired rule: turns that *cross* the straight stream wait
+            // (left turns), but right turns do not.
+            let same_entry = r.stream.entry == stream.entry;
+            let merge_compatible = same_entry
+                && ((maneuver == ManeuverKind::RightTurn && r.maneuver == ManeuverKind::Straight)
+                    || (maneuver == ManeuverKind::Straight
+                        && r.maneuver == ManeuverKind::RightTurn));
+            if merge_compatible {
+                continue;
+            }
+
+            return false;
+        }
+
+        true
     }
 }
 
@@ -700,7 +790,9 @@ fn default_tile_meters() -> f32 {
 }
 
 fn default_idm_desired_headway_secs() -> f32 {
-    1.4
+    // More aggressive than the classical 1.4s: improves intersection throughput and reduces
+    // "hesitation" after stops while still keeping a reasonable buffer in the MVP.
+    1.1
 }
 
 fn default_idm_min_gap_m() -> f32 {
@@ -708,7 +800,9 @@ fn default_idm_min_gap_m() -> f32 {
 }
 
 fn default_idm_max_accel_mps2() -> f32 {
-    1.6
+    // More aggressive acceleration improves responsiveness after stop lines and reduces the
+    // "slow crawl" effect through junctions when the path is clear.
+    3.2
 }
 
 fn default_idm_comfortable_decel_mps2() -> f32 {
@@ -896,7 +990,7 @@ fn spawn_trip_vehicles(
                 tf.translation.z = 10.0;
 
                 // Restore "active vehicle" visuals (parked vehicles are smaller + translucent).
-                sprite.custom_size = Some(Vec2::splat(p.cfg.tile_size * 0.55));
+                sprite.custom_size = Some(Vec2::splat(p.cfg.tile_size * VEHICLE_VISUAL_SIZE_TILES));
                 sprite.color = Color::linear_rgb(0.95, 0.95, 0.95);
 
                 p.commands
@@ -923,7 +1017,7 @@ fn spawn_trip_vehicles(
         let mut e = p.commands.spawn((
             Sprite {
                 color: Color::linear_rgb(0.95, 0.95, 0.95),
-                custom_size: Some(Vec2::splat(p.cfg.tile_size * 0.55)),
+                custom_size: Some(Vec2::splat(p.cfg.tile_size * VEHICLE_VISUAL_SIZE_TILES)),
                 ..default()
             },
             Transform::from_xyz(world_pos.x, world_pos.y, 10.0),
@@ -1994,10 +2088,11 @@ fn right_turn_zone(entry_dir: RoadDir) -> ConflictMask {
 }
 
 fn left_turn_zone(entry_dir: RoadDir) -> ConflictMask {
-    // Conservative: left turns occupy the center (they sweep across).
-    // This keeps safety while still allowing multiple right turns in different corners.
+    // Left turns cross opposing straight traffic and are the primary "wait" maneuver in the MVP.
+    // Model them conservatively as occupying the whole intersection so they yield to straight
+    // flows (and each other) unless the intersection is otherwise clear.
     let _ = entry_dir;
-    ZONE_CENTER
+    ZONE_ALL
 }
 
 fn straight_zone(entry_dir: RoadDir) -> ConflictMask {
@@ -2052,6 +2147,8 @@ struct IntersectionReservationCandidate {
     dist_to_entry: f32,
     vehicle: Entity,
     zones: ConflictMask,
+    stream: StreamKey,
+    maneuver: ManeuverKind,
     is_right_on_red: bool,
     exit_tile_idx: usize,
     exit_tile_cap: u16,
@@ -2124,6 +2221,11 @@ fn plan_intersection_reservations(
                 state: ReservationState::Inside,
                 created_at_sec: now,
                 zones: ZONE_ALL,
+                stream: StreamKey {
+                    entry: RoadDir::None,
+                    exit: RoadDir::None,
+                },
+                maneuver: ManeuverKind::Other,
             });
         }
     }
@@ -2234,12 +2336,27 @@ fn plan_intersection_reservations(
         let Some(zones) = reservation_zones_for_maneuver(&traffic_cfg, entry_dir, exit_dir) else {
             continue;
         };
-        if !reservations.can_reserve(id, e, zones) {
+        let stream = StreamKey {
+            entry: entry_dir,
+            exit: exit_dir,
+        };
+        let maneuver = maneuver_kind(&traffic_cfg, entry_dir, exit_dir);
+        if !reservations.can_reserve(id, e, zones, stream, maneuver) {
             continue;
         }
 
         let mut priority = 1u8;
         let mut is_right_on_red = false;
+
+        // Baseline maneuver priority for throughput:
+        // - Straight flows should not be blocked by turns.
+        // - Right turns are merges (prefer over left turns).
+        // - Left turns are the primary "wait" maneuver (crossing).
+        match maneuver {
+            ManeuverKind::Straight => priority = priority.max(3),
+            ManeuverKind::RightTurn => priority = priority.max(2),
+            ManeuverKind::LeftTurn | ManeuverKind::Other => {}
+        }
 
         // If there is a traffic light controller, only admit on green/yellow (or right-on-red).
         if intersections.traffic_lights.contains(&id) {
@@ -2251,10 +2368,8 @@ fn plan_intersection_reservations(
             // Admit on green or yellow. (Yellow handling in `update_vehicle_traffic_state` allows
             // proceeding when it's too late to stop; at the stop line this is always the case.)
             if light.is_green(dir) || light.is_yellow(dir) {
-                // Don't reserve for vehicles that are explicitly stopped/waiting at a red.
-                if stopped_or_waiting {
-                    continue;
-                }
+                // Admit on green/yellow even if the vehicle is currently stopped at the stop line.
+                // (State updates and acceleration happen in `update_vehicle_traffic_state`.)
                 priority = 2;
             } else {
                 // Right turn on red (near-side turn only), after coming to a stop.
@@ -2289,17 +2404,33 @@ fn plan_intersection_reservations(
                 priority = 1;
                 is_right_on_red = true;
             }
-        } else if stopped_or_waiting {
-            // For uncontrolled intersections, don't reserve for stopped vehicles.
-            continue;
+        } else {
+            // Uncontrolled intersection (stop/yield/priority rules handled by vehicle state).
+            //
+            // IMPORTANT: we MUST allow reservations for vehicles that are stopped at the stop line,
+            // otherwise stop-sign approaches would deadlock (vehicles stop -> become `Stopped` ->
+            // never get reserved -> never enter the intersection tile).
+            //
+            // Give a small priority bump to vehicles that are already stopped for *this* approach,
+            // to keep behavior stable and avoid admitting a farther-away vehicle first.
+            let stopped_for_this = matches!(
+                *state,
+                VehicleTrafficState::Stopped { stop_tile, .. } if stop_tile == cur
+            );
+            if stopped_for_this {
+                priority = priority.max(2);
+            }
         }
 
-        let dist = (1.0 - v.progress).clamp(0.0, 1.0);
+        // Distance to the intersection entry boundary (tile edge at progress=0.5).
+        let dist = (TILE_CENTER_TO_EDGE_TILES - v.progress).clamp(0.0, 1.0);
         let cand = IntersectionReservationCandidate {
             priority,
             dist_to_entry: dist,
             vehicle: e,
             zones,
+            stream,
+            maneuver,
             is_right_on_red,
             exit_tile_idx: exit_idx,
             exit_tile_cap: cap,
@@ -2308,7 +2439,6 @@ fn plan_intersection_reservations(
         candidates_by_intersection.entry(id).or_default().push(cand);
     }
 
-    const MAX_NEW_RES_PER_INTERSECTION_PER_TICK: usize = 2;
     for (&id, cands) in candidates_by_intersection.iter_mut() {
         if cands.is_empty() {
             continue;
@@ -2321,11 +2451,7 @@ fn plan_intersection_reservations(
                 .then_with(|| a.vehicle.to_bits().cmp(&b.vehicle.to_bits()))
         });
 
-        let mut added = 0usize;
         for cand in cands.iter().copied() {
-            if added >= MAX_NEW_RES_PER_INTERSECTION_PER_TICK {
-                break;
-            }
             // Right turn on red is a yield-maneuver: only allow it when the intersection is clear.
             //
             // With our current coarse conflict-mask model, "non-overlapping zones" is not enough to
@@ -2347,7 +2473,7 @@ fn plan_intersection_reservations(
             if *used >= cand.exit_tile_cap {
                 continue;
             }
-            if !reservations.can_reserve(id, cand.vehicle, cand.zones) {
+            if !reservations.can_reserve(id, cand.vehicle, cand.zones, cand.stream, cand.maneuver) {
                 continue;
             }
             reservations
@@ -2359,8 +2485,9 @@ fn plan_intersection_reservations(
                     state: ReservationState::Approaching,
                     created_at_sec: now,
                     zones: cand.zones,
+                    stream: cand.stream,
+                    maneuver: cand.maneuver,
                 });
-            added += 1;
             *used = used.saturating_add(1);
         }
     }
@@ -2573,8 +2700,40 @@ fn move_vehicles(
         }
 
         // --- Desired speed from speed limits (RoadKind.speed_limit() is treated as km/h).
+        //
+        // IMPORTANT: intersection tiles are represented as road cells with `dir=None` (cluster
+        // marker). They may have a different `RoadKind` than the approach/exit tiles, and sometimes
+        // can even end up with a 0 km/h speed limit. We therefore derive the desired speed limit
+        // from the adjacent **non-intersection** tiles (approach/exit) while inside the cluster.
         let current_tile = v.route[v.route_idx];
-        let speed_limit_world = road_speed_limit_world(&cfg, &traffic_cfg, current_tile, &grid);
+        let current_is_intersection = is_intersection_tile(&grid, current_tile);
+
+        let mut speed_limit_world = if current_is_intersection {
+            0.0
+        } else {
+            road_speed_limit_world(&cfg, &traffic_cfg, current_tile, &grid)
+        };
+
+        // Fallback to adjacent tiles (prev/next) or, for intersection tiles, use them as the
+        // primary speed limit source.
+        if v.route_idx > 0 {
+            let prev = v.route[v.route_idx - 1];
+            if !is_intersection_tile(&grid, prev) {
+                speed_limit_world =
+                    speed_limit_world.max(road_speed_limit_world(&cfg, &traffic_cfg, prev, &grid));
+            }
+        }
+        if v.route_idx + 1 < v.route.len() {
+            let next = v.route[v.route_idx + 1];
+            if !is_intersection_tile(&grid, next) {
+                speed_limit_world =
+                    speed_limit_world.max(road_speed_limit_world(&cfg, &traffic_cfg, next, &grid));
+            }
+        }
+        if speed_limit_world <= 0.0 {
+            // Defensive fallback: never allow a 0 speed limit to freeze vehicles.
+            speed_limit_world = v.max_speed;
+        }
         let mut v0 = speed_limit_world.min(v.max_speed).max(0.0);
         if let Some(ror) = ror.copied() {
             let cap = kmh_to_world_speed(&cfg, &traffic_cfg, RIGHT_ON_RED_TURN_MAX_KMH);
@@ -2632,18 +2791,14 @@ fn move_vehicles(
             let next_tile = v.route[v.route_idx + 1];
             let current_is_intersection = is_intersection_tile(&grid, current_tile);
             let next_is_intersection = is_intersection_tile(&grid, next_tile);
-            let stopped_or_waiting = matches!(
-                state,
-                VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. }
-            );
 
             // Intersection admission: require a reservation to enter an intersection tile.
             if next_is_intersection && !current_is_intersection {
                 blocked_next_is_intersection = true;
 
-                // If we're explicitly stopped/waiting (red light etc), never enter even if a stale
-                // reservation exists.
-                if stopped_or_waiting {
+                // If we're explicitly waiting for green, never enter even if a reservation exists.
+                // (Right-on-red is handled by transitioning out of WaitingForGreen once released.)
+                if matches!(state, VehicleTrafficState::WaitingForGreen { .. }) {
                     blocked_next = true;
                 } else {
                     let ok = if let Some(id) = intersections.intersection_id_at(next_tile) {
@@ -2701,7 +2856,10 @@ fn move_vehicles(
                 }
             }
 
-            if let Some(next_idx) = grid.idx(next_tile)
+            // Tile-capacity gate: only applies to **non-intersection** road tiles.
+            // Intersection cluster tiles are managed via reservations/conflict zones instead.
+            if !next_is_intersection
+                && let Some(next_idx) = grid.idx(next_tile)
                 && let Some(next_cell) = grid.get(next_tile)
                 && next_cell.road.is_some()
                 && next_idx < traffic.per_tick_vehicles.len()
@@ -2745,7 +2903,7 @@ fn move_vehicles(
         if blocked_next {
             let gap_tiles = if blocked_next_is_intersection {
                 // Stop line is before the intersection boundary, on the approach tile.
-                (1.0 - v.progress - STOP_LINE_OFFSET).max(0.0)
+                (TILE_CENTER_TO_EDGE_TILES - v.progress - STOP_LINE_OFFSET).max(0.0)
             } else {
                 (1.0 - v.progress).max(0.0)
             };
@@ -2779,7 +2937,7 @@ fn move_vehicles(
             let stop_before = 0.001;
             let max_p = if blocked_next_is_intersection {
                 // Clamp to the stop line within the approach tile.
-                (1.0 - STOP_LINE_OFFSET).max(0.0)
+                (TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET).max(0.0)
             } else {
                 1.0 - stop_before
             };
@@ -2959,7 +3117,11 @@ fn update_vehicle_traffic_state(
         }
 
         // Distance to the stop line (not to the intersection tile itself).
-        let stop_distance = (distance_to_light_tile - STOP_LINE_OFFSET).max(0.0);
+        //
+        // `distance_to_light_tile` is measured to the INTERSECTION TILE CENTER. The boundary
+        // between approach and intersection is `0.5` tiles before that center.
+        let stop_distance =
+            (distance_to_light_tile - TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET).max(0.0);
 
         // Yellow decision: if it's already too late to stop comfortably, proceed.
         // Otherwise treat yellow like red (prepare to stop at the stop line).
@@ -3243,7 +3405,9 @@ fn check_intersection_priority(
 
                     // Stop sign - must come to complete stop BEFORE entering the intersection.
                     // Stop line is on the approach tile (current_tile), not on the intersection tile.
-                    let dist_to_intersection = 1.0 - vehicle.progress;
+                    // Distance from current position to the intersection boundary (center-to-center model).
+                    let dist_to_intersection =
+                        (TILE_CENTER_TO_EDGE_TILES - vehicle.progress).max(0.0);
                     let dist_to_stop = (dist_to_intersection - STOP_LINE_OFFSET).max(0.0);
                     let speed_tiles_per_sec = vehicle.speed / cfg.tile_size.max(0.1);
 
@@ -3629,6 +3793,7 @@ mod tests {
     use crate::game::trips::TripPurpose;
     use bevy::app::App;
     use bevy::ecs::message::MessageReader;
+    use std::time::Duration;
 
     #[derive(Resource, Default)]
     struct FinishCount(u32);
@@ -3781,7 +3946,7 @@ mod tests {
                 Vehicle {
                     route: vec![approach, intersection_tile, exit],
                     route_idx: 0,
-                    progress: 1.0 - STOP_LINE_OFFSET,
+                    progress: TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
                     speed: 0.0,
                     max_speed: 60.0,
                     max_accel: 20.0,
@@ -3806,6 +3971,648 @@ mod tests {
         assert_eq!(
             app.world().get::<VehicleTrafficState>(vehicle).copied(),
             Some(VehicleTrafficState::CrossingIntersection { intersection: key })
+        );
+    }
+
+    #[test]
+    fn stop_sign_vehicle_gets_reserved_and_enters_intersection_tile() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<TripFinished>()
+            .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+                1.0 / 10.0,
+            ))
+            .insert_resource(MapConfig {
+                width: 3,
+                height: 1,
+                tile_size: 16.0,
+            })
+            .insert_resource({
+                let mut grid = MapGrid::new(3, 1);
+
+                let approach = TilePos { x: 0, y: 0 };
+                let intersection_tile = TilePos { x: 1, y: 0 };
+                let exit = TilePos { x: 2, y: 0 };
+
+                for (pos, kind, dir) in [
+                    (approach, RoadKind::TwoLane, RoadDir::East),
+                    // Intersection cluster tile: road tile with `dir=None` (cluster marker).
+                    (intersection_tile, RoadKind::TwoLane, RoadDir::None),
+                    (exit, RoadKind::TwoLane, RoadDir::East),
+                ] {
+                    let Some(mut cell) = grid.get(pos) else {
+                        continue;
+                    };
+                    cell.road = RoadCell {
+                        kind,
+                        dir,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    };
+                    grid.set(pos, cell);
+                }
+
+                grid
+            })
+            .insert_resource({
+                let intersection_tile = TilePos { x: 1, y: 0 };
+                let id = IntersectionId(0);
+                let key = IntersectionKey {
+                    aabb_min: intersection_tile,
+                    aabb_max: intersection_tile,
+                    tile_count: 1,
+                    tiles_hash: 1,
+                };
+
+                let mut idx = IntersectionIndex::default();
+                idx.clusters
+                    .push(crate::game::intersections::IntersectionCluster {
+                        id,
+                        key,
+                        tiles: vec![intersection_tile],
+                        aabb_min: intersection_tile,
+                        aabb_max: intersection_tile,
+                        centroid_tile: intersection_tile,
+                    });
+                idx.tile_to_intersection.insert(intersection_tile, id);
+                idx
+            })
+            .insert_resource(TrafficOccupancy::default())
+            .insert_resource(TrafficConfig::default())
+            .insert_resource(IntersectionReservations::default())
+            .insert_resource(TrafficSpatialIndex::default())
+            .insert_resource(VehicleAggSnapshot::default())
+            .insert_resource(ParkedVehicleTileIndex::default())
+            // Stop sign marker is used by `check_intersection_priority` to keep the vehicle stopped
+            // until it is safe to proceed.
+            .add_systems(
+                Update,
+                (
+                    check_intersection_priority,
+                    plan_intersection_reservations,
+                    build_traffic_spatial_index,
+                    move_vehicles,
+                )
+                    .chain(),
+            );
+
+        let approach = TilePos { x: 0, y: 0 };
+        let intersection_tile = TilePos { x: 1, y: 0 };
+        let exit = TilePos { x: 2, y: 0 };
+        let key = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .cluster_key_at(intersection_tile)
+            .unwrap();
+
+        app.world_mut().spawn(IntersectionPriorityMarker {
+            pos: intersection_tile,
+            priority: IntersectionPriority::StopSign,
+        });
+
+        let e = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![approach, intersection_tile, exit],
+                    route_idx: 0,
+                    progress: TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+                    speed: 0.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                Transform::default(),
+                VehicleTrafficState::Stopped {
+                    intersection: key,
+                    stop_tile: approach,
+                    queue_position: 0,
+                },
+            ))
+            .id();
+
+        // Advance fixed time so `move_vehicles` has a non-zero dt.
+        app.world_mut()
+            .resource_mut::<bevy::time::Time<bevy::time::Fixed>>()
+            .advance_by(Duration::from_secs_f32(0.1));
+
+        app.update();
+
+        // Reservation must exist now (or we'll deadlock at the intersection entry gate).
+        let id = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .intersection_id_at(intersection_tile)
+            .unwrap();
+        let reserved = app
+            .world()
+            .resource::<IntersectionReservations>()
+            .is_reserved_by(id, e);
+        assert!(reserved, "stop-sign vehicle was not reserved");
+
+        // And vehicle should be able to start moving toward the intersection.
+        let v = app.world().get::<Vehicle>(e).unwrap();
+        assert!(
+            v.progress > TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+            "vehicle did not advance after being released/reserved"
+        );
+    }
+
+    #[test]
+    fn straight_stream_allows_multiple_vehicles_to_reserve_concurrently() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+                1.0 / 10.0,
+            ))
+            .insert_resource(MapConfig {
+                width: 3,
+                height: 1,
+                tile_size: 16.0,
+            })
+            .insert_resource({
+                let mut grid = MapGrid::new(3, 1);
+
+                let approach = TilePos { x: 0, y: 0 };
+                let intersection_tile = TilePos { x: 1, y: 0 };
+                let exit = TilePos { x: 2, y: 0 };
+
+                for (pos, kind, dir) in [
+                    (approach, RoadKind::TwoLane, RoadDir::East),
+                    (intersection_tile, RoadKind::TwoLane, RoadDir::None),
+                    (exit, RoadKind::TwoLane, RoadDir::East),
+                ] {
+                    let Some(mut cell) = grid.get(pos) else {
+                        continue;
+                    };
+                    cell.road = RoadCell {
+                        kind,
+                        dir,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    };
+                    grid.set(pos, cell);
+                }
+
+                grid
+            })
+            .insert_resource({
+                let intersection_tile = TilePos { x: 1, y: 0 };
+                let id = IntersectionId(0);
+                let key = IntersectionKey {
+                    aabb_min: intersection_tile,
+                    aabb_max: intersection_tile,
+                    tile_count: 1,
+                    tiles_hash: 1,
+                };
+
+                let mut idx = IntersectionIndex::default();
+                idx.clusters
+                    .push(crate::game::intersections::IntersectionCluster {
+                        id,
+                        key,
+                        tiles: vec![intersection_tile],
+                        aabb_min: intersection_tile,
+                        aabb_max: intersection_tile,
+                        centroid_tile: intersection_tile,
+                    });
+                idx.tile_to_intersection.insert(intersection_tile, id);
+                idx
+            })
+            .insert_resource(TrafficOccupancy::default())
+            .insert_resource(TrafficConfig::default())
+            .insert_resource(IntersectionReservations::default())
+            .add_systems(Update, plan_intersection_reservations);
+
+        let approach = TilePos { x: 0, y: 0 };
+        let intersection_tile = TilePos { x: 1, y: 0 };
+        let exit = TilePos { x: 2, y: 0 };
+        let key = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .cluster_key_at(intersection_tile)
+            .unwrap();
+
+        // Two vehicles in the SAME stream (eastbound straight). Both should be reserved.
+        let e1 = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![approach, intersection_tile, exit],
+                    route_idx: 0,
+                    progress: TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+                    speed: 0.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                VehicleTrafficState::Stopped {
+                    intersection: key,
+                    stop_tile: approach,
+                    queue_position: 0,
+                },
+            ))
+            .id();
+        let e2 = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![approach, intersection_tile, exit],
+                    route_idx: 0,
+                    progress: TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+                    speed: 0.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                VehicleTrafficState::Stopped {
+                    intersection: key,
+                    stop_tile: approach,
+                    queue_position: 1,
+                },
+            ))
+            .id();
+
+        app.update();
+
+        let id = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .intersection_id_at(intersection_tile)
+            .unwrap();
+        let res = app.world().resource::<IntersectionReservations>();
+        assert!(res.is_reserved_by(id, e1));
+        assert!(res.is_reserved_by(id, e2));
+    }
+
+    #[test]
+    fn left_turn_conflicts_with_straight_flow() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+                1.0 / 10.0,
+            ))
+            .insert_resource(MapConfig {
+                width: 3,
+                height: 3,
+                tile_size: 16.0,
+            })
+            .insert_resource({
+                let mut grid = MapGrid::new(3, 3);
+                let i = TilePos { x: 1, y: 1 };
+
+                // Eastbound straight: (0,1)->(1,1)->(2,1)
+                for (pos, dir) in [
+                    (TilePos { x: 0, y: 1 }, RoadDir::East),
+                    (i, RoadDir::None),
+                    (TilePos { x: 2, y: 1 }, RoadDir::East),
+                ] {
+                    let Some(mut cell) = grid.get(pos) else {
+                        continue;
+                    };
+                    cell.road = RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    };
+                    grid.set(pos, cell);
+                }
+
+                // Northbound left turn: (1,0)->(1,1)->(0,1) (turn left at the intersection).
+                for (pos, dir) in [
+                    (TilePos { x: 1, y: 0 }, RoadDir::North),
+                    (i, RoadDir::None),
+                    (TilePos { x: 0, y: 1 }, RoadDir::East),
+                ] {
+                    let Some(mut cell) = grid.get(pos) else {
+                        continue;
+                    };
+                    if !cell.road.is_some() {
+                        cell.road = RoadCell {
+                            kind: RoadKind::TwoLane,
+                            dir,
+                            lane: 0,
+                            flow: RoadFlow::TwoWay,
+                            lane_type: LaneType::Regular,
+                        };
+                    }
+                    grid.set(pos, cell);
+                }
+
+                grid
+            })
+            .insert_resource({
+                let i = TilePos { x: 1, y: 1 };
+                let id = IntersectionId(0);
+                let key = IntersectionKey {
+                    aabb_min: i,
+                    aabb_max: i,
+                    tile_count: 1,
+                    tiles_hash: 1,
+                };
+                let mut idx = IntersectionIndex::default();
+                idx.clusters
+                    .push(crate::game::intersections::IntersectionCluster {
+                        id,
+                        key,
+                        tiles: vec![i],
+                        aabb_min: i,
+                        aabb_max: i,
+                        centroid_tile: i,
+                    });
+                idx.tile_to_intersection.insert(i, id);
+                idx
+            })
+            .insert_resource(TrafficOccupancy::default())
+            .insert_resource(TrafficConfig::default())
+            .insert_resource(IntersectionReservations::default())
+            .add_systems(Update, plan_intersection_reservations);
+
+        let i = TilePos { x: 1, y: 1 };
+        let id = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .intersection_id_at(i)
+            .unwrap();
+
+        // Straight vehicle (eastbound).
+        let straight = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![TilePos { x: 0, y: 1 }, i, TilePos { x: 2, y: 1 }],
+                    route_idx: 0,
+                    progress: 0.9,
+                    speed: 1.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                VehicleTrafficState::FreeFlow,
+            ))
+            .id();
+
+        // Left turn vehicle (from south to west).
+        let left = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![TilePos { x: 1, y: 0 }, i, TilePos { x: 0, y: 1 }],
+                    route_idx: 0,
+                    progress: 0.9,
+                    speed: 1.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                VehicleTrafficState::FreeFlow,
+            ))
+            .id();
+
+        app.update();
+
+        let res = app.world().resource::<IntersectionReservations>();
+        let list = res.by_intersection.get(&id).cloned().unwrap_or_default();
+        assert!(list.iter().any(|r| r.vehicle == straight));
+        assert!(
+            !list.iter().any(|r| r.vehicle == left),
+            "left turn was reserved while straight flow is present"
+        );
+    }
+
+    #[test]
+    fn intersection_tile_with_kind_none_does_not_force_speed_to_zero() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+                1.0 / 10.0,
+            ))
+            .insert_resource(MapConfig {
+                width: 4,
+                height: 1,
+                tile_size: 16.0,
+            })
+            .insert_resource({
+                let mut grid = MapGrid::new(4, 1);
+
+                let approach = TilePos { x: 0, y: 0 };
+                let i1 = TilePos { x: 1, y: 0 };
+                let i2 = TilePos { x: 2, y: 0 };
+                let exit = TilePos { x: 3, y: 0 };
+
+                // Approach/exit are regular road tiles, intersection cluster tiles have `dir=None`
+                // and `kind != None` (as in the runtime grid).
+                for (pos, kind, dir) in [
+                    (approach, RoadKind::TwoLane, RoadDir::East),
+                    (i1, RoadKind::TwoLane, RoadDir::None),
+                    (i2, RoadKind::TwoLane, RoadDir::None),
+                    (exit, RoadKind::TwoLane, RoadDir::East),
+                ] {
+                    let Some(mut cell) = grid.get(pos) else {
+                        continue;
+                    };
+                    cell.road = RoadCell {
+                        kind,
+                        dir,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    };
+                    grid.set(pos, cell);
+                }
+
+                grid
+            })
+            .insert_resource(TrafficOccupancy::default())
+            .insert_resource(TrafficConfig::default())
+            .insert_resource({
+                // One intersection cluster covering tiles (1,0) and (2,0).
+                let id = IntersectionId(0);
+                let key = IntersectionKey {
+                    aabb_min: TilePos { x: 1, y: 0 },
+                    aabb_max: TilePos { x: 2, y: 0 },
+                    tile_count: 2,
+                    tiles_hash: 3,
+                };
+                let mut idx = IntersectionIndex::default();
+                idx.clusters
+                    .push(crate::game::intersections::IntersectionCluster {
+                        id,
+                        key,
+                        tiles: vec![TilePos { x: 1, y: 0 }, TilePos { x: 2, y: 0 }],
+                        aabb_min: TilePos { x: 1, y: 0 },
+                        aabb_max: TilePos { x: 2, y: 0 },
+                        centroid_tile: TilePos { x: 1, y: 0 },
+                    });
+                idx.tile_to_intersection.insert(TilePos { x: 1, y: 0 }, id);
+                idx.tile_to_intersection.insert(TilePos { x: 2, y: 0 }, id);
+                idx
+            })
+            .insert_resource(IntersectionReservations::default())
+            .insert_resource(TrafficSpatialIndex::default())
+            .insert_resource(VehicleAggSnapshot::default())
+            .insert_resource(ParkedVehicleTileIndex::default())
+            .add_message::<TripFinished>()
+            .add_systems(Update, (build_traffic_spatial_index, move_vehicles).chain());
+
+        let key = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .cluster_key_at(TilePos { x: 1, y: 0 })
+            .unwrap();
+
+        let e = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![
+                        TilePos { x: 0, y: 0 },
+                        TilePos { x: 1, y: 0 },
+                        TilePos { x: 2, y: 0 },
+                        TilePos { x: 3, y: 0 },
+                    ],
+                    route_idx: 1, // already inside intersection cluster (kind=None/dir=None)
+                    progress: 0.0,
+                    speed: 8.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                Transform::default(),
+                VehicleTrafficState::CrossingIntersection { intersection: key },
+            ))
+            .id();
+
+        app.world_mut()
+            .resource_mut::<bevy::time::Time<bevy::time::Fixed>>()
+            .advance_by(Duration::from_secs_f32(0.1));
+        app.update();
+
+        let v = app.world().get::<Vehicle>(e).unwrap();
+        assert!(
+            v.speed > 0.1,
+            "vehicle speed was forced near-zero while on intersection tile"
+        );
+        assert!(v.progress > 0.0, "vehicle did not advance while crossing");
+    }
+
+    #[test]
+    fn intersection_tiles_ignore_tile_capacity_gate_in_move_vehicles() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+                1.0 / 10.0,
+            ))
+            .insert_resource(MapConfig {
+                width: 4,
+                height: 1,
+                tile_size: 16.0,
+            })
+            .insert_resource({
+                let mut grid = MapGrid::new(4, 1);
+
+                let approach = TilePos { x: 0, y: 0 };
+                let i1 = TilePos { x: 1, y: 0 };
+                let i2 = TilePos { x: 2, y: 0 };
+                let exit = TilePos { x: 3, y: 0 };
+
+                for (pos, kind, dir) in [
+                    (approach, RoadKind::TwoLane, RoadDir::East),
+                    (i1, RoadKind::TwoLane, RoadDir::None),
+                    (i2, RoadKind::TwoLane, RoadDir::None),
+                    (exit, RoadKind::TwoLane, RoadDir::East),
+                ] {
+                    let Some(mut cell) = grid.get(pos) else {
+                        continue;
+                    };
+                    cell.road = RoadCell {
+                        kind,
+                        dir,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    };
+                    grid.set(pos, cell);
+                }
+
+                grid
+            })
+            .insert_resource({
+                let mut occ = TrafficOccupancy::default();
+                occ.ensure_len(4);
+                // Pretend the next intersection tile is "full" per occupancy, to validate that
+                // `move_vehicles` does not use per-tile capacity gates for intersection tiles.
+                let i2 = TilePos { x: 2, y: 0 };
+                let idx = (i2.x as usize) + (i2.y as usize) * 4;
+                if idx < occ.per_tick_vehicles.len() {
+                    occ.per_tick_vehicles[idx] = u16::MAX;
+                }
+                occ
+            })
+            .insert_resource(TrafficConfig::default())
+            .insert_resource({
+                let id = IntersectionId(0);
+                let key = IntersectionKey {
+                    aabb_min: TilePos { x: 1, y: 0 },
+                    aabb_max: TilePos { x: 2, y: 0 },
+                    tile_count: 2,
+                    tiles_hash: 3,
+                };
+                let mut idx = IntersectionIndex::default();
+                idx.clusters
+                    .push(crate::game::intersections::IntersectionCluster {
+                        id,
+                        key,
+                        tiles: vec![TilePos { x: 1, y: 0 }, TilePos { x: 2, y: 0 }],
+                        aabb_min: TilePos { x: 1, y: 0 },
+                        aabb_max: TilePos { x: 2, y: 0 },
+                        centroid_tile: TilePos { x: 1, y: 0 },
+                    });
+                idx.tile_to_intersection.insert(TilePos { x: 1, y: 0 }, id);
+                idx.tile_to_intersection.insert(TilePos { x: 2, y: 0 }, id);
+                idx
+            })
+            .insert_resource(IntersectionReservations::default())
+            .insert_resource(TrafficSpatialIndex::default())
+            .insert_resource(VehicleAggSnapshot::default())
+            .insert_resource(ParkedVehicleTileIndex::default())
+            .add_message::<TripFinished>()
+            .add_systems(Update, (build_traffic_spatial_index, move_vehicles).chain());
+
+        let key = app
+            .world()
+            .resource::<IntersectionIndex>()
+            .cluster_key_at(TilePos { x: 1, y: 0 })
+            .unwrap();
+
+        let e = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    route: vec![
+                        TilePos { x: 0, y: 0 },
+                        TilePos { x: 1, y: 0 },
+                        TilePos { x: 2, y: 0 },
+                        TilePos { x: 3, y: 0 },
+                    ],
+                    route_idx: 1,
+                    progress: 0.0,
+                    speed: 8.0,
+                    max_speed: 60.0,
+                    max_accel: 20.0,
+                },
+                Transform::default(),
+                VehicleTrafficState::CrossingIntersection { intersection: key },
+            ))
+            .id();
+
+        app.world_mut()
+            .resource_mut::<bevy::time::Time<bevy::time::Fixed>>()
+            .advance_by(Duration::from_secs_f32(0.1));
+        app.update();
+
+        let v = app.world().get::<Vehicle>(e).unwrap();
+        assert!(
+            v.progress > 0.0,
+            "vehicle failed to advance between intersection tiles; capacity gate may still be applied"
         );
     }
 
@@ -3935,7 +4742,7 @@ mod tests {
 
         let v = app.world().get::<Vehicle>(ego).unwrap();
         assert_eq!(v.route.get(v.route_idx).copied(), Some(approach));
-        assert!(v.progress <= 1.0 - STOP_LINE_OFFSET + 1e-3);
+        assert!(v.progress <= TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET + 1e-3);
 
         let st = app.world().get::<VehicleTrafficState>(ego).unwrap();
         match st {
@@ -4251,7 +5058,7 @@ mod tests {
                 Vehicle {
                     route: vec![approach, intersection_tile, exit],
                     route_idx: 0,
-                    progress: 1.0 - STOP_LINE_OFFSET,
+                    progress: TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
                     speed: 0.0,
                     max_speed: 60.0,
                     max_accel: 20.0,
@@ -4274,6 +5081,11 @@ mod tests {
                     state: ReservationState::Approaching,
                     created_at_sec: 0.0,
                     zones: ZONE_ALL,
+                    stream: StreamKey {
+                        entry: RoadDir::None,
+                        exit: RoadDir::None,
+                    },
+                    maneuver: ManeuverKind::Other,
                 }],
             );
 
@@ -4489,7 +5301,7 @@ mod tests {
                 Vehicle {
                     route: vec![approach, intersection_tile, exit],
                     route_idx: 0,
-                    progress: 1.0 - STOP_LINE_OFFSET,
+                    progress: TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
                     speed: 0.0,
                     max_speed: 60.0,
                     max_accel: 20.0,
@@ -4631,7 +5443,7 @@ mod tests {
                 Vehicle {
                     route: vec![approach, intersection_tile, exit],
                     route_idx: 0,
-                    progress: 1.0 - STOP_LINE_OFFSET,
+                    progress: TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
                     speed: 0.0,
                     max_speed: 60.0,
                     max_accel: 20.0,
@@ -4655,6 +5467,11 @@ mod tests {
                     state: ReservationState::Approaching,
                     created_at_sec: 0.0,
                     zones: ZONE_NW,
+                    stream: StreamKey {
+                        entry: RoadDir::None,
+                        exit: RoadDir::None,
+                    },
+                    maneuver: ManeuverKind::Other,
                 }],
             );
 
@@ -5005,7 +5822,7 @@ mod tests {
                 Vehicle {
                     route: vec![approach, intersection_tile, exit],
                     route_idx: 0,
-                    progress: 1.0 - STOP_LINE_OFFSET,
+                    progress: TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
                     speed: 5.0,
                     max_speed: 60.0,
                     max_accel: 20.0,
@@ -5026,6 +5843,11 @@ mod tests {
                     state: ReservationState::Approaching,
                     created_at_sec: 0.0,
                     zones: ZONE_ALL,
+                    stream: StreamKey {
+                        entry: RoadDir::None,
+                        exit: RoadDir::None,
+                    },
+                    maneuver: ManeuverKind::Other,
                 }],
             );
 
@@ -5040,7 +5862,7 @@ mod tests {
         // Vehicle must not enter the intersection tile.
         let v = app.world().get::<Vehicle>(ego).unwrap();
         assert_eq!(v.route.get(v.route_idx).copied(), Some(approach));
-        assert!(v.progress <= 1.0 - STOP_LINE_OFFSET + 1e-6);
+        assert!(v.progress <= TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET + 1e-6);
     }
 
     #[test]
@@ -5383,7 +6205,8 @@ mod tests {
             .intersection_id_at(intersection_tile)
             .unwrap();
 
-        // Two vehicles doing the same right-turn (same entry_dir => same corner zone) -> conflict.
+        // Two vehicles doing the same right-turn (same stream) should be able to follow each other
+        // through the intersection (no artificial "one vehicle at a time" rule).
         let a = app
             .world_mut()
             .spawn((
@@ -5430,8 +6253,9 @@ mod tests {
             .get(&id)
             .cloned()
             .unwrap_or_default();
-        assert_eq!(rs.len(), 1);
-        assert!(rs[0].vehicle == a || rs[0].vehicle == b);
+        assert_eq!(rs.len(), 2);
+        assert!(rs.iter().any(|r| r.vehicle == a));
+        assert!(rs.iter().any(|r| r.vehicle == b));
     }
 
     #[test]
@@ -5544,7 +6368,7 @@ mod tests {
                 Vehicle {
                     route: vec![approach, intersection_tile, exit],
                     route_idx: 0,
-                    progress: 1.0 - STOP_LINE_OFFSET,
+                    progress: TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
                     speed: 999.0, // absurdly high, should be clamped
                     max_speed: 999.0,
                     max_accel: 20.0,
@@ -5568,6 +6392,11 @@ mod tests {
                     state: ReservationState::Approaching,
                     created_at_sec: 0.0,
                     zones: ZONE_ALL,
+                    stream: StreamKey {
+                        entry: RoadDir::None,
+                        exit: RoadDir::None,
+                    },
+                    maneuver: ManeuverKind::Other,
                 }],
             );
 
