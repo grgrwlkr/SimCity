@@ -1,6 +1,7 @@
 //! Land value system - calculates land value based on proximity to roads, services, and pollution.
 
 use bevy::prelude::*;
+use rayon::prelude::*;
 
 use crate::game::map::{MapGrid, TilePos};
 use crate::game::pollution::PollutionIndex;
@@ -62,7 +63,11 @@ fn compute_land_value(
     let start_idx = land_value.current_chunk * tiles_per_chunk;
     let end_idx = (start_idx + tiles_per_chunk).min(len);
 
-    for idx in start_idx..end_idx {
+    // Collect indices to process in parallel
+    let indices: Vec<usize> = (start_idx..end_idx).collect();
+
+    // Process tiles in parallel
+    let results: Vec<f32> = indices.par_iter().map(|&idx| {
         let x = (idx % grid.width as usize) as i32;
         let y = (idx / grid.width as usize) as i32;
         let pos = TilePos { x, y };
@@ -108,8 +113,12 @@ fn compute_land_value(
         }
 
         // Clamp to [0.0, 1.0]
-        value = value.clamp(0.0, 1.0);
-        land_value.values[idx] = value;
+        value.clamp(0.0, 1.0)
+    }).collect();
+
+    // Copy results to the land value array
+    for (i, &value) in results.iter().enumerate() {
+        land_value.values[start_idx + i] = value;
     }
 
     // Move to next chunk

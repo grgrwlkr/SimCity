@@ -12,7 +12,6 @@ pub mod turn_lanes;
 pub mod version;
 
 pub use lane_graph::{rebuild_lane_graph, LaneGraph, LaneId};
-// pub use lane_occupancy::{populate_lane_occupancy, LaneOccupancy, VehicleId};
 pub use lane_occupancy::VehicleId;
 pub use path_pool::{PathHandle, PathPool};
 pub use pathfinding::{find_road_path_cached, PathCache, PathfindingConfig, PathfindingCtx};

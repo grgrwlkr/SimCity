@@ -6,7 +6,7 @@ use bevy::prelude::*;
 use crate::game::commands::GameCommand;
 use crate::game::ids::CitizenId;
 use crate::game::intersections::{
-    IntersectionId, IntersectionIndex, IntersectionKey, IntersectionPriority,
+    IntersectionIndex, IntersectionPriority,
 };
 use crate::game::map::{MapConfig, MapGrid, TilePos};
 use crate::game::public_transport::{
@@ -59,6 +59,9 @@ use lane_change::{
     build_traffic_spatial_index, build_traffic_spatial_index_pre_lane_changes, plan_lane_changes,
     plan_oncoming_overtakes, tick_lane_change_cooldowns, tick_overtake_oncoming, tick_overtaking,
 };
+
+mod vehicle_render;
+// use vehicle_render::{interpolate_vehicle_position, update_vehicle_positions_for_interpolation}; // TODO: enable when GPU interpolation is needed
 
 mod traffic_spatial_index;
 pub(crate) use traffic_spatial_index::TrafficSpatialIndex;
@@ -331,6 +334,18 @@ impl Plugin for TrafficPlugin {
                 track_vehicle_counts
                     .in_set(GameSet::CommandApply)
                     .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+            )
+            // GPU interpolation systems for smooth 60fps rendering
+            .add_systems(
+                FixedUpdate,
+                vehicle_render::update_vehicle_positions_for_interpolation
+                    .in_set(GameSet::Sim)
+                    .run_if(in_state(AppState::InGame)),
+            )
+            .add_systems(
+                Update,
+                vehicle_render::interpolate_vehicle_position
+                    .run_if(in_state(AppState::InGame)),
             )
             // Jam recovery (run in sim; uses last tick's occupancy/graph state).
             .add_systems(

@@ -5,32 +5,46 @@ use crate::game::map::TilePos;
 use crate::game::transport::{LaneId, PathHandle, VehicleId};
 
 /// Vehicle entity – stores route handle and visual offset.
+/// Optimized memory layout for cache efficiency.
 #[derive(Component)]
+#[repr(C)]
 pub struct Vehicle {
-    /// Handle to shared path in PathPool.
-    pub path_handle: PathHandle,
-    /// Current index into path (so we never modify the shared path).
-    pub path_cursor: usize,
-    /// 0 = at current tile start, 1 = at next tile boundary; interpolated smoothly.
-    pub progress: f32,
-
-    /// Lane-based positioning (for 1M agent simulation).
-    pub lane_id: LaneId,
-    /// Position along lane (s-coordinate in meters).
-    pub lane_s: f32,
-    /// Lane-based vehicle ID.
-    pub vehicle_id: VehicleId,
-
-    /// Legacy tile-based positioning (for compatibility).
-    pub tile_pos: TilePos,
-
+    // Hot path fields (most frequently accessed) - grouped together for cache efficiency
     /// World units per second.
     pub speed: f32,
+    /// 0 = at current tile start, 1 = at next tile boundary; interpolated smoothly.
+    pub progress: f32,
     /// Maximum speed for this vehicle.
     pub max_speed: f32,
     /// Maximum acceleration (world units per second squared).
     #[allow(dead_code)]
     pub max_accel: f32,
+
+    // Position data (frequently accessed together)
+    /// Current frame world position.
+    pub curr_world_pos: Vec2,
+    /// Previous frame world position for interpolation.
+    pub prev_world_pos: Vec2,
+    /// Time of last position update (seconds).
+    pub last_update_time: f32,
+
+    // Path/navigation data
+    /// Handle to shared path in PathPool.
+    pub path_handle: PathHandle,
+    /// Current index into path (so we never modify the shared path).
+    pub path_cursor: usize,
+
+    // Lane-based positioning (for 1M agent simulation)
+    /// Lane-based vehicle ID.
+    pub vehicle_id: VehicleId,
+    /// Lane-based positioning (for 1M agent simulation).
+    pub lane_id: LaneId,
+    /// Position along lane (s-coordinate in meters).
+    pub lane_s: f32,
+
+    // Legacy compatibility data (less frequently accessed)
+    /// Legacy tile-based positioning (for compatibility).
+    pub tile_pos: TilePos,
 }
 
 impl Default for Vehicle {
@@ -46,6 +60,9 @@ impl Default for Vehicle {
             speed: 0.0,
             max_speed: 60.0, // Default speed
             max_accel: 20.0, // Default acceleration
+            prev_world_pos: Vec2::ZERO,
+            curr_world_pos: Vec2::ZERO,
+            last_update_time: 0.0,
         }
     }
 }

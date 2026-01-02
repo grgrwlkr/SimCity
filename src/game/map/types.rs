@@ -21,6 +21,7 @@ impl Default for MapConfig {
 #[derive(
     serde::Serialize, serde::Deserialize, Component, Debug, Copy, Clone, Eq, PartialEq, Hash,
 )]
+#[repr(C)]
 pub struct TilePos {
     pub x: i32,
     pub y: i32,

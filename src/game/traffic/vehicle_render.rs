@@ -1,45 +1,20 @@
 use bevy::prelude::*;
-use bevy::render::render_resource::{Buffer, BufferInitDescriptor, BufferUsages};
 
 use crate::game::traffic::Vehicle;
-use crate::game::transport::{LaneGraph, LaneOccupancy};
+use crate::game::transport::LaneGraph;
 
-/// Instance data for vehicle rendering.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct VehicleInstance {
-    /// Position (x, y)
-    pub position: [f32; 2],
-    /// Rotation (radians)
-    pub rotation: f32,
-    /// Color (RGBA)
-    pub color: [f32; 4],
-    /// Scale
-    pub scale: f32,
-    /// Padding for alignment
-    _padding: [f32; 3],
-}
-
-/// Component for vehicle instance buffer.
-#[derive(Component)]
-pub struct VehicleInstanceBuffer {
-    pub buffer: Buffer,
-    pub instance_count: u32,
-}
-
-/// System to update vehicle instance buffer.
-pub fn update_vehicle_instance_buffer(
-    mut commands: Commands,
-    q_vehicles: Query<(Entity, &Vehicle), Without<super::Parked>>,
+/// Update vehicle positions for GPU interpolation.
+/// This runs at simulation frequency (30fps) and stores position history.
+pub fn update_vehicle_positions_for_interpolation(
+    time: Res<Time>,
     lane_graph: Res<LaneGraph>,
-    mut instance_buffer: Option<ResMut<VehicleInstanceBuffer>>,
-    mut render_device: ResMut<bevy::render::renderer::RenderDevice>,
+    mut q_vehicles: Query<&mut Vehicle, Without<super::Parked>>,
 ) {
-    // Collect all vehicle instances
-    let mut instances = Vec::new();
+    let current_time = time.elapsed_secs_f64() as f32;
 
-    for (_entity, vehicle) in q_vehicles.iter() {
-        let position = if vehicle.lane_id != crate::game::transport::LaneId::INVALID {
+    for mut vehicle in q_vehicles.iter_mut() {
+        // Calculate current world position
+        let tile_pos = if vehicle.lane_id != crate::game::transport::LaneId::INVALID {
             // Use lane-based position
             lane_graph.lane_s_to_tile_pos(vehicle.lane_id, vehicle.lane_s)
                 .unwrap_or(vehicle.tile_pos)
@@ -49,61 +24,44 @@ pub fn update_vehicle_instance_buffer(
         };
 
         // Convert tile position to world coordinates
-        let world_pos = Vec2::new(
-            position.x as f32 * 1.0, // tile_size = 1.0 for simplicity
-            position.y as f32 * 1.0,
-        );
+        let world_pos = tile_to_world_pos(tile_pos, vehicle.progress);
 
-        let instance = VehicleInstance {
-            position: [world_pos.x, world_pos.y],
-            rotation: 0.0, // TODO: calculate based on lane direction
-            color: [0.8, 0.2, 0.2, 1.0], // Red cars for now
-            scale: 0.8,
-            _padding: [0.0; 3],
-        };
-
-        instances.push(instance);
-    }
-
-    if instances.is_empty() {
-        return;
-    }
-
-    // Create or update buffer
-    let buffer_data = bytemuck::cast_slice(&instances);
-
-    if let Some(mut buffer_res) = instance_buffer {
-        // Update existing buffer if size changed
-        if buffer_res.instance_count != instances.len() as u32 {
-            buffer_res.buffer = render_device.create_buffer(&BufferInitDescriptor {
-                label: Some("vehicle_instance_buffer"),
-                contents: buffer_data,
-                usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
-            });
-            buffer_res.instance_count = instances.len() as u32;
-        } else {
-            // TODO: Update buffer contents
-        }
-    } else {
-        // Create new buffer
-        let buffer = render_device.create_buffer(&BufferInitDescriptor {
-            label: Some("vehicle_instance_buffer"),
-            contents: buffer_data,
-            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
-        });
-
-        commands.insert_resource(VehicleInstanceBuffer {
-            buffer,
-            instance_count: instances.len() as u32,
-        });
+        // Store previous position and update current
+        vehicle.prev_world_pos = vehicle.curr_world_pos;
+        vehicle.curr_world_pos = world_pos;
+        vehicle.last_update_time = current_time;
     }
 }
 
-/// Plugin for vehicle instance rendering.
-pub struct VehicleRenderPlugin;
+/// Convert tile position to world coordinates with progress interpolation.
+fn tile_to_world_pos(tile_pos: crate::game::map::TilePos, progress: f32) -> Vec2 {
+    // Base tile position (simplified - no progress interpolation yet)
+    Vec2::new(
+        tile_pos.x as f32,
+        tile_pos.y as f32,
+    )
+}
 
-impl Plugin for VehicleRenderPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(Update, update_vehicle_instance_buffer);
+/// Interpolate vehicle position between simulation frames for smooth 60fps rendering.
+pub fn interpolate_vehicle_position(
+    time: Res<Time>,
+    mut q_vehicles: Query<&mut Vehicle, Without<super::Parked>>,
+) {
+    let current_time = time.elapsed_secs_f64() as f32;
+
+    for mut vehicle in q_vehicles.iter_mut() {
+        // Interpolate between prev and current position
+        let time_since_update = current_time - vehicle.last_update_time;
+        let interpolation_factor = (time_since_update / (1.0 / 30.0)).clamp(0.0, 1.0); // Assume 30fps simulation
+
+        // Linear interpolation for smooth movement
+        let interpolated_pos = vehicle.prev_world_pos.lerp(vehicle.curr_world_pos, interpolation_factor);
+
+        // Store interpolated position (can be used by rendering systems)
+        // For now, we update tile_pos as a simple approximation
+        vehicle.tile_pos.x = interpolated_pos.x as i32;
+        vehicle.tile_pos.y = interpolated_pos.y as i32;
+        // Simplified progress calculation
+        vehicle.progress = interpolated_pos.fract().x;
     }
 }

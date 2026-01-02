@@ -117,6 +117,9 @@ pub(crate) fn spawn_service_vehicle(
                 speed: 0.0,
                 max_speed: kind.vehicle_speed(),
                 max_accel: 25.0,
+                prev_world_pos: Vec2::ZERO,
+                curr_world_pos: Vec2::ZERO,
+                last_update_time: 0.0,
             },
             VehicleTrafficState::FreeFlow,
             ServiceVehicle {

@@ -1,6 +1,7 @@
 //! Pollution system - industrial buildings create pollution that affects land value.
 
 use bevy::prelude::*;
+use rayon::prelude::*;
 
 use crate::game::buildings::Building;
 use crate::game::map::{BuildingKind, MapGrid, TilePos};
