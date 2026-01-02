@@ -1,0 +1,455 @@
+use super::super::*;
+
+pub(in super::super) fn cleanup_right_on_red_markers(
+    intersections: Res<IntersectionIndex>,
+    mut commands: Commands,
+    q: Query<(Entity, &Vehicle, &RightTurnOnRed), Without<Parked>>,
+) {
+    for (e, v, ror) in q.iter() {
+        let Some(&cur) = v.route.get(v.route_idx) else {
+            commands.entity(e).remove::<RightTurnOnRed>();
+            continue;
+        };
+        let cur_id = intersections.intersection_id_at(cur);
+        let next_id = v
+            .route
+            .get(v.route_idx + 1)
+            .and_then(|t| intersections.intersection_id_at(*t));
+
+        let in_or_approaching =
+            cur_id == Some(ror.intersection_id) || next_id == Some(ror.intersection_id);
+        if !in_or_approaching {
+            commands.entity(e).remove::<RightTurnOnRed>();
+        }
+    }
+}
+
+/// Move vehicles along their routes.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub(in super::super) fn move_vehicles(
+    time: Res<Time<Fixed>>,
+    cfg: Res<MapConfig>,
+    grid: Res<MapGrid>,
+    traffic: Res<TrafficOccupancy>,
+    traffic_cfg: Res<TrafficConfig>,
+    intersections: Res<IntersectionIndex>,
+    reservations: Res<IntersectionReservations>,
+    q_pedestrians: Query<&crate::game::pedestrians::PedestrianCrossing>,
+    spatial: Res<TrafficSpatialIndex>,
+    mut vehicle_agg: ResMut<VehicleAggSnapshot>,
+    mut commands: Commands,
+    mut finished: bevy::ecs::message::MessageWriter<TripFinished>,
+    mut ped_axis_mask: Local<
+        std::collections::HashMap<crate::game::intersections::IntersectionId, u8>,
+    >,
+    mut vehicles: Query<
+        (
+            Entity,
+            &mut Vehicle,
+            &mut Transform,
+            &VehicleTrafficState,
+            Option<&RightTurnOnRed>,
+            Option<&TripPassenger>,
+            Option<&CarOwner>,
+            Option<&ServiceVehicle>,
+            Option<&BusVehicle>,
+        ),
+        Without<Parked>,
+    >,
+) {
+    let dt = time.delta_secs();
+    let idm = idm_params_world(&cfg, &traffic_cfg);
+
+    // Update telemetry counters for active (non-parked) vehicles while we already iterate them.
+    vehicle_agg.active = VehicleAgg::default();
+
+    // Snapshot pedestrian crossings by intersection id (axis-specific).
+    // bit0 = axis_ns, bit1 = axis_ew
+    ped_axis_mask.clear();
+    for p in q_pedestrians.iter() {
+        let m = ped_axis_mask.entry(p.intersection_id).or_insert(0);
+        if p.axis_ns {
+            *m |= 1 << 0;
+        } else {
+            *m |= 1 << 1;
+        }
+    }
+
+    for (entity, mut v, mut tf, state, ror, passenger, car_owner, service_vehicle, bus_vehicle) in
+        vehicles.iter_mut()
+    {
+        // --- Telemetry (cheap counters).
+        {
+            let a = &mut vehicle_agg.active;
+            a.total = a.total.saturating_add(1);
+            if v.route_idx >= v.route.len() {
+                a.no_route = a.no_route.saturating_add(1);
+            }
+            if v.speed < 0.1 {
+                a.zero_speed = a.zero_speed.saturating_add(1);
+            }
+            match state {
+                VehicleTrafficState::FreeFlow => a.free_flow = a.free_flow.saturating_add(1),
+                VehicleTrafficState::Approaching { .. } => {
+                    a.approaching = a.approaching.saturating_add(1)
+                }
+                VehicleTrafficState::Stopped { .. } => a.stopped = a.stopped.saturating_add(1),
+                VehicleTrafficState::WaitingForGreen { .. } => {
+                    a.waiting = a.waiting.saturating_add(1)
+                }
+                VehicleTrafficState::CrossingIntersection { .. } => {
+                    a.crossing = a.crossing.saturating_add(1)
+                }
+                VehicleTrafficState::Accelerating => {
+                    a.accelerating = a.accelerating.saturating_add(1)
+                }
+            }
+            if let Some(sv) = service_vehicle {
+                match sv.state {
+                    ServiceVehicleState::AtStation => {
+                        a.service_at_station = a.service_at_station.saturating_add(1)
+                    }
+                    ServiceVehicleState::EnRoute => {
+                        a.service_en_route = a.service_en_route.saturating_add(1)
+                    }
+                    ServiceVehicleState::OnScene => {
+                        a.service_on_scene = a.service_on_scene.saturating_add(1)
+                    }
+                    ServiceVehicleState::Returning => {
+                        a.service_returning = a.service_returning.saturating_add(1);
+                        if v.route_idx >= v.route.len() {
+                            a.service_returning_no_route =
+                                a.service_returning_no_route.saturating_add(1);
+                        }
+                        if v.speed < 0.1 {
+                            a.service_returning_zero_speed =
+                                a.service_returning_zero_speed.saturating_add(1);
+                        }
+                    }
+                }
+            }
+        }
+        if v.route_idx >= v.route.len() {
+            // Arrived – despawn trip vehicles, keep service vehicles (idle).
+            if service_vehicle.is_none() && bus_vehicle.is_none() {
+                if let Some(p) = passenger {
+                    finished.write(TripFinished {
+                        citizen: p.citizen,
+                        purpose: p.purpose,
+                    });
+                }
+                commands.entity(entity).despawn();
+            }
+            continue;
+        }
+
+        // --- Desired speed from speed limits (RoadKind.speed_limit() is treated as km/h).
+        //
+        // IMPORTANT: intersection tiles are represented as road cells with `dir=None` (cluster
+        // marker). They may have a different `RoadKind` than the approach/exit tiles, and sometimes
+        // can even end up with a 0 km/h speed limit. We therefore derive the desired speed limit
+        // from the adjacent **non-intersection** tiles (approach/exit) while inside the cluster.
+        let current_tile = v.route[v.route_idx];
+        let current_is_intersection = is_intersection_tile(&grid, current_tile);
+
+        let mut speed_limit_world = if current_is_intersection {
+            0.0
+        } else {
+            road_speed_limit_world(&cfg, &traffic_cfg, current_tile, &grid)
+        };
+
+        // Fallback to adjacent tiles (prev/next) or, for intersection tiles, use them as the
+        // primary speed limit source.
+        if v.route_idx > 0 {
+            let prev = v.route[v.route_idx - 1];
+            if !is_intersection_tile(&grid, prev) {
+                speed_limit_world =
+                    speed_limit_world.max(road_speed_limit_world(&cfg, &traffic_cfg, prev, &grid));
+            }
+        }
+        if v.route_idx + 1 < v.route.len() {
+            let next = v.route[v.route_idx + 1];
+            if !is_intersection_tile(&grid, next) {
+                speed_limit_world =
+                    speed_limit_world.max(road_speed_limit_world(&cfg, &traffic_cfg, next, &grid));
+            }
+        }
+        if speed_limit_world <= 0.0 {
+            // Defensive fallback: never allow a 0 speed limit to freeze vehicles.
+            speed_limit_world = v.max_speed;
+        }
+        let mut v0 = speed_limit_world.min(v.max_speed).max(0.0);
+        if let Some(ror) = ror.copied() {
+            let cap = kmh_to_world_speed(&cfg, &traffic_cfg, RIGHT_ON_RED_TURN_MAX_KMH);
+            // Clamp while we're in the intersection cluster OR still on the approach tile to it.
+            let cur_id = intersections.intersection_id_at(current_tile);
+            let next_id = v
+                .route
+                .get(v.route_idx + 1)
+                .and_then(|t| intersections.intersection_id_at(*t));
+            if cur_id == Some(ror.intersection_id) || next_id == Some(ror.intersection_id) {
+                v0 = v0.min(cap);
+            }
+        }
+
+        // --- Leader detection (tile-local) + virtual leaders (stop lines / blocked next tile).
+        let mut leader: Option<(f32, f32)> = spatial.leader_same_tile(entity);
+        if v.route_idx + 1 < v.route.len() {
+            let next_tile = v.route[v.route_idx + 1];
+            if let Some(next_idx) = grid.idx(next_tile)
+                && let Some((min_p, lead_v)) = spatial.tile_min_progress_speed(next_idx)
+            {
+                let gap_tiles = (1.0_f32 - v.progress) + min_p;
+                let gap_world = gap_tiles.max(0.0) * cfg.tile_size.max(0.1);
+                leader = Some(match leader {
+                    Some((g, gv)) if g <= gap_world => (g, gv),
+                    _ => (gap_world, lead_v),
+                });
+            }
+        }
+
+        // Virtual leader: stop line (traffic lights/stop signs).
+        if let VehicleTrafficState::Approaching {
+            distance_to_stop, ..
+        } = state
+        {
+            // IDM keeps a standstill gap of `s0` to a leader. For a virtual stop-line leader we want
+            // the vehicle to come to rest *at* the stop line, not `s0` behind it. Achieve that by
+            // shifting the virtual leader forward by `s0`.
+            let gap_world = distance_to_stop.max(0.0) * cfg.tile_size.max(0.1) + idm.s0;
+            let stop_leader = (gap_world, 0.0);
+            leader = Some(match leader {
+                Some((g, gv)) if g <= stop_leader.0 => (g, gv),
+                _ => stop_leader,
+            });
+        }
+
+        // Virtual leader: next tile blocked by capacity / admission / "don't block the box".
+        //
+        // NOTE: even when we are in Stopped/WaitingForGreen, we keep the kinematic update path and
+        // simply force `blocked_next=true`. This avoids abrupt "snap to 0" while still preventing
+        // any forward progress past the stop line.
+        let mut blocked_next = false;
+        let mut blocked_next_is_intersection = false;
+        if v.route_idx + 1 < v.route.len() {
+            let next_tile = v.route[v.route_idx + 1];
+            let current_is_intersection = is_intersection_tile(&grid, current_tile);
+            let next_is_intersection = is_intersection_tile(&grid, next_tile);
+
+            // Intersection admission: require a reservation to enter an intersection tile.
+            if next_is_intersection && !current_is_intersection {
+                blocked_next_is_intersection = true;
+
+                // If we're explicitly waiting for green, never enter even if a reservation exists.
+                // (Right-on-red is handled by transitioning out of WaitingForGreen once released.)
+                if matches!(state, VehicleTrafficState::WaitingForGreen { .. }) {
+                    blocked_next = true;
+                } else {
+                    let ok = if let Some(id) = intersections.intersection_id_at(next_tile) {
+                        reservations.is_reserved_by(id, entity)
+                    } else {
+                        false
+                    };
+                    if !ok {
+                        blocked_next = true;
+                    }
+
+                    // Yield to pedestrians already crossing.
+                    if !blocked_next
+                        && let Some(id) = intersections.intersection_id_at(next_tile)
+                        && let Some(mask) = ped_axis_mask.get(&id).copied()
+                        && mask != 0
+                    {
+                        if !intersections.traffic_lights.contains(&id) {
+                            blocked_next = true;
+                        } else {
+                            let entry_dir = dir_between_adjacent(current_tile, next_tile);
+                            let exit_dir =
+                                compute_exit_direction(&v.route[v.route_idx..], &grid, next_tile);
+                            if entry_dir != RoadDir::None && exit_dir != RoadDir::None {
+                                let right = if traffic_cfg.drive_on_right {
+                                    entry_dir.right()
+                                } else {
+                                    entry_dir.left()
+                                };
+                                let left = if traffic_cfg.drive_on_right {
+                                    entry_dir.left()
+                                } else {
+                                    entry_dir.right()
+                                };
+
+                                let is_right_turn = exit_dir == right;
+                                let is_left_turn = exit_dir == left;
+
+                                if is_left_turn {
+                                    blocked_next = true;
+                                } else if is_right_turn {
+                                    let conflicts_ns =
+                                        matches!(exit_dir, RoadDir::East | RoadDir::West);
+                                    let conflicts_ew =
+                                        matches!(exit_dir, RoadDir::North | RoadDir::South);
+                                    if (conflicts_ns && (mask & (1 << 0)) != 0)
+                                        || (conflicts_ew && (mask & (1 << 1)) != 0)
+                                    {
+                                        blocked_next = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Tile-capacity gate: only applies to **non-intersection** road tiles.
+            // Intersection cluster tiles are managed via reservations/conflict zones instead.
+            if !next_is_intersection
+                && let Some(next_idx) = grid.idx(next_tile)
+                && let Some(next_cell) = grid.get(next_tile)
+                && next_cell.road.is_some()
+                && next_idx < traffic.per_tick_vehicles.len()
+            {
+                let cap = next_cell.road.kind.capacity_per_lane_tile();
+                let occ = traffic.per_tick_vehicles[next_idx];
+                if occ >= cap {
+                    blocked_next = true;
+                }
+            }
+
+            // "Don't block the box": entering intersection requires free space to exit.
+            if !blocked_next && next_is_intersection {
+                let rem = &v.route[v.route_idx..];
+                let exit_tile = rem
+                    .iter()
+                    .position(|t| *t == next_tile)
+                    .and_then(|start_i| {
+                        let mut i = start_i;
+                        while i < rem.len() && is_intersection_tile(&grid, rem[i]) {
+                            i += 1;
+                        }
+                        rem.get(i).copied()
+                    });
+
+                if let Some(exit_tile) = exit_tile
+                    && let Some(exit_idx) = grid.idx(exit_tile)
+                    && let Some(exit_cell) = grid.get(exit_tile)
+                    && exit_cell.road.is_some()
+                    && exit_idx < traffic.per_tick_vehicles.len()
+                {
+                    let cap = exit_cell.road.kind.capacity_per_lane_tile();
+                    let occ = traffic.per_tick_vehicles[exit_idx];
+                    if occ >= cap {
+                        blocked_next = true;
+                    }
+                }
+            }
+        }
+
+        if blocked_next {
+            let gap_tiles = if blocked_next_is_intersection {
+                // Stop line is before the intersection boundary, on the approach tile.
+                (TILE_CENTER_TO_EDGE_TILES - v.progress - STOP_LINE_OFFSET).max(0.0)
+            } else {
+                (1.0 - v.progress).max(0.0)
+            };
+            // Same logic as stop-line leader above: for an intersection admission block, shift
+            // the virtual leader forward by `s0` so the vehicle can reach the stop line.
+            let mut gap_world = gap_tiles * cfg.tile_size.max(0.1);
+            if blocked_next_is_intersection {
+                gap_world += idm.s0;
+            }
+            let block_leader = (gap_world, 0.0);
+            leader = Some(match leader {
+                Some((g, gv)) if g <= block_leader.0 => (g, gv),
+                _ => block_leader,
+            });
+        }
+
+        // IDM speed update.
+        if v0 > 0.0 {
+            let accel = idm_accel_world(v.speed, v0, leader, &idm);
+            v.speed = (v.speed + accel * dt).clamp(0.0, v0);
+        } else {
+            v.speed = 0.0;
+        }
+
+        // Advance along the current tile.
+        let tile_size = cfg.tile_size.max(0.1);
+        let desired_dprog = (v.speed * dt) / tile_size;
+        let prev_p = v.progress;
+
+        if v.route_idx + 1 < v.route.len() && blocked_next {
+            let stop_before = 0.001;
+            let max_p = if blocked_next_is_intersection {
+                // Clamp to the stop line within the approach tile.
+                (TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET).max(0.0)
+            } else {
+                1.0 - stop_before
+            };
+            let desired_p = prev_p + desired_dprog;
+            let next_p = desired_p.min(max_p);
+            v.progress = next_p;
+
+            // Kinematic speed cap: if we hit the clamp this tick, adjust speed so we don't "snap".
+            if next_p < desired_p {
+                let actual_dprog = (next_p - prev_p).max(0.0);
+                let denom = dt.max(1e-6);
+                v.speed = (actual_dprog * tile_size) / denom;
+            }
+        } else {
+            v.progress = prev_p + desired_dprog;
+        }
+
+        let mut last_tile_for_arrival = v
+            .route
+            .get(v.route_idx)
+            .copied()
+            .unwrap_or(TilePos { x: 0, y: 0 });
+        while v.progress >= 1.0 && v.route_idx < v.route.len() {
+            v.progress -= 1.0;
+            last_tile_for_arrival = v.route[v.route_idx];
+            v.route_idx = v.route_idx.saturating_add(1);
+        }
+
+        if v.route_idx >= v.route.len() {
+            if service_vehicle.is_none() && bus_vehicle.is_none() {
+                if let Some(p) = passenger {
+                    finished.write(TripFinished {
+                        citizen: p.citizen,
+                        purpose: p.purpose,
+                    });
+                }
+                // CarTour Variant B: keep citizen-owned cars parked instead of despawning them.
+                if car_owner.is_some() && passenger.is_some() {
+                    v.route = vec![last_tile_for_arrival];
+                    v.route_idx = 0;
+                    v.progress = 0.0;
+                    v.speed = 0.0;
+                    commands
+                        .entity(entity)
+                        .insert((Parked { offset: 1.0 }, VehicleTrafficState::FreeFlow))
+                        .remove::<TripPassenger>()
+                        .remove::<RightTurnOnRed>();
+                } else {
+                    commands.entity(entity).despawn();
+                }
+            }
+            continue;
+        }
+
+        // Lerp between current tile and next.
+        let Some(&curr) = v.route.get(v.route_idx) else {
+            continue;
+        };
+        let next = if v.route_idx + 1 < v.route.len() {
+            v.route[v.route_idx + 1]
+        } else {
+            curr
+        };
+
+        let curr_world = tile_to_world(&cfg, curr);
+        let next_world = tile_to_world(&cfg, next);
+        let lerped = curr_world.lerp(next_world, v.progress.clamp(0.0, 1.0));
+        tf.translation.x = lerped.x;
+        tf.translation.y = lerped.y;
+    }
+}
