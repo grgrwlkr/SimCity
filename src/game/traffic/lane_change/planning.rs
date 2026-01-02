@@ -208,7 +208,12 @@ pub(in super::super) fn plan_lane_changes(
         }
 
         let dir = ego_cell.road.dir;
-        let goal = path_pool.get_tile(v.path_handle, path_pool.len(v.path_handle).saturating_sub(1)).unwrap_or(ego_tile);
+        let goal = path_pool
+            .get_tile(
+                v.path_handle,
+                path_pool.len(v.path_handle).saturating_sub(1),
+            )
+            .unwrap_or(ego_tile);
         if goal == ego_tile {
             continue;
         }
@@ -223,7 +228,14 @@ pub(in super::super) fn plan_lane_changes(
         let right_target = lane_change_target(&grid, ego_tile, dir.right());
 
         // Leader heuristics (for overtake decision).
-        let leader = find_leader_ahead((ego_tile, v.progress), &path_pool, v.path_handle, v.path_cursor, &grid, &spatial);
+        let leader = find_leader_ahead(
+            (ego_tile, v.progress),
+            &path_pool,
+            v.path_handle,
+            v.path_cursor,
+            &grid,
+            &spatial,
+        );
 
         let mut want_left = false;
         let mut want_right = false;

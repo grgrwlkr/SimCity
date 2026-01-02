@@ -1,6 +1,6 @@
-use bevy::prelude::*;
 use crate::game::map::{MapConfig, TilePos};
 use crate::game::roads::RoadDir;
+use bevy::prelude::*;
 
 /// Convert tile position to world coordinates.
 pub fn tile_to_world(cfg: &MapConfig, pos: TilePos) -> Vec2 {
@@ -21,11 +21,7 @@ pub fn desired_dir(from: TilePos, to: TilePos) -> RoadDir {
     let dx = to.x - from.x;
     let dy = to.y - from.y;
     if dx.abs() > dy.abs() {
-        if dx > 0 {
-            RoadDir::East
-        } else {
-            RoadDir::West
-        }
+        if dx > 0 { RoadDir::East } else { RoadDir::West }
     } else if dy > 0 {
         RoadDir::North
     } else {
@@ -41,10 +37,22 @@ pub fn pick_reachable_road_endpoint(
     // Check adjacent tiles for road endpoints
     let candidates = [
         from,
-        TilePos { x: from.x - 1, y: from.y },
-        TilePos { x: from.x + 1, y: from.y },
-        TilePos { x: from.x, y: from.y - 1 },
-        TilePos { x: from.x, y: from.y + 1 },
+        TilePos {
+            x: from.x - 1,
+            y: from.y,
+        },
+        TilePos {
+            x: from.x + 1,
+            y: from.y,
+        },
+        TilePos {
+            x: from.x,
+            y: from.y - 1,
+        },
+        TilePos {
+            x: from.x,
+            y: from.y + 1,
+        },
     ];
 
     for &pos in &candidates {
@@ -60,10 +68,22 @@ pub fn pick_reachable_road_endpoint(
 /// Find any adjacent road tile.
 pub fn adjacent_road_any(grid: &crate::game::map::MapGrid, pos: TilePos) -> Option<TilePos> {
     let candidates = [
-        TilePos { x: pos.x - 1, y: pos.y },
-        TilePos { x: pos.x + 1, y: pos.y },
-        TilePos { x: pos.x, y: pos.y - 1 },
-        TilePos { x: pos.x, y: pos.y + 1 },
+        TilePos {
+            x: pos.x - 1,
+            y: pos.y,
+        },
+        TilePos {
+            x: pos.x + 1,
+            y: pos.y,
+        },
+        TilePos {
+            x: pos.x,
+            y: pos.y - 1,
+        },
+        TilePos {
+            x: pos.x,
+            y: pos.y + 1,
+        },
     ];
 
     for candidate in candidates {
