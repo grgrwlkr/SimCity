@@ -13,6 +13,7 @@ use bevy::time::Fixed;
 
 use crate::game::intersections::IntersectionIndex;
 use crate::game::map::{BuildingKind, MapConfig, MapGrid, TilePos};
+use crate::game::transport::{LaneId, VehicleId};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::traffic::{TrafficOccupancy, Vehicle, VehicleTrafficState};
@@ -258,6 +259,10 @@ fn sync_bus_vehicle(mut p: BusParams) {
                     path_handle: p.path_pool.intern(route),
                     path_cursor: 0,
                     progress: 0.0,
+                    lane_id: LaneId::INVALID,
+                    lane_s: 0.0,
+                    vehicle_id: VehicleId::INVALID,
+                    tile_pos: TilePos { x: 0, y: 0 },
                     speed: p.pt_cfg.bus_speed,
                     max_speed: p.pt_cfg.bus_speed,
                     max_accel: 20.0,

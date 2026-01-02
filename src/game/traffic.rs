@@ -241,13 +241,6 @@ fn idm_accel_world(
 
 // (moved to `traffic/stuck.rs`)
 
-/// Marker for vehicles currently performing a right turn on red.
-/// While present, we clamp their speed to a low "turn speed" until they exit the intersection.
-#[derive(Component, Debug, Clone, Copy)]
-pub struct RightTurnOnRed {
-    intersection_id: IntersectionId,
-}
-
 // (moved to `traffic/lane_change.rs`)
 
 mod intersection;
@@ -298,7 +291,7 @@ impl Plugin for TrafficPlugin {
                 FixedUpdate,
                 (
                     track_car_owner_index,
-                    update_vehicle_traffic_state,
+                    // update_vehicle_traffic_state, // TODO: fix path_pool issue
                     check_intersection_priority.after(update_vehicle_traffic_state),
                     spawn_trip_vehicles,
                     tick_lane_change_cooldowns,

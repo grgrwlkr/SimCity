@@ -11,6 +11,9 @@ use crate::game::state::AppState;
 #[derive(Resource, Default)]
 pub struct PollutionIndex {
     pub pollution: Vec<f32>, // 0.0 - 1.0 for each tile
+    chunk_size: usize,
+    current_chunk: usize,
+    needs_full_reset: bool,
 }
 
 impl PollutionIndex {
@@ -35,7 +38,7 @@ impl Plugin for PollutionPlugin {
 /// Pollution radius from industrial buildings
 const POLLUTION_RADIUS: i32 = 10;
 
-/// Compute pollution for all tiles
+/// Compute pollution incrementally
 fn compute_pollution(
     grid: Res<MapGrid>,
     q_buildings: Query<&Building>,
@@ -45,18 +48,41 @@ fn compute_pollution(
     if pollution.pollution.len() != len {
         pollution.pollution.clear();
         pollution.pollution.resize(len, 0.0);
+        pollution.chunk_size = 32; // Smaller chunks for pollution
+        pollution.current_chunk = 0;
+        pollution.needs_full_reset = true;
     }
 
-    // Reset all pollution
-    pollution.pollution.fill(0.0);
+    // Reset chunks incrementally
+    if pollution.needs_full_reset {
+        let tiles_per_chunk = pollution.chunk_size;
+        let start_idx = pollution.current_chunk * tiles_per_chunk;
+        let end_idx = (start_idx + tiles_per_chunk).min(len);
 
-    // For each industrial building, spread pollution
+        for idx in start_idx..end_idx {
+            pollution.pollution[idx] = 0.0;
+        }
+
+        pollution.current_chunk += 1;
+        if pollution.current_chunk * tiles_per_chunk >= len {
+            pollution.needs_full_reset = false;
+            pollution.current_chunk = 0;
+        }
+        return; // Reset phase - don't compute pollution yet
+    }
+
+    // Compute pollution for current chunk
+    let tiles_per_chunk = pollution.chunk_size;
+    let start_idx = pollution.current_chunk * tiles_per_chunk;
+    let end_idx = (start_idx + tiles_per_chunk).min(len);
+
+    // For each industrial building, spread pollution to current chunk
     for building in q_buildings.iter() {
         if building.kind != BuildingKind::Industrial {
             continue;
         }
 
-        // Spread pollution in radius
+        // Only spread to tiles in current chunk
         for dy in -POLLUTION_RADIUS..=POLLUTION_RADIUS {
             for dx in -POLLUTION_RADIUS..=POLLUTION_RADIUS {
                 let check_pos = TilePos {
@@ -65,6 +91,10 @@ fn compute_pollution(
                 };
 
                 if let Some(idx) = grid.idx(check_pos) {
+                    if idx < start_idx || idx >= end_idx {
+                        continue; // Not in current chunk
+                    }
+
                     let distance = ((dx * dx + dy * dy) as f32).sqrt();
                     if distance <= POLLUTION_RADIUS as f32 {
                         // Intensity decreases with distance
@@ -77,4 +107,11 @@ fn compute_pollution(
             }
         }
     }
+
+    pollution.current_chunk += 1;
+    if pollution.current_chunk * tiles_per_chunk >= len {
+        pollution.current_chunk = 0;
+        pollution.needs_full_reset = true; // Start over for next full cycle
+    }
 }
+

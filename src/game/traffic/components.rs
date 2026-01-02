@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 
-use crate::game::intersections::IntersectionKey;
+use crate::game::intersections::{IntersectionId, IntersectionKey};
 use crate::game::map::TilePos;
-use crate::game::transport::PathHandle;
+use crate::game::transport::{LaneId, PathHandle, VehicleId};
 
 /// Vehicle entity – stores route handle and visual offset.
 #[derive(Component)]
@@ -13,6 +13,17 @@ pub struct Vehicle {
     pub path_cursor: usize,
     /// 0 = at current tile start, 1 = at next tile boundary; interpolated smoothly.
     pub progress: f32,
+
+    /// Lane-based positioning (for 1M agent simulation).
+    pub lane_id: LaneId,
+    /// Position along lane (s-coordinate in meters).
+    pub lane_s: f32,
+    /// Lane-based vehicle ID.
+    pub vehicle_id: VehicleId,
+
+    /// Legacy tile-based positioning (for compatibility).
+    pub tile_pos: TilePos,
+
     /// World units per second.
     pub speed: f32,
     /// Maximum speed for this vehicle.
@@ -28,6 +39,10 @@ impl Default for Vehicle {
             path_handle: PathHandle::INVALID,
             path_cursor: 0,
             progress: 0.0,
+            lane_id: LaneId::INVALID,
+            lane_s: 0.0,
+            vehicle_id: VehicleId::INVALID,
+            tile_pos: TilePos { x: 0, y: 0 },
             speed: 0.0,
             max_speed: 60.0, // Default speed
             max_accel: 20.0, // Default acceleration
@@ -82,4 +97,11 @@ pub struct Parked {
 #[derive(Component, Debug, Clone, Copy)]
 pub struct CarOwner {
     pub citizen: crate::game::ids::CitizenId,
+}
+
+/// Marker for vehicles currently performing a right turn on red.
+/// While present, we clamp their speed to a low "turn speed" until they exit the intersection.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct RightTurnOnRed {
+    pub intersection_id: IntersectionId,
 }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::game::transport::PathPool;
+use crate::game::transport::{LaneId, PathPool, VehicleId};
 
 pub(super) fn spawn_trip_vehicles(
     mut reader: bevy::ecs::message::MessageReader<TripRequested>,
@@ -109,7 +109,7 @@ pub(super) fn spawn_trip_vehicles(
                 let world_pos = tile_to_world(&p.cfg, start);
                 // Release old path if any
                 p.path_pool.release(v.path_handle);
-                v.path_handle = p.path_pool.intern(route);
+                v.path_handle = p.path_pool.intern(route.clone());
                 v.path_cursor = 0;
                 v.progress = 0.0;
                 v.speed = 0.0;
@@ -156,6 +156,10 @@ pub(super) fn spawn_trip_vehicles(
                 path_handle: p.path_pool.intern(route),
                 path_cursor: 0,
                 progress: 0.0,
+                lane_id: LaneId::INVALID,
+                lane_s: 0.0,
+                vehicle_id: VehicleId::INVALID,
+                tile_pos: start,
                 speed: 0.0,
                 max_speed: driver_max_speed_world,
                 max_accel: idm.a,

@@ -1,7 +1,7 @@
 use super::super::*;
 use crate::game::transport::PathPool;
 
-pub(in super::super) fn cleanup_right_on_red_markers(
+pub fn cleanup_right_on_red_markers(
     intersections: Res<IntersectionIndex>,
     path_pool: Res<PathPool>,
     mut commands: Commands,
@@ -25,7 +25,7 @@ pub(in super::super) fn cleanup_right_on_red_markers(
 
 /// Move vehicles along their routes.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub(in super::super) fn move_vehicles(
+pub fn move_vehicles(
     time: Res<Time<Fixed>>,
     cfg: Res<MapConfig>,
     grid: Res<MapGrid>,
@@ -35,7 +35,7 @@ pub(in super::super) fn move_vehicles(
     reservations: Res<IntersectionReservations>,
     q_pedestrians: Query<&crate::game::pedestrians::PedestrianCrossing>,
     spatial: Res<TrafficSpatialIndex>,
-    path_pool: Res<PathPool>,
+    mut path_pool: ResMut<PathPool>,
     mut vehicle_agg: ResMut<VehicleAggSnapshot>,
     mut commands: Commands,
     mut finished: bevy::ecs::message::MessageWriter<TripFinished>,

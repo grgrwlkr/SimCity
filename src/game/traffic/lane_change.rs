@@ -111,7 +111,7 @@ pub(super) fn plan_oncoming_overtakes(
     grid: Res<MapGrid>,
     traffic_cfg: Res<TrafficConfig>,
     spatial: Res<TrafficSpatialIndex>,
-    path_pool: Res<PathPool>,
+    mut path_pool: ResMut<PathPool>,
     mut commands: Commands,
     mut vehicles: ParamSet<(
         Query<
@@ -156,12 +156,11 @@ pub(super) fn plan_oncoming_overtakes(
         }
 
         // Never start close to intersections (safety).
-        if route_has_near_intersection_n(
-            &path_pool.remaining_from(v.path_handle, v.path_cursor),
-            &grid,
-            ONCOMING_OVERTAKE_INTERSECTION_LOOKAHEAD,
-        ) {
-            continue;
+        if let Some(route) = path_pool.remaining_from(v.path_handle, v.path_cursor) {
+            if route_has_near_intersection_n(route, &grid, ONCOMING_OVERTAKE_INTERSECTION_LOOKAHEAD)
+            {
+                continue;
+            }
         }
 
         // Do not start while stopped/waiting/approaching a stop line.
@@ -196,9 +195,15 @@ pub(super) fn plan_oncoming_overtakes(
         }
 
         // Only attempt if we have a close, slow leader and we're not already near our desired speed.
-        let Some((_lead_e, gap_tiles, lead_speed)) =
-            spatial.leader_ahead_entity(&grid, &path_pool, e, ego_tile, v.progress, v.path_handle, v.path_cursor)
-        else {
+        let Some((_lead_e, gap_tiles, lead_speed)) = spatial.leader_ahead_entity(
+            &grid,
+            &path_pool,
+            e,
+            ego_tile,
+            v.progress,
+            v.path_handle,
+            v.path_cursor,
+        ) else {
             continue;
         };
         if gap_tiles > OVERTAKE_LOOKAHEAD_TILES {
@@ -221,14 +226,17 @@ pub(super) fn plan_oncoming_overtakes(
             ONCOMING_OVERTAKE_MIN_PASS_TILES,
             ONCOMING_OVERTAKE_MAX_PASS_TILES,
         );
-        if v.route.len() <= pass_tiles + 1 {
+        let Some(route) = path_pool.remaining_from(v.path_handle, v.path_cursor) else {
+            continue;
+        };
+        if route.len() <= pass_tiles + 1 {
             continue;
         }
 
         // Validate straight TwoLane segment and matching oncoming tiles for the planned range.
         let mut ok = true;
         for i in 0..=pass_tiles {
-            let base = v.route[i];
+            let base = route[i];
             let Some(c) = grid.get(base) else {
                 ok = false;
                 break;
@@ -304,7 +312,9 @@ pub(super) fn plan_oncoming_overtakes(
         let Some(current) = path_pool.get_tile(vv.path_handle, vv.path_cursor) else {
             continue;
         };
-        let rem = path_pool.remaining_from(vv.path_handle, vv.path_cursor);
+        let Some(rem) = path_pool.remaining_from(vv.path_handle, vv.path_cursor) else {
+            continue;
+        };
         let mut new_route = Vec::with_capacity(rem.len() + p.pass_tiles + 2);
         new_route.push(current);
 

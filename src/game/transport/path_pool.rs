@@ -161,14 +161,35 @@ impl PathPool {
         if !handle.is_valid() {
             return;
         }
+
+        // Check if we need to remove from dedup first (before modifying entry)
+        let should_remove_from_dedup = if let Some(entry) = self.entries.get(handle.0 as usize) {
+            entry.refcount == 1 // Will become 0 after decrement
+        } else {
+            false
+        };
+
+        let (path_hash, version) = if should_remove_from_dedup {
+            if let Some(entry) = self.entries.get(handle.0 as usize) {
+                let path = entry.path.clone();
+                let path_hash = self.compute_path_hash(&path);
+                (Some(path_hash), Some(entry.version))
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
+
         if let Some(entry) = self.entries.get_mut(handle.0 as usize) {
             entry.refcount = entry.refcount.saturating_sub(1);
             if entry.refcount == 0 {
                 // Mark slot as free
                 self.free_slots.push(handle.0 as usize);
-                // Remove from dedup (but only if it's the current version)
-                let path_hash = self.compute_path_hash(&entry.path);
-                self.dedup.remove(&(path_hash, entry.version));
+                // Remove from dedup
+                if let (Some(path_hash), Some(version)) = (path_hash, version) {
+                    self.dedup.remove(&(path_hash, version));
+                }
             }
         }
     }

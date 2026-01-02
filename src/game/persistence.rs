@@ -256,6 +256,7 @@ struct LoadParams<'w, 's> {
     city: ResMut<'w, City>,
     id_gen: ResMut<'w, CitizenIdGen>,
     emergency_manager: Option<ResMut<'w, EmergencyManager>>,
+    path_pool: ResMut<'w, crate::game::transport::PathPool>,
     dirty: ResMut<'w, crate::game::map::DirtyTiles>,
     graph_version: ResMut<'w, GraphVersion>,
     map_edit_version: ResMut<'w, MapEditVersion>,
@@ -359,6 +360,7 @@ fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParam
                             spawn_service_vehicle(
                                 &mut p.commands,
                                 &p.cfg,
+                                &mut p.path_pool,
                                 s_kind,
                                 building_entity,
                                 start_pos,

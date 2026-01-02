@@ -184,8 +184,10 @@ pub(in super::super) fn plan_lane_changes(
         let Some(ego_tile) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
-        if route_has_near_intersection(&path_pool.remaining_from(v.path_handle, v.path_cursor), &grid) {
-            continue;
+        if let Some(route) = path_pool.remaining_from(v.path_handle, v.path_cursor) {
+            if route_has_near_intersection(route, &grid) {
+                continue;
+            }
         }
         let Some(ego_cell) = grid.get(ego_tile) else {
             continue;
@@ -338,16 +340,17 @@ pub(in super::super) fn plan_lane_changes(
             continue;
         }
 
-        if let Ok((_e, mut v)) = vehicles.p1().get_mut(d.e) {
-            // Keep current tile; insert lane-change as the first step.
-            let mut new_route = Vec::with_capacity(route_from_target.len() + 1);
-            new_route.push(current);
-            new_route.extend(route_from_target);
-            v.route = new_route;
-            v.route_idx = 0;
-        } else {
-            continue;
-        }
+        // TODO: implement lane-based route update
+        // if let Ok((_e, mut v)) = vehicles.p1().get_mut(d.e) {
+        //     // Keep current tile; insert lane-change as the first step.
+        //     let mut new_route = Vec::with_capacity(route_from_target.len() + 1);
+        //     new_route.push(current);
+        //     new_route.extend(route_from_target);
+        //     v.route = new_route;
+        //     v.route_idx = 0;
+        // } else {
+        //     continue;
+        // }
 
         // Reserve this position on the target tile to avoid same-tick overlaps.
         reserved.entry(d.target).or_default().push(d.ego_progress);

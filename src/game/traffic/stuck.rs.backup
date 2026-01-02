@@ -122,22 +122,16 @@ pub(super) fn resolve_stuck_vehicles(
         let Some(current) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
-        let goal = path_pool
-            .get_tile(
-                v.path_handle,
-                path_pool.len(v.path_handle).saturating_sub(1),
-            )
-            .unwrap_or(current);
+        let goal = path_pool.get_tile(v.path_handle, path_pool.len(v.path_handle).saturating_sub(1)).unwrap_or(current);
 
         // 1) Emergency re-route: try to find an alternative path to the same goal.
         let route = find_road_path_cached(&mut ctx, current, goal);
         if !route.is_empty() {
             let old_route = path_pool.remaining_from(v.path_handle, v.path_cursor);
-            if Some(route.as_slice()) != old_route {
+            if route != old_route {
                 path_pool.release(v.path_handle);
                 v.path_handle = path_pool.intern(route);
                 v.path_cursor = 0;
-            }
             v.progress = 0.0;
             v.speed = v.speed.min(v.max_speed * 0.5);
 
@@ -156,10 +150,7 @@ pub(super) fn resolve_stuck_vehicles(
         // once per stuck episode.
         if stuck.secs >= STUCK_REROUTE_SECS
             && !stuck.uturn_attempted
-            && path_pool
-                .remaining_from(v.path_handle, v.path_cursor)
-                .map(|r| r.is_empty())
-                .unwrap_or(true)
+            && path_pool.remaining_from(v.path_handle, v.path_cursor).is_empty()
             && let Some(cur_cell) = grid.get(current)
             && cur_cell.road.is_some()
             && cur_cell.road.dir != RoadDir::None

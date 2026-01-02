@@ -10,7 +10,7 @@ use super::GraphVersion;
 
 /// Tracks whether derived turn-lane markings were computed for a given `GraphVersion`.
 #[derive(Resource, Default)]
-pub(super) struct TurnLaneAutogenState {
+pub struct TurnLaneAutogenState {
     pub(super) version: u64,
 }
 
@@ -21,7 +21,7 @@ fn offset(pos: TilePos, d: IVec2) -> TilePos {
     }
 }
 
-pub(super) fn autogen_turn_lanes(
+pub fn autogen_turn_lanes(
     gv: Res<GraphVersion>,
     mut grid: ResMut<MapGrid>,
     mut state: ResMut<TurnLaneAutogenState>,

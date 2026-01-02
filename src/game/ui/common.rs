@@ -40,6 +40,7 @@ pub(super) struct RightSidebarParams<'w, 's> {
     pub(super) vehicle_agg: Option<Res<'w, VehicleAggSnapshot>>,
     pub(super) spatial: Option<Res<'w, TrafficSpatialIndex>>,
     pub(super) parked_index: Option<Res<'w, ParkedVehicleTileIndex>>,
+    pub(super) path_pool: Option<Res<'w, crate::game::transport::PathPool>>,
     pub(super) q_vehicle_by_entity: Query<'w, 's, &'static Vehicle, Without<Parked>>,
     pub(super) q_vehicle_details_active: Query<
         'w,

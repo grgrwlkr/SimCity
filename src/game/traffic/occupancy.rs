@@ -170,7 +170,7 @@ pub(super) fn update_traffic_occupancy(
     // Count occupancy at end-of-tick. Skip parked vehicles - they don't block traffic.
     for vehicle in q.iter() {
         if let Some(pos) = path_pool.get_tile(vehicle.path_handle, vehicle.path_cursor)
-            && let Some(idx) = grid.idx(*pos)
+            && let Some(idx) = grid.idx(pos)
         {
             // saturate at u16::MAX; capacity is small in MVP anyway.
             occ.per_tick_vehicles[idx] = occ.per_tick_vehicles[idx].saturating_add(1);

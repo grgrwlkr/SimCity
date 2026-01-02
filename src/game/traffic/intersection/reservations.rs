@@ -112,7 +112,7 @@ pub(crate) fn reset_intersection_reservations(mut reservations: ResMut<Intersect
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn plan_intersection_reservations(
+pub fn plan_intersection_reservations(
     time: Res<Time<Fixed>>,
     grid: Res<MapGrid>,
     intersections: Res<IntersectionIndex>,
@@ -220,7 +220,11 @@ pub(crate) fn plan_intersection_reservations(
         if entry_dir == RoadDir::None {
             continue;
         }
-        let exit_dir = super::super::compute_exit_direction(&path_pool.remaining_from(v.path_handle, v.path_cursor), &grid, next);
+        let exit_dir = if let Some(route) = path_pool.remaining_from(v.path_handle, v.path_cursor) {
+            super::super::compute_exit_direction(route, &grid, next)
+        } else {
+            RoadDir::None
+        };
 
         // Yield to pedestrians: block only maneuvers that conflict with the currently-crossing axis.
         if let Some(mask) = ped_axis_mask.get(&id).copied() {
@@ -255,12 +259,14 @@ pub(crate) fn plan_intersection_reservations(
 
         // Don't block the box: only admit if the planned exit lane tile has space.
         let rem = path_pool.remaining_from(v.path_handle, v.path_cursor);
-        let exit_tile = rem.iter().position(|t| *t == next).and_then(|start_i| {
-            let mut i = start_i;
-            while i < rem.len() && is_intersection_tile(&grid, rem[i]) {
-                i += 1;
-            }
-            rem.get(i).copied()
+        let exit_tile = rem.and_then(|route| {
+            route.iter().position(|t| *t == next).and_then(|start_i| {
+                let mut i = start_i;
+                while i < route.len() && is_intersection_tile(&grid, route[i]) {
+                    i += 1;
+                }
+                route.get(i).copied()
+            })
         });
         let Some(exit_tile) = exit_tile else {
             continue;
@@ -434,9 +440,10 @@ pub(crate) fn plan_intersection_reservations(
     }
 }
 
-pub(crate) fn cleanup_intersection_reservations(
+pub fn cleanup_intersection_reservations(
     time: Res<Time<Fixed>>,
     intersections: Res<IntersectionIndex>,
+    path_pool: Res<super::super::super::transport::PathPool>,
     mut reservations: ResMut<IntersectionReservations>,
     q_vehicles: Query<&Vehicle>,
 ) {
@@ -469,9 +476,9 @@ pub(crate) fn cleanup_intersection_reservations(
             match r.state {
                 ReservationState::Approaching => {
                     // Vehicle rerouted away: drop.
-                    let next_id = v
-                        .route
-                        .get(v.route_idx + 1)
+                    let next_id = path_pool
+                        .remaining_from(v.path_handle, v.path_cursor)
+                        .and_then(|route| route.get(1))
                         .and_then(|t| intersections.intersection_id_at(*t));
                     if next_id != Some(id) {
                         return false;
