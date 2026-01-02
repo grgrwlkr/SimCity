@@ -27,9 +27,9 @@ pub fn desired_dir(from: TilePos, to: TilePos) -> RoadDir {
             RoadDir::West
         }
     } else if dy > 0 {
-        RoadDir::South
-    } else {
         RoadDir::North
+    } else {
+        RoadDir::South
     }
 }
 
