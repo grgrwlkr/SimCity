@@ -1,4 +1,5 @@
 use super::*;
+use crate::game::transport::PathHandle;
 
 #[test]
 fn vehicle_arrival_emits_trip_finished() {
@@ -21,6 +22,7 @@ fn vehicle_arrival_emits_trip_finished() {
         .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(VehicleAggSnapshot::default())
         .insert_resource(ParkedVehicleTileIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .insert_resource(FinishCount::default())
         .add_systems(
             Update,
@@ -37,8 +39,8 @@ fn vehicle_arrival_emits_trip_finished() {
         .world_mut()
         .spawn((
             Vehicle {
-                route: Vec::new(),
-                route_idx: 0,
+                path_handle: PathHandle::INVALID,
+                path_cursor: 0,
                 progress: 0.0,
                 speed: 0.0,
                 max_speed: 60.0,
@@ -140,8 +142,8 @@ fn stop_sign_release_does_not_oscillate_crossing_state() {
         .world_mut()
         .spawn((
             Vehicle {
-                route: vec![approach, intersection_tile, exit],
-                route_idx: 0,
+                path_handle: PathHandle::INVALID, // TODO: use path_pool.intern()
+                path_cursor: 0,
                 progress: TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
                 speed: 0.0,
                 max_speed: 60.0,
@@ -271,8 +273,8 @@ fn stop_sign_vehicle_gets_reserved_and_enters_intersection_tile() {
         .world_mut()
         .spawn((
             Vehicle {
-                route: vec![approach, intersection_tile, exit],
-                route_idx: 0,
+                path_handle: PathHandle::INVALID, // TODO: use path_pool.intern()
+                path_cursor: 0,
                 progress: TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
                 speed: 0.0,
                 max_speed: 60.0,

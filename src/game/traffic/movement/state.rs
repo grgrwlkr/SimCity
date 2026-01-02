@@ -8,6 +8,7 @@ pub(in super::super) fn update_vehicle_traffic_state(
     grid: Res<MapGrid>,
     intersections: Res<IntersectionIndex>,
     reservations: Res<IntersectionReservations>,
+    path_pool: Res<super::super::super::transport::PathPool>,
     mut commands: Commands,
     q_lights: Query<&crate::game::intersections::TrafficLight>,
     q_priorities: Query<&crate::game::intersections::IntersectionPriorityMarker>,
@@ -36,7 +37,8 @@ pub(in super::super) fn update_vehicle_traffic_state(
     }
 
     for (entity, vehicle, mut state) in q_vehicles.iter_mut() {
-        let route = vehicle.route.get(vehicle.route_idx..).unwrap_or(&[]);
+        let remaining_route = path_pool.remaining_from(vehicle.path_handle, vehicle.path_cursor);
+        let route = &remaining_route;
         let current_tile = route.first().copied();
         if route.is_empty() {
             // No remaining route: leave non-light systems to handle completion/parking.
@@ -145,7 +147,7 @@ pub(in super::super) fn update_vehicle_traffic_state(
             && reservations.is_reserved_by(id, entity)
         {
             let exit_dir = compute_exit_direction(
-                &vehicle.route[vehicle.route_idx..],
+                &path_pool.remaining_from(vehicle.path_handle, vehicle.path_cursor),
                 &grid,
                 intersection_tile,
             );
@@ -291,7 +293,7 @@ pub(in super::super) fn check_intersection_priority(
 
     // For intersections without traffic lights, apply priority rules
     for (_entity, vehicle, mut state) in q_vehicles.iter_mut() {
-        let route = vehicle.route.get(vehicle.route_idx..).unwrap_or(&[]);
+        let route = path_pool.remaining_from(vehicle.path_handle, vehicle.path_cursor);
         let Some(current_tile) = route.first().copied() else {
             continue;
         };

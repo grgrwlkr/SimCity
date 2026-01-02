@@ -1,4 +1,5 @@
 use super::*;
+use crate::game::transport::PathPool;
 
 mod planning;
 pub(super) use planning::{oncoming_lane_offset, plan_lane_changes};
@@ -87,19 +88,21 @@ fn route_has_near_intersection(route: &[TilePos], grid: &MapGrid) -> bool {
 pub(super) fn build_traffic_spatial_index_pre_lane_changes(
     cfg: Res<MapConfig>,
     grid: Res<MapGrid>,
+    path_pool: Res<PathPool>,
     q_vehicles: Query<(Entity, &Vehicle), Without<Parked>>,
     mut index: ResMut<TrafficSpatialIndex>,
 ) {
-    index.rebuild(&cfg, &grid, &q_vehicles);
+    index.rebuild(&cfg, &grid, &path_pool, &q_vehicles);
 }
 
 pub(super) fn build_traffic_spatial_index(
     cfg: Res<MapConfig>,
     grid: Res<MapGrid>,
+    path_pool: Res<PathPool>,
     q_vehicles: Query<(Entity, &Vehicle), Without<Parked>>,
     mut index: ResMut<TrafficSpatialIndex>,
 ) {
-    index.rebuild(&cfg, &grid, &q_vehicles);
+    index.rebuild(&cfg, &grid, &path_pool, &q_vehicles);
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -108,6 +111,7 @@ pub(super) fn plan_oncoming_overtakes(
     grid: Res<MapGrid>,
     traffic_cfg: Res<TrafficConfig>,
     spatial: Res<TrafficSpatialIndex>,
+    path_pool: Res<PathPool>,
     mut commands: Commands,
     mut vehicles: ParamSet<(
         Query<
@@ -147,13 +151,13 @@ pub(super) fn plan_oncoming_overtakes(
         if service_vehicle.is_some() || bus_vehicle.is_some() {
             continue;
         }
-        if v.route_idx + 1 >= v.route.len() {
+        if v.path_cursor + 1 >= path_pool.len(v.path_handle) {
             continue;
         }
 
         // Never start close to intersections (safety).
         if route_has_near_intersection_n(
-            &v.route[v.route_idx..],
+            &path_pool.remaining_from(v.path_handle, v.path_cursor),
             &grid,
             ONCOMING_OVERTAKE_INTERSECTION_LOOKAHEAD,
         ) {
@@ -171,7 +175,7 @@ pub(super) fn plan_oncoming_overtakes(
             continue;
         }
 
-        let Some(&ego_tile) = v.route.get(v.route_idx) else {
+        let Some(ego_tile) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
         let Some(ego_cell) = grid.get(ego_tile) else {
@@ -193,7 +197,7 @@ pub(super) fn plan_oncoming_overtakes(
 
         // Only attempt if we have a close, slow leader and we're not already near our desired speed.
         let Some((_lead_e, gap_tiles, lead_speed)) =
-            spatial.leader_ahead_entity(&grid, e, ego_tile, v.progress, &v.route[v.route_idx..])
+            spatial.leader_ahead_entity(&grid, &path_pool, e, ego_tile, v.progress, v.path_handle, v.path_cursor)
         else {
             continue;
         };
@@ -297,10 +301,10 @@ pub(super) fn plan_oncoming_overtakes(
         };
 
         // Pull out to oncoming lane, move forward for `pass_tiles`, return.
-        let Some(&current) = vv.route.get(vv.route_idx) else {
+        let Some(current) = path_pool.get_tile(vv.path_handle, vv.path_cursor) else {
             continue;
         };
-        let rem = &vv.route[vv.route_idx..];
+        let rem = path_pool.remaining_from(vv.path_handle, vv.path_cursor);
         let mut new_route = Vec::with_capacity(rem.len() + p.pass_tiles + 2);
         new_route.push(current);
 
@@ -328,8 +332,9 @@ pub(super) fn plan_oncoming_overtakes(
 
         // Continue with the original route after the return tile.
         new_route.extend(rem.iter().copied().skip(p.pass_tiles + 1));
-        vv.route = new_route;
-        vv.route_idx = 0;
+        path_pool.release(vv.path_handle);
+        vv.path_handle = path_pool.intern(new_route);
+        vv.path_cursor = 0;
 
         commands.entity(p.e).insert(LaneChangeCooldown {
             remaining_secs: ONCOMING_OVERTAKE_COOLDOWN_SECS,

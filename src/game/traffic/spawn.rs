@@ -1,4 +1,5 @@
 use super::*;
+use crate::game::transport::PathPool;
 
 pub(super) fn spawn_trip_vehicles(
     mut reader: bevy::ecs::message::MessageReader<TripRequested>,
@@ -106,8 +107,10 @@ pub(super) fn spawn_trip_vehicles(
                 && let Ok((_e, _owner, mut v, mut tf, mut sprite)) = p.q_parked_cars.get_mut(e)
             {
                 let world_pos = tile_to_world(&p.cfg, start);
-                v.route = route.clone();
-                v.route_idx = 0;
+                // Release old path if any
+                p.path_pool.release(v.path_handle);
+                v.path_handle = p.path_pool.intern(route);
+                v.path_cursor = 0;
                 v.progress = 0.0;
                 v.speed = 0.0;
                 v.max_speed = driver_max_speed_world;
@@ -150,8 +153,8 @@ pub(super) fn spawn_trip_vehicles(
             },
             Transform::from_xyz(world_pos.x, world_pos.y, 10.0),
             Vehicle {
-                route,
-                route_idx: 0,
+                path_handle: p.path_pool.intern(route),
+                path_cursor: 0,
                 progress: 0.0,
                 speed: 0.0,
                 max_speed: driver_max_speed_world,
@@ -185,6 +188,7 @@ pub(super) struct SpawnTripVehiclesParams<'w, 's> {
     traffic_idx: Res<'w, TrafficIndex>,
     path_cfg: Res<'w, PathfindingConfig>,
     path_cache: ResMut<'w, PathCache>,
+    path_pool: ResMut<'w, PathPool>,
     intersections: Res<'w, IntersectionIndex>,
     pt_cfg: Option<Res<'w, PublicTransportConfig>>,
     pt: Option<Res<'w, PublicTransportIndex>>,

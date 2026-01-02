@@ -5,6 +5,7 @@ use bevy::time::Fixed;
 use crate::game::map::{MapConfig, MapGrid, TilePos};
 use crate::game::roads::RoadDir;
 use crate::game::traffic::{IntersectionReservations, Parked, TrafficConfig, Vehicle};
+use crate::game::transport::PathPool;
 use crate::game::trips::{TripFinished, TripMode, TripRequested};
 
 use super::config::PedestrianConfig;
@@ -126,6 +127,7 @@ pub(crate) struct MoveWalkersParams<'w, 's> {
     reservations: Option<Res<'w, IntersectionReservations>>,
     q_lights: Query<'w, 's, &'static crate::game::intersections::TrafficLight>,
     spatial: Option<Res<'w, crate::game::traffic::TrafficSpatialIndex>>,
+    path_pool: Res<'w, PathPool>,
     q_vehicles: Query<'w, 's, (Entity, &'static Vehicle), Without<Parked>>,
     q_vehicle_by_entity: Query<'w, 's, &'static Vehicle, Without<Parked>>,
     graph: Res<'w, PedestrianGraph>,
@@ -223,6 +225,7 @@ pub(crate) fn move_walkers(
                     &p.ped_cfg,
                     &p.grid,
                     p.spatial.as_deref(),
+                    &p.path_pool,
                     &p.q_vehicles,
                     &p.q_vehicle_by_entity,
                 )
@@ -385,6 +388,7 @@ fn ped_can_enter_uncontrolled(
     ped_cfg: &PedestrianConfig,
     grid: &MapGrid,
     spatial: Option<&crate::game::traffic::TrafficSpatialIndex>,
+    path_pool: &PathPool,
     q_vehicles: &Query<(Entity, &Vehicle), Without<Parked>>,
     q_vehicle_by_entity: &Query<&Vehicle, Without<Parked>>,
 ) -> bool {
@@ -437,7 +441,7 @@ fn ped_can_enter_uncontrolled(
             let Ok(v) = q_vehicle_by_entity.get(front.entity) else {
                 continue;
             };
-            if v.route_idx + 1 >= v.route.len() || v.route[v.route_idx + 1] != intersection_tile {
+            if path_pool.get_tile(v.path_handle, v.path_cursor + 1) != Some(intersection_tile) {
                 continue;
             }
 
@@ -461,10 +465,10 @@ fn ped_can_enter_uncontrolled(
 
     // Fallback path (mostly for minimal test worlds): scan all vehicles.
     for (_e, v) in q_vehicles.iter() {
-        if v.route.len() < 2 {
+        if path_pool.len(v.path_handle) < 2 {
             continue;
         }
-        if v.route_idx + 1 >= v.route.len() || v.route[v.route_idx + 1] != intersection_tile {
+        if path_pool.get_tile(v.path_handle, v.path_cursor + 1) != Some(intersection_tile) {
             continue;
         }
         let dist_to_entry_tiles = (1.0 - v.progress).clamp(0.0, 1.0);

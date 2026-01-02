@@ -12,10 +12,11 @@ pub(super) struct StuckTimer {
 #[allow(clippy::type_complexity)]
 pub(super) fn init_stuck_timers(
     mut commands: Commands,
+    path_pool: Res<super::super::transport::PathPool>,
     q: Query<(Entity, &Vehicle), (With<Vehicle>, Without<StuckTimer>)>,
 ) {
     for (e, v) in q.iter() {
-        let Some(tile) = v.route.get(v.route_idx).copied() else {
+        let Some(tile) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
         commands.entity(e).insert(StuckTimer {
@@ -29,11 +30,12 @@ pub(super) fn init_stuck_timers(
 
 pub(super) fn update_stuck_timers(
     time: Res<Time<Fixed>>,
+    path_pool: Res<super::super::transport::PathPool>,
     mut q: Query<(&Vehicle, &VehicleTrafficState, &mut StuckTimer), Without<Parked>>,
 ) {
     let dt = time.delta_secs();
     for (v, state, mut stuck) in q.iter_mut() {
-        let Some(tile) = v.route.get(v.route_idx).copied() else {
+        let Some(tile) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             stuck.secs = 0.0;
             stuck.uturn_attempted = false;
             continue;
@@ -69,6 +71,7 @@ pub(super) fn resolve_stuck_vehicles(
     traffic: Res<TrafficOccupancy>,
     path_cfg: Res<PathfindingConfig>,
     mut path_cache: ResMut<PathCache>,
+    mut path_pool: ResMut<super::super::transport::PathPool>,
     intersections: Res<IntersectionIndex>,
     mut commands: Commands,
     mut finished: bevy::ecs::message::MessageWriter<TripFinished>,
@@ -102,7 +105,7 @@ pub(super) fn resolve_stuck_vehicles(
         if handled >= MAX_UNSTUCK_PER_TICK {
             break;
         }
-        if v.route_idx >= v.route.len() {
+        if v.path_cursor >= path_pool.len(v.path_handle) {
             stuck.secs = 0.0;
             continue;
         }
@@ -116,16 +119,19 @@ pub(super) fn resolve_stuck_vehicles(
             continue;
         }
 
-        let Some(&current) = v.route.get(v.route_idx) else {
+        let Some(current) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
-        let goal = *v.route.last().unwrap_or(&current);
+        let goal = path_pool.get_tile(v.path_handle, path_pool.len(v.path_handle).saturating_sub(1)).unwrap_or(current);
 
         // 1) Emergency re-route: try to find an alternative path to the same goal.
         let route = find_road_path_cached(&mut ctx, current, goal);
-        if !route.is_empty() && route != v.route {
-            v.route = route;
-            v.route_idx = 0;
+        if !route.is_empty() {
+            let old_route = path_pool.remaining_from(v.path_handle, v.path_cursor);
+            if route != old_route {
+                path_pool.release(v.path_handle);
+                v.path_handle = path_pool.intern(route);
+                v.path_cursor = 0;
             v.progress = 0.0;
             v.speed = v.speed.min(v.max_speed * 0.5);
 
@@ -144,7 +150,7 @@ pub(super) fn resolve_stuck_vehicles(
         // once per stuck episode.
         if stuck.secs >= STUCK_REROUTE_SECS
             && !stuck.uturn_attempted
-            && route.is_empty()
+            && path_pool.remaining_from(v.path_handle, v.path_cursor).is_empty()
             && let Some(cur_cell) = grid.get(current)
             && cur_cell.road.is_some()
             && cur_cell.road.dir != RoadDir::None
@@ -180,8 +186,9 @@ pub(super) fn resolve_stuck_vehicles(
                         next_route.push(current);
                         next_route.extend(from_uturn);
 
-                        v.route = next_route;
-                        v.route_idx = 0;
+                        path_pool.release(v.path_handle);
+                        v.path_handle = path_pool.intern(next_route);
+                        v.path_cursor = 0;
                         v.progress = 0.0;
                         v.speed = 0.0;
 

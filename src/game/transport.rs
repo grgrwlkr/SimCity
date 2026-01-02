@@ -20,6 +20,9 @@ use turn_lanes::{TurnLaneAutogenState, autogen_turn_lanes};
 mod pathfinding;
 pub use pathfinding::{PathCache, PathfindingConfig, PathfindingCtx, find_road_path_cached};
 
+mod path_pool;
+pub use path_pool::{PathHandle, PathPool, PathPoolStats};
+
 mod road_graph;
 pub use road_graph::RoadGraph;
 use road_graph::rebuild_road_graph;
@@ -38,6 +41,7 @@ impl Plugin for TransportPlugin {
             .init_resource::<RegionGraph>()
             .init_resource::<PathfindingConfig>()
             .init_resource::<PathCache>()
+            .init_resource::<PathPool>()
             .add_systems(OnEnter(AppState::MainMenu), reset_transport)
             .add_systems(
                 Update,

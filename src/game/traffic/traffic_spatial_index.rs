@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::game::map::{MapConfig, MapGrid, TilePos};
+use crate::game::transport::{PathHandle, PathPool};
 
 use super::{Parked, Vehicle};
 
@@ -45,6 +46,7 @@ impl TrafficSpatialIndex {
         &mut self,
         cfg: &MapConfig,
         grid: &MapGrid,
+        path_pool: &PathPool,
         q_vehicles: &Query<(Entity, &Vehicle), Without<Parked>>,
     ) {
         let len = grid.len();
@@ -72,7 +74,7 @@ impl TrafficSpatialIndex {
 
         // Pass 1: count vehicles per tile, track touched tiles.
         for (_e, v) in q_vehicles.iter() {
-            let Some(&tile) = v.route.get(v.route_idx) else {
+            let Some(tile) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
                 continue;
             };
             let Some(idx) = grid.idx(tile) else {
@@ -117,7 +119,7 @@ impl TrafficSpatialIndex {
 
         // Pass 2: fill per-tile buckets into the flat array.
         for (e, v) in q_vehicles.iter() {
-            let Some(&tile) = v.route.get(v.route_idx) else {
+            let Some(tile) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
                 continue;
             };
             let Some(idx) = grid.idx(tile) else {
@@ -247,9 +249,11 @@ impl TrafficSpatialIndex {
     pub fn leader_ahead(
         &self,
         grid: &MapGrid,
+        path_pool: &PathPool,
         ego_tile: TilePos,
         ego_progress: f32,
-        route: &[TilePos],
+        path_handle: PathHandle,
+        path_cursor: usize,
     ) -> Option<(f32, f32)> {
         let mut best: Option<(f32, f32)> = None;
 
@@ -267,8 +271,7 @@ impl TrafficSpatialIndex {
             }
         }
 
-        if route.len() > 1 {
-            let next_tile = route[1];
+        if let Some(next_tile) = path_pool.get_tile(path_handle, path_cursor + 1) {
             if let Some(next_idx) = grid.idx(next_tile)
                 && let Some(e) = self.tile_first(next_idx)
             {
@@ -286,10 +289,12 @@ impl TrafficSpatialIndex {
     pub fn leader_ahead_entity(
         &self,
         grid: &MapGrid,
+        path_pool: &PathPool,
         ego: Entity,
         ego_tile: TilePos,
         ego_progress: f32,
-        route: &[TilePos],
+        path_handle: PathHandle,
+        path_cursor: usize,
     ) -> Option<(Entity, f32, f32)> {
         let tile_idx = grid.idx(ego_tile)?;
         let count = *self.counts.get(tile_idx)? as usize;
@@ -309,8 +314,7 @@ impl TrafficSpatialIndex {
         }
 
         // Next tile: earliest vehicle (closest to entry).
-        if route.len() > 1 {
-            let next_tile = route[1];
+        if let Some(next_tile) = path_pool.get_tile(path_handle, path_cursor + 1) {
             let next_idx = grid.idx(next_tile)?;
             if let Some(e) = self.tile_first(next_idx) {
                 let g = (1.0 - ego_progress) + e.progress;

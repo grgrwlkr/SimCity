@@ -118,6 +118,7 @@ pub(crate) fn plan_intersection_reservations(
     intersections: Res<IntersectionIndex>,
     traffic: Res<TrafficOccupancy>,
     traffic_cfg: Res<TrafficConfig>,
+    path_pool: Res<super::super::super::transport::PathPool>,
     mut reservations: ResMut<IntersectionReservations>,
     q_lights: Query<&crate::game::intersections::TrafficLight>,
     q_pedestrians: Query<&PedestrianCrossing>,
@@ -162,7 +163,7 @@ pub(crate) fn plan_intersection_reservations(
 
     // Ensure any vehicle currently inside an intersection cluster owns a reservation (safety net).
     for (e, v, _) in q_vehicles.iter() {
-        let Some(&cur) = v.route.get(v.route_idx) else {
+        let Some(cur) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
         if !is_intersection_tile(&grid, cur) {
@@ -190,7 +191,7 @@ pub(crate) fn plan_intersection_reservations(
     // Greedy admission: allow multiple approaching vehicles per intersection as long as their
     // conflict zones don't overlap (coarse safety).
     for (e, v, state) in q_vehicles.iter() {
-        if v.route_idx + 1 >= v.route.len() {
+        if v.path_cursor + 1 >= path_pool.len(v.path_handle) {
             continue;
         }
         let stopped_or_waiting = matches!(
@@ -198,13 +199,15 @@ pub(crate) fn plan_intersection_reservations(
             VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. }
         );
 
-        let Some(&cur) = v.route.get(v.route_idx) else {
+        let Some(cur) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
         if is_intersection_tile(&grid, cur) {
             continue;
         }
-        let next = v.route[v.route_idx + 1];
+        let Some(next) = path_pool.get_tile(v.path_handle, v.path_cursor + 1) else {
+            continue;
+        };
         if !is_intersection_tile(&grid, next) {
             continue;
         }
@@ -217,7 +220,7 @@ pub(crate) fn plan_intersection_reservations(
         if entry_dir == RoadDir::None {
             continue;
         }
-        let exit_dir = super::super::compute_exit_direction(&v.route[v.route_idx..], &grid, next);
+        let exit_dir = super::super::compute_exit_direction(&path_pool.remaining_from(v.path_handle, v.path_cursor), &grid, next);
 
         // Yield to pedestrians: block only maneuvers that conflict with the currently-crossing axis.
         if let Some(mask) = ped_axis_mask.get(&id).copied() {
@@ -251,7 +254,7 @@ pub(crate) fn plan_intersection_reservations(
         }
 
         // Don't block the box: only admit if the planned exit lane tile has space.
-        let rem = &v.route[v.route_idx..];
+        let rem = path_pool.remaining_from(v.path_handle, v.path_cursor);
         let exit_tile = rem.iter().position(|t| *t == next).and_then(|start_i| {
             let mut i = start_i;
             while i < rem.len() && is_intersection_tile(&grid, rem[i]) {
@@ -451,11 +454,11 @@ pub(crate) fn cleanup_intersection_reservations(
             let Ok(v) = q_vehicles.get(r.vehicle) else {
                 return false;
             };
-            if v.route_idx >= v.route.len() {
+            if v.path_cursor >= path_pool.len(v.path_handle) {
                 return false;
             }
 
-            let Some(&cur) = v.route.get(v.route_idx) else {
+            let Some(cur) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
                 return false;
             };
             let cur_id = intersections.intersection_id_at(cur);

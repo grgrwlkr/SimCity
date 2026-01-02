@@ -13,6 +13,7 @@ pub(crate) fn sync_service_stations_from_buildings(
     mut commands: Commands,
     cfg: Res<MapConfig>,
     grid: Res<MapGrid>,
+    mut path_pool: ResMut<crate::game::transport::PathPool>,
     q_buildings: Query<(Entity, &Building, Option<&ServiceStation>)>,
 ) {
     for (entity, b, station) in q_buildings.iter() {
@@ -30,12 +31,13 @@ pub(crate) fn sync_service_stations_from_buildings(
             pos: b.pos,
             total_vehicles: total,
             available_vehicles: total,
+            occupied: false,
         });
 
         // Spawn parked vehicles (idle at station). They must not be despawned by traffic.
         for _ in 0..total {
             if let Some(start_pos) = adjacent_road_any(&grid, b.pos) {
-                spawn_service_vehicle(&mut commands, &cfg, kind, entity, start_pos);
+                spawn_service_vehicle(&mut commands, &cfg, &mut path_pool, kind, entity, start_pos);
             }
         }
     }
@@ -84,6 +86,7 @@ fn tile_to_world(cfg: &MapConfig, pos: TilePos) -> Vec2 {
 pub(crate) fn spawn_service_vehicle(
     commands: &mut Commands,
     cfg: &MapConfig,
+    path_pool: &mut ResMut<crate::game::transport::PathPool>,
     kind: ServiceKind,
     station: Entity,
     start_pos: TilePos,
@@ -103,8 +106,8 @@ pub(crate) fn spawn_service_vehicle(
             Vehicle {
                 // Keep a "parked" tile so dispatch can build a route from the correct lane tile.
                 // Speed 0 keeps the vehicle stationary.
-                route: vec![start_pos],
-                route_idx: 0,
+                path_handle: path_pool.intern(vec![start_pos]),
+                path_cursor: 0,
                 progress: 0.0,
                 speed: 0.0,
                 max_speed: kind.vehicle_speed(),
@@ -142,15 +145,20 @@ pub(crate) fn park_returned_service_vehicles(
     mut q_vehicles: Query<(Entity, &mut ServiceVehicle, &mut Vehicle, Option<&Parked>)>,
     mut q_stations: Query<&mut ServiceStation>,
     q_emergencies: Query<Entity, With<Emergency>>,
+    mut path_pool: ResMut<crate::game::transport::PathPool>,
 ) {
     for (entity, mut sv, mut vehicle, parked) in q_vehicles.iter_mut() {
         // When a service vehicle finishes its route (either returning or due to missing mission),
         // snap it back to "parked at station" so it becomes dispatchable again.
         if sv.state == ServiceVehicleState::AtStation {
             // Ensure a stable parked representation.
-            if vehicle.route.is_empty() || vehicle.route_idx >= vehicle.route.len() {
-                vehicle.route = vec![sv.home_road];
-                vehicle.route_idx = 0;
+            if path_pool.len(vehicle.path_handle) == 0
+                || vehicle.path_cursor >= path_pool.len(vehicle.path_handle)
+            {
+                let route = vec![sv.home_road];
+                path_pool.release(vehicle.path_handle);
+                vehicle.path_handle = path_pool.intern(route);
+                vehicle.path_cursor = 0;
             }
             vehicle.speed = 0.0;
             // Ensure parked component is present
@@ -174,7 +182,7 @@ pub(crate) fn park_returned_service_vehicles(
             }
         }
 
-        if vehicle.route_idx < vehicle.route.len() {
+        if vehicle.path_cursor < path_pool.len(vehicle.path_handle) {
             continue;
         }
 
@@ -188,8 +196,10 @@ pub(crate) fn park_returned_service_vehicles(
         sv.state = ServiceVehicleState::AtStation;
         sv.mission = None;
         vehicle.speed = 0.0;
-        vehicle.route = vec![sv.home_road];
-        vehicle.route_idx = 0;
+        let route = vec![sv.home_road];
+        path_pool.release(vehicle.path_handle);
+        vehicle.path_handle = path_pool.intern(route);
+        vehicle.path_cursor = 0;
 
         // Add parked component - vehicle is now parked at station
         commands.entity(entity).insert(Parked { offset: 1.0 });

@@ -24,7 +24,7 @@ use crate::game::transport::{
 use crate::game::trips::{TripFinished, TripMode, TripRequested};
 
 mod components;
-pub use components::{CarOwner, Parked, Vehicle, VehicleTrafficState};
+pub use components::{CarOwner, Parked, RightTurnOnRed, Vehicle, VehicleTrafficState};
 
 mod config;
 pub use config::TrafficConfig;
@@ -244,7 +244,7 @@ fn idm_accel_world(
 /// Marker for vehicles currently performing a right turn on red.
 /// While present, we clamp their speed to a low "turn speed" until they exit the intersection.
 #[derive(Component, Debug, Clone, Copy)]
-struct RightTurnOnRed {
+pub struct RightTurnOnRed {
     intersection_id: IntersectionId,
 }
 

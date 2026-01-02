@@ -1,20 +1,19 @@
 use super::super::*;
+use crate::game::transport::PathPool;
 
 pub(in super::super) fn cleanup_right_on_red_markers(
     intersections: Res<IntersectionIndex>,
+    path_pool: Res<PathPool>,
     mut commands: Commands,
     q: Query<(Entity, &Vehicle, &RightTurnOnRed), Without<Parked>>,
 ) {
     for (e, v, ror) in q.iter() {
-        let Some(&cur) = v.route.get(v.route_idx) else {
+        let Some(cur) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             commands.entity(e).remove::<RightTurnOnRed>();
             continue;
         };
         let cur_id = intersections.intersection_id_at(cur);
-        let next_id = v
-            .route
-            .get(v.route_idx + 1)
-            .and_then(|t| intersections.intersection_id_at(*t));
+        let next_id = path_pool.get_tile(v.path_handle, v.path_cursor + 1).and_then(|t| intersections.intersection_id_at(t));
 
         let in_or_approaching =
             cur_id == Some(ror.intersection_id) || next_id == Some(ror.intersection_id);
@@ -36,6 +35,7 @@ pub(in super::super) fn move_vehicles(
     reservations: Res<IntersectionReservations>,
     q_pedestrians: Query<&crate::game::pedestrians::PedestrianCrossing>,
     spatial: Res<TrafficSpatialIndex>,
+    path_pool: Res<PathPool>,
     mut vehicle_agg: ResMut<VehicleAggSnapshot>,
     mut commands: Commands,
     mut finished: bevy::ecs::message::MessageWriter<TripFinished>,
@@ -82,7 +82,7 @@ pub(in super::super) fn move_vehicles(
         {
             let a = &mut vehicle_agg.active;
             a.total = a.total.saturating_add(1);
-            if v.route_idx >= v.route.len() {
+            if path_pool.len(v.path_handle) == 0 || v.path_cursor >= path_pool.len(v.path_handle) {
                 a.no_route = a.no_route.saturating_add(1);
             }
             if v.speed < 0.1 {
@@ -117,7 +117,7 @@ pub(in super::super) fn move_vehicles(
                     }
                     ServiceVehicleState::Returning => {
                         a.service_returning = a.service_returning.saturating_add(1);
-                        if v.route_idx >= v.route.len() {
+                        if path_pool.len(v.path_handle) == 0 || v.path_cursor >= path_pool.len(v.path_handle) {
                             a.service_returning_no_route =
                                 a.service_returning_no_route.saturating_add(1);
                         }
@@ -129,7 +129,7 @@ pub(in super::super) fn move_vehicles(
                 }
             }
         }
-        if v.route_idx >= v.route.len() {
+        if path_pool.len(v.path_handle) == 0 || v.path_cursor >= path_pool.len(v.path_handle) {
             // Arrived – despawn trip vehicles, keep service vehicles (idle).
             if service_vehicle.is_none() && bus_vehicle.is_none() {
                 if let Some(p) = passenger {
@@ -149,7 +149,7 @@ pub(in super::super) fn move_vehicles(
         // marker). They may have a different `RoadKind` than the approach/exit tiles, and sometimes
         // can even end up with a 0 km/h speed limit. We therefore derive the desired speed limit
         // from the adjacent **non-intersection** tiles (approach/exit) while inside the cluster.
-        let current_tile = v.route[v.route_idx];
+        let current_tile = path_pool.get_tile(v.path_handle, v.path_cursor).unwrap();
         let current_is_intersection = is_intersection_tile(&grid, current_tile);
 
         let mut speed_limit_world = if current_is_intersection {
@@ -160,15 +160,14 @@ pub(in super::super) fn move_vehicles(
 
         // Fallback to adjacent tiles (prev/next) or, for intersection tiles, use them as the
         // primary speed limit source.
-        if v.route_idx > 0 {
-            let prev = v.route[v.route_idx - 1];
+        if v.path_cursor > 0 {
+            let prev = path_pool.get_tile(v.path_handle, v.path_cursor - 1).unwrap();
             if !is_intersection_tile(&grid, prev) {
                 speed_limit_world =
                     speed_limit_world.max(road_speed_limit_world(&cfg, &traffic_cfg, prev, &grid));
             }
         }
-        if v.route_idx + 1 < v.route.len() {
-            let next = v.route[v.route_idx + 1];
+        if let Some(next) = path_pool.get_tile(v.path_handle, v.path_cursor + 1) {
             if !is_intersection_tile(&grid, next) {
                 speed_limit_world =
                     speed_limit_world.max(road_speed_limit_world(&cfg, &traffic_cfg, next, &grid));
@@ -183,10 +182,7 @@ pub(in super::super) fn move_vehicles(
             let cap = kmh_to_world_speed(&cfg, &traffic_cfg, RIGHT_ON_RED_TURN_MAX_KMH);
             // Clamp while we're in the intersection cluster OR still on the approach tile to it.
             let cur_id = intersections.intersection_id_at(current_tile);
-            let next_id = v
-                .route
-                .get(v.route_idx + 1)
-                .and_then(|t| intersections.intersection_id_at(*t));
+            let next_id = path_pool.get_tile(v.path_handle, v.path_cursor + 1).and_then(|t| intersections.intersection_id_at(t));
             if cur_id == Some(ror.intersection_id) || next_id == Some(ror.intersection_id) {
                 v0 = v0.min(cap);
             }
@@ -194,8 +190,7 @@ pub(in super::super) fn move_vehicles(
 
         // --- Leader detection (tile-local) + virtual leaders (stop lines / blocked next tile).
         let mut leader: Option<(f32, f32)> = spatial.leader_same_tile(entity);
-        if v.route_idx + 1 < v.route.len() {
-            let next_tile = v.route[v.route_idx + 1];
+        if let Some(next_tile) = path_pool.get_tile(v.path_handle, v.path_cursor + 1) {
             if let Some(next_idx) = grid.idx(next_tile)
                 && let Some((min_p, lead_v)) = spatial.tile_min_progress_speed(next_idx)
             {
@@ -231,8 +226,7 @@ pub(in super::super) fn move_vehicles(
         // any forward progress past the stop line.
         let mut blocked_next = false;
         let mut blocked_next_is_intersection = false;
-        if v.route_idx + 1 < v.route.len() {
-            let next_tile = v.route[v.route_idx + 1];
+        if let Some(next_tile) = path_pool.get_tile(v.path_handle, v.path_cursor + 1) {
             let current_is_intersection = is_intersection_tile(&grid, current_tile);
             let next_is_intersection = is_intersection_tile(&grid, next_tile);
 
@@ -265,7 +259,7 @@ pub(in super::super) fn move_vehicles(
                         } else {
                             let entry_dir = dir_between_adjacent(current_tile, next_tile);
                             let exit_dir =
-                                compute_exit_direction(&v.route[v.route_idx..], &grid, next_tile);
+                                compute_exit_direction(path_pool.remaining_from(v.path_handle, v.path_cursor).unwrap_or(&[]), &grid, next_tile);
                             if entry_dir != RoadDir::None && exit_dir != RoadDir::None {
                                 let right = if traffic_cfg.drive_on_right {
                                     entry_dir.right()
@@ -317,7 +311,7 @@ pub(in super::super) fn move_vehicles(
 
             // "Don't block the box": entering intersection requires free space to exit.
             if !blocked_next && next_is_intersection {
-                let rem = &v.route[v.route_idx..];
+                let rem = path_pool.remaining_from(v.path_handle, v.path_cursor).unwrap_or(&[]);
                 let exit_tile = rem
                     .iter()
                     .position(|t| *t == next_tile)
@@ -377,7 +371,7 @@ pub(in super::super) fn move_vehicles(
         let desired_dprog = (v.speed * dt) / tile_size;
         let prev_p = v.progress;
 
-        if v.route_idx + 1 < v.route.len() && blocked_next {
+        if path_pool.get_tile(v.path_handle, v.path_cursor + 1).is_some() && blocked_next {
             let stop_before = 0.001;
             let max_p = if blocked_next_is_intersection {
                 // Clamp to the stop line within the approach tile.
@@ -399,18 +393,14 @@ pub(in super::super) fn move_vehicles(
             v.progress = prev_p + desired_dprog;
         }
 
-        let mut last_tile_for_arrival = v
-            .route
-            .get(v.route_idx)
-            .copied()
-            .unwrap_or(TilePos { x: 0, y: 0 });
-        while v.progress >= 1.0 && v.route_idx < v.route.len() {
+        let mut last_tile_for_arrival = path_pool.get_tile(v.path_handle, v.path_cursor).unwrap_or(TilePos { x: 0, y: 0 });
+        while v.progress >= 1.0 && v.path_cursor < path_pool.len(v.path_handle) {
             v.progress -= 1.0;
-            last_tile_for_arrival = v.route[v.route_idx];
-            v.route_idx = v.route_idx.saturating_add(1);
+            last_tile_for_arrival = path_pool.get_tile(v.path_handle, v.path_cursor).unwrap_or(last_tile_for_arrival);
+            v.path_cursor = v.path_cursor.saturating_add(1);
         }
 
-        if v.route_idx >= v.route.len() {
+        if v.path_cursor >= path_pool.len(v.path_handle) {
             if service_vehicle.is_none() && bus_vehicle.is_none() {
                 if let Some(p) = passenger {
                     finished.write(TripFinished {
@@ -420,8 +410,10 @@ pub(in super::super) fn move_vehicles(
                 }
                 // CarTour Variant B: keep citizen-owned cars parked instead of despawning them.
                 if car_owner.is_some() && passenger.is_some() {
-                    v.route = vec![last_tile_for_arrival];
-                    v.route_idx = 0;
+                    // Release old path and create new single-tile path
+                    path_pool.release(v.path_handle);
+                    v.path_handle = path_pool.intern(vec![last_tile_for_arrival]);
+                    v.path_cursor = 0;
                     v.progress = 0.0;
                     v.speed = 0.0;
                     commands
@@ -437,14 +429,10 @@ pub(in super::super) fn move_vehicles(
         }
 
         // Lerp between current tile and next.
-        let Some(&curr) = v.route.get(v.route_idx) else {
+        let Some(curr) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
-        let next = if v.route_idx + 1 < v.route.len() {
-            v.route[v.route_idx + 1]
-        } else {
-            curr
-        };
+        let next = path_pool.get_tile(v.path_handle, v.path_cursor + 1).unwrap_or(curr);
 
         let curr_world = tile_to_world(&cfg, curr);
         let next_world = tile_to_world(&cfg, next);

@@ -8,7 +8,9 @@ use crate::game::camera::MainCamera;
 use crate::game::land_value::LandValueIndex;
 use crate::game::pollution::PollutionIndex;
 use crate::game::state::AppState;
+use crate::game::transport::PathPool;
 use crate::game::traffic::{Parked, Vehicle};
+use crate::game::transport::PathPool;
 use crate::game::ui_state::{OverlayMode, UiState};
 
 use super::coords::map_origin;
@@ -413,6 +415,7 @@ pub(super) fn vehicle_routes_overlay_render(
     state: Res<State<AppState>>,
     ui: Res<UiState>,
     cfg: Res<MapConfig>,
+    path_pool: Res<crate::game::transport::PathPool>,
     mut gizmos: Gizmos<RouteGizmos>,
     q_vehicles: Query<(&Vehicle, &Transform), Without<Parked>>,
     mut scratch: Local<Vec<Vec2>>,
@@ -440,11 +443,12 @@ pub(super) fn vehicle_routes_overlay_render(
             break;
         }
         // We draw from current *world position* to the remaining tiles.
-        if vehicle.route_idx + 1 >= vehicle.route.len() {
-            continue;
-        }
+        let route = match path_pool.remaining_from(vehicle.path_handle, vehicle.path_cursor) {
+            Some(route) if route.len() > 1 => route,
+            _ => continue,
+        };
 
-        let remaining_tiles = vehicle.route.len().saturating_sub(vehicle.route_idx + 1);
+        let remaining_tiles = route.len() - 1; // subtract current position
         let max_tiles = MAX_POINTS_PER_ROUTE.saturating_sub(1).max(1);
         let stride = remaining_tiles.div_ceil(max_tiles); // >= 1
 
@@ -452,10 +456,11 @@ pub(super) fn vehicle_routes_overlay_render(
         scratch.reserve(remaining_tiles.min(MAX_POINTS_PER_ROUTE) + 1);
         scratch.push(tf.translation.truncate());
 
-        for (i, pos) in vehicle.route.iter().enumerate().skip(vehicle.route_idx + 1) {
+        for (i, pos) in route.iter().enumerate().skip(1) {
+            // skip current position
             // Always include the last tile, even when downsampling.
-            let is_last = i + 1 == vehicle.route.len();
-            let rel_i = i.saturating_sub(vehicle.route_idx + 1);
+            let rel_i = i; // i already starts from 1 due to skip(1)
+            let is_last = rel_i + 1 == route.len();
             let should_take = is_last || (rel_i % stride == 0);
             if !should_take {
                 continue;

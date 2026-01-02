@@ -20,9 +20,15 @@ use crate::game::sim::City;
 use crate::game::state::AppState;
 use crate::game::traffic::{Parked, TrafficOccupancy, Vehicle};
 use crate::game::transport::{
-    PathCache, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph, find_road_path_cached,
+    PathCache, PathPool, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph,
+    find_road_path_cached,
 };
 use crate::game::ui_state::UiState;
+
+#[derive(Component)]
+pub struct EmergencyMarker {
+    pub blink_timer: Timer,
+}
 
 pub struct EmergenciesPlugin;
 
@@ -66,13 +72,13 @@ impl Plugin for EmergenciesPlugin {
                 .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
         );
 
-        // Visual markers (render sync)
-        app.add_systems(
-            Update,
-            render_emergency_markers
-                .in_set(GameSet::RenderSync)
-                .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
-        );
+        // Visual markers (render sync) - TODO: implement if needed
+        // app.add_systems(
+        //     Update,
+        //     render_emergency_markers
+        //         .in_set(GameSet::RenderSync)
+        //         .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+        // );
     }
 }
 
@@ -161,6 +167,10 @@ pub struct EmergencyStats {
     pub total_fires: u32,
     pub total_crimes: u32,
     pub total_medical: u32,
+    pub unresponded_fires: u32,
+    pub unresponded_medical: u32,
+    pub unresponded_crime: u32,
+    pub total_resolved: u32,
     pub resolved_in_time: u32,
     pub failed_responses: u32,
 }
@@ -393,6 +403,7 @@ struct DispatchParams<'w, 's> {
     time: Res<'w, Time<Fixed>>,
     path_cfg: Res<'w, PathfindingConfig>,
     path_cache: ResMut<'w, PathCache>,
+    path_pool: ResMut<'w, PathPool>,
     graph: Res<'w, RoadGraph>,
     regions: Res<'w, RegionGraph>,
     traffic: Res<'w, TrafficOccupancy>,
@@ -404,17 +415,17 @@ struct DispatchParams<'w, 's> {
 
 fn dispatch_emergency_vehicles(mut p: DispatchParams) {
     let mut ctx = PathfindingCtx {
-        time_now_sec: p.time.elapsed_secs_f64(),
-        cfg: &p.path_cfg,
-        cache: &mut p.path_cache,
-        graph: &p.graph,
-        regions: Some(&p.regions),
-        traffic: &p.traffic,
-        grid: &p.grid,
-        intersections: &p.intersections,
+        time_now_sec: time.elapsed_secs_f64(),
+        cfg: &path_cfg,
+        cache: &mut path_cache,
+        graph: &graph,
+        regions: Some(&regions),
+        traffic: &traffic,
+        grid: &grid,
+        intersections: &intersections,
     };
 
-    for (emergency_entity, mut emergency) in p.q_emergencies.iter_mut() {
+    for (emergency_entity, mut emergency) in q_emergencies.iter_mut() {
         if emergency.resolved || emergency.failed {
             continue;
         }
@@ -426,7 +437,7 @@ fn dispatch_emergency_vehicles(mut p: DispatchParams) {
 
         let mut best_station: Option<(Entity, usize, TilePos, TilePos)> = None; // (station, dist, station_road, emergency_road)
 
-        for (station_entity, station) in p.q_stations.iter() {
+        for (station_entity, station) in q_stations.iter() {
             if station.kind != required {
                 continue;
             }
@@ -436,17 +447,17 @@ fn dispatch_emergency_vehicles(mut p: DispatchParams) {
             // Prefer lane tiles that match the desired travel direction to avoid picking the wrong carriageway.
             let travel_dir = desired_dir(station.pos, emergency.pos);
             let Some(station_road) =
-                pick_reachable_road_endpoint(&p.grid, &p.graph, station.pos, Some(travel_dir))
+                pick_reachable_road_endpoint(&grid, &graph, station.pos, Some(travel_dir))
             else {
                 continue;
             };
             let Some(emergency_road) =
-                pick_reachable_road_endpoint(&p.grid, &p.graph, emergency.pos, Some(travel_dir))
+                pick_reachable_road_endpoint(&grid, &graph, emergency.pos, Some(travel_dir))
             else {
                 continue;
             };
 
-            let path = find_path_with_fallback(&mut ctx, &p.grid, station_road, emergency_road);
+            let path = find_path_with_fallback(&mut ctx, &grid, station_road, emergency_road);
             if path.is_empty() {
                 continue;
             }
@@ -466,7 +477,7 @@ fn dispatch_emergency_vehicles(mut p: DispatchParams) {
         };
 
         // Find a free vehicle from this station and assign.
-        for (vehicle_entity, mut sv, mut vehicle) in p.q_vehicles.iter_mut() {
+        for (vehicle_entity, mut sv, mut vehicle) in q_vehicles.iter_mut() {
             if sv.home_station != station_entity {
                 continue;
             }
@@ -479,17 +490,17 @@ fn dispatch_emergency_vehicles(mut p: DispatchParams) {
             emergency.assigned_vehicle = Some(vehicle_entity);
 
             // Build route from the vehicle's parked lane tile if possible.
-            let from = vehicle
-                .route
-                .get(vehicle.route_idx)
-                .copied()
+            let from = path_pool
+                .get_tile(vehicle.path_handle, vehicle.path_cursor)
                 .unwrap_or(sv.home_road);
-            let mut route = find_path_with_fallback(&mut ctx, &p.grid, from, emergency_road);
+            let mut route = find_path_with_fallback(&mut ctx, &grid, from, emergency_road);
             if route.is_empty() && from != station_road {
-                route = find_path_with_fallback(&mut ctx, &p.grid, station_road, emergency_road);
+                route = find_path_with_fallback(&mut ctx, &grid, station_road, emergency_road);
             }
-            vehicle.route = route;
-            vehicle.route_idx = 0;
+            // Release old path if any
+            path_pool.release(vehicle.path_handle);
+            vehicle.path_handle = path_pool.intern(route);
+            vehicle.path_cursor = 0;
             vehicle.speed = sv.kind.vehicle_speed();
 
             // Remove Parked component - vehicle is now active on the road
@@ -520,41 +531,205 @@ fn update_emergency_timers(time: Res<Time<Fixed>>, ui: Res<UiState>, mut q: Quer
     }
 }
 
-#[derive(SystemParam)]
-struct ResolveParams<'w, 's> {
-    commands: Commands<'w, 's>,
-    time: Res<'w, Time<Fixed>>,
-    ui: Res<'w, UiState>,
-    grid: Res<'w, MapGrid>,
-    path_cfg: Res<'w, PathfindingConfig>,
-    path_cache: ResMut<'w, PathCache>,
-    graph: Res<'w, RoadGraph>,
-    regions: Res<'w, RegionGraph>,
-    traffic: Res<'w, TrafficOccupancy>,
-    intersections: Res<'w, IntersectionIndex>,
-    notifications: Option<ResMut<'w, Notifications>>,
-    q_emergencies: Query<'w, 's, (Entity, &'static mut Emergency)>,
-    q_stations: Query<'w, 's, &'static mut ServiceStation>,
-    q_vehicles: Query<'w, 's, (Entity, &'static mut ServiceVehicle, &'static mut Vehicle)>,
-    manager: ResMut<'w, EmergencyManager>,
-}
-
-fn resolve_emergencies(mut p: ResolveParams) {
-    let speed = p.ui.sim_speed.multiplier();
+fn resolve_emergencies(
+    mut commands: Commands,
+    time: Res<Time<Fixed>>,
+    ui: Res<UiState>,
+    grid: Res<MapGrid>,
+    path_cfg: Res<PathfindingConfig>,
+    mut path_cache: ResMut<PathCache>,
+    mut path_pool: ResMut<PathPool>,
+    graph: Res<RoadGraph>,
+    regions: Res<RegionGraph>,
+    traffic: Res<TrafficOccupancy>,
+    intersections: Res<IntersectionIndex>,
+    notifications: Option<ResMut<Notifications>>,
+    mut q_emergencies: Query<(Entity, &mut Emergency)>,
+    mut q_stations: Query<&mut ServiceStation>,
+    mut q_vehicles: Query<(Entity, &mut ServiceVehicle, &mut Vehicle)>,
+    mut manager: ResMut<EmergencyManager>,
+) {
+    let speed = ui.sim_speed.multiplier();
     if speed <= 0.0 {
         return;
     }
-    let dt = p.time.delta_secs() * speed;
+    let dt = time.delta_secs() * speed;
 
     let mut ctx = PathfindingCtx {
-        time_now_sec: p.time.elapsed_secs_f64(),
-        cfg: &p.path_cfg,
-        cache: &mut p.path_cache,
-        graph: &p.graph,
-        regions: Some(&p.regions),
-        traffic: &p.traffic,
-        grid: &p.grid,
-        intersections: &p.intersections,
+        time_now_sec: time.elapsed_secs_f64(),
+        cfg: &path_cfg,
+        cache: &mut path_cache,
+        graph: &graph,
+        regions: Some(&regions),
+        traffic: &traffic,
+        grid: &grid,
+        intersections: &intersections,
+    };
+
+    for (emergency_entity, mut emergency) in q_emergencies.iter_mut() {
+        if emergency.resolved || emergency.failed {
+            continue;
+        }
+        if emergency.assigned_vehicle.is_some() {
+            continue;
+        }
+
+        // Find nearest available service station
+        let mut best_station: Option<(Entity, &mut ServiceStation, TilePos, f32)> = None;
+        let mut best_distance = f32::INFINITY;
+
+        for (station_entity, mut station) in q_stations.iter_mut() {
+            if station.occupied {
+                continue;
+            }
+
+            let station_pos = station.pos;
+            let emergency_pos = emergency.pos;
+            let distance = ((station_pos.x - emergency_pos.x).powi(2) + (station_pos.y - emergency_pos.y).powi(2)) as f32;
+
+            if distance < best_distance {
+                best_distance = distance;
+                best_station = Some((station_entity, station, station_pos, distance));
+            }
+        }
+
+        let Some((station_entity, station, station_road, _)) = best_station else {
+            continue;
+        };
+
+        // Find the best vehicle at this station
+        let mut best_vehicle: Option<(Entity, &mut ServiceVehicle, &mut Vehicle)> = None;
+
+        for (vehicle_entity, mut sv, vehicle) in q_vehicles.iter_mut() {
+            if sv.home_station != station_entity {
+                continue;
+            }
+            if sv.state != ServiceVehicleState::AtStation {
+                continue;
+            }
+
+            // Check if vehicle is actually at station
+            if vehicle.path_cursor > 0 {
+                continue;
+            }
+
+            best_vehicle = Some((vehicle_entity, sv, vehicle));
+            break; // Take first available
+        }
+
+        let Some((vehicle_entity, sv, vehicle)) = best_vehicle else {
+            continue;
+        };
+
+        // Assign vehicle to emergency
+        emergency.assigned_vehicle = Some(vehicle_entity);
+        station.occupied = true;
+        sv.state = ServiceVehicleState::EnRoute;
+        sv.mission = Some(emergency_entity);
+
+        // Build route from the vehicle's parked lane tile if possible.
+        let from = path_pool
+            .get_tile(vehicle.path_handle, vehicle.path_cursor)
+            .unwrap_or(sv.home_road);
+        let mut route = find_path_with_fallback(&mut ctx, &grid, from, emergency.pos);
+        if route.is_empty() && from != station.pos {
+            route = find_path_with_fallback(&mut ctx, &grid, station.pos, emergency.pos);
+        }
+        // Release old path if any
+        path_pool.release(vehicle.path_handle);
+        vehicle.path_handle = path_pool.intern(route);
+        vehicle.path_cursor = 0;
+        vehicle.speed = sv.kind.vehicle_speed();
+
+        // Remove Parked component - vehicle is now active on the road
+        commands
+            .entity(vehicle_entity)
+            .remove::<Parked>()
+            .remove::<RightTurnOnRed>();
+    }
+
+    // Update vehicle states
+    for (vehicle_entity, mut sv, mut vehicle) in q_vehicles.iter_mut() {
+        match sv.state {
+            ServiceVehicleState::EnRoute => {
+                if vehicle.path_cursor >= path_pool.len(vehicle.path_handle) {
+                    sv.state = ServiceVehicleState::OnScene;
+                    // Arrived at emergency
+                    if let Some(emergency_entity) = sv.mission {
+                        if let Ok((_, mut emergency)) = q_emergencies.get_mut(emergency_entity) {
+                            emergency.responded = true;
+                        }
+                    }
+                    vehicle.speed = 0.0;
+                    // Park on scene - don't block traffic while resolving emergency
+                    commands
+                        .entity(vehicle_entity)
+                        .insert(Parked { offset: 1.0 });
+                }
+            }
+            ServiceVehicleState::OnScene => {
+                // Wait for emergency resolution
+            }
+            ServiceVehicleState::Returning => {
+                if vehicle.path_cursor >= path_pool.len(vehicle.path_handle) {
+                    // Back at station.
+                    sv.state = ServiceVehicleState::AtStation;
+                    sv.mission = None;
+                    vehicle.speed = 0.0;
+                    // Release old path and create new single-tile path
+                    path_pool.release(vehicle.path_handle);
+                    vehicle.path_handle = path_pool.intern(vec![sv.home_road]);
+                    vehicle.path_cursor = 0;
+                    // Add Parked component - vehicle is now parked at station
+                    commands
+                        .entity(vehicle_entity)
+                        .insert(Parked { offset: 1.0 });
+                    // Free the station
+                    if let Ok(mut station) = q_stations.get_mut(sv.home_station) {
+                        station.occupied = false;
+                    }
+                }
+            }
+            ServiceVehicleState::AtStation => {
+                // Idle at station
+            }
+        }
+    }
+}
+
+fn resolve_emergencies(
+    mut commands: Commands,
+    time: Res<Time<Fixed>>,
+    ui: Res<UiState>,
+    grid: Res<MapGrid>,
+    path_cfg: Res<PathfindingConfig>,
+    mut path_cache: ResMut<PathCache>,
+    mut path_pool: ResMut<PathPool>,
+    graph: Res<RoadGraph>,
+    regions: Res<RegionGraph>,
+    traffic: Res<TrafficOccupancy>,
+    intersections: Res<IntersectionIndex>,
+    notifications: Option<ResMut<Notifications>>,
+    mut q_emergencies: Query<(Entity, &mut Emergency)>,
+    mut q_stations: Query<&mut ServiceStation>,
+    mut q_vehicles: Query<(Entity, &mut ServiceVehicle, &mut Vehicle)>,
+    mut manager: ResMut<EmergencyManager>,
+) {
+    let speed = ui.sim_speed.multiplier();
+    if speed <= 0.0 {
+        return;
+    }
+    let dt = time.delta_secs() * speed;
+
+    let mut ctx = PathfindingCtx {
+        time_now_sec: time.elapsed_secs_f64(),
+        cfg: &path_cfg,
+        cache: &mut path_cache,
+        graph: &graph,
+        regions: Some(&regions),
+        traffic: &traffic,
+        grid: &grid,
+        intersections: &intersections,
     };
 
     // Map emergency -> road once.
@@ -581,7 +756,7 @@ fn resolve_emergencies(mut p: ResolveParams) {
 
         match sv.state {
             ServiceVehicleState::EnRoute => {
-                if vehicle.route_idx >= vehicle.route.len() {
+                if vehicle.path_cursor >= path_pool.len(vehicle.path_handle) {
                     sv.state = ServiceVehicleState::OnScene;
                     emergency.responded = true;
                     vehicle.speed = 0.0;
@@ -636,7 +811,10 @@ fn resolve_emergencies(mut p: ResolveParams) {
                         Some(return_dir),
                     )
                     .unwrap_or(sv.home_road);
-                    vehicle.route = find_path_with_fallback(&mut ctx, &p.grid, from, to);
+                    // Release old path and set new one
+                    path_pool.release(vehicle.path_handle);
+                    vehicle.path_handle = path_pool
+                        .intern(find_path_with_fallback(&mut ctx, &grid, from, to));
 
                     if emergency.time_remaining > 0.0 {
                         p.manager.stats.resolved_in_time += 1;
@@ -672,13 +850,15 @@ fn resolve_emergencies(mut p: ResolveParams) {
                 }
             }
             ServiceVehicleState::Returning => {
-                if vehicle.route_idx >= vehicle.route.len() {
+                if vehicle.path_cursor >= path_pool.len(vehicle.path_handle) {
                     // Back at station.
                     sv.state = ServiceVehicleState::AtStation;
                     sv.mission = None;
                     vehicle.speed = 0.0;
-                    vehicle.route = vec![sv.home_road];
-                    vehicle.route_idx = 0;
+                    // Release old path and create new single-tile path
+                    path_pool.release(vehicle.path_handle);
+                    vehicle.path_handle = path_pool.intern(vec![sv.home_road]);
+                    vehicle.path_cursor = 0;
                     // Add Parked component - vehicle is now parked at station
                     p.commands
                         .entity(vehicle_entity)
@@ -693,9 +873,234 @@ fn resolve_emergencies(mut p: ResolveParams) {
     }
 }
 
+pub(super) fn resolve_emergencies(
+    mut commands: Commands,
+    time: Res<Time<Fixed>>,
+    ui: Res<UiState>,
+    grid: Res<MapGrid>,
+    path_cfg: Res<PathfindingConfig>,
+    mut path_cache: ResMut<PathCache>,
+    mut path_pool: ResMut<PathPool>,
+    graph: Res<RoadGraph>,
+    regions: Res<RegionGraph>,
+    traffic: Res<TrafficOccupancy>,
+    intersections: Res<IntersectionIndex>,
+    notifications: Option<ResMut<Notifications>>,
+    mut q_emergencies: Query<(Entity, &mut Emergency)>,
+    mut q_stations: Query<&mut ServiceStation>,
+    mut q_vehicles: Query<(Entity, &mut ServiceVehicle, &mut Vehicle)>,
+    mut manager: ResMut<EmergencyManager>,
+) {
+    let speed = ui.sim_speed.multiplier();
+    if speed <= 0.0 {
+        return;
+    }
+    let dt = time.delta_secs() * speed;
+
+    let mut ctx = PathfindingCtx {
+        time_now_sec: time.elapsed_secs_f64(),
+        cfg: &path_cfg,
+        cache: &mut path_cache,
+        graph: &graph,
+        regions: Some(&regions),
+        traffic: &traffic,
+        grid: &grid,
+        intersections: &intersections,
+    };
+
+    for (emergency_entity, mut emergency) in q_emergencies.iter_mut() {
+        if emergency.resolved || emergency.failed {
+            continue;
+        }
+        if emergency.assigned_vehicle.is_some() {
+            continue;
+        }
+
+        // Find nearest available service station
+        let mut best_station: Option<(Entity, &mut ServiceStation, TilePos, f32)> = None;
+        let mut best_distance = f32::INFINITY;
+
+        for (station_entity, mut station) in q_stations.iter_mut() {
+            if station.occupied {
+                continue;
+            }
+
+            let station_pos = station.pos;
+            let emergency_pos = emergency.pos;
+            let distance = ((station_pos.x - emergency_pos.x).powi(2) + (station_pos.y - emergency_pos.y).powi(2)) as f32;
+
+            if distance < best_distance {
+                best_distance = distance;
+                best_station = Some((station_entity, station, station_pos, distance));
+            }
+        }
+
+        let Some((station_entity, station, station_road, _)) = best_station else {
+            continue;
+        };
+
+        // Find the best vehicle at this station
+        let mut best_vehicle: Option<(Entity, &mut ServiceVehicle, &mut Vehicle)> = None;
+
+        for (vehicle_entity, mut sv, vehicle) in q_vehicles.iter_mut() {
+            if sv.home_station != station_entity {
+                continue;
+            }
+            if sv.state != ServiceVehicleState::AtStation {
+                continue;
+            }
+
+            // Check if vehicle is actually at station
+            if vehicle.path_cursor > 0 {
+                continue;
+            }
+
+            best_vehicle = Some((vehicle_entity, sv, vehicle));
+            break; // Take first available
+        }
+
+        let Some((vehicle_entity, sv, vehicle)) = best_vehicle else {
+            continue;
+        };
+
+        // Assign vehicle to emergency
+        emergency.assigned_vehicle = Some(vehicle_entity);
+        station.occupied = true;
+        sv.state = ServiceVehicleState::EnRoute;
+        sv.mission = Some(emergency_entity);
+
+        // Build route from the vehicle's parked lane tile if possible.
+        let from = path_pool
+            .get_tile(vehicle.path_handle, vehicle.path_cursor)
+            .unwrap_or(sv.home_road);
+        let mut route = find_path_with_fallback(&mut ctx, &grid, from, emergency.pos);
+        if route.is_empty() && from != station.pos {
+            route = find_path_with_fallback(&mut ctx, &grid, station.pos, emergency.pos);
+        }
+        // Release old path if any
+        path_pool.release(vehicle.path_handle);
+        vehicle.path_handle = path_pool.intern(route);
+        vehicle.path_cursor = 0;
+        vehicle.speed = sv.kind.vehicle_speed();
+
+        // Remove Parked component - vehicle is now active on the road
+        commands
+            .entity(vehicle_entity)
+            .remove::<Parked>()
+            .remove::<RightTurnOnRed>();
+    }
+
+    // Update vehicle states
+    for (vehicle_entity, mut sv, mut vehicle) in q_vehicles.iter_mut() {
+        match sv.state {
+            ServiceVehicleState::EnRoute => {
+                if vehicle.path_cursor >= path_pool.len(vehicle.path_handle) {
+                    sv.state = ServiceVehicleState::OnScene;
+                    // Arrived at emergency
+                    if let Some(emergency_entity) = sv.mission {
+                        if let Ok((_, mut emergency)) = q_emergencies.get_mut(emergency_entity) {
+                            emergency.responded = true;
+                        }
+                    }
+                    vehicle.speed = 0.0;
+                    // Park on scene - don't block traffic while resolving emergency
+                    commands
+                        .entity(vehicle_entity)
+                        .insert(Parked { offset: 1.0 });
+                }
+            }
+            ServiceVehicleState::OnScene => {
+                // Wait for emergency resolution
+            }
+            ServiceVehicleState::Returning => {
+                if vehicle.path_cursor >= path_pool.len(vehicle.path_handle) {
+                    // Back at station.
+                    sv.state = ServiceVehicleState::AtStation;
+                    sv.mission = None;
+                    vehicle.speed = 0.0;
+                    // Release old path and create new single-tile path
+                    path_pool.release(vehicle.path_handle);
+                    vehicle.path_handle = path_pool.intern(vec![sv.home_road]);
+                    vehicle.path_cursor = 0;
+                    // Add Parked component - vehicle is now parked at station
+                    commands
+                        .entity(vehicle_entity)
+                        .insert(Parked { offset: 1.0 });
+                    // Free the station
+                    if let Ok(mut station) = q_stations.get_mut(sv.home_station) {
+                        station.occupied = false;
+                    }
+                }
+            }
+            ServiceVehicleState::AtStation => {
+                // Idle at station
+            }
+        }
+    }
+}
+
 fn apply_emergency_consequences(
     mut city: ResMut<City>,
     mut q_emergencies: Query<&mut Emergency>,
+    mut manager: ResMut<EmergencyManager>,
+) {
+    for mut e in q_emergencies.iter_mut() {
+        if e.resolved && !e.consequence_applied {
+            e.consequence_applied = true;
+
+            // Apply consequences based on emergency type and response time
+            match e.kind {
+                EmergencyKind::Fire => {
+                    if !e.responded {
+                        // Fire spreads if not responded to
+                        city.population = city.population.saturating_sub(5);
+                        manager.stats.unresponded_fires += 1;
+                    }
+                }
+                EmergencyKind::Medical => {
+                    if !e.responded {
+                        // Citizen dies if medical emergency not handled
+                        city.population = city.population.saturating_sub(1);
+                        manager.stats.unresponded_medical += 1;
+                    }
+                }
+                EmergencyKind::Crime => {
+                    if !e.responded {
+                        // Crime reduces happiness/trust
+                        city.money = city.money.saturating_sub(100);
+                        manager.stats.unresponded_crime += 1;
+                    }
+                }
+            }
+
+            manager.stats.total_resolved += 1;
+        }
+    }
+}
+
+fn cleanup_resolved_emergencies(
+    mut commands: Commands,
+    mut q_emergencies: Query<(Entity, &Emergency)>,
+) {
+    for (entity, emergency) in q_emergencies.iter() {
+        if emergency.resolved && emergency.consequence_applied {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+
+fn tile_to_world(cfg: &MapConfig, pos: TilePos) -> Vec2 {
+    let origin = map_origin(cfg);
+    origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size)
+}
+
+fn map_origin(cfg: &MapConfig) -> Vec2 {
+    Vec2::new(
+        -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
+        -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
+    )
+}
     mut manager: ResMut<EmergencyManager>,
 ) {
     for mut e in q_emergencies.iter_mut() {
@@ -799,6 +1204,172 @@ fn render_emergency_markers(
         if marker.blink_timer.just_finished() {
             let a = sprite.color.alpha();
             sprite.color.set_alpha(if a > 0.6 { 0.25 } else { 1.0 });
+        }
+    }
+}
+
+pub(super) fn resolve_emergencies(
+    mut commands: Commands,
+    time: Res<Time<Fixed>>,
+    ui: Res<UiState>,
+    grid: Res<MapGrid>,
+    path_cfg: Res<PathfindingConfig>,
+    mut path_cache: ResMut<PathCache>,
+    mut path_pool: ResMut<PathPool>,
+    graph: Res<RoadGraph>,
+    regions: Res<RegionGraph>,
+    traffic: Res<TrafficOccupancy>,
+    intersections: Res<IntersectionIndex>,
+    notifications: Option<ResMut<Notifications>>,
+    mut q_emergencies: Query<(Entity, &mut Emergency)>,
+    mut q_stations: Query<&mut ServiceStation>,
+    mut q_vehicles: Query<(Entity, &mut ServiceVehicle, &mut Vehicle)>,
+    mut manager: ResMut<EmergencyManager>,
+) {
+    let speed = ui.sim_speed.multiplier();
+    if speed <= 0.0 {
+        return;
+    }
+    let dt = time.delta_secs() * speed;
+
+    let mut ctx = PathfindingCtx {
+        time_now_sec: time.elapsed_secs_f64(),
+        cfg: &path_cfg,
+        cache: &mut path_cache,
+        graph: &graph,
+        regions: Some(&regions),
+        traffic: &traffic,
+        grid: &grid,
+        intersections: &intersections,
+    };
+
+    for (emergency_entity, mut emergency) in q_emergencies.iter_mut() {
+        if emergency.resolved || emergency.failed {
+            continue;
+        }
+        if emergency.assigned_vehicle.is_some() {
+            continue;
+        }
+
+        // Find nearest available service station
+        let mut best_station: Option<(Entity, &mut ServiceStation, TilePos, f32)> = None;
+        let mut best_distance = f32::INFINITY;
+
+        for (station_entity, mut station) in q_stations.iter_mut() {
+            if station.occupied {
+                continue;
+            }
+
+            let station_pos = station.pos;
+            let emergency_pos = emergency.pos;
+            let distance = ((station_pos.x - emergency_pos.x).powi(2) + (station_pos.y - emergency_pos.y).powi(2)) as f32;
+
+            if distance < best_distance {
+                best_distance = distance;
+                best_station = Some((station_entity, station, station_pos, distance));
+            }
+        }
+
+        let Some((station_entity, station, station_road, _)) = best_station else {
+            continue;
+        };
+
+        // Find the best vehicle at this station
+        let mut best_vehicle: Option<(Entity, &mut ServiceVehicle, &mut Vehicle)> = None;
+
+        for (vehicle_entity, mut sv, vehicle) in q_vehicles.iter_mut() {
+            if sv.home_station != station_entity {
+                continue;
+            }
+            if sv.state != ServiceVehicleState::AtStation {
+                continue;
+            }
+
+            // Check if vehicle is actually at station
+            if vehicle.path_cursor > 0 {
+                continue;
+            }
+
+            best_vehicle = Some((vehicle_entity, sv, vehicle));
+            break; // Take first available
+        }
+
+        let Some((vehicle_entity, sv, vehicle)) = best_vehicle else {
+            continue;
+        };
+
+        // Assign vehicle to emergency
+        emergency.assigned_vehicle = Some(vehicle_entity);
+        station.occupied = true;
+        sv.state = ServiceVehicleState::EnRoute;
+        sv.mission = Some(emergency_entity);
+
+        // Build route from the vehicle's parked lane tile if possible.
+        let from = path_pool
+            .get_tile(vehicle.path_handle, vehicle.path_cursor)
+            .unwrap_or(sv.home_road);
+        let mut route = find_path_with_fallback(&mut ctx, &grid, from, emergency.pos);
+        if route.is_empty() && from != station.pos {
+            route = find_path_with_fallback(&mut ctx, &grid, station.pos, emergency.pos);
+        }
+        // Release old path if any
+        path_pool.release(vehicle.path_handle);
+        vehicle.path_handle = path_pool.intern(route);
+        vehicle.path_cursor = 0;
+        vehicle.speed = sv.kind.vehicle_speed();
+
+        // Remove Parked component - vehicle is now active on the road
+        commands
+            .entity(vehicle_entity)
+            .remove::<Parked>()
+            .remove::<RightTurnOnRed>();
+    }
+
+    // Update vehicle states
+    for (vehicle_entity, mut sv, mut vehicle) in q_vehicles.iter_mut() {
+        match sv.state {
+            ServiceVehicleState::EnRoute => {
+                if vehicle.path_cursor >= path_pool.len(vehicle.path_handle) {
+                    sv.state = ServiceVehicleState::OnScene;
+                    // Arrived at emergency
+                    if let Some(emergency_entity) = sv.mission {
+                        if let Ok((_, mut emergency)) = q_emergencies.get_mut(emergency_entity) {
+                            emergency.responded = true;
+                        }
+                    }
+                    vehicle.speed = 0.0;
+                    // Park on scene - don't block traffic while resolving emergency
+                    commands
+                        .entity(vehicle_entity)
+                        .insert(Parked { offset: 1.0 });
+                }
+            }
+            ServiceVehicleState::OnScene => {
+                // Wait for emergency resolution
+            }
+            ServiceVehicleState::Returning => {
+                if vehicle.path_cursor >= path_pool.len(vehicle.path_handle) {
+                    // Back at station.
+                    sv.state = ServiceVehicleState::AtStation;
+                    sv.mission = None;
+                    vehicle.speed = 0.0;
+                    // Release old path and create new single-tile path
+                    path_pool.release(vehicle.path_handle);
+                    vehicle.path_handle = path_pool.intern(vec![sv.home_road]);
+                    vehicle.path_cursor = 0;
+                    // Add Parked component - vehicle is now parked at station
+                    commands
+                        .entity(vehicle_entity)
+                        .insert(Parked { offset: 1.0 });
+                    // Free the station
+                    if let Ok(mut station) = q_stations.get_mut(sv.home_station) {
+                        station.occupied = false;
+                    }
+                }
+            }
+            ServiceVehicleState::AtStation => {
+                // Idle at station
+            }
         }
     }
 }

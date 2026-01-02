@@ -17,7 +17,8 @@ use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::traffic::{TrafficOccupancy, Vehicle, VehicleTrafficState};
 use crate::game::transport::{
-    PathCache, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph, find_road_path_cached,
+    PathCache, PathPool, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph,
+    find_road_path_cached,
 };
 use crate::game::trips::TripFinished;
 use crate::game::ui_state::UiState;
@@ -191,6 +192,7 @@ struct BusParams<'w, 's> {
     regions: Res<'w, RegionGraph>,
     path_cfg: Res<'w, PathfindingConfig>,
     path_cache: ResMut<'w, PathCache>,
+    path_pool: ResMut<'w, PathPool>,
     intersections: Res<'w, IntersectionIndex>,
     pt_cfg: Res<'w, PublicTransportConfig>,
     pt: Res<'w, PublicTransportIndex>,
@@ -253,8 +255,8 @@ fn sync_bus_vehicle(mut p: BusParams) {
                 ),
                 Transform::from_xyz(world.x, world.y, 11.0),
                 Vehicle {
-                    route,
-                    route_idx: 0,
+                    path_handle: p.path_pool.intern(route),
+                    path_cursor: 0,
                     progress: 0.0,
                     speed: p.pt_cfg.bus_speed,
                     max_speed: p.pt_cfg.bus_speed,
@@ -272,23 +274,31 @@ fn sync_bus_vehicle(mut p: BusParams) {
                 bv.a = a;
                 bv.b = b;
                 bv.to_b = true;
-                v.route = plan_route(a, b);
-                v.route_idx = 0;
+                // Release old path and set new one
+                p.path_pool.release(v.path_handle);
+                v.path_handle = p.path_pool.intern(plan_route(a, b));
+                v.path_cursor = 0;
                 v.progress = 0.0;
                 v.speed = p.pt_cfg.bus_speed;
                 return;
             }
 
             // When the route is finished, we arrived to an endpoint; plan the return leg.
-            if v.route_idx >= v.route.len() {
+            if p.path_pool.len(v.path_handle) == 0
+                || v.path_cursor >= p.path_pool.len(v.path_handle)
+            {
                 if bv.to_b {
                     bv.to_b = false;
-                    v.route = plan_route(b, a);
+                    // Release old path and set new one
+                    p.path_pool.release(v.path_handle);
+                    v.path_handle = p.path_pool.intern(plan_route(b, a));
                 } else {
                     bv.to_b = true;
-                    v.route = plan_route(a, b);
+                    // Release old path and set new one
+                    p.path_pool.release(v.path_handle);
+                    v.path_handle = p.path_pool.intern(plan_route(a, b));
                 }
-                v.route_idx = 0;
+                v.path_cursor = 0;
                 v.progress = 0.0;
                 v.speed = p.pt_cfg.bus_speed;
             }

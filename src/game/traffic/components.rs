@@ -2,14 +2,15 @@ use bevy::prelude::*;
 
 use crate::game::intersections::IntersectionKey;
 use crate::game::map::TilePos;
+use crate::game::transport::PathHandle;
 
-/// Vehicle entity – stores route and visual offset.
+/// Vehicle entity – stores route handle and visual offset.
 #[derive(Component)]
 pub struct Vehicle {
-    /// A* route as list of tile positions (full path).
-    pub route: Vec<TilePos>,
-    /// Current index into `route` (so we never `remove(0)` / shift the Vec).
-    pub route_idx: usize,
+    /// Handle to shared path in PathPool.
+    pub path_handle: PathHandle,
+    /// Current index into path (so we never modify the shared path).
+    pub path_cursor: usize,
     /// 0 = at current tile start, 1 = at next tile boundary; interpolated smoothly.
     pub progress: f32,
     /// World units per second.
@@ -24,8 +25,8 @@ pub struct Vehicle {
 impl Default for Vehicle {
     fn default() -> Self {
         Self {
-            route: Vec::new(),
-            route_idx: 0,
+            path_handle: PathHandle::INVALID,
+            path_cursor: 0,
             progress: 0.0,
             speed: 0.0,
             max_speed: 60.0, // Default speed

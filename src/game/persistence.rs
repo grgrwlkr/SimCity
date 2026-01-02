@@ -351,6 +351,7 @@ fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParam
                         pos,
                         total_vehicles: total,
                         available_vehicles: available,
+                        occupied: false,
                     });
 
                     for _ in 0..available {
