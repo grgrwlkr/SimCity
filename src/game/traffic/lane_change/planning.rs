@@ -125,7 +125,7 @@ pub(in super::super) fn plan_lane_changes(
     intersections: Res<IntersectionIndex>,
     traffic_cfg: Res<TrafficConfig>,
     spatial: Res<TrafficSpatialIndex>,
-    path_pool: Res<PathPool>,
+    mut path_pool: ResMut<PathPool>,
     mut commands: Commands,
     mut vehicles: ParamSet<(
         Query<
@@ -340,17 +340,19 @@ pub(in super::super) fn plan_lane_changes(
             continue;
         }
 
-        // TODO: implement lane-based route update
-        // if let Ok((_e, mut v)) = vehicles.p1().get_mut(d.e) {
-        //     // Keep current tile; insert lane-change as the first step.
-        //     let mut new_route = Vec::with_capacity(route_from_target.len() + 1);
-        //     new_route.push(current);
-        //     new_route.extend(route_from_target);
-        //     v.route = new_route;
-        //     v.route_idx = 0;
-        // } else {
-        //     continue;
-        // }
+        // Update vehicle route for lane change
+        if let Ok((_e, mut v)) = vehicles.p1().get_mut(d.e) {
+            // Keep current tile; insert lane-change as the first step.
+            let mut new_route = Vec::with_capacity(route_from_target.len() + 1);
+            new_route.push(current);
+            new_route.extend(route_from_target);
+            // Release old path and intern new one
+            path_pool.release(v.path_handle);
+            v.path_handle = path_pool.intern(new_route);
+            v.path_cursor = 0;
+        } else {
+            continue;
+        }
 
         // Reserve this position on the target tile to avoid same-tick overlaps.
         reserved.entry(d.target).or_default().push(d.ego_progress);
