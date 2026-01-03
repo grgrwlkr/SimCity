@@ -54,6 +54,7 @@ impl Plugin for BuildingsPlugin {
                     despawn_invalid_buildings,
                     upgrade_buildings,
                 )
+                    .in_set(GameSet::Sim)
                     .run_if(in_state(AppState::InGame)),
             );
     }

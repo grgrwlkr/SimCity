@@ -119,6 +119,10 @@ pub fn handle_traffic_light_commands(
                     continue;
                 };
                 index.traffic_light_keys.insert(key);
+                // Immediately update traffic_lights for current version
+                if let Some(id) = index.intersection_id_at(*pos) {
+                    index.traffic_lights.insert(id);
+                }
                 index.lights_dirty = true;
             }
             GameCommand::RemoveTrafficLight { pos } => {
@@ -126,6 +130,10 @@ pub fn handle_traffic_light_commands(
                     continue;
                 };
                 index.traffic_light_keys.remove(&key);
+                // Immediately update traffic_lights for current version
+                if let Some(id) = index.intersection_id_at(*pos) {
+                    index.traffic_lights.remove(&id);
+                }
                 index.lights_dirty = true;
             }
             _ => {} // Ignore other commands
