@@ -35,17 +35,13 @@ fn vehicle_arrival_emits_trip_finished() {
         );
 
     let citizen = CitizenId(42);
+    let mut path_pool = app
+        .world_mut()
+        .resource_mut::<crate::game::transport::PathPool>();
     let vehicle = app
         .world_mut()
         .spawn((
-            Vehicle {
-                path_handle: PathHandle::INVALID,
-                path_cursor: 0,
-                progress: 0.0,
-                speed: 0.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
+            create_vehicle_with_route(&mut path_pool, vec![], 0, 0.0, 0.0, 60.0, 20.0),
             Transform::default(),
             VehicleTrafficState::FreeFlow,
             TripPassenger {
@@ -120,6 +116,7 @@ fn stop_sign_release_does_not_oscillate_crossing_state() {
             idx.tile_to_intersection.insert(intersection_tile, id);
             idx
         })
+        .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, check_intersection_priority);
 
     let approach = TilePos { x: 0, y: 0 };
@@ -138,17 +135,21 @@ fn stop_sign_release_does_not_oscillate_crossing_state() {
     });
 
     // Vehicle is sitting right at the stop line (dist_to_stop == 0) and has already stopped.
+    let mut path_pool = app
+        .world_mut()
+        .resource_mut::<crate::game::transport::PathPool>();
     let vehicle = app
         .world_mut()
         .spawn((
-            Vehicle {
-                path_handle: PathHandle::INVALID, // TODO: use path_pool.intern()
-                path_cursor: 0,
-                progress: TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
-                speed: 0.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
+            create_vehicle_with_route(
+                &mut path_pool,
+                vec![approach, intersection_tile, exit],
+                0,
+                TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+                0.0,
+                60.0,
+                20.0,
+            ),
             VehicleTrafficState::Stopped {
                 intersection: key,
                 stop_tile: approach,
@@ -242,6 +243,7 @@ fn stop_sign_vehicle_gets_reserved_and_enters_intersection_tile() {
         .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(VehicleAggSnapshot::default())
         .insert_resource(ParkedVehicleTileIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         // Stop sign marker is used by `check_intersection_priority` to keep the vehicle stopped
         // until it is safe to proceed.
         .add_systems(
@@ -269,17 +271,21 @@ fn stop_sign_vehicle_gets_reserved_and_enters_intersection_tile() {
         priority: IntersectionPriority::StopSign,
     });
 
+    let mut path_pool = app
+        .world_mut()
+        .resource_mut::<crate::game::transport::PathPool>();
     let e = app
         .world_mut()
         .spawn((
-            Vehicle {
-                path_handle: PathHandle::INVALID, // TODO: use path_pool.intern()
-                path_cursor: 0,
-                progress: TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
-                speed: 0.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
+            create_vehicle_with_route(
+                &mut path_pool,
+                vec![approach, intersection_tile, exit],
+                0,
+                TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+                0.0,
+                60.0,
+                20.0,
+            ),
             Transform::default(),
             VehicleTrafficState::Stopped {
                 intersection: key,

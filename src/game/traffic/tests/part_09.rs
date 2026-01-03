@@ -50,6 +50,7 @@ fn parked_owned_car_is_reused_for_next_car_trip() {
         .insert_resource(TrafficIndex::default())
         .insert_resource(TrafficConfig::default())
         .insert_resource(IntersectionIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, spawn_trip_vehicles);
 
     let citizen = CitizenId(9);
@@ -72,18 +73,20 @@ fn parked_owned_car_is_reused_for_next_car_trip() {
     ));
 
     let road = TilePos { x: 1, y: 2 };
+    let mut path_pool = app.world_mut().resource_mut::<crate::game::transport::PathPool>();
     let car = app
         .world_mut()
         .spawn((
             Sprite::default(),
-            Vehicle {
-                route: vec![road],
-                route_idx: 0,
-                progress: 0.0,
-                speed: 0.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
+            create_vehicle_with_route(
+                &mut path_pool,
+                vec![road],
+                0,
+                0.0,
+                0.0,
+                60.0,
+                20.0,
+            ),
             Transform::default(),
             VehicleTrafficState::FreeFlow,
             CarOwner { citizen },

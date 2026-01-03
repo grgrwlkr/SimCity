@@ -65,6 +65,7 @@ fn straight_stream_allows_multiple_vehicles_to_reserve_concurrently() {
         .insert_resource(TrafficOccupancy::default())
         .insert_resource(TrafficConfig::default())
         .insert_resource(IntersectionReservations::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, plan_intersection_reservations);
 
     let approach = TilePos { x: 0, y: 0 };
@@ -77,17 +78,20 @@ fn straight_stream_allows_multiple_vehicles_to_reserve_concurrently() {
         .unwrap();
 
     // Two vehicles in the SAME stream (eastbound straight). Both should be reserved.
+    let mut path_pool = app.world_mut().resource_mut::<crate::game::transport::PathPool>();
+    let route = vec![approach, intersection_tile, exit];
     let e1 = app
         .world_mut()
         .spawn((
-            Vehicle {
-                route: vec![approach, intersection_tile, exit],
-                route_idx: 0,
-                progress: TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
-                speed: 0.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
+            create_vehicle_with_route(
+                &mut path_pool,
+                route.clone(),
+                0,
+                TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+                0.0,
+                60.0,
+                20.0,
+            ),
             VehicleTrafficState::Stopped {
                 intersection: key,
                 stop_tile: approach,
@@ -98,14 +102,15 @@ fn straight_stream_allows_multiple_vehicles_to_reserve_concurrently() {
     let e2 = app
         .world_mut()
         .spawn((
-            Vehicle {
-                route: vec![approach, intersection_tile, exit],
-                route_idx: 0,
-                progress: TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
-                speed: 0.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
+            create_vehicle_with_route(
+                &mut path_pool,
+                route,
+                0,
+                TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+                0.0,
+                60.0,
+                20.0,
+            ),
             VehicleTrafficState::Stopped {
                 intersection: key,
                 stop_tile: approach,
@@ -209,6 +214,7 @@ fn left_turn_conflicts_with_straight_flow() {
         .insert_resource(TrafficOccupancy::default())
         .insert_resource(TrafficConfig::default())
         .insert_resource(IntersectionReservations::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, plan_intersection_reservations);
 
     let i = TilePos { x: 1, y: 1 };
@@ -219,17 +225,19 @@ fn left_turn_conflicts_with_straight_flow() {
         .unwrap();
 
     // Straight vehicle (eastbound).
+    let mut path_pool = app.world_mut().resource_mut::<crate::game::transport::PathPool>();
     let straight = app
         .world_mut()
         .spawn((
-            Vehicle {
-                route: vec![TilePos { x: 0, y: 1 }, i, TilePos { x: 2, y: 1 }],
-                route_idx: 0,
-                progress: 0.9,
-                speed: 1.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
+            create_vehicle_with_route(
+                &mut path_pool,
+                vec![TilePos { x: 0, y: 1 }, i, TilePos { x: 2, y: 1 }],
+                0,
+                0.9,
+                1.0,
+                60.0,
+                20.0,
+            ),
             VehicleTrafficState::FreeFlow,
         ))
         .id();
@@ -238,14 +246,15 @@ fn left_turn_conflicts_with_straight_flow() {
     let left = app
         .world_mut()
         .spawn((
-            Vehicle {
-                route: vec![TilePos { x: 1, y: 0 }, i, TilePos { x: 0, y: 1 }],
-                route_idx: 0,
-                progress: 0.9,
-                speed: 1.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
+            create_vehicle_with_route(
+                &mut path_pool,
+                vec![TilePos { x: 1, y: 0 }, i, TilePos { x: 0, y: 1 }],
+                0,
+                0.9,
+                1.0,
+                60.0,
+                20.0,
+            ),
             VehicleTrafficState::FreeFlow,
         ))
         .id();
@@ -333,6 +342,7 @@ fn intersection_tile_with_kind_none_does_not_force_speed_to_zero() {
         .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(VehicleAggSnapshot::default())
         .insert_resource(ParkedVehicleTileIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .add_message::<TripFinished>()
         .add_systems(Update, (build_traffic_spatial_index, move_vehicles).chain());
 
@@ -342,22 +352,24 @@ fn intersection_tile_with_kind_none_does_not_force_speed_to_zero() {
         .cluster_key_at(TilePos { x: 1, y: 0 })
         .unwrap();
 
+    let mut path_pool = app.world_mut().resource_mut::<crate::game::transport::PathPool>();
     let e = app
         .world_mut()
         .spawn((
-            Vehicle {
-                route: vec![
+            create_vehicle_with_route(
+                &mut path_pool,
+                vec![
                     TilePos { x: 0, y: 0 },
                     TilePos { x: 1, y: 0 },
                     TilePos { x: 2, y: 0 },
                     TilePos { x: 3, y: 0 },
                 ],
-                route_idx: 1, // already inside intersection cluster (kind=None/dir=None)
-                progress: 0.0,
-                speed: 8.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
+                1, // already inside intersection cluster (kind=None/dir=None)
+                0.0,
+                8.0,
+                60.0,
+                20.0,
+            ),
             Transform::default(),
             VehicleTrafficState::CrossingIntersection { intersection: key },
         ))

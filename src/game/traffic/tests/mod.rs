@@ -22,6 +22,53 @@ fn count_trip_finished(mut reader: MessageReader<TripFinished>, mut cnt: ResMut<
     }
 }
 
+/// Helper function to create a Vehicle with proper PathPool integration
+pub fn create_vehicle_with_route(
+    path_pool: &mut crate::game::transport::PathPool,
+    route: Vec<crate::game::map::TilePos>,
+    route_idx: usize,
+    progress: f32,
+    speed: f32,
+    max_speed: f32,
+    max_accel: f32,
+) -> crate::game::traffic::components::Vehicle {
+    use crate::game::map::MapConfig;
+    use crate::game::transport::{LaneId, VehicleId};
+    use bevy::prelude::*;
+
+    let path_handle = if route.is_empty() {
+        crate::game::transport::PathHandle::INVALID
+    } else {
+        path_pool.intern(route.clone())
+    };
+
+    let start_pos = route.get(route_idx).copied().unwrap_or_else(|| {
+        route.first().copied().unwrap_or(crate::game::map::TilePos { x: 0, y: 0 })
+    });
+    
+    // Calculate world position (simplified - assumes default tile_size)
+    let world_pos = Vec2::new(
+        start_pos.x as f32 * 16.0,
+        start_pos.y as f32 * 16.0,
+    );
+
+    crate::game::traffic::components::Vehicle {
+        path_handle,
+        path_cursor: route_idx,
+        progress,
+        speed,
+        max_speed,
+        max_accel,
+        lane_id: LaneId::INVALID,
+        lane_s: 0.0,
+        vehicle_id: VehicleId::INVALID,
+        tile_pos: start_pos,
+        prev_world_pos: world_pos,
+        curr_world_pos: world_pos,
+        last_update_time: 0.0,
+    }
+}
+
 mod part_01;
 mod part_02;
 mod part_03;

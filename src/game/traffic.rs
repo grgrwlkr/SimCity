@@ -461,4 +461,5 @@ fn map_origin(cfg: &MapConfig) -> Vec2 {
 }
 
 #[cfg(test)]
-mod tests;
+#[cfg(test)]
+pub mod tests;

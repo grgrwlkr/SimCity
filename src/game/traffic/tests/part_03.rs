@@ -80,6 +80,7 @@ fn intersection_tiles_ignore_tile_capacity_gate_in_move_vehicles() {
         .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(VehicleAggSnapshot::default())
         .insert_resource(ParkedVehicleTileIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .add_message::<TripFinished>()
         .add_systems(Update, (build_traffic_spatial_index, move_vehicles).chain());
 
@@ -89,22 +90,24 @@ fn intersection_tiles_ignore_tile_capacity_gate_in_move_vehicles() {
         .cluster_key_at(TilePos { x: 1, y: 0 })
         .unwrap();
 
+    let mut path_pool = app.world_mut().resource_mut::<crate::game::transport::PathPool>();
     let e = app
         .world_mut()
         .spawn((
-            Vehicle {
-                route: vec![
+            create_vehicle_with_route(
+                &mut path_pool,
+                vec![
                     TilePos { x: 0, y: 0 },
                     TilePos { x: 1, y: 0 },
                     TilePos { x: 2, y: 0 },
                     TilePos { x: 3, y: 0 },
                 ],
-                route_idx: 1,
-                progress: 0.0,
-                speed: 8.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
+                1,
+                0.0,
+                8.0,
+                60.0,
+                20.0,
+            ),
             Transform::default(),
             VehicleTrafficState::CrossingIntersection { intersection: key },
         ))
@@ -188,6 +191,7 @@ fn traffic_light_stop_line_is_on_approach_tile_not_in_intersection() {
         .insert_resource(TrafficOccupancy::default())
         .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(VehicleAggSnapshot::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(
             Update,
             (
@@ -226,17 +230,20 @@ fn traffic_light_stop_line_is_on_approach_tile_not_in_intersection() {
             all_red_duration: 1.0,
         });
 
+    let mut path_pool = app.world_mut().resource_mut::<crate::game::transport::PathPool>();
+    let route = vec![approach, intersection_tile, exit];
     let ego = app
         .world_mut()
         .spawn((
-            Vehicle {
-                route: vec![approach, intersection_tile, exit],
-                route_idx: 0,
-                progress: 0.0,
-                speed: 8.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
+            create_vehicle_with_route(
+                &mut path_pool,
+                route.clone(),
+                0,
+                0.0,
+                8.0,
+                60.0,
+                20.0,
+            ),
             Transform::default(),
             VehicleTrafficState::FreeFlow,
         ))
@@ -247,7 +254,8 @@ fn traffic_light_stop_line_is_on_approach_tile_not_in_intersection() {
     }
 
     let v = app.world().get::<Vehicle>(ego).unwrap();
-    assert_eq!(v.route.get(v.route_idx).copied(), Some(approach));
+    let path_pool = app.world().resource::<crate::game::transport::PathPool>();
+    assert_eq!(path_pool.get_tile(v.path_handle, v.path_cursor), Some(approach));
     assert!(v.progress <= TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET + 1e-3);
 
     let st = app.world().get::<VehicleTrafficState>(ego).unwrap();
@@ -319,6 +327,7 @@ fn vehicle_inside_signalized_intersection_is_forced_to_crossing_state() {
             idx
         })
         .insert_resource(IntersectionReservations::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, update_vehicle_traffic_state);
 
     let intersection_tile = TilePos { x: 1, y: 1 };
@@ -346,17 +355,19 @@ fn vehicle_inside_signalized_intersection_is_forced_to_crossing_state() {
             all_red_duration: 1.0,
         });
 
+    let mut path_pool = app.world_mut().resource_mut::<crate::game::transport::PathPool>();
     let ego = app
         .world_mut()
         .spawn((
-            Vehicle {
-                route: vec![intersection_tile, exit],
-                route_idx: 0,
-                progress: 0.2,
-                speed: 0.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
+            create_vehicle_with_route(
+                &mut path_pool,
+                vec![intersection_tile, exit],
+                0,
+                0.2,
+                0.0,
+                60.0,
+                20.0,
+            ),
             // Even if we are wrongly marked as waiting, the system must force CrossingIntersection.
             VehicleTrafficState::WaitingForGreen {
                 intersection: key,

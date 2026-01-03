@@ -68,6 +68,7 @@ fn right_turn_on_red_is_blocked_by_conflicting_pedestrian_crossing_axis() {
         })
         .insert_resource(IntersectionReservations::default())
         .insert_resource(TrafficOccupancy::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, plan_intersection_reservations);
 
     let intersection_tile = TilePos { x: 1, y: 1 };
@@ -98,17 +99,19 @@ fn right_turn_on_red_is_blocked_by_conflicting_pedestrian_crossing_axis() {
     let approach = TilePos { x: 1, y: 0 };
     let exit = TilePos { x: 2, y: 1 };
 
+    let mut path_pool = app.world_mut().resource_mut::<crate::game::transport::PathPool>();
     let ego = app
         .world_mut()
         .spawn((
-            Vehicle {
-                route: vec![approach, intersection_tile, exit],
-                route_idx: 0,
-                progress: TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
-                speed: 0.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
+            create_vehicle_with_route(
+                &mut path_pool,
+                vec![approach, intersection_tile, exit],
+                0,
+                TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+                0.0,
+                60.0,
+                20.0,
+            ),
             VehicleTrafficState::WaitingForGreen {
                 intersection: key,
                 stop_tile: approach,
@@ -211,6 +214,7 @@ fn right_turn_on_red_is_only_admitted_when_intersection_is_clear() {
         })
         .insert_resource(TrafficOccupancy::default())
         .insert_resource(IntersectionReservations::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, plan_intersection_reservations);
 
     let intersection_tile = TilePos { x: 1, y: 1 };
@@ -240,17 +244,19 @@ fn right_turn_on_red_is_only_admitted_when_intersection_is_clear() {
 
     let approach = TilePos { x: 1, y: 0 };
     let exit = TilePos { x: 2, y: 1 };
+    let mut path_pool = app.world_mut().resource_mut::<crate::game::transport::PathPool>();
     let ego = app
         .world_mut()
         .spawn((
-            Vehicle {
-                route: vec![approach, intersection_tile, exit],
-                route_idx: 0,
-                progress: TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
-                speed: 0.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
+            create_vehicle_with_route(
+                &mut path_pool,
+                vec![approach, intersection_tile, exit],
+                0,
+                TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+                0.0,
+                60.0,
+                20.0,
+            ),
             VehicleTrafficState::WaitingForGreen {
                 intersection: key,
                 stop_tile: approach,
@@ -352,6 +358,7 @@ fn turn_reservations_yield_only_to_conflicting_pedestrian_axis() {
         })
         .insert_resource(IntersectionReservations::default())
         .insert_resource(TrafficOccupancy::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, plan_intersection_reservations);
 
     let intersection_tile = TilePos { x: 1, y: 1 };
@@ -362,21 +369,23 @@ fn turn_reservations_yield_only_to_conflicting_pedestrian_axis() {
         .unwrap();
 
     // Ego: right turn from northbound (south approach) to east.
+    let mut path_pool = app.world_mut().resource_mut::<crate::game::transport::PathPool>();
     let ego = app
         .world_mut()
         .spawn((
-            Vehicle {
-                route: vec![
+            create_vehicle_with_route(
+                &mut path_pool,
+                vec![
                     TilePos { x: 1, y: 0 },
                     intersection_tile,
                     TilePos { x: 2, y: 1 },
                 ],
-                route_idx: 0,
-                progress: 0.9,
-                speed: 1.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
+                0,
+                0.9,
+                1.0,
+                60.0,
+                20.0,
+            ),
             VehicleTrafficState::FreeFlow,
         ))
         .id();
