@@ -11,17 +11,17 @@ pub mod road_graph;
 pub mod turn_lanes;
 pub mod version;
 
-pub use lane_graph::{rebuild_lane_graph, LaneGraph, LaneId};
+pub use lane_graph::{LaneGraph, LaneId, rebuild_lane_graph};
 pub use lane_occupancy::VehicleId;
 pub use path_pool::{PathHandle, PathPool};
-pub use pathfinding::{find_road_path_cached, PathCache, PathfindingConfig, PathfindingCtx};
+pub use pathfinding::{PathCache, PathfindingConfig, PathfindingCtx, find_road_path_cached};
 pub use region_graph::RegionGraph;
 pub use road_graph::RoadGraph;
 pub use version::GraphVersion;
 
-use bevy::prelude::*;
 use crate::game::map::{MapGrid, TilePos};
 use crate::game::roads::RoadDir;
+use bevy::prelude::*;
 
 /// Find a road tile adjacent to `pos` that points towards `target`.
 /// Prefers roads facing the desired direction, falls back to any road.
@@ -94,9 +94,19 @@ impl Plugin for TransportPlugin {
             .init_resource::<RegionGraph>()
             .init_resource::<LaneGraph>()
             // .init_resource::<LaneOccupancy>()
-            .add_systems(FixedUpdate, road_graph::rebuild_road_graph.in_set(crate::game::sets::GameSet::GraphUpdate))
-            .add_systems(FixedUpdate, region_graph::rebuild_region_graph.in_set(crate::game::sets::GameSet::GraphUpdate))
-            .add_systems(FixedUpdate, rebuild_lane_graph.in_set(crate::game::sets::GameSet::GraphUpdate));
-            // .add_systems(FixedUpdate, populate_lane_occupancy.in_set(crate::game::sets::GameSet::GraphUpdate));
+            // .add_plugins(AsyncPathfindingPlugin)  // Temporarily disabled
+            .add_systems(
+                FixedUpdate,
+                road_graph::rebuild_road_graph.in_set(crate::game::sets::GameSet::GraphUpdate),
+            )
+            .add_systems(
+                FixedUpdate,
+                region_graph::rebuild_region_graph.in_set(crate::game::sets::GameSet::GraphUpdate),
+            )
+            .add_systems(
+                FixedUpdate,
+                rebuild_lane_graph.in_set(crate::game::sets::GameSet::GraphUpdate),
+            );
+        // .add_systems(FixedUpdate, populate_lane_occupancy.in_set(crate::game::sets::GameSet::GraphUpdate));
     }
 }

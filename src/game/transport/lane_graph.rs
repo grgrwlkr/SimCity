@@ -74,23 +74,29 @@ impl LaneGraph {
 
     /// Find lane at position.
     pub fn lane_at_pos(&self, pos: TilePos) -> Option<(LaneId, f32)> {
-        self.tile_to_lane.get(&pos)
+        self.tile_to_lane
+            .get(&pos)
             .and_then(|lanes| lanes.first().copied())
     }
 
     /// Get all lanes connected to this one.
     pub fn connected_lanes(&self, id: LaneId) -> &[LaneId] {
-        self.lane_connections.get(&id)
+        self.lane_connections
+            .get(&id)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
     }
 
     /// Convert tile position + progress to lane + s coordinate.
-    pub fn tile_progress_to_lane_s(&self, tile_pos: TilePos, progress: f32) -> Option<(LaneId, f32)> {
+    pub fn tile_progress_to_lane_s(
+        &self,
+        tile_pos: TilePos,
+        progress: f32,
+    ) -> Option<(LaneId, f32)> {
         self.tile_to_lane.get(&tile_pos).and_then(|lanes| {
-            lanes.first().map(|(lane_id, offset)| {
-                (*lane_id, offset + progress)
-            })
+            lanes
+                .first()
+                .map(|(lane_id, offset)| (*lane_id, offset + progress))
         })
     }
 
@@ -143,9 +149,9 @@ pub fn build_lane_graph(grid: &MapGrid, version: u64) -> LaneGraph {
             }
 
             // Start tracing a lane from this position
-            if let Some(lane_id) = trace_lane_from_pos(
-                grid, pos, &mut visited, &mut graph, &mut lane_id_counter
-            ) {
+            if let Some(lane_id) =
+                trace_lane_from_pos(grid, pos, &mut visited, &mut graph, &mut lane_id_counter)
+            {
                 // Connect this lane to others at intersections
                 connect_lane_at_end(grid, &mut graph, lane_id);
             }
@@ -178,15 +184,15 @@ fn trace_lane_from_pos(
     let lane_id = LaneId(*lane_id_counter);
     *lane_id_counter += 1;
 
-        let mut lane = Lane {
-            start_pos,
-            direction: start_dir,
-            kind: start_cell.road.kind,
-            speed_limit: match start_cell.road.kind {
-            RoadKind::SixLane => 27.78, // highway speed
+    let mut lane = Lane {
+        start_pos,
+        direction: start_dir,
+        kind: start_cell.road.kind,
+        speed_limit: match start_cell.road.kind {
+            RoadKind::SixLane => 27.78,  // highway speed
             RoadKind::FourLane => 16.67, // city road speed
-            RoadKind::TwoLane => 13.89, // local street speed
-            RoadKind::None => 8.33, // fallback
+            RoadKind::TwoLane => 13.89,  // local street speed
+            RoadKind::None => 8.33,      // fallback
         },
         ..Default::default()
     };
@@ -200,22 +206,38 @@ fn trace_lane_from_pos(
         visited[idx] = true;
 
         // Record this tile belongs to this lane
-        graph.tile_to_lane.entry(current_pos)
-            .or_insert_with(Vec::new)
+        graph
+            .tile_to_lane
+            .entry(current_pos)
+            .or_default()
             .push((lane_id, length_tiles as f32));
 
         length_tiles += 1;
 
         // Move to next tile in direction
         let next_pos = match start_dir {
-            RoadDir::North => TilePos { x: current_pos.x, y: current_pos.y + 1 },
-            RoadDir::South => TilePos { x: current_pos.x, y: current_pos.y - 1 },
-            RoadDir::East => TilePos { x: current_pos.x + 1, y: current_pos.y },
-            RoadDir::West => TilePos { x: current_pos.x - 1, y: current_pos.y },
+            RoadDir::North => TilePos {
+                x: current_pos.x,
+                y: current_pos.y + 1,
+            },
+            RoadDir::South => TilePos {
+                x: current_pos.x,
+                y: current_pos.y - 1,
+            },
+            RoadDir::East => TilePos {
+                x: current_pos.x + 1,
+                y: current_pos.y,
+            },
+            RoadDir::West => TilePos {
+                x: current_pos.x - 1,
+                y: current_pos.y,
+            },
             RoadDir::None => break,
         };
 
-        let Some(next_cell) = grid.get(next_pos) else { break };
+        let Some(next_cell) = grid.get(next_pos) else {
+            break;
+        };
         if !next_cell.road.is_some() || next_cell.road.dir != start_dir {
             break; // End of lane segment
         }
@@ -236,7 +258,7 @@ fn trace_lane_from_pos(
 }
 
 /// Connect lane to other lanes at its endpoint.
-fn connect_lane_at_end(grid: &MapGrid, graph: &mut LaneGraph, lane_id: LaneId) {
+fn connect_lane_at_end(_grid: &MapGrid, graph: &mut LaneGraph, lane_id: LaneId) {
     let lane = graph.get_lane(lane_id).unwrap();
     let end_pos = match lane.direction {
         RoadDir::North => TilePos {
@@ -263,17 +285,29 @@ fn connect_lane_at_end(grid: &MapGrid, graph: &mut LaneGraph, lane_id: LaneId) {
 
     // Check adjacent tiles for lane starts
     let adjacent_positions = [
-        TilePos { x: end_pos.x - 1, y: end_pos.y },
-        TilePos { x: end_pos.x + 1, y: end_pos.y },
-        TilePos { x: end_pos.x, y: end_pos.y - 1 },
-        TilePos { x: end_pos.x, y: end_pos.y + 1 },
+        TilePos {
+            x: end_pos.x - 1,
+            y: end_pos.y,
+        },
+        TilePos {
+            x: end_pos.x + 1,
+            y: end_pos.y,
+        },
+        TilePos {
+            x: end_pos.x,
+            y: end_pos.y - 1,
+        },
+        TilePos {
+            x: end_pos.x,
+            y: end_pos.y + 1,
+        },
     ];
 
     for adj_pos in adjacent_positions {
-        if let Some((other_lane_id, _)) = graph.lane_at_pos(adj_pos) {
-            if other_lane_id != lane_id {
-                connections.push(other_lane_id);
-            }
+        if let Some((other_lane_id, _)) = graph.lane_at_pos(adj_pos)
+            && other_lane_id != lane_id
+        {
+            connections.push(other_lane_id);
         }
     }
 

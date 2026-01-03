@@ -271,16 +271,15 @@ impl TrafficSpatialIndex {
             }
         }
 
-        if let Some(next_tile) = path_pool.get_tile(path_handle, path_cursor + 1) {
-            if let Some(next_idx) = grid.idx(next_tile)
-                && let Some(e) = self.tile_first(next_idx)
-            {
-                let g = (1.0_f32 - ego_progress) + e.progress;
-                best = Some(match best {
-                    Some((bg, bv)) if bg <= g => (bg, bv),
-                    _ => (g.max(0.0), e.speed),
-                });
-            }
+        if let Some(next_tile) = path_pool.get_tile(path_handle, path_cursor + 1)
+            && let Some(next_idx) = grid.idx(next_tile)
+            && let Some(e) = self.tile_first(next_idx)
+        {
+            let g = (1.0_f32 - ego_progress) + e.progress;
+            best = Some(match best {
+                Some((bg, bv)) if bg <= g => (bg, bv),
+                _ => (g.max(0.0), e.speed),
+            });
         }
 
         best

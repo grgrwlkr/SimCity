@@ -56,10 +56,10 @@ pub fn pick_reachable_road_endpoint(
     ];
 
     for &pos in &candidates {
-        if let Some(cell) = grid.get(pos) {
-            if cell.road.is_some() {
-                return Some(pos);
-            }
+        if let Some(cell) = grid.get(pos)
+            && cell.road.is_some()
+        {
+            return Some(pos);
         }
     }
     None
@@ -87,10 +87,10 @@ pub fn adjacent_road_any(grid: &crate::game::map::MapGrid, pos: TilePos) -> Opti
     ];
 
     for candidate in candidates {
-        if let Some(cell) = grid.get(candidate) {
-            if cell.road.is_some() {
-                return Some(candidate);
-            }
+        if let Some(cell) = grid.get(candidate)
+            && cell.road.is_some()
+        {
+            return Some(candidate);
         }
     }
     None

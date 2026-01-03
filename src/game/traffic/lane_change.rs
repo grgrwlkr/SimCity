@@ -156,11 +156,10 @@ pub(super) fn plan_oncoming_overtakes(
         }
 
         // Never start close to intersections (safety).
-        if let Some(route) = path_pool.remaining_from(v.path_handle, v.path_cursor) {
-            if route_has_near_intersection_n(route, &grid, ONCOMING_OVERTAKE_INTERSECTION_LOOKAHEAD)
-            {
-                continue;
-            }
+        if let Some(route) = path_pool.remaining_from(v.path_handle, v.path_cursor)
+            && route_has_near_intersection_n(route, &grid, ONCOMING_OVERTAKE_INTERSECTION_LOOKAHEAD)
+        {
+            continue;
         }
 
         // Do not start while stopped/waiting/approaching a stop line.

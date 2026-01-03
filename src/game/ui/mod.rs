@@ -33,7 +33,7 @@ use crate::game::ui_settings::UiSettings;
 use crate::game::ui_state::{OverlayMode, SimSpeed, ToolMode, UiState};
 
 mod metrics;
-use metrics::{
+pub use metrics::{
     DebugDumpCopyInfo, DebugDumpUiState, DebugTelemetry, DebugTelemetrySample, HistorySample,
     UiEntityCounts, UiHistory, UiMetrics, track_ui_entity_counts, update_ui_metrics,
 };
@@ -65,7 +65,7 @@ use building_popup::building_popup_ui;
 mod stats_window;
 use stats_window::{ShowStatsWindow, stats_ui};
 
-mod debug_dump;
+pub mod debug_dump;
 use debug_dump::debug_dump_ui;
 
 pub struct UiPlugin;

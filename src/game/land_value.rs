@@ -67,54 +67,57 @@ fn compute_land_value(
     let indices: Vec<usize> = (start_idx..end_idx).collect();
 
     // Process tiles in parallel
-    let results: Vec<f32> = indices.par_iter().map(|&idx| {
-        let x = (idx % grid.width as usize) as i32;
-        let y = (idx / grid.width as usize) as i32;
-        let pos = TilePos { x, y };
+    let results: Vec<f32> = indices
+        .par_iter()
+        .map(|&idx| {
+            let x = (idx % grid.width as usize) as i32;
+            let y = (idx / grid.width as usize) as i32;
+            let pos = TilePos { x, y };
 
-        let mut value = base_value;
+            let mut value = base_value;
 
-        // +0.2 for proximity to road
-        if has_adjacent_road(&grid, pos) {
-            value += 0.2;
-        }
-
-        // +0.1 for each service (Fire/Police/Medical)
-        if let Some(coverage) = service_coverage.as_deref() {
-            let mut service_bonus = 0.0;
-            if coverage.is_covered(idx, ServiceCoverageIndex::MASK_FIRE) {
-                service_bonus += 0.1;
+            // +0.2 for proximity to road
+            if has_adjacent_road(&grid, pos) {
+                value += 0.2;
             }
-            if coverage.is_covered(idx, ServiceCoverageIndex::MASK_POLICE) {
-                service_bonus += 0.1;
-            }
-            if coverage.is_covered(idx, ServiceCoverageIndex::MASK_MEDICAL) {
-                service_bonus += 0.1;
-            }
-            value += service_bonus;
-        }
 
-        // -0.4 * pollution for pollution impact
-        if let Some(poll) = pollution.as_deref() {
-            let poll_value = poll.get(idx);
-            value -= poll_value * 0.4;
-        }
-
-        // -0.2 for locally high traffic (nearby congested road tiles).
-        // Uses per-tile `TrafficOccupancy::heat_idx` (not city-wide averages).
-        if let Some(occ) = traffic.as_deref()
-            && max_heat > 0.0
-        {
-            let local_heat = local_traffic_heat(occ, &grid, pos);
-            let local_norm = (local_heat / max_heat).clamp(0.0, 1.0);
-            if local_norm > 0.7 {
-                value -= 0.2;
+            // +0.1 for each service (Fire/Police/Medical)
+            if let Some(coverage) = service_coverage.as_deref() {
+                let mut service_bonus = 0.0;
+                if coverage.is_covered(idx, ServiceCoverageIndex::MASK_FIRE) {
+                    service_bonus += 0.1;
+                }
+                if coverage.is_covered(idx, ServiceCoverageIndex::MASK_POLICE) {
+                    service_bonus += 0.1;
+                }
+                if coverage.is_covered(idx, ServiceCoverageIndex::MASK_MEDICAL) {
+                    service_bonus += 0.1;
+                }
+                value += service_bonus;
             }
-        }
 
-        // Clamp to [0.0, 1.0]
-        value.clamp(0.0, 1.0)
-    }).collect();
+            // -0.4 * pollution for pollution impact
+            if let Some(poll) = pollution.as_deref() {
+                let poll_value = poll.get(idx);
+                value -= poll_value * 0.4;
+            }
+
+            // -0.2 for locally high traffic (nearby congested road tiles).
+            // Uses per-tile `TrafficOccupancy::heat_idx` (not city-wide averages).
+            if let Some(occ) = traffic.as_deref()
+                && max_heat > 0.0
+            {
+                let local_heat = local_traffic_heat(occ, &grid, pos);
+                let local_norm = (local_heat / max_heat).clamp(0.0, 1.0);
+                if local_norm > 0.7 {
+                    value -= 0.2;
+                }
+            }
+
+            // Clamp to [0.0, 1.0]
+            value.clamp(0.0, 1.0)
+        })
+        .collect();
 
     // Copy results to the land value array
     for (i, &value) in results.iter().enumerate() {

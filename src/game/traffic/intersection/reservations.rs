@@ -40,13 +40,17 @@ pub(crate) struct IntersectionReservations {
 
 impl IntersectionReservations {
     pub(crate) fn is_reserved(&self, id: IntersectionId) -> bool {
-        self.by_intersection.get(&id).is_some_and(|v| !v.is_empty())
+        self.by_intersection
+            .get(&id)
+            .is_some_and(|v: &Vec<IntersectionReservation>| !v.is_empty())
     }
 
     pub(crate) fn is_reserved_by(&self, id: IntersectionId, vehicle: Entity) -> bool {
         self.by_intersection
             .get(&id)
-            .is_some_and(|rs| rs.iter().any(|r| r.vehicle == vehicle))
+            .is_some_and(|rs: &Vec<IntersectionReservation>| {
+                rs.iter().any(|r| r.vehicle == vehicle)
+            })
     }
 
     fn can_reserve(
@@ -157,7 +161,7 @@ pub fn plan_intersection_reservations(
 
     // Reuse candidate buffers across ticks.
     for v in candidates_by_intersection.values_mut() {
-        v.clear();
+        (v as &mut Vec<IntersectionReservationCandidate>).clear();
     }
     exit_tile_reserved.clear();
 
@@ -326,7 +330,9 @@ pub fn plan_intersection_reservations(
             };
             let dir = entry_dir;
 
-            if light.is_green(dir) || light.is_yellow(dir) {
+            if (light as &crate::game::intersections::TrafficLight).is_green(dir)
+                || (light as &crate::game::intersections::TrafficLight).is_yellow(dir)
+            {
                 priority = priority.max(2);
             } else {
                 // Right turn on red (near-side turn only), after coming to a stop.
@@ -390,7 +396,7 @@ pub fn plan_intersection_reservations(
     }
 
     for (&id, cands) in candidates_by_intersection.iter_mut() {
-        if cands.is_empty() {
+        if (cands as &Vec<IntersectionReservationCandidate>).is_empty() {
             continue;
         }
         // sort by priority, then distance, then stable entity id
@@ -457,7 +463,7 @@ pub fn cleanup_intersection_reservations(
             continue;
         };
 
-        list.retain_mut(|r| {
+        (list as &mut Vec<IntersectionReservation>).retain_mut(|r| {
             let Ok(v) = q_vehicles.get(r.vehicle) else {
                 return false;
             };

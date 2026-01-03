@@ -203,9 +203,14 @@ impl PathPool {
     /// Get pool statistics for debugging.
     pub fn stats(&self) -> PathPoolStats {
         let used_slots = self.entries.len() - self.free_slots.len();
-        let total_memory = self.entries.iter().map(|e| e.path.len() * std::mem::size_of::<TilePos>()).sum::<usize>()
+        let total_memory = self
+            .entries
+            .iter()
+            .map(|e| e.path.len() * std::mem::size_of::<TilePos>())
+            .sum::<usize>()
             + self.entries.len() * std::mem::size_of::<PathEntry>()
-            + self.dedup.len() * (std::mem::size_of::<(u64, u64)>() + std::mem::size_of::<PathHandle>());
+            + self.dedup.len()
+                * (std::mem::size_of::<(u64, u64)>() + std::mem::size_of::<PathHandle>());
 
         PathPoolStats {
             total_entries: self.entries.len(),

@@ -2,7 +2,7 @@ use super::*;
 use bevy_egui::{EguiContexts, egui};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-mod build;
+pub mod build;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn debug_dump_ui(
@@ -27,6 +27,31 @@ pub(super) fn debug_dump_ui(
     // Hotkeys: F9 copies dump; F8 toggles the debug window.
     if ctx.input(|i| i.key_pressed(egui::Key::F9)) {
         dump_ui.copy_requested = true;
+
+        // Log current game state to console
+        if let Some(last_sample) = telemetry.samples.back() {
+            println!("\n=== GAME STATE (F9 pressed) ===");
+            println!(
+                "Time: {:.1}s, Day: {}, Population: {}, Money: {}",
+                telemetry.t_real_s, last_sample.day, last_sample.population, last_sample.money
+            );
+            println!(
+                "Vehicles: total={}, zero_speed={}, no_route={}",
+                last_sample.vehicles.total,
+                last_sample.vehicles.zero_speed,
+                last_sample.vehicles.no_route
+            );
+            println!(
+                "Traffic: avg={:.3}, max={:.3}",
+                last_sample.traffic_avg, last_sample.traffic_max
+            );
+            println!(
+                "Demand: R={:.2}, C={:.2}, I={:.2}",
+                last_sample.demand_r, last_sample.demand_c, last_sample.demand_i
+            );
+            println!("Emergencies: active={}", last_sample.active_emergencies);
+            println!("Copying debug dump to clipboard...\n");
+        }
     }
     if ctx.input(|i| i.key_pressed(egui::Key::F8)) {
         dump_ui.open = !dump_ui.open;
@@ -142,11 +167,31 @@ pub(super) fn debug_dump_ui(
             chars: dump_ron.len(),
             samples: dump.telemetry.samples.len(),
         });
-        info!(
-            "Debug dump copied to clipboard ({} chars, {} samples)",
-            dump_ron.len(),
-            dump.telemetry.samples.len()
-        );
+
+        // Additional logging for debugging
+        if let Some(last_sample) = dump.telemetry.samples.last() {
+            info!(
+                "Debug dump copied to clipboard ({} chars, {} samples) | Vehicles: total={}, zero_speed={}, no_route={}",
+                dump_ron.len(),
+                dump.telemetry.samples.len(),
+                last_sample.vehicles.total,
+                last_sample.vehicles.zero_speed,
+                last_sample.vehicles.no_route
+            );
+
+            // Log vehicle states breakdown
+            let v = &last_sample.vehicles;
+            info!(
+                "Vehicle states: free_flow={}, approaching={}, stopped={}, waiting={}, crossing={}, accelerating={}",
+                v.free_flow, v.approaching, v.stopped, v.waiting, v.crossing, v.accelerating
+            );
+        } else {
+            info!(
+                "Debug dump copied to clipboard ({} chars, {} samples)",
+                dump_ron.len(),
+                dump.telemetry.samples.len()
+            );
+        }
     }
 
     if dump_ui.save_requested {
@@ -160,7 +205,22 @@ pub(super) fn debug_dump_ui(
         } else {
             let path = format!("{}/simcity_dump_{}.ron", dir, ts_ms);
             match std::fs::write(&path, dump_ron.as_bytes()) {
-                Ok(_) => info!("Saved debug dump to {}", path),
+                Ok(_) => {
+                    info!(
+                        "Saved debug dump to {} ({} chars, {} samples)",
+                        path,
+                        dump_ron.len(),
+                        dump.telemetry.samples.len()
+                    );
+                    if let Some(last_sample) = dump.telemetry.samples.last() {
+                        info!(
+                            "Dump summary: Vehicles total={}, zero_speed={}, traffic_avg={:.3}",
+                            last_sample.vehicles.total,
+                            last_sample.vehicles.zero_speed,
+                            last_sample.traffic_avg
+                        );
+                    }
+                }
                 Err(err) => warn!("Failed to save debug dump to {}: {}", path, err),
             }
         }
@@ -171,7 +231,7 @@ pub(super) fn debug_dump_ui(
 }
 
 #[derive(Debug, serde::Serialize)]
-struct DebugDump {
+pub struct DebugDump {
     dump_version: u32,
     generated_at_unix_ms: u64,
 

@@ -16,14 +16,15 @@ pub fn update_vehicle_positions_for_interpolation(
         // Calculate current world position
         let tile_pos = if vehicle.lane_id != crate::game::transport::LaneId::INVALID {
             // Use lane-based position
-            lane_graph.lane_s_to_tile_pos(vehicle.lane_id, vehicle.lane_s)
+            lane_graph
+                .lane_s_to_tile_pos(vehicle.lane_id, vehicle.lane_s)
                 .unwrap_or(vehicle.tile_pos)
         } else {
             // Fallback to tile-based position
             vehicle.tile_pos
         };
 
-        // Convert tile position to world coordinates
+        // Convert tile position to world coordinates with progress interpolation
         let world_pos = tile_to_world_pos(tile_pos, vehicle.progress);
 
         // Store previous position and update current
@@ -34,12 +35,9 @@ pub fn update_vehicle_positions_for_interpolation(
 }
 
 /// Convert tile position to world coordinates with progress interpolation.
-fn tile_to_world_pos(tile_pos: crate::game::map::TilePos, progress: f32) -> Vec2 {
+fn tile_to_world_pos(tile_pos: crate::game::map::TilePos, _progress: f32) -> Vec2 {
     // Base tile position (simplified - no progress interpolation yet)
-    Vec2::new(
-        tile_pos.x as f32,
-        tile_pos.y as f32,
-    )
+    Vec2::new(tile_pos.x as f32, tile_pos.y as f32)
 }
 
 /// Interpolate vehicle position between simulation frames for smooth 60fps rendering.
@@ -56,7 +54,9 @@ pub fn interpolate_vehicle_position(
         let interpolation_factor = (time_since_update / (1.0 / 30.0)).clamp(0.0, 1.0); // Assume 30fps simulation
 
         // Linear interpolation for smooth movement
-        let interpolated_pos = vehicle.prev_world_pos.lerp(vehicle.curr_world_pos, interpolation_factor);
+        let interpolated_pos = vehicle
+            .prev_world_pos
+            .lerp(vehicle.curr_world_pos, interpolation_factor);
 
         // Update only the Transform for rendering - don't touch Vehicle game logic
         transform.translation.x = interpolated_pos.x;

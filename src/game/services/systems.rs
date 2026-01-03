@@ -21,7 +21,7 @@ pub(crate) fn sync_service_stations_from_buildings(
         let Some(kind) = ServiceKind::from_building(b.kind) else {
             continue;
         };
-        if station.is_some() {
+        if (station as Option<&ServiceStation>).is_some() {
             continue;
         }
 

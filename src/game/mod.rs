@@ -2,13 +2,13 @@ use bevy::prelude::*;
 
 mod audio_sfx;
 mod buildings;
-mod camera;
+pub mod camera;
 mod citizens;
 mod command_history;
 mod commands;
 mod config_loader;
 mod custom_buildings;
-mod day_night;
+pub mod day_night;
 mod demand;
 mod economy;
 mod emergencies;
@@ -16,7 +16,7 @@ mod employment;
 mod ids;
 mod intersections;
 mod land_value;
-mod map;
+pub mod map;
 mod notifications;
 mod pedestrians;
 mod persistence;
@@ -27,23 +27,44 @@ mod roads;
 mod scenarios;
 mod services;
 mod sets;
-mod sim;
+pub mod sim;
 mod sim_events;
-mod state;
+pub mod state;
 mod telemetry;
 mod test_city;
 mod traffic;
 mod transport;
 mod trips;
-mod ui;
+pub mod ui;
 mod ui_settings;
-mod ui_state;
+pub mod ui_state;
 mod zone_placement;
+
+fn auto_dump_on_game_end(mut dump_ui: ResMut<ui::DebugDumpUiState>) {
+    info!("🎮 Game ended - copying debug dump to clipboard");
+    dump_ui.copy_requested = true;
+}
+
+fn auto_dump_on_window_close(mut counter: Local<i32>) {
+    *counter += 1;
+
+    // Print every 100 frames
+    if *counter % 100 == 0 {
+        println!("SYSTEM WORKING: frame {}", *counter);
+    }
+}
 
 pub struct GamePlugin;
 
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
+        info!("🚀 SimCity starting with performance optimizations enabled!");
+        info!("✅ Pathfinding: Cached A* with hierarchical search");
+        info!("✅ UI: Incremental metrics updates");
+        info!("✅ Memory: Optimized pedestrian BFS and building growth");
+        info!("✅ Traffic: Async route planning disabled (sync mode active)");
+        info!("🎮 Press F9 for debug dump, F8 to toggle debug window");
+
         app.init_state::<state::AppState>()
             .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
                 1.0 / 10.0,
@@ -103,6 +124,9 @@ impl Plugin for GamePlugin {
                 pollution::PollutionPlugin,
                 ui::UiPlugin,
                 ui_settings::UiSettingsPlugin,
-            ));
+            ))
+            .add_systems(OnExit(state::AppState::InGame), auto_dump_on_game_end)
+            .add_systems(OnExit(state::AppState::MainMenu), auto_dump_on_game_end)
+            .add_systems(Update, auto_dump_on_window_close);
     }
 }

@@ -4533,6 +4533,8 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bevy_egui",
+ "lazy_static",
+ "libc",
  "rand",
  "rayon",
  "ron 0.12.0",

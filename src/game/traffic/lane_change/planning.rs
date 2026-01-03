@@ -184,10 +184,10 @@ pub(in super::super) fn plan_lane_changes(
         let Some(ego_tile) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
-        if let Some(route) = path_pool.remaining_from(v.path_handle, v.path_cursor) {
-            if route_has_near_intersection(route, &grid) {
-                continue;
-            }
+        if let Some(route) = path_pool.remaining_from(v.path_handle, v.path_cursor)
+            && route_has_near_intersection(route, &grid)
+        {
+            continue;
         }
         let Some(ego_cell) = grid.get(ego_tile) else {
             continue;

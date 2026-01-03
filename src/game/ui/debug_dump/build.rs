@@ -1,7 +1,7 @@
 use super::*;
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn build_debug_dump(
+pub fn build_debug_dump(
     state: &State<AppState>,
     ui_state: &UiState,
     city: &City,

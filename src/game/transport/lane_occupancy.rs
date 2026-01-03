@@ -1,5 +1,3 @@
-use bevy::prelude::*;
-
 /// Unique identifier for vehicles in the lane occupancy system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VehicleId(pub u32);

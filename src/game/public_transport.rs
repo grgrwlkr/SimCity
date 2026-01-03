@@ -81,6 +81,8 @@ pub struct PublicTransportIndex {
     /// Two endpoints for the MVP shuttle bus.
     pub shuttle_a: Option<TilePos>,
     pub shuttle_b: Option<TilePos>,
+    /// Version for change detection
+    pub version: u64,
 }
 
 #[derive(Resource, Debug, Default)]
@@ -103,7 +105,16 @@ pub struct BusVehicle {
     pub to_b: bool,
 }
 
-fn compute_public_transport_index(grid: Res<MapGrid>, mut idx: ResMut<PublicTransportIndex>) {
+fn compute_public_transport_index(
+    grid: Res<MapGrid>,
+    edit_v: Res<crate::game::map::MapEditVersion>,
+    mut idx: ResMut<PublicTransportIndex>,
+) {
+    // Only recompute when buildings have changed
+    if idx.version == edit_v.0 {
+        return;
+    }
+
     // Derive stops from zoned buildings: any adjacent road tile becomes a stop.
     let mut stops = HashSet::<TilePos>::new();
     for y in 0..grid.height {
@@ -152,6 +163,7 @@ fn compute_public_transport_index(grid: Res<MapGrid>, mut idx: ResMut<PublicTran
     idx.stops = stops;
     idx.shuttle_a = a;
     idx.shuttle_b = b;
+    idx.version = edit_v.0;
 }
 
 fn tick_pending_transit_trips(

@@ -114,4 +114,3 @@ fn compute_pollution(
         pollution.needs_full_reset = true; // Start over for next full cycle
     }
 }
-

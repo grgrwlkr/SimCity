@@ -1,5 +1,5 @@
-use bevy::prelude::*;
 use crate::game::map::TilePos;
+use bevy::prelude::*;
 
 /// Visual marker for emergency locations on the map.
 #[derive(Component)]
