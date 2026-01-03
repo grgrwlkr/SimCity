@@ -8,7 +8,7 @@ mod lights;
 mod render;
 
 pub use index::{
-    IntersectionId, IntersectionIndex, IntersectionKey, IntersectionPriority,
+    IntersectionCluster, IntersectionId, IntersectionIndex, IntersectionKey, IntersectionPriority,
     IntersectionPriorityMarker, build_intersection_clusters,
 };
 pub use lights::{LightPhase, TrafficLight};
