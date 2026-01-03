@@ -2,10 +2,12 @@ use bevy::prelude::*;
 
 /// Async pathfinding request ID
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[allow(dead_code)] // Reserved for future async pathfinding feature
 pub struct PathRequestId(pub u64);
 
 /// Async pathfinding request
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Reserved for future async pathfinding feature
 pub struct PathRequest {
     pub id: PathRequestId,
     pub start: crate::game::map::TilePos,
@@ -15,6 +17,7 @@ pub struct PathRequest {
 
 /// Async pathfinding result
 #[derive(Debug)]
+#[allow(dead_code)] // Reserved for future async pathfinding feature
 pub struct PathResult {
     pub request_id: PathRequestId,
     pub path: Option<Vec<crate::game::map::TilePos>>,
@@ -22,6 +25,7 @@ pub struct PathResult {
 
 /// Queue of pending pathfinding requests
 #[derive(Resource, Default)]
+#[allow(dead_code)] // Reserved for future async pathfinding feature
 pub struct PathRequestQueue {
     next_id: u64,
     requests: Vec<PathRequest>,
@@ -30,11 +34,13 @@ pub struct PathRequestQueue {
 
 /// Results of completed pathfinding requests
 #[derive(Resource, Default)]
+#[allow(dead_code)] // Reserved for future async pathfinding feature
 pub struct PathResultQueue {
     results: Vec<PathResult>,
 }
 
 /// Plugin for async pathfinding system
+#[allow(dead_code)] // Reserved for future async pathfinding feature
 pub struct AsyncPathfindingPlugin;
 
 impl Plugin for AsyncPathfindingPlugin {
@@ -47,6 +53,7 @@ impl Plugin for AsyncPathfindingPlugin {
 
 impl PathRequestQueue {
     /// Submit a new pathfinding request
+    #[allow(dead_code)] // Reserved for future async pathfinding feature
     pub fn submit(
         &mut self,
         start: crate::game::map::TilePos,
@@ -67,6 +74,7 @@ impl PathRequestQueue {
     }
 
     /// Get next request to process (highest priority first)
+    #[allow(dead_code)] // Reserved for future async pathfinding feature
     pub fn pop_next(&mut self) -> Option<PathRequest> {
         if self.requests.is_empty() {
             return None;
@@ -89,16 +97,19 @@ impl PathRequestQueue {
     }
 
     /// Mark request as completed
+    #[allow(dead_code)] // Reserved for future async pathfinding feature
     pub fn complete(&mut self, id: PathRequestId) {
         self.processing.remove(&id);
     }
 
     /// Get pending request count
+    #[allow(dead_code)] // Reserved for future async pathfinding feature
     pub fn pending_count(&self) -> usize {
         self.requests.len()
     }
 
     /// Get processing request count
+    #[allow(dead_code)] // Reserved for future async pathfinding feature
     pub fn processing_count(&self) -> usize {
         self.processing.len()
     }
@@ -106,17 +117,21 @@ impl PathRequestQueue {
 
 impl PathResultQueue {
     /// Add completed pathfinding result
+    #[allow(dead_code)] // Reserved for future async pathfinding feature
     pub fn push(&mut self, result: PathResult) {
         self.results.push(result);
     }
 
     /// Get all pending results
+    #[allow(dead_code)] // Reserved for future async pathfinding feature
     pub fn drain(&mut self) -> std::vec::Drain<'_, PathResult> {
         self.results.drain(..)
     }
 }
 
 /// Process pathfinding requests with budget per tick
+#[allow(dead_code)] // Reserved for future async pathfinding feature
+#[allow(clippy::too_many_arguments)] // System parameters
 fn process_pathfinding_requests(
     time: Res<Time>,
     cfg: Res<super::PathfindingConfig>,

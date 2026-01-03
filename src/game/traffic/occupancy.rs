@@ -145,6 +145,7 @@ pub(super) fn reset_traffic_aggregates(
 }
 
 /// Update the occupancy map based on current vehicle positions.
+#[allow(clippy::too_many_arguments)] // Bevy systems often need many parameters
 pub(super) fn update_traffic_occupancy(
     grid: Res<MapGrid>,
     mut occ: ResMut<TrafficOccupancy>,

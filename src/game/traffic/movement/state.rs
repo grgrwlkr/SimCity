@@ -1,6 +1,7 @@
 use super::super::*;
 use std::collections::{HashMap, HashSet};
 
+#[allow(clippy::too_many_arguments)] // Bevy systems often need many parameters
 pub fn update_vehicle_traffic_state(
     _time: Res<Time<Fixed>>,
     _traffic_cfg: Res<TrafficConfig>,

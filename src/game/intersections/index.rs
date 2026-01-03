@@ -12,10 +12,12 @@ pub enum IntersectionPriority {
     #[default]
     None,
     /// Yield sign - must yield to traffic from right
+    #[allow(dead_code)] // Reserved for future use
     YieldSign,
     /// Stop sign - must come to complete stop
     StopSign,
     /// Main road - has priority over side roads
+    #[allow(dead_code)] // Reserved for future use
     MainRoad,
 }
 

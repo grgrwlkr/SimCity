@@ -150,6 +150,7 @@ pub(super) struct UiEntityCountTrackParams<'w, 's> {
     removed_emergencies: RemovedComponents<'w, 's, Emergency>,
 }
 
+#[allow(private_interfaces)] // SystemParam types are intentionally private
 pub fn track_ui_entity_counts(
     state: Res<State<AppState>>,
     mut counts: ResMut<UiEntityCounts>,
@@ -188,6 +189,7 @@ pub fn track_ui_entity_counts(
     }
 }
 
+#[allow(private_interfaces)] // SystemParam types are intentionally private
 pub fn update_ui_metrics(mut p: UiMetricsParams) {
     if !matches!(p.state.get(), AppState::InGame | AppState::Paused) {
         p.metrics.citizens = 0;

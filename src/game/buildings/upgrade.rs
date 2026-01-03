@@ -9,6 +9,7 @@ use crate::game::ui_state::UiState;
 
 use super::components::*;
 
+#[allow(clippy::too_many_arguments)]
 pub fn upgrade_buildings(
     time: Res<Time<Fixed>>,
     ui: Res<UiState>,

@@ -285,6 +285,7 @@ impl TrafficSpatialIndex {
         best
     }
 
+    #[allow(clippy::too_many_arguments)] // Public API method
     pub fn leader_ahead_entity(
         &self,
         grid: &MapGrid,

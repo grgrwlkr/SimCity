@@ -78,6 +78,7 @@ pub struct PathCache {
 }
 
 impl PathCache {
+    #[allow(dead_code)] // Public API method
     pub fn clear(&mut self) {
         self.map.clear();
         self.lru.clear();

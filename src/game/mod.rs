@@ -45,15 +45,6 @@ fn auto_dump_on_game_end(mut dump_ui: ResMut<ui::DebugDumpUiState>) {
     dump_ui.copy_requested = true;
 }
 
-fn auto_dump_on_window_close(mut counter: Local<i32>) {
-    *counter += 1;
-
-    // Print every 100 frames
-    if *counter % 100 == 0 {
-        println!("SYSTEM WORKING: frame {}", *counter);
-    }
-}
-
 pub struct GamePlugin;
 
 impl Plugin for GamePlugin {
@@ -126,7 +117,6 @@ impl Plugin for GamePlugin {
                 ui_settings::UiSettingsPlugin,
             ))
             .add_systems(OnExit(state::AppState::InGame), auto_dump_on_game_end)
-            .add_systems(OnExit(state::AppState::MainMenu), auto_dump_on_game_end)
-            .add_systems(Update, auto_dump_on_window_close);
+            .add_systems(OnExit(state::AppState::MainMenu), auto_dump_on_game_end);
     }
 }

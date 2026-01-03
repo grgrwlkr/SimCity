@@ -36,6 +36,7 @@ struct PathEntry {
     /// Version/timestamp for cache invalidation.
     version: u64,
     /// Total length in world units (cached for performance).
+    #[allow(dead_code)] // Reserved for future distance calculations
     length_world: f32,
 }
 
@@ -60,6 +61,7 @@ pub struct PathPool {
 
 impl PathPool {
     /// Bump the version (invalidates old cached paths).
+    #[allow(dead_code)] // Public API method
     pub fn bump_version(&mut self) {
         self.current_version = self.current_version.wrapping_add(1);
         // Note: we don't clear dedup here - let old entries be garbage collected naturally
@@ -80,6 +82,7 @@ impl PathPool {
     }
 
     /// Get cached world length.
+    #[allow(dead_code)] // Public API method
     pub fn length_world(&self, handle: PathHandle) -> f32 {
         if !handle.is_valid() {
             return 0.0;
@@ -147,6 +150,7 @@ impl PathPool {
     }
 
     /// Increment refcount for a handle.
+    #[allow(dead_code)] // Public API method
     pub fn retain(&mut self, handle: PathHandle) {
         if !handle.is_valid() {
             return;
@@ -195,12 +199,14 @@ impl PathPool {
     }
 
     /// Periodic cleanup: remove unused entries and compact if needed.
+    #[allow(dead_code)] // Public API method
     pub fn cleanup(&mut self) {
         // For now, just collect free slots. Full compaction could be added later.
         // The free_slots vec allows reuse, which is the main benefit.
     }
 
     /// Get pool statistics for debugging.
+    #[allow(dead_code)] // Public API method
     pub fn stats(&self) -> PathPoolStats {
         let used_slots = self.entries.len() - self.free_slots.len();
         let total_memory = self
@@ -247,6 +253,7 @@ impl PathPool {
 
 /// Statistics for debugging path pool usage.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Reserved for future debugging features
 pub struct PathPoolStats {
     pub total_entries: usize,
     pub used_entries: usize,

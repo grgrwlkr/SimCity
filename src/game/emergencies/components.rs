@@ -3,6 +3,7 @@ use bevy::prelude::*;
 
 /// Visual marker for emergency locations on the map.
 #[derive(Component)]
+#[allow(dead_code)] // Reserved for future use
 pub struct EmergencyMarker {
     pub emergency: Entity,
     pub blink_timer: Timer,
@@ -14,13 +15,19 @@ pub struct Emergency {
     pub kind: EmergencyKind,
     pub pos: TilePos,
     pub severity: f32, // 0.0..1.0
+    #[allow(dead_code)] // Reserved for future use
     pub spawned_at: f32,
     pub responded: bool,
+    #[allow(dead_code)] // Reserved for future use
     pub response_time_sec: Option<f32>,
+    #[allow(dead_code)] // Reserved for future use
     pub resolved: bool,
+    #[allow(dead_code)] // Reserved for future use
     pub consequence_applied: bool,
+    #[allow(dead_code)] // Reserved for future use
     pub failed: bool,
     pub time_remaining: f32,
+    #[allow(dead_code)] // Reserved for future use
     pub dispatched_vehicles: Vec<Entity>,
     pub resolution_progress: f32,
     pub assigned_vehicle: Option<Entity>,
@@ -29,8 +36,11 @@ pub struct Emergency {
 /// Types of emergencies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmergencyKind {
+    #[allow(dead_code)] // Reserved for future use
     Fire,
+    #[allow(dead_code)] // Reserved for future use
     Medical,
+    #[allow(dead_code)] // Reserved for future use
     Crime,
 }
 
@@ -57,15 +67,18 @@ pub struct EmergencyStats {
 #[derive(Resource, Default)]
 pub struct EmergencyEntityIndex {
     by_pos: std::collections::HashMap<TilePos, Entity>,
+    #[allow(dead_code)] // Reserved for future bidirectional lookup
     by_entity: std::collections::HashMap<Entity, TilePos>,
 }
 
 impl EmergencyEntityIndex {
+    #[allow(dead_code)] // Reserved for future use
     pub fn insert(&mut self, pos: TilePos, entity: Entity) {
         self.by_pos.insert(pos, entity);
         self.by_entity.insert(entity, pos);
     }
 
+    #[allow(dead_code)] // Reserved for future use
     pub fn remove(&mut self, entity: Entity) -> Option<TilePos> {
         if let Some(pos) = self.by_entity.remove(&entity) {
             self.by_pos.remove(&pos);
@@ -79,6 +92,7 @@ impl EmergencyEntityIndex {
         self.by_pos.get(&pos).copied()
     }
 
+    #[allow(dead_code)] // Reserved for future use
     pub fn clear(&mut self) {
         self.by_pos.clear();
         self.by_entity.clear();

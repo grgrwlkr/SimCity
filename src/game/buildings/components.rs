@@ -90,6 +90,7 @@ pub fn apply_building_tuning(tuning: Res<BuildingTuning>, mut clock: ResMut<Buil
     clock.timer = Timer::from_seconds(secs, TimerMode::Repeating);
 }
 
+#[allow(dead_code)]
 pub fn reset_building_upgrade_timer(clock: &mut BuildingUpgradeClock) {
     clock.timer.reset();
 }

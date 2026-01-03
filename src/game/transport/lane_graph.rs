@@ -23,12 +23,16 @@ pub struct Lane {
     pub start_pos: TilePos,
     pub direction: RoadDir,
     /// Connected lanes at the end (for routing).
+    #[allow(dead_code)] // Reserved for future routing features
     pub next_lanes: Vec<LaneId>,
     /// Reverse lane (if bidirectional).
+    #[allow(dead_code)] // Reserved for future bidirectional lane support
     pub reverse_lane: Option<LaneId>,
     /// Road kind (highway, normal, etc.).
+    #[allow(dead_code)] // Reserved for future road type features
     pub kind: RoadKind,
     /// Speed limit (m/s).
+    #[allow(dead_code)] // Reserved for future speed limit features
     pub speed_limit: f32,
 }
 
@@ -68,6 +72,7 @@ impl LaneGraph {
     }
 
     /// Get lane by ID (mutable).
+    #[allow(dead_code)] // Public API method
     pub fn get_lane_mut(&mut self, id: LaneId) -> Option<&mut Lane> {
         self.lanes.get_mut(id.0 as usize)
     }
@@ -80,6 +85,7 @@ impl LaneGraph {
     }
 
     /// Get all lanes connected to this one.
+    #[allow(dead_code)] // Public API method
     pub fn connected_lanes(&self, id: LaneId) -> &[LaneId] {
         self.lane_connections
             .get(&id)
@@ -88,6 +94,7 @@ impl LaneGraph {
     }
 
     /// Convert tile position + progress to lane + s coordinate.
+    #[allow(dead_code)] // Public API method
     pub fn tile_progress_to_lane_s(
         &self,
         tile_pos: TilePos,
@@ -101,6 +108,7 @@ impl LaneGraph {
     }
 
     /// Convert lane + s to approximate tile position.
+    #[allow(dead_code)] // Used by update_vehicle_positions_for_interpolation
     pub fn lane_s_to_tile_pos(&self, lane_id: LaneId, s: f32) -> Option<TilePos> {
         let lane = self.get_lane(lane_id)?;
         let tile_offset = (s / 1.0).floor() as i32; // 1 tile = 1 unit

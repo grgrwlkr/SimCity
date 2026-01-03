@@ -3,12 +3,14 @@ use crate::game::roads::RoadDir;
 use bevy::prelude::*;
 
 /// Convert tile position to world coordinates.
+#[allow(dead_code)] // Reserved for future use
 pub fn tile_to_world(cfg: &MapConfig, pos: TilePos) -> Vec2 {
     let origin = map_origin(cfg);
     origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size)
 }
 
 /// Get the world origin for tile coordinates.
+#[allow(dead_code)] // Reserved for future use
 pub fn map_origin(cfg: &MapConfig) -> Vec2 {
     Vec2::new(
         -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
@@ -17,6 +19,7 @@ pub fn map_origin(cfg: &MapConfig) -> Vec2 {
 }
 
 /// Calculate desired direction from one tile to another.
+#[allow(dead_code)] // Reserved for future use
 pub fn desired_dir(from: TilePos, to: TilePos) -> RoadDir {
     let dx = to.x - from.x;
     let dy = to.y - from.y;
@@ -30,6 +33,7 @@ pub fn desired_dir(from: TilePos, to: TilePos) -> RoadDir {
 }
 
 /// Find a reachable road endpoint near the given position.
+#[allow(dead_code)] // Reserved for future use
 pub fn pick_reachable_road_endpoint(
     grid: &crate::game::map::MapGrid,
     from: TilePos,
@@ -66,6 +70,7 @@ pub fn pick_reachable_road_endpoint(
 }
 
 /// Find any adjacent road tile.
+#[allow(dead_code)] // Reserved for future use
 pub fn adjacent_road_any(grid: &crate::game::map::MapGrid, pos: TilePos) -> Option<TilePos> {
     let candidates = [
         TilePos {

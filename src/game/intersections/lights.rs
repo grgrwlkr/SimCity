@@ -90,6 +90,7 @@ impl TrafficLight {
     }
 
     /// Check if the light is red for a given direction (not green and not yellow)
+    #[allow(dead_code)] // Reserved for future use
     pub fn is_red(&self, dir: crate::game::roads::RoadDir) -> bool {
         !self.is_green(dir) && !self.is_yellow(dir)
     }

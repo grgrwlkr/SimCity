@@ -5,6 +5,7 @@ use crate::game::transport::LaneGraph;
 
 /// Update vehicle positions for GPU interpolation.
 /// This runs at simulation frequency (30fps) and stores position history.
+#[allow(dead_code)] // Reserved for future GPU interpolation feature
 pub fn update_vehicle_positions_for_interpolation(
     time: Res<Time>,
     lane_graph: Res<LaneGraph>,
@@ -35,6 +36,7 @@ pub fn update_vehicle_positions_for_interpolation(
 }
 
 /// Convert tile position to world coordinates with progress interpolation.
+#[allow(dead_code)] // Used by update_vehicle_positions_for_interpolation
 fn tile_to_world_pos(tile_pos: crate::game::map::TilePos, _progress: f32) -> Vec2 {
     // Base tile position (simplified - no progress interpolation yet)
     Vec2::new(tile_pos.x as f32, tile_pos.y as f32)

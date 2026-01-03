@@ -234,8 +234,8 @@ pub(super) fn plan_oncoming_overtakes(
 
         // Validate straight TwoLane segment and matching oncoming tiles for the planned range.
         let mut ok = true;
-        for i in 0..=pass_tiles {
-            let base = route[i];
+        for base in route.iter().take(pass_tiles + 1) {
+            let base = *base;
             let Some(c) = grid.get(base) else {
                 ok = false;
                 break;

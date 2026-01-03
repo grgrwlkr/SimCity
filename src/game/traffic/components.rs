@@ -73,6 +73,7 @@ pub enum VehicleTrafficState {
     /// Moving freely (no traffic light ahead)
     FreeFlow,
     /// Approaching a traffic light / stop line.
+    #[allow(dead_code)] // Reserved for future use
     Approaching {
         intersection: IntersectionKey,
         /// The first intersection tile on the route for this approach (used for stop-line distance).
@@ -80,22 +81,26 @@ pub enum VehicleTrafficState {
         distance_to_stop: f32,
     },
     /// Stopped in queue
+    #[allow(dead_code)] // Reserved for future use
     Stopped {
         intersection: IntersectionKey,
         stop_tile: TilePos,
         queue_position: u8,
     },
     /// Waiting for green light
+    #[allow(dead_code)] // Reserved for future use
     WaitingForGreen {
         intersection: IntersectionKey,
         stop_tile: TilePos,
     },
     /// Accelerating after green
+    #[allow(dead_code)] // Reserved for future use
     Accelerating,
     /// Crossing (or admitted to) a specific logical intersection cluster.
     ///
     /// This state is used both when a vehicle is already inside the intersection tiles (`dir=None`)
     /// and when it has been released from a stop line and is about to enter the cluster.
+    #[allow(dead_code)] // Reserved for future use
     CrossingIntersection { intersection: IntersectionKey },
 }
 

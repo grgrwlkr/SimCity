@@ -70,6 +70,7 @@ pub(crate) use parked_tile_index::ParkedVehicleTileIndex;
 // NOTE: v2 Stage B uses IDM params stored in `TrafficConfig` instead of a separate braking resource.
 
 /// Distance to detect traffic lights ahead (in tiles)
+#[allow(dead_code)] // Reserved for future use
 const TRAFFIC_LIGHT_DETECTION_DISTANCE: f32 = 8.0;
 
 /// Vehicle sprite size in tile units (square).
@@ -96,8 +97,10 @@ const STOP_LINE_OFFSET: f32 = VEHICLE_HALF_TILES + STOP_LINE_MARGIN_TILES;
 /// Speed threshold (in tile fractions per second) for "snap to stopped" state at the stop line.
 /// This avoids abrupt halts when a vehicle reaches the stop line with a non-trivial residual speed
 /// due to coarse fixed-timestep integration.
+#[allow(dead_code)] // Reserved for future use
 const STOP_LOCK_SPEED_TILES_PER_SEC: f32 = 0.05;
 /// Numerical epsilon for "at stop line" checks (in tile fractions).
+#[allow(dead_code)] // Reserved for future use
 const STOP_LINE_EPS_TILES: f32 = 1e-3;
 
 /// Target speed cap while performing a right turn on red (doc: <= 15 km/h).
