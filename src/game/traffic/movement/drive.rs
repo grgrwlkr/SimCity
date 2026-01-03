@@ -437,7 +437,14 @@ pub fn move_vehicles(
         let curr_world = tile_to_world(&cfg, curr);
         let next_world = tile_to_world(&cfg, next);
         let lerped = curr_world.lerp(next_world, v.progress.clamp(0.0, 1.0));
+
+        // Update position for rendering and interpolation
         tf.translation.x = lerped.x;
         tf.translation.y = lerped.y;
+
+        // Store current position for GPU interpolation (60fps rendering)
+        v.prev_world_pos = v.curr_world_pos;
+        v.curr_world_pos = lerped;
+        v.last_update_time = time.elapsed_secs_f64() as f32;
     }
 }

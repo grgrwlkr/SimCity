@@ -13,10 +13,10 @@ use bevy::time::Fixed;
 
 use crate::game::intersections::IntersectionIndex;
 use crate::game::map::{BuildingKind, MapConfig, MapGrid, TilePos};
-use crate::game::transport::{LaneId, VehicleId};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::traffic::{TrafficOccupancy, Vehicle, VehicleTrafficState};
+use crate::game::transport::{LaneId, VehicleId};
 use crate::game::transport::{
     PathCache, PathPool, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph,
     find_road_path_cached,

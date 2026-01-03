@@ -43,13 +43,14 @@ fn tile_to_world_pos(tile_pos: crate::game::map::TilePos, progress: f32) -> Vec2
 }
 
 /// Interpolate vehicle position between simulation frames for smooth 60fps rendering.
+/// This function updates the Transform component for rendering while preserving game logic.
 pub fn interpolate_vehicle_position(
     time: Res<Time>,
-    mut q_vehicles: Query<&mut Vehicle, Without<super::Parked>>,
+    mut q_vehicles: Query<(&Vehicle, &mut Transform), Without<super::Parked>>,
 ) {
     let current_time = time.elapsed_secs_f64() as f32;
 
-    for mut vehicle in q_vehicles.iter_mut() {
+    for (vehicle, mut transform) in q_vehicles.iter_mut() {
         // Interpolate between prev and current position
         let time_since_update = current_time - vehicle.last_update_time;
         let interpolation_factor = (time_since_update / (1.0 / 30.0)).clamp(0.0, 1.0); // Assume 30fps simulation
@@ -57,11 +58,9 @@ pub fn interpolate_vehicle_position(
         // Linear interpolation for smooth movement
         let interpolated_pos = vehicle.prev_world_pos.lerp(vehicle.curr_world_pos, interpolation_factor);
 
-        // Store interpolated position (can be used by rendering systems)
-        // For now, we update tile_pos as a simple approximation
-        vehicle.tile_pos.x = interpolated_pos.x as i32;
-        vehicle.tile_pos.y = interpolated_pos.y as i32;
-        // Simplified progress calculation
-        vehicle.progress = interpolated_pos.fract().x;
+        // Update only the Transform for rendering - don't touch Vehicle game logic
+        transform.translation.x = interpolated_pos.x;
+        transform.translation.y = interpolated_pos.y;
+        // Keep Z coordinate as-is (for layering)
     }
 }
