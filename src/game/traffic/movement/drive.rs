@@ -46,7 +46,6 @@ pub fn move_vehicles(
         (
             Entity,
             &mut Vehicle,
-            &mut Transform,
             &VehicleTrafficState,
             Option<&RightTurnOnRed>,
             Option<&TripPassenger>,
@@ -75,7 +74,7 @@ pub fn move_vehicles(
         }
     }
 
-    for (entity, mut v, mut tf, state, ror, passenger, car_owner, service_vehicle, bus_vehicle) in
+    for (entity, mut v, state, ror, passenger, car_owner, service_vehicle, bus_vehicle) in
         vehicles.iter_mut()
     {
         // --- Telemetry (cheap counters).
@@ -438,11 +437,8 @@ pub fn move_vehicles(
         let next_world = tile_to_world(&cfg, next);
         let lerped = curr_world.lerp(next_world, v.progress.clamp(0.0, 1.0));
 
-        // Update position for rendering and interpolation
-        tf.translation.x = lerped.x;
-        tf.translation.y = lerped.y;
-
         // Store current position for GPU interpolation (60fps rendering)
+        // Transform will be updated by interpolation system for smooth movement
         v.prev_world_pos = v.curr_world_pos;
         v.curr_world_pos = lerped;
         v.last_update_time = time.elapsed_secs_f64() as f32;
