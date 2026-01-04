@@ -1,4 +1,5 @@
 use crate::game::map::TilePos;
+use crate::game::services::ServiceKind;
 use bevy::prelude::*;
 
 /// Visual marker for emergency locations on the map.
@@ -36,31 +37,82 @@ pub struct Emergency {
 /// Types of emergencies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmergencyKind {
-    #[allow(dead_code)] // Reserved for future use
     Fire,
-    #[allow(dead_code)] // Reserved for future use
     Medical,
-    #[allow(dead_code)] // Reserved for future use
     Crime,
 }
 
+impl EmergencyKind {
+    /// Get the service kind required to handle this emergency.
+    pub fn required_service(self) -> ServiceKind {
+        match self {
+            EmergencyKind::Fire => ServiceKind::Fire,
+            EmergencyKind::Crime => ServiceKind::Police,
+            EmergencyKind::Medical => ServiceKind::Medical,
+        }
+    }
+
+    /// Time in seconds until the emergency must be responded to.
+    pub fn response_deadline(self) -> f32 {
+        match self {
+            EmergencyKind::Fire => 30.0,
+            EmergencyKind::Crime => 45.0,
+            EmergencyKind::Medical => 25.0,
+        }
+    }
+
+    /// Time in seconds required to resolve the emergency after response.
+    pub fn resolution_time(self) -> f32 {
+        match self {
+            EmergencyKind::Fire => 15.0,
+            EmergencyKind::Crime => 10.0,
+            EmergencyKind::Medical => 12.0,
+        }
+    }
+
+    /// Color for visual markers on the map.
+    pub fn marker_color(self) -> Color {
+        match self {
+            EmergencyKind::Fire => Color::srgb(1.0, 0.4, 0.0),
+            EmergencyKind::Crime => Color::srgb(1.0, 0.0, 0.0),
+            EmergencyKind::Medical => Color::srgb(1.0, 1.0, 0.0),
+        }
+    }
+}
+
 /// Global emergency management state.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct EmergencyManager {
+    pub spawn_timer: Timer,
+    pub base_spawn_chance: f32,
+    pub max_active_emergencies: usize,
     pub stats: EmergencyStats,
+}
+
+impl Default for EmergencyManager {
+    fn default() -> Self {
+        Self {
+            // Conservative defaults: emergencies are occasional and shouldn't overwhelm sim/UI.
+            spawn_timer: Timer::from_seconds(6.0, TimerMode::Repeating),
+            base_spawn_chance: 0.06,
+            max_active_emergencies: 8,
+            stats: EmergencyStats::default(),
+        }
+    }
 }
 
 /// Statistics for emergency handling.
 #[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EmergencyStats {
-    pub total_spawned: u32,
-    pub total_resolved: u32,
-    pub total_failed: u32,
+    pub total_fires: u32,
+    pub total_crimes: u32,
+    pub total_medical: u32,
     pub unresponded_fires: u32,
     pub unresponded_medical: u32,
     pub unresponded_crime: u32,
-    pub failed_responses: u32,
+    pub total_resolved: u32,
     pub resolved_in_time: u32,
+    pub failed_responses: u32,
 }
 
 /// O(1) lookup of emergencies by tile for UI/inspector/debug.
@@ -72,14 +124,12 @@ pub struct EmergencyEntityIndex {
 }
 
 impl EmergencyEntityIndex {
-    #[allow(dead_code)] // Reserved for future use
-    pub fn insert(&mut self, pos: TilePos, entity: Entity) {
+    pub(crate) fn insert(&mut self, pos: TilePos, entity: Entity) {
         self.by_pos.insert(pos, entity);
         self.by_entity.insert(entity, pos);
     }
 
-    #[allow(dead_code)] // Reserved for future use
-    pub fn remove(&mut self, entity: Entity) -> Option<TilePos> {
+    pub(crate) fn remove(&mut self, entity: Entity) -> Option<TilePos> {
         if let Some(pos) = self.by_entity.remove(&entity) {
             self.by_pos.remove(&pos);
             Some(pos)
@@ -90,11 +140,5 @@ impl EmergencyEntityIndex {
 
     pub fn get(&self, pos: TilePos) -> Option<Entity> {
         self.by_pos.get(&pos).copied()
-    }
-
-    #[allow(dead_code)] // Reserved for future use
-    pub fn clear(&mut self) {
-        self.by_pos.clear();
-        self.by_entity.clear();
     }
 }

@@ -29,7 +29,7 @@ pub(crate) fn sync_service_stations_from_buildings(
         let total = b.kind.vehicle_capacity();
         commands.entity(entity).insert(ServiceStation {
             kind,
-            pos: b.pos,
+            pos: b.anchor_pos,
             total_vehicles: total,
             available_vehicles: total,
             occupied: false,
@@ -37,7 +37,7 @@ pub(crate) fn sync_service_stations_from_buildings(
 
         // Spawn parked vehicles (idle at station). They must not be despawned by traffic.
         for _ in 0..total {
-            if let Some(start_pos) = adjacent_road_any(&grid, b.pos) {
+            if let Some(start_pos) = adjacent_road_any(&grid, b.anchor_pos) {
                 spawn_service_vehicle(&mut commands, &cfg, &mut path_pool, kind, entity, start_pos);
             }
         }
@@ -105,6 +105,8 @@ pub(crate) fn spawn_service_vehicle(
             },
             Transform::from_xyz(world_pos.x, world_pos.y, 12.0),
             Vehicle {
+                is_reversing: false,
+                reverse_distance: 0.0,
                 // Keep a "parked" tile so dispatch can build a route from the correct lane tile.
                 // Speed 0 keeps the vehicle stationary.
                 path_handle: path_pool.intern(vec![start_pos]),

@@ -82,7 +82,6 @@ pub(super) fn resolve_stuck_vehicles(
             &VehicleTrafficState,
             Option<&TripPassenger>,
             Option<&ServiceVehicle>,
-            Option<&BusVehicle>,
             &mut StuckTimer,
         ),
         Without<Parked>,
@@ -101,7 +100,7 @@ pub(super) fn resolve_stuck_vehicles(
         intersections: &intersections,
     };
 
-    for (e, mut v, state, passenger, service_vehicle, bus_vehicle, mut stuck) in q.iter_mut() {
+    for (e, mut v, state, passenger, service_vehicle, mut stuck) in q.iter_mut() {
         if handled >= MAX_UNSTUCK_PER_TICK {
             break;
         }
@@ -140,11 +139,24 @@ pub(super) fn resolve_stuck_vehicles(
             }
             v.progress = 0.0;
             v.speed = v.speed.min(v.max_speed * 0.5);
+            // Reset reverse state after reroute
+            v.is_reversing = false;
+            v.reverse_distance = 0.0;
 
             stuck.secs = 0.0;
             stuck.last_tile = current;
             stuck.last_progress = 0.0;
             stuck.uturn_attempted = false;
+            handled += 1;
+            continue;
+        }
+
+        // 1.5) If reroute failed and vehicle is still stuck, try reverse movement (GDD: max 10 km/h, 2-3 tiles)
+        // This happens before U-turn attempt, as reverse is simpler and safer
+        if v.path_cursor > 0 && v.reverse_distance < 2.5 {
+            // Allow reverse movement - the move_vehicles system will handle it
+            // Just reset stuck timer slightly to give reverse a chance
+            stuck.secs = STUCK_REROUTE_SECS * 0.8; // Give some time for reverse to work
             handled += 1;
             continue;
         }
@@ -191,8 +203,9 @@ pub(super) fn resolve_stuck_vehicles(
                 if is_empty {
                     let from_uturn = find_road_path_cached(&mut ctx, uturn_tile, goal);
                     if !from_uturn.is_empty() {
-                        let mut next_route = Vec::with_capacity(from_uturn.len() + 1);
+                        let mut next_route = Vec::with_capacity(from_uturn.len() + 2);
                         next_route.push(current);
+                        next_route.push(uturn_tile);
                         next_route.extend(from_uturn);
 
                         path_pool.release(v.path_handle);
@@ -215,11 +228,7 @@ pub(super) fn resolve_stuck_vehicles(
         }
 
         // 3) Last-resort guardrail: despawn non-service trip vehicles after a very long time stuck.
-        if stuck.secs >= STUCK_DESPAWN_SECS
-            && service_vehicle.is_none()
-            && bus_vehicle.is_none()
-            && passenger.is_some()
-        {
+        if stuck.secs >= STUCK_DESPAWN_SECS && service_vehicle.is_none() && passenger.is_some() {
             if let Some(p) = passenger {
                 finished.write(TripFinished {
                     citizen: p.citizen,

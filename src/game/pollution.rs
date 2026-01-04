@@ -83,11 +83,12 @@ fn compute_pollution(
         }
 
         // Only spread to tiles in current chunk
+        // Use anchor position as center for pollution spread
         for dy in -POLLUTION_RADIUS..=POLLUTION_RADIUS {
             for dx in -POLLUTION_RADIUS..=POLLUTION_RADIUS {
                 let check_pos = TilePos {
-                    x: building.pos.x + dx,
-                    y: building.pos.y + dy,
+                    x: building.anchor_pos.x + dx,
+                    y: building.anchor_pos.y + dy,
                 };
 
                 if let Some(idx) = grid.idx(check_pos) {

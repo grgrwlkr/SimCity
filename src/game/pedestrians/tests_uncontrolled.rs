@@ -2,7 +2,7 @@ use super::*;
 use crate::game::intersections::{IntersectionId, IntersectionIndex, IntersectionKey};
 use crate::game::map::{MapConfig, MapGrid, TilePos};
 use crate::game::roads::{LaneType, RoadCell, RoadDir, RoadFlow, RoadKind};
-use crate::game::traffic::{IntersectionReservations, TrafficConfig, Vehicle};
+use crate::game::traffic::{IntersectionReservations, TrafficConfig};
 use bevy::prelude::{App, MinimalPlugins, Time, Transform, Update};
 use bevy::time::Fixed;
 use std::time::Duration;
@@ -73,21 +73,23 @@ fn pedestrian_waits_for_safe_gap_on_uncontrolled_intersection() {
     let c = TilePos { x: 1, y: 2 };
 
     // Vehicle is very close to entering: blocks pedestrian.
-    let mut path_pool = app.world_mut().resource_mut::<crate::game::transport::PathPool>();
+    let vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        crate::game::traffic::tests::create_vehicle_with_route(
+            &mut path_pool,
+            vec![a, intersection_tile, c],
+            0,
+            0.9,
+            5.0,
+            60.0,
+            20.0,
+        )
+    };
     let veh = app
         .world_mut()
-        .spawn((
-            crate::game::traffic::tests::create_vehicle_with_route(
-                &mut path_pool,
-                vec![a, intersection_tile, c],
-                0,
-                0.9,
-                5.0,
-                60.0,
-                20.0,
-            ),
-            crate::game::traffic::VehicleTrafficState::FreeFlow,
-        ))
+        .spawn((vehicle, crate::game::traffic::VehicleTrafficState::FreeFlow))
         .id();
 
     let ped = app
@@ -200,21 +202,23 @@ fn pedestrian_reroutes_after_long_wait_at_uncontrolled_intersection() {
     let goal = TilePos { x: 2, y: 0 };
 
     // Keep the crossing blocked by keeping a vehicle close to entry.
-    let mut path_pool = app.world_mut().resource_mut::<crate::game::transport::PathPool>();
+    let vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        crate::game::traffic::tests::create_vehicle_with_route(
+            &mut path_pool,
+            vec![start, avoid, goal],
+            0,
+            0.9,
+            5.0,
+            60.0,
+            20.0,
+        )
+    };
     let _veh = app
         .world_mut()
-        .spawn((
-            crate::game::traffic::tests::create_vehicle_with_route(
-                &mut path_pool,
-                vec![start, avoid, goal],
-                0,
-                0.9,
-                5.0,
-                60.0,
-                20.0,
-            ),
-            crate::game::traffic::VehicleTrafficState::FreeFlow,
-        ))
+        .spawn((vehicle, crate::game::traffic::VehicleTrafficState::FreeFlow))
         .id();
 
     let ped = app

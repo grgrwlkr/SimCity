@@ -1,3 +1,5 @@
+//! Tests for vehicle parking behavior: owned car reuse, parking on arrival, and parking state management.
+
 use super::*;
 
 #[test]
@@ -73,20 +75,17 @@ fn parked_owned_car_is_reused_for_next_car_trip() {
     ));
 
     let road = TilePos { x: 1, y: 2 };
-    let mut path_pool = app.world_mut().resource_mut::<crate::game::transport::PathPool>();
+    let vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(&mut path_pool, vec![road], 0, 0.0, 0.0, 60.0, 20.0)
+    };
     let car = app
         .world_mut()
         .spawn((
             Sprite::default(),
-            create_vehicle_with_route(
-                &mut path_pool,
-                vec![road],
-                0,
-                0.0,
-                0.0,
-                60.0,
-                20.0,
-            ),
+            vehicle,
             Transform::default(),
             VehicleTrafficState::FreeFlow,
             CarOwner { citizen },

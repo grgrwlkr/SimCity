@@ -14,7 +14,6 @@ pub enum TripPurpose {
 pub enum TripMode {
     Walk,
     Car,
-    Transit,
 }
 
 /// Command-like message emitted by simulation (citizens) and consumed by transport (traffic).

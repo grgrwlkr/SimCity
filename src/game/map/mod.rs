@@ -247,7 +247,7 @@ fn track_building_entity_index(
     index.ensure_sized(&grid);
 
     for (e, b) in q_added.iter() {
-        let Some(pos_idx) = grid.idx(b.pos) else {
+        let Some(pos_idx) = grid.idx(b.anchor_pos) else {
             continue;
         };
 

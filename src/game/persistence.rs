@@ -336,7 +336,8 @@ fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParam
                     continue;
                 };
 
-                let building_entity = spawn_building_entity(&mut p.commands, &p.cfg, pos, kind);
+                let building_entity =
+                    spawn_building_entity(&mut p.commands, &p.cfg, pos, kind, &p.city);
 
                 if let Some(s_kind) = ServiceKind::from_building(kind) {
                     let (total, available) = station_by_pos

@@ -63,26 +63,6 @@ pub(super) fn spawn_trip_vehicles(
             continue;
         }
 
-        // Public transport (MVP): mode is chosen by citizens (tour-based).
-        if msg.mode == TripMode::Transit
-            && let (Some(pt), Some(pt_cfg), Some(pending)) =
-                (p.pt.as_deref(), p.pt_cfg.as_deref(), p.pt_pending.as_mut())
-            && pt.stops.contains(&start)
-            && pt.stops.contains(&goal)
-        {
-            let dist_world = (route.len() as f32) * p.cfg.tile_size;
-            let travel_secs = (dist_world / pt_cfg.bus_speed.max(1.0)) + pt_cfg.wait_secs.max(0.0);
-            pending.trips.push(PendingTrip {
-                citizen: msg.citizen,
-                purpose: msg.purpose,
-                remaining_secs: travel_secs,
-            });
-            planned += 1;
-            continue;
-        }
-        // If `mode == Transit` but transit isn't possible, fall through and spawn a car so the trip
-        // can still complete.
-
         // CarTour Variant B: if the citizen already has a parked car entity, re-use it.
         if msg.mode == TripMode::Car {
             let mut reused = false;
@@ -153,6 +133,8 @@ pub(super) fn spawn_trip_vehicles(
             },
             Transform::from_xyz(world_pos.x, world_pos.y, 10.0),
             Vehicle {
+                is_reversing: false,
+                reverse_distance: 0.0,
                 path_handle: p.path_pool.intern(route),
                 path_cursor: 0,
                 progress: 0.0,
@@ -197,9 +179,6 @@ pub(super) struct SpawnTripVehiclesParams<'w, 's> {
     path_cache: ResMut<'w, PathCache>,
     path_pool: ResMut<'w, PathPool>,
     intersections: Res<'w, IntersectionIndex>,
-    pt_cfg: Option<Res<'w, PublicTransportConfig>>,
-    pt: Option<Res<'w, PublicTransportIndex>>,
-    pt_pending: Option<ResMut<'w, PendingTransitTrips>>,
     car_owner_index: Option<Res<'w, CarOwnerIndex>>,
     vehicle_counts: Option<Res<'w, TrafficVehicleCounts>>,
     q_vehicles: Query<'w, 's, Entity, (With<Vehicle>, Without<Parked>)>,

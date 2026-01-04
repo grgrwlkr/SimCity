@@ -45,6 +45,12 @@ pub struct Vehicle {
     // Legacy compatibility data (less frequently accessed)
     /// Legacy tile-based positioning (for compatibility).
     pub tile_pos: TilePos,
+
+    // Reverse movement (GDD: vehicles can reverse slowly when stuck)
+    /// Flag indicating if vehicle is currently reversing (GDD: max 10 km/h, only when stuck)
+    pub is_reversing: bool,
+    /// Distance reversed in tiles (limited to 2-3 tiles max)
+    pub reverse_distance: f32,
 }
 
 impl Default for Vehicle {
@@ -63,6 +69,8 @@ impl Default for Vehicle {
             prev_world_pos: Vec2::ZERO,
             curr_world_pos: Vec2::ZERO,
             last_update_time: 0.0,
+            is_reversing: false,
+            reverse_distance: 0.0,
         }
     }
 }

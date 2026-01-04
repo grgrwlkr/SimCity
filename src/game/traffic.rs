@@ -7,9 +7,6 @@ use crate::game::commands::GameCommand;
 use crate::game::ids::CitizenId;
 use crate::game::intersections::{IntersectionIndex, IntersectionPriority};
 use crate::game::map::{MapConfig, MapGrid, TilePos};
-use crate::game::public_transport::{
-    BusVehicle, PendingTransitTrips, PendingTrip, PublicTransportConfig, PublicTransportIndex,
-};
 use crate::game::roads::{RoadDir, RoadKind};
 use crate::game::services::{ServiceVehicle, ServiceVehicleState};
 use crate::game::sets::GameSet;
@@ -73,12 +70,13 @@ pub(crate) use parked_tile_index::ParkedVehicleTileIndex;
 #[allow(dead_code)] // Reserved for future use
 const TRAFFIC_LIGHT_DETECTION_DISTANCE: f32 = 8.0;
 
-/// Vehicle sprite size in tile units (square).
+/// Vehicle sprite size in tile units (length).
 ///
+/// GDD requirement: vehicles are visually 2 tiles long.
 /// IMPORTANT: Our movement uses the vehicle center point, and rendering uses `Transform` at that
 /// center. To ensure the *entire* vehicle stays behind the stop line (not visually overlapping the
 /// intersection), stop-line math must account for half of this size.
-const VEHICLE_VISUAL_SIZE_TILES: f32 = 0.55;
+const VEHICLE_VISUAL_SIZE_TILES: f32 = 2.0;
 const VEHICLE_HALF_TILES: f32 = VEHICLE_VISUAL_SIZE_TILES * 0.5;
 
 /// Extra margin before the intersection boundary for the vehicle bumper (tile units).
@@ -108,7 +106,7 @@ const RIGHT_ON_RED_TURN_MAX_KMH: f32 = 15.0;
 
 /// After this many seconds without progressing, try to resolve a traffic jam (reroute).
 /// (v2 policy: avoid "cheat" behavior by default; only intervene after a long timeout.)
-const STUCK_REROUTE_SECS: f32 = 60.0;
+pub(crate) const STUCK_REROUTE_SECS: f32 = 60.0;
 /// After this many seconds without progressing, despawn non-service trip vehicles as an emergency guardrail.
 const STUCK_DESPAWN_SECS: f32 = 180.0;
 /// Maximum number of unstuck operations per tick (guardrail).
@@ -176,7 +174,7 @@ fn world_per_meter(cfg: &MapConfig, traffic_cfg: &TrafficConfig) -> f32 {
     cfg.tile_size.max(0.1) / tile_m
 }
 
-fn kmh_to_world_speed(cfg: &MapConfig, traffic_cfg: &TrafficConfig, kmh: f32) -> f32 {
+pub(crate) fn kmh_to_world_speed(cfg: &MapConfig, traffic_cfg: &TrafficConfig, kmh: f32) -> f32 {
     let mps = kmh.max(0.0) / 3.6;
     mps * world_per_meter(cfg, traffic_cfg)
 }

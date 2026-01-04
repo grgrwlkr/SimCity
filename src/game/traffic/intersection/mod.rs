@@ -1,5 +1,6 @@
 //! Intersection admission: conflict zones + reservation bookkeeping.
 
+mod pdd_check;
 mod reservations;
 mod zones;
 

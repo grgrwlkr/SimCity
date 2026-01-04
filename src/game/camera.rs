@@ -22,6 +22,12 @@ impl Plugin for CameraPlugin {
                 camera_mouse_wheel_zoom
                     .in_set(GameSet::Input)
                     .run_if(in_game_or_paused),
+            )
+            .add_systems(
+                Update,
+                camera_keyboard_zoom
+                    .in_set(GameSet::Input)
+                    .run_if(in_game_or_paused),
             );
     }
 }
@@ -77,14 +83,56 @@ fn camera_mouse_wheel_zoom(
 ) {
     let mut zoom_delta = 0.0;
     for ev in mouse_wheel.read() {
-        zoom_delta += ev.y;
+        // Reduce sensitivity for touchpad (smooth scrolling)
+        // Touchpad events typically have smaller delta values, but we apply additional smoothing
+        let sensitivity = if ev.y.abs() < 0.5 {
+            // Likely touchpad - reduce sensitivity
+            0.04
+        } else {
+            // Likely mouse wheel - normal sensitivity
+            0.12
+        };
+        zoom_delta += ev.y * sensitivity;
     }
     if zoom_delta == 0.0 {
         return;
     }
 
-    let zoom_speed = 0.12;
-    let factor = 1.0 - zoom_delta * zoom_speed;
+    // Apply zoom factor (sensitivity already applied above, so just use zoom_delta directly)
+    let factor = 1.0 - zoom_delta;
+
+    let Ok(mut proj) = q_cam.single_mut() else {
+        return;
+    };
+
+    if let Projection::Orthographic(ortho) = proj.as_mut() {
+        ortho.scale = (ortho.scale * factor).clamp(0.25, 6.0);
+    }
+}
+
+/// Keyboard zoom control: Q (zoom out) and E (zoom in).
+/// One key press = one discrete zoom step (equivalent to one mouse wheel "click").
+fn camera_keyboard_zoom(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut q_cam: Query<&mut Projection, With<MainCamera>>,
+) {
+    let mut zoom_delta = 0.0;
+
+    if keys.just_pressed(KeyCode::KeyQ) {
+        // Zoom out (increase scale) - negative delta increases scale
+        zoom_delta = -0.12;
+    }
+    if keys.just_pressed(KeyCode::KeyE) {
+        // Zoom in (decrease scale) - positive delta decreases scale
+        zoom_delta = 0.12;
+    }
+
+    if zoom_delta == 0.0 {
+        return;
+    }
+
+    // Apply zoom factor (equivalent to mouse wheel with normal sensitivity)
+    let factor = 1.0 - zoom_delta;
 
     let Ok(mut proj) = q_cam.single_mut() else {
         return;

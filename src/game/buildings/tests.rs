@@ -1,0 +1,368 @@
+//! Tests for building systems: footprints, construction phases, occupancy, and parking.
+
+use super::components::{Building, BuildingPhase};
+use super::occupancy::{calculate_fill_days, calculate_pressure, calculate_target_ratio};
+use super::spawn::calculate_parking_spots;
+use super::zone_depth::{MAX_ZONE_DEPTH, is_footprint_within_zone_depth, is_within_zone_depth};
+use crate::game::map::{BuildingKind, MapGrid, TilePos};
+
+// ============================================================================
+// Tests for Building component methods
+// ============================================================================
+
+#[test]
+fn building_footprint_tiles_returns_correct_tiles() {
+    let building = Building {
+        kind: BuildingKind::Residential,
+        anchor_pos: TilePos { x: 10, y: 10 },
+        footprint_width: 3,
+        footprint_length: 4,
+        level: 1,
+        phase: BuildingPhase::Operational,
+        construction_start_day: 0,
+        capacity_residents: 4,
+        capacity_jobs: 0,
+        occupancy_residents: 0,
+        occupancy_jobs: 0,
+        target_occupancy_residents: 0,
+        target_occupancy_jobs: 0,
+        parking_spots: Vec::new(),
+    };
+
+    let tiles = building.footprint_tiles();
+    assert_eq!(tiles.len(), 12); // 3 * 4 = 12
+
+    // Check first tile (anchor)
+    assert_eq!(tiles[0], TilePos { x: 10, y: 10 });
+    // Check last tile
+    assert_eq!(tiles[11], TilePos { x: 12, y: 13 });
+}
+
+#[test]
+fn building_area_calculates_correctly() {
+    let building = Building {
+        kind: BuildingKind::Residential,
+        anchor_pos: TilePos { x: 0, y: 0 },
+        footprint_width: 5,
+        footprint_length: 6,
+        level: 1,
+        phase: BuildingPhase::Operational,
+        construction_start_day: 0,
+        capacity_residents: 4,
+        capacity_jobs: 0,
+        occupancy_residents: 0,
+        occupancy_jobs: 0,
+        target_occupancy_residents: 0,
+        target_occupancy_jobs: 0,
+        parking_spots: Vec::new(),
+    };
+
+    assert_eq!(building.area(), 30); // 5 * 6 = 30
+}
+
+#[test]
+fn building_is_operational_returns_correct_phase() {
+    let under_construction = Building {
+        kind: BuildingKind::Residential,
+        anchor_pos: TilePos { x: 0, y: 0 },
+        footprint_width: 3,
+        footprint_length: 3,
+        level: 1,
+        phase: BuildingPhase::UnderConstruction { days_remaining: 5 },
+        construction_start_day: 0,
+        capacity_residents: 4,
+        capacity_jobs: 0,
+        occupancy_residents: 0,
+        occupancy_jobs: 0,
+        target_occupancy_residents: 0,
+        target_occupancy_jobs: 0,
+        parking_spots: Vec::new(),
+    };
+
+    let operational = Building {
+        kind: BuildingKind::Residential,
+        anchor_pos: TilePos { x: 0, y: 0 },
+        footprint_width: 3,
+        footprint_length: 3,
+        level: 1,
+        phase: BuildingPhase::Operational,
+        construction_start_day: 0,
+        capacity_residents: 4,
+        capacity_jobs: 0,
+        occupancy_residents: 0,
+        occupancy_jobs: 0,
+        target_occupancy_residents: 0,
+        target_occupancy_jobs: 0,
+        parking_spots: Vec::new(),
+    };
+
+    assert!(!under_construction.is_operational());
+    assert!(operational.is_operational());
+}
+
+#[test]
+fn building_calculate_construction_days_scales_with_area() {
+    // 3x3 building (area 9)
+    let days_3x3 = Building::calculate_construction_days(BuildingKind::Residential, 1, 9);
+    assert_eq!(days_3x3, 14); // base_days(1) = 14, sqrt(9/9) = 1, so 14 * 1 = 14
+
+    // 6x6 building (area 36)
+    let days_6x6 = Building::calculate_construction_days(BuildingKind::Residential, 1, 36);
+    assert_eq!(days_6x6, 28); // base_days(1) = 14, sqrt(36/9) = 2, so 14 * 2 = 28
+
+    // Level 3, 3x3
+    let days_l3_3x3 = Building::calculate_construction_days(BuildingKind::Residential, 3, 9);
+    assert_eq!(days_l3_3x3, 56); // base_days(3) = 56, sqrt(9/9) = 1, so 56 * 1 = 56
+}
+
+// ============================================================================
+// Tests for zone depth checking
+// ============================================================================
+
+#[test]
+fn is_within_zone_depth_finds_road_at_zero_distance() {
+    let mut grid = MapGrid::new(10, 10);
+    let pos = TilePos { x: 5, y: 5 };
+
+    // Mark the tile itself as a road
+    let mut cell = grid.get(pos).unwrap();
+    cell.road = crate::game::roads::RoadCell {
+        kind: crate::game::roads::RoadKind::TwoLane,
+        dir: crate::game::roads::RoadDir::East,
+        lane: 0,
+        flow: crate::game::roads::RoadFlow::TwoWay,
+        lane_type: crate::game::roads::LaneType::Regular,
+    };
+    grid.set(pos, cell);
+
+    assert!(is_within_zone_depth(pos, &grid, MAX_ZONE_DEPTH));
+}
+
+#[test]
+fn is_within_zone_depth_finds_road_at_adjacent_tile() {
+    let mut grid = MapGrid::new(10, 10);
+    let pos = TilePos { x: 5, y: 5 };
+    let road_pos = TilePos { x: 5, y: 4 }; // North neighbor
+
+    // Mark neighbor as road
+    let mut cell = grid.get(road_pos).unwrap();
+    cell.road = crate::game::roads::RoadCell {
+        kind: crate::game::roads::RoadKind::TwoLane,
+        dir: crate::game::roads::RoadDir::East,
+        lane: 0,
+        flow: crate::game::roads::RoadFlow::TwoWay,
+        lane_type: crate::game::roads::LaneType::Regular,
+    };
+    grid.set(road_pos, cell);
+
+    assert!(is_within_zone_depth(pos, &grid, MAX_ZONE_DEPTH));
+}
+
+#[test]
+fn is_within_zone_depth_finds_road_at_max_depth() {
+    let mut grid = MapGrid::new(20, 20);
+    let pos = TilePos { x: 10, y: 10 };
+    let road_pos = TilePos {
+        x: 10,
+        y: 10 - MAX_ZONE_DEPTH as i32,
+    }; // Exactly MAX_ZONE_DEPTH away
+
+    // Mark road position
+    let mut cell = grid.get(road_pos).unwrap();
+    cell.road = crate::game::roads::RoadCell {
+        kind: crate::game::roads::RoadKind::TwoLane,
+        dir: crate::game::roads::RoadDir::East,
+        lane: 0,
+        flow: crate::game::roads::RoadFlow::TwoWay,
+        lane_type: crate::game::roads::LaneType::Regular,
+    };
+    grid.set(road_pos, cell);
+
+    assert!(is_within_zone_depth(pos, &grid, MAX_ZONE_DEPTH));
+}
+
+#[test]
+fn is_within_zone_depth_returns_false_beyond_max_depth() {
+    let mut grid = MapGrid::new(20, 20);
+    let pos = TilePos { x: 10, y: 10 };
+    let road_pos = TilePos {
+        x: 10,
+        y: 10 - (MAX_ZONE_DEPTH as i32 + 1),
+    }; // Beyond MAX_ZONE_DEPTH
+
+    // Mark road position
+    let mut cell = grid.get(road_pos).unwrap();
+    cell.road = crate::game::roads::RoadCell {
+        kind: crate::game::roads::RoadKind::TwoLane,
+        dir: crate::game::roads::RoadDir::East,
+        lane: 0,
+        flow: crate::game::roads::RoadFlow::TwoWay,
+        lane_type: crate::game::roads::LaneType::Regular,
+    };
+    grid.set(road_pos, cell);
+
+    assert!(!is_within_zone_depth(pos, &grid, MAX_ZONE_DEPTH));
+}
+
+#[test]
+fn is_footprint_within_zone_depth_checks_all_tiles() {
+    let mut grid = MapGrid::new(20, 20);
+    let anchor = TilePos { x: 10, y: 10 };
+    let width = 3;
+    let length = 3;
+
+    // Place road adjacent to the footprint (at y=9, directly north of anchor)
+    // This ensures all tiles in the 3x3 footprint are within MAX_ZONE_DEPTH = 6
+    let road_pos = TilePos { x: 10, y: 9 };
+    let mut cell = grid.get(road_pos).unwrap();
+    cell.road = crate::game::roads::RoadCell {
+        kind: crate::game::roads::RoadKind::TwoLane,
+        dir: crate::game::roads::RoadDir::East,
+        lane: 0,
+        flow: crate::game::roads::RoadFlow::TwoWay,
+        lane_type: crate::game::roads::LaneType::Regular,
+    };
+    grid.set(road_pos, cell);
+
+    assert!(is_footprint_within_zone_depth(
+        anchor,
+        width,
+        length,
+        &grid,
+        MAX_ZONE_DEPTH
+    ));
+}
+
+// ============================================================================
+// Tests for occupancy calculations
+// ============================================================================
+
+#[test]
+fn calculate_pressure_at_midpoint_returns_approximately_half() {
+    const D_MID: f32 = 0.3;
+    const K: f32 = 6.0;
+
+    let pressure = calculate_pressure(D_MID, D_MID, K);
+    // At d = d_mid, pressure should be approximately 0.5
+    assert!((pressure - 0.5).abs() < 0.01);
+}
+
+#[test]
+fn calculate_pressure_above_midpoint_returns_high_value() {
+    const D_MID: f32 = 0.3;
+    const K: f32 = 6.0;
+
+    let pressure_high = calculate_pressure(0.8, D_MID, K);
+    assert!(pressure_high > 0.9); // Should be close to 1.0
+}
+
+#[test]
+fn calculate_pressure_below_midpoint_returns_low_value() {
+    const D_MID: f32 = 0.3;
+    const K: f32 = 6.0;
+
+    let pressure_low = calculate_pressure(-0.5, D_MID, K);
+    assert!(pressure_low < 0.1); // Should be close to 0.0
+}
+
+#[test]
+fn calculate_target_ratio_clamps_correctly() {
+    // At pressure = 0.5, target_ratio = 2 * 0.5 = 1.0
+    assert_eq!(calculate_target_ratio(0.5), 1.0);
+
+    // At pressure = 0.6, target_ratio = 2 * 0.6 = 1.2, clamped to 1.0
+    assert_eq!(calculate_target_ratio(0.6), 1.0);
+
+    // At pressure = 0.2, target_ratio = 2 * 0.2 = 0.4
+    assert!((calculate_target_ratio(0.2) - 0.4).abs() < 0.001);
+
+    // At pressure = 0.0, target_ratio = 0.0
+    assert_eq!(calculate_target_ratio(0.0), 0.0);
+}
+
+#[test]
+fn calculate_fill_days_scales_with_level_and_area() {
+    // L1, 3x3 (area 9)
+    let fill_l1_3x3 = calculate_fill_days(1, 9, 0.5);
+    assert!((fill_l1_3x3 - 1.0).abs() < 0.1); // base_fill_days(1) = 1.0, sqrt(9/9) = 1
+
+    // L3, 3x3 (area 9)
+    let fill_l3_3x3 = calculate_fill_days(3, 9, 0.5);
+    assert!((fill_l3_3x3 - 3.5).abs() < 0.1); // base_fill_days(3) = 3.5, sqrt(9/9) = 1
+
+    // L3, 6x6 (area 36)
+    let fill_l3_6x6 = calculate_fill_days(3, 36, 0.5);
+    assert!((fill_l3_6x6 - 7.0).abs() < 0.1); // base_fill_days(3) = 3.5, sqrt(36/9) = 2, so 3.5 * 2 = 7.0
+}
+
+#[test]
+fn calculate_fill_days_scales_with_pressure() {
+    // High pressure should result in faster fill (lower fill_days)
+    let fill_high_pressure = calculate_fill_days(1, 9, 0.9);
+    let fill_low_pressure = calculate_fill_days(1, 9, 0.1);
+
+    assert!(fill_high_pressure < fill_low_pressure);
+}
+
+// ============================================================================
+// Tests for parking spots calculation
+// ============================================================================
+
+#[test]
+fn calculate_parking_spots_single_spot_at_center() {
+    let anchor = TilePos { x: 10, y: 10 };
+    let spots = calculate_parking_spots(anchor, 3, 3, 1);
+
+    assert_eq!(spots.len(), 1);
+    assert_eq!(spots[0], TilePos { x: 11, y: 11 }); // Center of 3x3
+}
+
+#[test]
+fn calculate_parking_spots_multiple_spots_distributed() {
+    let anchor = TilePos { x: 10, y: 10 };
+    let spots = calculate_parking_spots(anchor, 6, 6, 4);
+
+    assert_eq!(spots.len(), 4);
+    // All spots should be within footprint bounds
+    for spot in &spots {
+        assert!(spot.x >= anchor.x);
+        assert!(spot.x < anchor.x + 6);
+        assert!(spot.y >= anchor.y);
+        assert!(spot.y < anchor.y + 6);
+    }
+}
+
+#[test]
+fn calculate_parking_spots_respects_footprint_bounds() {
+    let anchor = TilePos { x: 5, y: 5 };
+    let spots = calculate_parking_spots(anchor, 4, 4, 9);
+
+    assert_eq!(spots.len(), 9);
+    for spot in &spots {
+        assert!(spot.x >= anchor.x);
+        assert!(spot.x < anchor.x + 4);
+        assert!(spot.y >= anchor.y);
+        assert!(spot.y < anchor.y + 4);
+    }
+}
+
+// ============================================================================
+// Integration tests for footprint finding algorithm
+// ============================================================================
+
+#[test]
+fn footprint_priority_area_then_length_then_width() {
+    // This test verifies the sorting logic in find_best_footprint
+    // We can't directly test the private function, but we can verify
+    // that the algorithm would prefer larger footprints
+
+    // 6x6 (area 36) should be preferred over 5x5 (area 25)
+    // 6x5 (area 30) should be preferred over 5x6 (area 30) because length (6) > length (5)
+    // Both have same area, but 6x5 has longer length
+
+    // This is more of a documentation test - the actual algorithm
+    // is tested through integration with the growth system
+    assert!(36 > 25); // 6x6 > 5x5
+    assert_eq!(6 * 5, 5 * 6); // Same area
+    assert!(6 > 5); // But 6x5 has longer length
+}

@@ -108,10 +108,10 @@ fn assign_jobs(mut p: AssignJobsParams) {
         if b.capacity_jobs == 0 {
             continue;
         }
-        caps.insert(b.pos, b.capacity_jobs);
-        let used = taken.get(&b.pos).copied().unwrap_or(0);
+        caps.insert(b.anchor_pos, b.capacity_jobs);
+        let used = taken.get(&b.anchor_pos).copied().unwrap_or(0);
         if used < b.capacity_jobs {
-            jobs.push(b.pos);
+            jobs.push(b.anchor_pos);
         }
     }
     if jobs.is_empty() {

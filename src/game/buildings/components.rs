@@ -12,13 +12,109 @@ pub fn building_visual_scale(level: u8) -> f32 {
     BUILDING_LEVEL1_SCALE + (lvl - 1.0) * BUILDING_LEVEL_SCALE_STEP
 }
 
-#[derive(Component, Debug, Copy, Clone)]
+/// Building construction and operational phases (GDD 10.3.3)
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum BuildingPhase {
+    /// Building is under construction
+    UnderConstruction {
+        /// Days remaining until completion
+        days_remaining: u32,
+    },
+    /// Building is operational and can have occupancy
+    Operational,
+}
+
+#[derive(Component, Debug, Clone)]
 pub struct Building {
     pub kind: crate::game::map::BuildingKind,
-    pub pos: crate::game::map::TilePos,
+    /// Anchor position (top-left corner of the footprint)
+    pub anchor_pos: crate::game::map::TilePos,
+    /// Width of the footprint (3-6 tiles)
+    pub footprint_width: u8,
+    /// Length of the footprint (3-6 tiles)
+    pub footprint_length: u8,
     pub level: u8, // 1, 2, or 3
+    /// Current construction/operational phase
+    pub phase: BuildingPhase,
+    /// Day when construction started (for tracking progress)
+    pub construction_start_day: u32,
     pub capacity_residents: u16,
     pub capacity_jobs: u16,
+    /// Current number of residents (GDD 10.3.5)
+    pub occupancy_residents: u16,
+    /// Current number of jobs filled (GDD 10.3.5)
+    pub occupancy_jobs: u16,
+    /// Target number of residents (calculated from demand)
+    pub target_occupancy_residents: u16,
+    /// Target number of jobs (calculated from demand)
+    pub target_occupancy_jobs: u16,
+    /// Parking spot positions inside the footprint (GDD 10.3.4)
+    /// Number of spots: max(1, area / 9) as simple heuristic
+    pub parking_spots: Vec<crate::game::map::TilePos>,
+}
+
+impl Building {
+    /// Get all tile positions occupied by this building's footprint
+    pub fn footprint_tiles(&self) -> Vec<crate::game::map::TilePos> {
+        let mut tiles = Vec::new();
+        for dx in 0..(self.footprint_width as i32) {
+            for dy in 0..(self.footprint_length as i32) {
+                tiles.push(crate::game::map::TilePos {
+                    x: self.anchor_pos.x + dx,
+                    y: self.anchor_pos.y + dy,
+                });
+            }
+        }
+        tiles
+    }
+
+    /// Get the area of the footprint
+    pub fn area(&self) -> u32 {
+        (self.footprint_width as u32) * (self.footprint_length as u32)
+    }
+
+    /// Legacy: get the primary position (anchor_pos for compatibility)
+    pub fn pos(&self) -> crate::game::map::TilePos {
+        self.anchor_pos
+    }
+
+    /// Check if building is operational
+    pub fn is_operational(&self) -> bool {
+        matches!(self.phase, BuildingPhase::Operational)
+    }
+
+    /// Calculate construction days based on GDD 10.3.3.2 formula:
+    /// construction_days = base_days(kind, level) * sqrt(area / 9)
+    pub fn calculate_construction_days(
+        kind: crate::game::map::BuildingKind,
+        level: u8,
+        area: u32,
+    ) -> u32 {
+        let base_days = match kind {
+            crate::game::map::BuildingKind::Residential => match level {
+                1 => 14,
+                2 => 28,
+                3 => 56,
+                _ => 14,
+            },
+            crate::game::map::BuildingKind::Commercial => match level {
+                1 => 12,
+                2 => 24,
+                3 => 48,
+                _ => 12,
+            },
+            crate::game::map::BuildingKind::Industrial => match level {
+                1 => 10,
+                2 => 20,
+                3 => 40,
+                _ => 10,
+            },
+            // Services (all 3x3 in MVP): 45 days
+            _ => 45,
+        };
+        let area_factor = (area as f32 / 9.0).sqrt();
+        (base_days as f32 * area_factor).round() as u32
+    }
 }
 
 /// Externalized tuning for building growth/decay (MVP).

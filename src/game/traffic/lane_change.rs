@@ -123,7 +123,6 @@ pub(super) fn plan_oncoming_overtakes(
                 Option<&Overtaking>,
                 Option<&OvertakeOncoming>,
                 Option<&ServiceVehicle>,
-                Option<&BusVehicle>,
             ),
             Without<Parked>,
         >,
@@ -139,16 +138,14 @@ pub(super) fn plan_oncoming_overtakes(
 
     let mut plans = Vec::<Plan>::new();
 
-    for (e, v, state, cooldown, overtaking, oncoming, service_vehicle, bus_vehicle) in
-        vehicles.p0().iter()
-    {
+    for (e, v, state, cooldown, overtaking, oncoming, service_vehicle) in vehicles.p0().iter() {
         if plans.len() >= MAX_ONCOMING_OVERTAKES_PER_TICK {
             break;
         }
         if cooldown.is_some() || overtaking.is_some() || oncoming.is_some() {
             continue;
         }
-        if service_vehicle.is_some() || bus_vehicle.is_some() {
+        if service_vehicle.is_some() {
             continue;
         }
         if v.path_cursor + 1 >= path_pool.len(v.path_handle) {

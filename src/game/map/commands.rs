@@ -1,7 +1,7 @@
 use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
 
-use crate::game::buildings::Building;
+use crate::game::buildings::{Building, BuildingPhase};
 use crate::game::command_history::{CommandHistory, UndoableCommand};
 use crate::game::commands::GameCommand;
 use crate::game::intersections::IntersectionIndex;
@@ -23,20 +23,78 @@ pub(crate) fn spawn_building_entity(
     cfg: &MapConfig,
     pos: TilePos,
     kind: BuildingKind,
+    city: &City,
 ) -> Entity {
+    // For manual placement, use default 3x3 footprint
+    let footprint_width = 3u8;
+    let footprint_length = 3u8;
     let origin = map_origin(cfg);
-    let world = origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size);
+    // Position at center of footprint
+    let center_x = pos.x as f32 + (footprint_width as f32 - 1.0) * 0.5;
+    let center_y = pos.y as f32 + (footprint_length as f32 - 1.0) * 0.5;
+    let world = origin + Vec2::new(center_x * cfg.tile_size, center_y * cfg.tile_size);
+    let sprite_size = Vec2::new(
+        footprint_width as f32 * cfg.tile_size,
+        footprint_length as f32 * cfg.tile_size,
+    );
+
+    let level = 1;
+    let area = (footprint_width as u32) * (footprint_length as u32);
+    let construction_days = Building::calculate_construction_days(kind, level, area);
 
     commands
         .spawn((
             Building {
                 kind,
-                pos,
-                level: 1,
-                capacity_residents: kind.capacity_residents_for_level(1),
-                capacity_jobs: kind.capacity_jobs_for_level(1),
+                anchor_pos: pos,
+                footprint_width,
+                footprint_length,
+                level,
+                phase: BuildingPhase::UnderConstruction {
+                    days_remaining: construction_days,
+                },
+                construction_start_day: city.day,
+                capacity_residents: kind.capacity_residents_for_level(level),
+                capacity_jobs: kind.capacity_jobs_for_level(level),
+                occupancy_residents: 0,
+                occupancy_jobs: 0,
+                target_occupancy_residents: 0,
+                target_occupancy_jobs: 0,
+                parking_spots: {
+                    // Calculate parking spots inline (same logic as in spawn.rs)
+                    let num_spots = (area / 9).max(1) as usize;
+                    let mut spots = Vec::new();
+                    if num_spots == 1 {
+                        spots.push(TilePos {
+                            x: pos.x + (footprint_width as i32 - 1) / 2,
+                            y: pos.y + (footprint_length as i32 - 1) / 2,
+                        });
+                    } else {
+                        let cols = (num_spots as f32).sqrt().ceil() as i32;
+                        let rows = ((num_spots as f32) / cols as f32).ceil() as i32;
+                        for i in 0..num_spots {
+                            let row = (i as i32) / cols;
+                            let col = (i as i32) % cols;
+                            let x_offset = if cols > 1 {
+                                (col * (footprint_width as i32 - 2)) / (cols - 1).max(1) + 1
+                            } else {
+                                footprint_width as i32 / 2
+                            };
+                            let y_offset = if rows > 1 {
+                                (row * (footprint_length as i32 - 2)) / (rows - 1).max(1) + 1
+                            } else {
+                                footprint_length as i32 / 2
+                            };
+                            spots.push(TilePos {
+                                x: pos.x + x_offset.min(footprint_width as i32 - 1),
+                                y: pos.y + y_offset.min(footprint_length as i32 - 1),
+                            });
+                        }
+                    }
+                    spots
+                },
             },
-            Sprite::from_color(kind.color(), Vec2::splat(cfg.tile_size * 0.75)),
+            Sprite::from_color(kind.color(), sprite_size),
             Transform::from_translation(Vec3::new(world.x, world.y, 8.0)),
         ))
         .id()
@@ -186,22 +244,41 @@ pub(super) fn apply_game_commands_to_grid(
                 map_edit_version.bump();
             }
             GameCommand::PlaceBuilding { pos, kind } => {
-                let Some(idx) = grid.idx(pos) else {
-                    continue;
-                };
-                let Some(mut cell) = grid.get(pos) else {
-                    continue;
-                };
+                // For manual placement, use default 3x3 footprint
+                let footprint_width = 3u8;
+                let footprint_length = 3u8;
+                let anchor = pos;
 
-                // Placement: same as zoning constraints + forbid placing over zoning for now.
-                if !can_zone_tile(&grid, pos) {
-                    continue;
-                }
-                if cell.zone != ZoneKind::None {
-                    continue;
+                // Check if all footprint tiles are valid
+                let mut all_valid = true;
+                let mut footprint_tiles = Vec::new();
+                for dx in 0..(footprint_width as i32) {
+                    for dy in 0..(footprint_length as i32) {
+                        let tile = TilePos {
+                            x: anchor.x + dx,
+                            y: anchor.y + dy,
+                        };
+                        if let Some(cell) = grid.get(tile) {
+                            if cell.water || cell.road.is_some() || cell.building.is_some() {
+                                all_valid = false;
+                                break;
+                            }
+                            if !can_zone_tile(&grid, tile) {
+                                all_valid = false;
+                                break;
+                            }
+                            footprint_tiles.push(tile);
+                        } else {
+                            all_valid = false;
+                            break;
+                        }
+                    }
+                    if !all_valid {
+                        break;
+                    }
                 }
 
-                if cell.building == Some(kind) {
+                if !all_valid || footprint_tiles.is_empty() {
                     continue;
                 }
 
@@ -210,25 +287,35 @@ pub(super) fn apply_game_commands_to_grid(
                     continue;
                 }
 
-                // Save old state for undo
-                let old_building = cell.building;
+                // Save old state for undo (save all tiles)
+                let old_buildings: Vec<(TilePos, Option<BuildingKind>)> = footprint_tiles
+                    .iter()
+                    .filter_map(|t| grid.get(*t).map(|c| (*t, c.building)))
+                    .collect();
 
                 // Save command to history before applying
                 history.push(UndoableCommand::PlaceBuilding {
-                    pos,
-                    old: old_building,
+                    pos: anchor,
+                    old: old_buildings.first().and_then(|(_, b)| *b),
                     new: kind,
                 });
 
                 city.money -= cost;
 
-                cell.building = Some(kind);
-                cell.zone = ZoneKind::None;
-                grid.set(pos, cell);
-                dirty.mark(idx);
+                // Mark all footprint tiles
+                for tile in &footprint_tiles {
+                    if let Some(mut cell) = grid.get(*tile) {
+                        cell.building = Some(kind);
+                        cell.zone = ZoneKind::None;
+                        grid.set(*tile, cell);
+                        if let Some(idx) = grid.idx(*tile) {
+                            dirty.mark(idx);
+                        }
+                    }
+                }
                 map_edit_version.bump();
 
-                let _ = spawn_building_entity(&mut commands, &cfg, pos, kind);
+                let _ = spawn_building_entity(&mut commands, &cfg, anchor, kind, &city);
             }
             GameCommand::EraseTile { pos } => {
                 let Some(idx) = grid.idx(pos) else {

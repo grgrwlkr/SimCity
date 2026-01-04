@@ -53,7 +53,7 @@ pub fn move_vehicles(
             Option<&TripPassenger>,
             Option<&CarOwner>,
             Option<&ServiceVehicle>,
-            Option<&BusVehicle>,
+            Option<&crate::game::traffic::stuck::StuckTimer>,
         ),
         Without<Parked>,
     >,
@@ -76,7 +76,7 @@ pub fn move_vehicles(
         }
     }
 
-    for (entity, mut v, state, ror, passenger, car_owner, service_vehicle, bus_vehicle) in
+    for (entity, mut v, state, ror, passenger, car_owner, service_vehicle, stuck_timer) in
         vehicles.iter_mut()
     {
         // --- Telemetry (cheap counters).
@@ -134,7 +134,7 @@ pub fn move_vehicles(
         }
         if path_pool.len(v.path_handle) == 0 || v.path_cursor >= path_pool.len(v.path_handle) {
             // Arrived – despawn trip vehicles, keep service vehicles (idle).
-            if service_vehicle.is_none() && bus_vehicle.is_none() {
+            if service_vehicle.is_none() {
                 if let Some(p) = passenger {
                     finished.write(TripFinished {
                         citizen: p.citizen,
@@ -371,20 +371,60 @@ pub fn move_vehicles(
             });
         }
 
-        // IDM speed update.
-        if v0 > 0.0 {
-            let accel = idm_accel_world(v.speed, v0, leader, &idm);
-            v.speed = (v.speed + accel * dt).clamp(0.0, v0);
-        } else {
+        // Reverse movement for stuck vehicles (GDD: max 10 km/h, only when stuck)
+        const MAX_REVERSE_SPEED_KMH: f32 = 10.0;
+        const MAX_REVERSE_DISTANCE_TILES: f32 = 2.5; // 2-3 tiles max
+        let can_reverse = stuck_timer
+            .map(|stuck| stuck.secs >= crate::game::traffic::STUCK_REROUTE_SECS)
+            .unwrap_or(false)
+            && blocked_next
+            && v.path_cursor > 0; // Can only reverse if not at start of path
+
+        if can_reverse && v.reverse_distance < MAX_REVERSE_DISTANCE_TILES {
+            // Allow reverse movement
+            v.is_reversing = true;
+            let max_reverse_speed =
+                crate::game::traffic::kmh_to_world_speed(&cfg, &traffic_cfg, MAX_REVERSE_SPEED_KMH);
+            v.speed = max_reverse_speed.min(v.speed + 2.0 * dt); // Gentle acceleration backwards
+        } else if v.is_reversing && !can_reverse {
+            // Stop reversing when no longer stuck or reached max distance
+            v.is_reversing = false;
             v.speed = 0.0;
+        } else if !v.is_reversing {
+            // Normal forward movement
+            // IDM speed update.
+            if v0 > 0.0 {
+                let accel = idm_accel_world(v.speed, v0, leader, &idm);
+                v.speed = (v.speed + accel * dt).clamp(0.0, v0);
+            } else {
+                v.speed = 0.0;
+            }
         }
 
-        // Advance along the current tile.
+        // Advance along the current tile (forward or backward).
         let tile_size = cfg.tile_size.max(0.1);
-        let desired_dprog = (v.speed * dt) / tile_size;
+        let desired_dprog = if v.is_reversing {
+            // Reverse: decrease progress
+            -(v.speed * dt) / tile_size
+        } else {
+            // Forward: increase progress
+            (v.speed * dt) / tile_size
+        };
         let prev_p = v.progress;
 
-        if path_pool
+        if v.is_reversing {
+            // Reverse movement: decrease progress, but don't go below 0
+            let desired_p = (prev_p + desired_dprog).max(0.0);
+            v.progress = desired_p;
+            // Update reverse distance
+            v.reverse_distance += desired_dprog.abs();
+
+            // If we've reversed to the start of current tile, move to previous tile
+            if v.progress <= 0.0 && v.path_cursor > 0 {
+                v.path_cursor = v.path_cursor.saturating_sub(1);
+                v.progress = 1.0; // Start at end of previous tile
+            }
+        } else if path_pool
             .get_tile(v.path_handle, v.path_cursor + 1)
             .is_some()
             && blocked_next
@@ -406,8 +446,12 @@ pub fn move_vehicles(
                 let denom = dt.max(1e-6);
                 v.speed = (actual_dprog * tile_size) / denom;
             }
+            // Reset reverse distance when moving forward
+            v.reverse_distance = 0.0;
         } else {
             v.progress = prev_p + desired_dprog;
+            // Reset reverse distance when moving forward
+            v.reverse_distance = 0.0;
         }
 
         let mut last_tile_for_arrival = path_pool
@@ -422,7 +466,7 @@ pub fn move_vehicles(
         }
 
         if v.path_cursor >= path_pool.len(v.path_handle) {
-            if service_vehicle.is_none() && bus_vehicle.is_none() {
+            if service_vehicle.is_none() {
                 if let Some(p) = passenger {
                     finished.write(TripFinished {
                         citizen: p.citizen,

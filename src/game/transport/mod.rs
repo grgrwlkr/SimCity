@@ -16,7 +16,7 @@ pub use lane_occupancy::VehicleId;
 pub use path_pool::{PathHandle, PathPool};
 pub use pathfinding::{PathCache, PathfindingConfig, PathfindingCtx, find_road_path_cached};
 pub use region_graph::RegionGraph;
-pub use road_graph::{rebuild_road_graph_inner, RoadGraph};
+pub use road_graph::{RoadGraph, rebuild_road_graph_inner};
 pub use version::GraphVersion;
 
 use crate::game::map::{MapGrid, TilePos};

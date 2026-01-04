@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::game::map::{BuildingKind, DirtyTiles, MapGrid, TilePos};
+use crate::game::map::{DirtyTiles, MapGrid, TilePos};
 use crate::game::sim::City;
 use crate::game::ui_state::UiState;
 
@@ -12,12 +12,31 @@ pub fn despawn_invalid_buildings(
     q: Query<(Entity, &Building)>,
 ) {
     for (e, b) in &q {
-        let Some(cell) = grid.get(b.pos) else {
+        // Check if anchor position is valid
+        let Some(cell) = grid.get(b.anchor_pos) else {
             commands.entity(e).despawn();
             continue;
         };
         let expected_zone = b.kind.as_zone();
+        // Check if anchor cell matches expected building
         if cell.water || cell.zone != expected_zone || cell.building != Some(b.kind) {
+            commands.entity(e).despawn();
+            continue;
+        }
+        // Check all footprint tiles are still valid
+        let mut all_valid = true;
+        for tile in b.footprint_tiles() {
+            if let Some(cell) = grid.get(tile) {
+                if cell.water || cell.building != Some(b.kind) {
+                    all_valid = false;
+                    break;
+                }
+            } else {
+                all_valid = false;
+                break;
+            }
+        }
+        if !all_valid {
             commands.entity(e).despawn();
         }
     }
@@ -29,7 +48,7 @@ pub fn building_decay_no_road_access(
     mut commands: Commands,
     mut grid: ResMut<MapGrid>,
     mut dirty: ResMut<DirtyTiles>,
-    mut city: ResMut<City>,
+    _city: ResMut<City>,
     mut q: Query<(Entity, &Building, Option<&mut NoRoadAccessDecay>)>,
 ) {
     let speed = ui.sim_speed.multiplier();
@@ -39,7 +58,14 @@ pub fn building_decay_no_road_access(
     let dt = time.delta_secs() * speed.clamp(0.0, 8.0);
 
     for (e, b, decay) in q.iter_mut() {
-        let has_access = has_adjacent_road(&grid, b.pos);
+        // Check if any tile in footprint has road access
+        let mut has_access = false;
+        for tile in b.footprint_tiles() {
+            if has_adjacent_road(&grid, tile) {
+                has_access = true;
+                break;
+            }
+        }
 
         if has_access {
             if decay.is_some() {
@@ -63,24 +89,21 @@ pub fn building_decay_no_road_access(
         }
 
         // Demolish: remove from sim state and despawn entity.
-        let Some(mut cell) = grid.get(b.pos) else {
-            commands.entity(e).despawn();
-            continue;
-        };
-        if cell.building != Some(b.kind) {
-            commands.entity(e).despawn();
-            continue;
-        }
-        cell.building = None;
-        grid.set(b.pos, cell);
-        if let Some(idx) = grid.idx(b.pos) {
-            dirty.mark(idx);
+        // Clear all footprint tiles
+        for tile in b.footprint_tiles() {
+            if let Some(mut cell) = grid.get(tile) {
+                if cell.building == Some(b.kind) {
+                    cell.building = None;
+                    grid.set(tile, cell);
+                    if let Some(idx) = grid.idx(tile) {
+                        dirty.mark(idx);
+                    }
+                }
+            }
         }
 
-        // Minimal city stat rollback (symmetry with growth).
-        if b.kind == BuildingKind::Residential {
-            city.population = city.population.saturating_sub(b.capacity_residents as u32);
-        }
+        // Population is now calculated from occupancy, not subtracted here
+        // The occupancy system will handle population changes
 
         commands.entity(e).despawn();
     }

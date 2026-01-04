@@ -90,7 +90,9 @@ pub(super) fn spawn_walkers(
         let start_tile = route[0];
         let goal_tile = *route.last().unwrap_or(&start_tile);
 
-        let speed_world = (p.ped_cfg.walk_speed_mps.max(0.1) * p.cfg.tile_size) / tile_meters;
+        // Convert km/h to m/s, then to world units
+        let walk_speed_mps = p.ped_cfg.walk_speed_mps();
+        let speed_world = (walk_speed_mps.max(0.1) * p.cfg.tile_size) / tile_meters;
 
         let world = tile_to_world(&p.cfg, start_tile);
         p.commands.spawn((

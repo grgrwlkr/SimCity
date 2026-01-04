@@ -68,8 +68,13 @@ pub(super) fn right_sidebar_ui(
                                 .building_index
                                 .as_deref()
                                 .and_then(|idx| idx.get(tile))
-                                .and_then(|e| p.q_buildings.get(e).ok().copied())
-                                .or_else(|| p.q_buildings.iter().find(|b| b.pos == tile).copied());
+                                .and_then(|e| p.q_buildings.get(e).ok().cloned())
+                                .or_else(|| {
+                                    p.q_buildings
+                                        .iter()
+                                        .find(|b| b.footprint_tiles().contains(&tile))
+                                        .cloned()
+                                });
                             if let Some(b) = b_found {
                                 ui.separator();
                                 ui.label("Building entity:");

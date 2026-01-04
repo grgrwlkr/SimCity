@@ -1,15 +1,24 @@
 //! M4: Zoning -> building growth (primitives).
 
 mod components;
+mod construction;
 mod decay;
 mod growth;
+mod occupancy;
 mod spawn;
 mod upgrade;
+mod zone_depth;
+
+#[cfg(test)]
+mod tests;
 
 pub use components::*;
+pub use construction::*;
 pub use decay::*;
 pub use growth::*;
+pub use occupancy::update_occupancy;
 pub use upgrade::*;
+pub(crate) use zone_depth::*;
 
 // Re-export functions that were in the original file
 pub use components::{apply_building_tuning, cleanup_buildings, reset_building_upgrade_clock};
@@ -42,9 +51,17 @@ impl Plugin for BuildingsPlugin {
             )
             .add_systems(
                 Update,
-                reset_growth_rng_on_new_map
-                    .in_set(GameSet::CommandApply)
-                    .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                (
+                    reset_growth_rng_on_new_map
+                        .in_set(GameSet::CommandApply)
+                        .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                    update_construction_progress
+                        .in_set(GameSet::Sim)
+                        .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                    update_occupancy
+                        .in_set(GameSet::Sim)
+                        .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                ),
             )
             .add_systems(
                 FixedUpdate,

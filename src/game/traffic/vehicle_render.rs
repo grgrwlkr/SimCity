@@ -44,8 +44,10 @@ fn tile_to_world_pos(tile_pos: crate::game::map::TilePos, _progress: f32) -> Vec
 
 /// Interpolate vehicle position between simulation frames for smooth 60fps rendering.
 /// This function updates the Transform component for rendering while preserving game logic.
+/// Also updates vehicle rotation to show front/back direction (GDD requirement: 2 tiles long vehicles).
 pub fn interpolate_vehicle_position(
     time: Res<Time>,
+    path_pool: Res<super::super::transport::PathPool>,
     mut q_vehicles: Query<(&Vehicle, &mut Transform), Without<super::Parked>>,
 ) {
     let current_time = time.elapsed_secs_f64() as f32;
@@ -64,5 +66,29 @@ pub fn interpolate_vehicle_position(
         transform.translation.x = interpolated_pos.x;
         transform.translation.y = interpolated_pos.y;
         // Keep Z coordinate as-is (for layering)
+
+        // Calculate direction from current tile to next tile for rotation
+        // GDD requirement: vehicles should visually show front/back
+        if let Some(current_tile) = path_pool.get_tile(vehicle.path_handle, vehicle.path_cursor) {
+            if let Some(next_tile) =
+                path_pool.get_tile(vehicle.path_handle, vehicle.path_cursor + 1)
+            {
+                let dx = next_tile.x as f32 - current_tile.x as f32;
+                let dy = next_tile.y as f32 - current_tile.y as f32;
+                // Calculate angle in radians (0 = right, PI/2 = up, PI = left, -PI/2 = down)
+                let angle = dy.atan2(dx);
+                transform.rotation = bevy::math::Quat::from_rotation_z(angle);
+            } else if vehicle.path_cursor > 0 {
+                // If at the end of path, use direction from previous tile
+                if let Some(prev_tile) =
+                    path_pool.get_tile(vehicle.path_handle, vehicle.path_cursor - 1)
+                {
+                    let dx = current_tile.x as f32 - prev_tile.x as f32;
+                    let dy = current_tile.y as f32 - prev_tile.y as f32;
+                    let angle = dy.atan2(dx);
+                    transform.rotation = bevy::math::Quat::from_rotation_z(angle);
+                }
+            }
+        }
     }
 }

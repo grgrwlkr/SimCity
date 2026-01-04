@@ -15,7 +15,7 @@ pub fn upgrade_buildings(
     ui: Res<UiState>,
     demand: Res<RciDemand>,
     mut rng: ResMut<BuildingGrowthRng>,
-    mut city: ResMut<City>,
+    _city: ResMut<City>,
     mut notifications: Option<ResMut<Notifications>>,
     mut upgrade_clock: ResMut<BuildingUpgradeClock>,
     cfg: Res<MapConfig>,
@@ -73,16 +73,11 @@ pub fn upgrade_buildings(
         building.level += 1;
 
         // Update capacity
-        let old_residents = building.capacity_residents;
-
         building.capacity_residents = building.kind.capacity_residents_for_level(building.level);
         building.capacity_jobs = building.kind.capacity_jobs_for_level(building.level);
 
-        // Update population if residential
-        if building.kind == BuildingKind::Residential {
-            let delta = building.capacity_residents.saturating_sub(old_residents);
-            city.population = city.population.saturating_add(delta as u32);
-        }
+        // Population is now calculated from occupancy, not updated here
+        // The occupancy system will adjust occupancy_residents based on new capacity and demand
 
         // Visual change: size grows with level.
         // Sprite size is based on tile_size; Transform scale carries the level factor.

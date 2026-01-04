@@ -137,7 +137,6 @@ pub(in super::super) fn plan_lane_changes(
                 Option<&Overtaking>,
                 Option<&OvertakeOncoming>,
                 Option<&ServiceVehicle>,
-                Option<&BusVehicle>,
             ),
             Without<Parked>,
         >,
@@ -164,16 +163,14 @@ pub(in super::super) fn plan_lane_changes(
     }
     let mut desires = Vec::<Desire>::new();
 
-    for (e, v, state, cooldown, overtaking, oncoming, service_vehicle, bus_vehicle) in
-        vehicles.p0().iter()
-    {
+    for (e, v, state, cooldown, overtaking, oncoming, service_vehicle) in vehicles.p0().iter() {
         if cooldown.is_some() {
             continue;
         }
         if oncoming.is_some() {
             continue;
         }
-        if service_vehicle.is_some() || bus_vehicle.is_some() {
+        if service_vehicle.is_some() {
             continue;
         }
         if v.path_cursor + 1 >= path_pool.len(v.path_handle) {
