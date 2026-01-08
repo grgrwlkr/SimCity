@@ -5,6 +5,7 @@ mod construction;
 mod decay;
 mod growth;
 mod occupancy;
+mod population;
 mod spawn;
 mod upgrade;
 mod zone_depth;
@@ -17,6 +18,7 @@ pub use construction::*;
 pub use decay::*;
 pub use growth::*;
 pub use occupancy::update_occupancy;
+pub use spawn::spawn_building_entity;
 pub use upgrade::*;
 pub(crate) use zone_depth::*;
 
@@ -60,6 +62,10 @@ impl Plugin for BuildingsPlugin {
                         .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
                     update_occupancy
                         .in_set(GameSet::Sim)
+                        .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                    population::update_city_population
+                        .after(update_occupancy)
+                        .in_set(GameSet::PostSim)
                         .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
                 ),
             )

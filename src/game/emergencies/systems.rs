@@ -277,6 +277,14 @@ pub(crate) fn dispatch_emergency_vehicles(mut p: DispatchParams) {
             if station.available_vehicles == 0 {
                 continue;
             }
+
+            // GDD 10.5.1: Service buildings without road access cannot dispatch vehicles
+            // Check if station building has road access (station.pos should have adjacent road)
+            let station_has_road =
+                crate::game::services::adjacent_road_any(&p.grid, station.pos).is_some();
+            if !station_has_road {
+                continue; // Skip stations without road access
+            }
             // Prefer lane tiles that match the desired travel direction to avoid picking the wrong carriageway.
             let travel_dir = desired_dir(station.pos, emergency.pos);
             let Some(station_road) =

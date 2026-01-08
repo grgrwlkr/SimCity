@@ -26,7 +26,9 @@ pub fn spawn_building_entity(
         footprint_width as f32 * cfg.tile_size,
         footprint_length as f32 * cfg.tile_size,
     );
-    tf.scale = Vec3::splat(building_visual_scale(1));
+    // Don't apply scale - sprite_size already matches the footprint exactly
+    // Scale is only used for level-based visual growth in upgrade.rs
+    tf.scale = Vec3::splat(1.0);
 
     let level = 1; // Start at level 1
     let area = (footprint_width as u32) * (footprint_length as u32);

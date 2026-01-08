@@ -79,10 +79,14 @@ pub fn upgrade_buildings(
         // Population is now calculated from occupancy, not updated here
         // The occupancy system will adjust occupancy_residents based on new capacity and demand
 
-        // Visual change: size grows with level.
-        // Sprite size is based on tile_size; Transform scale carries the level factor.
-        sprite.custom_size = Some(Vec2::splat(cfg.tile_size));
-        transform.scale = Vec3::splat(building_visual_scale(building.level));
+        // Visual change: size matches footprint exactly (footprint_width × footprint_length tiles)
+        // Sprite size must match the footprint - no scaling applied
+        let sprite_size = Vec2::new(
+            building.footprint_width as f32 * cfg.tile_size,
+            building.footprint_length as f32 * cfg.tile_size,
+        );
+        sprite.custom_size = Some(sprite_size);
+        transform.scale = Vec3::splat(1.0);
 
         // Emit notification
         if has_notifications {

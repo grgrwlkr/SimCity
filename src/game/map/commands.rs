@@ -361,7 +361,13 @@ pub(super) fn apply_game_commands_to_grid(
                 graph_version.bump();
             }
             GameCommand::LoadTestCity => {
-                test_city::generate_test_city(&mut grid, &cfg, &mut city, &mut intersections);
+                test_city::generate_test_city(
+                    &mut commands,
+                    &mut grid,
+                    &cfg,
+                    &mut city,
+                    &mut intersections,
+                );
                 dirty.mark_all();
                 road_dirty.mark_all();
                 map_edit_version.bump();

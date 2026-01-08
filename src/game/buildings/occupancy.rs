@@ -51,12 +51,48 @@ pub fn update_occupancy(
     mut day_events: MessageReader<DayAdvanced>,
     demand: Res<RciDemand>,
     mut q_buildings: Query<&mut Building>,
+    grid: Res<crate::game::map::MapGrid>,
 ) {
     // Process all DayAdvanced events (usually one per day transition)
     for _event in day_events.read() {
         for mut building in q_buildings.iter_mut() {
             // Only update occupancy for operational buildings
             if !building.is_operational() {
+                continue;
+            }
+
+            // GDD 10.5.1: Buildings without road access cannot function
+            let mut has_road_access = false;
+            for tile in building.footprint_tiles() {
+                // Check if tile has adjacent road
+                for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                    let neighbor = crate::game::map::TilePos {
+                        x: tile.x + dx,
+                        y: tile.y + dy,
+                    };
+                    if let Some(cell) = grid.get(neighbor) {
+                        if cell.road.is_some() {
+                            has_road_access = true;
+                            break;
+                        }
+                    }
+                }
+                if has_road_access {
+                    break;
+                }
+            }
+
+            // If no road access, set target occupancy to 0 and decrease current occupancy
+            if !has_road_access {
+                building.target_occupancy_residents = 0;
+                building.target_occupancy_jobs = 0;
+                // Gradually decrease occupancy (people/jobs leave)
+                if building.occupancy_residents > 0 {
+                    building.occupancy_residents = building.occupancy_residents.saturating_sub(1);
+                }
+                if building.occupancy_jobs > 0 {
+                    building.occupancy_jobs = building.occupancy_jobs.saturating_sub(1);
+                }
                 continue;
             }
 

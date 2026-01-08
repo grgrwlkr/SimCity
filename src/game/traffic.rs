@@ -72,12 +72,16 @@ const TRAFFIC_LIGHT_DETECTION_DISTANCE: f32 = 8.0;
 
 /// Vehicle sprite size in tile units (length).
 ///
-/// GDD requirement: vehicles are visually 2 tiles long.
+/// GDD requirement: vehicles are visually 2 tiles long, but must fit within a lane.
 /// IMPORTANT: Our movement uses the vehicle center point, and rendering uses `Transform` at that
 /// center. To ensure the *entire* vehicle stays behind the stop line (not visually overlapping the
 /// intersection), stop-line math must account for half of this size.
-const VEHICLE_VISUAL_SIZE_TILES: f32 = 2.0;
-const VEHICLE_HALF_TILES: f32 = VEHICLE_VISUAL_SIZE_TILES * 0.5;
+///
+/// Vehicles are rendered as rectangles: length (along direction of travel) is 2x width.
+/// Width fits within lane (roughly 0.5 tiles for two-lane road), so width = 0.7 tiles, length = 1.4 tiles.
+pub(crate) const VEHICLE_VISUAL_LENGTH_TILES: f32 = 1.4; // Length along direction of travel (GDD: 2 tiles visually, scaled down)
+pub(crate) const VEHICLE_VISUAL_WIDTH_TILES: f32 = 0.7; // Width perpendicular to direction (fits in lane with margin)
+const VEHICLE_HALF_LENGTH_TILES: f32 = VEHICLE_VISUAL_LENGTH_TILES * 0.5;
 
 /// Extra margin before the intersection boundary for the vehicle bumper (tile units).
 const STOP_LINE_MARGIN_TILES: f32 = 0.05;
@@ -91,7 +95,7 @@ const TILE_CENTER_TO_EDGE_TILES: f32 = 0.5;
 /// Important invariant for gameplay correctness: the stop line is always located on the
 /// **approach tile** (a normal road tile), i.e. vehicles must stop before they enter the
 /// intersection cluster tiles (`dir=None`).
-const STOP_LINE_OFFSET: f32 = VEHICLE_HALF_TILES + STOP_LINE_MARGIN_TILES;
+const STOP_LINE_OFFSET: f32 = VEHICLE_HALF_LENGTH_TILES + STOP_LINE_MARGIN_TILES;
 /// Speed threshold (in tile fractions per second) for "snap to stopped" state at the stop line.
 /// This avoids abrupt halts when a vehicle reaches the stop line with a non-trivial residual speed
 /// due to coarse fixed-timestep integration.

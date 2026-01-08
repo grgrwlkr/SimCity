@@ -49,7 +49,12 @@ pub fn building_decay_no_road_access(
     mut grid: ResMut<MapGrid>,
     mut dirty: ResMut<DirtyTiles>,
     _city: ResMut<City>,
-    mut q: Query<(Entity, &Building, Option<&mut NoRoadAccessDecay>)>,
+    mut q: Query<(
+        Entity,
+        &Building,
+        Option<&mut NoRoadAccessDecay>,
+        Option<&mut Sprite>,
+    )>,
 ) {
     let speed = ui.sim_speed.multiplier();
     if speed <= 0.0 {
@@ -57,7 +62,7 @@ pub fn building_decay_no_road_access(
     }
     let dt = time.delta_secs() * speed.clamp(0.0, 8.0);
 
-    for (e, b, decay) in q.iter_mut() {
+    for (e, b, decay, sprite) in q.iter_mut() {
         // Check if any tile in footprint has road access
         let mut has_access = false;
         for tile in b.footprint_tiles() {
@@ -71,6 +76,17 @@ pub fn building_decay_no_road_access(
             if decay.is_some() {
                 commands.entity(e).remove::<NoRoadAccessDecay>();
             }
+            // Restore normal color for service buildings
+            if let Some(mut sprite) = sprite {
+                if matches!(
+                    b.kind,
+                    crate::game::map::BuildingKind::FireStation
+                        | crate::game::map::BuildingKind::PoliceStation
+                        | crate::game::map::BuildingKind::Hospital
+                ) {
+                    sprite.color = b.kind.color();
+                }
+            }
             continue;
         }
 
@@ -80,6 +96,19 @@ pub fn building_decay_no_road_access(
             .map(|d| d.remaining_secs)
             .unwrap_or(NO_ROAD_ACCESS_GRACE_SECS);
         remaining -= dt;
+
+        // GDD 10.5.1: Visual indicator for service buildings without road access
+        if matches!(
+            b.kind,
+            crate::game::map::BuildingKind::FireStation
+                | crate::game::map::BuildingKind::PoliceStation
+                | crate::game::map::BuildingKind::Hospital
+        ) {
+            if let Some(mut sprite) = sprite {
+                // Change color to red to indicate problem (GDD: visual marking for player)
+                sprite.color = bevy::prelude::Color::srgb(1.0, 0.3, 0.3); // Red tint
+            }
+        }
 
         if remaining > 0.0 {
             commands.entity(e).insert(NoRoadAccessDecay {

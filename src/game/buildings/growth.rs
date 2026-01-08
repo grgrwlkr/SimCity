@@ -107,9 +107,14 @@ pub fn grow_buildings(mut p: GrowBuildingsParams) {
         }
 
         // Try to find a valid footprint starting from this seed position
-        let Some(footprint) =
-            find_best_footprint(seed_pos, kind, &p.grid, &occupied, p.land_value.as_deref())
-        else {
+        let Some(footprint) = find_best_footprint(
+            seed_pos,
+            kind,
+            &p.grid,
+            &occupied,
+            p.land_value.as_deref(),
+            &p.q_buildings,
+        ) else {
             continue;
         };
 
@@ -189,6 +194,7 @@ fn find_best_footprint(
     grid: &MapGrid,
     occupied: &HashSet<TilePos>,
     land_value: Option<&LandValueIndex>,
+    existing_buildings: &Query<&Building>,
 ) -> Option<Footprint> {
     // Generate all possible footprints sorted by priority: area → length → width
     // GDD 10.1.3: priority is area (desc), then length (desc), then width (desc)
@@ -214,9 +220,16 @@ fn find_best_footprint(
     // Try each candidate footprint, checking if it can be placed starting from seed_pos
     for (width, length) in candidates {
         // Try placing the footprint with seed_pos as anchor
-        if let Some(footprint) =
-            try_footprint_at(seed_pos, width, length, kind, grid, occupied, land_value)
-        {
+        if let Some(footprint) = try_footprint_at(
+            seed_pos,
+            width,
+            length,
+            kind,
+            grid,
+            occupied,
+            land_value,
+            existing_buildings,
+        ) {
             return Some(footprint);
         }
 
@@ -232,9 +245,16 @@ fn find_best_footprint(
                 x: seed_pos.x + anchor_offset.0,
                 y: seed_pos.y + anchor_offset.1,
             };
-            if let Some(footprint) =
-                try_footprint_at(anchor, width, length, kind, grid, occupied, land_value)
-            {
+            if let Some(footprint) = try_footprint_at(
+                anchor,
+                width,
+                length,
+                kind,
+                grid,
+                occupied,
+                land_value,
+                existing_buildings,
+            ) {
                 return Some(footprint);
             }
         }
@@ -245,6 +265,7 @@ fn find_best_footprint(
 
 /// Try to place a footprint at a specific anchor position.
 /// Returns Some(Footprint) if valid, None otherwise.
+/// GDD 10.1.3: RCI buildings cannot be built "behind" other buildings (blocking rule).
 fn try_footprint_at(
     anchor: TilePos,
     width: u8,
@@ -253,6 +274,7 @@ fn try_footprint_at(
     grid: &MapGrid,
     occupied: &HashSet<TilePos>,
     land_value: Option<&LandValueIndex>,
+    existing_buildings: &Query<&Building>,
 ) -> Option<Footprint> {
     let mut tiles = Vec::new();
     let required_zone = kind.as_zone();
@@ -294,16 +316,112 @@ fn try_footprint_at(
         return None;
     }
 
-    // Check road access: at least one tile must have adjacent road
+    // Check road access: at least one tile must have adjacent road (GDD: all buildings must be adjacent to road)
     let mut has_road_access = false;
+    let mut road_adjacent_tiles = Vec::new();
     for tile in &tiles {
         if has_adjacent_road(grid, *tile) {
             has_road_access = true;
-            break;
+            road_adjacent_tiles.push(*tile);
         }
     }
     if !has_road_access {
         return None;
+    }
+
+    // GDD 10.1.3: Check blocking rule - RCI buildings cannot be built "behind" other RCI buildings
+    // (Service buildings are exempt from this rule)
+    // Simplified approach: if a tile in the new footprint is further from the nearest road than
+    // any existing RCI building on the same "line" from that road, it's blocked
+    if matches!(
+        kind,
+        BuildingKind::Residential | BuildingKind::Commercial | BuildingKind::Industrial
+    ) {
+        // For each road-adjacent tile in the new footprint, check if there's a blocking building
+        for road_tile in &road_adjacent_tiles {
+            // Find all existing RCI buildings that are adjacent to this same road tile
+            for building in existing_buildings.iter() {
+                // Only check RCI buildings (not service buildings)
+                if !matches!(
+                    building.kind,
+                    BuildingKind::Residential | BuildingKind::Commercial | BuildingKind::Industrial
+                ) {
+                    continue;
+                }
+
+                let building_tiles = building.footprint_tiles();
+                let building_has_this_road = building_tiles.iter().any(|bt| {
+                    // Check if building tile is adjacent to the same road tile
+                    (bt.x - road_tile.x).abs() + (bt.y - road_tile.y).abs() == 1
+                });
+
+                if building_has_this_road {
+                    // Check if any tile in the new footprint is "behind" this building
+                    // (further from the road in the same direction)
+                    for new_tile in &tiles {
+                        // Skip if new tile is also adjacent to road (it's at the front, not behind)
+                        if has_adjacent_road(grid, *new_tile) {
+                            continue;
+                        }
+
+                        // Check if new tile is in the same "direction" from road as the building
+                        // Simple heuristic: if building extends in a direction, new tile shouldn't be further in that direction
+                        let building_max_dist = building_tiles
+                            .iter()
+                            .map(|bt| {
+                                let dx = bt.x - road_tile.x;
+                                let dy = bt.y - road_tile.y;
+                                dx.abs() + dy.abs()
+                            })
+                            .max()
+                            .unwrap_or(0);
+
+                        let new_tile_dist =
+                            (new_tile.x - road_tile.x).abs() + (new_tile.y - road_tile.y).abs();
+
+                        // If new tile is further from road than building extends, it might be blocked
+                        // But we need to check if they're on the same "line"
+                        // Simplified: if building is between road and new tile, block it
+                        if new_tile_dist > building_max_dist {
+                            // Check if new tile is in the same quadrant/direction from road
+                            let building_dir_x = if building.anchor_pos.x > road_tile.x {
+                                1
+                            } else if building.anchor_pos.x < road_tile.x {
+                                -1
+                            } else {
+                                0
+                            };
+                            let building_dir_y = if building.anchor_pos.y > road_tile.y {
+                                1
+                            } else if building.anchor_pos.y < road_tile.y {
+                                -1
+                            } else {
+                                0
+                            };
+                            let new_dir_x = if new_tile.x > road_tile.x {
+                                1
+                            } else if new_tile.x < road_tile.x {
+                                -1
+                            } else {
+                                0
+                            };
+                            let new_dir_y = if new_tile.y > road_tile.y {
+                                1
+                            } else if new_tile.y < road_tile.y {
+                                -1
+                            } else {
+                                0
+                            };
+
+                            // If directions match (same quadrant), block it
+                            if building_dir_x == new_dir_x && building_dir_y == new_dir_y {
+                                return None;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Check land value requirement (use minimum value from all tiles in footprint)
@@ -367,6 +485,44 @@ fn has_adjacent_road(grid: &MapGrid, pos: TilePos) -> bool {
         }
     }
     false
+}
+
+/// Find the nearest road tile to a given position using BFS (for blocking rule check)
+fn find_nearest_road_tile(grid: &MapGrid, start: TilePos) -> Option<TilePos> {
+    use std::collections::VecDeque;
+    let mut queue = VecDeque::new();
+    let mut visited = HashSet::new();
+    queue.push_back(start);
+    visited.insert(start);
+
+    while let Some(current) = queue.pop_front() {
+        if has_adjacent_road(grid, current) {
+            // Return the road tile itself (one of the adjacent tiles)
+            for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                let neighbor = TilePos {
+                    x: current.x + dx,
+                    y: current.y + dy,
+                };
+                if let Some(cell) = grid.get(neighbor) {
+                    if cell.road.is_some() {
+                        return Some(neighbor);
+                    }
+                }
+            }
+        }
+
+        for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            let neighbor = TilePos {
+                x: current.x + dx,
+                y: current.y + dy,
+            };
+            if !visited.contains(&neighbor) && grid.get(neighbor).is_some() {
+                visited.insert(neighbor);
+                queue.push_back(neighbor);
+            }
+        }
+    }
+    None
 }
 
 pub fn seed_growth_rng_from_map(

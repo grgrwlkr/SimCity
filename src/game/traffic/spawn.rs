@@ -101,7 +101,11 @@ pub(super) fn spawn_trip_vehicles(
                 tf.translation.z = 10.0;
 
                 // Restore "active vehicle" visuals (parked vehicles are smaller + translucent).
-                sprite.custom_size = Some(Vec2::splat(p.cfg.tile_size * VEHICLE_VISUAL_SIZE_TILES));
+                // Use rectangular sprite: length (along travel direction) x width (perpendicular)
+                sprite.custom_size = Some(Vec2::new(
+                    p.cfg.tile_size * VEHICLE_VISUAL_LENGTH_TILES,
+                    p.cfg.tile_size * VEHICLE_VISUAL_WIDTH_TILES,
+                ));
                 sprite.color = Color::linear_rgb(0.95, 0.95, 0.95);
 
                 p.commands
@@ -128,7 +132,10 @@ pub(super) fn spawn_trip_vehicles(
         let mut e = p.commands.spawn((
             Sprite {
                 color: Color::linear_rgb(0.95, 0.95, 0.95),
-                custom_size: Some(Vec2::splat(p.cfg.tile_size * VEHICLE_VISUAL_SIZE_TILES)),
+                custom_size: Some(Vec2::new(
+                    p.cfg.tile_size * VEHICLE_VISUAL_LENGTH_TILES,
+                    p.cfg.tile_size * VEHICLE_VISUAL_WIDTH_TILES,
+                )),
                 ..default()
             },
             Transform::from_xyz(world_pos.x, world_pos.y, 10.0),

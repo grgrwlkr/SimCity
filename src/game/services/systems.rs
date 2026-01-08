@@ -25,6 +25,20 @@ pub(crate) fn sync_service_stations_from_buildings(
             continue;
         }
 
+        // GDD 10.5.1: Service buildings must have road access to function
+        let mut has_road_access = false;
+        for tile in b.footprint_tiles() {
+            if adjacent_road_any(&grid, tile).is_some() {
+                has_road_access = true;
+                break;
+            }
+        }
+
+        // Only create station if building has road access
+        if !has_road_access {
+            continue;
+        }
+
         // Attach station component.
         let total = b.kind.vehicle_capacity();
         commands.entity(entity).insert(ServiceStation {
