@@ -58,16 +58,28 @@ pub enum SimSpeed {
     Paused,
     X1,
     X2,
-    X4,
+    X3,
 }
 
 impl SimSpeed {
+    /// Returns the real-time duration (in seconds) for one game hour at this speed.
+    /// GDD: x1 = 1.0 sec/hour, x2 = 0.8 sec/hour, x3 = 0.5 sec/hour
+    pub fn secs_per_game_hour(self) -> f32 {
+        match self {
+            SimSpeed::Paused => 0.0,
+            SimSpeed::X1 => 1.0,
+            SimSpeed::X2 => 0.8,
+            SimSpeed::X3 => 0.5,
+        }
+    }
+
+    /// Legacy multiplier for backward compatibility (deprecated, use secs_per_game_hour)
     pub fn multiplier(self) -> f32 {
         match self {
             SimSpeed::Paused => 0.0,
             SimSpeed::X1 => 1.0,
-            SimSpeed::X2 => 2.0,
-            SimSpeed::X4 => 4.0,
+            SimSpeed::X2 => 1.25, // 1.0 / 0.8
+            SimSpeed::X3 => 2.0,  // 1.0 / 0.5
         }
     }
 }

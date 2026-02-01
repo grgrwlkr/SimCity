@@ -1,8 +1,9 @@
 use bevy::prelude::*;
+use bevy::ecs::message::MessageReader;
 
 use crate::game::map::{DirtyTiles, MapGrid, TilePos};
 use crate::game::sim::City;
-use crate::game::ui_state::UiState;
+use crate::game::sim_events::DayAdvanced;
 
 use super::components::*;
 
@@ -42,25 +43,23 @@ pub fn despawn_invalid_buildings(
     }
 }
 
+/// GDD: Buildings without road access are demolished after 1 game day
 pub fn building_decay_no_road_access(
-    time: Res<Time<Fixed>>,
-    ui: Res<UiState>,
+    mut day_events: MessageReader<'_, '_, DayAdvanced>,
     mut commands: Commands,
     mut grid: ResMut<MapGrid>,
     mut dirty: ResMut<DirtyTiles>,
-    _city: ResMut<City>,
+    city: Res<City>,
     mut q: Query<(
         Entity,
         &Building,
-        Option<&mut NoRoadAccessDecay>,
+        Option<&NoRoadAccessDecay>,
         Option<&mut Sprite>,
     )>,
 ) {
-    let speed = ui.sim_speed.multiplier();
-    if speed <= 0.0 {
-        return;
-    }
-    let dt = time.delta_secs() * speed.clamp(0.0, 8.0);
+    // Check if any days advanced (only process decay on day changes)
+    let _days_advanced = day_events.read().count();
+    let current_day = city.day;
 
     for (e, b, decay, sprite) in q.iter_mut() {
         // Check if any tile in footprint has road access
@@ -90,14 +89,56 @@ pub fn building_decay_no_road_access(
             continue;
         }
 
-        // No access: start or tick countdown.
-        let mut remaining = decay
-            .as_deref()
-            .map(|d| d.remaining_secs)
-            .unwrap_or(NO_ROAD_ACCESS_GRACE_SECS);
-        remaining -= dt;
+        // No access: track when access was lost and check if grace period expired
+        let access_lost_day = decay
+            .as_ref()
+            .map(|d| d.access_lost_day)
+            .unwrap_or(current_day); // If decay component doesn't exist, start tracking now
 
-        // GDD 10.5.1: Visual indicator for service buildings without road access
+        // Check if grace period expired (GDD: 1 game day)
+        let days_without_access = current_day.saturating_sub(access_lost_day);
+        
+        // Only add/update component if not expired yet (avoid adding component to entity we're about to despawn)
+        if days_without_access < NO_ROAD_ACCESS_GRACE_DAYS {
+            // Verify building still exists in grid before adding component
+            // (another system might have despawned it)
+            let building_still_valid = grid.get(b.anchor_pos)
+                .map(|cell| {
+                    cell.building == Some(b.kind) && 
+                    !cell.water && 
+                    cell.zone == b.kind.as_zone()
+                })
+                .unwrap_or(false);
+            
+            if !building_still_valid {
+                // Building was despawned by another system, skip
+                continue;
+            }
+            
+            // GDD 10.5.1: Visual indicator for service buildings without road access
+            if matches!(
+                b.kind,
+                crate::game::map::BuildingKind::FireStation
+                    | crate::game::map::BuildingKind::PoliceStation
+                    | crate::game::map::BuildingKind::Hospital
+            ) {
+                if let Some(mut sprite) = sprite {
+                    // Change color to red to indicate problem (GDD: visual marking for player)
+                    sprite.color = bevy::prelude::Color::srgb(1.0, 0.3, 0.3); // Red tint
+                }
+            }
+
+            // Add decay component if not present
+            if decay.is_none() {
+                commands.entity(e).insert(NoRoadAccessDecay {
+                    access_lost_day: current_day,
+                });
+            }
+            continue;
+        }
+
+        // Grace period expired - demolish the building
+        // GDD 10.5.1: Visual indicator for service buildings without road access (already shown above)
         if matches!(
             b.kind,
             crate::game::map::BuildingKind::FireStation
@@ -105,16 +146,9 @@ pub fn building_decay_no_road_access(
                 | crate::game::map::BuildingKind::Hospital
         ) {
             if let Some(mut sprite) = sprite {
-                // Change color to red to indicate problem (GDD: visual marking for player)
-                sprite.color = bevy::prelude::Color::srgb(1.0, 0.3, 0.3); // Red tint
+                // Keep red color as warning (building will be demolished)
+                sprite.color = bevy::prelude::Color::srgb(1.0, 0.3, 0.3);
             }
-        }
-
-        if remaining > 0.0 {
-            commands.entity(e).insert(NoRoadAccessDecay {
-                remaining_secs: remaining,
-            });
-            continue;
         }
 
         // Demolish: remove from sim state and despawn entity.

@@ -135,12 +135,14 @@ impl Default for BuildingTuning {
 }
 
 /// When a building loses road access, start a demolition countdown.
+/// GDD: Grace period is 1 game day
 #[derive(Component, Debug, Copy, Clone)]
 pub struct NoRoadAccessDecay {
-    pub remaining_secs: f32,
+    /// Day when access was lost (GDD: tracked in game days)
+    pub access_lost_day: u32,
 }
 
-pub const NO_ROAD_ACCESS_GRACE_SECS: f32 = 20.0;
+pub const NO_ROAD_ACCESS_GRACE_DAYS: u32 = 1;
 
 #[derive(Resource)]
 pub struct BuildingGrowthClock {

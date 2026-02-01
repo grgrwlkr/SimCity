@@ -13,18 +13,19 @@ use crate::game::notifications::{NotificationKind, Notifications};
 use crate::game::roads::RoadDir;
 use crate::game::services::{ServiceStation, ServiceVehicle, ServiceVehicleState};
 use crate::game::sim::City;
+use crate::game::sim_events::HourAdvanced;
 use crate::game::traffic::{Parked, Vehicle};
 use crate::game::transport::{
     PathCache, PathPool, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph,
     find_road_path_cached,
 };
-use crate::game::ui_state::UiState;
+use bevy::ecs::message::MessageReader;
 
 use super::components::{Emergency, EmergencyEntityIndex, EmergencyKind, EmergencyManager};
 
-/// Spawn random emergency events at buildings.
+/// GDD: Spawn emergencies every 6 game hours
 pub(crate) fn spawn_emergencies(
-    time: Res<Time<bevy::time::Fixed>>,
+    mut hour_events: MessageReader<'_, '_, HourAdvanced>,
     city: Res<City>,
     mut manager: ResMut<EmergencyManager>,
     notifications: Option<ResMut<Notifications>>,
@@ -32,10 +33,21 @@ pub(crate) fn spawn_emergencies(
     q_emergencies: Query<&Emergency>,
     q_buildings: Query<&Building>,
 ) {
-    manager.spawn_timer.tick(time.delta());
-    if !manager.spawn_timer.just_finished() {
+    // Count game hours
+    let hours_passed = hour_events.read().count() as u32;
+    if hours_passed == 0 {
         return;
     }
+    
+    manager.hours_since_last_spawn += hours_passed;
+    
+    // Spawn every 6 game hours (GDD 13.2.1)
+    const SPAWN_INTERVAL_HOURS: u32 = 6;
+    if manager.hours_since_last_spawn < SPAWN_INTERVAL_HOURS {
+        return;
+    }
+    
+    manager.hours_since_last_spawn = manager.hours_since_last_spawn % SPAWN_INTERVAL_HOURS;
 
     if q_emergencies.iter().count() >= manager.max_active_emergencies {
         return;
@@ -357,32 +369,35 @@ pub(crate) fn dispatch_emergency_vehicles(mut p: DispatchParams) {
 }
 
 /// Update emergency timers.
+/// GDD: Update emergency timers using game hours (decrease by 1 hour per HourAdvanced event)
 pub(crate) fn update_emergency_timers(
-    time: Res<Time<bevy::time::Fixed>>,
-    ui: Res<UiState>,
+    mut hour_events: MessageReader<'_, '_, HourAdvanced>,
     mut q: Query<&mut Emergency>,
 ) {
-    let speed = ui.sim_speed.multiplier();
-    if speed <= 0.0 {
+    let hours_passed = hour_events.read().count() as f32;
+    if hours_passed <= 0.0 {
         return;
     }
-    let dt = time.delta_secs() * speed;
 
     for mut e in q.iter_mut() {
         if e.resolved || e.failed {
             continue;
         }
+        // Decrease time remaining by game hours (only if not yet responded)
         if !e.responded {
-            e.time_remaining -= dt;
+            e.time_remaining -= hours_passed;
+            if e.time_remaining < 0.0 {
+                e.time_remaining = 0.0;
+            }
         }
     }
 }
 
 #[derive(SystemParam)]
 pub(crate) struct ResolveParams<'w, 's> {
+    hour_events: MessageReader<'w, 's, HourAdvanced>,
     commands: Commands<'w, 's>,
     time: Res<'w, Time<bevy::time::Fixed>>,
-    ui: Res<'w, UiState>,
     grid: Res<'w, MapGrid>,
     path_cfg: Res<'w, PathfindingConfig>,
     path_cache: ResMut<'w, PathCache>,
@@ -398,13 +413,9 @@ pub(crate) struct ResolveParams<'w, 's> {
     manager: ResMut<'w, EmergencyManager>,
 }
 
-/// Resolve emergencies when vehicles arrive and handle vehicle state transitions.
+/// GDD: Resolve emergencies using game hours (progress incremented per game hour)
 pub(crate) fn resolve_emergencies(mut p: ResolveParams) {
-    let speed = p.ui.sim_speed.multiplier();
-    if speed <= 0.0 {
-        return;
-    }
-    let dt = p.time.delta_secs() * speed;
+    let hours_passed = p.hour_events.read().count() as f32;
 
     let mut ctx = PathfindingCtx {
         time_now_sec: p.time.elapsed_secs_f64(),
@@ -466,8 +477,11 @@ pub(crate) fn resolve_emergencies(mut p: ResolveParams) {
                 }
             }
             ServiceVehicleState::OnScene => {
-                let rate = 1.0 / emergency.kind.resolution_time();
-                emergency.resolution_progress += rate * dt;
+                // GDD: Resolution progresses in game hours (resolution_time is in game hours)
+                if hours_passed > 0.0 {
+                    let progress_per_hour = 1.0 / emergency.kind.resolution_time();
+                    emergency.resolution_progress += progress_per_hour * hours_passed;
+                }
                 if emergency.resolution_progress >= 1.0 {
                     emergency.resolution_progress = 1.0;
                     emergency.resolved = true;

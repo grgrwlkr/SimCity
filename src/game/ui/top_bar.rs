@@ -25,11 +25,11 @@ pub(super) fn top_status_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams)
                 ui.label(format!("👥 {}", p.city.population));
                 ui.separator();
 
-                // Day
-                ui.label(format!("📅 Day {}", p.city.day));
+                // Day and Game Time (GDD: HH:00 format)
+                ui.label(format!("📅 Day {} {:02}:00", p.city.day, p.city.hour));
                 ui.separator();
 
-                // Time of day with icon
+                // Time of day with icon (visual day/night cycle)
                 if matches!(p.state.get(), AppState::InGame | AppState::Paused)
                     && let Some(cycle) = p.day_night.as_deref()
                 {
@@ -64,9 +64,9 @@ pub(super) fn top_status_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams)
                     let resp = ui.selectable_value(&mut p.ui_state.sim_speed, SimSpeed::X1, "▶");
                     resp.on_hover_text("Normal speed (1x)");
                     let resp = ui.selectable_value(&mut p.ui_state.sim_speed, SimSpeed::X2, "▶▶");
-                    resp.on_hover_text("Fast speed (2x)");
-                    let resp = ui.selectable_value(&mut p.ui_state.sim_speed, SimSpeed::X4, "▶▶▶");
-                    resp.on_hover_text("Very fast speed (4x)");
+                    resp.on_hover_text("Fast speed (2x: 0.8s/hour)");
+                    let resp = ui.selectable_value(&mut p.ui_state.sim_speed, SimSpeed::X3, "▶▶▶");
+                    resp.on_hover_text("Very fast speed (3x: 0.5s/hour)");
                 });
                 ui.separator();
 

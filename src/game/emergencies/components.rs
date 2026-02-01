@@ -27,6 +27,7 @@ pub struct Emergency {
     pub consequence_applied: bool,
     #[allow(dead_code)] // Reserved for future use
     pub failed: bool,
+    /// Time remaining in game hours until deadline (GDD: tracked in game hours)
     pub time_remaining: f32,
     #[allow(dead_code)] // Reserved for future use
     pub dispatched_vehicles: Vec<Entity>,
@@ -52,21 +53,21 @@ impl EmergencyKind {
         }
     }
 
-    /// Time in seconds until the emergency must be responded to.
+    /// Time in game hours until the emergency must be responded to (GDD 13.2.1).
     pub fn response_deadline(self) -> f32 {
         match self {
-            EmergencyKind::Fire => 30.0,
-            EmergencyKind::Crime => 45.0,
-            EmergencyKind::Medical => 25.0,
+            EmergencyKind::Fire => 12.0,    // 12 game hours
+            EmergencyKind::Crime => 18.0,   // 18 game hours
+            EmergencyKind::Medical => 10.0, // 10 game hours
         }
     }
 
-    /// Time in seconds required to resolve the emergency after response.
+    /// Time in game hours required to resolve the emergency after response.
     pub fn resolution_time(self) -> f32 {
         match self {
-            EmergencyKind::Fire => 15.0,
-            EmergencyKind::Crime => 10.0,
-            EmergencyKind::Medical => 12.0,
+            EmergencyKind::Fire => 6.0,     // 6 game hours
+            EmergencyKind::Crime => 4.0,    // 4 game hours
+            EmergencyKind::Medical => 5.0,  // 5 game hours
         }
     }
 
@@ -83,7 +84,8 @@ impl EmergencyKind {
 /// Global emergency management state.
 #[derive(Resource)]
 pub struct EmergencyManager {
-    pub spawn_timer: Timer,
+    /// Hours since last spawn attempt (GDD: spawn every 6 game hours)
+    pub hours_since_last_spawn: u32,
     pub base_spawn_chance: f32,
     pub max_active_emergencies: usize,
     pub stats: EmergencyStats,
@@ -92,8 +94,7 @@ pub struct EmergencyManager {
 impl Default for EmergencyManager {
     fn default() -> Self {
         Self {
-            // Conservative defaults: emergencies are occasional and shouldn't overwhelm sim/UI.
-            spawn_timer: Timer::from_seconds(6.0, TimerMode::Repeating),
+            hours_since_last_spawn: 0,
             base_spawn_chance: 0.06,
             max_active_emergencies: 8,
             stats: EmergencyStats::default(),

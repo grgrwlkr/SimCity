@@ -8,7 +8,8 @@ use crate::game::land_value::LandValueIndex;
 use crate::game::map::{BuildingKind, DirtyTiles, MapConfig, MapGrid, TilePos};
 use crate::game::notifications::{NotificationKind, Notifications};
 use crate::game::sim::City;
-use crate::game::ui_state::UiState;
+use crate::game::sim_events::HourAdvanced;
+use bevy::ecs::message::MessageReader;
 
 use super::components::*;
 use super::spawn::spawn_building_entity;
@@ -16,14 +17,12 @@ use super::zone_depth::{MAX_ZONE_DEPTH, is_footprint_within_zone_depth};
 
 #[derive(SystemParam)]
 pub struct GrowBuildingsParams<'w, 's> {
-    time: Res<'w, Time<Fixed>>,
-    ui: Res<'w, UiState>,
+    hour_events: MessageReader<'w, 's, HourAdvanced>,
     cfg: Res<'w, MapConfig>,
     grid: ResMut<'w, MapGrid>,
     demand: Res<'w, RciDemand>,
     land_value: Option<Res<'w, LandValueIndex>>,
     city: ResMut<'w, City>,
-    clock: ResMut<'w, BuildingGrowthClock>,
     rng: ResMut<'w, BuildingGrowthRng>,
     dirty: ResMut<'w, DirtyTiles>,
     commands: Commands<'w, 's>,
@@ -31,16 +30,10 @@ pub struct GrowBuildingsParams<'w, 's> {
     notifications: Option<ResMut<'w, Notifications>>,
 }
 
+/// GDD: Building growth happens every 1 game hour (via HourAdvanced event)
 pub fn grow_buildings(mut p: GrowBuildingsParams) {
-    let speed = p.ui.sim_speed.multiplier();
-    if speed <= 0.0 {
-        return;
-    }
-
-    p.clock
-        .timer
-        .tick(p.time.delta().mul_f32(speed.clamp(0.0, 8.0)));
-    if !p.clock.timer.just_finished() {
+    // Trigger on every hour advanced (GDD: each 1 game hour)
+    if p.hour_events.read().count() == 0 {
         return;
     }
 
@@ -311,7 +304,7 @@ fn try_footprint_at(
         }
     }
 
-    // Check zone depth (GDD 10.2.2): all tiles must be within 6 tiles of a road
+    // Check zone depth (GDD 10.2.2): all tiles must be within 3 tiles of a road
     if !is_footprint_within_zone_depth(anchor, width, length, grid, MAX_ZONE_DEPTH) {
         return None;
     }

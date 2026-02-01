@@ -73,8 +73,8 @@ impl Plugin for BuildingsPlugin {
                 FixedUpdate,
                 (
                     grow_buildings,
+                    despawn_invalid_buildings.before(building_decay_no_road_access),
                     building_decay_no_road_access,
-                    despawn_invalid_buildings,
                     upgrade_buildings,
                 )
                     .in_set(GameSet::Sim)

@@ -212,7 +212,7 @@ fn collect_debug_telemetry(
         SimSpeed::Paused => "Paused",
         SimSpeed::X1 => "X1",
         SimSpeed::X2 => "X2",
-        SimSpeed::X4 => "X4",
+        SimSpeed::X3 => "X3",
     }
     .to_string();
 

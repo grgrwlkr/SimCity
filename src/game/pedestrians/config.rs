@@ -6,8 +6,9 @@ pub struct PedestrianConfig {
     pub walk_speed_kmh: f32,
     /// Max length for a WalkTour (meters). Doc default: 800 m.
     pub walk_tour_max_m: f32,
-    /// If a pedestrian is blocked at an uncontrolled crossing for this long, reroute.
-    pub wait_reroute_secs: f32,
+    /// If a pedestrian is blocked at an uncontrolled crossing for this long (in game hours), reroute.
+    /// GDD: 6 game hours
+    pub wait_reroute_hours: f32,
     /// Max number of reroute attempts for a single pedestrian.
     pub wait_reroute_max_attempts: u8,
     /// Uncontrolled crossing: additional safety margin added to time-to-cross window.
@@ -21,7 +22,7 @@ impl Default for PedestrianConfig {
         Self {
             walk_speed_kmh: 5.0,
             walk_tour_max_m: 800.0,
-            wait_reroute_secs: 60.0,
+            wait_reroute_hours: 6.0,
             wait_reroute_max_attempts: 3,
             uncontrolled_safety_margin_secs: 0.5,
             uncontrolled_min_gap_tiles: 0.35,
