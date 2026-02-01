@@ -73,8 +73,13 @@ pub fn upgrade_buildings(
         building.level += 1;
 
         // Update capacity
-        building.capacity_residents = building.kind.capacity_residents_for_level(building.level);
-        building.capacity_jobs = building.kind.capacity_jobs_for_level(building.level);
+        let area = building.area();
+        building.capacity_residents = building
+            .kind
+            .capacity_residents_for_level_area(building.level, area);
+        building.capacity_jobs = building
+            .kind
+            .capacity_jobs_for_level_area(building.level, area);
 
         // Population is now calculated from occupancy, not updated here
         // The occupancy system will adjust occupancy_residents based on new capacity and demand

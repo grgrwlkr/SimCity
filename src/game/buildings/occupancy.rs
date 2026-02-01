@@ -130,10 +130,14 @@ pub fn update_occupancy(
             let current_residents = building.occupancy_residents as f32;
             let target_residents_f = target_residents as f32;
             if current_residents < target_residents_f {
-                let new_residents = (current_residents + change_per_day).min(target_residents_f);
+                // Bugfix: change_per_day is a fraction; scale by target to get actual headcount/day.
+                let step = (target_residents_f * change_per_day).ceil().max(1.0);
+                let new_residents = (current_residents + step).min(target_residents_f);
                 building.occupancy_residents = new_residents.round() as u16;
             } else if current_residents > target_residents_f {
-                let new_residents = (current_residents - change_per_day).max(target_residents_f);
+                // For decreases, scale step by current headcount to avoid stalling near 0.
+                let step = (current_residents * change_per_day).ceil().max(1.0);
+                let new_residents = (current_residents - step).max(target_residents_f);
                 building.occupancy_residents = new_residents.round() as u16;
             }
 
@@ -141,10 +145,12 @@ pub fn update_occupancy(
             let current_jobs = building.occupancy_jobs as f32;
             let target_jobs_f = target_jobs as f32;
             if current_jobs < target_jobs_f {
-                let new_jobs = (current_jobs + change_per_day).min(target_jobs_f);
+                let step = (target_jobs_f * change_per_day).ceil().max(1.0);
+                let new_jobs = (current_jobs + step).min(target_jobs_f);
                 building.occupancy_jobs = new_jobs.round() as u16;
             } else if current_jobs > target_jobs_f {
-                let new_jobs = (current_jobs - change_per_day).max(target_jobs_f);
+                let step = (current_jobs * change_per_day).ceil().max(1.0);
+                let new_jobs = (current_jobs - step).max(target_jobs_f);
                 building.occupancy_jobs = new_jobs.round() as u16;
             }
         }

@@ -307,6 +307,95 @@ fn calculate_fill_days_scales_with_pressure() {
     assert!(fill_high_pressure < fill_low_pressure);
 }
 
+#[test]
+fn capacity_scales_with_area_per_gdd() {
+    // GDD: capacity = base(kind, level) * (area/9)
+    assert_eq!(
+        BuildingKind::Residential.capacity_residents_for_level_area(1, 9),
+        4
+    );
+    assert_eq!(
+        BuildingKind::Residential.capacity_residents_for_level_area(1, 18),
+        8
+    );
+    assert_eq!(
+        BuildingKind::Commercial.capacity_jobs_for_level_area(1, 9),
+        3
+    );
+    assert_eq!(
+        BuildingKind::Commercial.capacity_jobs_for_level_area(1, 18),
+        6
+    );
+}
+
+#[test]
+fn occupancy_increases_even_when_fill_days_gt_two() {
+    use bevy::prelude::{App, MinimalPlugins, Update};
+
+    use crate::game::demand::RciDemand;
+    use crate::game::roads::{LaneType, RoadCell, RoadDir, RoadFlow, RoadKind};
+    use crate::game::sim_events::DayAdvanced;
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .add_message::<DayAdvanced>()
+        .insert_resource(RciDemand {
+            // d_mid = 0.3 => pressure ~= 0.5 => target_ratio = 1.0
+            residential: 0.3,
+            commercial: 0.0,
+            industrial: 0.0,
+        })
+        .insert_resource({
+            let mut grid = MapGrid::new(4, 4);
+            // Road adjacent to the building footprint.
+            let road_pos = TilePos { x: 0, y: 1 };
+            let mut cell = grid.get(road_pos).unwrap();
+            cell.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                dir: RoadDir::East,
+                lane: 0,
+                flow: RoadFlow::TwoWay,
+                lane_type: LaneType::Regular,
+            };
+            grid.set(road_pos, cell);
+            grid
+        })
+        .add_systems(Update, super::occupancy::update_occupancy);
+
+    let e = app
+        .world_mut()
+        .spawn(Building {
+            kind: BuildingKind::Residential,
+            anchor_pos: TilePos { x: 1, y: 1 },
+            footprint_width: 3,
+            footprint_length: 3,
+            level: 3,
+            phase: BuildingPhase::Operational,
+            construction_start_day: 0,
+            capacity_residents: 30,
+            capacity_jobs: 0,
+            occupancy_residents: 0,
+            occupancy_jobs: 0,
+            target_occupancy_residents: 0,
+            target_occupancy_jobs: 0,
+            parking_spots: Vec::new(),
+        })
+        .id();
+
+    app.world_mut()
+        .resource_mut::<bevy::ecs::message::Messages<DayAdvanced>>()
+        .write(DayAdvanced { day: 1 });
+
+    app.update();
+
+    let b = app.world().get::<Building>(e).unwrap();
+    assert!(
+        b.occupancy_residents > 0,
+        "occupancy should increase even when fill_days > 2 (was {})",
+        b.occupancy_residents
+    );
+}
+
 // ============================================================================
 // Tests for parking spots calculation
 // ============================================================================
