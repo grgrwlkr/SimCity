@@ -1,6 +1,5 @@
 use super::*;
 use crate::game::buildings::BuildingPhase;
-use crate::game::buildings::footprint_contains;
 use bevy_egui::{EguiContexts, egui};
 
 #[allow(clippy::too_many_arguments)] // UI builders often have many ECS params
@@ -29,13 +28,7 @@ pub(super) fn building_popup_ui(
     let building = building_index
         .as_deref()
         .and_then(|idx| idx.get(tile))
-        .and_then(|e| q_buildings.get(e).ok())
-        .or_else(|| {
-            // Fallback: find by footprint
-            q_buildings.iter().find(|b| {
-                footprint_contains(b.anchor_pos, b.footprint_width, b.footprint_length, tile)
-            })
-        });
+        .and_then(|e| q_buildings.get(e).ok());
 
     let Some(cell) = grid.get(tile) else {
         return;

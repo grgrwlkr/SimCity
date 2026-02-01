@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use crate::game::buildings::Building;
+use crate::game::buildings::{Building, for_each_footprint_tile};
 use crate::game::command_history::CommandHistory;
 use crate::game::roads::RoadDir;
 use crate::game::sets::GameSet;
@@ -162,7 +162,7 @@ pub(crate) struct BuildingEntityIndex {
     /// Dense tile-indexed lookup (avoids hashing in the UI inspector hot path).
     by_pos: Vec<Option<Entity>>,
     /// Reverse lookup to delete entries when entities despawn.
-    by_entity: HashMap<Entity, usize>,
+    by_entity: HashMap<Entity, Vec<usize>>,
 }
 
 impl BuildingEntityIndex {
@@ -184,6 +184,53 @@ impl BuildingEntityIndex {
         }
         let idx = (pos.y as usize) * (self.width as usize) + (pos.x as usize);
         self.by_pos.get(idx).copied().flatten()
+    }
+
+    fn remove_entity(&mut self, e: Entity) {
+        let Some(idxs) = self.by_entity.remove(&e) else {
+            return;
+        };
+        for idx in idxs {
+            if self.by_pos.get(idx).copied().flatten() == Some(e) {
+                self.by_pos[idx] = None;
+            }
+        }
+    }
+
+    fn insert_footprint(&mut self, e: Entity, b: &Building, grid: &MapGrid) {
+        // Ensure we don't leave stale mappings if this entity was re-used.
+        self.remove_entity(e);
+
+        let mut idxs: Vec<usize> = Vec::new();
+        for_each_footprint_tile(
+            b.anchor_pos,
+            b.footprint_width,
+            b.footprint_length,
+            |tile| {
+                let Some(tile_idx) = grid.idx(tile) else {
+                    return;
+                };
+
+                // If another building was mapped here, detach it.
+                if let Some(prev) = self.by_pos[tile_idx].replace(e)
+                    && prev != e
+                    && let Some(prev_idxs) = self.by_entity.get_mut(&prev)
+                {
+                    if let Some(i) = prev_idxs.iter().position(|x| *x == tile_idx) {
+                        prev_idxs.swap_remove(i);
+                    }
+                    if prev_idxs.is_empty() {
+                        self.by_entity.remove(&prev);
+                    }
+                }
+
+                idxs.push(tile_idx);
+            },
+        );
+
+        if !idxs.is_empty() {
+            self.by_entity.insert(e, idxs);
+        }
     }
 }
 
@@ -247,32 +294,11 @@ fn track_building_entity_index(
     index.ensure_sized(&grid);
 
     for (e, b) in q_added.iter() {
-        let Some(pos_idx) = grid.idx(b.anchor_pos) else {
-            continue;
-        };
-
-        // If this entity was previously tracked at some other tile, clear that old mapping.
-        if let Some(old_idx) = index.by_entity.insert(e, pos_idx)
-            && index.by_pos.get(old_idx).copied().flatten() == Some(e)
-        {
-            index.by_pos[old_idx] = None;
-        }
-
-        // New buildings win for the purpose of UI lookups (duplicates should not happen).
-        if let Some(prev) = index.by_pos[pos_idx].replace(e)
-            && prev != e
-        {
-            index.by_entity.remove(&prev);
-        }
+        index.insert_footprint(e, b, &grid);
     }
 
     for e in removed.read() {
-        let Some(pos_idx) = index.by_entity.remove(&e) else {
-            continue;
-        };
-        if index.by_pos.get(pos_idx).copied().flatten() == Some(e) {
-            index.by_pos[pos_idx] = None;
-        }
+        index.remove_entity(e);
     }
 }
 
