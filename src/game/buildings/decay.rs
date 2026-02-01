@@ -1,7 +1,7 @@
-use bevy::prelude::*;
 use bevy::ecs::message::MessageReader;
+use bevy::prelude::*;
 
-use crate::game::map::{DirtyTiles, MapGrid, TilePos};
+use crate::game::map::{DirtyTiles, MapEditVersion, MapGrid, TilePos};
 use crate::game::sim::City;
 use crate::game::sim_events::DayAdvanced;
 
@@ -49,6 +49,8 @@ pub fn building_decay_no_road_access(
     mut commands: Commands,
     mut grid: ResMut<MapGrid>,
     mut dirty: ResMut<DirtyTiles>,
+    // Tracks map edits when buildings are demolished.
+    mut map_edit_version: ResMut<MapEditVersion>,
     city: Res<City>,
     mut q: Query<(
         Entity,
@@ -97,24 +99,23 @@ pub fn building_decay_no_road_access(
 
         // Check if grace period expired (GDD: 1 game day)
         let days_without_access = current_day.saturating_sub(access_lost_day);
-        
+
         // Only add/update component if not expired yet (avoid adding component to entity we're about to despawn)
         if days_without_access < NO_ROAD_ACCESS_GRACE_DAYS {
             // Verify building still exists in grid before adding component
             // (another system might have despawned it)
-            let building_still_valid = grid.get(b.anchor_pos)
+            let building_still_valid = grid
+                .get(b.anchor_pos)
                 .map(|cell| {
-                    cell.building == Some(b.kind) && 
-                    !cell.water && 
-                    cell.zone == b.kind.as_zone()
+                    cell.building == Some(b.kind) && !cell.water && cell.zone == b.kind.as_zone()
                 })
                 .unwrap_or(false);
-            
+
             if !building_still_valid {
                 // Building was despawned by another system, skip
                 continue;
             }
-            
+
             // GDD 10.5.1: Visual indicator for service buildings without road access
             if matches!(
                 b.kind,
@@ -164,6 +165,7 @@ pub fn building_decay_no_road_access(
                 }
             }
         }
+        map_edit_version.bump();
 
         // Population is now calculated from occupancy, not subtracted here
         // The occupancy system will handle population changes

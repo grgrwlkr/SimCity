@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use crate::game::demand::RciDemand;
 use crate::game::land_value::LandValueIndex;
-use crate::game::map::{BuildingKind, DirtyTiles, MapConfig, MapGrid, TilePos};
+use crate::game::map::{BuildingKind, DirtyTiles, MapConfig, MapEditVersion, MapGrid, TilePos};
 use crate::game::notifications::{NotificationKind, Notifications};
 use crate::game::sim::City;
 use crate::game::sim_events::HourAdvanced;
@@ -25,6 +25,8 @@ pub struct GrowBuildingsParams<'w, 's> {
     city: ResMut<'w, City>,
     rng: ResMut<'w, BuildingGrowthRng>,
     dirty: ResMut<'w, DirtyTiles>,
+    /// Tracks map edits when buildings grow.
+    map_edit_version: ResMut<'w, MapEditVersion>,
     commands: Commands<'w, 's>,
     q_buildings: Query<'w, 's, &'static Building>,
     notifications: Option<ResMut<'w, Notifications>>,
@@ -134,6 +136,7 @@ pub fn grow_buildings(mut p: GrowBuildingsParams) {
             kind,
             &p.city,
         );
+        p.map_edit_version.bump();
 
         // Mark all footprint tiles as occupied
         for tile in &footprint_tiles {

@@ -3,7 +3,7 @@
 use bevy::prelude::*;
 
 use crate::game::buildings::Building;
-use crate::game::map::{BuildingKind, MapGrid, TilePos};
+use crate::game::map::{BuildingKind, MapEditVersion, MapGrid, TilePos};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 
@@ -14,6 +14,16 @@ pub struct PollutionIndex {
     chunk_size: usize,
     current_chunk: usize,
     needs_full_reset: bool,
+    /// True while a recompute pass is in progress.
+    dirty: bool,
+    /// Last observed map edit version.
+    last_map_edit_version: u64,
+    /// Cached anchors of industrial buildings.
+    buildings: Vec<TilePos>,
+    /// Cursor into `buildings` during recompute.
+    building_cursor: usize,
+    /// Precomputed kernel offsets for pollution spread.
+    kernel: Vec<PollutionKernelOffset>,
 }
 
 impl PollutionIndex {
@@ -37,10 +47,24 @@ impl Plugin for PollutionPlugin {
 
 /// Pollution radius from industrial buildings
 const POLLUTION_RADIUS: i32 = 10;
+const RESET_CHUNK_SIZE: usize = 256;
+const BUILDING_BATCH_TARGET_TICKS: usize = 20;
+const BUILDING_BATCH_MAX: usize = 64;
+
+#[derive(Debug, Copy, Clone)]
+struct PollutionKernelOffset {
+    /// Relative x offset from anchor.
+    dx: i32,
+    /// Relative y offset from anchor.
+    dy: i32,
+    /// Precomputed intensity contribution.
+    intensity: f32,
+}
 
 /// Compute pollution incrementally
 fn compute_pollution(
     grid: Res<MapGrid>,
+    edit_v: Res<MapEditVersion>,
     q_buildings: Query<&Building>,
     mut pollution: ResMut<PollutionIndex>,
 ) {
@@ -48,9 +72,31 @@ fn compute_pollution(
     if pollution.pollution.len() != len {
         pollution.pollution.clear();
         pollution.pollution.resize(len, 0.0);
-        pollution.chunk_size = 32; // Smaller chunks for pollution
+        pollution.chunk_size = RESET_CHUNK_SIZE;
         pollution.current_chunk = 0;
         pollution.needs_full_reset = true;
+        pollution.dirty = true;
+        pollution.last_map_edit_version = edit_v.0;
+        pollution.building_cursor = 0;
+        rebuild_industrial_building_list(&q_buildings, &mut pollution.buildings);
+        build_pollution_kernel(&mut pollution.kernel);
+    }
+
+    if pollution.kernel.is_empty() {
+        build_pollution_kernel(&mut pollution.kernel);
+    }
+
+    if pollution.last_map_edit_version != edit_v.0 {
+        pollution.last_map_edit_version = edit_v.0;
+        pollution.dirty = true;
+        pollution.needs_full_reset = true;
+        pollution.current_chunk = 0;
+        pollution.building_cursor = 0;
+        rebuild_industrial_building_list(&q_buildings, &mut pollution.buildings);
+    }
+
+    if !pollution.dirty {
+        return;
     }
 
     // Reset chunks incrementally
@@ -71,47 +117,97 @@ fn compute_pollution(
         return; // Reset phase - don't compute pollution yet
     }
 
-    // Compute pollution for current chunk
-    let tiles_per_chunk = pollution.chunk_size;
-    let start_idx = pollution.current_chunk * tiles_per_chunk;
-    let end_idx = (start_idx + tiles_per_chunk).min(len);
-
-    // For each industrial building, spread pollution to current chunk
-    for building in q_buildings.iter() {
-        if building.kind != BuildingKind::Industrial {
-            continue;
-        }
-
-        // Only spread to tiles in current chunk
-        // Use anchor position as center for pollution spread
-        for dy in -POLLUTION_RADIUS..=POLLUTION_RADIUS {
-            for dx in -POLLUTION_RADIUS..=POLLUTION_RADIUS {
-                let check_pos = TilePos {
-                    x: building.anchor_pos.x + dx,
-                    y: building.anchor_pos.y + dy,
-                };
-
-                if let Some(idx) = grid.idx(check_pos) {
-                    if idx < start_idx || idx >= end_idx {
-                        continue; // Not in current chunk
-                    }
-
-                    let distance = ((dx * dx + dy * dy) as f32).sqrt();
-                    if distance <= POLLUTION_RADIUS as f32 {
-                        // Intensity decreases with distance
-                        let intensity = 1.0 - (distance / POLLUTION_RADIUS as f32);
-                        let current = pollution.pollution[idx];
-                        // Accumulate pollution (max 1.0)
-                        pollution.pollution[idx] = (current + intensity * 0.3).min(1.0);
-                    }
-                }
-            }
-        }
-    }
-
-    pollution.current_chunk += 1;
-    if pollution.current_chunk * tiles_per_chunk >= len {
+    if pollution.buildings.is_empty() {
+        pollution.dirty = false;
+        pollution.needs_full_reset = true;
         pollution.current_chunk = 0;
-        pollution.needs_full_reset = true; // Start over for next full cycle
+        pollution.building_cursor = 0;
+        return;
     }
+
+    // Compute pollution by processing a batch of industrial buildings per tick.
+    let batch = buildings_per_tick(pollution.buildings.len());
+    let end = (pollution.building_cursor + batch).min(pollution.buildings.len());
+    let width = grid.width;
+    let height = grid.height;
+    let width_usize = width.max(0) as usize;
+    if width_usize == 0 {
+        pollution.dirty = false;
+        pollution.needs_full_reset = true;
+        pollution.current_chunk = 0;
+        pollution.building_cursor = 0;
+        return;
+    }
+
+    for anchor in &pollution.buildings[pollution.building_cursor..end] {
+        let base_x = anchor.x;
+        let base_y = anchor.y;
+        for k in pollution.kernel.iter() {
+            let x = base_x + k.dx;
+            let y = base_y + k.dy;
+            if x < 0 || y < 0 || x >= width || y >= height {
+                continue;
+            }
+            let idx = (y as usize) * width_usize + (x as usize);
+            if idx >= pollution.pollution.len() {
+                continue;
+            }
+            let next = pollution.pollution[idx] + k.intensity;
+            pollution.pollution[idx] = next.min(1.0);
+        }
+    }
+
+    pollution.building_cursor = end;
+    if pollution.building_cursor >= pollution.buildings.len() {
+        pollution.dirty = false;
+        pollution.needs_full_reset = true;
+        pollution.current_chunk = 0;
+        pollution.building_cursor = 0;
+    }
+}
+
+/// Builds the list of industrial building anchors for pollution updates.
+fn rebuild_industrial_building_list(q_buildings: &Query<&Building>, out: &mut Vec<TilePos>) {
+    out.clear();
+    out.extend(
+        q_buildings
+            .iter()
+            .filter(|b| b.kind == BuildingKind::Industrial)
+            .map(|b| b.anchor_pos),
+    );
+}
+
+/// Precomputes the pollution kernel offsets for the configured radius.
+fn build_pollution_kernel(out: &mut Vec<PollutionKernelOffset>) {
+    if !out.is_empty() {
+        return;
+    }
+
+    let r = POLLUTION_RADIUS;
+    let r2 = r * r;
+    let rf = r as f32;
+    for dy in -r..=r {
+        for dx in -r..=r {
+            let d2 = dx * dx + dy * dy;
+            if d2 > r2 {
+                continue;
+            }
+            let dist = (d2 as f32).sqrt();
+            let intensity = (1.0 - (dist / rf)).max(0.0) * 0.3;
+            if intensity <= 0.0 {
+                continue;
+            }
+            out.push(PollutionKernelOffset { dx, dy, intensity });
+        }
+    }
+}
+
+/// Computes how many buildings to process per tick for pollution updates.
+fn buildings_per_tick(total: usize) -> usize {
+    if total == 0 {
+        return 0;
+    }
+    let target = BUILDING_BATCH_TARGET_TICKS.max(1);
+    let per_tick = (total + target - 1) / target;
+    per_tick.clamp(1, BUILDING_BATCH_MAX)
 }
