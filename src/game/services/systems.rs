@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
 use crate::game::buildings::Building;
+use crate::game::buildings::any_footprint_tile;
 use crate::game::emergencies::Emergency;
 use crate::game::map::{MapConfig, MapGrid, TilePos};
 use crate::game::traffic::{Parked, Vehicle, VehicleTrafficState};
@@ -26,13 +27,12 @@ pub(crate) fn sync_service_stations_from_buildings(
         }
 
         // GDD 10.5.1: Service buildings must have road access to function
-        let mut has_road_access = false;
-        for tile in b.footprint_tiles() {
-            if adjacent_road_any(&grid, tile).is_some() {
-                has_road_access = true;
-                break;
-            }
-        }
+        let has_road_access = any_footprint_tile(
+            b.anchor_pos,
+            b.footprint_width,
+            b.footprint_length,
+            |tile| adjacent_road_any(&grid, tile).is_some(),
+        );
 
         // Only create station if building has road access
         if !has_road_access {

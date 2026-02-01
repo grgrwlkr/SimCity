@@ -6,6 +6,7 @@ use crate::game::sim::City;
 use crate::game::sim_events::DayAdvanced;
 
 use super::components::*;
+use super::footprint::{all_footprint_tiles, any_footprint_tile, for_each_footprint_tile};
 
 pub fn despawn_invalid_buildings(
     mut commands: Commands,
@@ -25,18 +26,15 @@ pub fn despawn_invalid_buildings(
             continue;
         }
         // Check all footprint tiles are still valid
-        let mut all_valid = true;
-        for tile in b.footprint_tiles() {
-            if let Some(cell) = grid.get(tile) {
-                if cell.water || cell.building != Some(b.kind) {
-                    all_valid = false;
-                    break;
-                }
-            } else {
-                all_valid = false;
-                break;
-            }
-        }
+        let all_valid = all_footprint_tiles(
+            b.anchor_pos,
+            b.footprint_width,
+            b.footprint_length,
+            |tile| {
+                grid.get(tile)
+                    .is_some_and(|cell| !cell.water && cell.building == Some(b.kind))
+            },
+        );
         if !all_valid {
             commands.entity(e).despawn();
         }
@@ -63,13 +61,12 @@ pub fn building_decay_no_road_access(
 
     for (e, b, decay, sprite) in q.iter_mut() {
         // Check if any tile in footprint has road access
-        let mut has_access = false;
-        for tile in b.footprint_tiles() {
-            if has_adjacent_road(&grid, tile) {
-                has_access = true;
-                break;
-            }
-        }
+        let has_access = any_footprint_tile(
+            b.anchor_pos,
+            b.footprint_width,
+            b.footprint_length,
+            |tile| has_adjacent_road(&grid, tile),
+        );
 
         if has_access {
             if decay.is_some() {
@@ -150,17 +147,22 @@ pub fn building_decay_no_road_access(
 
         // Demolish: remove from sim state and despawn entity.
         // Clear all footprint tiles
-        for tile in b.footprint_tiles() {
-            if let Some(mut cell) = grid.get(tile)
-                && cell.building == Some(b.kind)
-            {
-                cell.building = None;
-                grid.set(tile, cell);
-                if let Some(idx) = grid.idx(tile) {
-                    dirty.mark(idx);
+        for_each_footprint_tile(
+            b.anchor_pos,
+            b.footprint_width,
+            b.footprint_length,
+            |tile| {
+                if let Some(mut cell) = grid.get(tile)
+                    && cell.building == Some(b.kind)
+                {
+                    cell.building = None;
+                    grid.set(tile, cell);
+                    if let Some(idx) = grid.idx(tile) {
+                        dirty.mark(idx);
+                    }
                 }
-            }
-        }
+            },
+        );
 
         // Population is now calculated from occupancy, not subtracted here
         // The occupancy system will handle population changes

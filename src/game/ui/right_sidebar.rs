@@ -1,5 +1,6 @@
 use super::common::RightSidebarParams;
 use super::*;
+use crate::game::buildings::footprint_contains;
 use bevy_egui::{EguiContexts, egui};
 
 #[derive(Default)]
@@ -72,7 +73,14 @@ pub(super) fn right_sidebar_ui(
                                 .or_else(|| {
                                     p.q_buildings
                                         .iter()
-                                        .find(|b| b.footprint_tiles().contains(&tile))
+                                        .find(|b| {
+                                            footprint_contains(
+                                                b.anchor_pos,
+                                                b.footprint_width,
+                                                b.footprint_length,
+                                                tile,
+                                            )
+                                        })
                                         .cloned()
                                 });
                             if let Some(b) = b_found {

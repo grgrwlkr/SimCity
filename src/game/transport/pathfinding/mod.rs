@@ -72,6 +72,7 @@ struct CacheEntry {
 /// A very small, dependency-free cache (TTL + approximate LRU).
 #[derive(Resource, Debug, Default)]
 pub struct PathCache {
+    version: u64,
     map: HashMap<PathKey, CacheEntry>,
     // (key, last_used_sec_at_push) allows skipping stale deque entries
     lru: VecDeque<(PathKey, f64)>,
@@ -151,9 +152,10 @@ pub fn find_road_path_cached(
     start: TilePos,
     goal: TilePos,
 ) -> Vec<TilePos> {
-    if ctx.graph.version != ctx.cache.map.keys().next().map(|k| k.version).unwrap_or(0) {
+    if ctx.cache.version != ctx.graph.version {
         ctx.cache.map.clear();
         ctx.cache.lru.clear();
+        ctx.cache.version = ctx.graph.version;
     }
 
     let key = PathKey {
@@ -163,12 +165,10 @@ pub fn find_road_path_cached(
     };
 
     // Check cache
-    if let Some(entry) = ctx.cache.map.get(&key) {
-        // Touch for LRU
-        ctx.cache.lru.retain(|(k, _)| k != &key);
+    if let Some(entry) = ctx.cache.map.get_mut(&key) {
+        // Touch for approximate LRU. We allow duplicates in `lru` and drop stale entries during purge.
+        entry.last_used_sec = ctx.time_now_sec;
         ctx.cache.lru.push_back((key, ctx.time_now_sec));
-        // Update last_used_sec
-        // Note: We can't modify the entry directly since it's behind &mut, but we update on access
         return entry.path.clone();
     }
 

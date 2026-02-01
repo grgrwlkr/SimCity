@@ -31,6 +31,8 @@ impl Default for PathHandle {
 struct PathEntry {
     /// The actual path tiles.
     path: Vec<TilePos>,
+    /// Hash of the path content (used for dedup/removal without cloning).
+    path_hash: u64,
     /// Reference count (number of vehicles using this path).
     refcount: u32,
     /// Version/timestamp for cache invalidation.
@@ -53,8 +55,8 @@ pub struct PathPool {
     entries: Vec<PathEntry>,
     /// Free slots for reuse (indices into entries).
     free_slots: Vec<usize>,
-    /// Deduplication map: (path_hash, version) -> PathHandle
-    dedup: HashMap<(u64, u64), PathHandle>,
+    /// Deduplication map: (path_hash, version) -> handles (collision-safe).
+    dedup: HashMap<(u64, u64), Vec<PathHandle>>,
     /// Current version counter for cache invalidation.
     current_version: u64,
 }
@@ -114,18 +116,27 @@ impl PathPool {
 
         // Check if we already have this exact path at current version
         let key = (path_hash, self.current_version);
-        if let Some(&existing) = self.dedup.get(&key) {
-            // Increment refcount and return existing handle
-            if let Some(entry) = self.entries.get_mut(existing.0 as usize) {
-                entry.refcount = entry.refcount.saturating_add(1);
+        if let Some(handles) = self.dedup.get(&key) {
+            for &existing in handles {
+                if let Some(entry) = self.entries.get(existing.0 as usize)
+                    && entry.refcount > 0
+                    && entry.version == self.current_version
+                    && entry.path == path
+                {
+                    // Increment refcount and return existing handle
+                    if let Some(entry) = self.entries.get_mut(existing.0 as usize) {
+                        entry.refcount = entry.refcount.saturating_add(1);
+                    }
+                    return existing;
+                }
             }
-            return existing;
         }
 
         // Need to create new entry
         let length_world = self.compute_length_world(&path);
         let entry = PathEntry {
             path,
+            path_hash,
             refcount: 1,
             version: self.current_version,
             length_world,
@@ -144,7 +155,7 @@ impl PathPool {
         let handle = PathHandle(idx as u32);
 
         // Add to dedup map
-        self.dedup.insert(key, handle);
+        self.dedup.entry(key).or_default().push(handle);
 
         handle
     }
@@ -166,23 +177,16 @@ impl PathPool {
             return;
         }
 
-        // Check if we need to remove from dedup first (before modifying entry)
-        let should_remove_from_dedup = if let Some(entry) = self.entries.get(handle.0 as usize) {
-            entry.refcount == 1 // Will become 0 after decrement
-        } else {
-            false
-        };
-
-        let (path_hash, version) = if should_remove_from_dedup {
-            if let Some(entry) = self.entries.get(handle.0 as usize) {
-                let path = entry.path.clone();
-                let path_hash = self.compute_path_hash(&path);
-                (Some(path_hash), Some(entry.version))
-            } else {
-                (None, None)
-            }
-        } else {
-            (None, None)
+        let Some((key_hash, key_version, will_free)) =
+            self.entries.get(handle.0 as usize).map(|e| {
+                (
+                    e.path_hash,
+                    e.version,
+                    e.refcount == 1, // Will become 0 after decrement
+                )
+            })
+        else {
+            return;
         };
 
         if let Some(entry) = self.entries.get_mut(handle.0 as usize) {
@@ -191,8 +195,14 @@ impl PathPool {
                 // Mark slot as free
                 self.free_slots.push(handle.0 as usize);
                 // Remove from dedup
-                if let (Some(path_hash), Some(version)) = (path_hash, version) {
-                    self.dedup.remove(&(path_hash, version));
+                if will_free {
+                    let key = (key_hash, key_version);
+                    if let Some(handles) = self.dedup.get_mut(&key) {
+                        handles.retain(|h| *h != handle);
+                        if handles.is_empty() {
+                            self.dedup.remove(&key);
+                        }
+                    }
                 }
             }
         }
@@ -209,20 +219,21 @@ impl PathPool {
     #[allow(dead_code)] // Public API method
     pub fn stats(&self) -> PathPoolStats {
         let used_slots = self.entries.len() - self.free_slots.len();
+        let dedup_handles = self.dedup.values().map(|v| v.len()).sum::<usize>();
         let total_memory = self
             .entries
             .iter()
             .map(|e| e.path.len() * std::mem::size_of::<TilePos>())
             .sum::<usize>()
             + self.entries.len() * std::mem::size_of::<PathEntry>()
-            + self.dedup.len()
-                * (std::mem::size_of::<(u64, u64)>() + std::mem::size_of::<PathHandle>());
+            + self.dedup.len() * std::mem::size_of::<(u64, u64)>()
+            + dedup_handles * std::mem::size_of::<PathHandle>();
 
         PathPoolStats {
             total_entries: self.entries.len(),
             used_entries: used_slots,
             free_entries: self.free_slots.len(),
-            dedup_entries: self.dedup.len(),
+            dedup_entries: dedup_handles,
             total_memory_bytes: total_memory,
             current_version: self.current_version,
         }

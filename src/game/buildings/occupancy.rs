@@ -5,6 +5,7 @@ use crate::game::demand::RciDemand;
 use crate::game::sim_events::DayAdvanced;
 
 use super::components::Building;
+use super::footprint::any_footprint_tile;
 use crate::game::map::BuildingKind;
 
 /// Calculate pressure from demand using sigmoid function (GDD 10.3.5.1)
@@ -62,25 +63,26 @@ pub fn update_occupancy(
             }
 
             // GDD 10.5.1: Buildings without road access cannot function
-            let mut has_road_access = false;
-            for tile in building.footprint_tiles() {
-                // Check if tile has adjacent road
-                for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                    let neighbor = crate::game::map::TilePos {
-                        x: tile.x + dx,
-                        y: tile.y + dy,
-                    };
-                    if let Some(cell) = grid.get(neighbor)
-                        && cell.road.is_some()
-                    {
-                        has_road_access = true;
-                        break;
+            let has_road_access = any_footprint_tile(
+                building.anchor_pos,
+                building.footprint_width,
+                building.footprint_length,
+                |tile| {
+                    // Check if this footprint tile has any adjacent road.
+                    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                        let neighbor = crate::game::map::TilePos {
+                            x: tile.x + dx,
+                            y: tile.y + dy,
+                        };
+                        if let Some(cell) = grid.get(neighbor)
+                            && cell.road.is_some()
+                        {
+                            return true;
+                        }
                     }
-                }
-                if has_road_access {
-                    break;
-                }
-            }
+                    false
+                },
+            );
 
             // If no road access, set target occupancy to 0 and decrease current occupancy
             if !has_road_access {

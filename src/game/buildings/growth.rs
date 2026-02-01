@@ -12,6 +12,7 @@ use crate::game::sim_events::HourAdvanced;
 use bevy::ecs::message::MessageReader;
 
 use super::components::*;
+use super::footprint::{any_footprint_tile, for_each_footprint_tile};
 use super::spawn::spawn_building_entity;
 use super::zone_depth::{MAX_ZONE_DEPTH, is_footprint_within_zone_depth};
 
@@ -63,9 +64,14 @@ pub fn grow_buildings(mut p: GrowBuildingsParams) {
     // Track all tiles occupied by building footprints
     let mut occupied = HashSet::<TilePos>::new();
     for b in &p.q_buildings {
-        for tile in b.footprint_tiles() {
-            occupied.insert(tile);
-        }
+        for_each_footprint_tile(
+            b.anchor_pos,
+            b.footprint_width,
+            b.footprint_length,
+            |tile| {
+                occupied.insert(tile);
+            },
+        );
     }
 
     let len = p.grid.len();
@@ -341,11 +347,12 @@ fn try_footprint_at(
                     continue;
                 }
 
-                let building_tiles = building.footprint_tiles();
-                let building_has_this_road = building_tiles.iter().any(|bt| {
-                    // Check if building tile is adjacent to the same road tile
-                    (bt.x - road_tile.x).abs() + (bt.y - road_tile.y).abs() == 1
-                });
+                let building_has_this_road = any_footprint_tile(
+                    building.anchor_pos,
+                    building.footprint_width,
+                    building.footprint_length,
+                    |bt| (bt.x - road_tile.x).abs() + (bt.y - road_tile.y).abs() == 1,
+                );
 
                 if building_has_this_road {
                     // Check if any tile in the new footprint is "behind" this building
@@ -358,15 +365,17 @@ fn try_footprint_at(
 
                         // Check if new tile is in the same "direction" from road as the building
                         // Simple heuristic: if building extends in a direction, new tile shouldn't be further in that direction
-                        let building_max_dist = building_tiles
-                            .iter()
-                            .map(|bt| {
+                        let mut building_max_dist = 0;
+                        for_each_footprint_tile(
+                            building.anchor_pos,
+                            building.footprint_width,
+                            building.footprint_length,
+                            |bt| {
                                 let dx = bt.x - road_tile.x;
                                 let dy = bt.y - road_tile.y;
-                                dx.abs() + dy.abs()
-                            })
-                            .max()
-                            .unwrap_or(0);
+                                building_max_dist = building_max_dist.max(dx.abs() + dy.abs());
+                            },
+                        );
 
                         let new_tile_dist =
                             (new_tile.x - road_tile.x).abs() + (new_tile.y - road_tile.y).abs();

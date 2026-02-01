@@ -3,6 +3,7 @@
 mod components;
 mod construction;
 mod decay;
+mod footprint;
 mod growth;
 mod occupancy;
 mod population;
@@ -16,6 +17,7 @@ mod tests;
 pub use components::*;
 pub use construction::*;
 pub use decay::*;
+pub use footprint::*;
 pub use growth::*;
 pub use occupancy::update_occupancy;
 pub use spawn::spawn_building_entity;

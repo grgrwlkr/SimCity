@@ -120,15 +120,19 @@ fn sim_tick(
     clock.timer.tick(time.delta());
 
     // Each timer completion = 1 game hour
-    // Limit iterations to prevent infinite loop if delta is very large (e.g., after load/pause)
+    // Limit iterations to prevent huge catch-up if delta is very large (e.g., after load/pause).
     const MAX_HOURS_PER_TICK: u32 = 24; // Max 1 day per tick
-    let mut hours_processed = 0u32;
 
-    while clock.timer.just_finished() && hours_processed < MAX_HOURS_PER_TICK {
+    let finished = clock.timer.times_finished_this_tick();
+    if finished == 0 {
+        return;
+    }
+
+    let hours_to_process = finished.min(MAX_HOURS_PER_TICK);
+    for _ in 0..hours_to_process {
         city.hour = (city.hour + 1) % 24;
-        hours_processed += 1;
 
-        // Emit hour advanced event (GDD: systems update every game hour)
+        // Emit hour advanced message (GDD: systems update every game hour)
         hour_out.write(HourAdvanced {
             hour: city.hour,
             day: city.day,
@@ -141,12 +145,11 @@ fn sim_tick(
         }
     }
 
-    // If we hit the limit, reset timer to prevent accumulation
-    // This can happen after loading a save or when resuming from a long pause
-    if hours_processed >= MAX_HOURS_PER_TICK {
+    // If we hit the limit, reset timer to prevent accumulating a backlog.
+    if finished > MAX_HOURS_PER_TICK {
         info!(
-            "Sim tick processed maximum hours ({}), resetting timer to prevent lag",
-            MAX_HOURS_PER_TICK
+            "Sim tick processed {} hours (clamped to {}), resetting timer to prevent lag",
+            finished, MAX_HOURS_PER_TICK
         );
         clock.timer.reset();
     }

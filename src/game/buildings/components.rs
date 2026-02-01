@@ -59,6 +59,7 @@ pub struct Building {
 
 impl Building {
     /// Get all tile positions occupied by this building's footprint
+    #[allow(dead_code)] // Prefer `buildings::for_each_footprint_tile` / `footprint_contains` in hot paths
     pub fn footprint_tiles(&self) -> Vec<crate::game::map::TilePos> {
         let mut tiles = Vec::new();
         for dx in 0..(self.footprint_width as i32) {
