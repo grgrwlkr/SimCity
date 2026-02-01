@@ -41,7 +41,12 @@ impl Plugin for PedestriansPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                (agents::spawn_walkers, agents::move_walkers)
+                (
+                    agents::spawn_walkers,
+                    agents::move_walkers,
+                    agents::update_pedestrian_blocked_timers,
+                )
+                    .chain()
                     .in_set(GameSet::Sim)
                     .run_if(in_state(AppState::InGame)),
             );

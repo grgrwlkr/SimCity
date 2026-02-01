@@ -27,6 +27,7 @@ pub struct TrafficLight {
     /// Stable key (used to reconcile entities across graph rebuilds).
     pub intersection_key: IntersectionKey,
     /// Position used for visuals.
+    #[allow(dead_code)] // Used by tests/visuals; not read in logic yet
     pub pos: TilePos,
     /// Current light phase
     pub phase: LightPhase,

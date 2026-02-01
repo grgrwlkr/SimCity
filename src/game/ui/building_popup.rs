@@ -2,6 +2,7 @@ use super::*;
 use crate::game::buildings::BuildingPhase;
 use bevy_egui::{EguiContexts, egui};
 
+#[allow(clippy::too_many_arguments)] // UI builders often have many ECS params
 pub(super) fn building_popup_ui(
     mut contexts: EguiContexts,
     state: Res<State<AppState>>,

@@ -412,7 +412,7 @@ fn right_turn_on_red_speed_is_capped_to_turn_speed() {
     // TODO: Re-enable update_vehicle_traffic_state system and restore this check
     // assert!(app.world().get::<RightTurnOnRed>(ego).is_some());
     let v = app.world().get::<Vehicle>(ego).unwrap();
-    let cap = kmh_to_world_speed(
+    let _cap = kmh_to_world_speed(
         app.world().resource::<MapConfig>(),
         app.world().resource::<TrafficConfig>(),
         RIGHT_ON_RED_TURN_MAX_KMH,

@@ -79,25 +79,24 @@ fn find_approach_tiles(
             };
 
             // Check if this neighbor is a road tile (not intersection) that points toward the intersection
-            if let Some(cell) = grid.get(neighbor) {
-                if cell.road.is_some()
-                    && cell.road.dir != RoadDir::None
-                    && !intersection_set.contains(&neighbor)
-                    && intersections.intersection_id_at(neighbor).is_none()
-                {
-                    // Check if the road direction points toward the intersection
-                    let road_dir = cell.road.dir;
-                    let points_toward = match (road_dir, dir) {
-                        (RoadDir::North, RoadDir::South) => true, // Road goes north, intersection is south
-                        (RoadDir::South, RoadDir::North) => true, // Road goes south, intersection is north
-                        (RoadDir::East, RoadDir::West) => true, // Road goes east, intersection is west
-                        (RoadDir::West, RoadDir::East) => true, // Road goes west, intersection is east
-                        _ => false,
-                    };
+            if let Some(cell) = grid.get(neighbor)
+                && cell.road.is_some()
+                && cell.road.dir != RoadDir::None
+                && !intersection_set.contains(&neighbor)
+                && intersections.intersection_id_at(neighbor).is_none()
+            {
+                // Check if the road direction points toward the intersection
+                let road_dir = cell.road.dir;
+                let points_toward = match (road_dir, dir) {
+                    (RoadDir::North, RoadDir::South) => true, // Road goes north, intersection is south
+                    (RoadDir::South, RoadDir::North) => true, // Road goes south, intersection is north
+                    (RoadDir::East, RoadDir::West) => true, // Road goes east, intersection is west
+                    (RoadDir::West, RoadDir::East) => true, // Road goes west, intersection is east
+                    _ => false,
+                };
 
-                    if points_toward {
-                        approaches.push((neighbor, road_dir));
-                    }
+                if points_toward {
+                    approaches.push((neighbor, road_dir));
                 }
             }
         }

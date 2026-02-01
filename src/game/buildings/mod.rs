@@ -20,7 +20,6 @@ pub use growth::*;
 pub use occupancy::update_occupancy;
 pub use spawn::spawn_building_entity;
 pub use upgrade::*;
-pub(crate) use zone_depth::*;
 
 // Re-export functions that were in the original file
 pub use components::{apply_building_tuning, cleanup_buildings, reset_building_upgrade_clock};
@@ -73,8 +72,8 @@ impl Plugin for BuildingsPlugin {
                 FixedUpdate,
                 (
                     grow_buildings,
+                    despawn_invalid_buildings.before(building_decay_no_road_access),
                     building_decay_no_road_access,
-                    despawn_invalid_buildings,
                     upgrade_buildings,
                 )
                     .in_set(GameSet::Sim)

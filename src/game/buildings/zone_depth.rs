@@ -1,7 +1,7 @@
 use crate::game::map::{MapGrid, TilePos};
 
-/// Maximum depth for zoning from roads (GDD 10.2.2)
-pub const MAX_ZONE_DEPTH: u8 = 6;
+/// Maximum depth for zoning from roads (GDD 10.2.2: strictly 3 tiles)
+pub const MAX_ZONE_DEPTH: u8 = 3;
 
 /// Check if a tile is within the maximum zone depth from a road.
 /// Uses BFS to find the nearest road within max_depth tiles.
@@ -13,10 +13,10 @@ pub fn is_within_zone_depth(tile: TilePos, grid: &MapGrid, max_depth: u8) -> boo
     }
 
     // If the tile itself is a road, it's valid
-    if let Some(cell) = grid.get(tile) {
-        if cell.road.is_some() {
-            return true;
-        }
+    if let Some(cell) = grid.get(tile)
+        && cell.road.is_some()
+    {
+        return true;
     }
 
     // BFS to find nearest road

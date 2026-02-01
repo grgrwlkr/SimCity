@@ -376,10 +376,10 @@ pub fn generate_test_city(
                 continue;
             }
             // Check if current tile has a road
-            if let Some(cell) = grid.get(current) {
-                if cell.road.is_some() {
-                    return true;
-                }
+            if let Some(cell) = grid.get(current)
+                && cell.road.is_some()
+            {
+                return true;
             }
             // Check neighbors
             for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {

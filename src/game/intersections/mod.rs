@@ -7,8 +7,10 @@ mod index;
 mod lights;
 mod render;
 
+#[allow(unused_imports)] // Re-exported for convenience (used by other modules/tests)
+pub use index::IntersectionCluster;
 pub use index::{
-    IntersectionCluster, IntersectionId, IntersectionIndex, IntersectionKey, IntersectionPriority,
+    IntersectionId, IntersectionIndex, IntersectionKey, IntersectionPriority,
     IntersectionPriorityMarker, build_intersection_clusters,
 };
 pub use lights::{LightPhase, TrafficLight};

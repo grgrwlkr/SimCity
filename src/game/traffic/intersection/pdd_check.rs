@@ -23,6 +23,7 @@ use crate::game::roads::{RoadDir, RoadKind};
 /// - Если есть знак "Уступи дорогу" - уступает
 /// - Если дороги равнозначны - применяется "помеха справа"
 /// - Главная дорога определяется по ширине/типу (более широкая = главная)
+#[allow(dead_code)] // Reserved for future PDD-based admission rules
 pub fn should_yield_at_uncontrolled_intersection(
     _entry_dir: RoadDir,
     _entry_road_kind: RoadKind,
@@ -44,6 +45,7 @@ pub fn should_yield_at_uncontrolled_intersection(
 ///
 /// Правило: более широкая дорога = главная.
 /// Если равны - дороги равнозначны.
+#[allow(dead_code)] // Reserved for future PDD-based admission rules
 pub fn is_main_road(road_kind: RoadKind, other_road_kind: RoadKind) -> bool {
     // Сравнение по ширине (используем capacity_per_lane_tile как прокси для ширины)
     // Более широкая дорога имеет больше capacity
@@ -55,6 +57,7 @@ pub fn is_main_road(road_kind: RoadKind, other_road_kind: RoadKind) -> bool {
 /// Проверить "помеху справа" для равнозначных дорог.
 ///
 /// Правило ПДД: при равнозначных дорогах уступает тот, у кого помеха справа.
+#[allow(dead_code)] // Reserved for future PDD-based admission rules
 pub fn has_right_of_way_obstacle(entry_dir: RoadDir, other_entry_dir: RoadDir) -> bool {
     // Определить, находится ли other_entry_dir справа от entry_dir
     let right_dir = entry_dir.right();

@@ -4,9 +4,12 @@ use rand::prelude::*;
 /// Visual scaling (buildings)
 // We want building visuals to grow with level. The Sprite uses a base size of `tile_size` and the
 // Transform scale encodes the level-dependent factor (so we don't double-apply scaling).
+#[allow(dead_code)] // Reserved for future level-based visual scaling
 const BUILDING_LEVEL1_SCALE: f32 = 0.75;
+#[allow(dead_code)] // Reserved for future level-based visual scaling
 const BUILDING_LEVEL_SCALE_STEP: f32 = 0.15; // lvl2=0.90, lvl3=1.05
 
+#[allow(dead_code)] // Reserved for future level-based visual scaling
 pub fn building_visual_scale(level: u8) -> f32 {
     let lvl = level.clamp(1, 3) as f32;
     BUILDING_LEVEL1_SCALE + (lvl - 1.0) * BUILDING_LEVEL_SCALE_STEP
@@ -37,6 +40,7 @@ pub struct Building {
     /// Current construction/operational phase
     pub phase: BuildingPhase,
     /// Day when construction started (for tracking progress)
+    #[allow(dead_code)] // Persisted for save/analytics; not used yet
     pub construction_start_day: u32,
     pub capacity_residents: u16,
     pub capacity_jobs: u16,
@@ -74,6 +78,7 @@ impl Building {
     }
 
     /// Legacy: get the primary position (anchor_pos for compatibility)
+    #[allow(dead_code)] // Legacy helper for old callsites/tests
     pub fn pos(&self) -> crate::game::map::TilePos {
         self.anchor_pos
     }
@@ -135,12 +140,14 @@ impl Default for BuildingTuning {
 }
 
 /// When a building loses road access, start a demolition countdown.
+/// GDD: Grace period is 1 game day
 #[derive(Component, Debug, Copy, Clone)]
 pub struct NoRoadAccessDecay {
-    pub remaining_secs: f32,
+    /// Day when access was lost (GDD: tracked in game days)
+    pub access_lost_day: u32,
 }
 
-pub const NO_ROAD_ACCESS_GRACE_SECS: f32 = 20.0;
+pub const NO_ROAD_ACCESS_GRACE_DAYS: u32 = 1;
 
 #[derive(Resource)]
 pub struct BuildingGrowthClock {

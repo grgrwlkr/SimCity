@@ -70,11 +70,11 @@ pub fn update_occupancy(
                         x: tile.x + dx,
                         y: tile.y + dy,
                     };
-                    if let Some(cell) = grid.get(neighbor) {
-                        if cell.road.is_some() {
-                            has_road_access = true;
-                            break;
-                        }
+                    if let Some(cell) = grid.get(neighbor)
+                        && cell.road.is_some()
+                    {
+                        has_road_access = true;
+                        break;
                     }
                 }
                 if has_road_access {

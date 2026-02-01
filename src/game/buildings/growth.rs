@@ -8,7 +8,8 @@ use crate::game::land_value::LandValueIndex;
 use crate::game::map::{BuildingKind, DirtyTiles, MapConfig, MapGrid, TilePos};
 use crate::game::notifications::{NotificationKind, Notifications};
 use crate::game::sim::City;
-use crate::game::ui_state::UiState;
+use crate::game::sim_events::HourAdvanced;
+use bevy::ecs::message::MessageReader;
 
 use super::components::*;
 use super::spawn::spawn_building_entity;
@@ -16,14 +17,12 @@ use super::zone_depth::{MAX_ZONE_DEPTH, is_footprint_within_zone_depth};
 
 #[derive(SystemParam)]
 pub struct GrowBuildingsParams<'w, 's> {
-    time: Res<'w, Time<Fixed>>,
-    ui: Res<'w, UiState>,
+    hour_events: MessageReader<'w, 's, HourAdvanced>,
     cfg: Res<'w, MapConfig>,
     grid: ResMut<'w, MapGrid>,
     demand: Res<'w, RciDemand>,
     land_value: Option<Res<'w, LandValueIndex>>,
     city: ResMut<'w, City>,
-    clock: ResMut<'w, BuildingGrowthClock>,
     rng: ResMut<'w, BuildingGrowthRng>,
     dirty: ResMut<'w, DirtyTiles>,
     commands: Commands<'w, 's>,
@@ -31,16 +30,10 @@ pub struct GrowBuildingsParams<'w, 's> {
     notifications: Option<ResMut<'w, Notifications>>,
 }
 
+/// GDD: Building growth happens every 1 game hour (via HourAdvanced event)
 pub fn grow_buildings(mut p: GrowBuildingsParams) {
-    let speed = p.ui.sim_speed.multiplier();
-    if speed <= 0.0 {
-        return;
-    }
-
-    p.clock
-        .timer
-        .tick(p.time.delta().mul_f32(speed.clamp(0.0, 8.0)));
-    if !p.clock.timer.just_finished() {
+    // Trigger on every hour advanced (GDD: each 1 game hour)
+    if p.hour_events.read().count() == 0 {
         return;
     }
 
@@ -266,6 +259,7 @@ fn find_best_footprint(
 /// Try to place a footprint at a specific anchor position.
 /// Returns Some(Footprint) if valid, None otherwise.
 /// GDD 10.1.3: RCI buildings cannot be built "behind" other buildings (blocking rule).
+#[allow(clippy::too_many_arguments)]
 fn try_footprint_at(
     anchor: TilePos,
     width: u8,
@@ -288,9 +282,7 @@ fn try_footprint_at(
             };
 
             // Check if tile is valid
-            let Some(cell) = grid.get(tile) else {
-                return None;
-            };
+            let cell = grid.get(tile)?;
 
             // Check basic constraints
             if cell.water || cell.road.is_some() || cell.building.is_some() {
@@ -311,7 +303,7 @@ fn try_footprint_at(
         }
     }
 
-    // Check zone depth (GDD 10.2.2): all tiles must be within 6 tiles of a road
+    // Check zone depth (GDD 10.2.2): all tiles must be within 3 tiles of a road
     if !is_footprint_within_zone_depth(anchor, width, length, grid, MAX_ZONE_DEPTH) {
         return None;
     }
@@ -488,6 +480,7 @@ fn has_adjacent_road(grid: &MapGrid, pos: TilePos) -> bool {
 }
 
 /// Find the nearest road tile to a given position using BFS (for blocking rule check)
+#[allow(dead_code)] // Reserved for future, more accurate blocking rule checks
 fn find_nearest_road_tile(grid: &MapGrid, start: TilePos) -> Option<TilePos> {
     use std::collections::VecDeque;
     let mut queue = VecDeque::new();
@@ -503,10 +496,10 @@ fn find_nearest_road_tile(grid: &MapGrid, start: TilePos) -> Option<TilePos> {
                     x: current.x + dx,
                     y: current.y + dy,
                 };
-                if let Some(cell) = grid.get(neighbor) {
-                    if cell.road.is_some() {
-                        return Some(neighbor);
-                    }
+                if let Some(cell) = grid.get(neighbor)
+                    && cell.road.is_some()
+                {
+                    return Some(neighbor);
                 }
             }
         }

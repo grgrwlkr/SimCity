@@ -211,18 +211,21 @@ fn is_footprint_within_zone_depth_checks_all_tiles() {
     let width = 3;
     let length = 3;
 
-    // Place road adjacent to the footprint (at y=9, directly north of anchor)
-    // This ensures all tiles in the 3x3 footprint are within MAX_ZONE_DEPTH = 6
-    let road_pos = TilePos { x: 10, y: 9 };
-    let mut cell = grid.get(road_pos).unwrap();
-    cell.road = crate::game::roads::RoadCell {
-        kind: crate::game::roads::RoadKind::TwoLane,
-        dir: crate::game::roads::RoadDir::East,
-        lane: 0,
-        flow: crate::game::roads::RoadFlow::TwoWay,
-        lane_type: crate::game::roads::LaneType::Regular,
-    };
-    grid.set(road_pos, cell);
+    // Place a short road strip directly north of the footprint.
+    // With MAX_ZONE_DEPTH = 3 (GDD: strictly 3 tiles), every tile in the 3x3 footprint must be
+    // within 3 steps of *some* road tile, so we span the whole footprint width.
+    for x in anchor.x..(anchor.x + width as i32) {
+        let road_pos = TilePos { x, y: anchor.y - 1 };
+        let mut cell = grid.get(road_pos).unwrap();
+        cell.road = crate::game::roads::RoadCell {
+            kind: crate::game::roads::RoadKind::TwoLane,
+            dir: crate::game::roads::RoadDir::East,
+            lane: 0,
+            flow: crate::game::roads::RoadFlow::TwoWay,
+            lane_type: crate::game::roads::LaneType::Regular,
+        };
+        grid.set(road_pos, cell);
+    }
 
     assert!(is_footprint_within_zone_depth(
         anchor,
@@ -350,19 +353,4 @@ fn calculate_parking_spots_respects_footprint_bounds() {
 // Integration tests for footprint finding algorithm
 // ============================================================================
 
-#[test]
-fn footprint_priority_area_then_length_then_width() {
-    // This test verifies the sorting logic in find_best_footprint
-    // We can't directly test the private function, but we can verify
-    // that the algorithm would prefer larger footprints
-
-    // 6x6 (area 36) should be preferred over 5x5 (area 25)
-    // 6x5 (area 30) should be preferred over 5x6 (area 30) because length (6) > length (5)
-    // Both have same area, but 6x5 has longer length
-
-    // This is more of a documentation test - the actual algorithm
-    // is tested through integration with the growth system
-    assert!(36 > 25); // 6x6 > 5x5
-    assert_eq!(6 * 5, 5 * 6); // Same area
-    assert!(6 > 5); // But 6x5 has longer length
-}
+// NOTE: footprint preference is validated indirectly via growth/placement integration tests.

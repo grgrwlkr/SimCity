@@ -68,13 +68,13 @@ mod tests {
     use crate::game::scenarios::Scenario;
     use crate::game::sim::City;
 
-    fn parse_required<T>(path: &str)
+    fn parse_required<T>(path: &str) -> T
     where
         T: serde::de::DeserializeOwned,
     {
         let text =
             fs::read_to_string(path).unwrap_or_else(|e| panic!("Failed to read {path}: {e}"));
-        ron::from_str::<T>(&text).unwrap_or_else(|e| panic!("Failed to parse {path}: {e}"));
+        ron::from_str::<T>(&text).unwrap_or_else(|e| panic!("Failed to parse {path}: {e}"))
     }
 
     #[test]
