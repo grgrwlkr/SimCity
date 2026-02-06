@@ -62,18 +62,7 @@ pub enum SimSpeed {
 }
 
 impl SimSpeed {
-    /// Returns the real-time duration (in seconds) for one game hour at this speed.
-    /// x1 = 1.0 sec/hour (24s/day), x2 = 0.5 sec/hour (12s/day), x3 = ~0.167 sec/hour (4s/day)
-    pub fn secs_per_game_hour(self) -> f32 {
-        match self {
-            SimSpeed::Paused => 0.0,
-            SimSpeed::X1 => 1.0,
-            SimSpeed::X2 => 0.5,
-            SimSpeed::X3 => 1.0 / 6.0, // ~0.167 => 24h in ~4 real seconds
-        }
-    }
-
-    /// Multiplier relative to x1 speed (used by systems that scale dt).
+    /// Multiplier relative to x1 speed (drives virtual time scaling).
     pub fn multiplier(self) -> f32 {
         match self {
             SimSpeed::Paused => 0.0,

@@ -1,6 +1,7 @@
 use bevy::ecs::message::MessageReader;
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
+use bevy::time::Real;
 use bevy_egui::PrimaryEguiContext;
 
 use crate::game::sets::GameSet;
@@ -44,7 +45,7 @@ fn in_game_or_paused(state: Res<State<AppState>>) -> bool {
 }
 
 fn camera_keyboard_pan(
-    time: Res<Time>,
+    time: Res<Time<Real>>,
     keys: Res<ButtonInput<KeyCode>>,
     mut q_cam: Query<&mut Transform, With<MainCamera>>,
 ) {

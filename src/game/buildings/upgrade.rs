@@ -1,18 +1,15 @@
 use bevy::prelude::*;
 use rand::Rng;
 
+use super::components::*;
 use crate::game::demand::RciDemand;
 use crate::game::map::{BuildingKind, MapConfig};
 use crate::game::notifications::{NotificationKind, Notifications};
 use crate::game::sim::City;
-use crate::game::ui_state::UiState;
-
-use super::components::*;
 
 #[allow(clippy::too_many_arguments)]
 pub fn upgrade_buildings(
     time: Res<Time<Fixed>>,
-    ui: Res<UiState>,
     demand: Res<RciDemand>,
     mut rng: ResMut<BuildingGrowthRng>,
     _city: ResMut<City>,
@@ -21,12 +18,7 @@ pub fn upgrade_buildings(
     cfg: Res<MapConfig>,
     mut q_buildings: Query<(&mut Building, &mut Transform, &mut Sprite)>,
 ) {
-    let speed = ui.sim_speed.multiplier();
-    if speed <= 0.0 {
-        return;
-    }
-
-    let dt = time.delta_secs() * speed.clamp(0.0, 8.0);
+    let dt = time.delta_secs();
 
     upgrade_clock
         .timer

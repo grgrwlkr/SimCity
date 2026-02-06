@@ -1,6 +1,7 @@
 use bevy::ecs::message::MessageWriter;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
+use bevy::time::Real;
 use bevy::window::PrimaryWindow;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use std::collections::VecDeque;
@@ -168,7 +169,7 @@ fn reset_debug_telemetry(mut telemetry: ResMut<DebugTelemetry>, mut ui: ResMut<D
 
 #[allow(clippy::too_many_arguments)]
 fn collect_debug_telemetry(
-    time: Res<Time>,
+    time: Res<Time<Real>>,
     state: Res<State<AppState>>,
     ui_state: Res<UiState>,
     city: Res<City>,

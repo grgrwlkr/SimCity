@@ -1,10 +1,10 @@
 use bevy::prelude::*;
-use bevy::time::Fixed;
+use bevy::time::{Fixed, TimeSystems, Virtual};
 
 use crate::game::sets::GameSet;
 use crate::game::sim_events::{DayAdvanced, HourAdvanced};
 use crate::game::state::AppState;
-use crate::game::ui_state::UiState;
+use crate::game::ui_state::{SimSpeed, UiState};
 
 pub struct SimPlugin;
 
@@ -13,6 +13,7 @@ impl Plugin for SimPlugin {
         app.init_resource::<City>()
             .init_resource::<SimClock>()
             .add_message::<HourAdvanced>()
+            .add_systems(First, sync_sim_speed.before(TimeSystems))
             .add_systems(
                 OnEnter(AppState::InGame),
                 (reset_city_for_new_game, emit_initial_day_advanced).chain(),
@@ -63,10 +64,33 @@ pub struct SimClock {
 
 impl Default for SimClock {
     fn default() -> Self {
-        // Initial value will be set based on sim speed
+        // Base hour length is applied by sim_tick.
         Self {
             timer: Timer::from_seconds(1.0, TimerMode::Repeating),
         }
+    }
+}
+
+/// Synchronize Bevy virtual time with UI sim speed and app pause state.
+fn sync_sim_speed(
+    state: Res<State<AppState>>,
+    ui_state: Res<UiState>,
+    mut time: ResMut<Time<Virtual>>,
+) {
+    let should_pause =
+        !matches!(state.get(), AppState::InGame) || matches!(ui_state.sim_speed, SimSpeed::Paused);
+    let desired_speed = ui_state.sim_speed.multiplier().max(0.0);
+
+    if should_pause {
+        if !time.is_paused() {
+            time.pause();
+        }
+    } else if time.is_paused() {
+        time.unpause();
+    }
+
+    if (time.relative_speed() - desired_speed).abs() > f32::EPSILON {
+        time.set_relative_speed(desired_speed);
     }
 }
 
@@ -102,21 +126,16 @@ fn handle_state_hotkeys(
 
 fn sim_tick(
     time: Res<Time<Fixed>>,
-    ui_state: Res<UiState>,
     mut clock: ResMut<SimClock>,
     mut city: ResMut<City>,
     mut day_out: bevy::ecs::message::MessageWriter<DayAdvanced>,
     mut hour_out: bevy::ecs::message::MessageWriter<HourAdvanced>,
 ) {
-    let secs_per_hour = ui_state.sim_speed.secs_per_game_hour();
-    if secs_per_hour <= 0.0 {
-        return;
-    }
-
-    // Update timer duration based on current sim speed (GDD: x1=1.0s/hour, x2=0.8s/hour, x3=0.5s/hour)
+    const SECS_PER_GAME_HOUR: f32 = 1.0;
+    // Timer duration uses base hour length; global time scale handles speed.
     clock
         .timer
-        .set_duration(std::time::Duration::from_secs_f32(secs_per_hour));
+        .set_duration(std::time::Duration::from_secs_f32(SECS_PER_GAME_HOUR));
     clock.timer.set_mode(TimerMode::Repeating);
 
     // Advance game time
