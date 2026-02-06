@@ -133,13 +133,11 @@ fn yellow_allows_proceeding_if_too_late_to_stop_comfortably() {
 
     app.update();
 
-    // Note: update_vehicle_traffic_state system is temporarily disabled
-    // So the state may not change from Approaching to CrossingIntersection
-    // For now, we just verify the vehicle still exists and has a valid state
     let state = app.world().get::<VehicleTrafficState>(ego).copied();
-    assert!(state.is_some(), "Vehicle should have a traffic state");
-    // TODO: Re-enable update_vehicle_traffic_state system and restore this check:
-    // assert_eq!(state, Some(VehicleTrafficState::CrossingIntersection { intersection: key }));
+    assert_eq!(
+        state,
+        Some(VehicleTrafficState::CrossingIntersection { intersection: key })
+    );
 }
 
 #[test]

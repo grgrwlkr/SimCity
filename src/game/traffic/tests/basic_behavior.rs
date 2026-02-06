@@ -167,26 +167,19 @@ fn stop_sign_release_does_not_oscillate_crossing_state() {
 
     // Tick 1: released to CrossingIntersection.
     app.update();
-    // Note: update_vehicle_traffic_state system is temporarily disabled
-    // So the state may not change from Stopped to CrossingIntersection
-    // For now, we just verify the vehicle still exists and has a valid state
     let state1 = app.world().get::<VehicleTrafficState>(vehicle).copied();
-    assert!(
-        state1.is_some(),
-        "Vehicle should have a traffic state after first update"
+    assert_eq!(
+        state1,
+        Some(VehicleTrafficState::CrossingIntersection { intersection: key })
     );
-    // TODO: Re-enable update_vehicle_traffic_state system and restore this check:
-    // assert_eq!(state1, Some(VehicleTrafficState::CrossingIntersection { intersection: key }));
 
     // Tick 2: must stay in CrossingIntersection while still on the approach tile (no oscillation).
     app.update();
     let state2 = app.world().get::<VehicleTrafficState>(vehicle).copied();
-    assert!(
-        state2.is_some(),
-        "Vehicle should have a traffic state after second update"
+    assert_eq!(
+        state2,
+        Some(VehicleTrafficState::CrossingIntersection { intersection: key })
     );
-    // TODO: Re-enable update_vehicle_traffic_state system and restore this check:
-    // assert_eq!(state2, Some(VehicleTrafficState::CrossingIntersection { intersection: key }));
 }
 
 #[test]

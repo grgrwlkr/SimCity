@@ -1,26 +1,20 @@
 //! 6.3.5 Day/Night cycle (MVP).
 //!
-//! Implements a simple global tint overlay that darkens the world at "night".
+//! Visual day/night overlay driven by **game time only** (City.day + City.hour).
+//! GDD 5.4: single source of time — no separate clock.
 
 use bevy::prelude::*;
-use bevy::time::Fixed;
 
 use crate::game::map::MapConfig;
 use crate::game::sets::GameSet;
+use crate::game::sim::City;
 use crate::game::state::AppState;
-use crate::game::ui_state::UiState;
 
 pub struct DayNightPlugin;
 
 impl Plugin for DayNightPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<DayNightCycle>()
-            .add_systems(
-                FixedUpdate,
-                tick_day_night
-                    .in_set(GameSet::Sim)
-                    .run_if(in_state(AppState::InGame)),
-            )
+        app.init_resource::<DayNightVisualConfig>()
             .add_systems(
                 Update,
                 render_day_night_overlay
@@ -31,44 +25,42 @@ impl Plugin for DayNightPlugin {
     }
 }
 
+/// Config for day/night overlay (max darkness, curve). Phase is derived from City.
 #[derive(Resource, serde::Serialize, serde::Deserialize, Debug, Copy, Clone)]
-pub struct DayNightCycle {
-    pub time_of_day: f32,     // 0..1
-    pub day_length_secs: f32, // simulated seconds per full cycle
-    pub max_night_alpha: f32, // 0..1
+pub struct DayNightVisualConfig {
+    pub max_night_alpha: f32,
 }
 
-impl Default for DayNightCycle {
+impl Default for DayNightVisualConfig {
     fn default() -> Self {
         Self {
-            time_of_day: 0.0,
-            day_length_secs: 30.0,
             max_night_alpha: 0.55,
         }
     }
 }
 
+/// Compute time-of-day phase 0..1 from game hour (single source of time).
+/// Hour 0 = midnight, 6 = dawn, 12 = noon, 18 = dusk.
+#[inline]
+pub fn time_of_day_from_hour(hour: u8) -> f32 {
+    (hour as f32 / 24.0).rem_euclid(1.0)
+}
+
 #[derive(Component)]
 struct DayNightOverlay;
 
-fn tick_day_night(time: Res<Time<Fixed>>, ui: Res<UiState>, mut cycle: ResMut<DayNightCycle>) {
-    let speed = ui.sim_speed.multiplier();
-    if speed <= 0.0 {
-        return;
-    }
-    let dt = time.delta_secs() * speed.clamp(0.0, 8.0);
-    let len = cycle.day_length_secs.max(1.0);
-    cycle.time_of_day = (cycle.time_of_day + dt / len) % 1.0;
-}
-
 fn render_day_night_overlay(
     cfg: Res<MapConfig>,
-    cycle: Res<DayNightCycle>,
+    city: Res<City>,
+    visual: Res<DayNightVisualConfig>,
     mut commands: Commands,
     mut q: Query<(&mut Sprite, &mut Transform), With<DayNightOverlay>>,
 ) {
-    let night = 0.5 - 0.5 * (cycle.time_of_day * std::f32::consts::TAU).cos();
-    let alpha = (night * cycle.max_night_alpha).clamp(0.0, 0.95);
+    let t = time_of_day_from_hour(city.hour);
+    // night=0 at noon (t=0.5), night=1 at midnight (t=0).
+    // cos(0)=1 → 0.5+0.5=1 (dark), cos(π)=-1 → 0.5-0.5=0 (bright).
+    let night = 0.5 + 0.5 * (t * std::f32::consts::TAU).cos();
+    let alpha = (night * visual.max_night_alpha).clamp(0.0, 0.95);
 
     let size = Vec2::new(
         cfg.width as f32 * cfg.tile_size,

@@ -11,7 +11,6 @@ pub(super) struct TopBarParams<'w> {
     pub(super) city: Res<'w, City>,
     pub(super) mode: Res<'w, BuildMode>,
     pub(super) metrics: Res<'w, UiMetrics>,
-    pub(super) day_night: Option<Res<'w, DayNightCycle>>,
     pub(super) scenario_catalog: Res<'w, ScenarioCatalog>,
     pub(super) scenario_selection: ResMut<'w, ScenarioSelection>,
     pub(super) scenario_progress: Res<'w, ScenarioProgress>,

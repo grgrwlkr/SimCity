@@ -482,6 +482,124 @@ pub fn generate_test_city(
     }
 
     // =========================================================================
+    // PRE-BUILT R/C/I BUILDINGS on zoned tiles (Operational, so sim starts immediately)
+    // =========================================================================
+    {
+        use std::collections::HashSet;
+
+        let footprint = 3i32;
+        let mut occupied = HashSet::<TilePos>::new();
+        let mut spawned_rci = 0usize;
+        let max_rci = 80; // Cap to keep it reasonable
+
+        // Scan grid for zoned tiles and place 3x3 buildings with road access
+        let mut y = 0;
+        while y < cfg.height && spawned_rci < max_rci {
+            let mut x = 0;
+            while x < cfg.width && spawned_rci < max_rci {
+                let anchor = TilePos { x, y };
+                let Some(cell) = grid.get(anchor) else {
+                    x += 1;
+                    continue;
+                };
+                let Some(kind) = BuildingKind::from_zone(cell.zone) else {
+                    x += 1;
+                    continue;
+                };
+
+                // Check 3x3 footprint is clear
+                let mut ok = true;
+                for dy in 0..footprint {
+                    for dx in 0..footprint {
+                        let t = TilePos {
+                            x: anchor.x + dx,
+                            y: anchor.y + dy,
+                        };
+                        let Some(c) = grid.get(t) else {
+                            ok = false;
+                            break;
+                        };
+                        if c.water
+                            || c.road.is_some()
+                            || c.building.is_some()
+                            || occupied.contains(&t)
+                        {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if !ok {
+                        break;
+                    }
+                }
+                if !ok {
+                    x += 1;
+                    continue;
+                }
+
+                // Need adjacent road
+                let mut has_road = false;
+                'road_check: for dy in 0..footprint {
+                    for dx in 0..footprint {
+                        let t = TilePos {
+                            x: anchor.x + dx,
+                            y: anchor.y + dy,
+                        };
+                        for (ndx, ndy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                            let n = TilePos {
+                                x: t.x + ndx,
+                                y: t.y + ndy,
+                            };
+                            if let Some(nc) = grid.get(n)
+                                && nc.road.is_some()
+                            {
+                                has_road = true;
+                                break 'road_check;
+                            }
+                        }
+                    }
+                }
+                if !has_road {
+                    x += 1;
+                    continue;
+                }
+
+                // Mark grid tiles
+                for dy in 0..footprint {
+                    for dx in 0..footprint {
+                        let t = TilePos {
+                            x: anchor.x + dx,
+                            y: anchor.y + dy,
+                        };
+                        if let Some(mut c) = grid.get(t) {
+                            c.building = Some(kind);
+                            c.zone = ZoneKind::None;
+                            grid.set(t, c);
+                        }
+                        occupied.insert(t);
+                    }
+                }
+
+                spawn_building_entity(
+                    commands,
+                    cfg,
+                    anchor,
+                    footprint as u8,
+                    footprint as u8,
+                    kind,
+                    city,
+                    true, // Operational immediately
+                );
+                spawned_rci += 1;
+
+                // Skip past this footprint
+                x += footprint;
+            }
+            y += 1;
+        }
+    }
+
+    // =========================================================================
     // SERVICE BUILDINGS: Place all types with road access
     // =========================================================================
 
@@ -580,7 +698,7 @@ pub fn generate_test_city(
                         }
                     }
 
-                    // Spawn the building entity with 3x3 footprint
+                    // Spawn already-built (Operational) so test city is playable immediately
                     spawn_building_entity(
                         commands,
                         cfg,
@@ -589,6 +707,7 @@ pub fn generate_test_city(
                         footprint_length,
                         kind,
                         city,
+                        true,
                     );
 
                     // For emergency buildings in test city, we'll mark them as Operational

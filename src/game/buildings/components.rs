@@ -90,7 +90,8 @@ impl Building {
     }
 
     /// Calculate construction days based on GDD 10.3.3.2 formula:
-    /// construction_days = base_days(kind, level) * sqrt(area / 9)
+    /// construction_days = base_days(kind, level) * sqrt(area / 9),
+    /// then clamped to the fast-build MVP target (2..=3 days).
     pub fn calculate_construction_days(
         kind: crate::game::map::BuildingKind,
         level: u8,
@@ -98,28 +99,29 @@ impl Building {
     ) -> u32 {
         let base_days = match kind {
             crate::game::map::BuildingKind::Residential => match level {
-                1 => 14,
-                2 => 28,
-                3 => 56,
-                _ => 14,
+                1 => 2,
+                2 => 3,
+                3 => 3,
+                _ => 2,
             },
             crate::game::map::BuildingKind::Commercial => match level {
-                1 => 12,
-                2 => 24,
-                3 => 48,
-                _ => 12,
+                1 => 2,
+                2 => 3,
+                3 => 3,
+                _ => 2,
             },
             crate::game::map::BuildingKind::Industrial => match level {
-                1 => 10,
-                2 => 20,
-                3 => 40,
-                _ => 10,
+                1 => 2,
+                2 => 3,
+                3 => 3,
+                _ => 2,
             },
-            // Services (all 3x3 in MVP): 45 days
-            _ => 45,
+            // Services (all 3x3 in MVP): fast build
+            _ => 3,
         };
         let area_factor = (area as f32 / 9.0).sqrt();
-        (base_days as f32 * area_factor).round() as u32
+        let days = (base_days as f32 * area_factor).round() as u32;
+        days.clamp(2, 3)
     }
 }
 

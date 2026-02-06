@@ -139,6 +139,7 @@ pub fn grow_buildings(mut p: GrowBuildingsParams) {
             footprint.length,
             kind,
             &p.city,
+            false,
         );
 
         // Mark all footprint tiles as occupied

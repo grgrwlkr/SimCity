@@ -1,12 +1,13 @@
-use bevy::ecs::message::MessageReader;
+use bevy::ecs::message::{MessageReader, MessageWriter};
 use bevy::prelude::*;
 
-use crate::game::buildings::{Building, BuildingPhase};
+use crate::game::buildings::{Building, BuildingPhase, calculate_parking_spots};
 use crate::game::command_history::{CommandHistory, UndoableCommand};
 use crate::game::commands::GameCommand;
 use crate::game::intersections::IntersectionIndex;
 use crate::game::roads::{RoadCell, RoadDir, RoadKind};
 use crate::game::sim::City;
+use crate::game::sim_events::DayAdvanced;
 use crate::game::test_city;
 use crate::game::transport::GraphVersion;
 use crate::game::zone_placement::can_zone_tile;
@@ -61,37 +62,9 @@ pub(crate) fn spawn_building_entity(
                 target_occupancy_residents: 0,
                 target_occupancy_jobs: 0,
                 parking_spots: {
-                    // Calculate parking spots inline (same logic as in spawn.rs)
+                    // GDD 10.3.4: max(1, area/9) parking spots distributed within footprint.
                     let num_spots = (area / 9).max(1) as usize;
-                    let mut spots = Vec::new();
-                    if num_spots == 1 {
-                        spots.push(TilePos {
-                            x: pos.x + (footprint_width as i32 - 1) / 2,
-                            y: pos.y + (footprint_length as i32 - 1) / 2,
-                        });
-                    } else {
-                        let cols = (num_spots as f32).sqrt().ceil() as i32;
-                        let rows = ((num_spots as f32) / cols as f32).ceil() as i32;
-                        for i in 0..num_spots {
-                            let row = (i as i32) / cols;
-                            let col = (i as i32) % cols;
-                            let x_offset = if cols > 1 {
-                                (col * (footprint_width as i32 - 2)) / (cols - 1).max(1) + 1
-                            } else {
-                                footprint_width as i32 / 2
-                            };
-                            let y_offset = if rows > 1 {
-                                (row * (footprint_length as i32 - 2)) / (rows - 1).max(1) + 1
-                            } else {
-                                footprint_length as i32 / 2
-                            };
-                            spots.push(TilePos {
-                                x: pos.x + x_offset.min(footprint_width as i32 - 1),
-                                y: pos.y + y_offset.min(footprint_length as i32 - 1),
-                            });
-                        }
-                    }
-                    spots
+                    calculate_parking_spots(pos, footprint_width, footprint_length, num_spots)
                 },
             },
             Sprite::from_color(kind.color(), sprite_size),
@@ -114,6 +87,7 @@ pub(super) fn apply_game_commands_to_grid(
     mut map_edit_version: ResMut<MapEditVersion>,
     mut history: ResMut<CommandHistory>,
     mut intersections: ResMut<IntersectionIndex>,
+    mut day_out: MessageWriter<DayAdvanced>,
 ) {
     for cmd in cmd_reader.read() {
         match *cmd {
@@ -372,6 +346,8 @@ pub(super) fn apply_game_commands_to_grid(
                 road_dirty.mark_all();
                 map_edit_version.bump();
                 graph_version.bump();
+                // Emit DayAdvanced so occupancy/construction run this frame for the new buildings.
+                day_out.write(DayAdvanced { day: city.day });
             }
             // Traffic commands are handled by TrafficPlugin.
             // Traffic light commands are handled by IntersectionsPlugin.

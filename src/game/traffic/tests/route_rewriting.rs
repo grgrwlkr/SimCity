@@ -247,13 +247,8 @@ fn right_turn_on_red_releases_when_reserved() {
         );
 
     app.update();
-    // Note: update_vehicle_traffic_state system is temporarily disabled
-    // So the state may not change from WaitingForGreen to Accelerating
-    // For now, we just verify the vehicle still exists and has a valid state
     let state = app.world().get::<VehicleTrafficState>(ego).copied();
-    assert!(state.is_some(), "Vehicle should have a traffic state");
-    // TODO: Re-enable update_vehicle_traffic_state system and restore this check:
-    // assert_eq!(state, Some(VehicleTrafficState::Accelerating));
+    assert_eq!(state, Some(VehicleTrafficState::Accelerating));
 }
 
 #[test]

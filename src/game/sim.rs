@@ -13,7 +13,10 @@ impl Plugin for SimPlugin {
         app.init_resource::<City>()
             .init_resource::<SimClock>()
             .add_message::<HourAdvanced>()
-            .add_systems(OnEnter(AppState::InGame), reset_city_for_new_game)
+            .add_systems(
+                OnEnter(AppState::InGame),
+                (reset_city_for_new_game, emit_initial_day_advanced).chain(),
+            )
             .add_systems(Update, handle_state_hotkeys.in_set(GameSet::Input))
             .add_systems(
                 FixedUpdate,
@@ -158,4 +161,15 @@ fn sim_tick(
 fn reset_city_for_new_game(mut city: ResMut<City>, mut clock: ResMut<SimClock>) {
     *city = City::default();
     clock.timer.reset();
+}
+
+/// Emit one DayAdvanced for the current day when entering InGame.
+/// DayAdvanced is otherwise only sent when hour wraps 23→0, so day 1 would never
+/// trigger occupancy/construction until the first full day passed. This ensures
+/// day-1 systems (occupancy, construction progress, etc.) run immediately.
+fn emit_initial_day_advanced(
+    city: Res<City>,
+    mut day_out: bevy::ecs::message::MessageWriter<DayAdvanced>,
+) {
+    day_out.write(DayAdvanced { day: city.day });
 }

@@ -33,7 +33,6 @@ mod generation;
 
 mod commands;
 use commands::apply_game_commands_to_grid;
-pub(crate) use commands::spawn_building_entity;
 
 mod input;
 use input::{

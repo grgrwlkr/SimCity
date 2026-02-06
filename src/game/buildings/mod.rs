@@ -20,6 +20,7 @@ pub use decay::*;
 pub use footprint::*;
 pub use growth::*;
 pub use occupancy::update_occupancy;
+pub(crate) use spawn::calculate_parking_spots;
 pub use spawn::spawn_building_entity;
 pub use upgrade::*;
 

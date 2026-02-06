@@ -406,11 +406,7 @@ fn right_turn_on_red_speed_is_capped_to_turn_speed() {
 
     app.update();
 
-    // RightTurnOnRed component is added by update_vehicle_traffic_state system
-    // Note: The system update_vehicle_traffic_state is currently disabled in the codebase
-    // So we skip the RightTurnOnRed check and just verify speed is capped
-    // TODO: Re-enable update_vehicle_traffic_state system and restore this check
-    // assert!(app.world().get::<RightTurnOnRed>(ego).is_some());
+    assert!(app.world().get::<RightTurnOnRed>(ego).is_some());
     let v = app.world().get::<Vehicle>(ego).unwrap();
     let _cap = kmh_to_world_speed(
         app.world().resource::<MapConfig>(),

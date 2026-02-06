@@ -297,7 +297,7 @@ impl Plugin for TrafficPlugin {
                 FixedUpdate,
                 (
                     track_car_owner_index,
-                    // update_vehicle_traffic_state, // TODO: fix path_pool issue
+                    update_vehicle_traffic_state,
                     check_intersection_priority.after(update_vehicle_traffic_state),
                     spawn_trip_vehicles,
                     tick_lane_change_cooldowns,

@@ -152,7 +152,10 @@ pub fn move_vehicles(
         // marker). They may have a different `RoadKind` than the approach/exit tiles, and sometimes
         // can even end up with a 0 km/h speed limit. We therefore derive the desired speed limit
         // from the adjacent **non-intersection** tiles (approach/exit) while inside the cluster.
-        let current_tile = path_pool.get_tile(v.path_handle, v.path_cursor).unwrap();
+        let Some(current_tile) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
+            // PathPool corruption/invalid handle: avoid crashing the whole sim tick.
+            continue;
+        };
         let current_is_intersection = is_intersection_tile(&grid, current_tile);
 
         let mut speed_limit_world = if current_is_intersection {
@@ -163,14 +166,12 @@ pub fn move_vehicles(
 
         // Fallback to adjacent tiles (prev/next) or, for intersection tiles, use them as the
         // primary speed limit source.
-        if v.path_cursor > 0 {
-            let prev = path_pool
-                .get_tile(v.path_handle, v.path_cursor - 1)
-                .unwrap();
-            if !is_intersection_tile(&grid, prev) {
-                speed_limit_world =
-                    speed_limit_world.max(road_speed_limit_world(&cfg, &traffic_cfg, prev, &grid));
-            }
+        if v.path_cursor > 0
+            && let Some(prev) = path_pool.get_tile(v.path_handle, v.path_cursor - 1)
+            && !is_intersection_tile(&grid, prev)
+        {
+            speed_limit_world =
+                speed_limit_world.max(road_speed_limit_world(&cfg, &traffic_cfg, prev, &grid));
         }
         if let Some(next) = path_pool.get_tile(v.path_handle, v.path_cursor + 1)
             && !is_intersection_tile(&grid, next)

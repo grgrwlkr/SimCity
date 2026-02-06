@@ -32,7 +32,6 @@ fn dump_on_window_close_system(
     map_cfg: Res<game::map::MapConfig>,
     grid: Res<game::map::MapGrid>,
     hovered: Res<game::map::HoveredTile>,
-    day_night: Option<Res<game::day_night::DayNightCycle>>,
     q_camera: Query<
         (
             &bevy::transform::components::Transform,
@@ -55,7 +54,6 @@ fn dump_on_window_close_system(
             &map_cfg,
             &grid,
             &hovered,
-            day_night.as_deref(),
             q_camera.single().ok(),
             &dump_ui,
             &telemetry,

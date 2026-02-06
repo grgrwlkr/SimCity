@@ -7,6 +7,7 @@ use bevy::ecs::message::MessageReader;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
+use crate::game::buildings::{Building, BuildingPhase};
 use crate::game::citizens::CitizenState;
 use crate::game::citizens::{Citizen, CitizenWorkplace};
 use crate::game::commands::GameCommand;
@@ -50,6 +51,59 @@ pub struct SaveGameV2 {
     pub seed: u64,
     pub map: MapGridV1,
     pub city: City,
+    pub citizens: Vec<CitizenSnapshotV1>,
+    pub next_citizen_id: u64,
+    pub service_stations: Vec<ServiceStationSnapshot>,
+    pub emergency_stats: EmergencyStats,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Copy, Clone)]
+pub enum BuildingPhaseSnapshot {
+    /// Building is under construction
+    UnderConstruction {
+        /// Days remaining until completion
+        days_remaining: u32,
+    },
+    /// Building is operational and can have occupancy
+    Operational,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct BuildingSnapshot {
+    pub kind: BuildingKind,
+    /// Anchor position (top-left corner of the footprint)
+    pub anchor_pos: TilePos,
+    /// Width of the footprint (3-6 tiles)
+    pub footprint_width: u8,
+    /// Length of the footprint (3-6 tiles)
+    pub footprint_length: u8,
+    /// Current building level (1-3)
+    pub level: u8,
+    /// Current construction/operational phase
+    pub phase: BuildingPhaseSnapshot,
+    /// Day when construction started (for tracking progress)
+    pub construction_start_day: u32,
+    pub capacity_residents: u16,
+    pub capacity_jobs: u16,
+    /// Current number of residents (GDD 10.3.5)
+    pub occupancy_residents: u16,
+    /// Current number of jobs filled (GDD 10.3.5)
+    pub occupancy_jobs: u16,
+    /// Target number of residents (calculated from demand)
+    pub target_occupancy_residents: u16,
+    /// Target number of jobs (calculated from demand)
+    pub target_occupancy_jobs: u16,
+    /// Parking spot positions inside the footprint (GDD 10.3.4)
+    pub parking_spots: Vec<TilePos>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct SaveGameV3 {
+    pub save_version: u32, // = 3
+    pub seed: u64,
+    pub map: MapGridV1,
+    pub city: City,
+    pub buildings: Vec<BuildingSnapshot>,
     pub citizens: Vec<CitizenSnapshotV1>,
     pub next_citizen_id: u64,
     pub service_stations: Vec<ServiceStationSnapshot>,
@@ -173,15 +227,74 @@ fn snapshot_savegame_v2(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn snapshot_savegame_v3(
+    seed: &MapSeed,
+    grid: &MapGrid,
+    city: &City,
+    buildings: &Query<&Building>,
+    citizens: &Query<(&CitizenIdComp, &Citizen, Option<&CitizenWorkplace>)>,
+    id_gen: &CitizenIdGen,
+    stations: &Query<&ServiceStation>,
+    emergency_manager: Option<&EmergencyManager>,
+) -> SaveGameV3 {
+    let v2 = snapshot_savegame_v2(
+        seed,
+        grid,
+        city,
+        citizens,
+        id_gen,
+        stations,
+        emergency_manager,
+    );
+    let mut out_buildings = Vec::new();
+    for b in buildings.iter() {
+        out_buildings.push(BuildingSnapshot {
+            kind: b.kind,
+            anchor_pos: b.anchor_pos,
+            footprint_width: b.footprint_width,
+            footprint_length: b.footprint_length,
+            level: b.level,
+            phase: match b.phase {
+                BuildingPhase::UnderConstruction { days_remaining } => {
+                    BuildingPhaseSnapshot::UnderConstruction { days_remaining }
+                }
+                BuildingPhase::Operational => BuildingPhaseSnapshot::Operational,
+            },
+            construction_start_day: b.construction_start_day,
+            capacity_residents: b.capacity_residents,
+            capacity_jobs: b.capacity_jobs,
+            occupancy_residents: b.occupancy_residents,
+            occupancy_jobs: b.occupancy_jobs,
+            target_occupancy_residents: b.target_occupancy_residents,
+            target_occupancy_jobs: b.target_occupancy_jobs,
+            parking_spots: b.parking_spots.clone(),
+        });
+    }
+
+    SaveGameV3 {
+        save_version: 3,
+        seed: v2.seed,
+        map: v2.map,
+        city: v2.city,
+        buildings: out_buildings,
+        citizens: v2.citizens,
+        next_citizen_id: v2.next_citizen_id,
+        service_stations: v2.service_stations,
+        emergency_stats: v2.emergency_stats,
+    }
+}
+
 fn dump_save_contract(mut reader: MessageReader<GameCommand>, p: DumpParams) {
     for cmd in reader.read() {
         if !matches!(cmd, GameCommand::DumpSaveContract) {
             continue;
         }
-        let save = snapshot_savegame_v2(
+        let save = snapshot_savegame_v3(
             &p.seed,
             &p.grid,
             &p.city,
+            &p.q_buildings,
             &p.q_citizens,
             &p.id_gen,
             &p.q_stations,
@@ -226,13 +339,25 @@ fn dump_save_contract(mut reader: MessageReader<GameCommand>, p: DumpParams) {
             (None, None, None, None)
         };
 
+        let (b_kind, b_pos, b_size, b_phase) = if let Some(b) = save.buildings.first() {
+            (
+                Some(b.kind),
+                Some(b.anchor_pos),
+                Some((b.footprint_width, b.footprint_length)),
+                Some(b.phase),
+            )
+        } else {
+            (None, None, None, None)
+        };
+
         info!(
-            "SaveContract v{}: seed={} map={}x{} tiles={} citizens={} next_citizen_id={} money={} day={} stations={} emergency_stats={:?} tile0={:?}/{:?}/{:?}/{:?}/{:?}/{:?} citizen0={:?}/{:?}/{:?}/{:?}/{:?} station0={:?}/{:?}/{:?}/{:?}",
+            "SaveContract v{}: seed={} map={}x{} tiles={} buildings={} citizens={} next_citizen_id={} money={} day={} stations={} emergency_stats={:?} tile0={:?}/{:?}/{:?}/{:?}/{:?}/{:?} building0={:?}/{:?}/{:?}/{:?} citizen0={:?}/{:?}/{:?}/{:?}/{:?} station0={:?}/{:?}/{:?}/{:?}",
             save.save_version,
             save.seed,
             save.map.width,
             save.map.height,
             save.map.tiles.len(),
+            save.buildings.len(),
             save.citizens.len(),
             save.next_citizen_id,
             save.city.money,
@@ -245,6 +370,10 @@ fn dump_save_contract(mut reader: MessageReader<GameCommand>, p: DumpParams) {
             t_road,
             t_zone,
             t_building,
+            b_kind,
+            b_pos,
+            b_size,
+            b_phase,
             c_id,
             c_home,
             c_last,
@@ -264,6 +393,7 @@ struct DumpParams<'w, 's> {
     grid: Res<'w, MapGrid>,
     city: Res<'w, City>,
     id_gen: Res<'w, CitizenIdGen>,
+    q_buildings: Query<'w, 's, &'static Building>,
     q_citizens: Query<
         'w,
         's,

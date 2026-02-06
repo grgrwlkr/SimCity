@@ -10,7 +10,6 @@ pub fn build_debug_dump(
     map_cfg: &MapConfig,
     grid: &MapGrid,
     hovered: &HoveredTile,
-    day_night: Option<&DayNightCycle>,
     camera: Option<(&Transform, &Projection)>,
     dump_ui: &DebugDumpUiState,
     telemetry: &DebugTelemetry,
@@ -119,7 +118,7 @@ pub fn build_debug_dump(
             last_income: city.last_income,
             last_expense: city.last_expense,
             happiness: city.happiness,
-            time_of_day: day_night.map(|c| c.time_of_day),
+            time_of_day: Some(crate::game::day_night::time_of_day_from_hour(city.hour)),
         },
         ui_metrics: DebugDumpUiMetrics {
             citizens: metrics.citizens,

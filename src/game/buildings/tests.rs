@@ -104,15 +104,15 @@ fn building_is_operational_returns_correct_phase() {
 fn building_calculate_construction_days_scales_with_area() {
     // 3x3 building (area 9)
     let days_3x3 = Building::calculate_construction_days(BuildingKind::Residential, 1, 9);
-    assert_eq!(days_3x3, 14); // base_days(1) = 14, sqrt(9/9) = 1, so 14 * 1 = 14
+    assert_eq!(days_3x3, 2); // base_days(1) = 2, sqrt(9/9) = 1, so 2 * 1 = 2
 
     // 6x6 building (area 36)
     let days_6x6 = Building::calculate_construction_days(BuildingKind::Residential, 1, 36);
-    assert_eq!(days_6x6, 28); // base_days(1) = 14, sqrt(36/9) = 2, so 14 * 2 = 28
+    assert_eq!(days_6x6, 3); // base_days(1) = 2, sqrt(36/9) = 2, so 2 * 2 = 4 -> clamped to 3
 
     // Level 3, 3x3
     let days_l3_3x3 = Building::calculate_construction_days(BuildingKind::Residential, 3, 9);
-    assert_eq!(days_l3_3x3, 56); // base_days(3) = 56, sqrt(9/9) = 1, so 56 * 1 = 56
+    assert_eq!(days_l3_3x3, 3); // base_days(3) = 3, sqrt(9/9) = 1, so 3 * 1 = 3
 }
 
 // ============================================================================

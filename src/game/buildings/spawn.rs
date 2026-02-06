@@ -5,6 +5,9 @@ use crate::game::sim::City;
 
 use super::components::*;
 
+/// Spawn a building entity. If `spawn_operational` is true, the building is immediately
+/// Operational (used e.g. for test city so simulation can run without waiting for construction).
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_building_entity(
     commands: &mut Commands,
     cfg: &MapConfig,
@@ -13,6 +16,7 @@ pub fn spawn_building_entity(
     footprint_length: u8,
     kind: BuildingKind,
     city: &City,
+    spawn_operational: bool,
 ) {
     let origin = map_origin(cfg);
     // Position at center of footprint
@@ -40,6 +44,14 @@ pub fn spawn_building_entity(
     let parking_spots =
         calculate_parking_spots(anchor_pos, footprint_width, footprint_length, num_spots);
 
+    let phase = if spawn_operational {
+        BuildingPhase::Operational
+    } else {
+        BuildingPhase::UnderConstruction {
+            days_remaining: construction_days,
+        }
+    };
+
     commands.spawn((
         Building {
             kind,
@@ -47,9 +59,7 @@ pub fn spawn_building_entity(
             footprint_width,
             footprint_length,
             level,
-            phase: BuildingPhase::UnderConstruction {
-                days_remaining: construction_days,
-            },
+            phase,
             construction_start_day: city.day,
             capacity_residents: kind.capacity_residents_for_level_area(level, area),
             capacity_jobs: kind.capacity_jobs_for_level_area(level, area),

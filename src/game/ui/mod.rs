@@ -10,7 +10,7 @@ use crate::game::camera::MainCamera;
 use crate::game::citizens::Citizen;
 use crate::game::citizens::CommuteStats;
 use crate::game::commands::GameCommand;
-use crate::game::day_night::DayNightCycle;
+use crate::game::day_night::time_of_day_from_hour;
 use crate::game::demand::RciDemand;
 use crate::game::economy::EconomyConfig;
 use crate::game::emergencies::Emergency;
@@ -173,7 +173,6 @@ fn collect_debug_telemetry(
     ui_state: Res<UiState>,
     city: Res<City>,
     metrics: Res<UiMetrics>,
-    day_night: Option<Res<DayNightCycle>>,
     cfg: Res<DebugDumpUiState>,
     mut telemetry: ResMut<DebugTelemetry>,
     vehicle_agg: Option<Res<VehicleAggSnapshot>>,
@@ -216,7 +215,7 @@ fn collect_debug_telemetry(
     }
     .to_string();
 
-    let time_of_day = day_night.as_deref().map(|c| c.time_of_day);
+    let time_of_day = Some(time_of_day_from_hour(city.hour));
 
     // Vehicle stats: use snapshot built by traffic systems (no full-world scan here).
     let vehicles = vehicle_agg

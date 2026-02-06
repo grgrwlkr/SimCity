@@ -115,6 +115,7 @@ fn send_road_on_water_once(mut out: MessageWriter<GameCommand>, mut sent: ResMut
 fn command_apply_marks_dirty_and_bumps_graph_version_on_road_change() {
     let mut app = App::new();
     app.add_message::<GameCommand>()
+        .add_message::<crate::game::sim_events::DayAdvanced>()
         .insert_resource(MapConfig {
             width: 8,
             height: 8,
@@ -159,6 +160,7 @@ fn command_apply_marks_dirty_and_bumps_graph_version_on_road_change() {
 fn water_tiles_are_not_buildable_by_commands() {
     let mut app = App::new();
     app.add_message::<GameCommand>()
+        .add_message::<crate::game::sim_events::DayAdvanced>()
         .insert_resource(MapConfig {
             width: 8,
             height: 8,

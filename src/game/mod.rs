@@ -64,6 +64,8 @@ impl Plugin for GamePlugin {
                 (
                     crate::game::sets::GameSet::Input,
                     crate::game::sets::GameSet::CommandApply,
+                    crate::game::sets::GameSet::Sim,
+                    crate::game::sets::GameSet::PostSim,
                     crate::game::sets::GameSet::GraphUpdate,
                     crate::game::sets::GameSet::RenderSync,
                     crate::game::sets::GameSet::Ui,
