@@ -99,26 +99,27 @@ fn handle_state_hotkeys(
     state: Res<State<AppState>>,
     mut next: ResMut<NextState<AppState>>,
 ) {
+    let next_state = &mut *next;
     // Global "back to menu"
     if keys.just_pressed(KeyCode::Escape) {
-        next.set(AppState::MainMenu);
+        next_state.set_if_neq(AppState::MainMenu);
         return;
     }
 
     match state.get() {
         AppState::MainMenu => {
             if keys.just_pressed(KeyCode::Enter) {
-                next.set(AppState::InGame);
+                next_state.set_if_neq(AppState::InGame);
             }
         }
         AppState::InGame => {
             if keys.just_pressed(KeyCode::Space) {
-                next.set(AppState::Paused);
+                next_state.set_if_neq(AppState::Paused);
             }
         }
         AppState::Paused => {
             if keys.just_pressed(KeyCode::Space) {
-                next.set(AppState::InGame);
+                next_state.set_if_neq(AppState::InGame);
             }
         }
     }

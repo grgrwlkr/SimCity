@@ -684,6 +684,6 @@ fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParam
         );
 
         // Ensure we're in-game after load.
-        p.next_state.set(AppState::InGame);
+        NextState::set_if_neq(&mut *p.next_state, AppState::InGame);
     }
 }
