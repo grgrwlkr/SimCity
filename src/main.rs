@@ -1,15 +1,22 @@
 mod game;
 
 use bevy::prelude::*;
+#[cfg(not(target_family = "wasm"))]
+use bevy::remote::BrpResult;
 use bevy::remote::RemotePlugin;
 #[cfg(not(target_family = "wasm"))]
 use bevy::remote::http::RemoteHttpPlugin;
+#[cfg(not(target_family = "wasm"))]
+use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use game::GamePlugin;
+#[cfg(not(target_family = "wasm"))]
+use serde_json::{Value, json};
 
 fn main() {
     let mut app = App::new();
     app.insert_resource(ClearColor(Color::srgb(0.08, 0.09, 0.11)));
-    app.add_plugins(RemotePlugin::default());
+    // Enable remote debugging (with screenshot method on native builds)
+    app.add_plugins(remote_plugin());
     #[cfg(not(target_family = "wasm"))]
     app.add_plugins(RemoteHttpPlugin::default());
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -23,6 +30,16 @@ fn main() {
     app.add_plugins(GamePlugin);
     app.add_systems(bevy::app::Last, dump_on_window_close_system);
     app.run();
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn remote_plugin() -> RemotePlugin {
+    RemotePlugin::default().with_method("bevy_debugger/screenshot", screenshot_handler)
+}
+
+#[cfg(target_family = "wasm")]
+fn remote_plugin() -> RemotePlugin {
+    RemotePlugin::default()
 }
 
 /// System that prints debug dump to console when the application is closing.
@@ -79,4 +96,43 @@ fn dump_on_window_close_system(
         println!("{}", dump_ron);
         println!("\n🎯 Debug dump printed to console on exit");
     }
+}
+
+/// Custom BRP handler for screenshot requests from the debugger
+#[cfg(not(target_family = "wasm"))]
+fn screenshot_handler(In(params): In<Option<Value>>, mut commands: Commands) -> BrpResult {
+    // Parse parameters from MCP request
+    let path = params
+        .as_ref()
+        .and_then(|p| p.get("path"))
+        .and_then(|p| p.as_str())
+        .unwrap_or("./screenshot.png")
+        .to_string();
+
+    let description = params
+        .as_ref()
+        .and_then(|p| p.get("description"))
+        .and_then(|d| d.as_str())
+        .unwrap_or("Screenshot from Bevy game");
+
+    // Note: timing controls (warmup_duration, capture_delay) are handled by the MCP server
+    // before the BRP request reaches this handler
+
+    println!("Screenshot requested via BRP: {} -> {}", description, path);
+
+    // Use Bevy's built-in screenshot system
+    commands
+        .spawn(Screenshot::primary_window())
+        .observe(save_to_disk(path.clone()));
+
+    // Return success response
+    Ok(json!({
+        "path": path,
+        "success": true,
+        "description": description,
+        "timestamp": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }))
 }

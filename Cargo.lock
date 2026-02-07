@@ -4732,6 +4732,7 @@ dependencies = [
  "rand",
  "ron",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
