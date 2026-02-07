@@ -71,6 +71,7 @@ fn intersection_conflict_zones_allow_two_opposite_straights() {
         })
         .insert_resource(IntersectionReservations::default())
         .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, plan_intersection_reservations);
 
@@ -205,6 +206,7 @@ fn intersection_conflict_zones_block_two_conflicting_right_turns() {
         })
         .insert_resource(IntersectionReservations::default())
         .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, plan_intersection_reservations);
 

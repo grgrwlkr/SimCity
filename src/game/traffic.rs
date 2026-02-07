@@ -107,6 +107,8 @@ const STOP_LINE_EPS_TILES: f32 = 1e-3;
 
 /// Target speed cap while performing a right turn on red (doc: <= 15 km/h).
 const RIGHT_ON_RED_TURN_MAX_KMH: f32 = 15.0;
+/// Failsafe: if a vehicle is blocked at a clear intersection for too long, allow entry.
+const INTERSECTION_FORCE_ENTRY_SECS: f32 = 8.0;
 
 /// After this many seconds without progressing, try to resolve a traffic jam (reroute).
 /// (v2 policy: avoid "cheat" behavior by default; only intervene after a long timeout.)

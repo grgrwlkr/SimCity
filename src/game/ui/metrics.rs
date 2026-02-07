@@ -136,6 +136,8 @@ pub struct DebugTelemetrySample {
     pub demand_i: f32,
     pub active_emergencies: u32,
     pub vehicles: VehicleAgg,
+    pub vehicles_active: VehicleAgg,
+    pub vehicles_parked: VehicleAgg,
 }
 
 #[derive(SystemParam)]

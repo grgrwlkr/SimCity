@@ -98,7 +98,7 @@ pub fn build_debug_dump(
     let generated_at_unix_ms = u64::try_from(generated_at_unix_ms_u128).unwrap_or(u64::MAX);
 
     DebugDump {
-        dump_version: 1,
+        dump_version: 2,
         generated_at_unix_ms,
         app_state,
         sim_speed,
@@ -139,6 +139,18 @@ pub fn build_debug_dump(
             active_emergencies: metrics.active_emergencies,
             emergencies_resolved: metrics.emergencies_resolved,
             emergencies_failed: metrics.emergencies_failed,
+            fire_stations: metrics.fire_stations,
+            police_stations: metrics.police_stations,
+            medical_stations: metrics.medical_stations,
+            fire_vehicles_available: metrics.fire_vehicles.0,
+            fire_vehicles_total: metrics.fire_vehicles.1,
+            police_vehicles_available: metrics.police_vehicles.0,
+            police_vehicles_total: metrics.police_vehicles.1,
+            medical_vehicles_available: metrics.medical_vehicles.0,
+            medical_vehicles_total: metrics.medical_vehicles.1,
+            service_cov_fire: metrics.service_cov_fire,
+            service_cov_police: metrics.service_cov_police,
+            service_cov_medical: metrics.service_cov_medical,
         },
         telemetry: DebugDumpTelemetry {
             window_secs: window,
@@ -184,8 +196,8 @@ pub(super) fn summarize_telemetry(
     for s in samples {
         traffic_min = traffic_min.min(s.traffic_avg);
         traffic_max = traffic_max.max(s.traffic_avg);
-        no_route_max = no_route_max.max(s.vehicles.no_route);
-        zero_speed_max = zero_speed_max.max(s.vehicles.zero_speed);
+        no_route_max = no_route_max.max(s.vehicles_active.no_route);
+        zero_speed_max = zero_speed_max.max(s.vehicles_active.zero_speed);
         emergencies_max = emergencies_max.max(s.active_emergencies);
     }
 

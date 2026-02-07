@@ -6,7 +6,8 @@ use crate::game::roads::RoadDir;
 
 use super::super::components::VehicleTrafficState;
 use super::super::{
-    TILE_CENTER_TO_EDGE_TILES, TrafficConfig, TrafficOccupancy, Vehicle, is_intersection_tile,
+    STOP_LINE_MARGIN_TILES, TILE_CENTER_TO_EDGE_TILES, TrafficConfig, TrafficOccupancy,
+    TrafficSpatialIndex, VEHICLE_HALF_LENGTH_TILES, Vehicle, is_intersection_tile,
 };
 use crate::game::pedestrians::PedestrianCrossing;
 
@@ -121,6 +122,7 @@ pub fn plan_intersection_reservations(
     grid: Res<MapGrid>,
     intersections: Res<IntersectionIndex>,
     traffic: Res<TrafficOccupancy>,
+    spatial: Res<TrafficSpatialIndex>,
     traffic_cfg: Res<TrafficConfig>,
     path_pool: Res<super::super::super::transport::PathPool>,
     mut reservations: ResMut<IntersectionReservations>,
@@ -139,6 +141,7 @@ pub fn plan_intersection_reservations(
     mut exit_tile_reserved: Local<std::collections::HashMap<(IntersectionId, usize), u16>>,
 ) {
     let now = time.elapsed_secs_f64();
+    let exit_clear_progress = (VEHICLE_HALF_LENGTH_TILES + STOP_LINE_MARGIN_TILES).clamp(0.0, 1.0);
 
     // Build a small lookup of controllers by intersection id.
     lights_by_id.clear();
@@ -293,7 +296,16 @@ pub fn plan_intersection_reservations(
             .get(exit_idx)
             .copied()
             .unwrap_or(0);
-        if occ >= cap {
+        let entry_clear = occ >= cap
+            && spatial
+                .tile_first(exit_idx)
+                .is_some_and(|e| e.progress > exit_clear_progress);
+        let effective_occ = if entry_clear {
+            occ.saturating_sub(1)
+        } else {
+            occ
+        };
+        if effective_occ >= cap {
             continue;
         }
 
@@ -417,11 +429,20 @@ pub fn plan_intersection_reservations(
             let used = exit_tile_reserved
                 .entry((id, cand.exit_tile_idx))
                 .or_insert_with(|| {
-                    traffic
+                    let occ = traffic
                         .per_tick_vehicles
                         .get(cand.exit_tile_idx)
                         .copied()
-                        .unwrap_or(0)
+                        .unwrap_or(0);
+                    let entry_clear = occ >= cand.exit_tile_cap
+                        && spatial
+                            .tile_first(cand.exit_tile_idx)
+                            .is_some_and(|e| e.progress > exit_clear_progress);
+                    if entry_clear {
+                        occ.saturating_sub(1)
+                    } else {
+                        occ
+                    }
                 });
             if *used >= cand.exit_tile_cap {
                 continue;

@@ -70,6 +70,7 @@ fn right_turn_on_red_is_blocked_by_conflicting_pedestrian_crossing_axis() {
         })
         .insert_resource(IntersectionReservations::default())
         .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, plan_intersection_reservations);
 
@@ -221,6 +222,7 @@ fn right_turn_on_red_is_only_admitted_when_intersection_is_clear() {
         })
         .insert_resource(TrafficOccupancy::default())
         .insert_resource(IntersectionReservations::default())
+        .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, plan_intersection_reservations);
 
@@ -370,6 +372,7 @@ fn turn_reservations_yield_only_to_conflicting_pedestrian_axis() {
         })
         .insert_resource(IntersectionReservations::default())
         .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, plan_intersection_reservations);
 

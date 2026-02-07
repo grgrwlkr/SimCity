@@ -67,6 +67,7 @@ fn straight_stream_allows_multiple_vehicles_to_reserve_concurrently() {
         .insert_resource(TrafficOccupancy::default())
         .insert_resource(TrafficConfig::default())
         .insert_resource(IntersectionReservations::default())
+        .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, plan_intersection_reservations);
 
@@ -224,6 +225,7 @@ fn left_turn_conflicts_with_straight_flow() {
         .insert_resource(TrafficOccupancy::default())
         .insert_resource(TrafficConfig::default())
         .insert_resource(IntersectionReservations::default())
+        .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, plan_intersection_reservations);
 

@@ -65,6 +65,7 @@ fn left_turn_reservations_yield_to_any_pedestrian_crossing_axis() {
         })
         .insert_resource(IntersectionReservations::default())
         .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, plan_intersection_reservations);
 
@@ -340,6 +341,7 @@ fn intersection_conflict_zones_allow_two_non_conflicting_right_turns() {
         })
         .insert_resource(IntersectionReservations::default())
         .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, plan_intersection_reservations);
 

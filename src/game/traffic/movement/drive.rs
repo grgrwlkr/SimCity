@@ -60,6 +60,7 @@ pub fn move_vehicles(
 ) {
     let dt = time.delta_secs();
     let idm = idm_params_world(&cfg, &traffic_cfg);
+    let exit_clear_progress = (VEHICLE_HALF_LENGTH_TILES + STOP_LINE_MARGIN_TILES).clamp(0.0, 1.0);
 
     // Update telemetry counters for active (non-parked) vehicles while we already iterate them.
     vehicle_agg.active = VehicleAgg::default();
@@ -252,7 +253,20 @@ pub fn move_vehicles(
                         false
                     };
                     if !ok {
-                        blocked_next = true;
+                        let force_entry =
+                            intersections
+                                .intersection_id_at(next_tile)
+                                .is_some_and(|id| {
+                                    !reservations.is_reserved(id)
+                                        && grid
+                                            .idx(next_tile)
+                                            .is_some_and(|idx| spatial.tile_count(idx) == 0)
+                                })
+                                && stuck_timer
+                                    .is_some_and(|st| st.secs >= INTERSECTION_FORCE_ENTRY_SECS);
+                        if !force_entry {
+                            blocked_next = true;
+                        }
                     }
 
                     // Yield to pedestrians already crossing.
@@ -346,7 +360,13 @@ pub fn move_vehicles(
                     let cap = exit_cell.road.kind.capacity_per_lane_tile();
                     let occ = traffic.per_tick_vehicles[exit_idx];
                     if occ >= cap {
-                        blocked_next = true;
+                        let entry_clear = occ == cap
+                            && spatial
+                                .tile_first(exit_idx)
+                                .is_some_and(|e| e.progress > exit_clear_progress);
+                        if !entry_clear {
+                            blocked_next = true;
+                        }
                     }
                 }
             }

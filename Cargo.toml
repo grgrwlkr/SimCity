@@ -6,7 +6,7 @@ resolver = "3"
 rust-version = "1.92"
 
 [dependencies]
-bevy = "0.18.0"
+bevy = { version = "0.18.0", features = ["bevy_remote"] }
 bevy_egui = "0.39.1"
 rand = "0.9.2"
 ron = "0.12.0"
