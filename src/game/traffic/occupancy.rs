@@ -145,11 +145,13 @@ pub(super) fn reset_traffic_aggregates(
 }
 
 /// Update the occupancy map based on current vehicle positions.
+#[allow(clippy::too_many_arguments)] // Bevy systems often need many parameters
 pub(super) fn update_traffic_occupancy(
     grid: Res<MapGrid>,
     mut occ: ResMut<TrafficOccupancy>,
     mut idx: ResMut<TrafficIndex>,
     mut roads: ResMut<TrafficRoadCache>,
+    path_pool: Res<super::super::transport::PathPool>,
     q: Query<&Vehicle, Without<Parked>>,
     cfg: Res<TrafficConfig>,
     edit_v: Option<Res<crate::game::map::MapEditVersion>>,
@@ -168,8 +170,8 @@ pub(super) fn update_traffic_occupancy(
 
     // Count occupancy at end-of-tick. Skip parked vehicles - they don't block traffic.
     for vehicle in q.iter() {
-        if let Some(pos) = vehicle.route.get(vehicle.route_idx)
-            && let Some(idx) = grid.idx(*pos)
+        if let Some(pos) = path_pool.get_tile(vehicle.path_handle, vehicle.path_cursor)
+            && let Some(idx) = grid.idx(pos)
         {
             // saturate at u16::MAX; capacity is small in MVP anyway.
             occ.per_tick_vehicles[idx] = occ.per_tick_vehicles[idx].saturating_add(1);

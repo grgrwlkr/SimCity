@@ -1,10 +1,13 @@
+use bevy::ecs::message::MessageReader;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::time::Fixed;
 
 use crate::game::map::{MapConfig, MapGrid, TilePos};
 use crate::game::roads::RoadDir;
+use crate::game::sim_events::HourAdvanced;
 use crate::game::traffic::{IntersectionReservations, Parked, TrafficConfig, Vehicle};
+use crate::game::transport::PathPool;
 use crate::game::trips::{TripFinished, TripMode, TripRequested};
 
 use super::config::PedestrianConfig;
@@ -33,6 +36,11 @@ pub struct PedestrianCrossing {
     pub axis_ns: bool,
 }
 
+/// Marker component indicating pedestrian is blocked at an uncontrolled intersection.
+/// GDD: Used to track wait time in game hours for rerouting (6 game hours).
+#[derive(Component, Debug, Copy, Clone)]
+pub struct BlockedAtUncontrolled;
+
 #[derive(Component, Debug, Clone)]
 pub struct Pedestrian {
     pub(crate) route: Vec<TilePos>,
@@ -40,13 +48,30 @@ pub struct Pedestrian {
     pub(crate) progress: f32,
     pub(crate) speed_world: f32,
     pub(crate) goal: TilePos,
-    pub(crate) wait_blocked_secs: f32,
+    /// Hours blocked at an uncontrolled crossing (GDD: tracked in game hours)
+    pub(crate) wait_blocked_hours: f32,
     pub(crate) reroute_attempts: u8,
 }
 
 pub(crate) fn cleanup_pedestrians(mut commands: Commands, q: Query<Entity, With<Pedestrian>>) {
     for e in q.iter() {
         commands.entity(e).despawn();
+    }
+}
+
+/// GDD: Update wait_blocked_hours for pedestrians blocked at uncontrolled intersections.
+/// Increments by 1 hour per HourAdvanced event.
+pub(crate) fn update_pedestrian_blocked_timers(
+    mut hour_events: MessageReader<'_, '_, HourAdvanced>,
+    mut q: Query<&mut Pedestrian, (With<BlockedAtUncontrolled>, With<Pedestrian>)>,
+) {
+    let hours_passed = hour_events.read().count() as f32;
+    if hours_passed <= 0.0 {
+        return;
+    }
+
+    for mut ped in q.iter_mut() {
+        ped.wait_blocked_hours += hours_passed;
     }
 }
 
@@ -89,7 +114,9 @@ pub(super) fn spawn_walkers(
         let start_tile = route[0];
         let goal_tile = *route.last().unwrap_or(&start_tile);
 
-        let speed_world = (p.ped_cfg.walk_speed_mps.max(0.1) * p.cfg.tile_size) / tile_meters;
+        // Convert km/h to m/s, then to world units
+        let walk_speed_mps = p.ped_cfg.walk_speed_mps();
+        let speed_world = (walk_speed_mps.max(0.1) * p.cfg.tile_size) / tile_meters;
 
         let world = tile_to_world(&p.cfg, start_tile);
         p.commands.spawn((
@@ -104,7 +131,7 @@ pub(super) fn spawn_walkers(
                 progress: 0.0,
                 speed_world,
                 goal: goal_tile,
-                wait_blocked_secs: 0.0,
+                wait_blocked_hours: 0.0,
                 reroute_attempts: 0,
             },
             PedestrianTile(start_tile),
@@ -126,6 +153,7 @@ pub(crate) struct MoveWalkersParams<'w, 's> {
     reservations: Option<Res<'w, IntersectionReservations>>,
     q_lights: Query<'w, 's, &'static crate::game::intersections::TrafficLight>,
     spatial: Option<Res<'w, crate::game::traffic::TrafficSpatialIndex>>,
+    path_pool: Res<'w, PathPool>,
     q_vehicles: Query<'w, 's, (Entity, &'static Vehicle), Without<Parked>>,
     q_vehicle_by_entity: Query<'w, 's, &'static Vehicle, Without<Parked>>,
     graph: Res<'w, PedestrianGraph>,
@@ -223,6 +251,7 @@ pub(crate) fn move_walkers(
                     &p.ped_cfg,
                     &p.grid,
                     p.spatial.as_deref(),
+                    &p.path_pool,
                     &p.q_vehicles,
                     &p.q_vehicle_by_entity,
                 )
@@ -235,51 +264,55 @@ pub(crate) fn move_walkers(
         if blocked {
             // Wait at the curb.
             ped.progress = 0.0;
-            ped.wait_blocked_secs = (ped.wait_blocked_secs + dt).min(10_000.0);
 
-            // Reroute if stuck too long at an uncontrolled crossing.
-            if let Some(avoid) = reroute_avoid
-                && ped.wait_blocked_secs >= p.ped_cfg.wait_reroute_secs.max(0.0)
-                && ped.reroute_attempts < p.ped_cfg.wait_reroute_max_attempts
-            {
-                ped.wait_blocked_secs = 0.0;
-                ped.reroute_attempts = ped.reroute_attempts.saturating_add(1);
+            // Mark as blocked at uncontrolled intersection if reroute_avoid is Some
+            if let Some(avoid) = reroute_avoid {
+                p.commands.entity(e).insert(BlockedAtUncontrolled);
 
-                // Attempt 1: avoid the blocked intersection tile only.
-                // Attempt 2+: avoid all uncontrolled intersections to prefer signalized crossings.
-                let prefer_signalized = ped.reroute_attempts >= 2;
-                let mut new_route = p
-                    .routing
-                    .shortest_path_avoid_bounded(&p.graph, a, ped.goal, avoid, max_steps);
-                if prefer_signalized
-                    && new_route.is_none()
-                    && let Some(intersections) = p.intersections.as_deref()
+                // Reroute if stuck too long at an uncontrolled crossing (GDD: 6 game hours).
+                if ped.wait_blocked_hours >= p.ped_cfg.wait_reroute_hours.max(0.0)
+                    && ped.reroute_attempts < p.ped_cfg.wait_reroute_max_attempts
                 {
-                    new_route = p.routing.shortest_path_blocked_bounded(
-                        &p.graph,
-                        a,
-                        ped.goal,
-                        max_steps,
-                        |pos| {
-                            if pos == avoid {
-                                return true;
-                            }
-                            if !is_intersection_tile(&p.grid, pos) {
-                                return false;
-                            }
-                            let Some(id) = intersections.intersection_id_at(pos) else {
-                                return false;
-                            };
-                            !intersections.traffic_lights.contains(&id)
-                        },
-                    );
-                }
+                    ped.wait_blocked_hours = 0.0;
+                    ped.reroute_attempts = ped.reroute_attempts.saturating_add(1);
 
-                if let Some(new_route) = new_route {
-                    ped.route = new_route;
-                    ped.route_idx = 0;
-                    ped.progress = 0.0;
-                    *ped_tile = PedestrianTile(a);
+                    // Attempt 1: avoid the blocked intersection tile only.
+                    // Attempt 2+: avoid all uncontrolled intersections to prefer signalized crossings.
+                    let prefer_signalized = ped.reroute_attempts >= 2;
+                    let mut new_route = p
+                        .routing
+                        .shortest_path_avoid_bounded(&p.graph, a, ped.goal, avoid, max_steps);
+                    if prefer_signalized
+                        && new_route.is_none()
+                        && let Some(intersections) = p.intersections.as_deref()
+                    {
+                        new_route = p.routing.shortest_path_blocked_bounded(
+                            &p.graph,
+                            a,
+                            ped.goal,
+                            max_steps,
+                            |pos| {
+                                if pos == avoid {
+                                    return true;
+                                }
+                                if !is_intersection_tile(&p.grid, pos) {
+                                    return false;
+                                }
+                                let Some(id) = intersections.intersection_id_at(pos) else {
+                                    return false;
+                                };
+                                !intersections.traffic_lights.contains(&id)
+                            },
+                        );
+                    }
+
+                    if let Some(new_route) = new_route {
+                        ped.route = new_route;
+                        ped.route_idx = 0;
+                        ped.progress = 0.0;
+                        *ped_tile = PedestrianTile(a);
+                        p.commands.entity(e).remove::<BlockedAtUncontrolled>();
+                    }
                 }
             }
 
@@ -287,6 +320,9 @@ pub(crate) fn move_walkers(
             tf.translation.x = world.x;
             tf.translation.y = world.y;
             continue;
+        } else {
+            // Not blocked: remove blocked marker if present
+            p.commands.entity(e).remove::<BlockedAtUncontrolled>();
         }
 
         // If we are about to enter an intersection tile, mark the crossing axis for other systems.
@@ -303,8 +339,9 @@ pub(crate) fn move_walkers(
             });
         }
 
-        // Reset wait timer once we're moving.
-        ped.wait_blocked_secs = 0.0;
+        // Reset wait timer and remove blocked marker once we're moving.
+        ped.wait_blocked_hours = 0.0;
+        p.commands.entity(e).remove::<BlockedAtUncontrolled>();
 
         ped.progress += (ped.speed_world * dt) / seg_len;
 
@@ -385,6 +422,7 @@ fn ped_can_enter_uncontrolled(
     ped_cfg: &PedestrianConfig,
     grid: &MapGrid,
     spatial: Option<&crate::game::traffic::TrafficSpatialIndex>,
+    path_pool: &PathPool,
     q_vehicles: &Query<(Entity, &Vehicle), Without<Parked>>,
     q_vehicle_by_entity: &Query<&Vehicle, Without<Parked>>,
 ) -> bool {
@@ -437,7 +475,7 @@ fn ped_can_enter_uncontrolled(
             let Ok(v) = q_vehicle_by_entity.get(front.entity) else {
                 continue;
             };
-            if v.route_idx + 1 >= v.route.len() || v.route[v.route_idx + 1] != intersection_tile {
+            if path_pool.get_tile(v.path_handle, v.path_cursor + 1) != Some(intersection_tile) {
                 continue;
             }
 
@@ -461,10 +499,10 @@ fn ped_can_enter_uncontrolled(
 
     // Fallback path (mostly for minimal test worlds): scan all vehicles.
     for (_e, v) in q_vehicles.iter() {
-        if v.route.len() < 2 {
+        if path_pool.len(v.path_handle) < 2 {
             continue;
         }
-        if v.route_idx + 1 >= v.route.len() || v.route[v.route_idx + 1] != intersection_tile {
+        if path_pool.get_tile(v.path_handle, v.path_cursor + 1) != Some(intersection_tile) {
             continue;
         }
         let dist_to_entry_tiles = (1.0 - v.progress).clamp(0.0, 1.0);

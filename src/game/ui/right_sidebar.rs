@@ -68,8 +68,7 @@ pub(super) fn right_sidebar_ui(
                                 .building_index
                                 .as_deref()
                                 .and_then(|idx| idx.get(tile))
-                                .and_then(|e| p.q_buildings.get(e).ok().copied())
-                                .or_else(|| p.q_buildings.iter().find(|b| b.pos == tile).copied());
+                                .and_then(|e| p.q_buildings.get(e).ok().cloned());
                             if let Some(b) = b_found {
                                 ui.separator();
                                 ui.label("Building entity:");
@@ -116,13 +115,14 @@ pub(super) fn right_sidebar_ui(
 
                             // Sample from active vehicles only (O(1) lookup).
                             let mut sample: Option<(usize, f32)> = None; // (route_len, progress)
-                            if let (Some(i), Some(spatial)) = (tile_idx, p.spatial.as_deref())
+                            if let (Some(i), Some(spatial), Some(path_pool)) =
+                                (tile_idx, p.spatial.as_deref(), p.path_pool.as_deref())
                                 && let Some(e) = spatial.tile_first(i)
                             {
                                 let route_len = p
                                     .q_vehicle_by_entity
                                     .get(e.entity)
-                                    .map(|v| v.route.len())
+                                    .map(|v| path_pool.len(v.path_handle))
                                     .unwrap_or(0);
                                 sample = Some((route_len, e.progress));
                             }

@@ -21,6 +21,7 @@ impl Default for MapConfig {
 #[derive(
     serde::Serialize, serde::Deserialize, Component, Debug, Copy, Clone, Eq, PartialEq, Hash,
 )]
+#[repr(C)]
 pub struct TilePos {
     pub x: i32,
     pub y: i32,
@@ -195,6 +196,13 @@ impl BuildingKind {
         }
     }
 
+    /// Capacity for residents at a given level, scaled by footprint area (GDD: base × (area/9)).
+    pub fn capacity_residents_for_level_area(self, level: u8, area: u32) -> u16 {
+        let base = self.capacity_residents_for_level(level) as f32;
+        let factor = (area as f32) / 9.0;
+        (base * factor).round().clamp(0.0, u16::MAX as f32) as u16
+    }
+
     /// Capacity for jobs at a given level
     pub fn capacity_jobs_for_level(self, level: u8) -> u16 {
         match (self, level) {
@@ -206,6 +214,13 @@ impl BuildingKind {
             (BuildingKind::Industrial, 3) => 40,
             _ => self.capacity_jobs(),
         }
+    }
+
+    /// Capacity for jobs at a given level, scaled by footprint area (GDD: base × (area/9)).
+    pub fn capacity_jobs_for_level_area(self, level: u8, area: u32) -> u16 {
+        let base = self.capacity_jobs_for_level(level) as f32;
+        let factor = (area as f32) / 9.0;
+        (base * factor).round().clamp(0.0, u16::MAX as f32) as u16
     }
 }
 

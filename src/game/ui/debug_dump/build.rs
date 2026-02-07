@@ -1,7 +1,7 @@
 use super::*;
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn build_debug_dump(
+pub fn build_debug_dump(
     state: &State<AppState>,
     ui_state: &UiState,
     city: &City,
@@ -10,7 +10,6 @@ pub(super) fn build_debug_dump(
     map_cfg: &MapConfig,
     grid: &MapGrid,
     hovered: &HoveredTile,
-    day_night: Option<&DayNightCycle>,
     camera: Option<(&Transform, &Projection)>,
     dump_ui: &DebugDumpUiState,
     telemetry: &DebugTelemetry,
@@ -26,7 +25,7 @@ pub(super) fn build_debug_dump(
         SimSpeed::Paused => "Paused",
         SimSpeed::X1 => "X1",
         SimSpeed::X2 => "X2",
-        SimSpeed::X4 => "X4",
+        SimSpeed::X3 => "X3",
     }
     .to_string();
 
@@ -99,7 +98,7 @@ pub(super) fn build_debug_dump(
     let generated_at_unix_ms = u64::try_from(generated_at_unix_ms_u128).unwrap_or(u64::MAX);
 
     DebugDump {
-        dump_version: 1,
+        dump_version: 2,
         generated_at_unix_ms,
         app_state,
         sim_speed,
@@ -119,7 +118,7 @@ pub(super) fn build_debug_dump(
             last_income: city.last_income,
             last_expense: city.last_expense,
             happiness: city.happiness,
-            time_of_day: day_night.map(|c| c.time_of_day),
+            time_of_day: Some(crate::game::day_night::time_of_day_from_hour(city.hour)),
         },
         ui_metrics: DebugDumpUiMetrics {
             citizens: metrics.citizens,
@@ -140,6 +139,18 @@ pub(super) fn build_debug_dump(
             active_emergencies: metrics.active_emergencies,
             emergencies_resolved: metrics.emergencies_resolved,
             emergencies_failed: metrics.emergencies_failed,
+            fire_stations: metrics.fire_stations,
+            police_stations: metrics.police_stations,
+            medical_stations: metrics.medical_stations,
+            fire_vehicles_available: metrics.fire_vehicles.0,
+            fire_vehicles_total: metrics.fire_vehicles.1,
+            police_vehicles_available: metrics.police_vehicles.0,
+            police_vehicles_total: metrics.police_vehicles.1,
+            medical_vehicles_available: metrics.medical_vehicles.0,
+            medical_vehicles_total: metrics.medical_vehicles.1,
+            service_cov_fire: metrics.service_cov_fire,
+            service_cov_police: metrics.service_cov_police,
+            service_cov_medical: metrics.service_cov_medical,
         },
         telemetry: DebugDumpTelemetry {
             window_secs: window,
@@ -185,8 +196,8 @@ pub(super) fn summarize_telemetry(
     for s in samples {
         traffic_min = traffic_min.min(s.traffic_avg);
         traffic_max = traffic_max.max(s.traffic_avg);
-        no_route_max = no_route_max.max(s.vehicles.no_route);
-        zero_speed_max = zero_speed_max.max(s.vehicles.zero_speed);
+        no_route_max = no_route_max.max(s.vehicles_active.no_route);
+        zero_speed_max = zero_speed_max.max(s.vehicles_active.zero_speed);
         emergencies_max = emergencies_max.max(s.active_emergencies);
     }
 

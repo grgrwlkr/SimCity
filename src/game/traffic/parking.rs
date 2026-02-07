@@ -6,6 +6,7 @@ pub(super) fn update_parked_vehicle_positions(
     grid: Res<MapGrid>,
     mut vehicle_agg: ResMut<VehicleAggSnapshot>,
     mut parked_index: ResMut<ParkedVehicleTileIndex>,
+    path_pool: Res<super::super::transport::PathPool>,
     mut q_parked: Query<(
         &Vehicle,
         &VehicleTrafficState,
@@ -19,7 +20,7 @@ pub(super) fn update_parked_vehicle_positions(
     parked_index.begin_frame(grid.len());
 
     for (vehicle, traffic_state, parked, service, mut tf, mut sprite) in q_parked.iter_mut() {
-        let Some(tile) = vehicle.route.get(vehicle.route_idx).copied() else {
+        let Some(tile) = path_pool.get_tile(vehicle.path_handle, vehicle.path_cursor) else {
             continue;
         };
         if let Some(tile_idx) = grid.idx(tile) {
@@ -66,7 +67,7 @@ pub(super) fn update_parked_vehicle_positions(
             let a = &mut vehicle_agg.parked;
             a.total = a.total.saturating_add(1);
             a.parked = a.parked.saturating_add(1);
-            if vehicle.route_idx >= vehicle.route.len() {
+            if vehicle.path_cursor >= path_pool.len(vehicle.path_handle) {
                 a.no_route = a.no_route.saturating_add(1);
             }
             if vehicle.speed < 0.1 {
@@ -102,7 +103,7 @@ pub(super) fn update_parked_vehicle_positions(
                     ServiceVehicleState::Returning => {
                         a.service_returning = a.service_returning.saturating_add(1);
                         a.service_returning_parked = a.service_returning_parked.saturating_add(1);
-                        if vehicle.route_idx >= vehicle.route.len() {
+                        if vehicle.path_cursor >= path_pool.len(vehicle.path_handle) {
                             a.service_returning_no_route =
                                 a.service_returning_no_route.saturating_add(1);
                         }

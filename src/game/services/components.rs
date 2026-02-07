@@ -45,6 +45,7 @@ pub struct ServiceStation {
     pub pos: TilePos,
     pub total_vehicles: u8,
     pub available_vehicles: u8,
+    pub occupied: bool,
 }
 
 /// Service vehicle state machine (minimal for now; dispatch logic is 5.4+).

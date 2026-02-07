@@ -1,6 +1,7 @@
 use bevy::ecs::message::MessageWriter;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
+use bevy::time::Real;
 use bevy::window::PrimaryWindow;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use std::collections::VecDeque;
@@ -10,7 +11,7 @@ use crate::game::camera::MainCamera;
 use crate::game::citizens::Citizen;
 use crate::game::citizens::CommuteStats;
 use crate::game::commands::GameCommand;
-use crate::game::day_night::DayNightCycle;
+use crate::game::day_night::time_of_day_from_hour;
 use crate::game::demand::RciDemand;
 use crate::game::economy::EconomyConfig;
 use crate::game::emergencies::Emergency;
@@ -33,7 +34,7 @@ use crate::game::ui_settings::UiSettings;
 use crate::game::ui_state::{OverlayMode, SimSpeed, ToolMode, UiState};
 
 mod metrics;
-use metrics::{
+pub use metrics::{
     DebugDumpCopyInfo, DebugDumpUiState, DebugTelemetry, DebugTelemetrySample, HistorySample,
     UiEntityCounts, UiHistory, UiMetrics, track_ui_entity_counts, update_ui_metrics,
 };
@@ -65,7 +66,7 @@ use building_popup::building_popup_ui;
 mod stats_window;
 use stats_window::{ShowStatsWindow, stats_ui};
 
-mod debug_dump;
+pub mod debug_dump;
 use debug_dump::debug_dump_ui;
 
 pub struct UiPlugin;
@@ -168,12 +169,11 @@ fn reset_debug_telemetry(mut telemetry: ResMut<DebugTelemetry>, mut ui: ResMut<D
 
 #[allow(clippy::too_many_arguments)]
 fn collect_debug_telemetry(
-    time: Res<Time>,
+    time: Res<Time<Real>>,
     state: Res<State<AppState>>,
     ui_state: Res<UiState>,
     city: Res<City>,
     metrics: Res<UiMetrics>,
-    day_night: Option<Res<DayNightCycle>>,
     cfg: Res<DebugDumpUiState>,
     mut telemetry: ResMut<DebugTelemetry>,
     vehicle_agg: Option<Res<VehicleAggSnapshot>>,
@@ -212,17 +212,23 @@ fn collect_debug_telemetry(
         SimSpeed::Paused => "Paused",
         SimSpeed::X1 => "X1",
         SimSpeed::X2 => "X2",
-        SimSpeed::X4 => "X4",
+        SimSpeed::X3 => "X3",
     }
     .to_string();
 
-    let time_of_day = day_night.as_deref().map(|c| c.time_of_day);
+    let time_of_day = Some(time_of_day_from_hour(city.hour));
 
     // Vehicle stats: use snapshot built by traffic systems (no full-world scan here).
-    let vehicles = vehicle_agg
+    let (vehicles, vehicles_active, vehicles_parked) = vehicle_agg
         .as_deref()
-        .map(|s| s.combined())
-        .unwrap_or_default();
+        .map(|s| (s.combined(), s.active.clone(), s.parked.clone()))
+        .unwrap_or_else(|| {
+            (
+                VehicleAgg::default(),
+                VehicleAgg::default(),
+                VehicleAgg::default(),
+            )
+        });
 
     let t_real_s = telemetry.t_real_s;
     telemetry.samples.push_back(DebugTelemetrySample {
@@ -240,6 +246,8 @@ fn collect_debug_telemetry(
         demand_i: metrics.demand_i,
         active_emergencies: metrics.active_emergencies,
         vehicles,
+        vehicles_active,
+        vehicles_parked,
     });
 
     while telemetry.samples.len() > max_samples {

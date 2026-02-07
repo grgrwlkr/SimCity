@@ -25,36 +25,21 @@ pub(super) fn top_status_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams)
                 ui.label(format!("👥 {}", p.city.population));
                 ui.separator();
 
-                // Day
-                ui.label(format!("📅 Day {}", p.city.day));
+                // Single game time (GDD 5.2): Day + hour, phase for day/night from City
+                let (time_icon, phase) = if p.city.hour >= 6 && p.city.hour < 12 {
+                    ("🌅", "Dawn")
+                } else if p.city.hour >= 12 && p.city.hour < 18 {
+                    ("🌤", "Day")
+                } else if p.city.hour >= 18 && p.city.hour < 21 {
+                    ("🌆", "Dusk")
+                } else {
+                    ("🌙", "Night")
+                };
+                ui.label(format!(
+                    "📅 {} Day {} {:02}:00 ({})",
+                    time_icon, p.city.day, p.city.hour, phase
+                ));
                 ui.separator();
-
-                // Time of day with icon
-                if matches!(p.state.get(), AppState::InGame | AppState::Paused)
-                    && let Some(cycle) = p.day_night.as_deref()
-                {
-                    let t = cycle.time_of_day.rem_euclid(1.0);
-                    let hours_f = ((t * 24.0) + 12.0) % 24.0;
-                    let mut hh = hours_f.floor() as u32;
-                    let mut mm = ((hours_f - (hh as f32)) * 60.0).round() as u32;
-                    if mm >= 60 {
-                        mm = 0;
-                        hh = (hh + 1) % 24;
-                    }
-
-                    let (time_icon, phase) = if t < 0.25 {
-                        ("🌤", "Day")
-                    } else if t < 0.5 {
-                        ("🌆", "Dusk")
-                    } else if t < 0.75 {
-                        ("🌙", "Night")
-                    } else {
-                        ("🌅", "Dawn")
-                    };
-
-                    ui.label(format!("{} {:02}:{:02} ({})", time_icon, hh, mm, phase));
-                    ui.separator();
-                }
 
                 // Sim speed (compact buttons)
                 ui.horizontal(|ui| {
@@ -64,9 +49,9 @@ pub(super) fn top_status_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams)
                     let resp = ui.selectable_value(&mut p.ui_state.sim_speed, SimSpeed::X1, "▶");
                     resp.on_hover_text("Normal speed (1x)");
                     let resp = ui.selectable_value(&mut p.ui_state.sim_speed, SimSpeed::X2, "▶▶");
-                    resp.on_hover_text("Fast speed (2x)");
-                    let resp = ui.selectable_value(&mut p.ui_state.sim_speed, SimSpeed::X4, "▶▶▶");
-                    resp.on_hover_text("Very fast speed (4x)");
+                    resp.on_hover_text("Fast speed (2x: 0.8s/hour)");
+                    let resp = ui.selectable_value(&mut p.ui_state.sim_speed, SimSpeed::X3, "▶▶▶");
+                    resp.on_hover_text("Very fast speed (3x: 0.5s/hour)");
                 });
                 ui.separator();
 

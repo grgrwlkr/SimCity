@@ -1,4 +1,5 @@
 use super::*;
+use crate::game::transport::{PathHandle, PathPool};
 
 fn lane_change_target(grid: &MapGrid, current: TilePos, move_dir: RoadDir) -> Option<TilePos> {
     let cur_cell = grid.get(current)?;
@@ -101,12 +102,14 @@ fn lane_change_safe_progress(
 
 fn find_leader_ahead(
     ego: (TilePos, f32),
-    route: &[TilePos],
+    path_pool: &PathPool,
+    path_handle: PathHandle,
+    path_cursor: usize,
     grid: &MapGrid,
     spatial: &TrafficSpatialIndex,
 ) -> Option<(f32, f32)> {
     let (tile, progress) = ego;
-    spatial.leader_ahead(grid, tile, progress, route)
+    spatial.leader_ahead(grid, path_pool, tile, progress, path_handle, path_cursor)
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -122,6 +125,7 @@ pub(in super::super) fn plan_lane_changes(
     intersections: Res<IntersectionIndex>,
     traffic_cfg: Res<TrafficConfig>,
     spatial: Res<TrafficSpatialIndex>,
+    mut path_pool: ResMut<PathPool>,
     mut commands: Commands,
     mut vehicles: ParamSet<(
         Query<
@@ -133,7 +137,6 @@ pub(in super::super) fn plan_lane_changes(
                 Option<&Overtaking>,
                 Option<&OvertakeOncoming>,
                 Option<&ServiceVehicle>,
-                Option<&BusVehicle>,
             ),
             Without<Parked>,
         >,
@@ -160,27 +163,27 @@ pub(in super::super) fn plan_lane_changes(
     }
     let mut desires = Vec::<Desire>::new();
 
-    for (e, v, state, cooldown, overtaking, oncoming, service_vehicle, bus_vehicle) in
-        vehicles.p0().iter()
-    {
+    for (e, v, state, cooldown, overtaking, oncoming, service_vehicle) in vehicles.p0().iter() {
         if cooldown.is_some() {
             continue;
         }
         if oncoming.is_some() {
             continue;
         }
-        if service_vehicle.is_some() || bus_vehicle.is_some() {
+        if service_vehicle.is_some() {
             continue;
         }
-        if v.route_idx + 1 >= v.route.len() {
+        if v.path_cursor + 1 >= path_pool.len(v.path_handle) {
             continue;
         }
 
         // Don't lane change inside/near intersections.
-        let Some(&ego_tile) = v.route.get(v.route_idx) else {
+        let Some(ego_tile) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
-        if route_has_near_intersection(&v.route[v.route_idx..], &grid) {
+        if let Some(route) = path_pool.remaining_from(v.path_handle, v.path_cursor)
+            && route_has_near_intersection(route, &grid)
+        {
             continue;
         }
         let Some(ego_cell) = grid.get(ego_tile) else {
@@ -202,7 +205,12 @@ pub(in super::super) fn plan_lane_changes(
         }
 
         let dir = ego_cell.road.dir;
-        let goal = *v.route.last().unwrap_or(&ego_tile);
+        let goal = path_pool
+            .get_tile(
+                v.path_handle,
+                path_pool.len(v.path_handle).saturating_sub(1),
+            )
+            .unwrap_or(ego_tile);
         if goal == ego_tile {
             continue;
         }
@@ -217,7 +225,14 @@ pub(in super::super) fn plan_lane_changes(
         let right_target = lane_change_target(&grid, ego_tile, dir.right());
 
         // Leader heuristics (for overtake decision).
-        let leader = find_leader_ahead((ego_tile, v.progress), &v.route, &grid, &spatial);
+        let leader = find_leader_ahead(
+            (ego_tile, v.progress),
+            &path_pool,
+            v.path_handle,
+            v.path_cursor,
+            &grid,
+            &spatial,
+        );
 
         let mut want_left = false;
         let mut want_right = false;
@@ -334,13 +349,16 @@ pub(in super::super) fn plan_lane_changes(
             continue;
         }
 
+        // Update vehicle route for lane change
         if let Ok((_e, mut v)) = vehicles.p1().get_mut(d.e) {
             // Keep current tile; insert lane-change as the first step.
             let mut new_route = Vec::with_capacity(route_from_target.len() + 1);
             new_route.push(current);
             new_route.extend(route_from_target);
-            v.route = new_route;
-            v.route_idx = 0;
+            // Release old path and intern new one
+            path_pool.release(v.path_handle);
+            v.path_handle = path_pool.intern(new_route);
+            v.path_cursor = 0;
         } else {
             continue;
         }

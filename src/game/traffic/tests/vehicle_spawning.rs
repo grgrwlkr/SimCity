@@ -1,3 +1,5 @@
+//! Tests for vehicle spawning and trip management: spawn location logic, yellow light behavior, and trip lifecycle.
+
 use super::*;
 
 #[test]
@@ -69,6 +71,7 @@ fn yellow_allows_proceeding_if_too_late_to_stop_comfortably() {
             idx
         })
         .insert_resource(IntersectionReservations::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, update_vehicle_traffic_state);
 
     let intersection_tile = TilePos { x: 2, y: 3 };
@@ -96,23 +99,30 @@ fn yellow_allows_proceeding_if_too_late_to_stop_comfortably() {
             all_red_duration: 1.0,
         });
 
+    let vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(
+            &mut path_pool,
+            vec![
+                TilePos { x: 2, y: 0 },
+                TilePos { x: 2, y: 1 },
+                TilePos { x: 2, y: 2 },
+                intersection_tile,
+                TilePos { x: 3, y: 3 },
+            ],
+            0,
+            0.0,
+            100.0, // fast enough that stopping comfortably is impossible in ~3 tiles
+            999.0,
+            20.0,
+        )
+    };
     let ego = app
         .world_mut()
         .spawn((
-            Vehicle {
-                route: vec![
-                    TilePos { x: 2, y: 0 },
-                    TilePos { x: 2, y: 1 },
-                    TilePos { x: 2, y: 2 },
-                    intersection_tile,
-                    TilePos { x: 3, y: 3 },
-                ],
-                route_idx: 0,
-                progress: 0.0,
-                speed: 100.0, // fast enough that stopping comfortably is impossible in ~3 tiles
-                max_speed: 999.0,
-                max_accel: 20.0,
-            },
+            vehicle,
             VehicleTrafficState::Approaching {
                 intersection: key,
                 stop_tile: TilePos { x: 2, y: 2 },
@@ -123,8 +133,9 @@ fn yellow_allows_proceeding_if_too_late_to_stop_comfortably() {
 
     app.update();
 
+    let state = app.world().get::<VehicleTrafficState>(ego).copied();
     assert_eq!(
-        app.world().get::<VehicleTrafficState>(ego).copied(),
+        state,
         Some(VehicleTrafficState::CrossingIntersection { intersection: key })
     );
 }
@@ -183,6 +194,7 @@ fn car_trip_spawns_from_citizen_car_parked_at_not_from() {
         .insert_resource(TrafficIndex::default())
         .insert_resource(TrafficConfig::default())
         .insert_resource(IntersectionIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, spawn_trip_vehicles);
 
     // Citizen's car is parked at "work" building (0,2), but trip is requested from (0,0).
@@ -263,6 +275,7 @@ fn owned_car_is_parked_on_arrival_not_despawned() {
         .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(VehicleAggSnapshot::default())
         .insert_resource(ParkedVehicleTileIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .insert_resource(FinishCount::default())
         .add_systems(
             Update,
@@ -276,18 +289,25 @@ fn owned_car_is_parked_on_arrival_not_despawned() {
 
     let tile = TilePos { x: 1, y: 1 };
     let citizen = CitizenId(7);
+    let vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(
+            &mut path_pool,
+            vec![tile],
+            0,
+            1.0, // will be consumed -> arrival
+            0.0,
+            60.0,
+            20.0,
+        )
+    };
     let car = app
         .world_mut()
         .spawn((
             Sprite::default(),
-            Vehicle {
-                route: vec![tile],
-                route_idx: 0,
-                progress: 1.0, // will be consumed -> arrival
-                speed: 0.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
+            vehicle,
             Transform::default(),
             VehicleTrafficState::FreeFlow,
             CarOwner { citizen },
@@ -314,6 +334,7 @@ fn owned_car_is_parked_on_arrival_not_despawned() {
         "trip marker removed"
     );
     let v = app.world().get::<Vehicle>(car).unwrap();
-    assert_eq!(v.route.get(v.route_idx).copied(), Some(tile));
+    let path_pool = app.world().resource::<crate::game::transport::PathPool>();
+    assert_eq!(path_pool.get_tile(v.path_handle, v.path_cursor), Some(tile));
     assert_eq!(v.speed, 0.0);
 }

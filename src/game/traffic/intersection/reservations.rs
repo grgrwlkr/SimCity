@@ -6,7 +6,8 @@ use crate::game::roads::RoadDir;
 
 use super::super::components::VehicleTrafficState;
 use super::super::{
-    TILE_CENTER_TO_EDGE_TILES, TrafficConfig, TrafficOccupancy, Vehicle, is_intersection_tile,
+    STOP_LINE_MARGIN_TILES, TILE_CENTER_TO_EDGE_TILES, TrafficConfig, TrafficOccupancy,
+    TrafficSpatialIndex, VEHICLE_HALF_LENGTH_TILES, Vehicle, is_intersection_tile,
 };
 use crate::game::pedestrians::PedestrianCrossing;
 
@@ -40,13 +41,17 @@ pub(crate) struct IntersectionReservations {
 
 impl IntersectionReservations {
     pub(crate) fn is_reserved(&self, id: IntersectionId) -> bool {
-        self.by_intersection.get(&id).is_some_and(|v| !v.is_empty())
+        self.by_intersection
+            .get(&id)
+            .is_some_and(|v: &Vec<IntersectionReservation>| !v.is_empty())
     }
 
     pub(crate) fn is_reserved_by(&self, id: IntersectionId, vehicle: Entity) -> bool {
         self.by_intersection
             .get(&id)
-            .is_some_and(|rs| rs.iter().any(|r| r.vehicle == vehicle))
+            .is_some_and(|rs: &Vec<IntersectionReservation>| {
+                rs.iter().any(|r| r.vehicle == vehicle)
+            })
     }
 
     fn can_reserve(
@@ -112,12 +117,14 @@ pub(crate) fn reset_intersection_reservations(mut reservations: ResMut<Intersect
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn plan_intersection_reservations(
+pub fn plan_intersection_reservations(
     time: Res<Time<Fixed>>,
     grid: Res<MapGrid>,
     intersections: Res<IntersectionIndex>,
     traffic: Res<TrafficOccupancy>,
+    spatial: Res<TrafficSpatialIndex>,
     traffic_cfg: Res<TrafficConfig>,
+    path_pool: Res<super::super::super::transport::PathPool>,
     mut reservations: ResMut<IntersectionReservations>,
     q_lights: Query<&crate::game::intersections::TrafficLight>,
     q_pedestrians: Query<&PedestrianCrossing>,
@@ -134,6 +141,7 @@ pub(crate) fn plan_intersection_reservations(
     mut exit_tile_reserved: Local<std::collections::HashMap<(IntersectionId, usize), u16>>,
 ) {
     let now = time.elapsed_secs_f64();
+    let exit_clear_progress = (VEHICLE_HALF_LENGTH_TILES + STOP_LINE_MARGIN_TILES).clamp(0.0, 1.0);
 
     // Build a small lookup of controllers by intersection id.
     lights_by_id.clear();
@@ -156,13 +164,13 @@ pub(crate) fn plan_intersection_reservations(
 
     // Reuse candidate buffers across ticks.
     for v in candidates_by_intersection.values_mut() {
-        v.clear();
+        (v as &mut Vec<IntersectionReservationCandidate>).clear();
     }
     exit_tile_reserved.clear();
 
     // Ensure any vehicle currently inside an intersection cluster owns a reservation (safety net).
     for (e, v, _) in q_vehicles.iter() {
-        let Some(&cur) = v.route.get(v.route_idx) else {
+        let Some(cur) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
         if !is_intersection_tile(&grid, cur) {
@@ -190,7 +198,7 @@ pub(crate) fn plan_intersection_reservations(
     // Greedy admission: allow multiple approaching vehicles per intersection as long as their
     // conflict zones don't overlap (coarse safety).
     for (e, v, state) in q_vehicles.iter() {
-        if v.route_idx + 1 >= v.route.len() {
+        if v.path_cursor + 1 >= path_pool.len(v.path_handle) {
             continue;
         }
         let stopped_or_waiting = matches!(
@@ -198,13 +206,15 @@ pub(crate) fn plan_intersection_reservations(
             VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. }
         );
 
-        let Some(&cur) = v.route.get(v.route_idx) else {
+        let Some(cur) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
         if is_intersection_tile(&grid, cur) {
             continue;
         }
-        let next = v.route[v.route_idx + 1];
+        let Some(next) = path_pool.get_tile(v.path_handle, v.path_cursor + 1) else {
+            continue;
+        };
         if !is_intersection_tile(&grid, next) {
             continue;
         }
@@ -217,7 +227,11 @@ pub(crate) fn plan_intersection_reservations(
         if entry_dir == RoadDir::None {
             continue;
         }
-        let exit_dir = super::super::compute_exit_direction(&v.route[v.route_idx..], &grid, next);
+        let exit_dir = if let Some(route) = path_pool.remaining_from(v.path_handle, v.path_cursor) {
+            super::super::compute_exit_direction(route, &grid, next)
+        } else {
+            RoadDir::None
+        };
 
         // Yield to pedestrians: block only maneuvers that conflict with the currently-crossing axis.
         if let Some(mask) = ped_axis_mask.get(&id).copied() {
@@ -251,13 +265,15 @@ pub(crate) fn plan_intersection_reservations(
         }
 
         // Don't block the box: only admit if the planned exit lane tile has space.
-        let rem = &v.route[v.route_idx..];
-        let exit_tile = rem.iter().position(|t| *t == next).and_then(|start_i| {
-            let mut i = start_i;
-            while i < rem.len() && is_intersection_tile(&grid, rem[i]) {
-                i += 1;
-            }
-            rem.get(i).copied()
+        let rem = path_pool.remaining_from(v.path_handle, v.path_cursor);
+        let exit_tile = rem.and_then(|route| {
+            route.iter().position(|t| *t == next).and_then(|start_i| {
+                let mut i = start_i;
+                while i < route.len() && is_intersection_tile(&grid, route[i]) {
+                    i += 1;
+                }
+                route.get(i).copied()
+            })
         });
         let Some(exit_tile) = exit_tile else {
             continue;
@@ -280,7 +296,16 @@ pub(crate) fn plan_intersection_reservations(
             .get(exit_idx)
             .copied()
             .unwrap_or(0);
-        if occ >= cap {
+        let entry_clear = occ >= cap
+            && spatial
+                .tile_first(exit_idx)
+                .is_some_and(|e| e.progress > exit_clear_progress);
+        let effective_occ = if entry_clear {
+            occ.saturating_sub(1)
+        } else {
+            occ
+        };
+        if effective_occ >= cap {
             continue;
         }
 
@@ -317,7 +342,9 @@ pub(crate) fn plan_intersection_reservations(
             };
             let dir = entry_dir;
 
-            if light.is_green(dir) || light.is_yellow(dir) {
+            if (light as &crate::game::intersections::TrafficLight).is_green(dir)
+                || (light as &crate::game::intersections::TrafficLight).is_yellow(dir)
+            {
                 priority = priority.max(2);
             } else {
                 // Right turn on red (near-side turn only), after coming to a stop.
@@ -381,7 +408,7 @@ pub(crate) fn plan_intersection_reservations(
     }
 
     for (&id, cands) in candidates_by_intersection.iter_mut() {
-        if cands.is_empty() {
+        if (cands as &Vec<IntersectionReservationCandidate>).is_empty() {
             continue;
         }
         // sort by priority, then distance, then stable entity id
@@ -402,11 +429,20 @@ pub(crate) fn plan_intersection_reservations(
             let used = exit_tile_reserved
                 .entry((id, cand.exit_tile_idx))
                 .or_insert_with(|| {
-                    traffic
+                    let occ = traffic
                         .per_tick_vehicles
                         .get(cand.exit_tile_idx)
                         .copied()
-                        .unwrap_or(0)
+                        .unwrap_or(0);
+                    let entry_clear = occ >= cand.exit_tile_cap
+                        && spatial
+                            .tile_first(cand.exit_tile_idx)
+                            .is_some_and(|e| e.progress > exit_clear_progress);
+                    if entry_clear {
+                        occ.saturating_sub(1)
+                    } else {
+                        occ
+                    }
                 });
             if *used >= cand.exit_tile_cap {
                 continue;
@@ -431,9 +467,10 @@ pub(crate) fn plan_intersection_reservations(
     }
 }
 
-pub(crate) fn cleanup_intersection_reservations(
+pub fn cleanup_intersection_reservations(
     time: Res<Time<Fixed>>,
     intersections: Res<IntersectionIndex>,
+    path_pool: Res<super::super::super::transport::PathPool>,
     mut reservations: ResMut<IntersectionReservations>,
     q_vehicles: Query<&Vehicle>,
 ) {
@@ -447,15 +484,15 @@ pub(crate) fn cleanup_intersection_reservations(
             continue;
         };
 
-        list.retain_mut(|r| {
+        (list as &mut Vec<IntersectionReservation>).retain_mut(|r| {
             let Ok(v) = q_vehicles.get(r.vehicle) else {
                 return false;
             };
-            if v.route_idx >= v.route.len() {
+            if v.path_cursor >= path_pool.len(v.path_handle) {
                 return false;
             }
 
-            let Some(&cur) = v.route.get(v.route_idx) else {
+            let Some(cur) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
                 return false;
             };
             let cur_id = intersections.intersection_id_at(cur);
@@ -466,9 +503,9 @@ pub(crate) fn cleanup_intersection_reservations(
             match r.state {
                 ReservationState::Approaching => {
                     // Vehicle rerouted away: drop.
-                    let next_id = v
-                        .route
-                        .get(v.route_idx + 1)
+                    let next_id = path_pool
+                        .remaining_from(v.path_handle, v.path_cursor)
+                        .and_then(|route| route.get(1))
                         .and_then(|t| intersections.intersection_id_at(*t));
                     if next_id != Some(id) {
                         return false;

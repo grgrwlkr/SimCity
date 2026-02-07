@@ -1,35 +1,76 @@
 use bevy::prelude::*;
 
-use crate::game::intersections::IntersectionKey;
+use crate::game::intersections::{IntersectionId, IntersectionKey};
 use crate::game::map::TilePos;
+use crate::game::transport::{LaneId, PathHandle, VehicleId};
 
-/// Vehicle entity – stores route and visual offset.
+/// Vehicle entity – stores route handle and visual offset.
+/// Optimized memory layout for cache efficiency.
 #[derive(Component)]
+#[repr(C)]
 pub struct Vehicle {
-    /// A* route as list of tile positions (full path).
-    pub route: Vec<TilePos>,
-    /// Current index into `route` (so we never `remove(0)` / shift the Vec).
-    pub route_idx: usize,
-    /// 0 = at current tile start, 1 = at next tile boundary; interpolated smoothly.
-    pub progress: f32,
+    // Hot path fields (most frequently accessed) - grouped together for cache efficiency
     /// World units per second.
     pub speed: f32,
+    /// 0 = at current tile start, 1 = at next tile boundary; interpolated smoothly.
+    pub progress: f32,
     /// Maximum speed for this vehicle.
     pub max_speed: f32,
     /// Maximum acceleration (world units per second squared).
     #[allow(dead_code)]
     pub max_accel: f32,
+
+    // Position data (frequently accessed together)
+    /// Current frame world position.
+    pub curr_world_pos: Vec2,
+    /// Previous frame world position for interpolation.
+    pub prev_world_pos: Vec2,
+    /// Time of last position update (seconds).
+    pub last_update_time: f32,
+
+    // Path/navigation data
+    /// Handle to shared path in PathPool.
+    pub path_handle: PathHandle,
+    /// Current index into path (so we never modify the shared path).
+    pub path_cursor: usize,
+
+    // Lane-based positioning (for 1M agent simulation)
+    /// Lane-based vehicle ID.
+    pub vehicle_id: VehicleId,
+    /// Lane-based positioning (for 1M agent simulation).
+    pub lane_id: LaneId,
+    /// Position along lane (s-coordinate in meters).
+    pub lane_s: f32,
+
+    // Legacy compatibility data (less frequently accessed)
+    /// Legacy tile-based positioning (for compatibility).
+    pub tile_pos: TilePos,
+
+    // Reverse movement (GDD: vehicles can reverse slowly when stuck)
+    /// Flag indicating if vehicle is currently reversing (GDD: max 10 km/h, only when stuck)
+    pub is_reversing: bool,
+    /// Distance reversed in tiles (limited to 2-3 tiles max)
+    pub reverse_distance: f32,
 }
 
 impl Default for Vehicle {
     fn default() -> Self {
         Self {
-            route: Vec::new(),
-            route_idx: 0,
+            path_handle: PathHandle::INVALID,
+            path_cursor: 0,
             progress: 0.0,
+            lane_id: LaneId::INVALID,
+            lane_s: 0.0,
+            vehicle_id: VehicleId::INVALID,
+            tile_pos: TilePos { x: 0, y: 0 },
             speed: 0.0,
             max_speed: 60.0, // Default speed
             max_accel: 20.0, // Default acceleration
+            prev_world_pos: Vec2::ZERO,
+            curr_world_pos: Vec2::ZERO,
+            last_update_time: 0.0,
+            is_reversing: false,
+            reverse_distance: 0.0,
         }
     }
 }
@@ -40,6 +81,7 @@ pub enum VehicleTrafficState {
     /// Moving freely (no traffic light ahead)
     FreeFlow,
     /// Approaching a traffic light / stop line.
+    #[allow(dead_code)] // Reserved for future use
     Approaching {
         intersection: IntersectionKey,
         /// The first intersection tile on the route for this approach (used for stop-line distance).
@@ -47,22 +89,26 @@ pub enum VehicleTrafficState {
         distance_to_stop: f32,
     },
     /// Stopped in queue
+    #[allow(dead_code)] // Reserved for future use
     Stopped {
         intersection: IntersectionKey,
         stop_tile: TilePos,
         queue_position: u8,
     },
     /// Waiting for green light
+    #[allow(dead_code)] // Reserved for future use
     WaitingForGreen {
         intersection: IntersectionKey,
         stop_tile: TilePos,
     },
     /// Accelerating after green
+    #[allow(dead_code)] // Reserved for future use
     Accelerating,
     /// Crossing (or admitted to) a specific logical intersection cluster.
     ///
     /// This state is used both when a vehicle is already inside the intersection tiles (`dir=None`)
     /// and when it has been released from a stop line and is about to enter the cluster.
+    #[allow(dead_code)] // Reserved for future use
     CrossingIntersection { intersection: IntersectionKey },
 }
 
@@ -81,4 +127,11 @@ pub struct Parked {
 #[derive(Component, Debug, Clone, Copy)]
 pub struct CarOwner {
     pub citizen: crate::game::ids::CitizenId,
+}
+
+/// Marker for vehicles currently performing a right turn on red.
+/// While present, we clamp their speed to a low "turn speed" until they exit the intersection.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct RightTurnOnRed {
+    pub intersection_id: IntersectionId,
 }

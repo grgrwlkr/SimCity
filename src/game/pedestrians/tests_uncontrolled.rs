@@ -2,7 +2,7 @@ use super::*;
 use crate::game::intersections::{IntersectionId, IntersectionIndex, IntersectionKey};
 use crate::game::map::{MapConfig, MapGrid, TilePos};
 use crate::game::roads::{LaneType, RoadCell, RoadDir, RoadFlow, RoadKind};
-use crate::game::traffic::{IntersectionReservations, TrafficConfig, Vehicle};
+use crate::game::traffic::{IntersectionReservations, TrafficConfig};
 use bevy::prelude::{App, MinimalPlugins, Time, Transform, Update};
 use bevy::time::Fixed;
 use std::time::Duration;
@@ -65,6 +65,7 @@ fn pedestrian_waits_for_safe_gap_on_uncontrolled_intersection() {
             idx
         })
         .insert_resource(IntersectionReservations::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, agents::move_walkers);
 
     let a = TilePos { x: 1, y: 0 };
@@ -72,19 +73,23 @@ fn pedestrian_waits_for_safe_gap_on_uncontrolled_intersection() {
     let c = TilePos { x: 1, y: 2 };
 
     // Vehicle is very close to entering: blocks pedestrian.
+    let vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        crate::game::traffic::tests::create_vehicle_with_route(
+            &mut path_pool,
+            vec![a, intersection_tile, c],
+            0,
+            0.9,
+            5.0,
+            60.0,
+            20.0,
+        )
+    };
     let veh = app
         .world_mut()
-        .spawn((
-            Vehicle {
-                route: vec![a, intersection_tile, c],
-                route_idx: 0,
-                progress: 0.9,
-                speed: 5.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
-            crate::game::traffic::VehicleTrafficState::FreeFlow,
-        ))
+        .spawn((vehicle, crate::game::traffic::VehicleTrafficState::FreeFlow))
         .id();
 
     let ped = app
@@ -96,7 +101,7 @@ fn pedestrian_waits_for_safe_gap_on_uncontrolled_intersection() {
                 progress: 0.0,
                 speed_world: 240.0,
                 goal: c,
-                wait_blocked_secs: 0.0,
+                wait_blocked_hours: 0.0,
                 reroute_attempts: 0,
             },
             agents::PedestrianTile(a),
@@ -189,6 +194,7 @@ fn pedestrian_reroutes_after_long_wait_at_uncontrolled_intersection() {
             idx
         })
         .insert_resource(IntersectionReservations::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, agents::move_walkers);
 
     let start = TilePos { x: 0, y: 0 };
@@ -196,19 +202,23 @@ fn pedestrian_reroutes_after_long_wait_at_uncontrolled_intersection() {
     let goal = TilePos { x: 2, y: 0 };
 
     // Keep the crossing blocked by keeping a vehicle close to entry.
+    let vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        crate::game::traffic::tests::create_vehicle_with_route(
+            &mut path_pool,
+            vec![start, avoid, goal],
+            0,
+            0.9,
+            5.0,
+            60.0,
+            20.0,
+        )
+    };
     let _veh = app
         .world_mut()
-        .spawn((
-            Vehicle {
-                route: vec![start, avoid, goal],
-                route_idx: 0,
-                progress: 0.9,
-                speed: 5.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
-            crate::game::traffic::VehicleTrafficState::FreeFlow,
-        ))
+        .spawn((vehicle, crate::game::traffic::VehicleTrafficState::FreeFlow))
         .id();
 
     let ped = app
@@ -220,7 +230,7 @@ fn pedestrian_reroutes_after_long_wait_at_uncontrolled_intersection() {
                 progress: 0.0,
                 speed_world: 240.0,
                 goal,
-                wait_blocked_secs: PedestrianConfig::default().wait_reroute_secs,
+                wait_blocked_hours: PedestrianConfig::default().wait_reroute_hours,
                 reroute_attempts: 0,
             },
             agents::PedestrianTile(start),

@@ -12,10 +12,11 @@ pub(super) struct StuckTimer {
 #[allow(clippy::type_complexity)]
 pub(super) fn init_stuck_timers(
     mut commands: Commands,
+    path_pool: Res<super::super::transport::PathPool>,
     q: Query<(Entity, &Vehicle), (With<Vehicle>, Without<StuckTimer>)>,
 ) {
     for (e, v) in q.iter() {
-        let Some(tile) = v.route.get(v.route_idx).copied() else {
+        let Some(tile) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
         commands.entity(e).insert(StuckTimer {
@@ -29,11 +30,12 @@ pub(super) fn init_stuck_timers(
 
 pub(super) fn update_stuck_timers(
     time: Res<Time<Fixed>>,
+    path_pool: Res<super::super::transport::PathPool>,
     mut q: Query<(&Vehicle, &VehicleTrafficState, &mut StuckTimer), Without<Parked>>,
 ) {
     let dt = time.delta_secs();
     for (v, state, mut stuck) in q.iter_mut() {
-        let Some(tile) = v.route.get(v.route_idx).copied() else {
+        let Some(tile) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             stuck.secs = 0.0;
             stuck.uturn_attempted = false;
             continue;
@@ -69,6 +71,7 @@ pub(super) fn resolve_stuck_vehicles(
     traffic: Res<TrafficOccupancy>,
     path_cfg: Res<PathfindingConfig>,
     mut path_cache: ResMut<PathCache>,
+    mut path_pool: ResMut<super::super::transport::PathPool>,
     intersections: Res<IntersectionIndex>,
     mut commands: Commands,
     mut finished: bevy::ecs::message::MessageWriter<TripFinished>,
@@ -79,7 +82,6 @@ pub(super) fn resolve_stuck_vehicles(
             &VehicleTrafficState,
             Option<&TripPassenger>,
             Option<&ServiceVehicle>,
-            Option<&BusVehicle>,
             &mut StuckTimer,
         ),
         Without<Parked>,
@@ -98,11 +100,11 @@ pub(super) fn resolve_stuck_vehicles(
         intersections: &intersections,
     };
 
-    for (e, mut v, state, passenger, service_vehicle, bus_vehicle, mut stuck) in q.iter_mut() {
+    for (e, mut v, state, passenger, service_vehicle, mut stuck) in q.iter_mut() {
         if handled >= MAX_UNSTUCK_PER_TICK {
             break;
         }
-        if v.route_idx >= v.route.len() {
+        if v.path_cursor >= path_pool.len(v.path_handle) {
             stuck.secs = 0.0;
             continue;
         }
@@ -116,23 +118,45 @@ pub(super) fn resolve_stuck_vehicles(
             continue;
         }
 
-        let Some(&current) = v.route.get(v.route_idx) else {
+        let Some(current) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
-        let goal = *v.route.last().unwrap_or(&current);
+        let goal = path_pool
+            .get_tile(
+                v.path_handle,
+                path_pool.len(v.path_handle).saturating_sub(1),
+            )
+            .unwrap_or(current);
 
         // 1) Emergency re-route: try to find an alternative path to the same goal.
         let route = find_road_path_cached(&mut ctx, current, goal);
-        if !route.is_empty() && route != v.route {
-            v.route = route;
-            v.route_idx = 0;
+        if !route.is_empty() {
+            let old_route = path_pool.remaining_from(v.path_handle, v.path_cursor);
+            if Some(route.as_slice()) != old_route {
+                path_pool.release(v.path_handle);
+                v.path_handle = path_pool.intern(route);
+                v.path_cursor = 0;
+            }
             v.progress = 0.0;
             v.speed = v.speed.min(v.max_speed * 0.5);
+            // Reset reverse state after reroute
+            v.is_reversing = false;
+            v.reverse_distance = 0.0;
 
             stuck.secs = 0.0;
             stuck.last_tile = current;
             stuck.last_progress = 0.0;
             stuck.uturn_attempted = false;
+            handled += 1;
+            continue;
+        }
+
+        // 1.5) If reroute failed and vehicle is still stuck, try reverse movement (GDD: max 10 km/h, 2-3 tiles)
+        // This happens before U-turn attempt, as reverse is simpler and safer
+        if v.path_cursor > 0 && v.reverse_distance < 2.5 {
+            // Allow reverse movement - the move_vehicles system will handle it
+            // Just reset stuck timer slightly to give reverse a chance
+            stuck.secs = STUCK_REROUTE_SECS * 0.8; // Give some time for reverse to work
             handled += 1;
             continue;
         }
@@ -144,7 +168,10 @@ pub(super) fn resolve_stuck_vehicles(
         // once per stuck episode.
         if stuck.secs >= STUCK_REROUTE_SECS
             && !stuck.uturn_attempted
-            && route.is_empty()
+            && path_pool
+                .remaining_from(v.path_handle, v.path_cursor)
+                .map(|r| r.is_empty())
+                .unwrap_or(true)
             && let Some(cur_cell) = grid.get(current)
             && cur_cell.road.is_some()
             && cur_cell.road.dir != RoadDir::None
@@ -176,12 +203,14 @@ pub(super) fn resolve_stuck_vehicles(
                 if is_empty {
                     let from_uturn = find_road_path_cached(&mut ctx, uturn_tile, goal);
                     if !from_uturn.is_empty() {
-                        let mut next_route = Vec::with_capacity(from_uturn.len() + 1);
+                        let mut next_route = Vec::with_capacity(from_uturn.len() + 2);
                         next_route.push(current);
+                        next_route.push(uturn_tile);
                         next_route.extend(from_uturn);
 
-                        v.route = next_route;
-                        v.route_idx = 0;
+                        path_pool.release(v.path_handle);
+                        v.path_handle = path_pool.intern(next_route);
+                        v.path_cursor = 0;
                         v.progress = 0.0;
                         v.speed = 0.0;
 
@@ -199,11 +228,7 @@ pub(super) fn resolve_stuck_vehicles(
         }
 
         // 3) Last-resort guardrail: despawn non-service trip vehicles after a very long time stuck.
-        if stuck.secs >= STUCK_DESPAWN_SECS
-            && service_vehicle.is_none()
-            && bus_vehicle.is_none()
-            && passenger.is_some()
-        {
+        if stuck.secs >= STUCK_DESPAWN_SECS && service_vehicle.is_none() && passenger.is_some() {
             if let Some(p) = passenger {
                 finished.write(TripFinished {
                     citizen: p.citizen,

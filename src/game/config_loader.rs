@@ -9,12 +9,11 @@ use bevy::prelude::*;
 
 use crate::game::buildings::BuildingTuning;
 use crate::game::custom_buildings::CustomBuildingRegistry;
-use crate::game::day_night::DayNightCycle;
+use crate::game::day_night::DayNightVisualConfig;
 use crate::game::economy::EconomyConfig;
 use crate::game::employment::EmploymentConfig;
 use crate::game::map::MapConfig;
 use crate::game::pedestrians::PedestrianConfig;
-use crate::game::public_transport::PublicTransportConfig;
 use crate::game::traffic::TrafficConfig;
 use crate::game::transport::PathfindingConfig;
 
@@ -33,8 +32,7 @@ fn load_configs_from_ron(mut commands: Commands) {
     load::<PathfindingConfig>("assets/config/pathfinding.ron", &mut commands);
     load::<EmploymentConfig>("assets/config/employment.ron", &mut commands);
     load::<BuildingTuning>("assets/config/buildings.ron", &mut commands);
-    load::<PublicTransportConfig>("assets/config/public_transport.ron", &mut commands);
-    load::<DayNightCycle>("assets/config/day_night.ron", &mut commands);
+    load::<DayNightVisualConfig>("assets/config/day_night.ron", &mut commands);
     load::<CustomBuildingRegistry>("assets/config/custom_buildings.ron", &mut commands);
     load::<PedestrianConfig>("assets/config/pedestrians.ron", &mut commands);
 }
@@ -65,18 +63,18 @@ mod tests {
     use super::*;
     use crate::game::emergencies::EmergencyStats;
     use crate::game::map::{TileKind, ZoneKind};
-    use crate::game::persistence_contract::{MapGridV1, MapTileV1, SaveGameV2};
+    use crate::game::persistence_contract::{MapGridV1, MapTileV1, SaveGameV3};
     use crate::game::roads::RoadCell;
     use crate::game::scenarios::Scenario;
     use crate::game::sim::City;
 
-    fn parse_required<T>(path: &str)
+    fn parse_required<T>(path: &str) -> T
     where
         T: serde::de::DeserializeOwned,
     {
         let text =
             fs::read_to_string(path).unwrap_or_else(|e| panic!("Failed to read {path}: {e}"));
-        ron::from_str::<T>(&text).unwrap_or_else(|e| panic!("Failed to parse {path}: {e}"));
+        ron::from_str::<T>(&text).unwrap_or_else(|e| panic!("Failed to parse {path}: {e}"))
     }
 
     #[test]
@@ -87,8 +85,7 @@ mod tests {
         parse_required::<PathfindingConfig>("assets/config/pathfinding.ron");
         parse_required::<EmploymentConfig>("assets/config/employment.ron");
         parse_required::<BuildingTuning>("assets/config/buildings.ron");
-        parse_required::<PublicTransportConfig>("assets/config/public_transport.ron");
-        parse_required::<DayNightCycle>("assets/config/day_night.ron");
+        parse_required::<DayNightVisualConfig>("assets/config/day_night.ron");
         parse_required::<CustomBuildingRegistry>("assets/config/custom_buildings.ron");
         parse_required::<PedestrianConfig>("assets/config/pedestrians.ron");
 
@@ -96,9 +93,9 @@ mod tests {
     }
 
     #[test]
-    fn savegame_v2_roundtrips_through_ron() {
-        let save = SaveGameV2 {
-            save_version: 2,
+    fn savegame_v3_roundtrips_through_ron() {
+        let save = SaveGameV3 {
+            save_version: 3,
             seed: 1,
             map: MapGridV1 {
                 width: 1,
@@ -113,6 +110,7 @@ mod tests {
                 }],
             },
             city: City::default(),
+            buildings: Vec::new(),
             citizens: Vec::new(),
             next_citizen_id: 1,
             service_stations: Vec::new(),
@@ -120,8 +118,8 @@ mod tests {
         };
 
         let pretty = ron::ser::PrettyConfig::new();
-        let text = ron::ser::to_string_pretty(&save, pretty).expect("serialize SaveGameV2");
-        let parsed: SaveGameV2 = ron::from_str(&text).expect("deserialize SaveGameV2");
-        assert_eq!(parsed.save_version, 2);
+        let text = ron::ser::to_string_pretty(&save, pretty).expect("serialize SaveGameV3");
+        let parsed: SaveGameV3 = ron::from_str(&text).expect("deserialize SaveGameV3");
+        assert_eq!(parsed.save_version, 3);
     }
 }

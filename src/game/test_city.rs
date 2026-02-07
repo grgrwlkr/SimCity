@@ -9,7 +9,9 @@
 //! - Height variation
 
 use bevy::math::IVec2;
+use bevy::prelude::*;
 
+use crate::game::buildings::spawn_building_entity;
 use crate::game::intersections::IntersectionIndex;
 use crate::game::map::{BuildingKind, MapConfig, MapGrid, TilePos, ZoneKind};
 use crate::game::roads::{LaneType, RoadCell, RoadDir, RoadFlow, RoadKind};
@@ -17,6 +19,7 @@ use crate::game::sim::City;
 
 /// Generate a test city with all types of content for testing.
 pub fn generate_test_city(
+    commands: &mut Commands,
     grid: &mut MapGrid,
     cfg: &MapConfig,
     city: &mut City,
@@ -321,6 +324,7 @@ pub fn generate_test_city(
     for pos in major_intersections {
         // Find a tile at this intersection that has RoadDir::None
         // The intersection might span multiple tiles for multi-lane roads
+        let mut found = false;
         for dy in -3..=3 {
             for dx in -3..=3 {
                 let check_pos = TilePos {
@@ -333,8 +337,16 @@ pub fn generate_test_city(
                     && let Some(id) = tile_to_intersection.get(&check_pos).copied()
                     && let Some(cluster) = clusters.get(id.as_usize())
                 {
+                    // Only add the key - detect_intersections will map it to the correct ID
+                    // when it rebuilds clusters after test city generation
                     intersections.traffic_light_keys.insert(cluster.key);
+                    intersections.lights_dirty = true;
+                    found = true;
+                    break;
                 }
+            }
+            if found {
+                break;
             }
         }
     }
@@ -343,7 +355,7 @@ pub fn generate_test_city(
     // ZONES: Create zoned areas adjacent to roads
     // =========================================================================
 
-    // Helper to check if a tile can be zoned
+    // Helper to check if a tile can be zoned (must be within 6 tiles of a road for 3x3-6x6 footprints)
     let can_zone = |grid: &MapGrid, pos: TilePos| -> bool {
         let Some(cell) = grid.get(pos) else {
             return false;
@@ -351,16 +363,34 @@ pub fn generate_test_city(
         if cell.water || cell.road.is_some() || cell.building.is_some() {
             return false;
         }
-        // Must be adjacent to a road
-        for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-            let neighbor = TilePos {
-                x: pos.x + dx,
-                y: pos.y + dy,
-            };
-            if let Some(ncell) = grid.get(neighbor)
-                && ncell.road.is_some()
+        // Must be within 6 tiles of a road (GDD 10.2.2: zoning depth up to 6 tiles)
+        // Use BFS to find nearest road
+        use std::collections::VecDeque;
+        let mut queue = VecDeque::new();
+        let mut visited = std::collections::HashSet::new();
+        queue.push_back((pos, 0));
+        visited.insert(pos);
+
+        while let Some((current, depth)) = queue.pop_front() {
+            if depth > 6 {
+                continue;
+            }
+            // Check if current tile has a road
+            if let Some(cell) = grid.get(current)
+                && cell.road.is_some()
             {
                 return true;
+            }
+            // Check neighbors
+            for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                let neighbor = TilePos {
+                    x: current.x + dx,
+                    y: current.y + dy,
+                };
+                if !visited.contains(&neighbor) {
+                    visited.insert(neighbor);
+                    queue.push_back((neighbor, depth + 1));
+                }
             }
         }
         false
@@ -452,60 +482,248 @@ pub fn generate_test_city(
     }
 
     // =========================================================================
+    // PRE-BUILT R/C/I BUILDINGS on zoned tiles (Operational, so sim starts immediately)
+    // =========================================================================
+    {
+        use std::collections::HashSet;
+
+        let footprint = 3i32;
+        let mut occupied = HashSet::<TilePos>::new();
+        let mut spawned_rci = 0usize;
+        let max_rci = 80; // Cap to keep it reasonable
+
+        // Scan grid for zoned tiles and place 3x3 buildings with road access
+        let mut y = 0;
+        while y < cfg.height && spawned_rci < max_rci {
+            let mut x = 0;
+            while x < cfg.width && spawned_rci < max_rci {
+                let anchor = TilePos { x, y };
+                let Some(cell) = grid.get(anchor) else {
+                    x += 1;
+                    continue;
+                };
+                let Some(kind) = BuildingKind::from_zone(cell.zone) else {
+                    x += 1;
+                    continue;
+                };
+
+                // Check 3x3 footprint is clear
+                let mut ok = true;
+                for dy in 0..footprint {
+                    for dx in 0..footprint {
+                        let t = TilePos {
+                            x: anchor.x + dx,
+                            y: anchor.y + dy,
+                        };
+                        let Some(c) = grid.get(t) else {
+                            ok = false;
+                            break;
+                        };
+                        if c.water
+                            || c.road.is_some()
+                            || c.building.is_some()
+                            || occupied.contains(&t)
+                        {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if !ok {
+                        break;
+                    }
+                }
+                if !ok {
+                    x += 1;
+                    continue;
+                }
+
+                // Need adjacent road
+                let mut has_road = false;
+                'road_check: for dy in 0..footprint {
+                    for dx in 0..footprint {
+                        let t = TilePos {
+                            x: anchor.x + dx,
+                            y: anchor.y + dy,
+                        };
+                        for (ndx, ndy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                            let n = TilePos {
+                                x: t.x + ndx,
+                                y: t.y + ndy,
+                            };
+                            if let Some(nc) = grid.get(n)
+                                && nc.road.is_some()
+                            {
+                                has_road = true;
+                                break 'road_check;
+                            }
+                        }
+                    }
+                }
+                if !has_road {
+                    x += 1;
+                    continue;
+                }
+
+                // Mark grid tiles
+                for dy in 0..footprint {
+                    for dx in 0..footprint {
+                        let t = TilePos {
+                            x: anchor.x + dx,
+                            y: anchor.y + dy,
+                        };
+                        if let Some(mut c) = grid.get(t) {
+                            c.building = Some(kind);
+                            c.zone = ZoneKind::None;
+                            grid.set(t, c);
+                        }
+                        occupied.insert(t);
+                    }
+                }
+
+                spawn_building_entity(
+                    commands,
+                    cfg,
+                    anchor,
+                    footprint as u8,
+                    footprint as u8,
+                    kind,
+                    city,
+                    true, // Operational immediately
+                );
+                spawned_rci += 1;
+
+                // Skip past this footprint
+                x += footprint;
+            }
+            y += 1;
+        }
+    }
+
+    // =========================================================================
     // SERVICE BUILDINGS: Place all types with road access
     // =========================================================================
 
-    // Helper to place a service building near a road
-    let place_service_building =
-        |grid: &mut MapGrid, center: TilePos, kind: BuildingKind| -> bool {
-            // Search for a valid spot near the center
-            for radius in 0i32..10 {
-                for dy in -radius..=radius {
-                    for dx in -radius..=radius {
-                        if dx.abs() != radius && dy.abs() != radius {
-                            continue;
-                        }
-                        let pos = TilePos {
-                            x: center.x + dx,
-                            y: center.y + dy,
-                        };
-                        let Some(cell) = grid.get(pos) else {
-                            continue;
-                        };
-                        if cell.water || cell.road.is_some() || cell.building.is_some() {
-                            continue;
-                        }
-                        // Check for adjacent road
-                        let mut has_road = false;
-                        for (ndx, ndy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                            let neighbor = TilePos {
-                                x: pos.x + ndx,
-                                y: pos.y + ndy,
+    // Helper to place a service building near a road with footprint 3x3
+    let place_service_building = |commands: &mut Commands,
+                                  grid: &mut MapGrid,
+                                  center: TilePos,
+                                  kind: BuildingKind|
+     -> bool {
+        // Search for a valid spot near the center that can fit a 3x3 footprint
+        for radius in 0i32..15 {
+            for dy in -radius..=radius {
+                for dx in -radius..=radius {
+                    if dx.abs() != radius && dy.abs() != radius {
+                        continue;
+                    }
+                    let anchor = TilePos {
+                        x: center.x + dx,
+                        y: center.y + dy,
+                    };
+
+                    // Check if 3x3 footprint fits
+                    let footprint_width = 3u8;
+                    let footprint_length = 3u8;
+                    let mut can_place = true;
+                    for fy in 0..footprint_length as i32 {
+                        for fx in 0..footprint_width as i32 {
+                            let check_pos = TilePos {
+                                x: anchor.x + fx,
+                                y: anchor.y + fy,
                             };
-                            if let Some(ncell) = grid.get(neighbor)
-                                && ncell.road.is_some()
-                            {
-                                has_road = true;
+                            let Some(cell) = grid.get(check_pos) else {
+                                can_place = false;
+                                break;
+                            };
+                            if cell.water || cell.road.is_some() || cell.building.is_some() {
+                                can_place = false;
                                 break;
                             }
                         }
-                        if !has_road {
-                            continue;
+                        if !can_place {
+                            break;
                         }
-                        // Place the building
-                        let mut cell = cell;
-                        cell.building = Some(kind);
-                        cell.zone = ZoneKind::None;
-                        grid.set(pos, cell);
-                        return true;
                     }
+
+                    if !can_place {
+                        continue;
+                    }
+
+                    // Check for adjacent road (at least one tile of footprint should be near road)
+                    let mut has_road = false;
+                    for fy in 0..footprint_length as i32 {
+                        for fx in 0..footprint_width as i32 {
+                            let pos = TilePos {
+                                x: anchor.x + fx,
+                                y: anchor.y + fy,
+                            };
+                            for (ndx, ndy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                                let neighbor = TilePos {
+                                    x: pos.x + ndx,
+                                    y: pos.y + ndy,
+                                };
+                                if let Some(ncell) = grid.get(neighbor)
+                                    && ncell.road.is_some()
+                                {
+                                    has_road = true;
+                                    break;
+                                }
+                            }
+                            if has_road {
+                                break;
+                            }
+                        }
+                        if has_road {
+                            break;
+                        }
+                    }
+
+                    if !has_road {
+                        continue;
+                    }
+
+                    // Mark all footprint tiles as occupied
+                    for fy in 0..footprint_length as i32 {
+                        for fx in 0..footprint_width as i32 {
+                            let pos = TilePos {
+                                x: anchor.x + fx,
+                                y: anchor.y + fy,
+                            };
+                            if let Some(cell) = grid.get(pos) {
+                                let mut cell = cell;
+                                cell.building = Some(kind);
+                                cell.zone = ZoneKind::None;
+                                grid.set(pos, cell);
+                            }
+                        }
+                    }
+
+                    // Spawn already-built (Operational) so test city is playable immediately
+                    spawn_building_entity(
+                        commands,
+                        cfg,
+                        anchor,
+                        footprint_width,
+                        footprint_length,
+                        kind,
+                        city,
+                        true,
+                    );
+
+                    // For emergency buildings in test city, we'll mark them as Operational
+                    // by finding the entity and updating it (done after spawn via a system or direct update)
+                    // For now, they'll be created as UnderConstruction but will complete quickly
+                    // The growth system will handle making them Operational
+                    return true;
                 }
             }
-            false
-        };
+        }
+        false
+    };
 
     // Fire Station - near residential area (upper left)
     place_service_building(
+        commands,
         grid,
         TilePos {
             x: local_x1 + 2,
@@ -516,6 +734,7 @@ pub fn generate_test_city(
 
     // Police Station - central location
     place_service_building(
+        commands,
         grid,
         TilePos {
             x: arterial1_x + 8,
@@ -526,6 +745,7 @@ pub fn generate_test_city(
 
     // Hospital - accessible from highway
     place_service_building(
+        commands,
         grid,
         TilePos {
             x: arterial2_x - 8,
@@ -536,6 +756,7 @@ pub fn generate_test_city(
 
     // Add a second Fire Station in industrial area
     place_service_building(
+        commands,
         grid,
         TilePos {
             x: local_x1 + 2,
@@ -546,6 +767,7 @@ pub fn generate_test_city(
 
     // Add a second Police Station
     place_service_building(
+        commands,
         grid,
         TilePos {
             x: local_x3 + 2,

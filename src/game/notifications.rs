@@ -1,6 +1,7 @@
 //! Notification system for game events.
 
 use bevy::prelude::*;
+use bevy::time::Real;
 use bevy_egui::{EguiContexts, egui};
 
 use crate::game::sets::GameSet;
@@ -18,8 +19,11 @@ pub struct Notification {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum NotificationKind {
     Info,
+    #[allow(dead_code)] // Reserved for future use
     Warning,
+    #[allow(dead_code)] // Reserved for future use
     Error,
+    #[allow(dead_code)] // Reserved for future use
     Achievement,
 }
 
@@ -65,7 +69,7 @@ impl Plugin for NotificationsPlugin {
 /// Render notification UI
 fn notification_ui(
     mut contexts: EguiContexts,
-    time: Res<Time>,
+    time: Res<Time<Real>>,
     mut notifications: ResMut<Notifications>,
 ) {
     // Update timestamps for new notifications

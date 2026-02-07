@@ -14,6 +14,8 @@ use crate::game::traffic::TrafficOccupancy;
 pub struct LandValueIndex {
     pub values: Vec<f32>, // 0.0 - 1.0 for each tile
     pub version: u64,
+    chunk_size: usize,
+    current_chunk: usize,
 }
 
 impl LandValueIndex {
@@ -35,7 +37,7 @@ impl Plugin for LandValuePlugin {
     }
 }
 
-/// Compute land value for all tiles
+/// Compute land value incrementally by chunks
 fn compute_land_value(
     grid: Res<MapGrid>,
     service_coverage: Option<Res<ServiceCoverageIndex>>,
@@ -47,19 +49,25 @@ fn compute_land_value(
     if land_value.values.len() != len {
         land_value.values.clear();
         land_value.values.resize(len, 0.5);
+        land_value.chunk_size = 64; // Process 64 tiles per frame
+        land_value.current_chunk = 0;
     }
 
     // Base value
     let base_value = 0.5;
     let max_heat = traffic.as_deref().map(|t| t.max_heat()).unwrap_or(0.0);
 
-    // Compute for each tile
-    for y in 0..grid.height {
-        for x in 0..grid.width {
+    // Process one chunk per frame
+    let tiles_per_chunk = land_value.chunk_size;
+    let start_idx = land_value.current_chunk * tiles_per_chunk;
+    let end_idx = (start_idx + tiles_per_chunk).min(len);
+
+    // Process tiles (chunk size is small enough that parallelization overhead isn't worth it)
+    let results: Vec<f32> = (start_idx..end_idx)
+        .map(|idx| {
+            let x = (idx % grid.width as usize) as i32;
+            let y = (idx / grid.width as usize) as i32;
             let pos = TilePos { x, y };
-            let Some(idx) = grid.idx(pos) else {
-                continue;
-            };
 
             let mut value = base_value;
 
@@ -84,9 +92,7 @@ fn compute_land_value(
             }
 
             // -0.4 * pollution for pollution impact
-            if let Some(poll) = pollution.as_deref()
-                && let Some(idx) = grid.idx(pos)
-            {
+            if let Some(poll) = pollution.as_deref() {
                 let poll_value = poll.get(idx);
                 value -= poll_value * 0.4;
             }
@@ -104,12 +110,21 @@ fn compute_land_value(
             }
 
             // Clamp to [0.0, 1.0]
-            value = value.clamp(0.0, 1.0);
-            land_value.values[idx] = value;
-        }
+            value.clamp(0.0, 1.0)
+        })
+        .collect();
+
+    // Copy results to the land value array
+    for (i, &value) in results.iter().enumerate() {
+        land_value.values[start_idx + i] = value;
     }
 
-    land_value.version += 1;
+    // Move to next chunk
+    land_value.current_chunk += 1;
+    if land_value.current_chunk * tiles_per_chunk >= len {
+        land_value.current_chunk = 0;
+        land_value.version += 1; // Full update completed
+    }
 }
 
 fn has_adjacent_road(grid: &MapGrid, pos: TilePos) -> bool {

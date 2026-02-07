@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Resource, Default, Debug, Clone)]
-pub(super) struct UiMetrics {
+pub struct UiMetrics {
     pub(super) citizens: usize,
     pub(super) vehicles: usize,
     pub(super) buildings: usize,
@@ -39,7 +39,7 @@ pub(super) struct UiMetrics {
 ///
 /// These are updated incrementally via Added/RemovedComponents to avoid full-world scans each frame.
 #[derive(Resource, Default, Debug, Clone, Copy)]
-pub(super) struct UiEntityCounts {
+pub struct UiEntityCounts {
     pub(super) citizens: usize,
     pub(super) vehicles: usize,
     pub(super) buildings: usize,
@@ -47,14 +47,14 @@ pub(super) struct UiEntityCounts {
 }
 
 #[derive(Resource, Debug, Clone)]
-pub(super) struct UiHistory {
+pub struct UiHistory {
     pub(super) last_day: u32,
     pub(super) max_len: usize,
     pub(super) samples: Vec<HistorySample>,
 }
 
 #[derive(Debug, Copy, Clone)]
-pub(super) struct HistorySample {
+pub struct HistorySample {
     pub(super) day: u32,
     pub(super) population: u32,
     pub(super) money: i64,
@@ -73,22 +73,22 @@ impl Default for UiHistory {
 
 /// UI state + settings for building/copying debug dumps.
 #[derive(Resource, Debug, Clone)]
-pub(super) struct DebugDumpUiState {
-    pub(super) open: bool,
-    pub(super) enabled: bool,
-    pub(super) window_secs: f32,
-    pub(super) interval_secs: f32,
-    pub(super) max_dump_samples: usize,
-    pub(super) include_hovered_tile: bool,
-    pub(super) include_daily_history_days: usize,
-    pub(super) copy_requested: bool,
-    pub(super) save_requested: bool,
-    pub(super) clear_requested: bool,
-    pub(super) last_copy: Option<DebugDumpCopyInfo>,
+pub struct DebugDumpUiState {
+    pub open: bool,
+    pub enabled: bool,
+    pub window_secs: f32,
+    pub interval_secs: f32,
+    pub max_dump_samples: usize,
+    pub include_hovered_tile: bool,
+    pub include_daily_history_days: usize,
+    pub copy_requested: bool,
+    pub save_requested: bool,
+    pub clear_requested: bool,
+    pub last_copy: Option<DebugDumpCopyInfo>,
 }
 
 #[derive(Debug, Copy, Clone, serde::Serialize)]
-pub(super) struct DebugDumpCopyInfo {
+pub struct DebugDumpCopyInfo {
     pub(super) at_t_real_s: f32,
     pub(super) chars: usize,
     pub(super) samples: usize,
@@ -114,28 +114,30 @@ impl Default for DebugDumpUiState {
 
 /// Rolling buffer of recent telemetry samples used for debugging/dumps.
 #[derive(Resource, Debug, Default)]
-pub(super) struct DebugTelemetry {
-    pub(super) t_real_s: f32,
+pub struct DebugTelemetry {
+    pub t_real_s: f32,
     pub(super) last_sample_t_s: f32,
-    pub(super) samples: VecDeque<DebugTelemetrySample>,
+    pub samples: VecDeque<DebugTelemetrySample>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-pub(super) struct DebugTelemetrySample {
+pub struct DebugTelemetrySample {
     pub(super) t_real_s: f32,
     pub(super) app_state: String,
     pub(super) sim_speed: String,
-    pub(super) day: u32,
+    pub day: u32,
     pub(super) time_of_day: Option<f32>, // 0..1
-    pub(super) money: i64,
-    pub(super) population: u32,
-    pub(super) traffic_avg: f32,
-    pub(super) traffic_max: f32,
-    pub(super) demand_r: f32,
-    pub(super) demand_c: f32,
-    pub(super) demand_i: f32,
-    pub(super) active_emergencies: u32,
-    pub(super) vehicles: VehicleAgg,
+    pub money: i64,
+    pub population: u32,
+    pub traffic_avg: f32,
+    pub traffic_max: f32,
+    pub demand_r: f32,
+    pub demand_c: f32,
+    pub demand_i: f32,
+    pub active_emergencies: u32,
+    pub vehicles: VehicleAgg,
+    pub vehicles_active: VehicleAgg,
+    pub vehicles_parked: VehicleAgg,
 }
 
 #[derive(SystemParam)]
@@ -150,7 +152,8 @@ pub(super) struct UiEntityCountTrackParams<'w, 's> {
     removed_emergencies: RemovedComponents<'w, 's, Emergency>,
 }
 
-pub(super) fn track_ui_entity_counts(
+#[allow(private_interfaces)] // SystemParam types are intentionally private
+pub fn track_ui_entity_counts(
     state: Res<State<AppState>>,
     mut counts: ResMut<UiEntityCounts>,
     mut p: UiEntityCountTrackParams,
@@ -188,7 +191,8 @@ pub(super) fn track_ui_entity_counts(
     }
 }
 
-pub(super) fn update_ui_metrics(mut p: UiMetricsParams) {
+#[allow(private_interfaces)] // SystemParam types are intentionally private
+pub fn update_ui_metrics(mut p: UiMetricsParams) {
     if !matches!(p.state.get(), AppState::InGame | AppState::Paused) {
         p.metrics.citizens = 0;
         p.metrics.vehicles = 0;

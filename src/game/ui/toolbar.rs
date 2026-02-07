@@ -136,11 +136,11 @@ pub(super) fn bottom_toolbar_ui(mut contexts: EguiContexts, mut p: TopBarParams)
                 let seed = p.ui_state.seed_text.trim().parse::<u64>().unwrap_or(1);
                 if ui.button("New Map").clicked() {
                     p.commands.write(GameCommand::GenerateMap { seed });
-                    p.next_state.set(AppState::InGame);
+                    NextState::set_if_neq(&mut *p.next_state, AppState::InGame);
                 }
                 if ui.button("Load Test City").clicked() {
                     p.commands.write(GameCommand::LoadTestCity);
-                    p.next_state.set(AppState::InGame);
+                    NextState::set_if_neq(&mut *p.next_state, AppState::InGame);
                 }
 
                 if matches!(p.state.get(), AppState::InGame | AppState::Paused) {
@@ -171,17 +171,17 @@ pub(super) fn bottom_toolbar_ui(mut contexts: EguiContexts, mut p: TopBarParams)
                                 });
                         }
                         if ui.button("Start").clicked() {
-                            p.next_state.set(AppState::InGame);
+                            NextState::set_if_neq(&mut *p.next_state, AppState::InGame);
                         }
                     }
                     AppState::InGame => {
                         if ui.button("Pause").clicked() {
-                            p.next_state.set(AppState::Paused);
+                            NextState::set_if_neq(&mut *p.next_state, AppState::Paused);
                         }
                     }
                     AppState::Paused => {
                         if ui.button("Resume").clicked() {
-                            p.next_state.set(AppState::InGame);
+                            NextState::set_if_neq(&mut *p.next_state, AppState::InGame);
                         }
                     }
                 }

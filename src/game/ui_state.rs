@@ -58,16 +58,17 @@ pub enum SimSpeed {
     Paused,
     X1,
     X2,
-    X4,
+    X3,
 }
 
 impl SimSpeed {
+    /// Multiplier relative to x1 speed (drives virtual time scaling).
     pub fn multiplier(self) -> f32 {
         match self {
             SimSpeed::Paused => 0.0,
             SimSpeed::X1 => 1.0,
-            SimSpeed::X2 => 2.0,
-            SimSpeed::X4 => 4.0,
+            SimSpeed::X2 => 2.0, // 1.0 / 0.5
+            SimSpeed::X3 => 6.0, // 1.0 / 0.167
         }
     }
 }

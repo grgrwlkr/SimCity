@@ -11,11 +11,9 @@ use crate::game::buildings::Building;
 use crate::game::ids::{CitizenIdComp, CitizenIdGen};
 use crate::game::map::{BuildingKind, MapGrid, TilePos};
 use crate::game::pedestrians::{PedestrianConfig, PedestrianGraph, PedestrianRoutingScratch};
-use crate::game::public_transport::{PublicTransportConfig, PublicTransportIndex};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::traffic::TrafficConfig;
-use crate::game::transport::adjacent_road_towards;
 use crate::game::trips::{TripFinished, TripMode, TripPurpose, TripRequested};
 
 pub struct CitizensPlugin;
@@ -126,8 +124,14 @@ fn spawn_citizens_from_residential(
         if b.kind != BuildingKind::Residential {
             continue;
         }
-        let current = have_home.get(&b.pos).copied().unwrap_or(0);
-        let target = (b.capacity_residents as usize).max(1);
+        // Only spawn citizens for operational buildings (GDD 10.3.3)
+        if !b.is_operational() {
+            continue;
+        }
+        let home_pos = b.anchor_pos;
+        let current = have_home.get(&home_pos).copied().unwrap_or(0);
+        // Use occupancy_residents as target (GDD 10.3.5)
+        let target = (b.occupancy_residents as usize).max(1);
         if current >= target {
             continue;
         }
@@ -144,11 +148,11 @@ fn spawn_citizens_from_residential(
             commands.spawn((
                 CitizenIdComp(id),
                 Citizen {
-                    home: b.pos,
+                    home: home_pos,
                     state: CitizenState::AtHome,
-                    last_place: b.pos,
+                    last_place: home_pos,
                     tour_mode: None,
-                    car_parked_at: b.pos,
+                    car_parked_at: home_pos,
                     decision_timer: decision.clone(),
                     shopping_need: shopping_need.clone(),
                     work_stay: work_stay.clone(),
@@ -161,7 +165,7 @@ fn spawn_citizens_from_residential(
             spawned_here += 1;
         }
         if spawned_here > 0 {
-            *have_home.entry(b.pos).or_insert(0) += spawned_here;
+            *have_home.entry(home_pos).or_insert(0) += spawned_here;
         }
     }
 }
@@ -178,7 +182,7 @@ fn citizen_trip_planner(
     let mut shops = Vec::<TilePos>::new();
     for b in &q_buildings {
         if b.kind == BuildingKind::Commercial {
-            shops.push(b.pos);
+            shops.push(b.anchor_pos);
         }
     }
 
@@ -323,13 +327,11 @@ struct CitizenTripPlannerParams<'w> {
     ped_routing: ResMut<'w, PedestrianRoutingScratch>,
     ped_cfg: Res<'w, PedestrianConfig>,
     traffic_cfg: Res<'w, TrafficConfig>,
-    pt: Res<'w, PublicTransportIndex>,
-    pt_cfg: Res<'w, PublicTransportConfig>,
 }
 
 fn choose_tour_mode(
     p: &mut CitizenTripPlannerParams,
-    rng: &mut impl rand::Rng,
+    _rng: &mut impl rand::Rng,
     from: TilePos,
     to: TilePos,
 ) -> TripMode {
@@ -350,18 +352,7 @@ fn choose_tour_mode(
         }
     }
 
-    // 2) TransitTour (existing feature): only if both endpoints are stops.
-    let can_transit = adjacent_road_towards(&p.grid, from, to)
-        .is_some_and(|s| p.pt.stops.contains(&s))
-        && adjacent_road_towards(&p.grid, to, from).is_some_and(|g| p.pt.stops.contains(&g));
-    if can_transit {
-        let prob = p.pt_cfg.adoption_rate.clamp(0.0, 1.0);
-        if rng.random_range(0.0..1.0) <= prob {
-            return TripMode::Transit;
-        }
-    }
-
-    // 3) Default.
+    // 2) Default.
     TripMode::Car
 }
 

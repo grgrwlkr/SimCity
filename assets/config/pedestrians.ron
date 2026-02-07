@@ -1,10 +1,10 @@
 (
-    // Doc defaults
-    walk_speed_mps: 1.4,
+    // GDD defaults: 5 km/h walking speed
+    walk_speed_kmh: 5.0,
     walk_tour_max_m: 800.0,
 
-    // Uncontrolled crossings
-    wait_reroute_secs: 60.0,
+    // Uncontrolled crossings (GDD: wait 6 game hours before rerouting)
+    wait_reroute_hours: 6.0,
     wait_reroute_max_attempts: 3,
     uncontrolled_safety_margin_secs: 0.5,
     uncontrolled_min_gap_tiles: 0.35,

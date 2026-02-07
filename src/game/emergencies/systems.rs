@@ -1,7 +1,4 @@
-//! 5.4 Random emergency events (MVP).
-//!
-//! Spawns random emergencies at buildings, dispatches service vehicles, and renders map markers.
-//! Persistence is intentionally out of scope for now (see roadmap).
+//! Emergency system implementations: spawning, dispatch, resolution, and cleanup.
 
 use std::collections::HashMap;
 
@@ -11,183 +8,24 @@ use rand::prelude::*;
 
 use crate::game::buildings::Building;
 use crate::game::intersections::IntersectionIndex;
-use crate::game::map::{BuildingKind, MapConfig, MapGrid, TilePos};
+use crate::game::map::{BuildingKind, MapGrid, TilePos};
 use crate::game::notifications::{NotificationKind, Notifications};
 use crate::game::roads::RoadDir;
-use crate::game::services::{ServiceKind, ServiceStation, ServiceVehicle, ServiceVehicleState};
-use crate::game::sets::GameSet;
+use crate::game::services::{ServiceStation, ServiceVehicle, ServiceVehicleState};
 use crate::game::sim::City;
-use crate::game::state::AppState;
-use crate::game::traffic::{Parked, TrafficOccupancy, Vehicle};
+use crate::game::sim_events::HourAdvanced;
+use crate::game::traffic::{Parked, Vehicle};
 use crate::game::transport::{
-    PathCache, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph, find_road_path_cached,
+    PathCache, PathPool, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph,
+    find_road_path_cached,
 };
-use crate::game::ui_state::UiState;
+use bevy::ecs::message::MessageReader;
 
-pub struct EmergenciesPlugin;
+use super::components::{Emergency, EmergencyEntityIndex, EmergencyKind, EmergencyManager};
 
-/// O(1) lookup of emergencies by tile for UI/inspector/debug.
-#[derive(Resource, Default)]
-pub(crate) struct EmergencyEntityIndex {
-    by_pos: std::collections::HashMap<TilePos, Entity>,
-    by_entity: std::collections::HashMap<Entity, TilePos>,
-}
-
-impl EmergencyEntityIndex {
-    pub(crate) fn get(&self, pos: TilePos) -> Option<Entity> {
-        self.by_pos.get(&pos).copied()
-    }
-}
-
-impl Plugin for EmergenciesPlugin {
-    fn build(&self, app: &mut App) {
-        app.init_resource::<EmergencyManager>()
-            .init_resource::<EmergencyEntityIndex>()
-            .add_systems(
-                FixedUpdate,
-                (
-                    spawn_emergencies,
-                    dispatch_emergency_vehicles,
-                    update_emergency_timers,
-                    resolve_emergencies,
-                    apply_emergency_consequences,
-                    cleanup_resolved_emergencies,
-                )
-                    .chain()
-                    .in_set(GameSet::Sim)
-                    .run_if(in_state(AppState::InGame)),
-            );
-
-        // Maintain cheap tile->emergency lookup for UI (no per-frame scans).
-        app.add_systems(
-            Update,
-            track_emergency_index
-                .in_set(GameSet::CommandApply)
-                .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
-        );
-
-        // Visual markers (render sync)
-        app.add_systems(
-            Update,
-            render_emergency_markers
-                .in_set(GameSet::RenderSync)
-                .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
-        );
-    }
-}
-
-fn track_emergency_index(
-    mut idx: ResMut<EmergencyEntityIndex>,
-    q_added: Query<(Entity, &Emergency), Added<Emergency>>,
-    mut removed: RemovedComponents<Emergency>,
-) {
-    for (e, em) in q_added.iter() {
-        idx.by_pos.insert(em.pos, e);
-        idx.by_entity.insert(e, em.pos);
-    }
-    for e in removed.read() {
-        let Some(pos) = idx.by_entity.remove(&e) else {
-            continue;
-        };
-        if idx.by_pos.get(&pos).copied() == Some(e) {
-            idx.by_pos.remove(&pos);
-        }
-    }
-}
-
-/// Type of emergency.
-#[allow(dead_code)]
-#[derive(serde::Serialize, serde::Deserialize, Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum EmergencyKind {
-    Fire,
-    Crime,
-    Medical,
-}
-
-impl EmergencyKind {
-    pub fn required_service(self) -> ServiceKind {
-        match self {
-            EmergencyKind::Fire => ServiceKind::Fire,
-            EmergencyKind::Crime => ServiceKind::Police,
-            EmergencyKind::Medical => ServiceKind::Medical,
-        }
-    }
-
-    pub fn response_deadline(self) -> f32 {
-        match self {
-            EmergencyKind::Fire => 30.0,
-            EmergencyKind::Crime => 45.0,
-            EmergencyKind::Medical => 25.0,
-        }
-    }
-
-    pub fn resolution_time(self) -> f32 {
-        match self {
-            EmergencyKind::Fire => 15.0,
-            EmergencyKind::Crime => 10.0,
-            EmergencyKind::Medical => 12.0,
-        }
-    }
-
-    pub fn marker_color(self) -> Color {
-        match self {
-            EmergencyKind::Fire => Color::srgb(1.0, 0.4, 0.0),
-            EmergencyKind::Crime => Color::srgb(1.0, 0.0, 0.0),
-            EmergencyKind::Medical => Color::srgb(1.0, 1.0, 0.0),
-        }
-    }
-}
-
-/// Active emergency event in the world.
-#[allow(dead_code)]
-#[derive(Component, Debug)]
-pub struct Emergency {
-    pub kind: EmergencyKind,
-    pub pos: TilePos,
-    pub severity: f32,            // 0..1
-    pub time_remaining: f32,      // until deadline, if not responded
-    pub resolution_progress: f32, // 0..1
-    pub responded: bool,
-    pub assigned_vehicle: Option<Entity>,
-    pub consequence_applied: bool,
-    pub resolved: bool,
-    pub failed: bool,
-}
-
-/// Runtime stats for UI later.
-#[allow(dead_code)]
-#[derive(serde::Serialize, serde::Deserialize, Default, Debug, Clone)]
-pub struct EmergencyStats {
-    pub total_fires: u32,
-    pub total_crimes: u32,
-    pub total_medical: u32,
-    pub resolved_in_time: u32,
-    pub failed_responses: u32,
-}
-
-#[allow(dead_code)]
-#[derive(Resource)]
-pub struct EmergencyManager {
-    pub spawn_timer: Timer,
-    pub base_spawn_chance: f32,
-    pub max_active_emergencies: usize,
-    pub stats: EmergencyStats,
-}
-
-impl Default for EmergencyManager {
-    fn default() -> Self {
-        Self {
-            // Conservative defaults: emergencies are occasional and shouldn't overwhelm sim/UI.
-            spawn_timer: Timer::from_seconds(6.0, TimerMode::Repeating),
-            base_spawn_chance: 0.06,
-            max_active_emergencies: 8,
-            stats: EmergencyStats::default(),
-        }
-    }
-}
-
-fn spawn_emergencies(
-    time: Res<Time<Fixed>>,
+/// GDD: Spawn emergencies every 6 game hours
+pub(crate) fn spawn_emergencies(
+    mut hour_events: MessageReader<'_, '_, HourAdvanced>,
     city: Res<City>,
     mut manager: ResMut<EmergencyManager>,
     notifications: Option<ResMut<Notifications>>,
@@ -195,10 +33,21 @@ fn spawn_emergencies(
     q_emergencies: Query<&Emergency>,
     q_buildings: Query<&Building>,
 ) {
-    manager.spawn_timer.tick(time.delta());
-    if !manager.spawn_timer.just_finished() {
+    // Count game hours
+    let hours_passed = hour_events.read().count() as u32;
+    if hours_passed == 0 {
         return;
     }
+
+    manager.hours_since_last_spawn += hours_passed;
+
+    // Spawn every 6 game hours (GDD 13.2.1)
+    const SPAWN_INTERVAL_HOURS: u32 = 6;
+    if manager.hours_since_last_spawn < SPAWN_INTERVAL_HOURS {
+        return;
+    }
+
+    manager.hours_since_last_spawn %= SPAWN_INTERVAL_HOURS;
 
     if q_emergencies.iter().count() >= manager.max_active_emergencies {
         return;
@@ -221,7 +70,7 @@ fn spawn_emergencies(
                 BuildingKind::Residential | BuildingKind::Commercial | BuildingKind::Industrial
             )
         })
-        .map(|b| b.pos)
+        .map(|b| b.anchor_pos)
         .collect();
 
     if buildings.is_empty() {
@@ -240,13 +89,16 @@ fn spawn_emergencies(
         kind,
         pos,
         severity,
-        time_remaining: kind.response_deadline(),
-        resolution_progress: 0.0,
+        spawned_at: 0.0,
         responded: false,
-        assigned_vehicle: None,
-        consequence_applied: false,
+        response_time_sec: None,
         resolved: false,
+        consequence_applied: false,
         failed: false,
+        time_remaining: kind.response_deadline(),
+        dispatched_vehicles: vec![],
+        resolution_progress: 0.0,
+        assigned_vehicle: None,
     });
 
     match kind {
@@ -315,7 +167,9 @@ fn pick_reachable_road_endpoint(
     let mut best_any: Option<TilePos> = None;
 
     for cpos in candidates {
-        let Some(cell) = grid.get(cpos) else { continue };
+        let Some(cell) = grid.get(cpos) else {
+            continue;
+        };
         if cell.water || !cell.road.is_some() {
             continue;
         }
@@ -387,22 +241,24 @@ fn adjacent_road_any(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
 }
 
 #[derive(SystemParam)]
-struct DispatchParams<'w, 's> {
+pub(crate) struct DispatchParams<'w, 's> {
     commands: Commands<'w, 's>,
     grid: Res<'w, MapGrid>,
-    time: Res<'w, Time<Fixed>>,
+    time: Res<'w, Time<bevy::time::Fixed>>,
     path_cfg: Res<'w, PathfindingConfig>,
     path_cache: ResMut<'w, PathCache>,
+    path_pool: ResMut<'w, PathPool>,
     graph: Res<'w, RoadGraph>,
     regions: Res<'w, RegionGraph>,
-    traffic: Res<'w, TrafficOccupancy>,
+    traffic: Res<'w, crate::game::traffic::TrafficOccupancy>,
     intersections: Res<'w, IntersectionIndex>,
     q_emergencies: Query<'w, 's, (Entity, &'static mut Emergency)>,
     q_stations: Query<'w, 's, (Entity, &'static mut ServiceStation)>,
     q_vehicles: Query<'w, 's, (Entity, &'static mut ServiceVehicle, &'static mut Vehicle)>,
 }
 
-fn dispatch_emergency_vehicles(mut p: DispatchParams) {
+/// Dispatch service vehicles to emergencies.
+pub(crate) fn dispatch_emergency_vehicles(mut p: DispatchParams) {
     let mut ctx = PathfindingCtx {
         time_now_sec: p.time.elapsed_secs_f64(),
         cfg: &p.path_cfg,
@@ -432,6 +288,14 @@ fn dispatch_emergency_vehicles(mut p: DispatchParams) {
             }
             if station.available_vehicles == 0 {
                 continue;
+            }
+
+            // GDD 10.5.1: Service buildings without road access cannot dispatch vehicles
+            // Check if station building has road access (station.pos should have adjacent road)
+            let station_has_road =
+                crate::game::services::adjacent_road_any(&p.grid, station.pos).is_some();
+            if !station_has_road {
+                continue; // Skip stations without road access
             }
             // Prefer lane tiles that match the desired travel direction to avoid picking the wrong carriageway.
             let travel_dir = desired_dir(station.pos, emergency.pos);
@@ -479,17 +343,18 @@ fn dispatch_emergency_vehicles(mut p: DispatchParams) {
             emergency.assigned_vehicle = Some(vehicle_entity);
 
             // Build route from the vehicle's parked lane tile if possible.
-            let from = vehicle
-                .route
-                .get(vehicle.route_idx)
-                .copied()
+            let from = p
+                .path_pool
+                .get_tile(vehicle.path_handle, vehicle.path_cursor)
                 .unwrap_or(sv.home_road);
             let mut route = find_path_with_fallback(&mut ctx, &p.grid, from, emergency_road);
             if route.is_empty() && from != station_road {
                 route = find_path_with_fallback(&mut ctx, &p.grid, station_road, emergency_road);
             }
-            vehicle.route = route;
-            vehicle.route_idx = 0;
+            // Release old path if any
+            p.path_pool.release(vehicle.path_handle);
+            vehicle.path_handle = p.path_pool.intern(route);
+            vehicle.path_cursor = 0;
             vehicle.speed = sv.kind.vehicle_speed();
 
             // Remove Parked component - vehicle is now active on the road
@@ -503,34 +368,43 @@ fn dispatch_emergency_vehicles(mut p: DispatchParams) {
     }
 }
 
-fn update_emergency_timers(time: Res<Time<Fixed>>, ui: Res<UiState>, mut q: Query<&mut Emergency>) {
-    let speed = ui.sim_speed.multiplier();
-    if speed <= 0.0 {
+/// Update emergency timers.
+/// GDD: Update emergency timers using game hours (decrease by 1 hour per HourAdvanced event)
+pub(crate) fn update_emergency_timers(
+    mut hour_events: MessageReader<'_, '_, HourAdvanced>,
+    mut q: Query<&mut Emergency>,
+) {
+    let hours_passed = hour_events.read().count() as f32;
+    if hours_passed <= 0.0 {
         return;
     }
-    let dt = time.delta_secs() * speed;
 
     for mut e in q.iter_mut() {
         if e.resolved || e.failed {
             continue;
         }
+        // Decrease time remaining by game hours (only if not yet responded)
         if !e.responded {
-            e.time_remaining -= dt;
+            e.time_remaining -= hours_passed;
+            if e.time_remaining < 0.0 {
+                e.time_remaining = 0.0;
+            }
         }
     }
 }
 
 #[derive(SystemParam)]
-struct ResolveParams<'w, 's> {
+pub(crate) struct ResolveParams<'w, 's> {
+    hour_events: MessageReader<'w, 's, HourAdvanced>,
     commands: Commands<'w, 's>,
-    time: Res<'w, Time<Fixed>>,
-    ui: Res<'w, UiState>,
+    time: Res<'w, Time<bevy::time::Fixed>>,
     grid: Res<'w, MapGrid>,
     path_cfg: Res<'w, PathfindingConfig>,
     path_cache: ResMut<'w, PathCache>,
+    path_pool: ResMut<'w, PathPool>,
     graph: Res<'w, RoadGraph>,
     regions: Res<'w, RegionGraph>,
-    traffic: Res<'w, TrafficOccupancy>,
+    traffic: Res<'w, crate::game::traffic::TrafficOccupancy>,
     intersections: Res<'w, IntersectionIndex>,
     notifications: Option<ResMut<'w, Notifications>>,
     q_emergencies: Query<'w, 's, (Entity, &'static mut Emergency)>,
@@ -539,12 +413,9 @@ struct ResolveParams<'w, 's> {
     manager: ResMut<'w, EmergencyManager>,
 }
 
-fn resolve_emergencies(mut p: ResolveParams) {
-    let speed = p.ui.sim_speed.multiplier();
-    if speed <= 0.0 {
-        return;
-    }
-    let dt = p.time.delta_secs() * speed;
+/// GDD: Resolve emergencies using game hours (progress incremented per game hour)
+pub(crate) fn resolve_emergencies(mut p: ResolveParams) {
+    let hours_passed = p.hour_events.read().count() as f32;
 
     let mut ctx = PathfindingCtx {
         time_now_sec: p.time.elapsed_secs_f64(),
@@ -581,7 +452,7 @@ fn resolve_emergencies(mut p: ResolveParams) {
 
         match sv.state {
             ServiceVehicleState::EnRoute => {
-                if vehicle.route_idx >= vehicle.route.len() {
+                if vehicle.path_cursor >= p.path_pool.len(vehicle.path_handle) {
                     sv.state = ServiceVehicleState::OnScene;
                     emergency.responded = true;
                     vehicle.speed = 0.0;
@@ -606,8 +477,11 @@ fn resolve_emergencies(mut p: ResolveParams) {
                 }
             }
             ServiceVehicleState::OnScene => {
-                let rate = 1.0 / emergency.kind.resolution_time();
-                emergency.resolution_progress += rate * dt;
+                // GDD: Resolution progresses in game hours (resolution_time is in game hours)
+                if hours_passed > 0.0 {
+                    let progress_per_hour = 1.0 / emergency.kind.resolution_time();
+                    emergency.resolution_progress += progress_per_hour * hours_passed;
+                }
                 if emergency.resolution_progress >= 1.0 {
                     emergency.resolution_progress = 1.0;
                     emergency.resolved = true;
@@ -636,7 +510,11 @@ fn resolve_emergencies(mut p: ResolveParams) {
                         Some(return_dir),
                     )
                     .unwrap_or(sv.home_road);
-                    vehicle.route = find_path_with_fallback(&mut ctx, &p.grid, from, to);
+                    let route = find_path_with_fallback(&mut ctx, &p.grid, from, to);
+                    // Release old path and set new one
+                    p.path_pool.release(vehicle.path_handle);
+                    vehicle.path_handle = p.path_pool.intern(route);
+                    vehicle.path_cursor = 0;
 
                     if emergency.time_remaining > 0.0 {
                         p.manager.stats.resolved_in_time += 1;
@@ -672,13 +550,15 @@ fn resolve_emergencies(mut p: ResolveParams) {
                 }
             }
             ServiceVehicleState::Returning => {
-                if vehicle.route_idx >= vehicle.route.len() {
+                if vehicle.path_cursor >= p.path_pool.len(vehicle.path_handle) {
                     // Back at station.
                     sv.state = ServiceVehicleState::AtStation;
                     sv.mission = None;
                     vehicle.speed = 0.0;
-                    vehicle.route = vec![sv.home_road];
-                    vehicle.route_idx = 0;
+                    // Release old path and create new single-tile path
+                    p.path_pool.release(vehicle.path_handle);
+                    vehicle.path_handle = p.path_pool.intern(vec![sv.home_road]);
+                    vehicle.path_cursor = 0;
                     // Add Parked component - vehicle is now parked at station
                     p.commands
                         .entity(vehicle_entity)
@@ -693,7 +573,8 @@ fn resolve_emergencies(mut p: ResolveParams) {
     }
 }
 
-fn apply_emergency_consequences(
+/// Apply consequences for failed emergencies.
+pub(crate) fn apply_emergency_consequences(
     mut city: ResMut<City>,
     mut q_emergencies: Query<&mut Emergency>,
     mut manager: ResMut<EmergencyManager>,
@@ -728,7 +609,8 @@ fn apply_emergency_consequences(
     }
 }
 
-fn cleanup_resolved_emergencies(
+/// Clean up resolved emergencies.
+pub(crate) fn cleanup_resolved_emergencies(
     mut commands: Commands,
     q_emergencies: Query<(Entity, &Emergency)>,
 ) {
@@ -739,78 +621,16 @@ fn cleanup_resolved_emergencies(
     }
 }
 
-#[derive(Component)]
-struct EmergencyMarker {
-    emergency: Entity,
-    blink_timer: Timer,
-}
-
-fn render_emergency_markers(
-    time: Res<Time>,
-    cfg: Res<MapConfig>,
-    mut commands: Commands,
-    q_emergencies: Query<(Entity, &Emergency)>,
-    mut q_markers: Query<(Entity, &mut EmergencyMarker, &mut Sprite)>,
+/// Track emergency index for UI lookups.
+pub(crate) fn track_emergency_index(
+    mut idx: ResMut<EmergencyEntityIndex>,
+    q_added: Query<(Entity, &Emergency), Added<Emergency>>,
+    mut removed: RemovedComponents<Emergency>,
 ) {
-    // Build a lookup of active emergencies.
-    let mut active = HashMap::<Entity, EmergencyKind>::new();
-    for (e, ev) in q_emergencies.iter() {
-        if ev.resolved || ev.failed {
-            continue;
-        }
-        active.insert(e, ev.kind);
+    for (e, em) in q_added.iter() {
+        idx.insert(em.pos, e);
     }
-
-    // Despawn markers for missing emergencies.
-    for (marker_e, marker, _) in q_markers.iter_mut() {
-        if !active.contains_key(&marker.emergency) {
-            commands.entity(marker_e).despawn();
-        }
+    for e in removed.read() {
+        idx.remove(e);
     }
-
-    // Spawn markers for emergencies without one.
-    for (e, ev) in q_emergencies.iter() {
-        if ev.resolved || ev.failed {
-            continue;
-        }
-        let has_marker = q_markers.iter().any(|(_, m, _)| m.emergency == e);
-        if has_marker {
-            continue;
-        }
-
-        let world = tile_to_world(&cfg, ev.pos);
-        commands.spawn((
-            Sprite {
-                color: ev.kind.marker_color(),
-                custom_size: Some(Vec2::splat(cfg.tile_size * 0.4)),
-                ..default()
-            },
-            Transform::from_xyz(world.x, world.y, 15.0),
-            EmergencyMarker {
-                emergency: e,
-                blink_timer: Timer::from_seconds(0.5, TimerMode::Repeating),
-            },
-        ));
-    }
-
-    // Blink markers.
-    for (_, mut marker, mut sprite) in q_markers.iter_mut() {
-        marker.blink_timer.tick(time.delta());
-        if marker.blink_timer.just_finished() {
-            let a = sprite.color.alpha();
-            sprite.color.set_alpha(if a > 0.6 { 0.25 } else { 1.0 });
-        }
-    }
-}
-
-fn tile_to_world(cfg: &MapConfig, pos: TilePos) -> Vec2 {
-    let origin = map_origin(cfg);
-    origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size)
-}
-
-fn map_origin(cfg: &MapConfig) -> Vec2 {
-    Vec2::new(
-        -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
-        -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
-    )
 }

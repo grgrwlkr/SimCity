@@ -27,6 +27,7 @@ fn pedestrian_waits_for_allowed_phase_before_entering_intersection() {
             tile_size: 16.0,
         })
         .insert_resource(TrafficConfig::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .insert_resource({
             let mut grid = MapGrid::new(3, 3);
             let intersection_tile = TilePos { x: 1, y: 1 };
@@ -109,7 +110,7 @@ fn pedestrian_waits_for_allowed_phase_before_entering_intersection() {
                 // finish the whole route and despawn.
                 speed_world: 240.0,
                 goal: c,
-                wait_blocked_secs: 0.0,
+                wait_blocked_hours: 0.0,
                 reroute_attempts: 0,
             },
             agents::PedestrianTile(a),
@@ -169,6 +170,7 @@ fn pedestrian_can_finish_crossing_inside_signalized_intersection_after_phase_cha
             tile_size: 16.0,
         })
         .insert_resource(TrafficConfig::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .insert_resource({
             let mut grid = MapGrid::new(3, 4);
             // Two-tile intersection cluster at (1,1) and (1,2).
@@ -253,7 +255,7 @@ fn pedestrian_can_finish_crossing_inside_signalized_intersection_after_phase_cha
                 // that we skip through the whole intersection and despawn before assertions.
                 speed_world: 165.0,
                 goal: c,
-                wait_blocked_secs: 0.0,
+                wait_blocked_hours: 0.0,
                 reroute_attempts: 0,
             },
             agents::PedestrianTile(a),

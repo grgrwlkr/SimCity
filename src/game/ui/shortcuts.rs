@@ -30,6 +30,8 @@ pub(super) fn shortcuts_ui(mut contexts: EguiContexts, show: Res<ShowShortcuts>)
             ui.heading("Navigation");
             ui.label("WASD / Arrow keys — Pan camera");
             ui.label("Mouse wheel — Zoom");
+            ui.label("Q — Zoom out");
+            ui.label("E — Zoom in");
 
             ui.separator();
             ui.heading("Tools");

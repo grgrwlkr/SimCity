@@ -1,4 +1,5 @@
 use super::*;
+use crate::game::transport::{LaneId, PathPool, VehicleId};
 
 pub(super) fn spawn_trip_vehicles(
     mut reader: bevy::ecs::message::MessageReader<TripRequested>,
@@ -62,26 +63,6 @@ pub(super) fn spawn_trip_vehicles(
             continue;
         }
 
-        // Public transport (MVP): mode is chosen by citizens (tour-based).
-        if msg.mode == TripMode::Transit
-            && let (Some(pt), Some(pt_cfg), Some(pending)) =
-                (p.pt.as_deref(), p.pt_cfg.as_deref(), p.pt_pending.as_mut())
-            && pt.stops.contains(&start)
-            && pt.stops.contains(&goal)
-        {
-            let dist_world = (route.len() as f32) * p.cfg.tile_size;
-            let travel_secs = (dist_world / pt_cfg.bus_speed.max(1.0)) + pt_cfg.wait_secs.max(0.0);
-            pending.trips.push(PendingTrip {
-                citizen: msg.citizen,
-                purpose: msg.purpose,
-                remaining_secs: travel_secs,
-            });
-            planned += 1;
-            continue;
-        }
-        // If `mode == Transit` but transit isn't possible, fall through and spawn a car so the trip
-        // can still complete.
-
         // CarTour Variant B: if the citizen already has a parked car entity, re-use it.
         if msg.mode == TripMode::Car {
             let mut reused = false;
@@ -106,8 +87,10 @@ pub(super) fn spawn_trip_vehicles(
                 && let Ok((_e, _owner, mut v, mut tf, mut sprite)) = p.q_parked_cars.get_mut(e)
             {
                 let world_pos = tile_to_world(&p.cfg, start);
-                v.route = route.clone();
-                v.route_idx = 0;
+                // Release old path if any
+                p.path_pool.release(v.path_handle);
+                v.path_handle = p.path_pool.intern(route.clone());
+                v.path_cursor = 0;
                 v.progress = 0.0;
                 v.speed = 0.0;
                 v.max_speed = driver_max_speed_world;
@@ -118,7 +101,11 @@ pub(super) fn spawn_trip_vehicles(
                 tf.translation.z = 10.0;
 
                 // Restore "active vehicle" visuals (parked vehicles are smaller + translucent).
-                sprite.custom_size = Some(Vec2::splat(p.cfg.tile_size * VEHICLE_VISUAL_SIZE_TILES));
+                // Use rectangular sprite: length (along travel direction) x width (perpendicular)
+                sprite.custom_size = Some(Vec2::new(
+                    p.cfg.tile_size * VEHICLE_VISUAL_LENGTH_TILES,
+                    p.cfg.tile_size * VEHICLE_VISUAL_WIDTH_TILES,
+                ));
                 sprite.color = Color::linear_rgb(0.95, 0.95, 0.95);
 
                 p.commands
@@ -145,17 +132,29 @@ pub(super) fn spawn_trip_vehicles(
         let mut e = p.commands.spawn((
             Sprite {
                 color: Color::linear_rgb(0.95, 0.95, 0.95),
-                custom_size: Some(Vec2::splat(p.cfg.tile_size * VEHICLE_VISUAL_SIZE_TILES)),
+                custom_size: Some(Vec2::new(
+                    p.cfg.tile_size * VEHICLE_VISUAL_LENGTH_TILES,
+                    p.cfg.tile_size * VEHICLE_VISUAL_WIDTH_TILES,
+                )),
                 ..default()
             },
             Transform::from_xyz(world_pos.x, world_pos.y, 10.0),
             Vehicle {
-                route,
-                route_idx: 0,
+                is_reversing: false,
+                reverse_distance: 0.0,
+                path_handle: p.path_pool.intern(route),
+                path_cursor: 0,
                 progress: 0.0,
+                lane_id: LaneId::INVALID,
+                lane_s: 0.0,
+                vehicle_id: VehicleId::INVALID,
+                tile_pos: start,
                 speed: 0.0,
                 max_speed: driver_max_speed_world,
                 max_accel: idm.a,
+                prev_world_pos: world_pos,
+                curr_world_pos: world_pos,
+                last_update_time: 0.0, // Will be set by first update
             },
             VehicleTrafficState::FreeFlow,
             TripPassenger {
@@ -185,10 +184,8 @@ pub(super) struct SpawnTripVehiclesParams<'w, 's> {
     traffic_idx: Res<'w, TrafficIndex>,
     path_cfg: Res<'w, PathfindingConfig>,
     path_cache: ResMut<'w, PathCache>,
+    path_pool: ResMut<'w, PathPool>,
     intersections: Res<'w, IntersectionIndex>,
-    pt_cfg: Option<Res<'w, PublicTransportConfig>>,
-    pt: Option<Res<'w, PublicTransportIndex>>,
-    pt_pending: Option<ResMut<'w, PendingTransitTrips>>,
     car_owner_index: Option<Res<'w, CarOwnerIndex>>,
     vehicle_counts: Option<Res<'w, TrafficVehicleCounts>>,
     q_vehicles: Query<'w, 's, Entity, (With<Vehicle>, Without<Parked>)>,

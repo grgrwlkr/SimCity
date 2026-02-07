@@ -2,7 +2,7 @@ use super::*;
 use bevy_egui::{EguiContexts, egui};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-mod build;
+pub mod build;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn debug_dump_ui(
@@ -15,7 +15,6 @@ pub(super) fn debug_dump_ui(
     map_cfg: Res<MapConfig>,
     grid: Res<MapGrid>,
     hovered: Res<HoveredTile>,
-    day_night: Option<Res<DayNightCycle>>,
     q_camera: Query<(&Transform, &Projection), With<MainCamera>>,
     mut dump_ui: ResMut<DebugDumpUiState>,
     mut telemetry: ResMut<DebugTelemetry>,
@@ -27,6 +26,35 @@ pub(super) fn debug_dump_ui(
     // Hotkeys: F9 copies dump; F8 toggles the debug window.
     if ctx.input(|i| i.key_pressed(egui::Key::F9)) {
         dump_ui.copy_requested = true;
+
+        // Log current game state to console
+        if let Some(last_sample) = telemetry.samples.back() {
+            println!("\n=== GAME STATE (F9 pressed) ===");
+            println!(
+                "Time: {:.1}s, Day: {}, Population: {}, Money: {}",
+                telemetry.t_real_s, last_sample.day, last_sample.population, last_sample.money
+            );
+            println!(
+                "Vehicles: total={} (active {}, parked {}), zero_speed(a/p)={}/{}, no_route(a/p)={}/{}",
+                last_sample.vehicles.total,
+                last_sample.vehicles_active.total,
+                last_sample.vehicles_parked.total,
+                last_sample.vehicles_active.zero_speed,
+                last_sample.vehicles_parked.zero_speed,
+                last_sample.vehicles_active.no_route,
+                last_sample.vehicles_parked.no_route
+            );
+            println!(
+                "Traffic: avg={:.3}, max={:.3}",
+                last_sample.traffic_avg, last_sample.traffic_max
+            );
+            println!(
+                "Demand: R={:.2}, C={:.2}, I={:.2}",
+                last_sample.demand_r, last_sample.demand_c, last_sample.demand_i
+            );
+            println!("Emergencies: active={}", last_sample.active_emergencies);
+            println!("Copying debug dump to clipboard...\n");
+        }
     }
     if ctx.input(|i| i.key_pressed(egui::Key::F8)) {
         dump_ui.open = !dump_ui.open;
@@ -121,7 +149,6 @@ pub(super) fn debug_dump_ui(
         &map_cfg,
         &grid,
         &hovered,
-        day_night.as_deref(),
         q_camera.single().ok(),
         &dump_ui,
         &telemetry,
@@ -130,7 +157,7 @@ pub(super) fn debug_dump_ui(
     let pretty = ron::ser::PrettyConfig::new();
     let dump_ron = ron::ser::to_string_pretty(&dump, pretty).unwrap_or_else(|e| {
         format!(
-            "(dump_version: 1, error: \"failed to serialize dump: {:?}\")",
+            "(dump_version: 2, error: \"failed to serialize dump: {:?}\")",
             e
         )
     });
@@ -142,11 +169,35 @@ pub(super) fn debug_dump_ui(
             chars: dump_ron.len(),
             samples: dump.telemetry.samples.len(),
         });
-        info!(
-            "Debug dump copied to clipboard ({} chars, {} samples)",
-            dump_ron.len(),
-            dump.telemetry.samples.len()
-        );
+
+        // Additional logging for debugging
+        if let Some(last_sample) = dump.telemetry.samples.last() {
+            info!(
+                "Debug dump copied to clipboard ({} chars, {} samples) | Vehicles: total={} (active {}, parked {}), zero_speed(a/p)={}/{}, no_route(a/p)={}/{}",
+                dump_ron.len(),
+                dump.telemetry.samples.len(),
+                last_sample.vehicles.total,
+                last_sample.vehicles_active.total,
+                last_sample.vehicles_parked.total,
+                last_sample.vehicles_active.zero_speed,
+                last_sample.vehicles_parked.zero_speed,
+                last_sample.vehicles_active.no_route,
+                last_sample.vehicles_parked.no_route
+            );
+
+            // Log vehicle states breakdown
+            let v = &last_sample.vehicles_active;
+            info!(
+                "Active vehicle states: free_flow={}, approaching={}, stopped={}, waiting={}, crossing={}, accelerating={}",
+                v.free_flow, v.approaching, v.stopped, v.waiting, v.crossing, v.accelerating
+            );
+        } else {
+            info!(
+                "Debug dump copied to clipboard ({} chars, {} samples)",
+                dump_ron.len(),
+                dump.telemetry.samples.len()
+            );
+        }
     }
 
     if dump_ui.save_requested {
@@ -160,7 +211,24 @@ pub(super) fn debug_dump_ui(
         } else {
             let path = format!("{}/simcity_dump_{}.ron", dir, ts_ms);
             match std::fs::write(&path, dump_ron.as_bytes()) {
-                Ok(_) => info!("Saved debug dump to {}", path),
+                Ok(_) => {
+                    info!(
+                        "Saved debug dump to {} ({} chars, {} samples)",
+                        path,
+                        dump_ron.len(),
+                        dump.telemetry.samples.len()
+                    );
+                    if let Some(last_sample) = dump.telemetry.samples.last() {
+                        info!(
+                            "Dump summary: Vehicles total={} (active {}, parked {}), zero_speed_active={}, traffic_avg={:.3}",
+                            last_sample.vehicles.total,
+                            last_sample.vehicles_active.total,
+                            last_sample.vehicles_parked.total,
+                            last_sample.vehicles_active.zero_speed,
+                            last_sample.traffic_avg
+                        );
+                    }
+                }
                 Err(err) => warn!("Failed to save debug dump to {}: {}", path, err),
             }
         }
@@ -171,7 +239,7 @@ pub(super) fn debug_dump_ui(
 }
 
 #[derive(Debug, serde::Serialize)]
-struct DebugDump {
+pub struct DebugDump {
     dump_version: u32,
     generated_at_unix_ms: u64,
 
@@ -248,6 +316,18 @@ struct DebugDumpUiMetrics {
     active_emergencies: u32,
     emergencies_resolved: u32,
     emergencies_failed: u32,
+    fire_stations: u32,
+    police_stations: u32,
+    medical_stations: u32,
+    fire_vehicles_available: u32,
+    fire_vehicles_total: u32,
+    police_vehicles_available: u32,
+    police_vehicles_total: u32,
+    medical_vehicles_available: u32,
+    medical_vehicles_total: u32,
+    service_cov_fire: f32,
+    service_cov_police: f32,
+    service_cov_medical: f32,
 }
 
 #[derive(Debug, serde::Serialize)]

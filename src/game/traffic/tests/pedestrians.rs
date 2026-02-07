@@ -1,3 +1,5 @@
+//! Tests for pedestrian-vehicle interactions at intersections: yielding behavior, uncontrolled intersection safety, and conflict zone handling.
+
 use super::*;
 
 #[test]
@@ -63,6 +65,8 @@ fn left_turn_reservations_yield_to_any_pedestrian_crossing_axis() {
         })
         .insert_resource(IntersectionReservations::default())
         .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, plan_intersection_reservations);
 
     let intersection_tile = TilePos { x: 1, y: 1 };
@@ -72,23 +76,27 @@ fn left_turn_reservations_yield_to_any_pedestrian_crossing_axis() {
         .intersection_id_at(intersection_tile)
         .unwrap();
 
+    let vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(
+            &mut path_pool,
+            vec![
+                TilePos { x: 1, y: 0 },
+                intersection_tile,
+                TilePos { x: 0, y: 1 },
+            ],
+            0,
+            0.9,
+            1.0,
+            60.0,
+            20.0,
+        )
+    };
     let ego = app
         .world_mut()
-        .spawn((
-            Vehicle {
-                route: vec![
-                    TilePos { x: 1, y: 0 },
-                    intersection_tile,
-                    TilePos { x: 0, y: 1 },
-                ],
-                route_idx: 0,
-                progress: 0.9,
-                speed: 1.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
-            VehicleTrafficState::FreeFlow,
-        ))
+        .spawn((vehicle, VehicleTrafficState::FreeFlow))
         .id();
 
     // Either axis must block left turns.
@@ -194,6 +202,7 @@ fn vehicle_does_not_enter_uncontrolled_intersection_while_pedestrian_is_crossing
         .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(VehicleAggSnapshot::default())
         .insert_resource(ParkedVehicleTileIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, (build_traffic_spatial_index, move_vehicles).chain());
 
     let approach = TilePos { x: 1, y: 0 };
@@ -205,20 +214,23 @@ fn vehicle_does_not_enter_uncontrolled_intersection_while_pedestrian_is_crossing
         .intersection_id_at(intersection_tile)
         .unwrap();
 
+    let vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(
+            &mut path_pool,
+            vec![approach, intersection_tile, exit],
+            0,
+            TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+            5.0,
+            60.0,
+            20.0,
+        )
+    };
     let ego = app
         .world_mut()
-        .spawn((
-            Vehicle {
-                route: vec![approach, intersection_tile, exit],
-                route_idx: 0,
-                progress: TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
-                speed: 5.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
-            Transform::default(),
-            VehicleTrafficState::FreeFlow,
-        ))
+        .spawn((vehicle, Transform::default(), VehicleTrafficState::FreeFlow))
         .id();
 
     // Give the vehicle a reservation (would normally allow entry).
@@ -250,7 +262,11 @@ fn vehicle_does_not_enter_uncontrolled_intersection_while_pedestrian_is_crossing
 
     // Vehicle must not enter the intersection tile.
     let v = app.world().get::<Vehicle>(ego).unwrap();
-    assert_eq!(v.route.get(v.route_idx).copied(), Some(approach));
+    let path_pool = app.world().resource::<crate::game::transport::PathPool>();
+    assert_eq!(
+        path_pool.get_tile(v.path_handle, v.path_cursor),
+        Some(approach)
+    );
     assert!(v.progress <= TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET + 1e-6);
 }
 
@@ -325,6 +341,8 @@ fn intersection_conflict_zones_allow_two_non_conflicting_right_turns() {
         })
         .insert_resource(IntersectionReservations::default())
         .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, plan_intersection_reservations);
 
     let intersection_tile = TilePos { x: 1, y: 1 };
@@ -335,43 +353,48 @@ fn intersection_conflict_zones_allow_two_non_conflicting_right_turns() {
         .unwrap();
 
     // Car A: approach from south, right turn to east => zones SE.
-    let a = app
-        .world_mut()
-        .spawn((
-            Vehicle {
-                route: vec![
+    let (vehicle_a, vehicle_b) = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        (
+            create_vehicle_with_route(
+                &mut path_pool,
+                vec![
                     TilePos { x: 1, y: 0 },
                     intersection_tile,
                     TilePos { x: 2, y: 1 },
                 ],
-                route_idx: 0,
-                progress: 0.9,
-                speed: 1.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
-            VehicleTrafficState::FreeFlow,
-        ))
+                0,
+                0.9,
+                1.0,
+                60.0,
+                20.0,
+            ),
+            create_vehicle_with_route(
+                &mut path_pool,
+                vec![
+                    TilePos { x: 2, y: 1 },
+                    intersection_tile,
+                    TilePos { x: 1, y: 2 },
+                ],
+                0,
+                0.9,
+                1.0,
+                60.0,
+                20.0,
+            ),
+        )
+    };
+    let a = app
+        .world_mut()
+        .spawn((vehicle_a, VehicleTrafficState::FreeFlow))
         .id();
 
     // Car B: approach from east, right turn to north => zones NE.
     let b = app
         .world_mut()
-        .spawn((
-            Vehicle {
-                route: vec![
-                    TilePos { x: 2, y: 1 },
-                    intersection_tile,
-                    TilePos { x: 1, y: 2 },
-                ],
-                route_idx: 0,
-                progress: 0.9,
-                speed: 1.0,
-                max_speed: 60.0,
-                max_accel: 20.0,
-            },
-            VehicleTrafficState::FreeFlow,
-        ))
+        .spawn((vehicle_b, VehicleTrafficState::FreeFlow))
         .id();
 
     app.update();

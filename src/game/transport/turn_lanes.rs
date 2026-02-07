@@ -10,10 +10,12 @@ use super::GraphVersion;
 
 /// Tracks whether derived turn-lane markings were computed for a given `GraphVersion`.
 #[derive(Resource, Default)]
-pub(super) struct TurnLaneAutogenState {
+#[allow(dead_code)] // Reserved for future turn lane autogen feature
+pub struct TurnLaneAutogenState {
     pub(super) version: u64,
 }
 
+#[allow(dead_code)] // Used by autogen_turn_lanes_inner
 fn offset(pos: TilePos, d: IVec2) -> TilePos {
     TilePos {
         x: pos.x + d.x,
@@ -21,7 +23,8 @@ fn offset(pos: TilePos, d: IVec2) -> TilePos {
     }
 }
 
-pub(super) fn autogen_turn_lanes(
+#[allow(dead_code)] // Reserved for future turn lane autogen feature
+pub fn autogen_turn_lanes(
     gv: Res<GraphVersion>,
     mut grid: ResMut<MapGrid>,
     mut state: ResMut<TurnLaneAutogenState>,
@@ -34,6 +37,7 @@ pub(super) fn autogen_turn_lanes(
     autogen_turn_lanes_inner(&mut grid);
 }
 
+#[allow(dead_code)] // Reserved for future turn lane autogen feature
 pub(super) fn autogen_turn_lanes_inner(grid: &mut MapGrid) {
     // Reset any old markings (roads may have changed).
     for y in 0..grid.height {

@@ -11,7 +11,6 @@ pub(super) struct TopBarParams<'w> {
     pub(super) city: Res<'w, City>,
     pub(super) mode: Res<'w, BuildMode>,
     pub(super) metrics: Res<'w, UiMetrics>,
-    pub(super) day_night: Option<Res<'w, DayNightCycle>>,
     pub(super) scenario_catalog: Res<'w, ScenarioCatalog>,
     pub(super) scenario_selection: ResMut<'w, ScenarioSelection>,
     pub(super) scenario_progress: Res<'w, ScenarioProgress>,
@@ -40,6 +39,7 @@ pub(super) struct RightSidebarParams<'w, 's> {
     pub(super) vehicle_agg: Option<Res<'w, VehicleAggSnapshot>>,
     pub(super) spatial: Option<Res<'w, TrafficSpatialIndex>>,
     pub(super) parked_index: Option<Res<'w, ParkedVehicleTileIndex>>,
+    pub(super) path_pool: Option<Res<'w, crate::game::transport::PathPool>>,
     pub(super) q_vehicle_by_entity: Query<'w, 's, &'static Vehicle, Without<Parked>>,
     pub(super) q_vehicle_details_active: Query<
         'w,

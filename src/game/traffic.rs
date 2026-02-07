@@ -5,13 +5,8 @@ use bevy::prelude::*;
 
 use crate::game::commands::GameCommand;
 use crate::game::ids::CitizenId;
-use crate::game::intersections::{
-    IntersectionId, IntersectionIndex, IntersectionKey, IntersectionPriority,
-};
+use crate::game::intersections::{IntersectionIndex, IntersectionPriority};
 use crate::game::map::{MapConfig, MapGrid, TilePos};
-use crate::game::public_transport::{
-    BusVehicle, PendingTransitTrips, PendingTrip, PublicTransportConfig, PublicTransportIndex,
-};
 use crate::game::roads::{RoadDir, RoadKind};
 use crate::game::services::{ServiceVehicle, ServiceVehicleState};
 use crate::game::sets::GameSet;
@@ -24,7 +19,7 @@ use crate::game::transport::{
 use crate::game::trips::{TripFinished, TripMode, TripRequested};
 
 mod components;
-pub use components::{CarOwner, Parked, Vehicle, VehicleTrafficState};
+pub use components::{CarOwner, Parked, RightTurnOnRed, Vehicle, VehicleTrafficState};
 
 mod config;
 pub use config::TrafficConfig;
@@ -60,6 +55,9 @@ use lane_change::{
     plan_oncoming_overtakes, tick_lane_change_cooldowns, tick_overtake_oncoming, tick_overtaking,
 };
 
+mod vehicle_render;
+// use vehicle_render::{interpolate_vehicle_position, update_vehicle_positions_for_interpolation}; // TODO: enable when GPU interpolation is needed
+
 mod traffic_spatial_index;
 pub(crate) use traffic_spatial_index::TrafficSpatialIndex;
 
@@ -69,15 +67,21 @@ pub(crate) use parked_tile_index::ParkedVehicleTileIndex;
 // NOTE: v2 Stage B uses IDM params stored in `TrafficConfig` instead of a separate braking resource.
 
 /// Distance to detect traffic lights ahead (in tiles)
+#[allow(dead_code)] // Reserved for future use
 const TRAFFIC_LIGHT_DETECTION_DISTANCE: f32 = 8.0;
 
-/// Vehicle sprite size in tile units (square).
+/// Vehicle sprite size in tile units (length).
 ///
+/// GDD requirement: vehicles are visually 2 tiles long, but must fit within a lane.
 /// IMPORTANT: Our movement uses the vehicle center point, and rendering uses `Transform` at that
 /// center. To ensure the *entire* vehicle stays behind the stop line (not visually overlapping the
 /// intersection), stop-line math must account for half of this size.
-const VEHICLE_VISUAL_SIZE_TILES: f32 = 0.55;
-const VEHICLE_HALF_TILES: f32 = VEHICLE_VISUAL_SIZE_TILES * 0.5;
+///
+/// Vehicles are rendered as rectangles: length (along direction of travel) is 2x width.
+/// Width fits within lane (roughly 0.5 tiles for two-lane road), so width = 0.7 tiles, length = 1.4 tiles.
+pub(crate) const VEHICLE_VISUAL_LENGTH_TILES: f32 = 1.4; // Length along direction of travel (GDD: 2 tiles visually, scaled down)
+pub(crate) const VEHICLE_VISUAL_WIDTH_TILES: f32 = 0.7; // Width perpendicular to direction (fits in lane with margin)
+const VEHICLE_HALF_LENGTH_TILES: f32 = VEHICLE_VISUAL_LENGTH_TILES * 0.5;
 
 /// Extra margin before the intersection boundary for the vehicle bumper (tile units).
 const STOP_LINE_MARGIN_TILES: f32 = 0.05;
@@ -91,20 +95,24 @@ const TILE_CENTER_TO_EDGE_TILES: f32 = 0.5;
 /// Important invariant for gameplay correctness: the stop line is always located on the
 /// **approach tile** (a normal road tile), i.e. vehicles must stop before they enter the
 /// intersection cluster tiles (`dir=None`).
-const STOP_LINE_OFFSET: f32 = VEHICLE_HALF_TILES + STOP_LINE_MARGIN_TILES;
+const STOP_LINE_OFFSET: f32 = VEHICLE_HALF_LENGTH_TILES + STOP_LINE_MARGIN_TILES;
 /// Speed threshold (in tile fractions per second) for "snap to stopped" state at the stop line.
 /// This avoids abrupt halts when a vehicle reaches the stop line with a non-trivial residual speed
 /// due to coarse fixed-timestep integration.
+#[allow(dead_code)] // Reserved for future use
 const STOP_LOCK_SPEED_TILES_PER_SEC: f32 = 0.05;
 /// Numerical epsilon for "at stop line" checks (in tile fractions).
+#[allow(dead_code)] // Reserved for future use
 const STOP_LINE_EPS_TILES: f32 = 1e-3;
 
 /// Target speed cap while performing a right turn on red (doc: <= 15 km/h).
 const RIGHT_ON_RED_TURN_MAX_KMH: f32 = 15.0;
+/// Failsafe: if a vehicle is blocked at a clear intersection for too long, allow entry.
+const INTERSECTION_FORCE_ENTRY_SECS: f32 = 8.0;
 
 /// After this many seconds without progressing, try to resolve a traffic jam (reroute).
 /// (v2 policy: avoid "cheat" behavior by default; only intervene after a long timeout.)
-const STUCK_REROUTE_SECS: f32 = 60.0;
+pub(crate) const STUCK_REROUTE_SECS: f32 = 60.0;
 /// After this many seconds without progressing, despawn non-service trip vehicles as an emergency guardrail.
 const STUCK_DESPAWN_SECS: f32 = 180.0;
 /// Maximum number of unstuck operations per tick (guardrail).
@@ -172,7 +180,7 @@ fn world_per_meter(cfg: &MapConfig, traffic_cfg: &TrafficConfig) -> f32 {
     cfg.tile_size.max(0.1) / tile_m
 }
 
-fn kmh_to_world_speed(cfg: &MapConfig, traffic_cfg: &TrafficConfig, kmh: f32) -> f32 {
+pub(crate) fn kmh_to_world_speed(cfg: &MapConfig, traffic_cfg: &TrafficConfig, kmh: f32) -> f32 {
     let mps = kmh.max(0.0) / 3.6;
     mps * world_per_meter(cfg, traffic_cfg)
 }
@@ -240,13 +248,6 @@ fn idm_accel_world(
 }
 
 // (moved to `traffic/stuck.rs`)
-
-/// Marker for vehicles currently performing a right turn on red.
-/// While present, we clamp their speed to a low "turn speed" until they exit the intersection.
-#[derive(Component, Debug, Clone, Copy)]
-struct RightTurnOnRed {
-    intersection_id: IntersectionId,
-}
 
 // (moved to `traffic/lane_change.rs`)
 
@@ -338,6 +339,19 @@ impl Plugin for TrafficPlugin {
                 track_vehicle_counts
                     .in_set(GameSet::CommandApply)
                     .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+            )
+            // GPU interpolation systems for smooth 60fps rendering
+            // Note: update_vehicle_positions_for_interpolation is disabled because move_vehicles
+            // already properly updates vehicle positions for interpolation
+            // .add_systems(
+            //     FixedUpdate,
+            //     vehicle_render::update_vehicle_positions_for_interpolation
+            //         .in_set(GameSet::Sim)
+            //         .run_if(in_state(AppState::InGame)),
+            // )
+            .add_systems(
+                Update,
+                vehicle_render::interpolate_vehicle_position.run_if(in_state(AppState::InGame)),
             )
             // Jam recovery (run in sim; uses last tick's occupancy/graph state).
             .add_systems(
@@ -451,4 +465,4 @@ fn map_origin(cfg: &MapConfig) -> Vec2 {
 }
 
 #[cfg(test)]
-mod tests;
+pub mod tests;

@@ -31,7 +31,7 @@ pub(super) fn rebuild_road_graph(
     rebuild_road_graph_inner(&grid, &gv, &mut graph);
 }
 
-pub(crate) fn rebuild_road_graph_inner(grid: &MapGrid, gv: &GraphVersion, graph: &mut RoadGraph) {
+pub fn rebuild_road_graph_inner(grid: &MapGrid, gv: &GraphVersion, graph: &mut RoadGraph) {
     if graph.is_built_for(gv.0)
         && graph.width == grid.width as usize
         && graph.height == grid.height as usize
