@@ -17,6 +17,7 @@ mod ids;
 mod intersections;
 mod land_value;
 pub mod map;
+mod mcp_status;
 mod notifications;
 mod pedestrians;
 mod persistence;
@@ -113,6 +114,7 @@ impl Plugin for GamePlugin {
                 land_value::LandValuePlugin,
                 notifications::NotificationsPlugin,
                 pollution::PollutionPlugin,
+                mcp_status::McpStatusPlugin,
                 ui::UiPlugin,
                 ui_settings::UiSettingsPlugin,
             ))

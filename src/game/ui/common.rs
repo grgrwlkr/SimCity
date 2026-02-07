@@ -1,4 +1,5 @@
 use super::*;
+use bevy::time::Real;
 
 #[derive(SystemParam)]
 pub(super) struct TopBarParams<'w> {
@@ -8,9 +9,11 @@ pub(super) struct TopBarParams<'w> {
     pub(super) debug_dump: ResMut<'w, DebugDumpUiState>,
     pub(super) state: Res<'w, State<AppState>>,
     pub(super) next_state: ResMut<'w, NextState<AppState>>,
+    pub(super) time: Res<'w, Time<Real>>,
     pub(super) city: Res<'w, City>,
     pub(super) mode: Res<'w, BuildMode>,
     pub(super) metrics: Res<'w, UiMetrics>,
+    pub(super) mcp_status: Res<'w, crate::game::mcp_status::McpConnectionStatus>,
     pub(super) scenario_catalog: Res<'w, ScenarioCatalog>,
     pub(super) scenario_selection: ResMut<'w, ScenarioSelection>,
     pub(super) scenario_progress: Res<'w, ScenarioProgress>,

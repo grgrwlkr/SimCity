@@ -1,5 +1,6 @@
 use super::common::TopBarParams;
 use super::*;
+use crate::game::mcp_status::{MCP_ACTIVE_WINDOW_S, MCP_IDLE_WINDOW_S, McpConnectionStatus};
 use bevy_egui::{EguiContexts, egui};
 
 /// Compact top status bar with key metrics
@@ -106,6 +107,13 @@ pub(super) fn top_status_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams)
                     ui.separator();
                 }
 
+                // MCP status (approximation via recent BRP activity)
+                let (mcp_label, mcp_color, mcp_tooltip) =
+                    mcp_status_label(&p.mcp_status, p.time.elapsed_secs());
+                ui.colored_label(mcp_color, mcp_label)
+                    .on_hover_text(mcp_tooltip);
+                ui.separator();
+
                 // Settings and save (right side)
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if matches!(p.state.get(), AppState::InGame | AppState::Paused) {
@@ -167,4 +175,44 @@ pub(super) fn top_status_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams)
                 });
             });
         });
+}
+
+/// Build a compact label for MCP activity based on recent BRP requests.
+fn mcp_status_label(status: &McpConnectionStatus, now_s: f32) -> (String, egui::Color32, String) {
+    if !status.remote_enabled {
+        return (
+            "🔌 MCP: off".to_string(),
+            egui::Color32::DARK_GRAY,
+            "RemotePlugin is not initialized.".to_string(),
+        );
+    }
+
+    let age = status.last_request_at_s.map(|t| (now_s - t).max(0.0));
+
+    let (label, color) = if status.pending_requests > 0 {
+        ("🔌 MCP: active".to_string(), egui::Color32::LIGHT_GREEN)
+    } else if let Some(age_s) = age {
+        if age_s <= MCP_ACTIVE_WINDOW_S {
+            ("🔌 MCP: active".to_string(), egui::Color32::LIGHT_GREEN)
+        } else if age_s <= MCP_IDLE_WINDOW_S {
+            (
+                format!("🔌 MCP: idle ({:.0}s)", age_s),
+                egui::Color32::YELLOW,
+            )
+        } else {
+            ("🔌 MCP: idle".to_string(), egui::Color32::GRAY)
+        }
+    } else {
+        ("🔌 MCP: waiting".to_string(), egui::Color32::GRAY)
+    };
+
+    let age_text = age
+        .map(|value| format!("{:.1}s ago", value))
+        .unwrap_or_else(|| "never".to_string());
+    let tooltip = format!(
+        "BRP HTTP is stateless; this shows recent remote activity.\nPending requests: {}\nLast request: {}",
+        status.pending_requests, age_text
+    );
+
+    (label, color, tooltip)
 }
