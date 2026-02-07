@@ -1,25 +1,28 @@
 mod game;
 
 use bevy::prelude::*;
-use bevy::remote::{RemotePlugin, http::RemoteHttpPlugin};
+use bevy::remote::RemotePlugin;
+#[cfg(not(target_family = "wasm"))]
+use bevy::remote::http::RemoteHttpPlugin;
 use game::GamePlugin;
 
 fn main() {
-    App::new()
-        .insert_resource(ClearColor(Color::srgb(0.08, 0.09, 0.11)))
-        .add_plugins(RemotePlugin::default())
-        .add_plugins(RemoteHttpPlugin::default())
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "SimCity (Bevy)".to_string(),
-                resolution: (1280, 720).into(),
-                ..default()
-            }),
+    let mut app = App::new();
+    app.insert_resource(ClearColor(Color::srgb(0.08, 0.09, 0.11)));
+    app.add_plugins(RemotePlugin::default());
+    #[cfg(not(target_family = "wasm"))]
+    app.add_plugins(RemoteHttpPlugin::default());
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "SimCity (Bevy)".to_string(),
+            resolution: (1280, 720).into(),
             ..default()
-        }))
-        .add_plugins(GamePlugin)
-        .add_systems(bevy::app::Last, dump_on_window_close_system)
-        .run();
+        }),
+        ..default()
+    }));
+    app.add_plugins(GamePlugin);
+    app.add_systems(bevy::app::Last, dump_on_window_close_system);
+    app.run();
 }
 
 /// System that prints debug dump to console when the application is closing.
