@@ -1,5 +1,6 @@
 use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
+use std::collections::HashSet;
 
 use crate::game::commands::GameCommand;
 use crate::game::map::TilePos;
@@ -148,7 +149,19 @@ pub fn sync_traffic_light_entities(
     mut commands: Commands,
     q_existing: Query<(Entity, &TrafficLight)>,
 ) {
-    if !index.lights_dirty {
+    let mut needs_sync = index.lights_dirty;
+    if !needs_sync {
+        let mut existing_ids = HashSet::new();
+        let mut existing_count = 0usize;
+        for (_, light) in q_existing.iter() {
+            existing_ids.insert(light.intersection_id);
+            existing_count += 1;
+        }
+        if existing_ids != index.traffic_lights || existing_ids.len() != existing_count {
+            needs_sync = true;
+        }
+    }
+    if !needs_sync {
         return;
     }
     index.lights_dirty = false;
@@ -181,7 +194,6 @@ pub fn sync_traffic_light_entities(
                 pos: cluster.centroid_tile,
                 ..default()
             },
-            TrafficLightVisual,
             Transform::default(),
             Visibility::Visible,
         ));
@@ -190,27 +202,38 @@ pub fn sync_traffic_light_entities(
 
 /// Update traffic light phases
 pub fn update_traffic_lights(time: Res<Time>, mut q_lights: Query<&mut TrafficLight>) {
+    let dt = time.delta_secs();
+    if dt <= 0.0 {
+        return;
+    }
+
     for mut light in q_lights.iter_mut() {
-        light.phase_timer -= time.delta_secs();
+        light.phase_timer -= dt;
 
-        if light.phase_timer > 0.0 {
-            continue;
+        // Catch up multiple phase transitions if we had a large delta (pause/resume or hitch).
+        let mut guard = 0;
+        while light.phase_timer <= 0.0 && guard < 8 {
+            // Transition to next phase
+            light.phase = match light.phase {
+                LightPhase::NorthSouthGreen => LightPhase::NorthSouthYellow,
+                LightPhase::NorthSouthYellow => LightPhase::AllRedToEastWest,
+                LightPhase::AllRedToEastWest => LightPhase::EastWestGreen,
+                LightPhase::EastWestGreen => LightPhase::EastWestYellow,
+                LightPhase::EastWestYellow => LightPhase::AllRedToNorthSouth,
+                LightPhase::AllRedToNorthSouth => LightPhase::NorthSouthGreen,
+            };
+
+            let next = match light.phase {
+                LightPhase::NorthSouthGreen | LightPhase::EastWestGreen => light.green_duration,
+                LightPhase::NorthSouthYellow | LightPhase::EastWestYellow => light.yellow_duration,
+                LightPhase::AllRedToEastWest | LightPhase::AllRedToNorthSouth => {
+                    light.all_red_duration
+                }
+            }
+            .max(0.01);
+
+            light.phase_timer += next;
+            guard += 1;
         }
-
-        // Transition to next phase
-        light.phase = match light.phase {
-            LightPhase::NorthSouthGreen => LightPhase::NorthSouthYellow,
-            LightPhase::NorthSouthYellow => LightPhase::AllRedToEastWest,
-            LightPhase::AllRedToEastWest => LightPhase::EastWestGreen,
-            LightPhase::EastWestGreen => LightPhase::EastWestYellow,
-            LightPhase::EastWestYellow => LightPhase::AllRedToNorthSouth,
-            LightPhase::AllRedToNorthSouth => LightPhase::NorthSouthGreen,
-        };
-
-        light.phase_timer = match light.phase {
-            LightPhase::NorthSouthGreen | LightPhase::EastWestGreen => light.green_duration,
-            LightPhase::NorthSouthYellow | LightPhase::EastWestYellow => light.yellow_duration,
-            LightPhase::AllRedToEastWest | LightPhase::AllRedToNorthSouth => light.all_red_duration,
-        };
     }
 }
