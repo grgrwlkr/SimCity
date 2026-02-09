@@ -19,7 +19,7 @@ impl Default for UiState {
             seed_text: "1".to_string(),
             tool: ToolMode::Road(RoadKind::TwoLane),
             overlay: OverlayMode::None,
-            sim_speed: SimSpeed::X1,
+            sim_speed: SimSpeed::X3,
             one_way_mode: false,
         }
     }

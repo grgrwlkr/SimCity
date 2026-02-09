@@ -22,11 +22,23 @@ impl CarOwnerIndex {
 
 /// Counts of vehicle entities maintained incrementally (no full-world scans).
 #[derive(Resource, Debug, Default)]
-pub(super) struct TrafficVehicleCounts {
+pub(crate) struct TrafficVehicleCounts {
     /// Vehicles without `Parked`.
-    pub(super) active: u32,
+    pub(crate) active: u32,
     /// Per-vehicle parked flag, so despawns can decrement the right counter without queries.
-    pub(super) parked_flag: std::collections::HashMap<Entity, bool>,
+    pub(crate) parked_flag: std::collections::HashMap<Entity, bool>,
+}
+
+impl TrafficVehicleCounts {
+    /// Total vehicles tracked (active + parked).
+    pub(crate) fn total(&self) -> u32 {
+        self.parked_flag.len() as u32
+    }
+
+    /// Vehicles currently parked.
+    pub(crate) fn parked(&self) -> u32 {
+        self.total().saturating_sub(self.active)
+    }
 }
 
 pub(super) fn track_car_owner_index(

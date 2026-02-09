@@ -2,6 +2,7 @@ use bevy::prelude::*;
 
 use crate::game::intersections::{IntersectionId, IntersectionKey};
 use crate::game::map::TilePos;
+use crate::game::roads::RoadDir;
 use crate::game::transport::{LaneId, PathHandle, VehicleId};
 
 /// Vehicle entity – stores route handle and visual offset.
@@ -110,6 +111,157 @@ pub enum VehicleTrafficState {
     /// and when it has been released from a stop line and is about to enter the cluster.
     #[allow(dead_code)] // Reserved for future use
     CrossingIntersection { intersection: IntersectionKey },
+}
+
+/// Lightweight reflected traffic state for MCP inspection.
+#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DebugVehicleTrafficState {
+    /// Vehicle is free-flowing.
+    #[default]
+    FreeFlow,
+    /// Vehicle is approaching a stop line.
+    Approaching,
+    /// Vehicle is stopped in a queue.
+    Stopped,
+    /// Vehicle is waiting for green.
+    WaitingForGreen,
+    /// Vehicle is accelerating after release.
+    Accelerating,
+    /// Vehicle is crossing or admitted to an intersection.
+    CrossingIntersection,
+}
+
+impl From<VehicleTrafficState> for DebugVehicleTrafficState {
+    fn from(state: VehicleTrafficState) -> Self {
+        match state {
+            VehicleTrafficState::FreeFlow => Self::FreeFlow,
+            VehicleTrafficState::Approaching { .. } => Self::Approaching,
+            VehicleTrafficState::Stopped { .. } => Self::Stopped,
+            VehicleTrafficState::WaitingForGreen { .. } => Self::WaitingForGreen,
+            VehicleTrafficState::Accelerating => Self::Accelerating,
+            VehicleTrafficState::CrossingIntersection { .. } => Self::CrossingIntersection,
+        }
+    }
+}
+
+/// Reflected per-vehicle snapshot for MCP inspection tools.
+#[derive(Component, Reflect, Debug, Clone, Copy, Default)]
+#[reflect(Component)]
+pub struct DebugVehicleState {
+    /// Current tile x.
+    pub tile_x: i32,
+    /// Current tile y.
+    pub tile_y: i32,
+    /// Next tile x (or current if none).
+    pub next_tile_x: i32,
+    /// Next tile y (or current if none).
+    pub next_tile_y: i32,
+    /// Vehicle speed in world units per second.
+    pub speed: f32,
+    /// Vehicle progress along the current tile (0..1).
+    pub progress: f32,
+    /// Current traffic state.
+    pub state: DebugVehicleTrafficState,
+    /// Current path cursor (index in route).
+    pub path_cursor: u32,
+    /// Current path length in tiles.
+    pub path_len: u32,
+    /// Whether the vehicle is currently reversing.
+    pub is_reversing: bool,
+}
+
+/// Reflected road direction for MCP inspection.
+#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DebugRoadDir {
+    /// No direction (non-lane tile).
+    #[default]
+    None,
+    /// West-bound direction.
+    West,
+    /// East-bound direction.
+    East,
+    /// North-bound direction.
+    North,
+    /// South-bound direction.
+    South,
+}
+
+impl From<RoadDir> for DebugRoadDir {
+    fn from(dir: RoadDir) -> Self {
+        match dir {
+            RoadDir::None => Self::None,
+            RoadDir::West => Self::West,
+            RoadDir::East => Self::East,
+            RoadDir::North => Self::North,
+            RoadDir::South => Self::South,
+        }
+    }
+}
+
+/// Reflected maneuver classification for intersection connectors.
+#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DebugManeuverKind {
+    /// No maneuver (inactive).
+    #[default]
+    None,
+    /// Straight through intersection.
+    Straight,
+    /// Right turn.
+    RightTurn,
+    /// Left turn.
+    LeftTurn,
+    /// Other (U-turn or custom logic).
+    Other,
+}
+
+/// Reflected snapshot of intersection connector rewriting for MCP inspection.
+#[derive(Component, Reflect, Debug, Clone, Copy, Default)]
+#[reflect(Component)]
+pub struct DebugIntersectionConnectorState {
+    /// Whether a connector analysis was performed this frame.
+    pub active: bool,
+    /// Whether a connector path could be built.
+    pub has_connector: bool,
+    /// Whether the route segment was rewritten.
+    pub was_rewritten: bool,
+    /// Maneuver classification for the connector.
+    pub maneuver: DebugManeuverKind,
+    /// Entry travel direction at the intersection.
+    pub entry_dir: DebugRoadDir,
+    /// Exit travel direction from the intersection.
+    pub exit_dir: DebugRoadDir,
+    /// Remaining route length (from current cursor).
+    pub route_len: u32,
+    /// Start index of the intersection segment (relative to remaining route).
+    pub segment_start: u32,
+    /// End index (exclusive) of the intersection segment (relative to remaining route).
+    pub segment_end: u32,
+    /// Length of the existing intersection segment.
+    pub existing_len: u32,
+    /// Length of the computed connector path.
+    pub connector_len: u32,
+    /// Approach tile x (before entry).
+    pub approach_x: i32,
+    /// Approach tile y (before entry).
+    pub approach_y: i32,
+    /// Entry tile x.
+    pub entry_x: i32,
+    /// Entry tile y.
+    pub entry_y: i32,
+    /// Exit tile x (last intersection tile).
+    pub exit_x: i32,
+    /// Exit tile y (last intersection tile).
+    pub exit_y: i32,
+    /// Exit lane tile x (first non-intersection tile).
+    pub exit_lane_x: i32,
+    /// Exit lane tile y (first non-intersection tile).
+    pub exit_lane_y: i32,
+    /// Selected anchor tile x.
+    pub anchor_x: i32,
+    /// Selected anchor tile y.
+    pub anchor_y: i32,
+    /// Intersection id for the connector (0 when inactive).
+    pub intersection_id: u32,
 }
 
 /// Marker component for parked vehicles.

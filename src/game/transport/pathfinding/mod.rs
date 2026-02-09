@@ -79,11 +79,28 @@ pub struct PathCache {
 }
 
 impl PathCache {
+    /// Lightweight cache statistics for MCP/debug.
+    pub fn stats(&self) -> PathCacheStats {
+        PathCacheStats {
+            entries: self.map.len(),
+            lru_len: self.lru.len(),
+            version: self.version,
+        }
+    }
+
     #[allow(dead_code)] // Public API method
     pub fn clear(&mut self) {
         self.map.clear();
         self.lru.clear();
     }
+}
+
+/// Snapshot of pathfinding cache state for debugging.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PathCacheStats {
+    pub entries: usize,
+    pub lru_len: usize,
+    pub version: u64,
 }
 
 /// Find a road path using the current road graph and cache.

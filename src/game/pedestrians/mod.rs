@@ -21,6 +21,7 @@ mod tests_signalized;
 mod tests_uncontrolled;
 
 pub use agents::PedestrianCrossing;
+pub(crate) use agents::{BlockedAtUncontrolled, Pedestrian};
 pub use config::PedestrianConfig;
 pub use graph::PedestrianGraph;
 pub use routing::PedestrianRoutingScratch;

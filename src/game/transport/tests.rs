@@ -231,6 +231,130 @@ fn lane_type_straight_only_allows_only_straight_entry_into_intersection() {
 }
 
 #[test]
+fn intersection_exit_requires_lane_dir_alignment() {
+    let mut grid = MapGrid::new(3, 3);
+    let intersection = TilePos { x: 1, y: 1 };
+
+    let mut ic = grid.get(intersection).unwrap_or_default();
+    ic.water = false;
+    ic.road = RoadCell {
+        kind: RoadKind::TwoLane,
+        dir: RoadDir::None,
+        lane: 0,
+        flow: RoadFlow::TwoWay,
+        lane_type: LaneType::Regular,
+    };
+    grid.set(intersection, ic);
+
+    // North neighbor points South (opposite to move_dir North) -> should be blocked.
+    let north = TilePos { x: 1, y: 2 };
+    let mut n = grid.get(north).unwrap_or_default();
+    n.water = false;
+    n.road = RoadCell {
+        kind: RoadKind::TwoLane,
+        dir: RoadDir::South,
+        lane: 0,
+        flow: RoadFlow::TwoWay,
+        lane_type: LaneType::Regular,
+    };
+    grid.set(north, n);
+
+    // South neighbor points South (matches move_dir South) -> should be allowed.
+    let south = TilePos { x: 1, y: 0 };
+    let mut s = grid.get(south).unwrap_or_default();
+    s.water = false;
+    s.road = RoadCell {
+        kind: RoadKind::TwoLane,
+        dir: RoadDir::South,
+        lane: 0,
+        flow: RoadFlow::TwoWay,
+        lane_type: LaneType::Regular,
+    };
+    grid.set(south, s);
+
+    let gv = GraphVersion(1);
+    let mut graph = RoadGraph::default();
+    rebuild_road_graph_inner(&grid, &gv, &mut graph);
+
+    let idx = grid.idx(intersection).unwrap();
+    let mask = graph.edges[idx];
+
+    assert_eq!(
+        mask & (1 << 3),
+        0,
+        "exit into opposite-direction lane should be blocked"
+    );
+    assert_ne!(
+        mask & (1 << 2),
+        0,
+        "exit into matching-direction lane should be allowed"
+    );
+}
+
+#[test]
+fn lane_entry_blocks_reverse_into_intersection() {
+    let mut grid = MapGrid::new(3, 3);
+    let intersection = TilePos { x: 1, y: 1 };
+
+    let mut ic = grid.get(intersection).unwrap_or_default();
+    ic.water = false;
+    ic.road = RoadCell {
+        kind: RoadKind::TwoLane,
+        dir: RoadDir::None,
+        lane: 0,
+        flow: RoadFlow::TwoWay,
+        lane_type: LaneType::Regular,
+    };
+    grid.set(intersection, ic);
+
+    // South lane points North (approach) -> forward entry should be allowed.
+    let south = TilePos { x: 1, y: 0 };
+    let mut s = grid.get(south).unwrap_or_default();
+    s.water = false;
+    s.road = RoadCell {
+        kind: RoadKind::TwoLane,
+        dir: RoadDir::North,
+        lane: 0,
+        flow: RoadFlow::TwoWay,
+        lane_type: LaneType::Regular,
+    };
+    grid.set(south, s);
+
+    // North lane also points North (moving away) -> reverse entry should be blocked.
+    let north = TilePos { x: 1, y: 2 };
+    let mut n = grid.get(north).unwrap_or_default();
+    n.water = false;
+    n.road = RoadCell {
+        kind: RoadKind::TwoLane,
+        dir: RoadDir::North,
+        lane: 0,
+        flow: RoadFlow::TwoWay,
+        lane_type: LaneType::Regular,
+    };
+    grid.set(north, n);
+
+    let gv = GraphVersion(1);
+    let mut graph = RoadGraph::default();
+    rebuild_road_graph_inner(&grid, &gv, &mut graph);
+
+    let south_idx = grid.idx(south).unwrap();
+    let north_idx = grid.idx(north).unwrap();
+    let south_mask = graph.edges[south_idx];
+    let north_mask = graph.edges[north_idx];
+
+    assert_ne!(
+        south_mask & (1 << 3),
+        0,
+        "forward entry into intersection should be allowed"
+    );
+    assert_eq!(
+        north_mask & (1 << 2),
+        0,
+        "reverse entry into intersection should be blocked"
+    );
+}
+
+#[test]
 fn autogen_turn_lanes_four_lane_two_lanes_assigns_left_and_straight_only() {
     // 2x2 intersection cluster in the center with:
     // - approaches from South (two North-bound lanes)

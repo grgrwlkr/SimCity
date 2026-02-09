@@ -1,9 +1,12 @@
 //! Intersection admission: conflict zones + reservation bookkeeping.
 
+mod connectors;
 mod pdd_check;
 mod reservations;
 mod zones;
 
+#[allow(unused_imports)]
+pub(crate) use connectors::rewrite_intersection_connectors;
 #[allow(unused_imports)]
 pub(crate) use reservations::{
     IntersectionReservation, IntersectionReservations, ReservationState,

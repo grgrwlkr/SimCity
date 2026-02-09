@@ -3,6 +3,7 @@
 use super::lane_change::{LaneChangeCooldown, OvertakeOncoming};
 use super::stuck::StuckTimer;
 use super::*;
+use crate::game::intersections::build_intersection_clusters;
 
 #[test]
 fn oncoming_overtake_rewrites_route_on_two_lane() {
@@ -104,6 +105,105 @@ fn oncoming_overtake_rewrites_route_on_two_lane() {
 
     assert!(app.world().get::<LaneChangeCooldown>(ego).is_some());
     assert!(app.world().get::<OvertakeOncoming>(ego).is_some());
+}
+
+#[test]
+fn intersection_connector_rewrites_corner_cut() {
+    let grid = {
+        let mut grid = MapGrid::new(5, 5);
+        for x in 1..=3 {
+            for y in 1..=3 {
+                let pos = TilePos { x, y };
+                let Some(mut cell) = grid.get(pos) else {
+                    continue;
+                };
+                cell.road = RoadCell {
+                    kind: RoadKind::TwoLane,
+                    dir: RoadDir::None,
+                    lane: 0,
+                    flow: RoadFlow::TwoWay,
+                    lane_type: LaneType::Regular,
+                };
+                grid.set(pos, cell);
+            }
+        }
+
+        for (pos, dir) in [
+            (TilePos { x: 2, y: 0 }, RoadDir::North),
+            (TilePos { x: 4, y: 2 }, RoadDir::East),
+        ] {
+            let Some(mut cell) = grid.get(pos) else {
+                continue;
+            };
+            cell.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                dir,
+                lane: 0,
+                flow: RoadFlow::TwoWay,
+                lane_type: LaneType::Regular,
+            };
+            grid.set(pos, cell);
+        }
+
+        grid
+    };
+    let (clusters, tile_to_intersection) = build_intersection_clusters(&grid);
+    let index = IntersectionIndex {
+        version: 1,
+        clusters,
+        tile_to_intersection,
+        ..Default::default()
+    };
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(MapConfig {
+            width: 5,
+            height: 5,
+            tile_size: 16.0,
+        })
+        .insert_resource(TrafficConfig::default())
+        .insert_resource(grid)
+        .insert_resource(index)
+        .insert_resource(crate::game::transport::PathPool::default())
+        .add_systems(Update, rewrite_intersection_connectors);
+
+    let vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(
+            &mut path_pool,
+            vec![
+                TilePos { x: 2, y: 0 },
+                TilePos { x: 2, y: 1 },
+                TilePos { x: 3, y: 1 },
+                TilePos { x: 3, y: 2 },
+                TilePos { x: 4, y: 2 },
+            ],
+            0,
+            0.0,
+            5.0,
+            60.0,
+            20.0,
+        )
+    };
+    let ego = app
+        .world_mut()
+        .spawn((vehicle, VehicleTrafficState::FreeFlow))
+        .id();
+
+    app.update();
+
+    let v = app.world().get::<Vehicle>(ego).unwrap();
+    let path_pool = app.world().resource::<crate::game::transport::PathPool>();
+    let route = path_pool.get(v.path_handle).unwrap();
+
+    assert_eq!(route[0], TilePos { x: 2, y: 0 });
+    assert_eq!(route[1], TilePos { x: 2, y: 1 });
+    assert_eq!(route[2], TilePos { x: 2, y: 2 });
+    assert_eq!(route[3], TilePos { x: 3, y: 2 });
+    assert_eq!(route[4], TilePos { x: 4, y: 2 });
 }
 
 #[test]

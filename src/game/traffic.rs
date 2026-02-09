@@ -19,7 +19,10 @@ use crate::game::transport::{
 use crate::game::trips::{TripFinished, TripMode, TripRequested};
 
 mod components;
-pub use components::{CarOwner, Parked, RightTurnOnRed, Vehicle, VehicleTrafficState};
+pub use components::{
+    CarOwner, DebugIntersectionConnectorState, DebugManeuverKind, DebugRoadDir, DebugVehicleState,
+    DebugVehicleTrafficState, Parked, RightTurnOnRed, Vehicle, VehicleTrafficState,
+};
 
 mod config;
 pub use config::TrafficConfig;
@@ -39,7 +42,8 @@ mod parking;
 use parking::update_parked_vehicle_positions;
 
 mod indices;
-use indices::{CarOwnerIndex, TrafficVehicleCounts, track_car_owner_index, track_vehicle_counts};
+pub(crate) use indices::TrafficVehicleCounts;
+use indices::{CarOwnerIndex, track_car_owner_index, track_vehicle_counts};
 
 mod spawn;
 use spawn::{clear_vehicles, spawn_trip_vehicles};
@@ -55,6 +59,9 @@ use lane_change::{
 
 mod vehicle_render;
 // use vehicle_render::{interpolate_vehicle_position, update_vehicle_positions_for_interpolation}; // TODO: enable when GPU interpolation is needed
+
+mod debug;
+use debug::update_debug_vehicle_state;
 
 mod traffic_spatial_index;
 pub(crate) use traffic_spatial_index::TrafficSpatialIndex;
@@ -251,9 +258,10 @@ fn idm_accel_world(
 
 mod intersection;
 pub(crate) use intersection::IntersectionReservations;
+pub(crate) use intersection::{ManeuverKind, ReservationState};
 use intersection::{
     cleanup_intersection_reservations, plan_intersection_reservations,
-    reset_intersection_reservations,
+    reset_intersection_reservations, rewrite_intersection_connectors,
 };
 
 #[derive(Component, Debug, Copy, Clone)]
@@ -277,6 +285,11 @@ impl Plugin for TrafficPlugin {
             .init_resource::<TrafficRoadCache>()
             .init_resource::<CarOwnerIndex>()
             .init_resource::<TrafficVehicleCounts>()
+            .register_type::<DebugIntersectionConnectorState>()
+            .register_type::<DebugManeuverKind>()
+            .register_type::<DebugRoadDir>()
+            .register_type::<DebugVehicleState>()
+            .register_type::<DebugVehicleTrafficState>()
             .add_systems(
                 OnEnter(AppState::MainMenu),
                 (
@@ -319,10 +332,14 @@ impl Plugin for TrafficPlugin {
                         .before(move_vehicles),
                     plan_oncoming_overtakes
                         .after(plan_lane_changes)
+                        .before(rewrite_intersection_connectors)
                         .before(plan_intersection_reservations)
                         .before(move_vehicles),
-                    plan_intersection_reservations
+                    rewrite_intersection_connectors
                         .after(plan_oncoming_overtakes)
+                        .before(plan_intersection_reservations),
+                    plan_intersection_reservations
+                        .after(rewrite_intersection_connectors)
                         .before(move_vehicles),
                     move_vehicles.after(plan_intersection_reservations),
                     cleanup_right_on_red_markers.after(move_vehicles),
@@ -336,6 +353,13 @@ impl Plugin for TrafficPlugin {
                 Update,
                 track_vehicle_counts
                     .in_set(GameSet::CommandApply)
+                    .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+            )
+            // MCP debug snapshot for vehicles (reflected component).
+            .add_systems(
+                Update,
+                update_debug_vehicle_state
+                    .in_set(GameSet::Ui)
                     .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
             )
             // GPU interpolation systems for smooth 60fps rendering

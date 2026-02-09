@@ -135,8 +135,25 @@ pub fn rebuild_road_graph_inner(grid: &MapGrid, gv: &GraphVersion, graph: &mut R
                 }
             }
 
-            // Intersection tiles: allow any direction to connect into them (entry),
-            // and allow exiting them into any lane tile direction.
+            // Intersection tiles: when exiting a cluster, only allow lanes that match movement dir.
+            if cur.dir == RoadDir::None && next.dir != RoadDir::None {
+                if next.dir != move_dir {
+                    return;
+                }
+                mask |= 1 << bit;
+                return;
+            }
+
+            // Entering an intersection: block reverse moves into the cluster.
+            if cur.dir != RoadDir::None && next.dir == RoadDir::None {
+                if move_dir == cur.dir.opposite() {
+                    return;
+                }
+                mask |= 1 << bit;
+                return;
+            }
+
+            // Intersection tiles: allow internal cluster connections.
             if cur.dir == RoadDir::None || next.dir == RoadDir::None {
                 // Prevent jumping between roads of different kinds through intersections (MVP stability).
                 // (E.g., mixing highway and street tiles in same intersection cluster.)
