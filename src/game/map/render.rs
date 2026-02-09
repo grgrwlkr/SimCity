@@ -77,6 +77,7 @@ pub(super) fn spawn_map_if_needed(
         for cx in 0..chunks_x {
             let e = commands
                 .spawn((
+                    Name::new(format!("TileChunkRoot({}, {})", cx, cy)),
                     TileChunkRoot { cx, cy },
                     Transform::default(),
                     Visibility::Visible,
@@ -119,6 +120,7 @@ pub(super) fn spawn_map_if_needed(
     }
 
     commands.spawn((
+        Name::new("CursorHighlight"),
         Sprite::from_color(
             Color::srgba(1.0, 1.0, 1.0, 0.25),
             Vec2::splat(cfg.tile_size + 2.0),

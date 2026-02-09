@@ -32,10 +32,8 @@ mod overlay;
 use overlay::{TrafficOverlayPool, TrafficOverlayTile, render_traffic_overlay};
 
 mod movement;
-use movement::{
-    check_intersection_priority, cleanup_right_on_red_markers, move_vehicles,
-    update_vehicle_traffic_state,
-};
+pub(crate) use movement::update_vehicle_traffic_state;
+use movement::{check_intersection_priority, cleanup_right_on_red_markers, move_vehicles};
 
 mod parking;
 use parking::update_parked_vehicle_positions;

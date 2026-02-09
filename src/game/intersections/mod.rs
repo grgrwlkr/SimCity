@@ -53,10 +53,10 @@ impl Plugin for IntersectionsPlugin {
                     .run_if(in_game_or_paused),
             )
             .add_systems(
-                Update,
+                FixedUpdate,
                 lights::update_traffic_lights
-                    .in_set(GameSet::GraphUpdate)
-                    .after(lights::sync_traffic_light_entities)
+                    .in_set(GameSet::Sim)
+                    .before(crate::game::traffic::update_vehicle_traffic_state)
                     .run_if(in_state(AppState::InGame)),
             )
             .add_systems(

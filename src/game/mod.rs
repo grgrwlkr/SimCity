@@ -9,6 +9,7 @@ mod commands;
 mod config_loader;
 mod custom_buildings;
 pub mod day_night;
+mod debug_world;
 mod demand;
 mod economy;
 mod emergencies;
@@ -39,6 +40,37 @@ pub mod ui;
 mod ui_settings;
 pub mod ui_state;
 mod zone_placement;
+
+#[derive(Resource, Debug, Copy, Clone)]
+struct AutoStartTestCity {
+    pending: bool,
+}
+
+impl Default for AutoStartTestCity {
+    fn default() -> Self {
+        Self { pending: true }
+    }
+}
+
+fn auto_start_test_city(
+    mut commands: bevy::ecs::message::MessageWriter<commands::GameCommand>,
+    state: Res<State<state::AppState>>,
+    mut next: ResMut<NextState<state::AppState>>,
+    mut auto: ResMut<AutoStartTestCity>,
+) {
+    if !auto.pending {
+        return;
+    }
+    match state.get() {
+        state::AppState::MainMenu => {
+            NextState::set_if_neq(&mut *next, state::AppState::InGame);
+        }
+        state::AppState::InGame | state::AppState::Paused => {
+            commands.write(commands::GameCommand::LoadTestCity);
+            auto.pending = false;
+        }
+    }
+}
 
 fn auto_dump_on_game_end(mut dump_ui: ResMut<ui::DebugDumpUiState>) {
     info!("🎮 Game ended - copying debug dump to clipboard");
@@ -86,6 +118,7 @@ impl Plugin for GamePlugin {
             .add_message::<trips::TripFinished>()
             .add_message::<sim_events::DayAdvanced>()
             .init_resource::<ui_state::UiState>()
+            .init_resource::<AutoStartTestCity>()
             .add_plugins((
                 config_loader::ConfigLoaderPlugin,
                 custom_buildings::CustomBuildingsPlugin,
@@ -116,8 +149,13 @@ impl Plugin for GamePlugin {
                 pollution::PollutionPlugin,
                 mcp_status::McpStatusPlugin,
                 ui::UiPlugin,
+                debug_world::DebugWorldPlugin,
                 ui_settings::UiSettingsPlugin,
             ))
+            .add_systems(
+                Update,
+                auto_start_test_city.in_set(crate::game::sets::GameSet::Input),
+            )
             .add_systems(OnExit(state::AppState::InGame), auto_dump_on_game_end)
             .add_systems(OnExit(state::AppState::MainMenu), auto_dump_on_game_end);
     }

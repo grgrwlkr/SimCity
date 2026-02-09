@@ -37,7 +37,12 @@ impl Plugin for CameraPlugin {
 pub struct MainCamera;
 
 fn spawn_camera(mut commands: Commands) {
-    commands.spawn((Camera2d, MainCamera, PrimaryEguiContext));
+    commands.spawn((
+        Camera2d,
+        MainCamera,
+        PrimaryEguiContext,
+        Name::new("MainCamera"),
+    ));
 }
 
 fn in_game_or_paused(state: Res<State<AppState>>) -> bool {

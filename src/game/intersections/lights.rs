@@ -1,5 +1,6 @@
 use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
+use bevy::time::Fixed;
 use std::collections::HashSet;
 
 use crate::game::commands::GameCommand;
@@ -201,7 +202,7 @@ pub fn sync_traffic_light_entities(
 }
 
 /// Update traffic light phases
-pub fn update_traffic_lights(time: Res<Time>, mut q_lights: Query<&mut TrafficLight>) {
+pub fn update_traffic_lights(time: Res<Time<Fixed>>, mut q_lights: Query<&mut TrafficLight>) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
         return;
