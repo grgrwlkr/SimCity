@@ -1,6 +1,7 @@
 use super::common::TopBarParams;
 use super::*;
 use crate::game::mcp_status::{MCP_ACTIVE_WINDOW_S, MCP_IDLE_WINDOW_S, McpConnectionStatus};
+use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy_egui::{EguiContexts, egui};
 
 /// Compact top status bar with key metrics
@@ -94,6 +95,39 @@ pub(super) fn top_status_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams)
                         traffic_color,
                         format!("🚦 Traffic: {:.0}%", p.metrics.traffic_avg * 100.0),
                     );
+                    ui.separator();
+                }
+
+                if let Some(diags) = p.diagnostics.as_deref() {
+                    let fps_raw = diags
+                        .get(&FrameTimeDiagnosticsPlugin::FPS)
+                        .and_then(|d| d.value())
+                        .unwrap_or(0.0) as f32;
+                    let fps = diags
+                        .get(&FrameTimeDiagnosticsPlugin::FPS)
+                        .and_then(|d| d.smoothed())
+                        .unwrap_or(fps_raw as f64) as f32;
+                    let frame_ms_raw = diags
+                        .get(&FrameTimeDiagnosticsPlugin::FRAME_TIME)
+                        .and_then(|d| d.value())
+                        .unwrap_or(0.0) as f32;
+                    let frame_ms = diags
+                        .get(&FrameTimeDiagnosticsPlugin::FRAME_TIME)
+                        .and_then(|d| d.smoothed())
+                        .unwrap_or(frame_ms_raw as f64) as f32;
+
+                    let fps_color = if fps >= 55.0 {
+                        egui::Color32::LIGHT_GREEN
+                    } else if fps >= 30.0 {
+                        egui::Color32::YELLOW
+                    } else {
+                        egui::Color32::LIGHT_RED
+                    };
+                    ui.colored_label(fps_color, format!("🎯 FPS: {:.1} ({:.2} ms)", fps, frame_ms))
+                        .on_hover_text(format!(
+                            "Raw FPS: {:.1}\nRaw frame time: {:.2} ms",
+                            fps_raw, frame_ms_raw
+                        ));
                     ui.separator();
                 }
 

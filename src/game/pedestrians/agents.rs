@@ -84,15 +84,31 @@ pub(super) struct SpawnWalkersParams<'w, 's> {
     ped_cfg: Res<'w, PedestrianConfig>,
     graph: Res<'w, PedestrianGraph>,
     routing: ResMut<'w, PedestrianRoutingScratch>,
+    q_walkers: Query<'w, 's, (), With<Pedestrian>>,
 }
 
 pub(super) fn spawn_walkers(
     mut reader: bevy::ecs::message::MessageReader<TripRequested>,
     mut p: SpawnWalkersParams,
 ) {
+    // Guardrails for bursty demand spikes:
+    // - cap total active walkers
+    // - cap new spawns per fixed tick
+    // Requests above limits remain unread in this reader and will be retried next ticks.
+    let max_active_walkers = p.ped_cfg.max_active_walkers.max(1);
+    let max_spawns_per_tick = p.ped_cfg.max_walkers_spawn_per_tick.max(1);
+    let mut active_walkers = p.q_walkers.iter().count();
+    if active_walkers >= max_active_walkers {
+        return;
+    }
+
+    let mut spawned_this_tick = 0usize;
     for msg in reader.read() {
         if msg.mode != TripMode::Walk {
             continue;
+        }
+        if spawned_this_tick >= max_spawns_per_tick || active_walkers >= max_active_walkers {
+            break;
         }
 
         let Some(start) = nearest_walkable(&p.graph, &p.grid, msg.from) else {
@@ -140,6 +156,8 @@ pub(super) fn spawn_walkers(
                 purpose: msg.purpose,
             },
         ));
+        spawned_this_tick += 1;
+        active_walkers += 1;
     }
 }
 

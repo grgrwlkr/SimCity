@@ -7,6 +7,9 @@ pub mod components;
 pub mod systems;
 pub mod utils;
 
+#[cfg(test)]
+mod tests;
+
 pub use components::*;
 
 use crate::game::sets::GameSet;
@@ -20,10 +23,12 @@ impl Plugin for EmergenciesPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<EmergencyManager>()
             .init_resource::<EmergencyEntityIndex>()
+            .init_resource::<systems::DispatchStationIndex>()
             .add_systems(
                 FixedUpdate,
                 (
                     systems::spawn_emergencies,
+                    systems::build_dispatch_station_index,
                     systems::dispatch_emergency_vehicles,
                     systems::update_emergency_timers,
                     systems::resolve_emergencies,
@@ -40,6 +45,14 @@ impl Plugin for EmergenciesPlugin {
                 systems::track_emergency_index
                     .in_set(GameSet::CommandApply)
                     .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
-            );
+            )
+            // Sync visual markers to emergency locations (spawn/despawn/blink).
+            .add_systems(
+                Update,
+                systems::sync_emergency_markers
+                    .in_set(GameSet::RenderSync)
+                    .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+            )
+            .add_systems(OnExit(AppState::InGame), systems::cleanup_emergency_markers);
     }
 }

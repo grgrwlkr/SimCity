@@ -1,4 +1,14 @@
 (
     max_assignments_per_tick: 32,
     max_candidates_per_citizen: 24,
+    // Budget expensive job-assignment path searches per fixed tick.
+    max_pathfind_attempts_per_tick: 128,
+    // Keep citizen scanning bounded when unemployment spikes.
+    max_unassigned_scans_per_tick: 512,
+    // Skip re-checking known-unreachable home<->job road pairs across ticks.
+    unreachable_pair_cache_enabled: true,
+    // Memory bound for unreachable pair memo.
+    unreachable_pair_cache_capacity: 4096,
+    // Retention in assign_jobs ticks (600 ~= ~60s at 10Hz fixed update).
+    unreachable_pair_cache_ttl_ticks: 600,
 )

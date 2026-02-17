@@ -6,11 +6,17 @@ mod reservations;
 mod zones;
 
 #[allow(unused_imports)]
-pub(crate) use connectors::rewrite_intersection_connectors;
+pub(crate) use connectors::{
+    mark_vehicles_needing_connector_rewrite, rewrite_intersection_connectors,
+    rewrite_marked_intersection_connectors,
+};
 #[allow(unused_imports)]
 pub(crate) use reservations::{
-    IntersectionReservation, IntersectionReservations, ReservationState,
-    cleanup_intersection_reservations, plan_intersection_reservations,
+    IntersectionLightStateCache, IntersectionReservation, IntersectionReservationCandidates,
+    IntersectionReservations, PedestrianCrossingStateCache, ReservationState,
+    apply_intersection_reservation_candidates, cache_intersection_light_state,
+    cache_pedestrian_crossing_state, cleanup_intersection_reservations,
+    collect_intersection_reservation_candidates, plan_intersection_reservations,
     reset_intersection_reservations,
 };
 #[allow(unused_imports)]

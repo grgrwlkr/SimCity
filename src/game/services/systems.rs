@@ -132,6 +132,8 @@ pub(crate) fn spawn_service_vehicle(
                 tile_pos: start_pos,
                 speed: 0.0,
                 max_speed: kind.vehicle_speed(),
+                // Actual overspeed behavior is applied in traffic movement for ServiceVehicle.
+                speed_factor: 1.0,
                 max_accel: 25.0,
                 prev_world_pos: Vec2::ZERO,
                 curr_world_pos: Vec2::ZERO,

@@ -215,7 +215,15 @@ pub(in super::super) fn plan_lane_changes(
             continue;
         }
 
-        let v0 = road_speed_limit_world(&cfg, &traffic_cfg, ego_tile, &grid).min(v.max_speed);
+        let profile_factor = if v.speed_factor.is_finite() {
+            v.speed_factor
+                .clamp(DRIVER_PROFILE_FACTOR_MIN, DRIVER_PROFILE_FACTOR_MAX)
+        } else {
+            DRIVER_PROFILE_MEDIUM_FACTOR
+        };
+        let v0 = (road_speed_limit_world(&cfg, &traffic_cfg, ego_tile, &grid) * profile_factor)
+            .min(v.max_speed)
+            .max(0.0);
         if v0 <= 0.0 {
             continue;
         }
@@ -246,8 +254,10 @@ pub(in super::super) fn plan_lane_changes(
             want_left = true;
         }
 
-        // Return right after overtaking, or keep-right when cruising.
-        if right_target.is_some() {
+        // Return right after overtaking, or lane preference when cruising:
+        // - Fast vehicles (high speed_factor) prefer left lanes.
+        // - Slow vehicles (low speed_factor) keep right.
+        if right_target.is_some() || left_target.is_some() {
             if let Some(ov) = overtaking {
                 // If we're overtaking but not currently blocked, start returning right in the second half.
                 if ov.remaining_secs <= (OVERTAKE_HOLD_SECS * 0.5)
@@ -255,21 +265,26 @@ pub(in super::super) fn plan_lane_changes(
                 {
                     want_right = true;
                 }
-            } else {
-                // Keep-right when not actively overtaking and not slowed.
-                if leader.is_none_or(|(_, lead_v)| lead_v >= v0 * 0.95) {
+            } else if leader.is_none_or(|(_, lead_v)| lead_v >= v0 * 0.95) {
+                // Cruising: speed-dependent lane preference.
+                if profile_factor > KEEP_RIGHT_SPEED_THRESHOLD {
+                    // Fast drivers prefer left (passing) lane.
+                    want_left = true;
+                } else {
+                    // Slow drivers keep right.
                     want_right = true;
                 }
             }
         }
 
-        // Build a desire (priority: overtake-left > return-right > keep-right).
+        // Build a desire (priority: overtake-left > return-right > prefer-left > keep-right).
         if want_left {
             if let Some(target) = left_target {
+                let priority = if overtaking.is_some() { 2 } else { 1 };
                 desires.push(Desire {
                     e,
                     target,
-                    priority: 2,
+                    priority,
                     ego_tile,
                     ego_progress: v.progress,
                     goal,

@@ -1,14 +1,16 @@
+use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::ecs::message::MessageReader;
 use bevy::ecs::system::{EntityCommands, SystemParam};
 use bevy::prelude::*;
 use bevy::time::Real;
+use std::collections::VecDeque;
 
 use crate::game::buildings::{Building, BuildingPhase, BuildingTuning};
 use crate::game::camera::MainCamera;
 use crate::game::citizens::{Citizen, CitizenState, CommuteStats, ShoppingDemandStats};
 use crate::game::demand::RciDemand;
 use crate::game::economy::EconomyConfig;
-use crate::game::emergencies::{Emergency, EmergencyKind, EmergencyManager};
+use crate::game::emergencies::{Emergency, EmergencyKind, EmergencyManager, EmergencyMarker};
 use crate::game::employment::{EmploymentConfig, EmploymentStats};
 use crate::game::intersections::IntersectionIndex;
 use crate::game::land_value::LandValueIndex;
@@ -60,6 +62,54 @@ pub struct DebugWorldSnapshot {
     pub traffic_vehicles_on_roads: u32,
     pub traffic_avg_congestion: f32,
     pub traffic_max_congestion: f32,
+    pub fps: f32,
+    pub fps_smoothed: f32,
+    pub frame_time_ms: f32,
+    pub frame_time_smoothed_ms: f32,
+    pub frame_count: u64,
+    pub perf_low_fps_threshold: f32,
+    pub perf_critical_fps_threshold: f32,
+    pub perf_frame_spike_threshold_ms: f32,
+    pub perf_flag_low_fps: bool,
+    pub perf_flag_critical_fps: bool,
+    pub perf_flag_frame_spike: bool,
+    pub perf_flag_drop_active: bool,
+    pub perf_drops_total: u32,
+    pub perf_drops_last_60s: u32,
+    pub perf_window_1s_samples: u32,
+    pub perf_window_1s_fps_min: f32,
+    pub perf_window_1s_fps_max: f32,
+    pub perf_window_1s_fps_avg: f32,
+    pub perf_window_1s_frame_ms_min: f32,
+    pub perf_window_1s_frame_ms_max: f32,
+    pub perf_window_1s_frame_ms_avg: f32,
+    pub perf_window_5s_samples: u32,
+    pub perf_window_5s_fps_min: f32,
+    pub perf_window_5s_fps_max: f32,
+    pub perf_window_5s_fps_avg: f32,
+    pub perf_window_5s_frame_ms_min: f32,
+    pub perf_window_5s_frame_ms_max: f32,
+    pub perf_window_5s_frame_ms_avg: f32,
+    pub perf_active_drop_start_s: f32,
+    pub perf_active_drop_duration_s: f32,
+    pub perf_active_drop_samples: u32,
+    pub perf_active_drop_fps_min: f32,
+    pub perf_active_drop_fps_max: f32,
+    pub perf_active_drop_fps_avg: f32,
+    pub perf_active_drop_frame_ms_min: f32,
+    pub perf_active_drop_frame_ms_max: f32,
+    pub perf_active_drop_frame_ms_avg: f32,
+    pub perf_last_drop_valid: bool,
+    pub perf_last_drop_start_s: f32,
+    pub perf_last_drop_end_s: f32,
+    pub perf_last_drop_duration_s: f32,
+    pub perf_last_drop_samples: u32,
+    pub perf_last_drop_fps_min: f32,
+    pub perf_last_drop_fps_max: f32,
+    pub perf_last_drop_fps_avg: f32,
+    pub perf_last_drop_frame_ms_min: f32,
+    pub perf_last_drop_frame_ms_max: f32,
+    pub perf_last_drop_frame_ms_avg: f32,
     pub mcp_remote_enabled: bool,
     pub mcp_pending_requests: usize,
     pub mcp_last_request_age_s: Option<f32>,
@@ -221,6 +271,30 @@ pub struct DebugEmploymentSnapshot {
     pub employed_industrial: u32,
     /// Employment rate in [0..1].
     pub employment_rate: f32,
+    /// Job-assignment road-path attempts in the latest tick.
+    pub pathfind_attempts_last_tick: u32,
+    /// Failed job-assignment road-path attempts in the latest tick.
+    pub pathfind_failures_last_tick: u32,
+    /// Candidate pairs skipped by per-tick failed-pair memoization.
+    pub skipped_failed_pairs_last_tick: u32,
+    /// Candidate pairs checked against cross-tick unreachable cache.
+    pub unreachable_cache_lookups_last_tick: u32,
+    /// Candidate pairs skipped by cross-tick unreachable cache.
+    pub skipped_unreachable_cache_last_tick: u32,
+    /// New entries inserted into cross-tick unreachable cache.
+    pub unreachable_cache_inserts_last_tick: u32,
+    /// Current entry count in cross-tick unreachable cache.
+    pub unreachable_cache_entries: u32,
+    /// Entries evicted by TTL from cross-tick unreachable cache.
+    pub unreachable_cache_ttl_evictions_last_tick: u32,
+    /// Entries evicted by capacity from cross-tick unreachable cache.
+    pub unreachable_cache_capacity_evictions_last_tick: u32,
+    /// True when cross-tick unreachable cache was cleared by graph version change.
+    pub unreachable_cache_graph_cleared_last_tick: bool,
+    /// Unemployed citizens scanned by assign_jobs in the latest tick.
+    pub unassigned_scanned_last_tick: u32,
+    /// True when assign_jobs hit at least one per-tick budget.
+    pub budget_hit_last_tick: bool,
 }
 
 /// Buildings subsystem snapshot for MCP inspection.
@@ -315,6 +389,8 @@ pub struct DebugEmergenciesSnapshot {
     pub emergencies_medical: u32,
     /// Active emergencies awaiting response.
     pub emergencies_unresponded: u32,
+    /// Active visual emergency markers.
+    pub emergency_markers_active: u32,
     /// Hours since last spawn attempt.
     pub hours_since_last_spawn: u32,
     /// Max allowed active emergencies.
@@ -475,10 +551,24 @@ pub struct DebugConfigSnapshot {
     pub employment_max_assignments_per_tick: u32,
     /// Employment: max candidates per citizen.
     pub employment_max_candidates_per_citizen: u32,
+    /// Employment: max road-path attempts per tick.
+    pub employment_max_pathfind_attempts_per_tick: u32,
+    /// Employment: max unemployed scans per tick.
+    pub employment_max_unassigned_scans_per_tick: u32,
+    /// Employment: enable cross-tick unreachable pair cache.
+    pub employment_unreachable_pair_cache_enabled: bool,
+    /// Employment: max entries in cross-tick unreachable pair cache.
+    pub employment_unreachable_pair_cache_capacity: u32,
+    /// Employment: cross-tick unreachable pair cache TTL in assign_jobs ticks.
+    pub employment_unreachable_pair_cache_ttl_ticks: u32,
     /// Pedestrians: walk speed (km/h).
     pub pedestrian_walk_speed_kmh: f32,
     /// Pedestrians: max walk tour (m).
     pub pedestrian_walk_tour_max_m: f32,
+    /// Pedestrians: hard cap for active walker entities.
+    pub pedestrian_max_active_walkers: u32,
+    /// Pedestrians: per-tick cap for new walker spawns.
+    pub pedestrian_max_walkers_spawn_per_tick: u32,
     /// Pedestrians: wait reroute hours.
     pub pedestrian_wait_reroute_hours: f32,
     /// Pedestrians: wait reroute max attempts.
@@ -687,6 +777,151 @@ fn ensure_component<T: Component + Default>(
     }
 }
 
+const PERF_LOW_FPS_THRESHOLD: f32 = 45.0;
+const PERF_CRITICAL_FPS_THRESHOLD: f32 = 30.0;
+const PERF_FRAME_SPIKE_THRESHOLD_MS: f32 = 25.0;
+const PERF_HISTORY_WINDOW_S: f32 = 60.0;
+const PERF_WINDOW_SHORT_S: f32 = 1.0;
+const PERF_WINDOW_MEDIUM_S: f32 = 5.0;
+const PERF_DROP_RECOVER_FRAMES: u8 = 6;
+
+#[derive(Copy, Clone)]
+struct PerfSample {
+    t_s: f32,
+    fps: f32,
+    frame_ms: f32,
+}
+
+#[derive(Copy, Clone, Default)]
+struct PerfWindowStats {
+    samples: u32,
+    fps_min: f32,
+    fps_max: f32,
+    fps_avg: f32,
+    frame_ms_min: f32,
+    frame_ms_max: f32,
+    frame_ms_avg: f32,
+}
+
+#[derive(Copy, Clone, Default)]
+struct PerfDropSnapshot {
+    start_s: f32,
+    end_s: f32,
+    duration_s: f32,
+    samples: u32,
+    fps_min: f32,
+    fps_max: f32,
+    fps_avg: f32,
+    frame_ms_min: f32,
+    frame_ms_max: f32,
+    frame_ms_avg: f32,
+}
+
+#[derive(Copy, Clone)]
+struct ActivePerfDrop {
+    start_s: f32,
+    samples: u32,
+    fps_sum: f32,
+    fps_min: f32,
+    fps_max: f32,
+    frame_ms_sum: f32,
+    frame_ms_min: f32,
+    frame_ms_max: f32,
+}
+
+impl ActivePerfDrop {
+    fn new(start_s: f32, fps: f32, frame_ms: f32) -> Self {
+        Self {
+            start_s,
+            samples: 1,
+            fps_sum: fps,
+            fps_min: fps,
+            fps_max: fps,
+            frame_ms_sum: frame_ms,
+            frame_ms_min: frame_ms,
+            frame_ms_max: frame_ms,
+        }
+    }
+
+    fn push(&mut self, fps: f32, frame_ms: f32) {
+        self.samples = self.samples.saturating_add(1);
+        self.fps_sum += fps;
+        self.fps_min = self.fps_min.min(fps);
+        self.fps_max = self.fps_max.max(fps);
+        self.frame_ms_sum += frame_ms;
+        self.frame_ms_min = self.frame_ms_min.min(frame_ms);
+        self.frame_ms_max = self.frame_ms_max.max(frame_ms);
+    }
+
+    fn snapshot(&self, end_s: f32) -> PerfDropSnapshot {
+        let samples_f = (self.samples as f32).max(1.0);
+        PerfDropSnapshot {
+            start_s: self.start_s,
+            end_s,
+            duration_s: (end_s - self.start_s).max(0.0),
+            samples: self.samples,
+            fps_min: self.fps_min,
+            fps_max: self.fps_max,
+            fps_avg: self.fps_sum / samples_f,
+            frame_ms_min: self.frame_ms_min,
+            frame_ms_max: self.frame_ms_max,
+            frame_ms_avg: self.frame_ms_sum / samples_f,
+        }
+    }
+}
+
+#[derive(Default)]
+struct PerfSnapshotState {
+    samples: VecDeque<PerfSample>,
+    active_drop: Option<ActivePerfDrop>,
+    last_drop: Option<PerfDropSnapshot>,
+    drop_end_times: VecDeque<f32>,
+    recover_frames: u8,
+    last_frame_count: u64,
+    drops_total: u32,
+}
+
+fn compute_window_stats(
+    samples: &VecDeque<PerfSample>,
+    now_s: f32,
+    window_s: f32,
+) -> PerfWindowStats {
+    let mut count = 0u32;
+    let mut fps_sum = 0.0f32;
+    let mut frame_sum = 0.0f32;
+    let mut fps_min = f32::MAX;
+    let mut fps_max = f32::MIN;
+    let mut frame_min = f32::MAX;
+    let mut frame_max = f32::MIN;
+
+    for sample in samples.iter().rev() {
+        if now_s - sample.t_s > window_s {
+            break;
+        }
+        count = count.saturating_add(1);
+        fps_sum += sample.fps;
+        frame_sum += sample.frame_ms;
+        fps_min = fps_min.min(sample.fps);
+        fps_max = fps_max.max(sample.fps);
+        frame_min = frame_min.min(sample.frame_ms);
+        frame_max = frame_max.max(sample.frame_ms);
+    }
+
+    if count == 0 {
+        return PerfWindowStats::default();
+    }
+    let n = count as f32;
+    PerfWindowStats {
+        samples: count,
+        fps_min,
+        fps_max,
+        fps_avg: fps_sum / n,
+        frame_ms_min: frame_min,
+        frame_ms_max: frame_max,
+        frame_ms_avg: frame_sum / n,
+    }
+}
+
 /// Update the debug snapshot from live resources for MCP inspection.
 #[allow(clippy::too_many_arguments)]
 fn update_debug_snapshot(
@@ -697,10 +932,12 @@ fn update_debug_snapshot(
     map_cfg: Res<MapConfig>,
     hovered: Res<HoveredTile>,
     mcp: Res<McpConnectionStatus>,
+    diagnostics: Option<Res<DiagnosticsStore>>,
     traffic: Option<Res<TrafficIndex>>,
     q_cam: Query<(&Transform, &Projection), With<MainCamera>>,
     holder: Res<DebugSnapshotEntity>,
     mut q_snapshot: Query<&mut DebugWorldSnapshot>,
+    mut perf_state: Local<PerfSnapshotState>,
 ) {
     let Some(entity) = holder.entity else {
         return;
@@ -708,6 +945,7 @@ fn update_debug_snapshot(
     let Ok(mut snapshot) = q_snapshot.get_mut(entity) else {
         return;
     };
+    let now_s = time.elapsed_secs();
 
     set_string(&mut snapshot.app_state, app_state_label(state.get()));
     set_string(&mut snapshot.sim_speed, sim_speed_label(ui_state.sim_speed));
@@ -758,11 +996,157 @@ fn update_debug_snapshot(
         snapshot.traffic_max_congestion = 0.0;
     }
 
+    let mut fps = 0.0f32;
+    let mut fps_smoothed = 0.0f32;
+    let mut frame_time_ms = 0.0f32;
+    let mut frame_time_smoothed_ms = 0.0f32;
+    let mut frame_count = 0u64;
+    if let Some(diags) = diagnostics.as_deref() {
+        if let Some(d) = diags.get(&FrameTimeDiagnosticsPlugin::FPS) {
+            fps = d.value().unwrap_or(0.0) as f32;
+            fps_smoothed = d.smoothed().unwrap_or(fps as f64) as f32;
+        }
+        if let Some(d) = diags.get(&FrameTimeDiagnosticsPlugin::FRAME_TIME) {
+            frame_time_ms = d.value().unwrap_or(0.0) as f32;
+            frame_time_smoothed_ms = d.smoothed().unwrap_or(frame_time_ms as f64) as f32;
+        }
+        if let Some(d) = diags.get(&FrameTimeDiagnosticsPlugin::FRAME_COUNT) {
+            frame_count = d.value().unwrap_or(0.0).max(0.0).round() as u64;
+        }
+    }
+
+    let fps_effective = if fps_smoothed > 0.0 {
+        fps_smoothed
+    } else {
+        fps
+    };
+    let frame_ms_effective = if frame_time_smoothed_ms > 0.0 {
+        frame_time_smoothed_ms
+    } else {
+        frame_time_ms
+    };
+
+    if frame_count > 0
+        && frame_count != perf_state.last_frame_count
+        && (fps_effective > 0.0 || frame_ms_effective > 0.0)
+    {
+        perf_state.last_frame_count = frame_count;
+        perf_state.samples.push_back(PerfSample {
+            t_s: now_s,
+            fps: fps_effective,
+            frame_ms: frame_ms_effective,
+        });
+
+        let is_drop_sample = (fps_effective > 0.0 && fps_effective < PERF_LOW_FPS_THRESHOLD)
+            || frame_ms_effective >= PERF_FRAME_SPIKE_THRESHOLD_MS;
+
+        if is_drop_sample {
+            perf_state.recover_frames = 0;
+            if let Some(active) = perf_state.active_drop.as_mut() {
+                active.push(fps_effective, frame_ms_effective);
+            } else {
+                perf_state.active_drop = Some(ActivePerfDrop::new(
+                    now_s,
+                    fps_effective,
+                    frame_ms_effective,
+                ));
+                perf_state.drops_total = perf_state.drops_total.saturating_add(1);
+            }
+        } else if perf_state.active_drop.is_some() {
+            perf_state.recover_frames = perf_state.recover_frames.saturating_add(1);
+            if perf_state.recover_frames >= PERF_DROP_RECOVER_FRAMES {
+                if let Some(active) = perf_state.active_drop.take() {
+                    let finished = active.snapshot(now_s);
+                    perf_state.last_drop = Some(finished);
+                    perf_state.drop_end_times.push_back(now_s);
+                }
+                perf_state.recover_frames = 0;
+            }
+        }
+    }
+
+    while perf_state
+        .samples
+        .front()
+        .is_some_and(|s| now_s - s.t_s > PERF_HISTORY_WINDOW_S)
+    {
+        perf_state.samples.pop_front();
+    }
+    while perf_state
+        .drop_end_times
+        .front()
+        .is_some_and(|t| now_s - *t > PERF_HISTORY_WINDOW_S)
+    {
+        perf_state.drop_end_times.pop_front();
+    }
+
+    let window_1s = compute_window_stats(&perf_state.samples, now_s, PERF_WINDOW_SHORT_S);
+    let window_5s = compute_window_stats(&perf_state.samples, now_s, PERF_WINDOW_MEDIUM_S);
+
+    let perf_flag_low_fps = fps_effective > 0.0 && fps_effective < PERF_LOW_FPS_THRESHOLD;
+    let perf_flag_critical_fps = fps_effective > 0.0 && fps_effective < PERF_CRITICAL_FPS_THRESHOLD;
+    let perf_flag_frame_spike = frame_ms_effective >= PERF_FRAME_SPIKE_THRESHOLD_MS;
+    let perf_flag_drop_active = perf_state.active_drop.is_some();
+
+    let active_drop = perf_state
+        .active_drop
+        .map(|d| d.snapshot(now_s))
+        .unwrap_or_default();
+    let last_drop = perf_state.last_drop.unwrap_or_default();
+    let has_last_drop = perf_state.last_drop.is_some();
+
+    snapshot.fps = fps;
+    snapshot.fps_smoothed = fps_smoothed;
+    snapshot.frame_time_ms = frame_time_ms;
+    snapshot.frame_time_smoothed_ms = frame_time_smoothed_ms;
+    snapshot.frame_count = frame_count;
+    snapshot.perf_low_fps_threshold = PERF_LOW_FPS_THRESHOLD;
+    snapshot.perf_critical_fps_threshold = PERF_CRITICAL_FPS_THRESHOLD;
+    snapshot.perf_frame_spike_threshold_ms = PERF_FRAME_SPIKE_THRESHOLD_MS;
+    snapshot.perf_flag_low_fps = perf_flag_low_fps;
+    snapshot.perf_flag_critical_fps = perf_flag_critical_fps;
+    snapshot.perf_flag_frame_spike = perf_flag_frame_spike;
+    snapshot.perf_flag_drop_active = perf_flag_drop_active;
+    snapshot.perf_drops_total = perf_state.drops_total;
+    snapshot.perf_drops_last_60s = perf_state.drop_end_times.len() as u32;
+    snapshot.perf_window_1s_samples = window_1s.samples;
+    snapshot.perf_window_1s_fps_min = window_1s.fps_min;
+    snapshot.perf_window_1s_fps_max = window_1s.fps_max;
+    snapshot.perf_window_1s_fps_avg = window_1s.fps_avg;
+    snapshot.perf_window_1s_frame_ms_min = window_1s.frame_ms_min;
+    snapshot.perf_window_1s_frame_ms_max = window_1s.frame_ms_max;
+    snapshot.perf_window_1s_frame_ms_avg = window_1s.frame_ms_avg;
+    snapshot.perf_window_5s_samples = window_5s.samples;
+    snapshot.perf_window_5s_fps_min = window_5s.fps_min;
+    snapshot.perf_window_5s_fps_max = window_5s.fps_max;
+    snapshot.perf_window_5s_fps_avg = window_5s.fps_avg;
+    snapshot.perf_window_5s_frame_ms_min = window_5s.frame_ms_min;
+    snapshot.perf_window_5s_frame_ms_max = window_5s.frame_ms_max;
+    snapshot.perf_window_5s_frame_ms_avg = window_5s.frame_ms_avg;
+    snapshot.perf_active_drop_start_s = active_drop.start_s;
+    snapshot.perf_active_drop_duration_s = active_drop.duration_s;
+    snapshot.perf_active_drop_samples = active_drop.samples;
+    snapshot.perf_active_drop_fps_min = active_drop.fps_min;
+    snapshot.perf_active_drop_fps_max = active_drop.fps_max;
+    snapshot.perf_active_drop_fps_avg = active_drop.fps_avg;
+    snapshot.perf_active_drop_frame_ms_min = active_drop.frame_ms_min;
+    snapshot.perf_active_drop_frame_ms_max = active_drop.frame_ms_max;
+    snapshot.perf_active_drop_frame_ms_avg = active_drop.frame_ms_avg;
+    snapshot.perf_last_drop_valid = has_last_drop;
+    snapshot.perf_last_drop_start_s = last_drop.start_s;
+    snapshot.perf_last_drop_end_s = last_drop.end_s;
+    snapshot.perf_last_drop_duration_s = last_drop.duration_s;
+    snapshot.perf_last_drop_samples = last_drop.samples;
+    snapshot.perf_last_drop_fps_min = last_drop.fps_min;
+    snapshot.perf_last_drop_fps_max = last_drop.fps_max;
+    snapshot.perf_last_drop_fps_avg = last_drop.fps_avg;
+    snapshot.perf_last_drop_frame_ms_min = last_drop.frame_ms_min;
+    snapshot.perf_last_drop_frame_ms_max = last_drop.frame_ms_max;
+    snapshot.perf_last_drop_frame_ms_avg = last_drop.frame_ms_avg;
+
     snapshot.mcp_remote_enabled = mcp.remote_enabled;
     snapshot.mcp_pending_requests = mcp.pending_requests;
-    snapshot.mcp_last_request_age_s = mcp
-        .last_request_at_s
-        .map(|t| (time.elapsed_secs() - t).max(0.0));
+    snapshot.mcp_last_request_age_s = mcp.last_request_at_s.map(|t| (now_s - t).max(0.0));
 
     snapshot.mcp_is_active = snapshot
         .mcp_last_request_age_s
@@ -1051,6 +1435,21 @@ fn update_debug_employment_snapshot(
     snapshot.employed_commercial = stats.employed_commercial as u32;
     snapshot.employed_industrial = stats.employed_industrial as u32;
     snapshot.employment_rate = stats.employment_rate;
+    snapshot.pathfind_attempts_last_tick = stats.pathfind_attempts_last_tick;
+    snapshot.pathfind_failures_last_tick = stats.pathfind_failures_last_tick;
+    snapshot.skipped_failed_pairs_last_tick = stats.skipped_failed_pairs_last_tick;
+    snapshot.unreachable_cache_lookups_last_tick = stats.unreachable_cache_lookups_last_tick;
+    snapshot.skipped_unreachable_cache_last_tick = stats.skipped_unreachable_cache_last_tick;
+    snapshot.unreachable_cache_inserts_last_tick = stats.unreachable_cache_inserts_last_tick;
+    snapshot.unreachable_cache_entries = stats.unreachable_cache_entries;
+    snapshot.unreachable_cache_ttl_evictions_last_tick =
+        stats.unreachable_cache_ttl_evictions_last_tick;
+    snapshot.unreachable_cache_capacity_evictions_last_tick =
+        stats.unreachable_cache_capacity_evictions_last_tick;
+    snapshot.unreachable_cache_graph_cleared_last_tick =
+        stats.unreachable_cache_graph_cleared_last_tick;
+    snapshot.unassigned_scanned_last_tick = stats.unassigned_scanned_last_tick;
+    snapshot.budget_hit_last_tick = stats.budget_hit_last_tick;
 }
 
 /// Update building metrics debug snapshot.
@@ -1223,6 +1622,7 @@ fn update_debug_services_snapshot(
 fn update_debug_emergencies_snapshot(
     manager: Option<Res<EmergencyManager>>,
     q_emergencies: Query<&Emergency>,
+    q_markers: Query<(), With<EmergencyMarker>>,
     holder: Res<DebugSnapshotEntity>,
     mut q_snapshot: Query<&mut DebugEmergenciesSnapshot>,
 ) {
@@ -1255,6 +1655,7 @@ fn update_debug_emergencies_snapshot(
     snapshot.emergencies_crime = crime;
     snapshot.emergencies_medical = medical;
     snapshot.emergencies_unresponded = unresponded;
+    snapshot.emergency_markers_active = q_markers.iter().count() as u32;
 
     if let Some(m) = manager.as_deref() {
         snapshot.hours_since_last_spawn = m.hours_since_last_spawn;
@@ -1550,9 +1951,21 @@ fn update_debug_config_snapshot(
     snapshot.employment_max_assignments_per_tick = employment_cfg.max_assignments_per_tick as u32;
     snapshot.employment_max_candidates_per_citizen =
         employment_cfg.max_candidates_per_citizen as u32;
+    snapshot.employment_max_pathfind_attempts_per_tick =
+        employment_cfg.max_pathfind_attempts_per_tick as u32;
+    snapshot.employment_max_unassigned_scans_per_tick =
+        employment_cfg.max_unassigned_scans_per_tick as u32;
+    snapshot.employment_unreachable_pair_cache_enabled =
+        employment_cfg.unreachable_pair_cache_enabled;
+    snapshot.employment_unreachable_pair_cache_capacity =
+        employment_cfg.unreachable_pair_cache_capacity as u32;
+    snapshot.employment_unreachable_pair_cache_ttl_ticks =
+        employment_cfg.unreachable_pair_cache_ttl_ticks;
 
     snapshot.pedestrian_walk_speed_kmh = ped_cfg.walk_speed_kmh;
     snapshot.pedestrian_walk_tour_max_m = ped_cfg.walk_tour_max_m;
+    snapshot.pedestrian_max_active_walkers = ped_cfg.max_active_walkers as u32;
+    snapshot.pedestrian_max_walkers_spawn_per_tick = ped_cfg.max_walkers_spawn_per_tick as u32;
     snapshot.pedestrian_wait_reroute_hours = ped_cfg.wait_reroute_hours;
     snapshot.pedestrian_wait_reroute_max_attempts = ped_cfg.wait_reroute_max_attempts;
     snapshot.pedestrian_uncontrolled_safety_margin_secs = ped_cfg.uncontrolled_safety_margin_secs;

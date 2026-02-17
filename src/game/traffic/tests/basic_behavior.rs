@@ -40,7 +40,7 @@ fn vehicle_arrival_emits_trip_finished() {
         let mut path_pool = app
             .world_mut()
             .resource_mut::<crate::game::transport::PathPool>();
-        create_vehicle_with_route(&mut path_pool, vec![], 0, 0.0, 0.0, 60.0, 20.0)
+        create_vehicle_with_route(&mut path_pool, vec![], 0, 0.0, 0.0, 60.0, 20.0, 1.0)
     };
     let vehicle = app
         .world_mut()
@@ -151,6 +151,7 @@ fn stop_sign_release_does_not_oscillate_crossing_state() {
             0.0,
             60.0,
             20.0,
+            1.0,
         )
     };
     let vehicle = app
@@ -292,6 +293,7 @@ fn stop_sign_vehicle_gets_reserved_and_enters_intersection_tile() {
             0.0,
             60.0,
             20.0,
+            1.0,
         )
     };
     let e = app

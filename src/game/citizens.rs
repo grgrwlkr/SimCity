@@ -16,12 +16,16 @@ use crate::game::state::AppState;
 use crate::game::traffic::TrafficConfig;
 use crate::game::trips::{TripFinished, TripMode, TripPurpose, TripRequested};
 
+const MAX_TRIP_MODE_CACHE_ENTRIES: usize = 16_384;
+
 pub struct CitizensPlugin;
 
 impl Plugin for CitizensPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CommuteStats>()
             .init_resource::<ShoppingDemandStats>()
+            .init_resource::<CitizenTileIndex>()
+            .init_resource::<CitizenTripModeCache>()
             .init_resource::<CitizenIdGen>()
             .add_systems(OnEnter(AppState::MainMenu), cleanup_citizens)
             .add_systems(
@@ -36,7 +40,8 @@ impl Plugin for CitizensPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                cleanup_homeless_citizens
+                (cleanup_homeless_citizens, rebuild_citizen_tile_index)
+                    .chain()
                     .in_set(GameSet::PostSim)
                     .run_if(in_state(AppState::InGame)),
             );
@@ -100,10 +105,60 @@ pub struct ShoppingDemandStats {
     pub unmet_ratio: f32,
 }
 
-fn cleanup_citizens(mut commands: Commands, q: Query<Entity, With<Citizen>>) {
+/// Read-model index for O(1) tile -> citizen counters used by UI inspector.
+#[derive(Resource, Debug, Default)]
+pub struct CitizenTileIndex {
+    home_counts: HashMap<TilePos, u32>,
+    place_counts: HashMap<TilePos, u32>,
+}
+
+/// Cache for citizen trip mode decisions (`Walk`/`Car`) for `(from, to)` pairs.
+///
+/// The cache is invalidated whenever pedestrian graph version or routing thresholds change.
+#[derive(Resource, Debug, Default)]
+struct CitizenTripModeCache {
+    graph_version: u64,
+    walk_tour_max_m: f32,
+    tile_meters: f32,
+    entries: HashMap<(TilePos, TilePos), TripMode>,
+}
+
+impl CitizenTripModeCache {
+    fn invalidate_if_needed(&mut self, graph_version: u64, walk_tour_max_m: f32, tile_meters: f32) {
+        let should_reset = self.graph_version != graph_version
+            || self.walk_tour_max_m.to_bits() != walk_tour_max_m.to_bits()
+            || self.tile_meters.to_bits() != tile_meters.to_bits();
+        if should_reset {
+            self.graph_version = graph_version;
+            self.walk_tour_max_m = walk_tour_max_m;
+            self.tile_meters = tile_meters;
+            self.entries.clear();
+        }
+    }
+}
+
+impl CitizenTileIndex {
+    pub fn home_count(&self, tile: TilePos) -> u32 {
+        self.home_counts.get(&tile).copied().unwrap_or(0)
+    }
+
+    pub fn place_count(&self, tile: TilePos) -> u32 {
+        self.place_counts.get(&tile).copied().unwrap_or(0)
+    }
+}
+
+fn cleanup_citizens(
+    mut commands: Commands,
+    q: Query<Entity, With<Citizen>>,
+    mut tile_index: ResMut<CitizenTileIndex>,
+    mut trip_mode_cache: ResMut<CitizenTripModeCache>,
+) {
     for e in &q {
         commands.entity(e).despawn();
     }
+    tile_index.home_counts.clear();
+    tile_index.place_counts.clear();
+    trip_mode_cache.entries.clear();
 }
 
 fn spawn_citizens_from_residential(
@@ -175,6 +230,7 @@ fn citizen_trip_planner(
     q_buildings: Query<&Building>,
     mut q_citizens: Query<(&CitizenIdComp, &mut Citizen, &CitizenWorkplace)>,
     mut shopping: ResMut<ShoppingDemandStats>,
+    mut mode_cache: ResMut<CitizenTripModeCache>,
     mut out: MessageWriter<TripRequested>,
     mut p: CitizenTripPlannerParams,
 ) {
@@ -187,6 +243,9 @@ fn citizen_trip_planner(
     }
 
     let mut rng = rand::rng();
+    let walk_tour_max_m = p.ped_cfg.walk_tour_max_m.max(0.0);
+    let tile_meters = p.traffic_cfg.tile_meters().max(0.1);
+    mode_cache.invalidate_if_needed(p.ped_graph.version, walk_tour_max_m, tile_meters);
 
     // Reset per-tick stats (derived read model).
     shopping.demand_events = 0;
@@ -218,7 +277,7 @@ fn citizen_trip_planner(
                 if c.shopping_need.just_finished() {
                     shopping.demand_events = shopping.demand_events.saturating_add(1);
                     if let Some(&shop) = shops.choose(&mut rng) {
-                        let mode = choose_tour_mode(&mut p, &mut rng, c.home, shop);
+                        let mode = choose_tour_mode(&mut p, &mut mode_cache, c.home, shop);
                         c.tour_mode = Some(mode);
                         out.write(TripRequested {
                             citizen: id.0,
@@ -246,7 +305,7 @@ fn citizen_trip_planner(
                 let Some(work) = wp.workplace else {
                     continue;
                 };
-                let mode = choose_tour_mode(&mut p, &mut rng, c.home, work);
+                let mode = choose_tour_mode(&mut p, &mut mode_cache, c.home, work);
                 c.tour_mode = Some(mode);
                 out.write(TripRequested {
                     citizen: id.0,
@@ -331,15 +390,24 @@ struct CitizenTripPlannerParams<'w> {
 
 fn choose_tour_mode(
     p: &mut CitizenTripPlannerParams,
-    _rng: &mut impl rand::Rng,
+    cache: &mut CitizenTripModeCache,
     from: TilePos,
     to: TilePos,
 ) -> TripMode {
+    if let Some(mode) = cache.entries.get(&(from, to)).copied() {
+        return mode;
+    }
+
+    // Guardrail against unbounded growth for long-running sessions.
+    if cache.entries.len() >= MAX_TRIP_MODE_CACHE_ENTRIES {
+        cache.entries.clear();
+    }
+
     // 1) WalkTour if pedestrian path exists and <= 800m.
-    let tile_meters = p.traffic_cfg.tile_meters().max(0.1);
-    let max_m = p.ped_cfg.walk_tour_max_m.max(0.0);
+    let tile_meters = cache.tile_meters.max(0.1);
+    let max_m = cache.walk_tour_max_m.max(0.0);
     let max_steps = (max_m / tile_meters).floor().max(0.0) as u32;
-    if let (Some(a), Some(b)) = (
+    let mode = if let (Some(a), Some(b)) = (
         nearest_ped_node(&p.ped_graph, &p.grid, from),
         nearest_ped_node(&p.ped_graph, &p.grid, to),
     ) && let Some(steps) =
@@ -348,12 +416,16 @@ fn choose_tour_mode(
     {
         let dist_m = (steps as f32) * tile_meters;
         if dist_m <= max_m {
-            return TripMode::Walk;
+            TripMode::Walk
+        } else {
+            TripMode::Car
         }
-    }
+    } else {
+        TripMode::Car
+    };
 
-    // 2) Default.
-    TripMode::Car
+    cache.entries.insert((from, to), mode);
+    mode
 }
 
 fn nearest_ped_node(graph: &PedestrianGraph, grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
@@ -396,12 +468,17 @@ fn handle_trip_finished(
     time: Res<Time<Fixed>>,
     mut stats: ResMut<CommuteStats>,
 ) {
+    let finished: Vec<TripFinished> = reader.read().copied().collect();
+    if finished.is_empty() {
+        return;
+    }
+
     let mut id_to_entity = HashMap::new();
     for (e, id) in &q_id {
         id_to_entity.insert(id.0, e);
     }
 
-    for msg in reader.read() {
+    for msg in finished {
         let Some(&entity) = id_to_entity.get(&msg.citizen) else {
             continue;
         };
@@ -466,5 +543,15 @@ fn cleanup_homeless_citizens(
         if !ok_home {
             commands.entity(e).despawn();
         }
+    }
+}
+
+/// Rebuild tile->citizen counters once per sim tick after citizen updates.
+fn rebuild_citizen_tile_index(q: Query<&Citizen>, mut idx: ResMut<CitizenTileIndex>) {
+    idx.home_counts.clear();
+    idx.place_counts.clear();
+    for c in q.iter() {
+        *idx.home_counts.entry(c.home).or_insert(0) += 1;
+        *idx.place_counts.entry(c.last_place).or_insert(0) += 1;
     }
 }

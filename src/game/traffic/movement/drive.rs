@@ -184,7 +184,17 @@ pub fn move_vehicles(
             // Defensive fallback: never allow a 0 speed limit to freeze vehicles.
             speed_limit_world = v.max_speed;
         }
-        let mut v0 = speed_limit_world.min(v.max_speed).max(0.0);
+        let profile_factor = if service_vehicle.is_some() {
+            SERVICE_VEHICLE_SPEED_LIMIT_FACTOR
+        } else if v.speed_factor.is_finite() {
+            v.speed_factor
+                .clamp(DRIVER_PROFILE_FACTOR_MIN, DRIVER_PROFILE_FACTOR_MAX)
+        } else {
+            DRIVER_PROFILE_MEDIUM_FACTOR
+        };
+        let mut v0 = (speed_limit_world * profile_factor)
+            .min(v.max_speed)
+            .max(0.0);
         if let Some(ror) = ror.copied() {
             let cap = kmh_to_world_speed(&cfg, &traffic_cfg, RIGHT_ON_RED_TURN_MAX_KMH);
             // Clamp while we're in the intersection cluster OR still on the approach tile to it.

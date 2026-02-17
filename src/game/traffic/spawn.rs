@@ -1,5 +1,33 @@
 use super::*;
 use crate::game::transport::{LaneId, PathPool, VehicleId};
+use rand::Rng;
+
+fn sample_non_medium_driver_speed_factor(rng: &mut impl Rng) -> f32 {
+    loop {
+        let sampled = rng.random_range(DRIVER_PROFILE_FACTOR_MIN..DRIVER_PROFILE_FACTOR_MAX);
+        if (sampled - DRIVER_PROFILE_MEDIUM_FACTOR).abs() > f32::EPSILON {
+            return sampled;
+        }
+    }
+}
+
+fn sample_driver_speed_factor(rng: &mut impl Rng) -> f32 {
+    if rng.random_bool(DRIVER_PROFILE_MEDIUM_SHARE as f64) {
+        return DRIVER_PROFILE_MEDIUM_FACTOR;
+    }
+    sample_non_medium_driver_speed_factor(rng)
+}
+
+/// Samples per-driver max speed in world units. Variation (90–130 km/h) ensures visible
+/// speed differences even on highways where road limits are high.
+fn sample_driver_max_speed_world(
+    cfg: &crate::game::map::MapConfig,
+    traffic_cfg: &TrafficConfig,
+    rng: &mut impl Rng,
+) -> f32 {
+    let kmh = rng.random_range(DRIVER_MAX_SPEED_KMH_MIN..=DRIVER_MAX_SPEED_KMH_MAX);
+    kmh_to_world_speed(cfg, traffic_cfg, kmh)
+}
 
 pub(super) fn spawn_trip_vehicles(
     mut reader: bevy::ecs::message::MessageReader<TripRequested>,
@@ -12,8 +40,7 @@ pub(super) fn spawn_trip_vehicles(
         .map(|c| c.active as usize)
         .unwrap_or_else(|| p.q_vehicles.iter().count());
     let idm = idm_params_world(&p.cfg, &p.traffic_cfg);
-    // Driver maximum (km/h). Actual speed is capped by per-road speed limits in `move_vehicles`.
-    let driver_max_speed_world = kmh_to_world_speed(&p.cfg, &p.traffic_cfg, 130.0);
+    let mut rng = rand::rng();
     // If the network is already gridlocked, stop spawning new cars until it clears.
     let congested = p.traffic_idx.max_congestion >= SPAWN_THROTTLE_MAX_CONG
         || p.traffic_idx.avg_congestion >= SPAWN_THROTTLE_AVG_CONG;
@@ -93,7 +120,9 @@ pub(super) fn spawn_trip_vehicles(
                 v.path_cursor = 0;
                 v.progress = 0.0;
                 v.speed = 0.0;
-                v.max_speed = driver_max_speed_world;
+                v.max_speed = sample_driver_max_speed_world(&p.cfg, &p.traffic_cfg, &mut rng);
+                // Driver behavior is trip-bound: sample a fresh profile for each new trip.
+                v.speed_factor = sample_driver_speed_factor(&mut rng);
                 v.max_accel = idm.a;
 
                 tf.translation.x = world_pos.x;
@@ -129,6 +158,8 @@ pub(super) fn spawn_trip_vehicles(
         }
 
         let world_pos = tile_to_world(&p.cfg, start);
+        let speed_factor = sample_driver_speed_factor(&mut rng);
+        let max_speed = sample_driver_max_speed_world(&p.cfg, &p.traffic_cfg, &mut rng);
         let mut e = p.commands.spawn((
             Sprite {
                 color: Color::linear_rgb(0.95, 0.95, 0.95),
@@ -150,7 +181,8 @@ pub(super) fn spawn_trip_vehicles(
                 vehicle_id: VehicleId::INVALID,
                 tile_pos: start,
                 speed: 0.0,
-                max_speed: driver_max_speed_world,
+                max_speed,
+                speed_factor,
                 max_accel: idm.a,
                 prev_world_pos: world_pos,
                 curr_world_pos: world_pos,

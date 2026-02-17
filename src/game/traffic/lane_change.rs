@@ -185,7 +185,15 @@ pub(super) fn plan_oncoming_overtakes(
         }
         let dir = ego_road.dir;
 
-        let v0 = road_speed_limit_world(&cfg, &traffic_cfg, ego_tile, &grid).min(v.max_speed);
+        let profile_factor = if v.speed_factor.is_finite() {
+            v.speed_factor
+                .clamp(DRIVER_PROFILE_FACTOR_MIN, DRIVER_PROFILE_FACTOR_MAX)
+        } else {
+            DRIVER_PROFILE_MEDIUM_FACTOR
+        };
+        let v0 = (road_speed_limit_world(&cfg, &traffic_cfg, ego_tile, &grid) * profile_factor)
+            .min(v.max_speed)
+            .max(0.0);
         if v0 <= 0.0 {
             continue;
         }

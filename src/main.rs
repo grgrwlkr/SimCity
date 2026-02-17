@@ -1,5 +1,6 @@
 mod game;
 
+use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
 #[cfg(not(target_family = "wasm"))]
 use bevy::remote::BrpResult;
@@ -22,11 +23,13 @@ fn main() {
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "SimCity (Bevy)".to_string(),
-            resolution: (1280, 720).into(),
+            resolution: (2000, 1000).into(),
             ..default()
         }),
         ..default()
     }));
+    // Bevy-native FPS/frame-time diagnostics (must be after DefaultPlugins).
+    app.add_plugins(FrameTimeDiagnosticsPlugin::default());
     app.add_plugins(GamePlugin);
     app.add_systems(bevy::app::Last, dump_on_window_close_system);
     app.run();
@@ -80,13 +83,14 @@ fn dump_on_window_close_system(
             q_camera.single().ok(),
             &dump_ui,
             &telemetry,
+            None,
         );
 
         // Serialize to RON format
         let pretty = ron::ser::PrettyConfig::new();
         let dump_ron = ron::ser::to_string_pretty(&dump, pretty).unwrap_or_else(|e| {
             format!(
-                "(dump_version: 1, error: \"failed to serialize dump: {:?}\")",
+                "(dump_version: 3, error: \"failed to serialize dump: {:?}\")",
                 e
             )
         });

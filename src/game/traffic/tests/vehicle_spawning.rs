@@ -117,6 +117,7 @@ fn yellow_allows_proceeding_if_too_late_to_stop_comfortably() {
             100.0, // fast enough that stopping comfortably is impossible in ~3 tiles
             999.0,
             20.0,
+            1.0,
         )
     };
     let ego = app
@@ -301,6 +302,7 @@ fn owned_car_is_parked_on_arrival_not_despawned() {
             0.0,
             60.0,
             20.0,
+            1.0,
         )
     };
     let car = app

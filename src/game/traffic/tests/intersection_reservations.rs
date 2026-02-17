@@ -95,6 +95,7 @@ fn straight_stream_allows_multiple_vehicles_to_reserve_concurrently() {
                 0.0,
                 60.0,
                 20.0,
+                1.0,
             ),
             create_vehicle_with_route(
                 &mut path_pool,
@@ -104,6 +105,7 @@ fn straight_stream_allows_multiple_vehicles_to_reserve_concurrently() {
                 0.0,
                 60.0,
                 20.0,
+                1.0,
             ),
         )
     };
@@ -250,6 +252,7 @@ fn left_turn_conflicts_with_straight_flow() {
                 1.0,
                 60.0,
                 20.0,
+                1.0,
             ),
             create_vehicle_with_route(
                 &mut path_pool,
@@ -259,6 +262,7 @@ fn left_turn_conflicts_with_straight_flow() {
                 1.0,
                 60.0,
                 20.0,
+                1.0,
             ),
         )
     };
@@ -383,6 +387,7 @@ fn intersection_tile_with_kind_none_does_not_force_speed_to_zero() {
             8.0,
             60.0,
             20.0,
+            1.0,
         )
     };
     let e = app

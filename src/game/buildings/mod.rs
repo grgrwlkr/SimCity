@@ -23,6 +23,7 @@ pub use occupancy::update_occupancy;
 pub(crate) use spawn::calculate_parking_spots;
 pub use spawn::spawn_building_entity;
 pub use upgrade::*;
+pub use zone_depth::{MAX_ZONE_DEPTH, is_within_zone_depth};
 
 // Re-export functions that were in the original file
 pub use components::{apply_building_tuning, cleanup_buildings, reset_building_upgrade_clock};

@@ -14,7 +14,7 @@ pub use index::{
     IntersectionPriorityMarker, build_intersection_clusters,
 };
 pub use lights::{LightPhase, TrafficLight};
-pub use render::render_traffic_lights;
+pub use render::{render_traffic_lights, sync_traffic_light_visuals};
 
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
@@ -61,7 +61,10 @@ impl Plugin for IntersectionsPlugin {
             )
             .add_systems(
                 Update,
-                render_traffic_lights
+                (
+                    sync_traffic_light_visuals,
+                    render_traffic_lights.after(sync_traffic_light_visuals),
+                )
                     .in_set(GameSet::RenderSync)
                     .run_if(in_game_or_paused),
             );

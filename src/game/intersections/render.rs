@@ -1,15 +1,48 @@
 use bevy::prelude::*;
+use std::collections::{HashMap, HashSet};
 
 use crate::game::map::{MapConfig, MapGrid, TilePos};
 use crate::game::roads::RoadDir;
 
-use super::index::IntersectionIndex;
+use super::index::{IntersectionId, IntersectionIndex};
 use super::lights::*;
 
-/// Render traffic light visuals
-/// GDD requirement: light should be displayed at each entrance to an intersection (on the right side of the road),
-/// showing the correct phase for each direction.
-pub fn render_traffic_lights(
+/// Extra metadata for traffic light visuals so we can update colors without respawning entities.
+#[derive(Component, Debug, Copy, Clone)]
+pub struct TrafficLightVisualMeta {
+    intersection_id: IntersectionId,
+    entry_dir: RoadDir,
+}
+
+#[derive(Default)]
+pub(crate) struct TrafficLightVisualLayoutState {
+    intersection_version: u64,
+    map_width: i32,
+    map_height: i32,
+    tile_size_bits: u32,
+    drive_on_right: bool,
+    light_count: usize,
+    light_hash: u64,
+}
+
+fn traffic_light_set_signature(q_lights: &Query<&TrafficLight>) -> (usize, u64) {
+    let mut count = 0usize;
+    let mut hash = 0u64;
+    for light in q_lights.iter() {
+        count += 1;
+        let id = light.intersection_id.0 as u64;
+        hash = hash.wrapping_add(id.wrapping_mul(0x9E37_79B1_85EB_CA87));
+        hash ^= id.rotate_left((id as u32) & 31);
+    }
+    (count, hash)
+}
+
+/// Synchronize traffic light visual entities (topology/layout changes only).
+///
+/// This system is intentionally separated from `render_traffic_lights` so we avoid
+/// despawn/spawn churn every frame.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_traffic_light_visuals(
     mut commands: Commands,
     cfg: Res<MapConfig>,
     grid: Res<MapGrid>,
@@ -17,27 +50,47 @@ pub fn render_traffic_lights(
     traffic_cfg: Res<crate::game::traffic::TrafficConfig>,
     q_lights: Query<&TrafficLight>,
     q_visuals: Query<Entity, With<TrafficLightVisual>>,
+    mut layout_state: Local<TrafficLightVisualLayoutState>,
 ) {
-    // Clear old visuals.
+    let (light_count, light_hash) = traffic_light_set_signature(&q_lights);
+    let needs_rebuild = q_visuals.is_empty()
+        || layout_state.intersection_version != intersections.version
+        || layout_state.map_width != cfg.width
+        || layout_state.map_height != cfg.height
+        || layout_state.tile_size_bits != cfg.tile_size.to_bits()
+        || layout_state.drive_on_right != traffic_cfg.drive_on_right
+        || layout_state.light_count != light_count
+        || layout_state.light_hash != light_hash;
+    if !needs_rebuild {
+        return;
+    }
+
+    layout_state.intersection_version = intersections.version;
+    layout_state.map_width = cfg.width;
+    layout_state.map_height = cfg.height;
+    layout_state.tile_size_bits = cfg.tile_size.to_bits();
+    layout_state.drive_on_right = traffic_cfg.drive_on_right;
+    layout_state.light_count = light_count;
+    layout_state.light_hash = light_hash;
+
     for e in &q_visuals {
         commands.entity(e).despawn();
     }
 
+    if light_count == 0 {
+        return;
+    }
+
+    let mut tiles_by_intersection: HashMap<IntersectionId, Vec<TilePos>> = HashMap::new();
+    for (pos, &id) in intersections.tile_to_intersection.iter() {
+        tiles_by_intersection.entry(id).or_default().push(*pos);
+    }
+
     for light in &q_lights {
-        // Find all approach tiles (road tiles adjacent to intersection that lead into it)
-        // Build intersection tiles set from tile_to_intersection map
-        let intersection_tiles: Vec<TilePos> = intersections
-            .tile_to_intersection
-            .iter()
-            .filter_map(|(pos, &id)| {
-                if id == light.intersection_id {
-                    Some(*pos)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let approach_tiles = find_approach_tiles(&grid, &intersection_tiles, &intersections);
+        let Some(intersection_tiles) = tiles_by_intersection.get(&light.intersection_id) else {
+            continue;
+        };
+        let approach_tiles = find_approach_tiles(&grid, intersection_tiles, &intersections);
 
         // Create a light visual for each approach
         for (approach_tile, entry_dir) in approach_tiles {
@@ -51,7 +104,34 @@ pub fn render_traffic_lights(
                 Sprite::from_color(color, Vec2::splat(cfg.tile_size * 0.25)),
                 Transform::from_translation(Vec3::new(light_pos.x, light_pos.y, 12.0)),
                 TrafficLightVisual,
+                TrafficLightVisualMeta {
+                    intersection_id: light.intersection_id,
+                    entry_dir,
+                },
             ));
+        }
+    }
+}
+
+/// Update traffic light visual colors from current light phases.
+///
+/// Runs every frame but only updates sprite colors (no entity churn).
+pub fn render_traffic_lights(
+    q_lights: Query<&TrafficLight>,
+    mut q_visuals: Query<(&TrafficLightVisualMeta, &mut Sprite), With<TrafficLightVisual>>,
+    mut lights_by_id: Local<HashMap<IntersectionId, TrafficLight>>,
+) {
+    lights_by_id.clear();
+    for light in q_lights.iter() {
+        lights_by_id.insert(light.intersection_id, light.clone());
+    }
+
+    for (meta, mut sprite) in q_visuals.iter_mut() {
+        if let Some(light) = lights_by_id.get(&meta.intersection_id) {
+            sprite.color = get_light_color_for_direction(light, meta.entry_dir);
+        } else {
+            // Should be rare (stale visual until next sync), keep it visibly inactive.
+            sprite.color = Color::srgba(0.4, 0.4, 0.4, 0.35);
         }
     }
 }
@@ -63,7 +143,7 @@ fn find_approach_tiles(
     intersections: &IntersectionIndex,
 ) -> Vec<(TilePos, RoadDir)> {
     let mut approaches = Vec::new();
-    let intersection_set: std::collections::HashSet<_> = intersection_tiles.iter().collect();
+    let intersection_set: HashSet<_> = intersection_tiles.iter().collect();
 
     // Check all 4 neighbors of each intersection tile
     for &intersection_tile in intersection_tiles {
@@ -104,7 +184,7 @@ fn find_approach_tiles(
 
     // Remove duplicates (same tile might be found from multiple intersection tiles)
     // Use HashSet to deduplicate since TilePos doesn't implement Ord
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     let mut unique_approaches = Vec::new();
     for (pos, dir) in approaches {
         if seen.insert(pos) {

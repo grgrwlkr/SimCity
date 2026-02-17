@@ -92,6 +92,7 @@ fn left_turn_reservations_yield_to_any_pedestrian_crossing_axis() {
             1.0,
             60.0,
             20.0,
+            1.0,
         )
     };
     let ego = app
@@ -226,6 +227,7 @@ fn vehicle_does_not_enter_uncontrolled_intersection_while_pedestrian_is_crossing
             5.0,
             60.0,
             20.0,
+            1.0,
         )
     };
     let ego = app
@@ -370,6 +372,7 @@ fn intersection_conflict_zones_allow_two_non_conflicting_right_turns() {
                 1.0,
                 60.0,
                 20.0,
+                1.0,
             ),
             create_vehicle_with_route(
                 &mut path_pool,
@@ -383,6 +386,7 @@ fn intersection_conflict_zones_allow_two_non_conflicting_right_turns() {
                 1.0,
                 60.0,
                 20.0,
+                1.0,
             ),
         )
     };

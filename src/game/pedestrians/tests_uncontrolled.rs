@@ -85,6 +85,7 @@ fn pedestrian_waits_for_safe_gap_on_uncontrolled_intersection() {
             5.0,
             60.0,
             20.0,
+            1.0,
         )
     };
     let veh = app
@@ -214,6 +215,7 @@ fn pedestrian_reroutes_after_long_wait_at_uncontrolled_intersection() {
             5.0,
             60.0,
             20.0,
+            1.0,
         )
     };
     let _veh = app

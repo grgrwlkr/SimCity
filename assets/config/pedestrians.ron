@@ -2,6 +2,9 @@
     // GDD defaults: 5 km/h walking speed
     walk_speed_kmh: 5.0,
     walk_tour_max_m: 800.0,
+    // Performance guardrails for bursty walk-demand spikes.
+    max_active_walkers: 128,
+    max_walkers_spawn_per_tick: 24,
 
     // Uncontrolled crossings (GDD: wait 6 game hours before rerouting)
     wait_reroute_hours: 6.0,

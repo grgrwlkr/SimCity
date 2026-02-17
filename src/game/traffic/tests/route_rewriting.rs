@@ -68,6 +68,7 @@ fn oncoming_overtake_rewrites_route_on_two_lane() {
             2.0,
             60.0,
             20.0,
+            1.0,
         )
     };
     app.world_mut()
@@ -86,6 +87,7 @@ fn oncoming_overtake_rewrites_route_on_two_lane() {
             5.0,
             60.0,
             20.0,
+            1.0,
         )
     };
     let ego = app
@@ -186,6 +188,7 @@ fn intersection_connector_rewrites_corner_cut() {
             5.0,
             60.0,
             20.0,
+            1.0,
         )
     };
     let ego = app
@@ -314,6 +317,7 @@ fn right_turn_on_red_releases_when_reserved() {
             0.0,
             60.0,
             20.0,
+            1.0,
         )
     };
     let ego = app
@@ -428,7 +432,16 @@ fn stuck_dead_end_uturn_rewrites_route_on_two_lane() {
         let mut path_pool = app
             .world_mut()
             .resource_mut::<crate::game::transport::PathPool>();
-        create_vehicle_with_route(&mut path_pool, vec![current, goal], 0, 0.0, 0.0, 60.0, 20.0)
+        create_vehicle_with_route(
+            &mut path_pool,
+            vec![current, goal],
+            0,
+            0.0,
+            0.0,
+            60.0,
+            20.0,
+            1.0,
+        )
     };
     let e = app
         .world_mut()
@@ -457,4 +470,155 @@ fn stuck_dead_end_uturn_rewrites_route_on_two_lane() {
     // The original path was [current, goal], but after re-routing it may be different
     // For this test, we just verify that the route was rewritten and reaches the goal
     assert!(route.len() >= 2, "Route should have at least 2 tiles");
+}
+
+/// Verifies speed-dependent lane preference: slow vehicles keep right, fast vehicles prefer left.
+/// Uses separate tests to avoid vehicles blocking each other's lane changes.
+#[test]
+fn lane_preference_slow_keeps_right() {
+    let mut app = lane_preference_test_setup();
+    let slow_route: Vec<TilePos> = (0..6).map(|x| TilePos { x, y: 1 }).collect();
+    let slow_vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(
+            &mut path_pool,
+            slow_route,
+            0,
+            0.0,
+            5.0,
+            60.0,
+            20.0,
+            KEEP_RIGHT_SPEED_THRESHOLD - 0.05, // slow: below threshold
+        )
+    };
+    let slow_entity = app
+        .world_mut()
+        .spawn((slow_vehicle, VehicleTrafficState::FreeFlow))
+        .id();
+
+    app.update();
+
+    let path_pool = app.world().resource::<crate::game::transport::PathPool>();
+    let vehicle = app.world().get::<Vehicle>(slow_entity).unwrap();
+    let route_after = path_pool.get(vehicle.path_handle).unwrap();
+    assert_eq!(
+        route_after[0],
+        TilePos { x: 0, y: 1 },
+        "slow vehicle should keep current tile"
+    );
+    assert_eq!(
+        route_after[1],
+        TilePos { x: 0, y: 0 },
+        "slow vehicle should change to right lane (keep-right)"
+    );
+}
+
+#[test]
+fn lane_preference_fast_prefers_left() {
+    let mut app = lane_preference_test_setup();
+    let fast_route: Vec<TilePos> = (0..6).map(|x| TilePos { x, y: 0 }).collect();
+    let fast_vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(
+            &mut path_pool,
+            fast_route,
+            0,
+            0.0,
+            5.0,
+            60.0,
+            20.0,
+            KEEP_RIGHT_SPEED_THRESHOLD + 0.05, // fast: above threshold
+        )
+    };
+    let fast_entity = app
+        .world_mut()
+        .spawn((fast_vehicle, VehicleTrafficState::FreeFlow))
+        .id();
+
+    app.update();
+
+    let path_pool = app.world().resource::<crate::game::transport::PathPool>();
+    let vehicle = app.world().get::<Vehicle>(fast_entity).unwrap();
+    let route_after = path_pool.get(vehicle.path_handle).unwrap();
+    assert_eq!(
+        route_after[0],
+        TilePos { x: 0, y: 0 },
+        "fast vehicle should keep current tile"
+    );
+    assert_eq!(
+        route_after[1],
+        TilePos { x: 0, y: 1 },
+        "fast vehicle should change to left lane (prefer-left)"
+    );
+}
+
+fn lane_preference_test_setup() -> bevy::prelude::App {
+    use crate::game::transport::{
+        GraphVersion, PathCache, PathfindingConfig, RegionGraph, RoadGraph,
+        rebuild_road_graph_inner,
+    };
+
+    let mut grid = MapGrid::new(6, 2);
+    for x in 0..6 {
+        for y in 0..2 {
+            let pos = TilePos { x, y };
+            let Some(mut c) = grid.get(pos) else {
+                continue;
+            };
+            c.water = false;
+            c.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                dir: RoadDir::East,
+                lane: y as u8,
+                flow: RoadFlow::TwoWay,
+                lane_type: LaneType::Regular,
+            };
+            grid.set(pos, c);
+        }
+    }
+
+    let gv = GraphVersion(1);
+    let mut graph = RoadGraph::default();
+    rebuild_road_graph_inner(&grid, &gv, &mut graph);
+
+    let mut occ = TrafficOccupancy::default();
+    occ.ensure_len(grid.len());
+
+    let path_cfg = PathfindingConfig {
+        enable_hierarchical: false,
+        ..Default::default()
+    };
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(Time::<Fixed>::from_seconds(1.0 / 10.0))
+        .insert_resource(MapConfig {
+            width: 6,
+            height: 2,
+            tile_size: 16.0,
+        })
+        .insert_resource(grid)
+        .insert_resource(graph)
+        .insert_resource(RegionGraph::default())
+        .insert_resource(path_cfg)
+        .insert_resource(PathCache::default())
+        .insert_resource(IntersectionIndex::default())
+        .insert_resource(occ)
+        .insert_resource(TrafficConfig::default())
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .add_systems(
+            Update,
+            (
+                build_traffic_spatial_index_pre_lane_changes,
+                plan_lane_changes,
+            )
+                .chain(),
+        );
+
+    app
 }

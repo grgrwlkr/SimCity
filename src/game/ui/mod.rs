@@ -1,3 +1,4 @@
+use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::ecs::message::MessageWriter;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
@@ -167,6 +168,10 @@ fn reset_debug_telemetry(mut telemetry: ResMut<DebugTelemetry>, mut ui: ResMut<D
     ui.last_copy = None;
 }
 
+const PERF_LOW_FPS_THRESHOLD: f32 = 45.0;
+const PERF_CRITICAL_FPS_THRESHOLD: f32 = 30.0;
+const PERF_FRAME_SPIKE_THRESHOLD_MS: f32 = 25.0;
+
 #[allow(clippy::too_many_arguments)]
 fn collect_debug_telemetry(
     time: Res<Time<Real>>,
@@ -177,6 +182,7 @@ fn collect_debug_telemetry(
     cfg: Res<DebugDumpUiState>,
     mut telemetry: ResMut<DebugTelemetry>,
     vehicle_agg: Option<Res<VehicleAggSnapshot>>,
+    diagnostics: Option<Res<DiagnosticsStore>>,
 ) {
     if !cfg.enabled {
         return;
@@ -231,6 +237,40 @@ fn collect_debug_telemetry(
         });
 
     let t_real_s = telemetry.t_real_s;
+    let fps_raw = diagnostics
+        .as_deref()
+        .and_then(|d| d.get(&FrameTimeDiagnosticsPlugin::FPS))
+        .and_then(|d| d.value())
+        .unwrap_or(0.0) as f32;
+    let fps_smoothed = diagnostics
+        .as_deref()
+        .and_then(|d| d.get(&FrameTimeDiagnosticsPlugin::FPS))
+        .and_then(|d| d.smoothed())
+        .unwrap_or(fps_raw as f64) as f32;
+    let frame_time_ms_raw = diagnostics
+        .as_deref()
+        .and_then(|d| d.get(&FrameTimeDiagnosticsPlugin::FRAME_TIME))
+        .and_then(|d| d.value())
+        .unwrap_or(0.0) as f32;
+    let frame_time_ms_smoothed = diagnostics
+        .as_deref()
+        .and_then(|d| d.get(&FrameTimeDiagnosticsPlugin::FRAME_TIME))
+        .and_then(|d| d.smoothed())
+        .unwrap_or(frame_time_ms_raw as f64) as f32;
+    let fps_effective = if fps_smoothed > 0.0 {
+        fps_smoothed
+    } else {
+        fps_raw
+    };
+    let frame_ms_effective = if frame_time_ms_smoothed > 0.0 {
+        frame_time_ms_smoothed
+    } else {
+        frame_time_ms_raw
+    };
+    let perf_low_fps = fps_effective > 0.0 && fps_effective < PERF_LOW_FPS_THRESHOLD;
+    let perf_critical_fps = fps_effective > 0.0 && fps_effective < PERF_CRITICAL_FPS_THRESHOLD;
+    let perf_frame_spike = frame_ms_effective >= PERF_FRAME_SPIKE_THRESHOLD_MS;
+
     telemetry.samples.push_back(DebugTelemetrySample {
         t_real_s,
         app_state,
@@ -245,6 +285,13 @@ fn collect_debug_telemetry(
         demand_c: metrics.demand_c,
         demand_i: metrics.demand_i,
         active_emergencies: metrics.active_emergencies,
+        fps: fps_raw,
+        fps_smoothed,
+        frame_time_ms: frame_time_ms_raw,
+        frame_time_smoothed_ms: frame_time_ms_smoothed,
+        perf_low_fps,
+        perf_critical_fps,
+        perf_frame_spike,
         vehicles,
         vehicles_active,
         vehicles_parked,

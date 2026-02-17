@@ -100,6 +100,7 @@ fn intersection_conflict_zones_allow_two_opposite_straights() {
                 1.0,
                 60.0,
                 20.0,
+                1.0,
             ),
             create_vehicle_with_route(
                 &mut path_pool,
@@ -113,6 +114,7 @@ fn intersection_conflict_zones_allow_two_opposite_straights() {
                 1.0,
                 60.0,
                 20.0,
+                1.0,
             ),
         )
     };
@@ -229,8 +231,8 @@ fn intersection_conflict_zones_block_two_conflicting_right_turns() {
             .world_mut()
             .resource_mut::<crate::game::transport::PathPool>();
         (
-            create_vehicle_with_route(&mut path_pool, route.clone(), 0, 0.9, 1.0, 60.0, 20.0),
-            create_vehicle_with_route(&mut path_pool, route, 0, 0.8, 1.0, 60.0, 20.0),
+            create_vehicle_with_route(&mut path_pool, route.clone(), 0, 0.9, 1.0, 60.0, 20.0, 1.0),
+            create_vehicle_with_route(&mut path_pool, route, 0, 0.8, 1.0, 60.0, 20.0, 1.0),
         )
     };
     let a = app
@@ -373,6 +375,7 @@ fn right_turn_on_red_speed_is_capped_to_turn_speed() {
             999.0, // absurdly high, should be clamped
             999.0,
             20.0,
+            1.0,
         )
     };
     let ego = app

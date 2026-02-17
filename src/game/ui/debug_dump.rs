@@ -16,6 +16,7 @@ pub(super) fn debug_dump_ui(
     grid: Res<MapGrid>,
     hovered: Res<HoveredTile>,
     q_camera: Query<(&Transform, &Projection), With<MainCamera>>,
+    q_debug_world: Query<&crate::game::debug_world::DebugWorldSnapshot>,
     mut dump_ui: ResMut<DebugDumpUiState>,
     mut telemetry: ResMut<DebugTelemetry>,
 ) {
@@ -152,12 +153,13 @@ pub(super) fn debug_dump_ui(
         q_camera.single().ok(),
         &dump_ui,
         &telemetry,
+        q_debug_world.iter().next(),
     );
 
     let pretty = ron::ser::PrettyConfig::new();
     let dump_ron = ron::ser::to_string_pretty(&dump, pretty).unwrap_or_else(|e| {
         format!(
-            "(dump_version: 2, error: \"failed to serialize dump: {:?}\")",
+            "(dump_version: 3, error: \"failed to serialize dump: {:?}\")",
             e
         )
     });
@@ -173,7 +175,7 @@ pub(super) fn debug_dump_ui(
         // Additional logging for debugging
         if let Some(last_sample) = dump.telemetry.samples.last() {
             info!(
-                "Debug dump copied to clipboard ({} chars, {} samples) | Vehicles: total={} (active {}, parked {}), zero_speed(a/p)={}/{}, no_route(a/p)={}/{}",
+                "Debug dump copied to clipboard ({} chars, {} samples) | Vehicles: total={} (active {}, parked {}), zero_speed(a/p)={}/{}, no_route(a/p)={}/{}, fps={:.1}, frame_ms={:.2}",
                 dump_ron.len(),
                 dump.telemetry.samples.len(),
                 last_sample.vehicles.total,
@@ -182,7 +184,9 @@ pub(super) fn debug_dump_ui(
                 last_sample.vehicles_active.zero_speed,
                 last_sample.vehicles_parked.zero_speed,
                 last_sample.vehicles_active.no_route,
-                last_sample.vehicles_parked.no_route
+                last_sample.vehicles_parked.no_route,
+                last_sample.fps_smoothed,
+                last_sample.frame_time_smoothed_ms
             );
 
             // Log vehicle states breakdown
@@ -220,12 +224,17 @@ pub(super) fn debug_dump_ui(
                     );
                     if let Some(last_sample) = dump.telemetry.samples.last() {
                         info!(
-                            "Dump summary: Vehicles total={} (active {}, parked {}), zero_speed_active={}, traffic_avg={:.3}",
+                            "Dump summary: Vehicles total={} (active {}, parked {}), zero_speed_active={}, traffic_avg={:.3}, fps={:.1}, frame_ms={:.2}, perf_flags(low/critical/spike)={}/{}/{}",
                             last_sample.vehicles.total,
                             last_sample.vehicles_active.total,
                             last_sample.vehicles_parked.total,
                             last_sample.vehicles_active.zero_speed,
-                            last_sample.traffic_avg
+                            last_sample.traffic_avg,
+                            last_sample.fps_smoothed,
+                            last_sample.frame_time_smoothed_ms,
+                            last_sample.perf_low_fps,
+                            last_sample.perf_critical_fps,
+                            last_sample.perf_frame_spike
                         );
                     }
                 }
@@ -254,6 +263,7 @@ pub struct DebugDump {
 
     city: DebugDumpCity,
     ui_metrics: DebugDumpUiMetrics,
+    performance: Option<DebugDumpPerformance>,
 
     telemetry: DebugDumpTelemetry,
     daily_history: Vec<DebugDumpDailySample>,
@@ -331,12 +341,60 @@ struct DebugDumpUiMetrics {
 }
 
 #[derive(Debug, serde::Serialize)]
+struct DebugDumpPerformance {
+    fps: f32,
+    fps_smoothed: f32,
+    frame_time_ms: f32,
+    frame_time_smoothed_ms: f32,
+    frame_count: u64,
+    perf_low_fps_threshold: f32,
+    perf_critical_fps_threshold: f32,
+    perf_frame_spike_threshold_ms: f32,
+    perf_flag_low_fps: bool,
+    perf_flag_critical_fps: bool,
+    perf_flag_frame_spike: bool,
+    perf_flag_drop_active: bool,
+    perf_drops_total: u32,
+    perf_drops_last_60s: u32,
+    perf_window_1s: DebugDumpPerfWindow,
+    perf_window_5s: DebugDumpPerfWindow,
+    perf_active_drop: Option<DebugDumpPerfDrop>,
+    perf_last_drop: Option<DebugDumpPerfDrop>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct DebugDumpPerfWindow {
+    samples: u32,
+    fps_min: f32,
+    fps_max: f32,
+    fps_avg: f32,
+    frame_time_ms_min: f32,
+    frame_time_ms_max: f32,
+    frame_time_ms_avg: f32,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct DebugDumpPerfDrop {
+    start_t_s: f32,
+    end_t_s: Option<f32>,
+    duration_s: f32,
+    samples: u32,
+    fps_min: f32,
+    fps_max: f32,
+    fps_avg: f32,
+    frame_time_ms_min: f32,
+    frame_time_ms_max: f32,
+    frame_time_ms_avg: f32,
+}
+
+#[derive(Debug, serde::Serialize)]
 struct DebugDumpTelemetry {
     window_secs: f32,
     interval_secs: f32,
     max_dump_samples: usize,
     sample_stride: usize,
     summary: DebugDumpTelemetrySummary,
+    fps_drop_ranges: Vec<DebugDumpFpsDropRange>,
     samples: Vec<DebugTelemetrySample>,
 }
 
@@ -350,6 +408,32 @@ struct DebugDumpTelemetrySummary {
     vehicles_no_route_max: u32,
     vehicles_zero_speed_max: u32,
     emergencies_active_max: u32,
+    fps_min: f32,
+    fps_max: f32,
+    fps_avg: f32,
+    frame_time_ms_min: f32,
+    frame_time_ms_max: f32,
+    frame_time_ms_avg: f32,
+    perf_low_fps_samples: u32,
+    perf_critical_fps_samples: u32,
+    perf_frame_spike_samples: u32,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct DebugDumpFpsDropRange {
+    start_t_s: f32,
+    end_t_s: f32,
+    duration_s: f32,
+    samples: u32,
+    fps_min: f32,
+    fps_max: f32,
+    fps_avg: f32,
+    frame_time_ms_min: f32,
+    frame_time_ms_max: f32,
+    frame_time_ms_avg: f32,
+    low_fps_hits: u32,
+    critical_fps_hits: u32,
+    frame_spike_hits: u32,
 }
 
 #[derive(Debug, serde::Serialize)]

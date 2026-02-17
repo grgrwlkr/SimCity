@@ -112,6 +112,23 @@ const STOP_LINE_EPS_TILES: f32 = 1e-3;
 
 /// Target speed cap while performing a right turn on red (doc: <= 15 km/h).
 const RIGHT_ON_RED_TURN_MAX_KMH: f32 = 15.0;
+/// Share of drivers that keep a standard speed profile (40%).
+/// Lower than before (70%) so per-car speed variation is more visible in-game.
+const DRIVER_PROFILE_MEDIUM_SHARE: f32 = 0.40;
+/// Standard speed profile multiplier applied to per-road speed limits.
+const DRIVER_PROFILE_MEDIUM_FACTOR: f32 = 1.0;
+/// Minimum driver profile multiplier (cautious drivers).
+const DRIVER_PROFILE_SLOW_MIN_FACTOR: f32 = 0.70;
+/// Maximum driver profile multiplier (aggressive drivers).
+const DRIVER_PROFILE_FAST_MAX_FACTOR: f32 = 1.35;
+/// Safety clamp for externally loaded/invalid speed profiles.
+const DRIVER_PROFILE_FACTOR_MIN: f32 = DRIVER_PROFILE_SLOW_MIN_FACTOR;
+const DRIVER_PROFILE_FACTOR_MAX: f32 = DRIVER_PROFILE_FAST_MAX_FACTOR;
+/// Per-driver max speed range (km/h). Variation ensures visible speed differences even on highways.
+pub(crate) const DRIVER_MAX_SPEED_KMH_MIN: f32 = 90.0;
+pub(crate) const DRIVER_MAX_SPEED_KMH_MAX: f32 = 130.0;
+/// Service vehicles may exceed posted road limits by this factor.
+const SERVICE_VEHICLE_SPEED_LIMIT_FACTOR: f32 = 1.50;
 /// Failsafe: if a vehicle is blocked at a clear intersection for too long, allow entry.
 const INTERSECTION_FORCE_ENTRY_SECS: f32 = 8.0;
 
@@ -142,6 +159,9 @@ const LANE_CHANGE_INTERSECTION_LOOKAHEAD: usize = 6;
 const OVERTAKE_LOOKAHEAD_TILES: f32 = 2.0;
 /// Leader is considered "slow" if below this fraction of our desired speed.
 const OVERTAKE_LEADER_SPEED_RATIO: f32 = 0.85;
+/// Speed profile threshold for lane preference: vehicles with speed_factor above this prefer left
+/// lanes; those at or below keep right (DRIVER_PROFILE_MEDIUM_FACTOR = 1.0).
+pub(crate) const KEEP_RIGHT_SPEED_THRESHOLD: f32 = 0.98;
 
 // ---------------------------------------------------------------------------
 // Stage F (initial): oncoming-lane overtakes on TwoLane (1+1) with strict guardrails
@@ -258,10 +278,16 @@ fn idm_accel_world(
 
 mod intersection;
 pub(crate) use intersection::IntersectionReservations;
+#[cfg(test)]
+use intersection::plan_intersection_reservations;
+#[cfg(test)]
+use intersection::rewrite_intersection_connectors;
 pub(crate) use intersection::{ManeuverKind, ReservationState};
 use intersection::{
-    cleanup_intersection_reservations, plan_intersection_reservations,
-    reset_intersection_reservations, rewrite_intersection_connectors,
+    apply_intersection_reservation_candidates, cache_intersection_light_state,
+    cache_pedestrian_crossing_state, cleanup_intersection_reservations,
+    collect_intersection_reservation_candidates, mark_vehicles_needing_connector_rewrite,
+    reset_intersection_reservations, rewrite_marked_intersection_connectors,
 };
 
 #[derive(Component, Debug, Copy, Clone)]
@@ -279,6 +305,9 @@ impl Plugin for TrafficPlugin {
             .init_resource::<TrafficConfig>()
             .init_resource::<TrafficOverlayPool>()
             .init_resource::<IntersectionReservations>()
+            .init_resource::<intersection::IntersectionReservationCandidates>()
+            .init_resource::<intersection::IntersectionLightStateCache>()
+            .init_resource::<intersection::PedestrianCrossingStateCache>()
             .init_resource::<TrafficSpatialIndex>()
             .init_resource::<VehicleAggSnapshot>()
             .init_resource::<ParkedVehicleTileIndex>()
@@ -328,20 +357,43 @@ impl Plugin for TrafficPlugin {
                     build_traffic_spatial_index
                         .after(plan_lane_changes)
                         .before(plan_oncoming_overtakes)
-                        .before(plan_intersection_reservations)
+                        .before(collect_intersection_reservation_candidates)
+                        .before(apply_intersection_reservation_candidates)
                         .before(move_vehicles),
                     plan_oncoming_overtakes
                         .after(plan_lane_changes)
-                        .before(rewrite_intersection_connectors)
-                        .before(plan_intersection_reservations)
+                        .before(mark_vehicles_needing_connector_rewrite)
+                        .before(rewrite_marked_intersection_connectors)
+                        .before(collect_intersection_reservation_candidates)
+                        .before(apply_intersection_reservation_candidates)
                         .before(move_vehicles),
-                    rewrite_intersection_connectors
+                    mark_vehicles_needing_connector_rewrite
                         .after(plan_oncoming_overtakes)
-                        .before(plan_intersection_reservations),
-                    plan_intersection_reservations
-                        .after(rewrite_intersection_connectors)
+                        .before(rewrite_marked_intersection_connectors)
+                        .before(cache_intersection_light_state)
+                        .before(cache_pedestrian_crossing_state)
+                        .before(collect_intersection_reservation_candidates),
+                    rewrite_marked_intersection_connectors
+                        .after(mark_vehicles_needing_connector_rewrite)
+                        .before(cache_intersection_light_state)
+                        .before(cache_pedestrian_crossing_state)
+                        .before(collect_intersection_reservation_candidates),
+                    cache_intersection_light_state
+                        .after(rewrite_marked_intersection_connectors)
+                        .before(collect_intersection_reservation_candidates),
+                    cache_pedestrian_crossing_state
+                        .after(rewrite_marked_intersection_connectors)
+                        .before(collect_intersection_reservation_candidates),
+                    collect_intersection_reservation_candidates
+                        .after(rewrite_marked_intersection_connectors)
+                        .after(cache_intersection_light_state)
+                        .after(cache_pedestrian_crossing_state)
+                        .before(apply_intersection_reservation_candidates)
                         .before(move_vehicles),
-                    move_vehicles.after(plan_intersection_reservations),
+                    apply_intersection_reservation_candidates
+                        .after(collect_intersection_reservation_candidates)
+                        .before(move_vehicles),
+                    move_vehicles.after(apply_intersection_reservation_candidates),
                     cleanup_right_on_red_markers.after(move_vehicles),
                     cleanup_intersection_reservations.after(move_vehicles),
                 )

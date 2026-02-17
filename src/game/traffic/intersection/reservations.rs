@@ -1,4 +1,6 @@
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
+use std::collections::HashMap;
 
 use crate::game::intersections::{IntersectionId, IntersectionIndex};
 use crate::game::map::MapGrid;
@@ -112,68 +114,320 @@ pub(crate) struct IntersectionReservationCandidate {
     exit_tile_cap: u16,
 }
 
+/// Per-tick buffer of reservation candidates built in collect stage and consumed in apply stage.
+#[derive(Resource, Default)]
+pub(crate) struct IntersectionReservationCandidates {
+    by_intersection: HashMap<IntersectionId, Vec<IntersectionReservationCandidate>>,
+}
+
+/// Per-tick cache of traffic light states keyed by intersection id.
+#[derive(Resource, Default)]
+pub(crate) struct IntersectionLightStateCache {
+    by_id: std::collections::HashMap<IntersectionId, crate::game::intersections::TrafficLight>,
+}
+
+/// Per-tick cache of active pedestrian crossing axes keyed by intersection id.
+///
+/// Bit layout:
+/// - bit 0: axis_ns=true (pedestrians move North/South)
+/// - bit 1: axis_ns=false (pedestrians move East/West)
+#[derive(Resource, Default)]
+pub(crate) struct PedestrianCrossingStateCache {
+    axis_mask: std::collections::HashMap<IntersectionId, u8>,
+}
+
+/// Build a compact lookup of traffic light controllers for this tick.
+pub(crate) fn cache_intersection_light_state(
+    q_lights: Query<&crate::game::intersections::TrafficLight>,
+    mut cache: ResMut<IntersectionLightStateCache>,
+) {
+    cache.by_id.clear();
+    for light in q_lights.iter() {
+        cache.by_id.insert(light.intersection_id, light.clone());
+    }
+}
+
+/// Build a compact lookup of active pedestrian crossings for this tick.
+pub(crate) fn cache_pedestrian_crossing_state(
+    q_pedestrians: Query<&PedestrianCrossing>,
+    mut cache: ResMut<PedestrianCrossingStateCache>,
+) {
+    cache.axis_mask.clear();
+    for crossing in q_pedestrians.iter() {
+        let mask = cache.axis_mask.entry(crossing.intersection_id).or_insert(0);
+        if crossing.axis_ns {
+            *mask |= 1 << 0;
+        } else {
+            *mask |= 1 << 1;
+        }
+    }
+}
+
+#[derive(SystemParam)]
+pub(crate) struct PlanIntersectionReservationParams<'w, 's> {
+    grid: Res<'w, MapGrid>,
+    intersections: Res<'w, IntersectionIndex>,
+    traffic: Res<'w, TrafficOccupancy>,
+    spatial: Res<'w, TrafficSpatialIndex>,
+    traffic_cfg: Res<'w, TrafficConfig>,
+    path_pool: Res<'w, super::super::super::transport::PathPool>,
+    light_cache: Option<Res<'w, IntersectionLightStateCache>>,
+    ped_cache: Option<Res<'w, PedestrianCrossingStateCache>>,
+    reservations: ResMut<'w, IntersectionReservations>,
+    q_lights: Query<'w, 's, &'static crate::game::intersections::TrafficLight>,
+    q_pedestrians: Query<'w, 's, &'static PedestrianCrossing>,
+    q_vehicles: Query<
+        'w,
+        's,
+        (Entity, &'static Vehicle, &'static VehicleTrafficState),
+        Without<super::super::Parked>,
+    >,
+    fallback_lights_by_id: Local<
+        's,
+        std::collections::HashMap<IntersectionId, crate::game::intersections::TrafficLight>,
+    >,
+    fallback_ped_axis_mask: Local<'s, std::collections::HashMap<IntersectionId, u8>>,
+    candidates_by_intersection:
+        Local<'s, std::collections::HashMap<IntersectionId, Vec<IntersectionReservationCandidate>>>,
+    exit_tile_reserved: Local<'s, std::collections::HashMap<(IntersectionId, usize), u16>>,
+}
+
+#[derive(SystemParam)]
+pub(crate) struct CollectIntersectionReservationParams<'w, 's> {
+    grid: Res<'w, MapGrid>,
+    intersections: Res<'w, IntersectionIndex>,
+    traffic: Res<'w, TrafficOccupancy>,
+    spatial: Res<'w, TrafficSpatialIndex>,
+    traffic_cfg: Res<'w, TrafficConfig>,
+    path_pool: Res<'w, super::super::super::transport::PathPool>,
+    light_cache: Option<Res<'w, IntersectionLightStateCache>>,
+    ped_cache: Option<Res<'w, PedestrianCrossingStateCache>>,
+    reservations: ResMut<'w, IntersectionReservations>,
+    q_lights: Query<'w, 's, &'static crate::game::intersections::TrafficLight>,
+    q_pedestrians: Query<'w, 's, &'static PedestrianCrossing>,
+    q_vehicles: Query<
+        'w,
+        's,
+        (Entity, &'static Vehicle, &'static VehicleTrafficState),
+        Without<super::super::Parked>,
+    >,
+    fallback_lights_by_id: Local<
+        's,
+        std::collections::HashMap<IntersectionId, crate::game::intersections::TrafficLight>,
+    >,
+    fallback_ped_axis_mask: Local<'s, std::collections::HashMap<IntersectionId, u8>>,
+}
+
+#[derive(SystemParam)]
+pub(crate) struct ApplyIntersectionReservationParams<'w, 's> {
+    traffic: Res<'w, TrafficOccupancy>,
+    spatial: Res<'w, TrafficSpatialIndex>,
+    reservations: ResMut<'w, IntersectionReservations>,
+    candidates: ResMut<'w, IntersectionReservationCandidates>,
+    exit_tile_reserved: Local<'s, std::collections::HashMap<(IntersectionId, usize), u16>>,
+}
+
 pub(crate) fn reset_intersection_reservations(mut reservations: ResMut<IntersectionReservations>) {
     reservations.by_intersection.clear();
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn plan_intersection_reservations(
+/// Collect reservation candidates into a shared per-tick buffer.
+pub(crate) fn collect_intersection_reservation_candidates(
     time: Res<Time<Fixed>>,
-    grid: Res<MapGrid>,
-    intersections: Res<IntersectionIndex>,
-    traffic: Res<TrafficOccupancy>,
-    spatial: Res<TrafficSpatialIndex>,
-    traffic_cfg: Res<TrafficConfig>,
-    path_pool: Res<super::super::super::transport::PathPool>,
-    mut reservations: ResMut<IntersectionReservations>,
-    q_lights: Query<&crate::game::intersections::TrafficLight>,
-    q_pedestrians: Query<&PedestrianCrossing>,
-    q_vehicles: Query<(Entity, &Vehicle, &VehicleTrafficState), Without<super::super::Parked>>,
-    mut lights_by_id: Local<
-        std::collections::HashMap<IntersectionId, crate::game::intersections::TrafficLight>,
-    >,
-    mut ped_axis_mask: Local<
-        std::collections::HashMap<crate::game::intersections::IntersectionId, u8>,
-    >,
-    mut candidates_by_intersection: Local<
-        std::collections::HashMap<IntersectionId, Vec<IntersectionReservationCandidate>>,
-    >,
-    mut exit_tile_reserved: Local<std::collections::HashMap<(IntersectionId, usize), u16>>,
+    mut p: CollectIntersectionReservationParams,
+    mut candidates: ResMut<IntersectionReservationCandidates>,
 ) {
     let now = time.elapsed_secs_f64();
     let exit_clear_progress = (VEHICLE_HALF_LENGTH_TILES + STOP_LINE_MARGIN_TILES).clamp(0.0, 1.0);
+    let grid = p.grid.as_ref();
+    let intersections = p.intersections.as_ref();
+    let traffic = p.traffic.as_ref();
+    let spatial = p.spatial.as_ref();
+    let traffic_cfg = p.traffic_cfg.as_ref();
+    let path_pool = p.path_pool.as_ref();
+    let reservations = &mut *p.reservations;
+    let q_lights = &p.q_lights;
+    let q_pedestrians = &p.q_pedestrians;
+    let q_vehicles = &p.q_vehicles;
+    let fallback_lights_by_id = &mut *p.fallback_lights_by_id;
+    let fallback_ped_axis_mask = &mut *p.fallback_ped_axis_mask;
 
-    // Build a small lookup of controllers by intersection id.
-    lights_by_id.clear();
-    for l in q_lights.iter() {
-        lights_by_id.insert(l.intersection_id, l.clone());
-    }
-
-    // Pedestrian crossings inside intersections (axis-specific):
-    // - axis_ns=true: pedestrian moves N/S (crossing E-W roadway)
-    // - axis_ns=false: pedestrian moves E/W (crossing N-S roadway)
-    ped_axis_mask.clear();
-    for p in q_pedestrians.iter() {
-        let m = ped_axis_mask.entry(p.intersection_id).or_insert(0);
-        if p.axis_ns {
-            *m |= 1 << 0;
-        } else {
-            *m |= 1 << 1;
+    let lights_by_id = if let Some(cache) = p.light_cache.as_deref() {
+        &cache.by_id
+    } else {
+        fallback_lights_by_id.clear();
+        for light in q_lights.iter() {
+            fallback_lights_by_id.insert(light.intersection_id, light.clone());
         }
-    }
+        &*fallback_lights_by_id
+    };
+    let ped_axis_mask = if let Some(cache) = p.ped_cache.as_deref() {
+        &cache.axis_mask
+    } else {
+        fallback_ped_axis_mask.clear();
+        for crossing in q_pedestrians.iter() {
+            let mask = fallback_ped_axis_mask
+                .entry(crossing.intersection_id)
+                .or_insert(0);
+            if crossing.axis_ns {
+                *mask |= 1 << 0;
+            } else {
+                *mask |= 1 << 1;
+            }
+        }
+        &*fallback_ped_axis_mask
+    };
 
-    // Reuse candidate buffers across ticks.
-    for v in candidates_by_intersection.values_mut() {
-        (v as &mut Vec<IntersectionReservationCandidate>).clear();
-    }
+    clear_candidate_buffers(&mut candidates.by_intersection);
+    collect_intersection_reservation_candidates_inner(
+        now,
+        exit_clear_progress,
+        grid,
+        intersections,
+        traffic,
+        spatial,
+        traffic_cfg,
+        path_pool,
+        reservations,
+        q_vehicles,
+        lights_by_id,
+        ped_axis_mask,
+        &mut candidates.by_intersection,
+    );
+}
+
+/// Apply reservation candidates built by the collect stage.
+pub(crate) fn apply_intersection_reservation_candidates(
+    time: Res<Time<Fixed>>,
+    mut p: ApplyIntersectionReservationParams,
+) {
+    let now = time.elapsed_secs_f64();
+    let exit_clear_progress = (VEHICLE_HALF_LENGTH_TILES + STOP_LINE_MARGIN_TILES).clamp(0.0, 1.0);
+    let traffic = p.traffic.as_ref();
+    let spatial = p.spatial.as_ref();
+    let reservations = &mut *p.reservations;
+    let candidates_by_intersection = &mut p.candidates.by_intersection;
+    let exit_tile_reserved = &mut *p.exit_tile_reserved;
+
     exit_tile_reserved.clear();
+    apply_intersection_reservation_candidates_inner(
+        now,
+        exit_clear_progress,
+        traffic,
+        spatial,
+        reservations,
+        candidates_by_intersection,
+        exit_tile_reserved,
+    );
+}
 
+#[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn plan_intersection_reservations(
+    time: Res<Time<Fixed>>,
+    mut p: PlanIntersectionReservationParams,
+) {
+    let now = time.elapsed_secs_f64();
+    let exit_clear_progress = (VEHICLE_HALF_LENGTH_TILES + STOP_LINE_MARGIN_TILES).clamp(0.0, 1.0);
+    let grid = p.grid.as_ref();
+    let intersections = p.intersections.as_ref();
+    let traffic = p.traffic.as_ref();
+    let spatial = p.spatial.as_ref();
+    let traffic_cfg = p.traffic_cfg.as_ref();
+    let path_pool = p.path_pool.as_ref();
+    let reservations = &mut *p.reservations;
+    let q_lights = &p.q_lights;
+    let q_pedestrians = &p.q_pedestrians;
+    let q_vehicles = &p.q_vehicles;
+    let fallback_lights_by_id = &mut *p.fallback_lights_by_id;
+    let fallback_ped_axis_mask = &mut *p.fallback_ped_axis_mask;
+    let candidates_by_intersection = &mut *p.candidates_by_intersection;
+    let exit_tile_reserved = &mut *p.exit_tile_reserved;
+
+    let lights_by_id = if let Some(cache) = p.light_cache.as_deref() {
+        &cache.by_id
+    } else {
+        fallback_lights_by_id.clear();
+        for light in q_lights.iter() {
+            fallback_lights_by_id.insert(light.intersection_id, light.clone());
+        }
+        &*fallback_lights_by_id
+    };
+    let ped_axis_mask = if let Some(cache) = p.ped_cache.as_deref() {
+        &cache.axis_mask
+    } else {
+        fallback_ped_axis_mask.clear();
+        for crossing in q_pedestrians.iter() {
+            let mask = fallback_ped_axis_mask
+                .entry(crossing.intersection_id)
+                .or_insert(0);
+            if crossing.axis_ns {
+                *mask |= 1 << 0;
+            } else {
+                *mask |= 1 << 1;
+            }
+        }
+        &*fallback_ped_axis_mask
+    };
+
+    clear_candidate_buffers(candidates_by_intersection);
+    exit_tile_reserved.clear();
+    collect_intersection_reservation_candidates_inner(
+        now,
+        exit_clear_progress,
+        grid,
+        intersections,
+        traffic,
+        spatial,
+        traffic_cfg,
+        path_pool,
+        reservations,
+        q_vehicles,
+        lights_by_id,
+        ped_axis_mask,
+        candidates_by_intersection,
+    );
+    apply_intersection_reservation_candidates_inner(
+        now,
+        exit_clear_progress,
+        traffic,
+        spatial,
+        reservations,
+        candidates_by_intersection,
+        exit_tile_reserved,
+    );
+}
+
+fn clear_candidate_buffers(
+    candidates_by_intersection: &mut HashMap<IntersectionId, Vec<IntersectionReservationCandidate>>,
+) {
+    for cands in candidates_by_intersection.values_mut() {
+        cands.clear();
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_intersection_reservation_candidates_inner(
+    now: f64,
+    exit_clear_progress: f32,
+    grid: &MapGrid,
+    intersections: &IntersectionIndex,
+    traffic: &TrafficOccupancy,
+    spatial: &TrafficSpatialIndex,
+    traffic_cfg: &TrafficConfig,
+    path_pool: &super::super::super::transport::PathPool,
+    reservations: &mut IntersectionReservations,
+    q_vehicles: &Query<(Entity, &Vehicle, &VehicleTrafficState), Without<super::super::Parked>>,
+    lights_by_id: &HashMap<IntersectionId, crate::game::intersections::TrafficLight>,
+    ped_axis_mask: &HashMap<IntersectionId, u8>,
+    candidates_by_intersection: &mut HashMap<IntersectionId, Vec<IntersectionReservationCandidate>>,
+) {
     // Ensure any vehicle currently inside an intersection cluster owns a reservation (safety net).
     for (e, v, _) in q_vehicles.iter() {
         let Some(cur) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
-        if !is_intersection_tile(&grid, cur) {
+        if !is_intersection_tile(grid, cur) {
             continue;
         }
         let Some(id) = intersections.intersection_id_at(cur) else {
@@ -209,13 +463,13 @@ pub fn plan_intersection_reservations(
         let Some(cur) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
-        if is_intersection_tile(&grid, cur) {
+        if is_intersection_tile(grid, cur) {
             continue;
         }
         let Some(next) = path_pool.get_tile(v.path_handle, v.path_cursor + 1) else {
             continue;
         };
-        if !is_intersection_tile(&grid, next) {
+        if !is_intersection_tile(grid, next) {
             continue;
         }
 
@@ -228,7 +482,7 @@ pub fn plan_intersection_reservations(
             continue;
         }
         let exit_dir = if let Some(route) = path_pool.remaining_from(v.path_handle, v.path_cursor) {
-            super::super::compute_exit_direction(route, &grid, next)
+            super::super::compute_exit_direction(route, grid, next)
         } else {
             RoadDir::None
         };
@@ -269,7 +523,7 @@ pub fn plan_intersection_reservations(
         let exit_tile = rem.and_then(|route| {
             route.iter().position(|t| *t == next).and_then(|start_i| {
                 let mut i = start_i;
-                while i < route.len() && is_intersection_tile(&grid, route[i]) {
+                while i < route.len() && is_intersection_tile(grid, route[i]) {
                     i += 1;
                 }
                 route.get(i).copied()
@@ -309,7 +563,7 @@ pub fn plan_intersection_reservations(
             continue;
         }
 
-        let Some(zones) = reservation_zones_for_maneuver(&traffic_cfg, entry_dir, exit_dir) else {
+        let Some(zones) = reservation_zones_for_maneuver(traffic_cfg, entry_dir, exit_dir) else {
             continue;
         };
 
@@ -317,7 +571,7 @@ pub fn plan_intersection_reservations(
             entry: entry_dir,
             exit: exit_dir,
         };
-        let maneuver = maneuver_kind(&traffic_cfg, entry_dir, exit_dir);
+        let maneuver = maneuver_kind(traffic_cfg, entry_dir, exit_dir);
         if !reservations.can_reserve(id, e, zones, stream, maneuver) {
             continue;
         }
@@ -406,7 +660,17 @@ pub fn plan_intersection_reservations(
 
         candidates_by_intersection.entry(id).or_default().push(cand);
     }
+}
 
+fn apply_intersection_reservation_candidates_inner(
+    now: f64,
+    exit_clear_progress: f32,
+    traffic: &TrafficOccupancy,
+    spatial: &TrafficSpatialIndex,
+    reservations: &mut IntersectionReservations,
+    candidates_by_intersection: &mut HashMap<IntersectionId, Vec<IntersectionReservationCandidate>>,
+    exit_tile_reserved: &mut HashMap<(IntersectionId, usize), u16>,
+) {
     for (&id, cands) in candidates_by_intersection.iter_mut() {
         if (cands as &Vec<IntersectionReservationCandidate>).is_empty() {
             continue;

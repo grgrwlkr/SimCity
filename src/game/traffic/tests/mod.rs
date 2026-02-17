@@ -23,7 +23,8 @@ fn count_trip_finished(mut reader: MessageReader<TripFinished>, mut cnt: ResMut<
     }
 }
 
-/// Helper function to create a Vehicle with proper PathPool integration
+/// Helper function to create a Vehicle with proper PathPool integration.
+/// `speed_factor` defaults to 1.0; use < KEEP_RIGHT_SPEED_THRESHOLD for slow, > for fast lane preference.
 pub fn create_vehicle_with_route(
     path_pool: &mut crate::game::transport::PathPool,
     route: Vec<crate::game::map::TilePos>,
@@ -32,6 +33,7 @@ pub fn create_vehicle_with_route(
     speed: f32,
     max_speed: f32,
     max_accel: f32,
+    speed_factor: f32,
 ) -> crate::game::traffic::components::Vehicle {
     use crate::game::transport::{LaneId, VehicleId};
     use bevy::prelude::*;
@@ -60,6 +62,7 @@ pub fn create_vehicle_with_route(
         is_reversing: false,
         reverse_distance: 0.0,
         max_speed,
+        speed_factor,
         max_accel,
         lane_id: LaneId::INVALID,
         lane_s: 0.0,

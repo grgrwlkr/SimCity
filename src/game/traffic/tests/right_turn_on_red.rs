@@ -114,6 +114,7 @@ fn right_turn_on_red_is_blocked_by_conflicting_pedestrian_crossing_axis() {
             0.0,
             60.0,
             20.0,
+            1.0,
         )
     };
     let ego = app
@@ -265,6 +266,7 @@ fn right_turn_on_red_is_only_admitted_when_intersection_is_clear() {
             0.0,
             60.0,
             20.0,
+            1.0,
         )
     };
     let ego = app
@@ -400,6 +402,7 @@ fn turn_reservations_yield_only_to_conflicting_pedestrian_axis() {
             1.0,
             60.0,
             20.0,
+            1.0,
         )
     };
     let ego = app

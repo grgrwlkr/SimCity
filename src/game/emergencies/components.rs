@@ -4,9 +4,9 @@ use bevy::prelude::*;
 
 /// Visual marker for emergency locations on the map.
 #[derive(Component)]
-#[allow(dead_code)] // Reserved for future use
 pub struct EmergencyMarker {
     pub emergency: Entity,
+    pub kind: EmergencyKind,
     pub blink_timer: Timer,
 }
 
@@ -72,7 +72,6 @@ impl EmergencyKind {
     }
 
     /// Color for visual markers on the map.
-    #[allow(dead_code)] // Reserved for future map marker rendering
     pub fn marker_color(self) -> Color {
         match self {
             EmergencyKind::Fire => Color::srgb(1.0, 0.4, 0.0),

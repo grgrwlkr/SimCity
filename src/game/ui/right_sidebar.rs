@@ -2,19 +2,8 @@ use super::common::RightSidebarParams;
 use super::*;
 use bevy_egui::{EguiContexts, egui};
 
-#[derive(Default)]
-pub(super) struct InspectorCitizenCache {
-    tile: Option<TilePos>,
-    home_c: usize,
-    place_c: usize,
-}
-
 /// Right sidebar with minimap, info panel, and statistics
-pub(super) fn right_sidebar_ui(
-    mut contexts: EguiContexts,
-    p: RightSidebarParams,
-    mut citizen_cache: Local<InspectorCitizenCache>,
-) {
+pub(super) fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
@@ -137,25 +126,29 @@ pub(super) fn right_sidebar_ui(
                             }
 
                             // Citizens linked to tile (home or last_place).
-                            if citizen_cache.tile != Some(tile) {
-                                citizen_cache.tile = Some(tile);
-                                citizen_cache.home_c = 0;
-                                citizen_cache.place_c = 0;
-                                for c in p.q_citizens.iter() {
-                                    if c.home == tile {
-                                        citizen_cache.home_c += 1;
+                            let (home_c, place_c) =
+                                if let Some(idx) = p.citizen_tile_index.as_deref() {
+                                    (
+                                        idx.home_count(tile) as usize,
+                                        idx.place_count(tile) as usize,
+                                    )
+                                } else {
+                                    // Fallback when the read model isn't available (tests/tools).
+                                    let mut home_c = 0usize;
+                                    let mut place_c = 0usize;
+                                    for c in p.q_citizens.iter() {
+                                        if c.home == tile {
+                                            home_c += 1;
+                                        }
+                                        if c.last_place == tile {
+                                            place_c += 1;
+                                        }
                                     }
-                                    if c.last_place == tile {
-                                        citizen_cache.place_c += 1;
-                                    }
-                                }
-                            }
+                                    (home_c, place_c)
+                                };
                             ui.separator();
-                            ui.label(format!("Citizens home here: {}", citizen_cache.home_c));
-                            ui.label(format!(
-                                "Citizens last_place here: {}",
-                                citizen_cache.place_c
-                            ));
+                            ui.label(format!("Citizens home here: {}", home_c));
+                            ui.label(format!("Citizens last_place here: {}", place_c));
                         });
                 });
 

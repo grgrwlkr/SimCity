@@ -17,6 +17,9 @@ pub struct Vehicle {
     pub progress: f32,
     /// Maximum speed for this vehicle.
     pub max_speed: f32,
+    /// Driver speed profile multiplier applied to road speed limits.
+    /// `1.0` = typical flow, `<1.0` = cautious, `>1.0` = aggressive.
+    pub speed_factor: f32,
     /// Maximum acceleration (world units per second squared).
     #[allow(dead_code)]
     pub max_accel: f32,
@@ -66,6 +69,7 @@ impl Default for Vehicle {
             tile_pos: TilePos { x: 0, y: 0 },
             speed: 0.0,
             max_speed: 60.0, // Default speed
+            speed_factor: 1.0,
             max_accel: 20.0, // Default acceleration
             prev_world_pos: Vec2::ZERO,
             curr_world_pos: Vec2::ZERO,
@@ -144,6 +148,9 @@ impl From<VehicleTrafficState> for DebugVehicleTrafficState {
     }
 }
 
+/// Number of upcoming route tiles sampled in `DebugVehicleState`.
+pub(crate) const DEBUG_ROUTE_SAMPLE_LEN: usize = 8;
+
 /// Reflected per-vehicle snapshot for MCP inspection tools.
 #[derive(Component, Reflect, Debug, Clone, Copy, Default)]
 #[reflect(Component)]
@@ -158,6 +165,10 @@ pub struct DebugVehicleState {
     pub next_tile_y: i32,
     /// Vehicle speed in world units per second.
     pub speed: f32,
+    /// Vehicle maximum speed cap in world units per second.
+    pub max_speed: f32,
+    /// Driver speed profile multiplier.
+    pub speed_factor: f32,
     /// Vehicle progress along the current tile (0..1).
     pub progress: f32,
     /// Current traffic state.
@@ -166,6 +177,14 @@ pub struct DebugVehicleState {
     pub path_cursor: u32,
     /// Current path length in tiles.
     pub path_len: u32,
+    /// Path index that the route sample starts from.
+    pub route_sample_start: u32,
+    /// Number of valid entries in the route sample arrays.
+    pub route_sample_len: u32,
+    /// X coordinates of upcoming route tiles starting at `route_sample_start`.
+    pub route_sample_x: [i32; DEBUG_ROUTE_SAMPLE_LEN],
+    /// Y coordinates of upcoming route tiles starting at `route_sample_start`.
+    pub route_sample_y: [i32; DEBUG_ROUTE_SAMPLE_LEN],
     /// Whether the vehicle is currently reversing.
     pub is_reversing: bool,
 }

@@ -11,6 +11,7 @@ description: Start the SimCity game via cargo run, ensure no existing instance, 
 3. Run `cargo run` from the repo root with `block_until_ms: 0` to background it.
 4. Monitor the terminal output until the game window is created.
 5. Wait for MCP: retry `list components` with short sleeps until connected.
+6. Keep the game running for at least 60 seconds before stopping or concluding startup checks.
 
 ## Commands
 ```bash
@@ -26,3 +27,4 @@ cargo run
 - Always stop any previous instance before starting (R10.6).
 - Use the project root as the working directory.
 - Report the terminal file path and MCP readiness status.
+- Do not stop or restart the game earlier than 1 minute after successful startup, unless the user explicitly requests it.

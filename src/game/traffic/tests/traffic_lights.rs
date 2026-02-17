@@ -109,6 +109,7 @@ fn intersection_tiles_ignore_tile_capacity_gate_in_move_vehicles() {
             8.0,
             60.0,
             20.0,
+            1.0,
         )
     };
     let e = app
@@ -242,7 +243,7 @@ fn traffic_light_stop_line_is_on_approach_tile_not_in_intersection() {
         let mut path_pool = app
             .world_mut()
             .resource_mut::<crate::game::transport::PathPool>();
-        create_vehicle_with_route(&mut path_pool, route, 0, 0.0, 8.0, 60.0, 20.0)
+        create_vehicle_with_route(&mut path_pool, route, 0, 0.0, 8.0, 60.0, 20.0, 1.0)
     };
     let ego = app
         .world_mut()
@@ -389,6 +390,7 @@ fn vehicle_inside_signalized_intersection_is_forced_to_crossing_state() {
             0.0,
             60.0,
             20.0,
+            1.0,
         )
     };
     let ego = app

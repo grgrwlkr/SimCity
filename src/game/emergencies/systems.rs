@@ -11,7 +11,7 @@ use crate::game::intersections::IntersectionIndex;
 use crate::game::map::{BuildingKind, MapGrid, TilePos};
 use crate::game::notifications::{NotificationKind, Notifications};
 use crate::game::roads::RoadDir;
-use crate::game::services::{ServiceStation, ServiceVehicle, ServiceVehicleState};
+use crate::game::services::{ServiceKind, ServiceStation, ServiceVehicle, ServiceVehicleState};
 use crate::game::sim::City;
 use crate::game::sim_events::HourAdvanced;
 use crate::game::traffic::{Parked, Vehicle};
@@ -21,7 +21,9 @@ use crate::game::transport::{
 };
 use bevy::ecs::message::MessageReader;
 
-use super::components::{Emergency, EmergencyEntityIndex, EmergencyKind, EmergencyManager};
+use super::components::{
+    Emergency, EmergencyEntityIndex, EmergencyKind, EmergencyManager, EmergencyMarker,
+};
 
 /// GDD: Spawn emergencies every 6 game hours
 pub(crate) fn spawn_emergencies(
@@ -252,9 +254,59 @@ pub(crate) struct DispatchParams<'w, 's> {
     regions: Res<'w, RegionGraph>,
     traffic: Res<'w, crate::game::traffic::TrafficOccupancy>,
     intersections: Res<'w, IntersectionIndex>,
+    station_index: Res<'w, DispatchStationIndex>,
     q_emergencies: Query<'w, 's, (Entity, &'static mut Emergency)>,
     q_stations: Query<'w, 's, (Entity, &'static mut ServiceStation)>,
     q_vehicles: Query<'w, 's, (Entity, &'static mut ServiceVehicle, &'static mut Vehicle)>,
+}
+
+/// Max number of pathfinding candidates per emergency dispatch.
+///
+/// We pre-sort stations by cheap Manhattan distance and run full routing
+/// only on the best few candidates.
+const DISPATCH_PATHFIND_TOP_K: usize = 4;
+
+#[derive(Debug, Copy, Clone)]
+struct DispatchStationEntry {
+    station: Entity,
+    kind: ServiceKind,
+    pos: TilePos,
+    fallback_road: TilePos,
+}
+
+/// Per-tick index of service stations that have road access.
+#[derive(Resource, Default)]
+pub(crate) struct DispatchStationIndex {
+    by_kind: HashMap<ServiceKind, Vec<DispatchStationEntry>>,
+}
+
+/// Build a compact station index once per tick for emergency dispatch.
+pub(crate) fn build_dispatch_station_index(
+    grid: Res<MapGrid>,
+    graph: Res<RoadGraph>,
+    q_stations: Query<(Entity, &ServiceStation)>,
+    mut index: ResMut<DispatchStationIndex>,
+) {
+    index.by_kind.clear();
+
+    for (station_entity, station) in q_stations.iter() {
+        let fallback_road = pick_reachable_road_endpoint(&grid, &graph, station.pos, None)
+            .or_else(|| crate::game::services::adjacent_road_any(&grid, station.pos));
+        let Some(fallback_road) = fallback_road else {
+            continue;
+        };
+
+        index
+            .by_kind
+            .entry(station.kind)
+            .or_default()
+            .push(DispatchStationEntry {
+                station: station_entity,
+                kind: station.kind,
+                pos: station.pos,
+                fallback_road,
+            });
+    }
 }
 
 /// Dispatch service vehicles to emergencies.
@@ -281,29 +333,33 @@ pub(crate) fn dispatch_emergency_vehicles(mut p: DispatchParams) {
         let required = emergency.kind.required_service();
 
         let mut best_station: Option<(Entity, usize, TilePos, TilePos)> = None; // (station, dist, station_road, emergency_road)
+        let Some(entries) = p.station_index.by_kind.get(&required) else {
+            continue;
+        };
 
-        for (station_entity, station) in p.q_stations.iter() {
-            if station.kind != required {
+        let mut candidates = Vec::<DispatchStationEntry>::new();
+        for entry in entries.iter().copied() {
+            if entry.kind != required {
                 continue;
             }
+            let Ok((_, station)) = p.q_stations.get(entry.station) else {
+                continue;
+            };
             if station.available_vehicles == 0 {
                 continue;
             }
+            candidates.push(entry);
+        }
+        candidates.sort_by_key(|entry| {
+            (entry.pos.x - emergency.pos.x).abs() + (entry.pos.y - emergency.pos.y).abs()
+        });
 
-            // GDD 10.5.1: Service buildings without road access cannot dispatch vehicles
-            // Check if station building has road access (station.pos should have adjacent road)
-            let station_has_road =
-                crate::game::services::adjacent_road_any(&p.grid, station.pos).is_some();
-            if !station_has_road {
-                continue; // Skip stations without road access
-            }
+        for entry in candidates.into_iter().take(DISPATCH_PATHFIND_TOP_K) {
             // Prefer lane tiles that match the desired travel direction to avoid picking the wrong carriageway.
-            let travel_dir = desired_dir(station.pos, emergency.pos);
-            let Some(station_road) =
-                pick_reachable_road_endpoint(&p.grid, &p.graph, station.pos, Some(travel_dir))
-            else {
-                continue;
-            };
+            let travel_dir = desired_dir(entry.pos, emergency.pos);
+            let station_road =
+                pick_reachable_road_endpoint(&p.grid, &p.graph, entry.pos, Some(travel_dir))
+                    .unwrap_or(entry.fallback_road);
             let Some(emergency_road) =
                 pick_reachable_road_endpoint(&p.grid, &p.graph, emergency.pos, Some(travel_dir))
             else {
@@ -317,9 +373,9 @@ pub(crate) fn dispatch_emergency_vehicles(mut p: DispatchParams) {
 
             let dist = path.len();
             match best_station {
-                None => best_station = Some((station_entity, dist, station_road, emergency_road)),
+                None => best_station = Some((entry.station, dist, station_road, emergency_road)),
                 Some((_, best_dist, _, _)) if dist < best_dist => {
-                    best_station = Some((station_entity, dist, station_road, emergency_road));
+                    best_station = Some((entry.station, dist, station_road, emergency_road));
                 }
                 _ => {}
             }
@@ -632,5 +688,74 @@ pub(crate) fn track_emergency_index(
     }
     for e in removed.read() {
         idx.remove(e);
+    }
+}
+
+/// Sync visual markers to active emergencies: spawn for new, despawn for resolved, blink.
+pub(crate) fn sync_emergency_markers(
+    time: Res<Time>,
+    cfg: Res<crate::game::map::MapConfig>,
+    mut commands: Commands,
+    q_emergencies: Query<(Entity, &Emergency)>,
+    mut q_markers: Query<(Entity, &mut EmergencyMarker, &mut Sprite)>,
+) {
+    let emergency_entities: std::collections::HashSet<Entity> =
+        q_emergencies.iter().map(|(e, _)| e).collect();
+
+    // Despawn markers for resolved/removed emergencies.
+    for (marker_entity, marker, _) in q_markers.iter() {
+        if !emergency_entities.contains(&marker.emergency) {
+            commands.entity(marker_entity).despawn();
+        }
+    }
+
+    // Spawn markers for emergencies that don't have one.
+    let marker_emergencies: std::collections::HashSet<Entity> =
+        q_markers.iter().map(|(_, m, _)| m.emergency).collect();
+    let origin = super::utils::map_origin(&cfg);
+
+    for (emergency_entity, emergency) in q_emergencies.iter() {
+        if marker_emergencies.contains(&emergency_entity) {
+            continue;
+        }
+        let world = origin
+            + Vec2::new(
+                emergency.pos.x as f32 * cfg.tile_size,
+                emergency.pos.y as f32 * cfg.tile_size,
+            );
+        let color = emergency.kind.marker_color();
+        commands.spawn((
+            EmergencyMarker {
+                emergency: emergency_entity,
+                kind: emergency.kind,
+                blink_timer: Timer::from_seconds(0.5, TimerMode::Repeating),
+            },
+            Sprite {
+                color,
+                custom_size: Some(Vec2::splat(cfg.tile_size * 0.4)),
+                ..default()
+            },
+            Transform::from_xyz(world.x, world.y, 15.0),
+        ));
+    }
+
+    // Blink existing markers (run after spawn/despawn so we don't mutate during iteration).
+    for (_, mut marker, mut sprite) in q_markers.iter_mut() {
+        marker.blink_timer.tick(time.delta());
+        if marker.blink_timer.just_finished() {
+            let base = marker.kind.marker_color();
+            let alpha = if sprite.color.alpha() > 0.5 { 0.3 } else { 1.0 };
+            sprite.color = base.with_alpha(alpha);
+        }
+    }
+}
+
+/// Despawn all emergency markers when leaving the game.
+pub(crate) fn cleanup_emergency_markers(
+    mut commands: Commands,
+    q: Query<Entity, With<EmergencyMarker>>,
+) {
+    for e in &q {
+        commands.entity(e).despawn();
     }
 }

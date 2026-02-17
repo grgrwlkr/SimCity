@@ -1,9 +1,9 @@
-//! Test city generator - creates a comprehensive test city with all game content types.
+//! Test city generator for integration and gameplay smoke tests.
 //!
 //! This creates a realistic city layout with:
 //! - All road types (TwoLane, FourLane, SixLane)
-//! - All zone types (Residential, Commercial, Industrial)
-//! - All service buildings (FireStation, PoliceStation, Hospital)
+//! - Zoned R/C/I areas for organic growth (no prebuilt R/C/I buildings)
+//! - Prebuilt service buildings (FireStation, PoliceStation, Hospital)
 //! - Water features
 //! - Proper intersections with traffic lights
 //! - Height variation
@@ -11,13 +11,14 @@
 use bevy::math::IVec2;
 use bevy::prelude::*;
 
-use crate::game::buildings::spawn_building_entity;
+use crate::game::buildings::{MAX_ZONE_DEPTH, is_within_zone_depth, spawn_building_entity};
 use crate::game::intersections::IntersectionIndex;
 use crate::game::map::{BuildingKind, MapConfig, MapGrid, TilePos, ZoneKind};
 use crate::game::roads::{LaneType, RoadCell, RoadDir, RoadFlow, RoadKind};
 use crate::game::sim::City;
 
-/// Generate a test city with all types of content for testing.
+/// Generate a test city with roads, zoning markup, and service infrastructure.
+/// R/C/I stays zoning-only at load time; service buildings are prebuilt.
 pub fn generate_test_city(
     commands: &mut Commands,
     grid: &mut MapGrid,
@@ -352,10 +353,10 @@ pub fn generate_test_city(
     }
 
     // =========================================================================
-    // ZONES: Create zoned areas adjacent to roads
+    // ZONES: Create growth-eligible zoned areas (no prebuilt R/C/I)
     // =========================================================================
 
-    // Helper to check if a tile can be zoned (must be within 6 tiles of a road for 3x3-6x6 footprints)
+    // Helper to check if a tile can be zoned using the same depth rule as growth.
     let can_zone = |grid: &MapGrid, pos: TilePos| -> bool {
         let Some(cell) = grid.get(pos) else {
             return false;
@@ -363,37 +364,7 @@ pub fn generate_test_city(
         if cell.water || cell.road.is_some() || cell.building.is_some() {
             return false;
         }
-        // Must be within 6 tiles of a road (GDD 10.2.2: zoning depth up to 6 tiles)
-        // Use BFS to find nearest road
-        use std::collections::VecDeque;
-        let mut queue = VecDeque::new();
-        let mut visited = std::collections::HashSet::new();
-        queue.push_back((pos, 0));
-        visited.insert(pos);
-
-        while let Some((current, depth)) = queue.pop_front() {
-            if depth > 6 {
-                continue;
-            }
-            // Check if current tile has a road
-            if let Some(cell) = grid.get(current)
-                && cell.road.is_some()
-            {
-                return true;
-            }
-            // Check neighbors
-            for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                let neighbor = TilePos {
-                    x: current.x + dx,
-                    y: current.y + dy,
-                };
-                if !visited.contains(&neighbor) {
-                    visited.insert(neighbor);
-                    queue.push_back((neighbor, depth + 1));
-                }
-            }
-        }
-        false
+        is_within_zone_depth(pos, grid, MAX_ZONE_DEPTH)
     };
 
     // RESIDENTIAL zones: Upper-left quadrant
@@ -440,7 +411,7 @@ pub fn generate_test_city(
 
     // More COMMERCIAL zones: Upper right (away from lake)
     for y in (highway_y + 5)..(cfg.height - 40) {
-        for x in (arterial2_x + 5)..(cfg.width - 40) {
+        for x in (arterial2_x + 5)..(cfg.width - 15) {
             let pos = TilePos { x, y };
             if can_zone(grid, pos)
                 && let Some(cell) = grid.get(pos)
@@ -478,124 +449,6 @@ pub fn generate_test_city(
                 cell.zone = ZoneKind::Industrial;
                 grid.set(pos, cell);
             }
-        }
-    }
-
-    // =========================================================================
-    // PRE-BUILT R/C/I BUILDINGS on zoned tiles (Operational, so sim starts immediately)
-    // =========================================================================
-    {
-        use std::collections::HashSet;
-
-        let footprint = 3i32;
-        let mut occupied = HashSet::<TilePos>::new();
-        let mut spawned_rci = 0usize;
-        let max_rci = 80; // Cap to keep it reasonable
-
-        // Scan grid for zoned tiles and place 3x3 buildings with road access
-        let mut y = 0;
-        while y < cfg.height && spawned_rci < max_rci {
-            let mut x = 0;
-            while x < cfg.width && spawned_rci < max_rci {
-                let anchor = TilePos { x, y };
-                let Some(cell) = grid.get(anchor) else {
-                    x += 1;
-                    continue;
-                };
-                let Some(kind) = BuildingKind::from_zone(cell.zone) else {
-                    x += 1;
-                    continue;
-                };
-
-                // Check 3x3 footprint is clear
-                let mut ok = true;
-                for dy in 0..footprint {
-                    for dx in 0..footprint {
-                        let t = TilePos {
-                            x: anchor.x + dx,
-                            y: anchor.y + dy,
-                        };
-                        let Some(c) = grid.get(t) else {
-                            ok = false;
-                            break;
-                        };
-                        if c.water
-                            || c.road.is_some()
-                            || c.building.is_some()
-                            || occupied.contains(&t)
-                        {
-                            ok = false;
-                            break;
-                        }
-                    }
-                    if !ok {
-                        break;
-                    }
-                }
-                if !ok {
-                    x += 1;
-                    continue;
-                }
-
-                // Need adjacent road
-                let mut has_road = false;
-                'road_check: for dy in 0..footprint {
-                    for dx in 0..footprint {
-                        let t = TilePos {
-                            x: anchor.x + dx,
-                            y: anchor.y + dy,
-                        };
-                        for (ndx, ndy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                            let n = TilePos {
-                                x: t.x + ndx,
-                                y: t.y + ndy,
-                            };
-                            if let Some(nc) = grid.get(n)
-                                && nc.road.is_some()
-                            {
-                                has_road = true;
-                                break 'road_check;
-                            }
-                        }
-                    }
-                }
-                if !has_road {
-                    x += 1;
-                    continue;
-                }
-
-                // Mark grid tiles
-                for dy in 0..footprint {
-                    for dx in 0..footprint {
-                        let t = TilePos {
-                            x: anchor.x + dx,
-                            y: anchor.y + dy,
-                        };
-                        if let Some(mut c) = grid.get(t) {
-                            c.building = Some(kind);
-                            c.zone = ZoneKind::None;
-                            grid.set(t, c);
-                        }
-                        occupied.insert(t);
-                    }
-                }
-
-                spawn_building_entity(
-                    commands,
-                    cfg,
-                    anchor,
-                    footprint as u8,
-                    footprint as u8,
-                    kind,
-                    city,
-                    true, // Operational immediately
-                );
-                spawned_rci += 1;
-
-                // Skip past this footprint
-                x += footprint;
-            }
-            y += 1;
         }
     }
 
@@ -698,7 +551,8 @@ pub fn generate_test_city(
                         }
                     }
 
-                    // Spawn already-built (Operational) so test city is playable immediately
+                    // Spawn service buildings as prebuilt so city services are available immediately.
+                    // R/C/I stays zoning-only and is spawned later by growth.
                     spawn_building_entity(
                         commands,
                         cfg,
@@ -709,11 +563,6 @@ pub fn generate_test_city(
                         city,
                         true,
                     );
-
-                    // For emergency buildings in test city, we'll mark them as Operational
-                    // by finding the entity and updating it (done after spawn via a system or direct update)
-                    // For now, they'll be created as UnderConstruction but will complete quickly
-                    // The growth system will handle making them Operational
                     return true;
                 }
             }
