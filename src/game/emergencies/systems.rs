@@ -320,6 +320,7 @@ pub(crate) fn dispatch_emergency_vehicles(mut p: DispatchParams) {
         traffic: &p.traffic,
         grid: &p.grid,
         intersections: &p.intersections,
+        max_iterations: None,
     };
 
     for (emergency_entity, mut emergency) in p.q_emergencies.iter_mut() {
@@ -482,6 +483,7 @@ pub(crate) fn resolve_emergencies(mut p: ResolveParams) {
         traffic: &p.traffic,
         grid: &p.grid,
         intersections: &p.intersections,
+        max_iterations: None,
     };
 
     // Map emergency -> road once.

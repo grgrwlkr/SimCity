@@ -10,7 +10,7 @@ use crate::game::traffic::TrafficOccupancy;
 use super::{RegionGraph, RoadGraph};
 
 mod astar;
-mod r#async;
+pub mod r#async;
 mod cache;
 pub mod cost;
 mod regions;
@@ -118,6 +118,8 @@ pub struct PathfindingCtx<'a> {
     pub traffic: &'a TrafficOccupancy,
     pub grid: &'a MapGrid,
     pub intersections: &'a IntersectionIndex,
+    /// Optional maximum A* iterations (for async pathfinding budget)
+    pub max_iterations: Option<usize>,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]

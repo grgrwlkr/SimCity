@@ -181,10 +181,37 @@ pub(in super::super) fn plan_lane_changes(
         let Some(ego_tile) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
-        if let Some(route) = path_pool.remaining_from(v.path_handle, v.path_cursor)
-            && route_has_near_intersection(route, &grid)
-        {
-            continue;
+
+        // CRITICAL: Never allow lane changes ON intersection tiles
+        if let Some(ego_cell) = grid.get(ego_tile) {
+            if ego_cell.road.is_some() && ego_cell.road.dir == RoadDir::None {
+                continue; // Currently on intersection tile - no lane changes!
+            }
+        }
+
+        // CRITICAL: Fix lane 2-3 tiles before intersection (no lane changes when approaching)
+        // This ensures vehicles are in correct lane for their maneuver before entering intersection
+        if let Some(route) = path_pool.remaining_from(v.path_handle, v.path_cursor) {
+            // Check if intersection is within 3 tiles
+            let tiles_to_intersection = route
+                .iter()
+                .skip(1)
+                .take(4) // Check next 3 tiles + current
+                .position(|&t| {
+                    grid.get(t)
+                        .is_some_and(|c| c.road.is_some() && c.road.dir == RoadDir::None)
+                });
+
+            if let Some(dist) = tiles_to_intersection {
+                if dist <= 3 {
+                    // Too close to intersection - lane is locked!
+                    continue;
+                }
+            }
+
+            if route_has_near_intersection(route, &grid) {
+                continue;
+            }
         }
         let Some(ego_cell) = grid.get(ego_tile) else {
             continue;
@@ -280,25 +307,39 @@ pub(in super::super) fn plan_lane_changes(
         // Build a desire (priority: overtake-left > return-right > prefer-left > keep-right).
         if want_left {
             if let Some(target) = left_target {
-                let priority = if overtaking.is_some() { 2 } else { 1 };
-                desires.push(Desire {
-                    e,
-                    target,
-                    priority,
-                    ego_tile,
-                    ego_progress: v.progress,
-                    goal,
-                });
+                // CRITICAL: Never allow lane change target to be on intersection tile
+                if let Some(target_cell) = grid.get(target) {
+                    if target_cell.road.is_some() && target_cell.road.dir == RoadDir::None {
+                        // Target is on intersection - skip this lane change
+                    } else if let Some(target) = left_target {
+                        let priority = if overtaking.is_some() { 2 } else { 1 };
+                        desires.push(Desire {
+                            e,
+                            target,
+                            priority,
+                            ego_tile,
+                            ego_progress: v.progress,
+                            goal,
+                        });
+                    }
+                }
             }
         } else if want_right && let Some(target) = right_target {
-            desires.push(Desire {
-                e,
-                target,
-                priority: if overtaking.is_some() { 1 } else { 0 },
-                ego_tile,
-                ego_progress: v.progress,
-                goal,
-            });
+            // CRITICAL: Never allow lane change target to be on intersection tile
+            if let Some(target_cell) = grid.get(target) {
+                if target_cell.road.is_some() && target_cell.road.dir == RoadDir::None {
+                    // Target is on intersection - skip this lane change
+                } else {
+                    desires.push(Desire {
+                        e,
+                        target,
+                        priority: if overtaking.is_some() { 1 } else { 0 },
+                        ego_tile,
+                        ego_progress: v.progress,
+                        goal,
+                    });
+                }
+            }
         }
     }
 
@@ -319,6 +360,7 @@ pub(in super::super) fn plan_lane_changes(
         traffic: &traffic,
         grid: &grid,
         intersections: &intersections,
+        max_iterations: None,
     };
 
     for d in desires {

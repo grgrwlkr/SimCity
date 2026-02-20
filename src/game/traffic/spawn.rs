@@ -1,5 +1,5 @@
 use super::*;
-use crate::game::transport::{LaneId, PathPool, VehicleId};
+use crate::game::transport::{LaneGraph, LaneId, PathPool, VehicleId};
 use rand::Rng;
 
 fn sample_non_medium_driver_speed_factor(rng: &mut impl Rng) -> f32 {
@@ -73,18 +73,54 @@ pub(super) fn spawn_trip_vehicles(
         let Some(goal) = adjacent_road_towards(&p.grid, msg.to, msg.from) else {
             continue;
         };
-        let mut ctx = PathfindingCtx {
-            time_now_sec: p.time.elapsed_secs_f64(),
-            cfg: &p.path_cfg,
-            cache: &mut p.path_cache,
-            graph: &p.graph,
-            regions: Some(&p.regions),
-            traffic: &p.traffic,
-            grid: &p.grid,
-            intersections: &p.intersections,
+
+        // LANE-BASED PATHFINDING: Find start and goal lanes
+        let start_cell = p.grid.get(start).unwrap();
+        let travel_dir = start_cell.road.dir;
+        let start_lane = p
+            .lane_graph
+            .as_ref()
+            .and_then(|lg| lg.get_rightmost_lane(start, travel_dir))
+            .unwrap_or(LaneId::INVALID);
+
+        let goal_cell = p.grid.get(goal).unwrap();
+        let goal_lane = p
+            .lane_graph
+            .as_ref()
+            .and_then(|lg| lg.get_rightmost_lane(goal, goal_cell.road.dir))
+            .unwrap_or(LaneId::INVALID);
+
+        // Use lane-based pathfinding if LaneGraph is available
+        let lane_path = if let (Some(lg), true) = (
+            p.lane_graph.as_ref(),
+            start_lane != LaneId::INVALID && goal_lane != LaneId::INVALID,
+        ) {
+            crate::game::transport::find_lane_path(lg, start_lane, goal_lane)
+        } else {
+            Vec::new()
         };
 
-        let route = find_road_path_cached(&mut ctx, start, goal);
+        // Convert lane path to tile path for backward compatibility
+        let route = if lane_path.is_empty() {
+            // Fallback to tile-based pathfinding
+            let mut ctx = PathfindingCtx {
+                time_now_sec: p.time.elapsed_secs_f64(),
+                cfg: &p.path_cfg,
+                cache: &mut p.path_cache,
+                graph: &p.graph,
+                regions: Some(&p.regions),
+                traffic: &p.traffic,
+                grid: &p.grid,
+                intersections: &p.intersections,
+                max_iterations: None,
+            };
+            find_road_path_cached(&mut ctx, start, goal)
+        } else if let Some(lg) = p.lane_graph.as_ref() {
+            crate::game::transport::lane_path_to_tiles(&lane_path, lg)
+        } else {
+            Vec::new()
+        };
+
         // No fallback to astar_path - vehicles must follow lane rules.
         if route.is_empty() {
             continue;
@@ -160,6 +196,17 @@ pub(super) fn spawn_trip_vehicles(
         let world_pos = tile_to_world(&p.cfg, start);
         let speed_factor = sample_driver_speed_factor(&mut rng);
         let max_speed = sample_driver_max_speed_world(&p.cfg, &p.traffic_cfg, &mut rng);
+
+        // Get the start lane for lane-based navigation
+        let start_lane = if start_lane != LaneId::INVALID {
+            start_lane
+        } else {
+            p.lane_graph
+                .as_ref()
+                .and_then(|lg| lg.get_rightmost_lane(start, travel_dir))
+                .unwrap_or(LaneId::INVALID)
+        };
+
         let mut e = p.commands.spawn((
             Sprite {
                 color: Color::linear_rgb(0.95, 0.95, 0.95),
@@ -176,7 +223,7 @@ pub(super) fn spawn_trip_vehicles(
                 path_handle: p.path_pool.intern(route),
                 path_cursor: 0,
                 progress: 0.0,
-                lane_id: LaneId::INVALID,
+                lane_id: start_lane, // ← LANE-BASED: Set correct lane!
                 lane_s: 0.0,
                 vehicle_id: VehicleId::INVALID,
                 tile_pos: start,
@@ -212,6 +259,7 @@ pub(super) struct SpawnTripVehiclesParams<'w, 's> {
     time: Res<'w, Time<bevy::time::Fixed>>,
     graph: Res<'w, RoadGraph>,
     regions: Res<'w, RegionGraph>,
+    lane_graph: Option<Res<'w, LaneGraph>>,
     traffic: Res<'w, TrafficOccupancy>,
     traffic_idx: Res<'w, TrafficIndex>,
     path_cfg: Res<'w, PathfindingConfig>,

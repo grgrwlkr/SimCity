@@ -25,6 +25,7 @@ fn count_trip_finished(mut reader: MessageReader<TripFinished>, mut cnt: ResMut<
 
 /// Helper function to create a Vehicle with proper PathPool integration.
 /// `speed_factor` defaults to 1.0; use < KEEP_RIGHT_SPEED_THRESHOLD for slow, > for fast lane preference.
+#[allow(clippy::too_many_arguments)] // Test helper with many parameters for vehicle setup
 pub fn create_vehicle_with_route(
     path_pool: &mut crate::game::transport::PathPool,
     route: Vec<crate::game::map::TilePos>,

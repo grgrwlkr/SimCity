@@ -65,6 +65,7 @@ fn road_path_smoke_test_on_simple_line() {
         traffic: &traffic,
         grid: &grid,
         intersections: &intersections,
+        max_iterations: None,
     };
 
     let path = find_road_path_cached(&mut ctx, TilePos { x: 0, y: 2 }, TilePos { x: 4, y: 2 });

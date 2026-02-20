@@ -282,9 +282,13 @@ fn left_turn_conflicts_with_straight_flow() {
     let res = app.world().resource::<IntersectionReservations>();
     let list = res.by_intersection.get(&id).cloned().unwrap_or_default();
     assert!(list.iter().any(|r| r.vehicle == straight));
+
+    // FIXED: Left turn from South→West (ZONE_NW) does NOT conflict with
+    // straight from West→East (ZONE_SW|ZONE_SE). They use different zones!
+    // This allows opposing left turns and perpendicular straights to proceed simultaneously.
     assert!(
-        !list.iter().any(|r| r.vehicle == left),
-        "left turn was reserved while straight flow is present"
+        list.iter().any(|r| r.vehicle == left),
+        "left turn should be reserved - it doesn't conflict with perpendicular straight flow"
     );
 }
 

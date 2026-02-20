@@ -10,6 +10,7 @@ pub(super) fn stats_ui(
     state: Res<State<AppState>>,
     hist: Res<UiHistory>,
     ui_settings: Res<UiSettings>,
+    demand: Res<crate::game::demand::RciDemand>,
     mut show: ResMut<ShowStatsWindow>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
@@ -58,6 +59,89 @@ pub(super) fn stats_ui(
             draw_history_plot(ui, "Population", &pop, egui::Color32::LIGHT_GREEN);
             draw_history_plot(ui, "Money", &money, egui::Color32::LIGHT_YELLOW);
             draw_history_plot(ui, "Traffic avg (%)", &traffic, egui::Color32::LIGHT_RED);
+
+            ui.separator();
+
+            // RCI Demand bars
+            ui.label("RCI Demand:");
+            let demand_size = egui::vec2(260.0, 30.0);
+            let (demand_rect, _) = ui.allocate_exact_size(demand_size, egui::Sense::hover());
+            let demand_painter = ui.painter_at(demand_rect);
+
+            demand_painter.rect_filled(
+                demand_rect,
+                2.0,
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 40),
+            );
+
+            let bar_width = demand_rect.width() / 3.0;
+            let center_y = demand_rect.center().y;
+
+            // Residential (green)
+            let r_height = (demand.residential.abs() * 25.0).min(14.0);
+            let r_color = if demand.residential > 0.0 {
+                egui::Color32::LIGHT_GREEN
+            } else {
+                egui::Color32::DARK_RED
+            };
+            let r_rect = egui::Rect::from_min_size(
+                egui::pos2(demand_rect.min.x + 5.0, center_y - r_height / 2.0),
+                egui::vec2(bar_width - 10.0, r_height),
+            );
+            demand_painter.rect_filled(r_rect, 2.0, r_color);
+            demand_painter.text(
+                r_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                format!("R: {:.1}", demand.residential),
+                egui::FontId::default(),
+                egui::Color32::WHITE,
+            );
+
+            // Commercial (blue)
+            let c_height = (demand.commercial.abs() * 25.0).min(14.0);
+            let c_color = if demand.commercial > 0.0 {
+                egui::Color32::LIGHT_BLUE
+            } else {
+                egui::Color32::DARK_RED
+            };
+            let c_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    demand_rect.min.x + bar_width + 5.0,
+                    center_y - c_height / 2.0,
+                ),
+                egui::vec2(bar_width - 10.0, c_height),
+            );
+            demand_painter.rect_filled(c_rect, 2.0, c_color);
+            demand_painter.text(
+                c_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                format!("C: {:.1}", demand.commercial),
+                egui::FontId::default(),
+                egui::Color32::WHITE,
+            );
+
+            // Industrial (yellow)
+            let i_height = (demand.industrial.abs() * 25.0).min(14.0);
+            let i_color = if demand.industrial > 0.0 {
+                egui::Color32::LIGHT_YELLOW
+            } else {
+                egui::Color32::DARK_RED
+            };
+            let i_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    demand_rect.min.x + bar_width * 2.0 + 5.0,
+                    center_y - i_height / 2.0,
+                ),
+                egui::vec2(bar_width - 10.0, i_height),
+            );
+            demand_painter.rect_filled(i_rect, 2.0, i_color);
+            demand_painter.text(
+                i_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                format!("I: {:.1}", demand.industrial),
+                egui::FontId::default(),
+                egui::Color32::WHITE,
+            );
         });
 
     show.0 = open;

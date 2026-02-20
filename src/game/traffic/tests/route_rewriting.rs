@@ -356,6 +356,133 @@ fn right_turn_on_red_releases_when_reserved() {
 }
 
 #[test]
+fn intersection_connector_corrects_wrong_way_exit_lane_and_suffix() {
+    let grid = {
+        let mut grid = MapGrid::new(5, 3);
+
+        // Single-tile intersection.
+        let intersection = TilePos { x: 1, y: 1 };
+        let Some(mut ic) = grid.get(intersection) else {
+            panic!("intersection tile missing");
+        };
+        ic.road = RoadCell {
+            kind: RoadKind::TwoLane,
+            dir: RoadDir::None,
+            lane: 0,
+            flow: RoadFlow::TwoWay,
+            lane_type: LaneType::Regular,
+        };
+        grid.set(intersection, ic);
+
+        // Northbound approach.
+        let approach = TilePos { x: 1, y: 0 };
+        let Some(mut ac) = grid.get(approach) else {
+            panic!("approach tile missing");
+        };
+        ac.road = RoadCell {
+            kind: RoadKind::TwoLane,
+            dir: RoadDir::North,
+            lane: 0,
+            flow: RoadFlow::TwoWay,
+            lane_type: LaneType::Regular,
+        };
+        grid.set(approach, ac);
+
+        // Wrong-way outgoing row (north side): Westbound.
+        for x in 2..=4 {
+            let pos = TilePos { x, y: 1 };
+            let Some(mut c) = grid.get(pos) else {
+                continue;
+            };
+            c.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                dir: RoadDir::West,
+                lane: 1,
+                flow: RoadFlow::TwoWay,
+                lane_type: LaneType::Regular,
+            };
+            grid.set(pos, c);
+        }
+
+        // Correct outgoing row (south side): Eastbound.
+        for x in 2..=4 {
+            let pos = TilePos { x, y: 0 };
+            let Some(mut c) = grid.get(pos) else {
+                continue;
+            };
+            c.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                dir: RoadDir::East,
+                lane: 0,
+                flow: RoadFlow::TwoWay,
+                lane_type: LaneType::Regular,
+            };
+            grid.set(pos, c);
+        }
+
+        grid
+    };
+    let (clusters, tile_to_intersection) = build_intersection_clusters(&grid);
+    let index = IntersectionIndex {
+        version: 1,
+        clusters,
+        tile_to_intersection,
+        ..Default::default()
+    };
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(MapConfig {
+            width: 5,
+            height: 3,
+            tile_size: 16.0,
+        })
+        .insert_resource(TrafficConfig::default())
+        .insert_resource(grid)
+        .insert_resource(index)
+        .insert_resource(crate::game::transport::PathPool::default())
+        .add_systems(Update, rewrite_intersection_connectors);
+
+    let vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(
+            &mut path_pool,
+            vec![
+                TilePos { x: 1, y: 0 },
+                TilePos { x: 1, y: 1 },
+                TilePos { x: 2, y: 1 },
+                TilePos { x: 3, y: 1 },
+                TilePos { x: 4, y: 1 },
+            ],
+            0,
+            0.0,
+            5.0,
+            60.0,
+            20.0,
+            1.0,
+        )
+    };
+    let ego = app
+        .world_mut()
+        .spawn((vehicle, VehicleTrafficState::FreeFlow))
+        .id();
+
+    app.update();
+
+    let v = app.world().get::<Vehicle>(ego).unwrap();
+    let path_pool = app.world().resource::<crate::game::transport::PathPool>();
+    let route = path_pool.get(v.path_handle).unwrap();
+
+    assert_eq!(route[0], TilePos { x: 1, y: 0 });
+    assert_eq!(route[1], TilePos { x: 1, y: 1 });
+    assert_eq!(route[2], TilePos { x: 2, y: 0 });
+    assert_eq!(route[3], TilePos { x: 3, y: 0 });
+    assert_eq!(route[4], TilePos { x: 4, y: 0 });
+}
+
+#[test]
 fn stuck_dead_end_uturn_rewrites_route_on_two_lane() {
     use crate::game::transport::{
         GraphVersion, PathCache, PathfindingConfig, RegionGraph, RoadGraph,

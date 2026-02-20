@@ -98,6 +98,7 @@ pub(super) fn resolve_stuck_vehicles(
         traffic: &traffic,
         grid: &grid,
         intersections: &intersections,
+        max_iterations: None,
     };
 
     for (e, mut v, state, passenger, service_vehicle, mut stuck) in q.iter_mut() {

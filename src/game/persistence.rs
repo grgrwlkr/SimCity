@@ -110,9 +110,16 @@ fn snapshot_service_stations(q: &Query<&ServiceStation>) -> Vec<ServiceStationSn
     out
 }
 
-fn snapshot_buildings(q: &Query<&Building>) -> Vec<BuildingSnapshot> {
+fn snapshot_buildings(
+    q: &Query<(
+        &Building,
+        Option<&crate::game::buildings::components_pub::NoRoadAccessDecay>,
+        Option<&crate::game::buildings::components_pub::LowHappinessDecay>,
+        Option<&crate::game::buildings::components_pub::EconomicDecay>,
+    )>,
+) -> Vec<BuildingSnapshot> {
     let mut out = Vec::new();
-    for b in q.iter() {
+    for (b, no_road, low_happy, economic) in q.iter() {
         out.push(BuildingSnapshot {
             kind: b.kind,
             anchor_pos: b.anchor_pos,
@@ -128,6 +135,23 @@ fn snapshot_buildings(q: &Query<&Building>) -> Vec<BuildingSnapshot> {
             target_occupancy_residents: b.target_occupancy_residents,
             target_occupancy_jobs: b.target_occupancy_jobs,
             parking_spots: b.parking_spots.clone(),
+            no_road_access_decay: no_road.copied().map(|d| {
+                crate::game::persistence_contract::NoRoadAccessDecaySnapshot {
+                    access_lost_day: d.access_lost_day,
+                }
+            }),
+            low_happiness_decay: low_happy.copied().map(|d| {
+                crate::game::persistence_contract::LowHappinessDecaySnapshot {
+                    decay_start_day: d.decay_start_day,
+                    avg_happiness: d.avg_happiness,
+                }
+            }),
+            economic_decay: economic.copied().map(|d| {
+                crate::game::persistence_contract::EconomicDecaySnapshot {
+                    decay_start_day: d.decay_start_day,
+                    cumulative_losses: d.cumulative_losses,
+                }
+            }),
         });
     }
     out
@@ -170,28 +194,47 @@ fn spawn_building_entity_from_snapshot(
     let mut tf = Transform::from_translation(Vec3::new(world.x, world.y, 8.0));
     tf.scale = Vec3::splat(1.0);
 
-    commands
-        .spawn((
-            Building {
-                kind: snapshot.kind,
-                anchor_pos: snapshot.anchor_pos,
-                footprint_width: snapshot.footprint_width,
-                footprint_length: snapshot.footprint_length,
-                level: snapshot.level,
-                phase: restore_building_phase(snapshot.phase),
-                construction_start_day: snapshot.construction_start_day,
-                capacity_residents: snapshot.capacity_residents,
-                capacity_jobs: snapshot.capacity_jobs,
-                occupancy_residents: snapshot.occupancy_residents,
-                occupancy_jobs: snapshot.occupancy_jobs,
-                target_occupancy_residents: snapshot.target_occupancy_residents,
-                target_occupancy_jobs: snapshot.target_occupancy_jobs,
-                parking_spots: snapshot.parking_spots.clone(),
-            },
-            Sprite::from_color(snapshot.kind.color(), sprite_size),
-            tf,
-        ))
-        .id()
+    let mut entity_commands = commands.spawn((
+        Building {
+            kind: snapshot.kind,
+            anchor_pos: snapshot.anchor_pos,
+            footprint_width: snapshot.footprint_width,
+            footprint_length: snapshot.footprint_length,
+            level: snapshot.level,
+            phase: restore_building_phase(snapshot.phase),
+            construction_start_day: snapshot.construction_start_day,
+            capacity_residents: snapshot.capacity_residents,
+            capacity_jobs: snapshot.capacity_jobs,
+            occupancy_residents: snapshot.occupancy_residents,
+            occupancy_jobs: snapshot.occupancy_jobs,
+            target_occupancy_residents: snapshot.target_occupancy_residents,
+            target_occupancy_jobs: snapshot.target_occupancy_jobs,
+            parking_spots: snapshot.parking_spots.clone(),
+        },
+        Sprite::from_color(snapshot.kind.color(), sprite_size),
+        tf,
+    ));
+
+    // Restore decay components if present
+    if let Some(decay) = snapshot.no_road_access_decay {
+        entity_commands.insert(crate::game::buildings::components_pub::NoRoadAccessDecay {
+            access_lost_day: decay.access_lost_day,
+        });
+    }
+    if let Some(decay) = snapshot.low_happiness_decay {
+        entity_commands.insert(crate::game::buildings::components_pub::LowHappinessDecay {
+            decay_start_day: decay.decay_start_day,
+            avg_happiness: decay.avg_happiness,
+        });
+    }
+    if let Some(decay) = snapshot.economic_decay {
+        entity_commands.insert(crate::game::buildings::components_pub::EconomicDecay {
+            decay_start_day: decay.decay_start_day,
+            cumulative_losses: decay.cumulative_losses,
+        });
+    }
+
+    entity_commands.id()
 }
 
 #[derive(SystemParam)]
@@ -200,7 +243,16 @@ struct SaveParams<'w, 's> {
     grid: Res<'w, MapGrid>,
     city: Res<'w, City>,
     id_gen: Res<'w, CitizenIdGen>,
-    q_buildings: Query<'w, 's, &'static Building>,
+    q_buildings: Query<
+        'w,
+        's,
+        (
+            &'static Building,
+            Option<&'static crate::game::buildings::components_pub::NoRoadAccessDecay>,
+            Option<&'static crate::game::buildings::components_pub::LowHappinessDecay>,
+            Option<&'static crate::game::buildings::components_pub::EconomicDecay>,
+        ),
+    >,
     q_citizens: Query<
         'w,
         's,
@@ -436,6 +488,9 @@ fn building_snapshot_from_legacy(
         target_occupancy_residents: 0,
         target_occupancy_jobs: 0,
         parking_spots: calculate_parking_spots(anchor, width, length, num_spots),
+        no_road_access_decay: None,
+        low_happiness_decay: None,
+        economic_decay: None,
     }
 }
 

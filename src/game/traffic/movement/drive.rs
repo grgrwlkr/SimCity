@@ -182,7 +182,27 @@ pub fn move_vehicles(
         }
         if speed_limit_world <= 0.0 {
             // Defensive fallback: never allow a 0 speed limit to freeze vehicles.
+            // Try prev/next tiles first, then use vehicle's max_speed.
             speed_limit_world = v.max_speed;
+
+            // Try to get speed from adjacent non-intersection tiles
+            if v.path_cursor > 0
+                && let Some(prev) = path_pool.get_tile(v.path_handle, v.path_cursor - 1)
+                && !is_intersection_tile(&grid, prev)
+            {
+                let prev_speed = road_speed_limit_world(&cfg, &traffic_cfg, prev, &grid);
+                if prev_speed > 0.0 {
+                    speed_limit_world = prev_speed;
+                }
+            }
+            if let Some(next) = path_pool.get_tile(v.path_handle, v.path_cursor + 1)
+                && !is_intersection_tile(&grid, next)
+            {
+                let next_speed = road_speed_limit_world(&cfg, &traffic_cfg, next, &grid);
+                if next_speed > 0.0 {
+                    speed_limit_world = speed_limit_world.max(next_speed);
+                }
+            }
         }
         let profile_factor = if service_vehicle.is_some() {
             SERVICE_VEHICLE_SPEED_LIMIT_FACTOR

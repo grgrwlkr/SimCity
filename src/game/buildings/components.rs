@@ -150,7 +150,32 @@ pub struct NoRoadAccessDecay {
     pub access_lost_day: u32,
 }
 
+/// When a building has low happiness (unhappy residents/workers), track decay.
+/// GDD: Buildings with persistent low happiness become abandoned.
+#[derive(Component, Debug, Copy, Clone)]
+pub struct LowHappinessDecay {
+    /// Day when low happiness was first detected
+    pub decay_start_day: u32,
+    /// Average happiness of building occupants (0.0 - 1.0)
+    pub avg_happiness: f32,
+}
+
+/// Economic decay: building is losing money (expenses > income)
+#[derive(Component, Debug, Copy, Clone)]
+pub struct EconomicDecay {
+    /// Day when economic problems started
+    pub decay_start_day: u32,
+    /// Cumulative losses (negative value)
+    pub cumulative_losses: i64,
+}
+
 pub const NO_ROAD_ACCESS_GRACE_DAYS: u32 = 1;
+/// Days before abandonment due to low happiness (GDD: 2 days)
+pub const LOW_HAPPINESS_GRACE_DAYS: u32 = 2;
+/// Happiness threshold below which decay starts
+pub const LOW_HAPPINESS_THRESHOLD: f32 = 0.3;
+/// Economic losses threshold before abandonment (GDD: -100 money)
+pub const ECONOMIC_LOSSES_THRESHOLD: i64 = -100;
 
 #[derive(Resource)]
 pub struct BuildingGrowthClock {

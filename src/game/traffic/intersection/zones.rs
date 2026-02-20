@@ -71,11 +71,20 @@ pub(crate) fn right_turn_zone(entry_dir: RoadDir) -> ConflictMask {
 }
 
 pub(crate) fn left_turn_zone(entry_dir: RoadDir) -> ConflictMask {
-    // Left turns cross opposing straight traffic and are the primary "wait" maneuver in the MVP.
-    // Model them conservatively as occupying the whole intersection so they yield to straight
-    // flows (and each other) unless the intersection is otherwise clear.
-    let _ = entry_dir;
-    ZONE_ALL
+    // Left turns cross opposing straight traffic, but NOT opposing left turns!
+    // On two-way roads, opposing left turns use different corners and don't conflict.
+    //
+    // Real-world behavior:
+    // - Northbound left turn uses NW corner
+    // - Southbound left turn uses SE corner
+    // - These don't overlap, so both can turn simultaneously
+    match entry_dir {
+        RoadDir::North => ZONE_NW, // Coming from South, turning West: uses NW corner
+        RoadDir::East => ZONE_NE,  // Coming from West, turning North: uses NE corner
+        RoadDir::South => ZONE_SE, // Coming from North, turning East: uses SE corner
+        RoadDir::West => ZONE_SW,  // Coming from East, turning South: uses SW corner
+        RoadDir::None => ZONE_CENTER,
+    }
 }
 
 pub(crate) fn straight_zone(entry_dir: RoadDir) -> ConflictMask {

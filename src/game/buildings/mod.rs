@@ -1,6 +1,10 @@
 //! M4: Zoning -> building growth (primitives).
 
 mod components;
+pub mod components_pub {
+    pub use super::components::*;
+}
+pub use components::*;
 mod construction;
 mod decay;
 mod footprint;
@@ -78,6 +82,8 @@ impl Plugin for BuildingsPlugin {
                     grow_buildings,
                     despawn_invalid_buildings.before(building_decay_no_road_access),
                     building_decay_no_road_access,
+                    building_decay_low_happiness,
+                    building_decay_economic,
                     upgrade_buildings,
                 )
                     .in_set(GameSet::Sim)

@@ -1320,7 +1320,7 @@ fn update_debug_transport_snapshot(
     if let Some(graph) = lane_graph.as_deref() {
         snapshot.lane_graph_version = graph.version;
         snapshot.lane_count = graph.lanes.len() as u32;
-        snapshot.lane_connections = graph.lane_connections.len() as u32;
+        snapshot.lane_connections = graph.connections.len() as u32;
     } else {
         snapshot.lane_graph_version = 0;
         snapshot.lane_count = 0;

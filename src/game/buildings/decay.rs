@@ -1,6 +1,7 @@
 use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
 
+use crate::game::economy::EconomyConfig;
 use crate::game::map::{DirtyTiles, MapGrid, TilePos};
 use crate::game::sim::City;
 use crate::game::sim_events::DayAdvanced;
@@ -199,4 +200,230 @@ fn has_adjacent_road(grid: &MapGrid, pos: TilePos) -> bool {
         }
     }
     false
+}
+
+/// Track and process building decay due to low happiness.
+///
+/// Buildings with average happiness below LOW_HAPPINESS_THRESHOLD for LOW_HAPPINESS_GRACE_DAYS
+/// become abandoned and are demolished.
+pub fn building_decay_low_happiness(
+    mut day_events: MessageReader<'_, '_, DayAdvanced>,
+    mut commands: Commands,
+    mut grid: ResMut<MapGrid>,
+    mut dirty: ResMut<DirtyTiles>,
+    city: Res<City>,
+    economy_cfg: Res<EconomyConfig>,
+    mut q: Query<(
+        Entity,
+        &Building,
+        Option<&LowHappinessDecay>,
+        Option<&mut Sprite>,
+    )>,
+) {
+    let _days_advanced = day_events.read().count();
+    let current_day = city.day;
+
+    // Calculate target happiness based on economy config
+    let _target_happiness = economy_cfg.happiness_target;
+
+    for (e, b, decay, sprite) in q.iter_mut() {
+        // Only residential and commercial buildings have happiness
+        if !matches!(
+            b.kind,
+            crate::game::map::BuildingKind::Residential
+                | crate::game::map::BuildingKind::Commercial
+        ) {
+            continue;
+        }
+
+        // Skip buildings under construction
+        if !b.is_operational() {
+            continue;
+        }
+
+        // Calculate approximate happiness based on occupancy vs target
+        // This is a simplified model - real happiness would come from citizen simulation
+        let occupancy_ratio = if b.kind == crate::game::map::BuildingKind::Residential {
+            b.occupancy_residents as f32 / b.capacity_residents as f32
+        } else {
+            b.occupancy_jobs as f32 / b.capacity_jobs as f32
+        };
+
+        // Happiness is high when occupancy is close to target
+        let estimated_happiness = occupancy_ratio.clamp(0.0, 1.0);
+
+        if estimated_happiness >= LOW_HAPPINESS_THRESHOLD {
+            // Happiness recovered - remove decay component
+            if decay.is_some() {
+                commands.entity(e).remove::<LowHappinessDecay>();
+                // Restore normal sprite color
+                if let Some(mut sprite) = sprite {
+                    sprite.color = b.kind.color();
+                }
+            }
+            continue;
+        }
+
+        // Low happiness detected
+        let decay_start_day = decay
+            .as_ref()
+            .map(|d| d.decay_start_day)
+            .unwrap_or(current_day);
+
+        let days_with_low_happiness = current_day.saturating_sub(decay_start_day);
+
+        // Visual indicator: yellow/orange tint for struggling buildings
+        if days_with_low_happiness < LOW_HAPPINESS_GRACE_DAYS {
+            if let Some(mut sprite) = sprite {
+                // Yellow tint to indicate problems
+                sprite.color = bevy::prelude::Color::srgb(1.0, 0.8, 0.3);
+            }
+
+            // Add decay component if not present
+            if decay.is_none() {
+                commands.entity(e).insert(LowHappinessDecay {
+                    decay_start_day: current_day,
+                    avg_happiness: estimated_happiness,
+                });
+            }
+            continue;
+        }
+
+        // Grace period expired - abandon building
+        demolish_building(
+            e,
+            b,
+            &mut commands,
+            &mut grid,
+            &mut dirty,
+            sprite.as_deref(),
+        );
+    }
+}
+
+/// Track and process building decay due to economic losses.
+///
+/// Buildings with cumulative losses below ECONOMIC_LOSSES_THRESHOLD are abandoned.
+pub fn building_decay_economic(
+    mut day_events: MessageReader<'_, '_, DayAdvanced>,
+    mut commands: Commands,
+    mut grid: ResMut<MapGrid>,
+    mut dirty: ResMut<DirtyTiles>,
+    city: Res<City>,
+    mut q: Query<(
+        Entity,
+        &Building,
+        Option<&EconomicDecay>,
+        Option<&mut Sprite>,
+    )>,
+) {
+    let _days_advanced = day_events.read().count();
+    let current_day = city.day;
+
+    for (e, b, decay, sprite) in q.iter_mut() {
+        // Only commercial and industrial buildings have economic concerns
+        if !matches!(
+            b.kind,
+            crate::game::map::BuildingKind::Commercial | crate::game::map::BuildingKind::Industrial
+        ) {
+            continue;
+        }
+
+        // Skip buildings under construction
+        if !b.is_operational() {
+            continue;
+        }
+
+        // Calculate economic performance based on occupancy
+        // Low occupancy = low income = losses
+        let occupancy_ratio = b.occupancy_jobs as f32 / b.capacity_jobs as f32;
+
+        // Estimate daily loss based on low occupancy
+        // This is simplified - real economy would track actual money flow
+        let estimated_daily_loss = if occupancy_ratio < 0.5 {
+            ((0.5 - occupancy_ratio) * 20.0) as i64 // Up to -10 per day
+        } else {
+            0
+        };
+
+        if estimated_daily_loss == 0 {
+            // Economic recovery
+            if decay.is_some() {
+                commands.entity(e).remove::<EconomicDecay>();
+                if let Some(mut sprite) = sprite {
+                    sprite.color = b.kind.color();
+                }
+            }
+            continue;
+        }
+
+        let decay_start_day = decay
+            .as_ref()
+            .map(|d| d.decay_start_day)
+            .unwrap_or(current_day);
+
+        let days_with_losses = current_day.saturating_sub(decay_start_day);
+        let cumulative_losses = (days_with_losses as i64) * estimated_daily_loss;
+
+        if cumulative_losses >= ECONOMIC_LOSSES_THRESHOLD {
+            // Add/update decay component
+            if decay.is_none() {
+                commands.entity(e).insert(EconomicDecay {
+                    decay_start_day: current_day,
+                    cumulative_losses,
+                });
+            }
+
+            // Visual indicator: purple tint for economic trouble
+            if let Some(mut sprite) = sprite {
+                sprite.color = bevy::prelude::Color::srgb(0.8, 0.5, 1.0);
+            }
+            continue;
+        }
+
+        // Economic losses exceeded threshold - abandon building
+        demolish_building(
+            e,
+            b,
+            &mut commands,
+            &mut grid,
+            &mut dirty,
+            sprite.as_deref(),
+        );
+    }
+}
+
+/// Helper function to demolish a building
+fn demolish_building(
+    e: Entity,
+    b: &Building,
+    commands: &mut Commands,
+    grid: &mut ResMut<MapGrid>,
+    dirty: &mut ResMut<DirtyTiles>,
+    sprite: Option<&Sprite>,
+) {
+    // Visual indicator before demolition: red tint
+    if let Some(_sprite) = sprite {
+        // Sprite color already set by caller
+    }
+
+    // Clear all footprint tiles
+    for_each_footprint_tile(
+        b.anchor_pos,
+        b.footprint_width,
+        b.footprint_length,
+        |tile| {
+            if let Some(mut cell) = grid.get(tile)
+                && cell.building == Some(b.kind)
+            {
+                cell.building = None;
+                grid.set(tile, cell);
+                if let Some(idx) = grid.idx(tile) {
+                    dirty.mark(idx);
+                }
+            }
+        },
+    );
+
+    commands.entity(e).despawn();
 }

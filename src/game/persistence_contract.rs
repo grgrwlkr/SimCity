@@ -7,6 +7,7 @@ use bevy::ecs::message::MessageReader;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
+use crate::game::buildings::components_pub::{EconomicDecay, LowHappinessDecay, NoRoadAccessDecay};
 use crate::game::buildings::{Building, BuildingPhase};
 use crate::game::citizens::CitizenState;
 use crate::game::citizens::{Citizen, CitizenWorkplace};
@@ -95,6 +96,32 @@ pub struct BuildingSnapshot {
     pub target_occupancy_jobs: u16,
     /// Parking spot positions inside the footprint (GDD 10.3.4)
     pub parking_spots: Vec<TilePos>,
+    /// Decay state: road access loss
+    pub no_road_access_decay: Option<NoRoadAccessDecaySnapshot>,
+    /// Decay state: low happiness
+    pub low_happiness_decay: Option<LowHappinessDecaySnapshot>,
+    /// Decay state: economic losses
+    pub economic_decay: Option<EconomicDecaySnapshot>,
+}
+
+/// Snapshot of NoRoadAccessDecay component
+#[derive(serde::Serialize, serde::Deserialize, Debug, Copy, Clone)]
+pub struct NoRoadAccessDecaySnapshot {
+    pub access_lost_day: u32,
+}
+
+/// Snapshot of LowHappinessDecay component
+#[derive(serde::Serialize, serde::Deserialize, Debug, Copy, Clone)]
+pub struct LowHappinessDecaySnapshot {
+    pub decay_start_day: u32,
+    pub avg_happiness: f32,
+}
+
+/// Snapshot of EconomicDecay component
+#[derive(serde::Serialize, serde::Deserialize, Debug, Copy, Clone)]
+pub struct EconomicDecaySnapshot {
+    pub decay_start_day: u32,
+    pub cumulative_losses: i64,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -232,7 +259,12 @@ fn snapshot_savegame_v3(
     seed: &MapSeed,
     grid: &MapGrid,
     city: &City,
-    buildings: &Query<&Building>,
+    buildings: &Query<(
+        &Building,
+        Option<&NoRoadAccessDecay>,
+        Option<&LowHappinessDecay>,
+        Option<&EconomicDecay>,
+    )>,
     citizens: &Query<(&CitizenIdComp, &Citizen, Option<&CitizenWorkplace>)>,
     id_gen: &CitizenIdGen,
     stations: &Query<&ServiceStation>,
@@ -248,7 +280,7 @@ fn snapshot_savegame_v3(
         emergency_manager,
     );
     let mut out_buildings = Vec::new();
-    for b in buildings.iter() {
+    for (b, no_road, low_happy, economic) in buildings.iter() {
         out_buildings.push(BuildingSnapshot {
             kind: b.kind,
             anchor_pos: b.anchor_pos,
@@ -269,6 +301,17 @@ fn snapshot_savegame_v3(
             target_occupancy_residents: b.target_occupancy_residents,
             target_occupancy_jobs: b.target_occupancy_jobs,
             parking_spots: b.parking_spots.clone(),
+            no_road_access_decay: no_road.copied().map(|d| NoRoadAccessDecaySnapshot {
+                access_lost_day: d.access_lost_day,
+            }),
+            low_happiness_decay: low_happy.copied().map(|d| LowHappinessDecaySnapshot {
+                decay_start_day: d.decay_start_day,
+                avg_happiness: d.avg_happiness,
+            }),
+            economic_decay: economic.copied().map(|d| EconomicDecaySnapshot {
+                decay_start_day: d.decay_start_day,
+                cumulative_losses: d.cumulative_losses,
+            }),
         });
     }
 
@@ -393,7 +436,16 @@ struct DumpParams<'w, 's> {
     grid: Res<'w, MapGrid>,
     city: Res<'w, City>,
     id_gen: Res<'w, CitizenIdGen>,
-    q_buildings: Query<'w, 's, &'static Building>,
+    q_buildings: Query<
+        'w,
+        's,
+        (
+            &'static Building,
+            Option<&'static NoRoadAccessDecay>,
+            Option<&'static LowHappinessDecay>,
+            Option<&'static EconomicDecay>,
+        ),
+    >,
     q_citizens: Query<
         'w,
         's,

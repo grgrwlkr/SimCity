@@ -1,6 +1,7 @@
 use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
 use bevy::time::Fixed;
+use rand::Rng;
 use std::collections::HashSet;
 
 use crate::game::commands::GameCommand;
@@ -58,7 +59,7 @@ impl Default for TrafficLight {
             phase_timer: 10.0,
             green_duration: 10.0,
             yellow_duration: 3.0,
-            all_red_duration: 1.0,
+            all_red_duration: 4.0, // Increased from 1.0 to 4.0 for safety (GDD: clearance interval)
         }
     }
 }
@@ -175,6 +176,7 @@ pub fn sync_traffic_light_entities(
     }
 
     // Spawn new lights
+    let mut rng = rand::rng();
     for cluster in index.clusters.iter() {
         if !index.traffic_lights.contains(&cluster.id) {
             continue;
@@ -188,11 +190,16 @@ pub fn sync_traffic_light_entities(
             continue;
         }
 
+        // CRITICAL: Random phase offset to prevent synchronized lights (green wave)
+        // Each intersection starts at a random point in its cycle
+        let random_offset = rng.random_range(0.0..10.0); // Random 0-10 second offset
+
         commands.spawn((
             TrafficLight {
                 intersection_id: cluster.id,
                 intersection_key: cluster.key,
                 pos: cluster.centroid_tile,
+                phase_timer: random_offset, // Start at random phase
                 ..default()
             },
             Transform::default(),

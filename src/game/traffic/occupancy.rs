@@ -145,6 +145,9 @@ pub(super) fn reset_traffic_aggregates(
 }
 
 /// Update the occupancy map based on current vehicle positions.
+///
+/// This system runs at the **beginning** of `GameSet::Sim` to ensure pathfinding
+/// uses fresh occupancy data from the previous tick, not stale data.
 #[allow(clippy::too_many_arguments)] // Bevy systems often need many parameters
 pub(super) fn update_traffic_occupancy(
     grid: Res<MapGrid>,
@@ -263,4 +266,60 @@ pub(super) fn update_traffic_occupancy(
 
     // Persist touched list for next tick clearing.
     occ.touched = touched;
+}
+
+/// Update TrafficIndex metrics at end of Sim tick for UI display.
+///
+/// This runs after all vehicle movement to provide accurate end-of-tick metrics.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn update_traffic_index(
+    grid: Res<MapGrid>,
+    occ: Res<TrafficOccupancy>,
+    mut idx: ResMut<TrafficIndex>,
+    roads: Res<TrafficRoadCache>,
+    _path_pool: Res<super::super::transport::PathPool>,
+    _q: Query<&Vehicle, Without<Parked>>,
+    _cfg: Res<TrafficConfig>,
+) {
+    // Recompute metrics from current occupancy
+    let mut vehicles_on_roads = 0u32;
+    let mut sum_cong = 0.0f32;
+    let mut max_cong = 0.0f32;
+    let mut max_tile: Option<usize> = None;
+    let mut max_tile_vehicles: u16 = 0;
+    let mut max_tile_cap: u16 = 0;
+
+    for ti in 0..grid.len() {
+        let cap = roads.capacity_per_tile.get(ti).copied().unwrap_or(0) as f32;
+        if cap <= 0.0 {
+            continue;
+        }
+        let c_u16 = occ.per_tick_vehicles[ti];
+        vehicles_on_roads = vehicles_on_roads.saturating_add(c_u16 as u32);
+        let cong = ((c_u16 as f32) / cap).clamp(0.0, 1.0);
+        sum_cong += cong;
+        if cong > max_cong {
+            max_cong = cong;
+            max_tile = Some(ti);
+            max_tile_vehicles = c_u16;
+            max_tile_cap = roads.capacity_per_tile.get(ti).copied().unwrap_or(0);
+        }
+    }
+
+    idx.road_tiles = roads.road_tiles;
+    idx.vehicles_on_roads = vehicles_on_roads;
+    if roads.road_tiles > 0 {
+        idx.avg_congestion = sum_cong / (roads.road_tiles as f32);
+        idx.max_congestion = max_cong;
+    } else {
+        idx.avg_congestion = 0.0;
+        idx.max_congestion = 0.0;
+    }
+
+    idx.max_congestion_tile = max_tile.map(|ti| TilePos {
+        x: (ti % (grid.width as usize)) as i32,
+        y: (ti / (grid.width as usize)) as i32,
+    });
+    idx.max_congestion_tile_vehicles = max_tile_vehicles;
+    idx.max_congestion_tile_capacity = max_tile_cap;
 }

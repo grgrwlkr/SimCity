@@ -29,7 +29,9 @@ pub use config::TrafficConfig;
 
 mod occupancy;
 pub use occupancy::{TrafficIndex, TrafficOccupancy};
-use occupancy::{TrafficRoadCache, reset_traffic_aggregates, update_traffic_occupancy};
+use occupancy::{
+    TrafficRoadCache, reset_traffic_aggregates, update_traffic_index, update_traffic_occupancy,
+};
 
 mod overlay;
 use overlay::{TrafficOverlayPool, TrafficOverlayTile, render_traffic_overlay};
@@ -334,10 +336,13 @@ impl Plugin for TrafficPlugin {
                     .in_set(GameSet::CommandApply)
                     .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
             )
-            // Simulation
+            // Simulation - Part 1: occupancy, state updates, spawning
             .add_systems(
                 FixedUpdate,
                 (
+                    // Update occupancy FIRST so pathfinding uses fresh data from previous tick
+                    update_traffic_occupancy,
+                    update_parked_vehicle_positions,
                     track_car_owner_index,
                     update_vehicle_traffic_state,
                     check_intersection_priority.after(update_vehicle_traffic_state),
@@ -345,6 +350,15 @@ impl Plugin for TrafficPlugin {
                     tick_lane_change_cooldowns,
                     tick_overtaking,
                     tick_overtake_oncoming,
+                )
+                    .chain()
+                    .in_set(GameSet::Sim)
+                    .run_if(in_state(AppState::InGame)),
+            )
+            // Simulation - Part 2: lane changes, intersections, movement
+            .add_systems(
+                FixedUpdate,
+                (
                     build_traffic_spatial_index_pre_lane_changes
                         .after(check_intersection_priority)
                         .after(spawn_trip_vehicles)
@@ -438,10 +452,10 @@ impl Plugin for TrafficPlugin {
                     .in_set(GameSet::Sim)
                     .run_if(in_state(AppState::InGame)),
             )
+            // Update traffic index at end of Sim for accurate UI metrics
             .add_systems(
                 FixedUpdate,
-                (update_traffic_occupancy, update_parked_vehicle_positions)
-                    .chain()
+                update_traffic_index
                     .in_set(GameSet::PostSim)
                     .run_if(in_state(AppState::InGame)),
             )

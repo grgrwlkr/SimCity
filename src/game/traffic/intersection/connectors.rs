@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
@@ -12,6 +12,53 @@ use crate::game::traffic::{
 use crate::game::transport::PathPool;
 
 use super::zones::{ManeuverKind, maneuver_kind};
+
+/// For two-way two-lane roads, ensure the exit lane is on the correct side.
+///
+/// In right-hand traffic:
+/// - When exiting North (dy=-1), we want the EAST lane (right side)
+/// - When exiting South (dy=1), we want the WEST lane (right side)
+/// - When exiting East (dx=1), we want the SOUTH lane (right side)
+/// - When exiting West (dx=-1), we want the NORTH lane (right side)
+fn ensure_correct_exit_lane(
+    mut exit_lane_tile: TilePos,
+    exit_dir: RoadDir,
+    grid: &MapGrid,
+    drive_on_right: bool,
+) -> TilePos {
+    if let Some(cell) = grid.get(exit_lane_tile) {
+        if cell.road.is_some()
+            && cell.road.flow == crate::game::roads::RoadFlow::TwoWay
+            && cell.road.kind == crate::game::roads::RoadKind::TwoLane
+        {
+            // This is a two-way two-lane road - check if we're on correct side
+            let travel_dir = exit_dir;
+            let correct_side = if drive_on_right {
+                travel_dir.right() // For right-hand traffic, correct lane is on the right
+            } else {
+                travel_dir.left() // For left-hand traffic, correct lane is on the left
+            };
+
+            // Check adjacent tile on the correct side
+            let correct_side_tile = TilePos {
+                x: exit_lane_tile.x + correct_side.delta().x,
+                y: exit_lane_tile.y + correct_side.delta().y,
+            };
+
+            if let Some(correct_cell) = grid.get(correct_side_tile) {
+                if correct_cell.road.is_some()
+                    && correct_cell.road.dir == travel_dir
+                    && correct_cell.road.flow == crate::game::roads::RoadFlow::TwoWay
+                {
+                    // Found correct lane - use it instead
+                    exit_lane_tile = correct_side_tile;
+                }
+            }
+        }
+    }
+
+    exit_lane_tile
+}
 
 /// Cached per-cluster data used for deterministic connector path generation.
 struct ClusterCache {
@@ -368,6 +415,11 @@ fn rewrite_intersection_segments(
         let entry_dir = super::super::dir_between_adjacent(approach_tile, entry_tile);
         let exit_dir = super::super::dir_between_adjacent(exit_tile, exit_lane_tile);
 
+        // CRITICAL: For two-way two-lane roads, ensure we exit on the correct lane
+        // (right-hand traffic: exit lane should be on the right side of the road)
+        let corrected_exit_lane_tile =
+            ensure_correct_exit_lane(exit_lane_tile, exit_dir, grid, traffic_cfg.drive_on_right);
+
         let mut replaced = false;
         if entry_dir != RoadDir::None
             && exit_dir != RoadDir::None
@@ -395,13 +447,92 @@ fn rewrite_intersection_segments(
         if !replaced {
             out.extend_from_slice(existing_segment);
         }
-        idx = end;
+
+        let (next_idx, lane_changed) = append_corrected_exit_lane_suffix(
+            &mut out,
+            route,
+            end,
+            corrected_exit_lane_tile,
+            exit_dir,
+            grid,
+        );
+        if lane_changed {
+            changed = true;
+        }
+        idx = next_idx;
     }
 
     if changed { Some(out) } else { None }
 }
 
-/// Build a connector path through a cluster for a specific maneuver.
+/// Replace a wrong post-intersection lane with corrected lane and, when possible,
+/// keep the corrected offset for the immediate outgoing straight segment.
+fn append_corrected_exit_lane_suffix(
+    out: &mut Vec<TilePos>,
+    route: &[TilePos],
+    exit_lane_idx: usize,
+    corrected_exit_lane: TilePos,
+    exit_dir: RoadDir,
+    grid: &MapGrid,
+) -> (usize, bool) {
+    let Some(&original_exit_lane) = route.get(exit_lane_idx) else {
+        return (exit_lane_idx, false);
+    };
+
+    if corrected_exit_lane == original_exit_lane {
+        out.push(original_exit_lane);
+        return (exit_lane_idx + 1, false);
+    }
+
+    out.push(corrected_exit_lane);
+    let mut changed = true;
+    let offset_x = corrected_exit_lane.x - original_exit_lane.x;
+    let offset_y = corrected_exit_lane.y - original_exit_lane.y;
+    let mut prev = corrected_exit_lane;
+    let mut idx = exit_lane_idx + 1;
+
+    while idx < route.len() {
+        let original = route[idx];
+        if is_intersection_tile(grid, original) {
+            break;
+        }
+
+        let Some(original_cell) = grid.get(original) else {
+            break;
+        };
+        if !original_cell.road.is_some() {
+            break;
+        }
+
+        let shifted = TilePos {
+            x: original.x + offset_x,
+            y: original.y + offset_y,
+        };
+        let Some(shifted_cell) = grid.get(shifted) else {
+            break;
+        };
+        if !shifted_cell.road.is_some() || shifted_cell.road.dir != exit_dir {
+            break;
+        }
+        if super::super::dir_between_adjacent(prev, shifted) == RoadDir::None {
+            break;
+        }
+
+        out.push(shifted);
+        prev = shifted;
+        changed = true;
+        idx += 1;
+    }
+
+    (idx, changed)
+}
+
+/// Build connector path through a cluster for a specific maneuver.
+///
+/// CRITICAL: This must follow real-world traffic rules:
+/// - Straight: stay on right side through intersection
+/// - Left turn: enter from left, cross center, exit on RIGHT lane (not oncoming!)
+/// - Right turn: tight turn around corner, exit on right lane
 fn build_connector_path(
     entry_tile: TilePos,
     exit_tile: TilePos,
@@ -410,66 +541,275 @@ fn build_connector_path(
     cluster: &ClusterCache,
     traffic_cfg: &TrafficConfig,
 ) -> Option<(Vec<TilePos>, TilePos)> {
-    let anchor = choose_anchor(
-        entry_tile,
-        exit_tile,
-        entry_dir,
-        exit_dir,
-        cluster,
-        traffic_cfg,
-    )?;
-    let bounds = center_bounds(cluster.aabb_min, cluster.aabb_max);
-    let entry_side = side_dir_for_travel(traffic_cfg, entry_dir);
-    let exit_side = side_dir_for_travel(traffic_cfg, exit_dir);
-    let allowed_entry = |pos: TilePos| {
-        pos == entry_tile
-            || pos == anchor
-            || is_center_tile(pos, bounds)
-            || is_on_side(pos, entry_side, bounds)
-    };
-    let allowed_exit = |pos: TilePos| {
-        pos == exit_tile
-            || pos == anchor
-            || is_center_tile(pos, bounds)
-            || is_on_side(pos, exit_side, bounds)
-    };
-
-    let mut path_a = axis_first_path(entry_tile, anchor, Some(entry_dir), cluster, &allowed_entry)
-        .or_else(|| bfs_path(entry_tile, anchor, cluster, &allowed_entry))?;
-    let path_b = axis_first_path(anchor, exit_tile, Some(exit_dir), cluster, &allowed_exit)
-        .or_else(|| bfs_path(anchor, exit_tile, cluster, &allowed_exit))?;
-
-    if path_b.len() > 1 {
-        path_a.pop();
-        path_a.extend(path_b);
-    }
-
-    Some((path_a, anchor))
-}
-
-/// Choose an anchor tile that defines the intended connector shape.
-fn choose_anchor(
-    entry_tile: TilePos,
-    exit_tile: TilePos,
-    entry_dir: RoadDir,
-    exit_dir: RoadDir,
-    cluster: &ClusterCache,
-    traffic_cfg: &TrafficConfig,
-) -> Option<TilePos> {
     let maneuver = maneuver_kind(traffic_cfg, entry_dir, exit_dir);
-    let raw = match maneuver {
-        ManeuverKind::Straight => exit_tile,
-        ManeuverKind::RightTurn => corner_anchor(entry_tile, exit_tile, entry_dir),
-        ManeuverKind::LeftTurn | ManeuverKind::Other => {
-            left_turn_anchor(entry_tile, entry_dir, cluster)?
+
+    // Build path based on maneuver type using simple geometry
+    let connector = match maneuver {
+        ManeuverKind::Straight => {
+            // Simple straight path: just go from entry to exit
+            build_simple_path(entry_tile, exit_tile, cluster)?
+        }
+        ManeuverKind::RightTurn => {
+            // Right turn: via corner
+            let anchor = corner_anchor(entry_tile, exit_tile, entry_dir);
+            build_simple_path_via(entry_tile, anchor, exit_tile, cluster)?
+        }
+        ManeuverKind::LeftTurn => {
+            // Left turn: via center, MUST exit on correct (rightmost) lane
+            // This is CRITICAL - don't exit on oncoming lane!
+            build_left_turn_connector_correct(
+                entry_tile,
+                exit_tile,
+                exit_dir,
+                cluster,
+                traffic_cfg,
+            )?
+        }
+        ManeuverKind::Other => {
+            // U-turn or unknown - use fallback
+            build_simple_path(entry_tile, exit_tile, cluster)?
         }
     };
 
-    let clamped = TilePos {
-        x: raw.x.clamp(cluster.aabb_min.x, cluster.aabb_max.x),
-        y: raw.y.clamp(cluster.aabb_min.y, cluster.aabb_max.y),
+    // Use center of intersection as anchor for visualization
+    let anchor = center_anchor(cluster)?;
+
+    Some((connector, anchor))
+}
+
+/// Build left turn connector that EXPLICITLY exits on the correct (rightmost) lane.
+///
+/// For right-hand traffic:
+/// - When exiting North: use lane 0 (rightmost for North)
+/// - When exiting South: use lane 0 (rightmost for South, which is east side)
+/// - When exiting East: use lane 0 (rightmost for East, which is south side)
+/// - When exiting West: use lane 0 (rightmost for West, which is north side)
+fn build_left_turn_connector_correct(
+    entry_tile: TilePos,
+    exit_tile: TilePos,
+    exit_dir: RoadDir,
+    cluster: &ClusterCache,
+    traffic_cfg: &TrafficConfig,
+) -> Option<Vec<TilePos>> {
+    let mut path = Vec::new();
+    path.push(entry_tile);
+
+    // Move to center of intersection
+    let center_tile = center_anchor(cluster)?;
+
+    // Entry → Center
+    let mut cx = entry_tile.x;
+    let mut cy = entry_tile.y;
+
+    while cx != center_tile.x {
+        let step = if center_tile.x > cx { 1 } else { -1 };
+        cx += step;
+        let next = TilePos { x: cx, y: cy };
+        if cluster.tiles_set.contains(&next) && path.last() != Some(&next) {
+            path.push(next);
+        }
+    }
+    while cy != center_tile.y {
+        let step = if center_tile.y > cy { 1 } else { -1 };
+        cy += step;
+        let next = TilePos { x: cx, y: cy };
+        if cluster.tiles_set.contains(&next) && path.last() != Some(&next) {
+            path.push(next);
+        }
+    }
+
+    // Center → Exit: CRITICAL - must exit on correct lane!
+    // For right-hand traffic, we want the rightmost lane for the exit direction
+    // Find the correct exit tile by checking adjacent tiles
+    let correct_exit =
+        find_correct_exit_lane(exit_tile, exit_dir, cluster, traffic_cfg.drive_on_right);
+
+    // Move from center to correct exit
+    cx = center_tile.x;
+    cy = center_tile.y;
+    let ex = correct_exit.x;
+    let ey = correct_exit.y;
+
+    while cx != ex {
+        let step = if ex > cx { 1 } else { -1 };
+        cx += step;
+        let next = TilePos { x: cx, y: cy };
+        if cluster.tiles_set.contains(&next) && path.last() != Some(&next) {
+            path.push(next);
+        }
+    }
+    while cy != ey {
+        let step = if ey > cy { 1 } else { -1 };
+        cy += step;
+        let next = TilePos { x: cx, y: cy };
+        if cluster.tiles_set.contains(&next) && path.last() != Some(&next) {
+            path.push(next);
+        }
+    }
+
+    if path.last() != Some(&correct_exit) {
+        path.push(correct_exit);
+    }
+
+    if path.len() < 2 { None } else { Some(path) }
+}
+
+/// Find the correct exit lane tile for a given exit direction.
+/// For right-hand traffic, returns the rightmost lane for that direction.
+fn find_correct_exit_lane(
+    exit_tile: TilePos,
+    exit_dir: RoadDir,
+    cluster: &ClusterCache,
+    drive_on_right: bool,
+) -> TilePos {
+    // Check adjacent tiles to find the correct lane
+    // For right-hand traffic: we want the rightmost lane for exit_dir
+    let right_side = if drive_on_right {
+        exit_dir.right()
+    } else {
+        exit_dir.left()
     };
-    nearest_tile_in_cluster(clamped, cluster)
+
+    // Check tile on the right side
+    let right_tile = TilePos {
+        x: exit_tile.x + right_side.delta().x,
+        y: exit_tile.y + right_side.delta().y,
+    };
+
+    // If right tile is in cluster and has correct direction, use it
+    if cluster.tiles_set.contains(&right_tile) {
+        return right_tile;
+    }
+
+    // Otherwise use the original exit tile
+    exit_tile
+}
+
+/// Build simple straight path from entry to exit.
+fn build_simple_path(
+    entry_tile: TilePos,
+    exit_tile: TilePos,
+    cluster: &ClusterCache,
+) -> Option<Vec<TilePos>> {
+    let mut path = Vec::new();
+    path.push(entry_tile);
+
+    let mut cx = entry_tile.x;
+    let mut cy = entry_tile.y;
+    let ex = exit_tile.x;
+    let ey = exit_tile.y;
+
+    // Move horizontally first
+    while cx != ex {
+        let step = if ex > cx { 1 } else { -1 };
+        cx += step;
+        let next = TilePos { x: cx, y: cy };
+        if cluster.tiles_set.contains(&next) && path.last() != Some(&next) {
+            path.push(next);
+        }
+    }
+    // Then vertically
+    while cy != ey {
+        let step = if ey > cy { 1 } else { -1 };
+        cy += step;
+        let next = TilePos { x: cx, y: cy };
+        if cluster.tiles_set.contains(&next) && path.last() != Some(&next) {
+            path.push(next);
+        }
+    }
+
+    if path.last() != Some(&exit_tile) {
+        path.push(exit_tile);
+    }
+
+    if path.len() < 2 { None } else { Some(path) }
+}
+
+/// Build simple path via an intermediate point.
+fn build_simple_path_via(
+    entry_tile: TilePos,
+    via_tile: TilePos,
+    exit_tile: TilePos,
+    cluster: &ClusterCache,
+) -> Option<Vec<TilePos>> {
+    let mut path = Vec::new();
+    path.push(entry_tile);
+
+    // Entry → Via
+    let mut cx = entry_tile.x;
+    let mut cy = entry_tile.y;
+    let vx = via_tile.x;
+    let vy = via_tile.y;
+
+    while cx != vx {
+        let step = if vx > cx { 1 } else { -1 };
+        cx += step;
+        let next = TilePos { x: cx, y: cy };
+        if cluster.tiles_set.contains(&next) && path.last() != Some(&next) {
+            path.push(next);
+        }
+    }
+    while cy != vy {
+        let step = if vy > cy { 1 } else { -1 };
+        cy += step;
+        let next = TilePos { x: cx, y: cy };
+        if cluster.tiles_set.contains(&next) && path.last() != Some(&next) {
+            path.push(next);
+        }
+    }
+
+    // Via → Exit
+    cx = via_tile.x;
+    cy = via_tile.y;
+    let ex = exit_tile.x;
+    let ey = exit_tile.y;
+
+    while cx != ex {
+        let step = if ex > cx { 1 } else { -1 };
+        cx += step;
+        let next = TilePos { x: cx, y: cy };
+        if cluster.tiles_set.contains(&next) && path.last() != Some(&next) {
+            path.push(next);
+        }
+    }
+    while cy != ey {
+        let step = if ey > cy { 1 } else { -1 };
+        cy += step;
+        let next = TilePos { x: cx, y: cy };
+        if cluster.tiles_set.contains(&next) && path.last() != Some(&next) {
+            path.push(next);
+        }
+    }
+
+    if path.last() != Some(&exit_tile) {
+        path.push(exit_tile);
+    }
+
+    if path.len() < 2 { None } else { Some(path) }
+}
+
+/// Get the center tile of an intersection cluster.
+fn center_anchor(cluster: &ClusterCache) -> Option<TilePos> {
+    if cluster.tiles.is_empty() {
+        return None;
+    }
+
+    let center_x = (cluster.aabb_min.x + cluster.aabb_max.x) / 2;
+    let center_y = (cluster.aabb_min.y + cluster.aabb_max.y) / 2;
+
+    // Find tile closest to center
+    let mut best = cluster.tiles[0];
+    let mut best_dist = i32::MAX;
+
+    for &tile in &cluster.tiles {
+        let dist = (tile.x - center_x).abs() + (tile.y - center_y).abs();
+        if dist < best_dist {
+            best = tile;
+            best_dist = dist;
+        }
+    }
+
+    Some(best)
 }
 
 fn debug_maneuver_kind(maneuver: ManeuverKind) -> DebugManeuverKind {
@@ -489,289 +829,6 @@ fn corner_anchor(entry_tile: TilePos, exit_tile: TilePos, entry_dir: RoadDir) ->
         RoadDir::None => (entry_tile.x, entry_tile.y),
     };
     TilePos { x: ax, y: ay }
-}
-
-/// Anchor for left turns / U-turns: closest center tile.
-fn left_turn_anchor(
-    entry_tile: TilePos,
-    entry_dir: RoadDir,
-    cluster: &ClusterCache,
-) -> Option<TilePos> {
-    let (center_x0, center_x1, center_y0, center_y1) =
-        center_bounds(cluster.aabb_min, cluster.aabb_max);
-    let mut best: Option<TilePos> = None;
-    let mut best_proj = i32::MIN;
-    let mut best_dist = i32::MAX;
-
-    for t in cluster.tiles.iter().copied() {
-        if t.x < center_x0 || t.x > center_x1 || t.y < center_y0 || t.y > center_y1 {
-            continue;
-        }
-        let proj = dir_projection(t, entry_dir);
-        let dist = (t.x - entry_tile.x).abs() + (t.y - entry_tile.y).abs();
-        let better = if proj > best_proj {
-            true
-        } else if proj == best_proj {
-            dist < best_dist
-        } else {
-            false
-        };
-
-        if better {
-            best = Some(t);
-            best_proj = proj;
-            best_dist = dist;
-        }
-    }
-
-    best.or_else(|| nearest_tile_in_cluster(entry_tile, cluster))
-}
-
-fn side_dir_for_travel(traffic_cfg: &TrafficConfig, travel_dir: RoadDir) -> RoadDir {
-    if travel_dir == RoadDir::None {
-        return RoadDir::None;
-    }
-    if traffic_cfg.drive_on_right {
-        travel_dir.right()
-    } else {
-        travel_dir.left()
-    }
-}
-
-fn is_center_tile(pos: TilePos, bounds: (i32, i32, i32, i32)) -> bool {
-    let (center_x0, center_x1, center_y0, center_y1) = bounds;
-    pos.x >= center_x0 && pos.x <= center_x1 && pos.y >= center_y0 && pos.y <= center_y1
-}
-
-fn is_on_side(pos: TilePos, side_dir: RoadDir, bounds: (i32, i32, i32, i32)) -> bool {
-    let (center_x0, center_x1, center_y0, center_y1) = bounds;
-    match side_dir {
-        RoadDir::East => pos.x >= center_x1,
-        RoadDir::West => pos.x <= center_x0,
-        RoadDir::North => pos.y >= center_y1,
-        RoadDir::South => pos.y <= center_y0,
-        RoadDir::None => true,
-    }
-}
-
-fn dir_projection(pos: TilePos, dir: RoadDir) -> i32 {
-    match dir {
-        RoadDir::North => pos.y,
-        RoadDir::South => -pos.y,
-        RoadDir::East => pos.x,
-        RoadDir::West => -pos.x,
-        RoadDir::None => 0,
-    }
-}
-
-/// Nearest cluster tile to a target coordinate (Manhattan distance).
-fn nearest_tile_in_cluster(target: TilePos, cluster: &ClusterCache) -> Option<TilePos> {
-    let mut best = None;
-    let mut best_d = i32::MAX;
-    for t in cluster.tiles.iter().copied() {
-        let d = (t.x - target.x).abs() + (t.y - target.y).abs();
-        if d < best_d {
-            best = Some(t);
-            best_d = d;
-        }
-    }
-    best
-}
-
-/// Build a deterministic axis-first Manhattan path inside a cluster with a tile filter.
-fn axis_first_path(
-    start: TilePos,
-    end: TilePos,
-    preferred_dir: Option<RoadDir>,
-    cluster: &ClusterCache,
-    allowed: &dyn Fn(TilePos) -> bool,
-) -> Option<Vec<TilePos>> {
-    if start == end {
-        return allowed(start).then_some(vec![start]);
-    }
-    if !allowed(start) || !allowed(end) {
-        return None;
-    }
-
-    let primary = preferred_dir
-        .and_then(primary_axis_for_dir)
-        .unwrap_or(PrimaryAxis::X);
-    let secondary = primary.other();
-
-    if let Some(path) = axis_path_with_order(start, end, primary, cluster, allowed) {
-        return Some(path);
-    }
-    axis_path_with_order(start, end, secondary, cluster, allowed)
-}
-
-/// Build a Manhattan path by moving along the first axis, then the other.
-fn axis_path_with_order(
-    start: TilePos,
-    end: TilePos,
-    first_axis: PrimaryAxis,
-    cluster: &ClusterCache,
-    allowed: &dyn Fn(TilePos) -> bool,
-) -> Option<Vec<TilePos>> {
-    let mut path = Vec::new();
-    let mut cur = start;
-    if !cluster.tiles_set.contains(&cur) || !allowed(cur) {
-        return None;
-    }
-    path.push(cur);
-
-    walk_axis(&mut cur, end, first_axis, cluster, allowed, &mut path)?;
-    walk_axis(
-        &mut cur,
-        end,
-        first_axis.other(),
-        cluster,
-        allowed,
-        &mut path,
-    )?;
-
-    Some(path)
-}
-
-/// Walk along a single axis, appending intermediate tiles to the path.
-fn walk_axis(
-    cur: &mut TilePos,
-    end: TilePos,
-    axis: PrimaryAxis,
-    cluster: &ClusterCache,
-    allowed: &dyn Fn(TilePos) -> bool,
-    path: &mut Vec<TilePos>,
-) -> Option<()> {
-    match axis {
-        PrimaryAxis::X => {
-            let step = (end.x - cur.x).signum();
-            for _ in 0..(end.x - cur.x).abs() {
-                cur.x += step;
-                if !cluster.tiles_set.contains(cur) || !allowed(*cur) {
-                    return None;
-                }
-                path.push(*cur);
-            }
-        }
-        PrimaryAxis::Y => {
-            let step = (end.y - cur.y).signum();
-            for _ in 0..(end.y - cur.y).abs() {
-                cur.y += step;
-                if !cluster.tiles_set.contains(cur) || !allowed(*cur) {
-                    return None;
-                }
-                path.push(*cur);
-            }
-        }
-    }
-    Some(())
-}
-
-/// Fallback BFS inside a filtered cluster (guarantees a path if the region is connected).
-fn bfs_path(
-    start: TilePos,
-    end: TilePos,
-    cluster: &ClusterCache,
-    allowed: &dyn Fn(TilePos) -> bool,
-) -> Option<Vec<TilePos>> {
-    if start == end {
-        return allowed(start).then_some(vec![start]);
-    }
-    if !cluster.tiles_set.contains(&start) || !cluster.tiles_set.contains(&end) {
-        return None;
-    }
-    if !allowed(start) || !allowed(end) {
-        return None;
-    }
-
-    let mut queue = VecDeque::new();
-    let mut visited = HashSet::new();
-    let mut prev = HashMap::new();
-    queue.push_back(start);
-    visited.insert(start);
-
-    while let Some(cur) = queue.pop_front() {
-        for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-            let next = TilePos {
-                x: cur.x + dx,
-                y: cur.y + dy,
-            };
-            if !cluster.tiles_set.contains(&next) {
-                continue;
-            }
-            if !allowed(next) {
-                continue;
-            }
-            if !visited.insert(next) {
-                continue;
-            }
-            prev.insert(next, cur);
-            if next == end {
-                return Some(reconstruct_path(start, end, &prev));
-            }
-            queue.push_back(next);
-        }
-    }
-
-    None
-}
-
-/// Reconstruct a path from BFS predecessor links.
-fn reconstruct_path(
-    start: TilePos,
-    end: TilePos,
-    prev: &HashMap<TilePos, TilePos>,
-) -> Vec<TilePos> {
-    let mut path = vec![end];
-    let mut cur = end;
-    while cur != start {
-        if let Some(p) = prev.get(&cur).copied() {
-            path.push(p);
-            cur = p;
-        } else {
-            break;
-        }
-    }
-    path.reverse();
-    path
-}
-
-/// Determine primary axis preference from a travel direction.
-fn primary_axis_for_dir(dir: RoadDir) -> Option<PrimaryAxis> {
-    match dir {
-        RoadDir::North | RoadDir::South => Some(PrimaryAxis::Y),
-        RoadDir::East | RoadDir::West => Some(PrimaryAxis::X),
-        RoadDir::None => None,
-    }
-}
-
-/// Axis used for deterministic Manhattan path ordering.
-#[derive(Debug, Copy, Clone)]
-enum PrimaryAxis {
-    /// Horizontal axis (x).
-    X,
-    /// Vertical axis (y).
-    Y,
-}
-
-impl PrimaryAxis {
-    /// Return the other axis.
-    fn other(self) -> Self {
-        match self {
-            PrimaryAxis::X => PrimaryAxis::Y,
-            PrimaryAxis::Y => PrimaryAxis::X,
-        }
-    }
-}
-
-/// Compute center bounds for a cluster AABB (supports even sizes).
-fn center_bounds(min: TilePos, max: TilePos) -> (i32, i32, i32, i32) {
-    let w = max.x - min.x + 1;
-    let h = max.y - min.y + 1;
-    let center_x0 = min.x + (w - 1) / 2;
-    let center_x1 = min.x + w / 2;
-    let center_y0 = min.y + (h - 1) / 2;
-    let center_y1 = min.y + h / 2;
-    (center_x0, center_x1, center_y0, center_y1)
 }
 
 /// Intersection tile predicate (dir == None).

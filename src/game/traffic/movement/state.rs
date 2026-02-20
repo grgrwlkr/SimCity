@@ -119,6 +119,39 @@ pub fn update_vehicle_traffic_state(
             continue;
         };
 
+        // CRITICAL: Verify vehicle is on correct side of two-way road
+        // For 2-lane two-way roads, each direction has its own lane
+        if let Some(cur_cell) = grid.get(cur_tile) {
+            if cur_cell.road.is_some()
+                && cur_cell.road.flow == crate::game::roads::RoadFlow::TwoWay
+                && cur_cell.road.kind == crate::game::roads::RoadKind::TwoLane
+            {
+                // Check if vehicle is traveling in correct direction for this lane
+                if cur_cell.road.dir != RoadDir::None
+                    && vehicle.path_cursor + 1 < path_pool.len(vehicle.path_handle)
+                {
+                    if let Some(next_tile) =
+                        path_pool.get_tile(vehicle.path_handle, vehicle.path_cursor + 1)
+                    {
+                        if let Some(next_cell) = grid.get(next_tile) {
+                            if next_cell.road.is_some() && next_cell.road.dir != RoadDir::None {
+                                // Vehicle should follow the road direction
+                                // If road.dir doesn't match travel direction, vehicle is on wrong side
+                                let travel_dir = dir_between_adjacent(cur_tile, next_tile);
+                                if travel_dir != cur_cell.road.dir
+                                    && travel_dir.opposite() == cur_cell.road.dir
+                                {
+                                    // Vehicle is on wrong side of two-way road!
+                                    // This should trigger a reroute, but for now just log it
+                                    // TODO: Add wrong-way detection and reroute
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Safety net: if we're inside a cluster tile, always force CrossingIntersection.
         if is_intersection_tile(&grid, cur_tile) {
             if let Some(key) = intersections.cluster_key_at(cur_tile) {

@@ -1,6 +1,6 @@
 use crate::game::intersections::IntersectionIndex;
 use crate::game::map::{MapGrid, TilePos};
-use crate::game::roads::RoadDir;
+use crate::game::roads::{RoadDir, RoadKind};
 use crate::game::traffic::TrafficOccupancy;
 
 use super::PathfindingConfig;
@@ -34,13 +34,7 @@ pub(super) fn step_cost_for_edge(params: StepCostParams<'_>) -> u32 {
         grid,
         intersections,
     } = params;
-    // Weight model (MVP):
-    // travel_time = 1 / speed_limit
-    // congestion_factor = 1 + k * congestion
-    // desirability_factor = 1 / desirability
-    //
-    // edge_weight = travel_time * congestion_factor * desirability_factor
-    // Scaled to u32 for A*.
+
     let cur = grid
         .get(idx_to_pos(cur_idx, w))
         .map(|c| c.road)
@@ -61,7 +55,6 @@ pub(super) fn step_cost_for_edge(params: StepCostParams<'_>) -> u32 {
         .get(next_idx)
         .copied()
         .unwrap_or(0) as f32;
-    // We compute the weight for entering `next_idx` (cost-to-enter model).
     let congestion = (occupancy / capacity).clamp(0.0, cfg.congestion_max.max(0.0));
 
     let travel_time = 1.0 / speed;
@@ -71,9 +64,7 @@ pub(super) fn step_cost_for_edge(params: StepCostParams<'_>) -> u32 {
 
     let raw = base_cost * congestion_factor * cfg.cost_scale.max(1.0);
 
-    // Extra penalties to stabilize lane behavior:
-    // - lane change: small penalty so we don't zig-zag
-    // - turn: slightly larger penalty (turns are "harder" and limited anyway)
+    // Extra penalties to stabilize lane behavior
     let mut penalty = 0.0f32;
     if cur.dir != RoadDir::None && next.dir != RoadDir::None {
         let left = cur.dir.left();
@@ -85,11 +76,36 @@ pub(super) fn step_cost_for_edge(params: StepCostParams<'_>) -> u32 {
         }
     }
 
-    // Traffic light penalty: average wait time (half cycle duration)
+    // CRITICAL: BLOCK path if entering a lane with opposite direction (oncoming traffic)
+    // Compare current tile direction with next tile direction
+    if cur.dir != RoadDir::None && next.dir != RoadDir::None {
+        // Both tiles have directions - check for oncoming traffic
+        if next.dir == cur.dir.opposite() {
+            // Next tile faces opposite direction = oncoming lane!
+            penalty += 1_000_000.0; // BLOCK oncoming lane
+        }
+    }
+
+    // Additional check: if we're changing lanes, verify it's legal
+    // (same direction, adjacent lane)
+    if cur.dir != RoadDir::None && next.dir != RoadDir::None && cur.dir == next.dir {
+        // Same direction - check if lane change is valid
+        // For two-way roads: lane < half = our direction, lane >= half = oncoming
+        if cur.kind == next.kind && cur.kind != RoadKind::None {
+            let half = cur.kind.lanes() / 2;
+            let cur_on_correct_side = cur.lane < half;
+            let next_on_correct_side = next.lane < half;
+
+            // If one is on correct side and other is not, this is crossing the centerline
+            if cur_on_correct_side != next_on_correct_side {
+                penalty += 500_000.0; // Strong penalty but not absolute block
+            }
+        }
+    }
+
+    // Traffic light penalty
     let next_pos = idx_to_pos(next_idx, w);
     let traffic_light_penalty = if intersections.has_traffic_light_at(next_pos) {
-        // Average delay: half of a typical cycle (10s / 2 = 5s)
-        // Convert to cost units (assuming 1.0 = 1 tile travel time)
         let avg_wait_secs = 5.0;
         avg_wait_secs * cfg.cost_scale.max(1.0)
     } else {

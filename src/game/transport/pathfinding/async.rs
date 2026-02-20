@@ -1,31 +1,29 @@
 use bevy::prelude::*;
 
+use crate::game::map::TilePos;
+
 /// Async pathfinding request ID
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-#[allow(dead_code)] // Reserved for future async pathfinding feature
 pub struct PathRequestId(pub u64);
 
 /// Async pathfinding request
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Reserved for future async pathfinding feature
 pub struct PathRequest {
     pub id: PathRequestId,
-    pub start: crate::game::map::TilePos,
-    pub goal: crate::game::map::TilePos,
+    pub start: TilePos,
+    pub goal: TilePos,
     pub priority: i32, // Higher = more important
 }
 
 /// Async pathfinding result
 #[derive(Debug)]
-#[allow(dead_code)] // Reserved for future async pathfinding feature
 pub struct PathResult {
     pub request_id: PathRequestId,
-    pub path: Option<Vec<crate::game::map::TilePos>>,
+    pub path: Option<Vec<TilePos>>,
 }
 
 /// Queue of pending pathfinding requests
 #[derive(Resource, Default)]
-#[allow(dead_code)] // Reserved for future async pathfinding feature
 pub struct PathRequestQueue {
     next_id: u64,
     requests: Vec<PathRequest>,
@@ -34,32 +32,46 @@ pub struct PathRequestQueue {
 
 /// Results of completed pathfinding requests
 #[derive(Resource, Default)]
-#[allow(dead_code)] // Reserved for future async pathfinding feature
 pub struct PathResultQueue {
     results: Vec<PathResult>,
 }
 
+/// Configuration for async pathfinding budget
+#[derive(Resource, Debug, Clone)]
+pub struct AsyncPathfindingConfig {
+    /// Maximum pathfinding requests to process per tick
+    pub max_requests_per_tick: usize,
+    /// Maximum A* iterations per request (prevents long paths from blocking)
+    pub max_iterations_per_request: usize,
+}
+
+impl Default for AsyncPathfindingConfig {
+    fn default() -> Self {
+        Self {
+            max_requests_per_tick: 8,
+            max_iterations_per_request: 1000,
+        }
+    }
+}
+
 /// Plugin for async pathfinding system
-#[allow(dead_code)] // Reserved for future async pathfinding feature
 pub struct AsyncPathfindingPlugin;
 
 impl Plugin for AsyncPathfindingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PathRequestQueue>()
             .init_resource::<PathResultQueue>()
-            .add_systems(FixedUpdate, process_pathfinding_requests);
+            .init_resource::<AsyncPathfindingConfig>()
+            .add_systems(
+                FixedUpdate,
+                process_pathfinding_requests.in_set(crate::game::sets::GameSet::Sim),
+            );
     }
 }
 
 impl PathRequestQueue {
     /// Submit a new pathfinding request
-    #[allow(dead_code)] // Reserved for future async pathfinding feature
-    pub fn submit(
-        &mut self,
-        start: crate::game::map::TilePos,
-        goal: crate::game::map::TilePos,
-        priority: i32,
-    ) -> PathRequestId {
+    pub fn submit(&mut self, start: TilePos, goal: TilePos, priority: i32) -> PathRequestId {
         let id = PathRequestId(self.next_id);
         self.next_id = self.next_id.wrapping_add(1);
 
@@ -74,7 +86,6 @@ impl PathRequestQueue {
     }
 
     /// Get next request to process (highest priority first)
-    #[allow(dead_code)] // Reserved for future async pathfinding feature
     pub fn pop_next(&mut self) -> Option<PathRequest> {
         if self.requests.is_empty() {
             return None;
@@ -97,19 +108,18 @@ impl PathRequestQueue {
     }
 
     /// Mark request as completed
-    #[allow(dead_code)] // Reserved for future async pathfinding feature
     pub fn complete(&mut self, id: PathRequestId) {
         self.processing.remove(&id);
     }
 
     /// Get pending request count
-    #[allow(dead_code)] // Reserved for future async pathfinding feature
+    #[allow(dead_code)]
     pub fn pending_count(&self) -> usize {
         self.requests.len()
     }
 
     /// Get processing request count
-    #[allow(dead_code)] // Reserved for future async pathfinding feature
+    #[allow(dead_code)]
     pub fn processing_count(&self) -> usize {
         self.processing.len()
     }
@@ -117,23 +127,20 @@ impl PathRequestQueue {
 
 impl PathResultQueue {
     /// Add completed pathfinding result
-    #[allow(dead_code)] // Reserved for future async pathfinding feature
     pub fn push(&mut self, result: PathResult) {
         self.results.push(result);
     }
 
     /// Get all pending results
-    #[allow(dead_code)] // Reserved for future async pathfinding feature
     pub fn drain(&mut self) -> std::vec::Drain<'_, PathResult> {
         self.results.drain(..)
     }
 }
 
 /// Process pathfinding requests with budget per tick
-#[allow(dead_code)] // Reserved for future async pathfinding feature
-#[allow(clippy::too_many_arguments)] // System parameters
 fn process_pathfinding_requests(
     time: Res<Time>,
+    async_cfg: Res<AsyncPathfindingConfig>,
     cfg: Res<super::PathfindingConfig>,
     mut cache: ResMut<super::PathCache>,
     graph: Res<super::RoadGraph>,
@@ -144,14 +151,15 @@ fn process_pathfinding_requests(
     mut request_queue: ResMut<PathRequestQueue>,
     mut result_queue: ResMut<PathResultQueue>,
 ) {
-    // Budget: process up to 8 requests per tick to avoid stalls
-    const MAX_REQUESTS_PER_TICK: usize = 8;
+    // Budget: process up to N requests per tick to avoid stalls
+    let max_requests = async_cfg.max_requests_per_tick;
+    let max_iterations = async_cfg.max_iterations_per_request;
     let mut processed = 0;
 
     // Default traffic occupancy for when none is available
     let default_traffic = crate::game::traffic::TrafficOccupancy::default();
 
-    while processed < MAX_REQUESTS_PER_TICK {
+    while processed < max_requests {
         let Some(request) = request_queue.pop_next() else {
             break;
         };
@@ -166,6 +174,7 @@ fn process_pathfinding_requests(
             traffic: traffic.as_deref().unwrap_or(&default_traffic),
             grid: &grid,
             intersections: &intersections,
+            max_iterations: Some(max_iterations),
         };
 
         // Process the pathfinding request

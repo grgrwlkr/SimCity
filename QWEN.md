@@ -165,47 +165,47 @@ FixedUpdate schedule (10 ticks/sec):
 
 ### Core Resources
 
-| Resource | Purpose |
-|----------|---------|
-| `MapGrid` | 128×128 cells (height, water, terrain, road, zone, building) |
-| `City` | Day, money, population, happiness |
-| `RoadGraph` | Compact road graph (bitmask edges) |
-| `PathCache` | LRU+TTL cached A* paths (4096 entries, 10s TTL) |
-| `TrafficOccupancy` | Per-tick vehicle counts + EMA heatmap |
-| `EmploymentStats` | Employed/unemployed/rate |
-| `CommuteStats` | Average commute time |
-| `UiState` | Tool mode, overlay mode, sim speed |
-| `GraphVersion` | Monotonic counter for graph invalidation |
+| Resource           | Purpose                                                      |
+| ------------------ | ------------------------------------------------------------ |
+| `MapGrid`          | 128×128 cells (height, water, terrain, road, zone, building) |
+| `City`             | Day, money, population, happiness                            |
+| `RoadGraph`        | Compact road graph (bitmask edges)                           |
+| `PathCache`        | LRU+TTL cached A* paths (4096 entries, 10s TTL)              |
+| `TrafficOccupancy` | Per-tick vehicle counts + EMA heatmap                        |
+| `EmploymentStats`  | Employed/unemployed/rate                                     |
+| `CommuteStats`     | Average commute time                                         |
+| `UiState`          | Tool mode, overlay mode, sim speed                           |
+| `GraphVersion`     | Monotonic counter for graph invalidation                     |
 
 ### ECS Entities
 
-| Entity | Components |
-|--------|------------|
-| Tile sprite | `TilePos`, `TileKind`, `Sprite`, `Transform` |
-| Building | `Building { kind, pos, capacity_*, level }`, `Sprite` |
-| Citizen | `CitizenIdComp`, `Citizen { home, state, timers }`, `CitizenWorkplace` |
-| Vehicle | `Vehicle { route, progress, speed }`, `Sprite`, `TripPassenger` (optional) |
-| ServiceVehicle | `ServiceVehicle { kind, home_station, mission, state }`, nested sprites |
-| Emergency | `Emergency { kind, pos, severity, time_remaining }` |
+| Entity         | Components                                                                 |
+| -------------- | -------------------------------------------------------------------------- |
+| Tile sprite    | `TilePos`, `TileKind`, `Sprite`, `Transform`                               |
+| Building       | `Building { kind, pos, capacity_*, level }`, `Sprite`                      |
+| Citizen        | `CitizenIdComp`, `Citizen { home, state, timers }`, `CitizenWorkplace`     |
+| Vehicle        | `Vehicle { route, progress, speed }`, `Sprite`, `TripPassenger` (optional) |
+| ServiceVehicle | `ServiceVehicle { kind, home_station, mission, state }`, nested sprites    |
+| Emergency      | `Emergency { kind, pos, severity, time_remaining }`                        |
 
 ---
 
 ## Controls
 
-| Input | Action |
-|-------|--------|
-| **Enter** | Start/continue game |
-| **Esc** | Return to menu |
-| **Space** | Pause/unpause |
-| **WASD / Arrow keys** | Camera pan |
-| **Mouse wheel** | Camera zoom |
-| **1/2/3/4** | Build mode (Road/R/C/I) |
-| **5** | Erase tool |
-| **Left click (drag)** | Build/erase tiles |
-| **F10** | UI Settings panel |
-| **?** | Shortcuts panel |
-| **Ctrl+Z** | Undo |
-| **Ctrl+Y** | Redo |
+| Input                 | Action                  |
+| --------------------- | ----------------------- |
+| **Enter**             | Start/continue game     |
+| **Esc**               | Return to menu          |
+| **Space**             | Pause/unpause           |
+| **WASD / Arrow keys** | Camera pan              |
+| **Mouse wheel**       | Camera zoom             |
+| **1/2/3/4**           | Build mode (Road/R/C/I) |
+| **5**                 | Erase tool              |
+| **Left click (drag)** | Build/erase tiles       |
+| **F10**               | UI Settings panel       |
+| **?**                 | Shortcuts panel         |
+| **Ctrl+Z**            | Undo                    |
+| **Ctrl+Y**            | Redo                    |
 
 ---
 
@@ -250,13 +250,13 @@ FixedUpdate schedule (10 ticks/sec):
 - **`docs/persistence-contract.md`** — Save/load contract: what is authoritative, what to persist
 
 ### System-Specific Docs
-| System | Document |
-|--------|----------|
-| Roads | `docs/roads-architecture.md` (multi-lane, one-way, turn lanes) |
-| Intersections | `docs/intersections-architecture.md` (traffic lights, priority rules) |
-| Traffic | `docs/traffic-vehicles-architecture.md` (15+ improvement ideas) |
-| Buildings | `docs/buildings-zoning-architecture.md` (zoning, RCI demand, services) |
-| UI | `docs/ui-architecture.md` (redesign, tooltips, undo/redo, settings) |
+| System        | Document                                                               |
+| ------------- | ---------------------------------------------------------------------- |
+| Roads         | `docs/roads-architecture.md` (multi-lane, one-way, turn lanes)         |
+| Intersections | `docs/intersections-architecture.md` (traffic lights, priority rules)  |
+| Traffic       | `docs/traffic-vehicles-architecture.md` (15+ improvement ideas)        |
+| Buildings     | `docs/buildings-zoning-architecture.md` (zoning, RCI demand, services) |
+| UI            | `docs/ui-architecture.md` (redesign, tooltips, undo/redo, settings)    |
 
 ### Before Making Changes
 1. Read relevant architecture docs
@@ -299,7 +299,7 @@ FixedUpdate schedule (10 ticks/sec):
 
 ### Bevy Remote Debugging
 - Enabled via `bevy_remote` feature
-- HTTP API available at `http://localhost:15700`
+- HTTP API available at `http://127.0.0.1:15702`
 - Custom screenshot BRP handler for MCP integration
 
 ### Profiling Backends

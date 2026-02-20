@@ -24,6 +24,7 @@ mod pedestrians;
 mod persistence;
 mod persistence_contract;
 mod pollution;
+mod public_transport;
 mod roads;
 mod scenarios;
 mod services;
@@ -133,21 +134,26 @@ impl Plugin for GamePlugin {
                 scenarios::ScenariosPlugin,
                 persistence::PersistencePlugin,
                 persistence_contract::PersistenceContractPlugin,
-                audio_sfx::AudioSfxPlugin,
             ))
             .add_plugins((
+                audio_sfx::AudioSfxPlugin,
                 day_night::DayNightPlugin,
                 services::ServicesPlugin,
                 transport::TransportPlugin,
                 zone_placement::ZonePlacementPlugin,
                 sim::SimPlugin,
                 traffic::TrafficPlugin,
+            ))
+            .add_plugins((
                 pedestrians::PedestriansPlugin,
                 intersections::IntersectionsPlugin,
                 land_value::LandValuePlugin,
                 notifications::NotificationsPlugin,
                 pollution::PollutionPlugin,
+                public_transport::PublicTransportPlugin,
                 mcp_status::McpStatusPlugin,
+            ))
+            .add_plugins((
                 ui::UiPlugin,
                 debug_world::DebugWorldPlugin,
                 ui_settings::UiSettingsPlugin,
