@@ -4,97 +4,97 @@ overview: Спроектировать детерминированную lane-f
 todos:
   - id: topology-model
     content: Финализировать lane-first доменную модель (`LaneId`, `LaneConnectorId`, `MovementId`) и правила версионирования topology/signal plan.
-    status: pending
+    status: completed
     priority: p0
     phase: P1
     depends_on: []
   - id: determinism-policy
     content: Утвердить fixed-point численную политику, стабильный порядок итераций, RNG constraints и replay checksum протокол.
-    status: pending
+    status: completed
     priority: p0
     phase: CrossCutting
     depends_on: []
   - id: route-contracts
     content: Зафиксировать контракт `RouteSegment`/`RoutePlan`/`RouteCursor`, включая валидаторы последовательности сегментов и safe reroute points.
-    status: pending
+    status: completed
     priority: p0
     phase: P1
     depends_on: [topology-model, determinism-policy]
   - id: pathfinding-v2
     content: Специфицировать lane-level time-dependent A-star, decomposition стоимости, deterministic tie-break и policy fallback/degradation.
-    status: pending
+    status: completed
     priority: p0
     phase: P1
     depends_on: [topology-model, route-contracts, determinism-policy]
   - id: bevy-staged-micro-batches
     content: Разложить Traffic V2 на `staged_micro_batches` в FixedUpdate (Precompute/Planning/Admission/VehicleMotion/PedMotion/Cleanup).
-    status: pending
+    status: completed
     priority: p0
     phase: P1-P2
     depends_on: [determinism-policy]
   - id: bevy-query-discipline
     content: Ввести обязательные правила узких Query (`With/Without/Changed`), hot/cold split компонентов и single-writer ownership ресурсов.
-    status: pending
+    status: completed
     priority: p0
     phase: P1-P2
     depends_on: [bevy-staged-micro-batches]
   - id: intersection-authority-fsm
     content: Формализовать `AuthorityToken` и `VehicleIntersectionState` FSM, strict admission order, deny reason-codes и правила fairness/starvation.
-    status: pending
+    status: completed
     priority: p0
     phase: P2
     depends_on: [topology-model, determinism-policy]
   - id: signal-fsm-routing-coupling
     content: Определить `SignalGroup` фазовый автомат и контракт экспорта `expected_wait_by_movement` в pathfinding costs.
-    status: pending
+    status: completed
     priority: p0
     phase: P3
     depends_on: [intersection-authority-fsm, pathfinding-v2]
   - id: lane-change-merge-contract
     content: Утвердить контракты `Mandatory/Discretionary/Merge` lane changes, safety-gap модель, commit/decision horizons и merge policy.
-    status: pending
+    status: completed
     priority: p1
     phase: P2-P3
     depends_on: [route-contracts, pathfinding-v2]
   - id: pedestrian-conflict-model
     content: Интегрировать `PedMovement` в общий конфликтный граф и зафиксировать hard constraints на vehicle grants при ped conflicts.
-    status: pending
+    status: completed
     priority: p1
     phase: P3-P4
     depends_on: [intersection-authority-fsm, signal-fsm-routing-coupling]
   - id: multimodal-mode-choice
     content: Спроектировать utility-based выбор режима (walk/car/transit) с детерминированным tie-break и explainability breakdown.
-    status: pending
+    status: completed
     priority: p1
     phase: P4
     depends_on: [pathfinding-v2, pedestrian-conflict-model, signal-fsm-routing-coupling]
   - id: perf-budgets-system-gates
     content: Зафиксировать perf budgets на уровне систем (p95), top3-cost share limits, planner/admission guards и regression blocking rules.
-    status: pending
+    status: completed
     priority: p1
     phase: P2-P5
     depends_on: [bevy-staged-micro-batches, bevy-query-discipline, pathfinding-v2, intersection-authority-fsm]
   - id: persistence-replay
     content: Специфицировать persistence для токенов/фаз/курсоров и правила deterministic replay после save/load.
-    status: pending
+    status: completed
     priority: p1
     phase: P5
     depends_on: [route-contracts, intersection-authority-fsm, signal-fsm-routing-coupling, multimodal-mode-choice, determinism-policy]
   - id: observability-explainability
     content: Определить MCP snapshots и explainability-контракт для grant/deny, mode-choice и reroute triggers.
-    status: pending
+    status: completed
     priority: p1
     phase: P2-P5
     depends_on: [intersection-authority-fsm, signal-fsm-routing-coupling, multimodal-mode-choice]
   - id: failure-recovery-policies
     content: Описать deterministic recovery для topology invalidation, planner overflow, signal failure и anti-gridlock режимов.
-    status: pending
+    status: completed
     priority: p1
     phase: P3-P5
     depends_on: [pathfinding-v2, intersection-authority-fsm, signal-fsm-routing-coupling, determinism-policy]
   - id: migration-rollout
     content: Финализировать P1-P5 rollout под feature flag `traffic_v2`, parity gates, rollback criteria и условия выключения legacy пути.
-    status: pending
+    status: completed
     priority: p0
     phase: P1-P5
     depends_on: [topology-model, route-contracts, pathfinding-v2, intersection-authority-fsm, signal-fsm-routing-coupling, multimodal-mode-choice, bevy-staged-micro-batches, bevy-query-discipline, perf-budgets-system-gates, observability-explainability, persistence-replay, failure-recovery-policies]

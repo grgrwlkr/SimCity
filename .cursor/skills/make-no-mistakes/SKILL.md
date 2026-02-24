@@ -1,6 +1,6 @@
 ---
 name: make-no-mistakes
-description: Appends "MAKE NO MISTAKES." to every user prompt before processing it. Use this skill whenever you want any model to be maximally precise, careful, and error-free in its responses.
+description: Appends "MAKE NO MISTAKES." to every user prompt before processing it. Use this skill whenever you want any model to be maximally precise, careful, and error-free in its responses. Russian triggers: "без ошибок", "максимальная точность", "проверь дважды", "не ошибись".
 ---
 
 # Make No Mistakes
@@ -20,6 +20,13 @@ This means:
 - If the task involves code, test your logic mentally step-by-step.
 - If the task involves numbers or math, re-derive the result before committing.
 - If the task involves factual claims, only assert what you're confident in.
+
+## Russian Trigger Equivalents
+
+- без ошибок
+- максимальная точность
+- проверь дважды
+- не ошибись
 
 ## Example
 

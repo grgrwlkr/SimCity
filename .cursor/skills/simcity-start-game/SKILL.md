@@ -1,6 +1,6 @@
 ---
 name: simcity-start-game
-description: Start the SimCity game via cargo run, ensure no existing instance, and wait for MCP connectivity. Use when starting the game, before MCP checks, or before live tests that need a running game.
+description: Start the SimCity game via cargo run, ensure no existing instance, and wait for MCP connectivity. Use when starting the game, before MCP checks, or before live tests that need a running game. Russian triggers: "запусти игру", "стартани SimCity", "подними игру перед MCP", "перезапусти игру".
 ---
 
 # SimCity Start Game
@@ -12,6 +12,13 @@ description: Start the SimCity game via cargo run, ensure no existing instance, 
 4. Monitor the terminal output until the game window is created.
 5. Wait for MCP: retry `list components` with short sleeps until connected.
 6. Keep the game running for at least 60 seconds before stopping or concluding startup checks.
+
+## Russian Trigger Equivalents
+
+- запусти игру
+- стартани SimCity
+- подними игру перед MCP
+- перезапусти игру
 
 ## Commands
 ```bash

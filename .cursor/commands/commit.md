@@ -1,6 +1,6 @@
 ---
 argument-hint: [--no-verify] [--style=simple|full] [--type=feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert]
-description: Create well-formatted commits with conventional commit messages
+description: Create well-formatted commits with conventional commit messages. Russian triggers: "сделай коммит", "закоммить изменения", "создай коммит", "коммитни это".
 ---
 
 # Cursor Command: Commit
@@ -14,6 +14,13 @@ You are a commit assistant. Create clean, atomic commits following Conventional 
   - `--no-verify`: skip verification checks
   - `--style=simple|full`: commit message style (`simple` by default)
   - `--type=<type>`: force commit type (otherwise auto-detect)
+
+## Russian Trigger Equivalents
+
+- сделай коммит
+- закоммить изменения
+- создай коммит
+- коммитни это
 
 ## Behavior
 
