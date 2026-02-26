@@ -1,6 +1,6 @@
 ---
 name: sync-russian-triggers
-description: Sync and enforce Russian trigger equivalents across skills, commands, and agent files in project, personal, codex, and enabled plugin-cache locations. Use when plugin updates may add new files without Russian triggers, or when the user asks to verify/repair trigger coverage. Russian triggers: "синхронизируй русские триггеры", "пропиши русские триггеры", "обнови русские триггеры после апдейта".
+description: Sync and enforce Russian trigger equivalents across skills, commands, and agent files in project, personal, codex, and Cursor plugin-cache locations (enabled plugins and full cache scan). Use when plugin updates may add new files without Russian triggers, or when the user asks to verify/repair trigger coverage. Russian triggers: "синхронизируй русские триггеры", "пропиши русские триггеры", "обнови русские триггеры после апдейта".
 ---
 
 # Sync Russian Triggers
@@ -17,6 +17,8 @@ Targets include:
 - Personal: `~/.cursor/skills/**`
 - Codex system: `~/.codex/skills/**`
 - Enabled plugin cache entries from `.cursor/settings.json`
+- Cursor plugin cache root (all plugins): `~/.cursor/plugins/cache/**`
+- Common provider path (example): `~/.cursor/plugins/cache/cursor-public/**`
 
 ## Russian Trigger Equivalents
 
@@ -32,6 +34,15 @@ bun run ./.cursor/hooks/sync-russian-triggers.ts --check --verbose
 
 # Apply missing Russian triggers
 bun run ./.cursor/hooks/sync-russian-triggers.ts --verbose
+
+# Optional: strict full-cache audit (not limited by .cursor/settings.json)
+rg --files-without-match -i \
+  -g '**/SKILL.md' \
+  -g '**/commands/*.md' \
+  -g '**/commands/*.txt' \
+  -g '**/agents/*.md' \
+  'Russian triggers:|Русские триггеры|Russian Trigger Equivalents|Русские эквиваленты триггеров' \
+  ~/.cursor/plugins/cache
 ```
 
 ## Rules
