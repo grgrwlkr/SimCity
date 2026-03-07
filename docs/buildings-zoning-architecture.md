@@ -1,5 +1,10 @@
 # Архитектура системы зданий и зонирования SimCity
 
+> Статус: `deep-dive`.
+> 
+> Для текущего implemented state сначала смотри `docs/README.md`, `docs/architecture.md` и `docs/gameplay.md`.
+> Этот документ оставлен как подробный subsystem reference и может содержать design intent шире текущей реализации.
+
 ## Оглавление
 
 1. [Обзор системы](#обзор-системы)

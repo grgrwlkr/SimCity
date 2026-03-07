@@ -1,64 +1,100 @@
-## SimCity (Bevy) — city builder / management sim (skeleton)
+# SimCity (Bevy)
 
-Это стартовый каркас проекта на **Rust + Bevy**: камера, сетка тайлов, режимы строительства, состояние игры (меню/игра/пауза) и простой тик симуляции.
+Градостроительный симулятор на Rust + Bevy с упором на ECS, наблюдаемость и детальную транспортную модель.
 
-### Запуск
+Сейчас это не "skeleton", а один binary crate на `bevy = 0.18.0` с картой, дорогами, зонированием, зданиями, гражданами, трафиком, сервисами, persistence, сценариями и развитым debug/tooling слоем. По умолчанию запуск сейчас dev-ориентирован: игра автоматически переходит в `InGame` и грузит test city.
+
+## Быстрый старт
 
 ```bash
 cargo run
 ```
 
-### Управление
-
-- **Enter**: старт/продолжить игру
-- **Esc**: вернуться в меню
-- **Space**: пауза/продолжить
-- **WASD / стрелки**: перемещение камеры
-- **Колесо мыши**: зум
-- **1/2/3/4**: выбор режима строительства (дорога/жильё/промка/трава)
-- **ЛКМ по тайлу**: построить выбранный тип (если хватает денег)
-
-### Профилирование (официальное Bevy)
-
-Bevy 0.17.x имеет **встроенные tracing-спаны** и официальные backend’ы профилирования:
-
-- **Tracy (рекомендуется)**:
+Полезные команды:
 
 ```bash
-# 1) в отдельном терминале запусти tracy-capture (или GUI для live capture)
-# 2) затем запусти игру:
+# Faster iteration on native builds
+cargo run --features dev
+
+# Format / lint / test
+cargo fmt --all
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+
+# Profiling
 cargo run --release --features profile_tracy
-```
-
-- **Tracy + профилирование аллокаций** (больше overhead):
-
-```bash
 cargo run --release --features profile_tracy_memory
-```
-
-- **Chrome trace** (сохранит `.json` трейс-файл, открывается в Perfetto):
-
-```bash
 cargo run --release --features profile_chrome
 ```
 
-### Архитектура (куда добавлять логику)
+## Что уже реализовано
 
-- `src/game/state.rs`: состояние приложения (`MainMenu / InGame / Paused`)
-- `src/game/camera.rs`: камера и ввод для пан/зум
-- `src/game/map/`: карта (тайлы), выбор типа постройки, размещение на клике
-- `src/game/sim.rs`: ресурсы города и тик симуляции (деньги/дни/население)
-- `src/game/ui.rs`: UI-слой (сейчас — статус в заголовке окна + лог подсказок)
+- `128x128` карта с конфигом из `assets/config/map.ron`.
+- Дороги `2/4/6` полос, `one-way` режим, lane graph, region graph и path cache.
+- Point-to-point road building, drag-paint для зон и erase/inspect инструменты.
+- R/C/I zoning, рост зданий, occupancy, decay, land value, pollution.
+- Граждане, поездки, машины, пешеходы, перекрёстки, светофоры, резервации, парковка.
+- Сервисные здания и emergency loop: fire, police, hospital.
+- `RON` save/load с текущим форматом `SaveGameV3`.
+- Scenario system, custom building registry и externalized tuning через `assets/config/*.ron`.
+- egui UI: top bar, toolbar, right sidebar, stats, building popup, debug dump window.
+- Remote debugging через `bevy_remote` и HTTP bridge, MCP-visible world snapshots и screenshot handler.
 
-### Производительность и масштабирование
+## Управление
 
-- `docs/performance-audit.md` — **Performance & Architecture Audit**: текущие узкие места, правила разработки (guardrails) и roadmap до **1,000,000 агентных машин** + рендер 1M инстансов.
+Актуальные бинды по коду:
 
-### Идеи следующего шага
+- `Enter` — переход из `MainMenu` в `InGame`
+- `Space` — pause / resume
+- `Esc` — возврат в меню
+- `WASD` / `Arrow keys` — pan камеры
+- `Mouse wheel` — zoom
+- `Q` / `E` — дискретный zoom out / zoom in
+- `1` — road tool, повторное нажатие циклит `2/4/6` полос
+- `2` / `3` / `4` — residential / commercial / industrial
+- `5` — erase
+- `Left click` — старт / завершение road segment
+- `Right click` или `Esc` во время road build — отмена текущего сегмента
+- `Left click + drag` — paint для зон и других drag-friendly инструментов
+- `Ctrl+Z` / `Ctrl+Y` — undo / redo
+- `?` — shortcuts panel
+- `F8` — toggle debug dump window
+- `F9` — copy debug dump
 
-- Тайлы с данными (электричество/вода/дороги), граф дорог, поиск пути
-- Зонирование + “агенты” жителей/рабочих мест
-- Сохранение/загрузка (serde)
-- Настоящий UI (Bevy UI / egui), тулбары, подсказки
+Сохранение и загрузка сейчас доступны через UI-кнопки. Хоткеи `Ctrl+S` / `Ctrl+L` в коде не привязаны.
 
+## Где читать дальше
 
+Current-state docs:
+
+- `docs/architecture.md`
+- `docs/gameplay.md`
+- `docs/persistence.md`
+- `docs/debugging-and-observability.md`
+- `docs/config-assets-scenarios.md`
+- `docs/testing.md`
+- `docs/README.md`
+
+Deep dives, которые ещё полезны, но не являются источником истины:
+
+- `docs/performance-audit.md`
+- `docs/buildings-zoning-architecture.md`
+- `docs/ui-architecture.md`
+
+Исторические и superseded материалы вынесены в `docs/archive/`.
+
+## Что улучшать дальше
+
+- Traffic correctness: wrong-way detection, более полная ПДД/priority logic и добивка edge cases на перекрёстках.
+- Test coverage: construction, occupancy, parking, reverse behavior, right-of-way integration.
+- Performance scaling: дальнейший уход от per-tick временных структур к более плотным lane/cell индексам и более дешёвому render path.
+- Product polish: убрать расхождения между in-app help и реальными биндами, ослабить dev-biased auto-start test city, сделать main menu / scenarios first-class flow.
+
+## Source Of Truth
+
+Для текущего состояния проекта ориентир такой:
+
+1. Код и runtime config в `src/` и `assets/config/`
+2. Current-state docs в `docs/`
+3. Deep-dive docs
+4. `docs/archive/` как historical context
