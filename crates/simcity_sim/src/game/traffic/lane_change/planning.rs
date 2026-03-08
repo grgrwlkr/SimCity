@@ -183,10 +183,11 @@ pub(in super::super) fn plan_lane_changes(
         };
 
         // CRITICAL: Never allow lane changes ON intersection tiles
-        if let Some(ego_cell) = grid.get(ego_tile) {
-            if ego_cell.road.is_some() && ego_cell.road.dir == RoadDir::None {
-                continue; // Currently on intersection tile - no lane changes!
-            }
+        if let Some(ego_cell) = grid.get(ego_tile)
+            && ego_cell.road.is_some()
+            && ego_cell.road.dir == RoadDir::None
+        {
+            continue; // Currently on intersection tile - no lane changes!
         }
 
         // CRITICAL: Fix lane 2-3 tiles before intersection (no lane changes when approaching)
@@ -202,11 +203,11 @@ pub(in super::super) fn plan_lane_changes(
                         .is_some_and(|c| c.road.is_some() && c.road.dir == RoadDir::None)
                 });
 
-            if let Some(dist) = tiles_to_intersection {
-                if dist <= 3 {
-                    // Too close to intersection - lane is locked!
-                    continue;
-                }
+            if let Some(dist) = tiles_to_intersection
+                && dist <= 3
+            {
+                // Too close to intersection - lane is locked!
+                continue;
             }
 
             if route_has_near_intersection(route, &grid) {

@@ -43,6 +43,19 @@ impl Plugin for PersistencePlugin {
     }
 }
 
+type BuildingSnapshotQueryItem = (
+    &'static Building,
+    Option<&'static crate::game::buildings::components_pub::NoRoadAccessDecay>,
+    Option<&'static crate::game::buildings::components_pub::LowHappinessDecay>,
+    Option<&'static crate::game::buildings::components_pub::EconomicDecay>,
+);
+
+type CitizenSnapshotQueryItem = (
+    &'static CitizenIdComp,
+    &'static Citizen,
+    Option<&'static CitizenWorkplace>,
+);
+
 fn saves_dir() -> PathBuf {
     PathBuf::from("saves")
 }
@@ -81,9 +94,7 @@ fn snapshot_map(grid: &MapGrid) -> MapGridV1 {
     }
 }
 
-fn snapshot_citizens(
-    q: &Query<(&CitizenIdComp, &Citizen, Option<&CitizenWorkplace>)>,
-) -> Vec<CitizenSnapshotV1> {
+fn snapshot_citizens(q: &Query<CitizenSnapshotQueryItem>) -> Vec<CitizenSnapshotV1> {
     let mut out = Vec::new();
     for (id, c, wp) in q.iter() {
         out.push(CitizenSnapshotV1 {
@@ -110,14 +121,7 @@ fn snapshot_service_stations(q: &Query<&ServiceStation>) -> Vec<ServiceStationSn
     out
 }
 
-fn snapshot_buildings(
-    q: &Query<(
-        &Building,
-        Option<&crate::game::buildings::components_pub::NoRoadAccessDecay>,
-        Option<&crate::game::buildings::components_pub::LowHappinessDecay>,
-        Option<&crate::game::buildings::components_pub::EconomicDecay>,
-    )>,
-) -> Vec<BuildingSnapshot> {
+fn snapshot_buildings(q: &Query<BuildingSnapshotQueryItem>) -> Vec<BuildingSnapshot> {
     let mut out = Vec::new();
     for (b, no_road, low_happy, economic) in q.iter() {
         out.push(BuildingSnapshot {
@@ -243,25 +247,8 @@ struct SaveParams<'w, 's> {
     grid: Res<'w, MapGrid>,
     city: Res<'w, City>,
     id_gen: Res<'w, CitizenIdGen>,
-    q_buildings: Query<
-        'w,
-        's,
-        (
-            &'static Building,
-            Option<&'static crate::game::buildings::components_pub::NoRoadAccessDecay>,
-            Option<&'static crate::game::buildings::components_pub::LowHappinessDecay>,
-            Option<&'static crate::game::buildings::components_pub::EconomicDecay>,
-        ),
-    >,
-    q_citizens: Query<
-        'w,
-        's,
-        (
-            &'static CitizenIdComp,
-            &'static Citizen,
-            Option<&'static CitizenWorkplace>,
-        ),
-    >,
+    q_buildings: Query<'w, 's, BuildingSnapshotQueryItem>,
+    q_citizens: Query<'w, 's, CitizenSnapshotQueryItem>,
     q_stations: Query<'w, 's, &'static ServiceStation>,
     emergency_manager: Option<Res<'w, EmergencyManager>>,
 }

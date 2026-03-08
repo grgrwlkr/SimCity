@@ -26,34 +26,32 @@ fn ensure_correct_exit_lane(
     grid: &MapGrid,
     drive_on_right: bool,
 ) -> TilePos {
-    if let Some(cell) = grid.get(exit_lane_tile) {
-        if cell.road.is_some()
-            && cell.road.flow == crate::game::roads::RoadFlow::TwoWay
-            && cell.road.kind == crate::game::roads::RoadKind::TwoLane
+    if let Some(cell) = grid.get(exit_lane_tile)
+        && cell.road.is_some()
+        && cell.road.flow == crate::game::roads::RoadFlow::TwoWay
+        && cell.road.kind == crate::game::roads::RoadKind::TwoLane
+    {
+        // This is a two-way two-lane road - check if we're on correct side
+        let travel_dir = exit_dir;
+        let correct_side = if drive_on_right {
+            travel_dir.right() // For right-hand traffic, correct lane is on the right
+        } else {
+            travel_dir.left() // For left-hand traffic, correct lane is on the left
+        };
+
+        // Check adjacent tile on the correct side
+        let correct_side_tile = TilePos {
+            x: exit_lane_tile.x + correct_side.delta().x,
+            y: exit_lane_tile.y + correct_side.delta().y,
+        };
+
+        if let Some(correct_cell) = grid.get(correct_side_tile)
+            && correct_cell.road.is_some()
+            && correct_cell.road.dir == travel_dir
+            && correct_cell.road.flow == crate::game::roads::RoadFlow::TwoWay
         {
-            // This is a two-way two-lane road - check if we're on correct side
-            let travel_dir = exit_dir;
-            let correct_side = if drive_on_right {
-                travel_dir.right() // For right-hand traffic, correct lane is on the right
-            } else {
-                travel_dir.left() // For left-hand traffic, correct lane is on the left
-            };
-
-            // Check adjacent tile on the correct side
-            let correct_side_tile = TilePos {
-                x: exit_lane_tile.x + correct_side.delta().x,
-                y: exit_lane_tile.y + correct_side.delta().y,
-            };
-
-            if let Some(correct_cell) = grid.get(correct_side_tile) {
-                if correct_cell.road.is_some()
-                    && correct_cell.road.dir == travel_dir
-                    && correct_cell.road.flow == crate::game::roads::RoadFlow::TwoWay
-                {
-                    // Found correct lane - use it instead
-                    exit_lane_tile = correct_side_tile;
-                }
-            }
+            // Found correct lane - use it instead
+            exit_lane_tile = correct_side_tile;
         }
     }
 

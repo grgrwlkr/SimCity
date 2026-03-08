@@ -36,6 +36,19 @@ impl Plugin for PersistenceContractPlugin {
     }
 }
 
+type BuildingContractQueryItem = (
+    &'static Building,
+    Option<&'static NoRoadAccessDecay>,
+    Option<&'static LowHappinessDecay>,
+    Option<&'static EconomicDecay>,
+);
+
+type CitizenContractQueryItem = (
+    &'static CitizenIdComp,
+    &'static Citizen,
+    Option<&'static CitizenWorkplace>,
+);
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct SaveGameV1 {
     pub save_version: u32,
@@ -175,7 +188,7 @@ fn snapshot_savegame_v1(
     seed: &MapSeed,
     grid: &MapGrid,
     city: &City,
-    citizens: &Query<(&CitizenIdComp, &Citizen, Option<&CitizenWorkplace>)>,
+    citizens: &Query<CitizenContractQueryItem>,
     id_gen: &CitizenIdGen,
 ) -> SaveGameV1 {
     let mut tiles = Vec::with_capacity(grid.len());
@@ -223,7 +236,7 @@ fn snapshot_savegame_v2(
     seed: &MapSeed,
     grid: &MapGrid,
     city: &City,
-    citizens: &Query<(&CitizenIdComp, &Citizen, Option<&CitizenWorkplace>)>,
+    citizens: &Query<CitizenContractQueryItem>,
     id_gen: &CitizenIdGen,
     stations: &Query<&ServiceStation>,
     emergency_manager: Option<&EmergencyManager>,
@@ -259,13 +272,8 @@ fn snapshot_savegame_v3(
     seed: &MapSeed,
     grid: &MapGrid,
     city: &City,
-    buildings: &Query<(
-        &Building,
-        Option<&NoRoadAccessDecay>,
-        Option<&LowHappinessDecay>,
-        Option<&EconomicDecay>,
-    )>,
-    citizens: &Query<(&CitizenIdComp, &Citizen, Option<&CitizenWorkplace>)>,
+    buildings: &Query<BuildingContractQueryItem>,
+    citizens: &Query<CitizenContractQueryItem>,
     id_gen: &CitizenIdGen,
     stations: &Query<&ServiceStation>,
     emergency_manager: Option<&EmergencyManager>,
@@ -436,25 +444,8 @@ struct DumpParams<'w, 's> {
     grid: Res<'w, MapGrid>,
     city: Res<'w, City>,
     id_gen: Res<'w, CitizenIdGen>,
-    q_buildings: Query<
-        'w,
-        's,
-        (
-            &'static Building,
-            Option<&'static NoRoadAccessDecay>,
-            Option<&'static LowHappinessDecay>,
-            Option<&'static EconomicDecay>,
-        ),
-    >,
-    q_citizens: Query<
-        'w,
-        's,
-        (
-            &'static CitizenIdComp,
-            &'static Citizen,
-            Option<&'static CitizenWorkplace>,
-        ),
-    >,
+    q_buildings: Query<'w, 's, BuildingContractQueryItem>,
+    q_citizens: Query<'w, 's, CitizenContractQueryItem>,
     q_stations: Query<'w, 's, &'static ServiceStation>,
     emergency_manager: Option<Res<'w, EmergencyManager>>,
 }

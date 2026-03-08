@@ -97,25 +97,25 @@ fn spawn_buses(
         let margin = 5i32;
 
         // Top edge
-        for x in (margin..(grid.width as i32 - margin)).step_by(10) {
+        for x in (margin..(grid.width - margin)).step_by(10) {
             stops.push(TilePos { x, y: margin });
         }
         // Right edge
-        for y in (margin..(grid.height as i32 - margin)).step_by(10) {
+        for y in (margin..(grid.height - margin)).step_by(10) {
             stops.push(TilePos {
-                x: grid.width as i32 - margin,
+                x: grid.width - margin,
                 y,
             });
         }
         // Bottom edge
-        for x in ((margin..(grid.width as i32 - margin)).rev()).step_by(10) {
+        for x in ((margin..(grid.width - margin)).rev()).step_by(10) {
             stops.push(TilePos {
                 x,
-                y: grid.height as i32 - margin,
+                y: grid.height - margin,
             });
         }
         // Left edge
-        for y in ((margin..(grid.height as i32 - margin)).rev()).step_by(10) {
+        for y in ((margin..(grid.height - margin)).rev()).step_by(10) {
             stops.push(TilePos { x: margin, y });
         }
 
@@ -211,17 +211,15 @@ fn move_buses(
                     };
 
                     // Plan next segment
-                    if let Some(route) = route_mgr.get_route(bus.route_id) {
-                        if let Some(current) = find_road_near(&grid, route.stops[bus.current_stop])
-                        {
-                            if let Some(next) = find_road_near(&grid, route.stops[bus.next_stop]) {
-                                let path = vec![current, next];
-                                bus.path_handle = path_pool.intern(path);
-                                bus.path_cursor = 0;
-                                vehicle.path_handle = bus.path_handle;
-                                vehicle.path_cursor = 0;
-                            }
-                        }
+                    if let Some(route) = route_mgr.get_route(bus.route_id)
+                        && let Some(current) = find_road_near(&grid, route.stops[bus.current_stop])
+                        && let Some(next) = find_road_near(&grid, route.stops[bus.next_stop])
+                    {
+                        let path = vec![current, next];
+                        bus.path_handle = path_pool.intern(path);
+                        bus.path_cursor = 0;
+                        vehicle.path_handle = bus.path_handle;
+                        vehicle.path_cursor = 0;
                     }
                 }
             }
@@ -242,12 +240,12 @@ fn move_buses(
         }
 
         // Update vehicle position
-        if let Some(path) = path_pool.get(vehicle.path_handle) {
-            if let Some(&current_tile) = path.get(vehicle.path_cursor) {
-                let world_pos = tile_to_world(&grid, current_tile);
-                let mut tf = commands.entity(entity);
-                tf.insert(Transform::from_xyz(world_pos.x, world_pos.y, 11.0));
-            }
+        if let Some(path) = path_pool.get(vehicle.path_handle)
+            && let Some(&current_tile) = path.get(vehicle.path_cursor)
+        {
+            let world_pos = tile_to_world(&grid, current_tile);
+            let mut tf = commands.entity(entity);
+            tf.insert(Transform::from_xyz(world_pos.x, world_pos.y, 11.0));
         }
     }
 }
@@ -255,10 +253,10 @@ fn move_buses(
 /// Find a road tile near the given position
 fn find_road_near(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
     // Check the position itself first
-    if let Some(cell) = grid.get(pos) {
-        if cell.road.is_some() {
-            return Some(pos);
-        }
+    if let Some(cell) = grid.get(pos)
+        && cell.road.is_some()
+    {
+        return Some(pos);
     }
 
     // Check neighbors
@@ -268,10 +266,10 @@ fn find_road_near(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
                 x: pos.x + dx,
                 y: pos.y + dy,
             };
-            if let Some(cell) = grid.get(check) {
-                if cell.road.is_some() {
-                    return Some(check);
-                }
+            if let Some(cell) = grid.get(check)
+                && cell.road.is_some()
+            {
+                return Some(check);
             }
         }
     }

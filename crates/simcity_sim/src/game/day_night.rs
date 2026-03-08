@@ -53,7 +53,7 @@ pub struct DayNightCycle {
 impl DayNightCycle {
     /// Check if current hour is night (22:00-06:00)
     pub fn is_night_hour(hour: u8) -> bool {
-        hour >= 22 || hour < 6
+        !(6..22).contains(&hour)
     }
 
     /// Check if current hour is rush hour

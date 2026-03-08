@@ -1,3 +1,4 @@
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::game::map::TilePos;
@@ -137,43 +138,46 @@ impl PathResultQueue {
     }
 }
 
+#[derive(SystemParam)]
+struct AsyncPathfindingParams<'w> {
+    time: Res<'w, Time>,
+    async_cfg: Res<'w, AsyncPathfindingConfig>,
+    cfg: Res<'w, super::PathfindingConfig>,
+    cache: ResMut<'w, super::PathCache>,
+    graph: Res<'w, super::RoadGraph>,
+    regions: Option<Res<'w, super::RegionGraph>>,
+    traffic: Option<Res<'w, crate::game::traffic::TrafficOccupancy>>,
+    grid: Res<'w, crate::game::map::MapGrid>,
+    intersections: Res<'w, crate::game::intersections::IntersectionIndex>,
+    request_queue: ResMut<'w, PathRequestQueue>,
+    result_queue: ResMut<'w, PathResultQueue>,
+}
+
 /// Process pathfinding requests with budget per tick
-fn process_pathfinding_requests(
-    time: Res<Time>,
-    async_cfg: Res<AsyncPathfindingConfig>,
-    cfg: Res<super::PathfindingConfig>,
-    mut cache: ResMut<super::PathCache>,
-    graph: Res<super::RoadGraph>,
-    regions: Option<Res<super::RegionGraph>>,
-    traffic: Option<Res<crate::game::traffic::TrafficOccupancy>>,
-    grid: Res<crate::game::map::MapGrid>,
-    intersections: Res<crate::game::intersections::IntersectionIndex>,
-    mut request_queue: ResMut<PathRequestQueue>,
-    mut result_queue: ResMut<PathResultQueue>,
-) {
+fn process_pathfinding_requests(mut p: AsyncPathfindingParams) {
     // Budget: process up to N requests per tick to avoid stalls
-    let max_requests = async_cfg.max_requests_per_tick;
-    let max_iterations = async_cfg.max_iterations_per_request;
+    let max_requests = p.async_cfg.max_requests_per_tick;
+    let max_iterations = p.async_cfg.max_iterations_per_request;
     let mut processed = 0;
 
     // Default traffic occupancy for when none is available
     let default_traffic = crate::game::traffic::TrafficOccupancy::default();
 
     while processed < max_requests {
-        let Some(request) = request_queue.pop_next() else {
+        let Some(request) = p.request_queue.pop_next() else {
             break;
         };
 
         // Create pathfinding context for this request
         let mut ctx = super::PathfindingCtx {
-            time_now_sec: time.elapsed_secs_f64(),
-            cfg: &cfg,
-            cache: &mut cache,
-            graph: &graph,
-            regions: regions.as_deref(),
-            traffic: traffic.as_deref().unwrap_or(&default_traffic),
-            grid: &grid,
-            intersections: &intersections,
+            time_now_sec: p.time.elapsed_secs_f64(),
+            cfg: &p.cfg,
+            cache: &mut p.cache,
+            graph: &p.graph,
+            regions: p.regions.as_deref(),
+            traffic: p.traffic.as_deref().unwrap_or(&default_traffic),
+            grid: &p.grid,
+            intersections: &p.intersections,
             max_iterations: Some(max_iterations),
         };
 
@@ -181,13 +185,13 @@ fn process_pathfinding_requests(
         let path = super::find_road_path_cached(&mut ctx, request.start, request.goal);
 
         // Store result
-        result_queue.push(PathResult {
+        p.result_queue.push(PathResult {
             request_id: request.id,
             path: Some(path),
         });
 
         // Mark as completed
-        request_queue.complete(request.id);
+        p.request_queue.complete(request.id);
         processed += 1;
     }
 }
