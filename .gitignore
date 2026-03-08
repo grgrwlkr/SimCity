@@ -8,3 +8,6 @@
 # Local git worktrees (implementation isolation)
 /.worktrees/
 
+# Local Cursor hook state
+/.cursor/hooks/state/
+
