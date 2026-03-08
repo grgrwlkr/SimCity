@@ -1,7 +1,7 @@
 use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
 use bevy::time::Fixed;
-use rand::Rng;
+use rand::RngExt;
 use std::collections::HashSet;
 
 use crate::game::commands::GameCommand;

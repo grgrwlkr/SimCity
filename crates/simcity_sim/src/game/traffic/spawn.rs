@@ -1,6 +1,6 @@
 use super::*;
 use crate::game::transport::{LaneGraph, LaneId, PathPool, VehicleId};
-use rand::Rng;
+use rand::{Rng, RngExt};
 
 fn sample_non_medium_driver_speed_factor(rng: &mut impl Rng) -> f32 {
     loop {

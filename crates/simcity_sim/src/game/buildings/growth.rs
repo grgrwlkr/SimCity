@@ -1,6 +1,6 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{RngExt, SeedableRng, rngs::StdRng};
 use std::collections::HashSet;
 
 use crate::game::demand::RciDemand;
