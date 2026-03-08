@@ -1,0 +1,9 @@
+[package]
+name = "simcity_debug"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { workspace = true }
+simcity_core = { path = "../simcity_core" }
+simcity_sim = { path = "../simcity_sim" }

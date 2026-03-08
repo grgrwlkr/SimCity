@@ -4724,7 +4724,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
-name = "simcity"
+name = "simcity_app"
 version = "0.1.0"
 dependencies = [
  "bevy",
@@ -4733,6 +4733,66 @@ dependencies = [
  "ron",
  "serde",
  "serde_json",
+ "simcity_core",
+ "simcity_data",
+ "simcity_debug",
+ "simcity_frontend",
+ "simcity_sim",
+]
+
+[[package]]
+name = "simcity_core"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "serde",
+]
+
+[[package]]
+name = "simcity_data"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "ron",
+ "serde",
+ "simcity_core",
+ "simcity_sim",
+]
+
+[[package]]
+name = "simcity_debug"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "simcity_core",
+ "simcity_sim",
+]
+
+[[package]]
+name = "simcity_frontend"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_egui",
+ "ron",
+ "serde",
+ "simcity_core",
+ "simcity_data",
+ "simcity_debug",
+ "simcity_sim",
+]
+
+[[package]]
+name = "simcity_sim"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_egui",
+ "rand",
+ "ron",
+ "serde",
+ "serde_json",
+ "simcity_core",
 ]
 
 [[package]]

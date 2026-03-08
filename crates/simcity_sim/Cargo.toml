@@ -1,0 +1,13 @@
+[package]
+name = "simcity_sim"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { workspace = true }
+bevy_egui = { workspace = true }
+rand = { workspace = true }
+ron = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+simcity_core = { path = "../simcity_core" }
