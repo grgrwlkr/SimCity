@@ -61,7 +61,7 @@ impl Plugin for NotificationsPlugin {
             Update,
             notification_ui
                 .in_set(GameSet::Ui)
-                .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
         );
     }
 }

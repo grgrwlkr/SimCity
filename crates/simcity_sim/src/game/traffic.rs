@@ -334,7 +334,7 @@ impl Plugin for TrafficPlugin {
                 Update,
                 clear_vehicles
                     .in_set(GameSet::CommandApply)
-                    .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                    .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
             )
             // Simulation - Part 1: occupancy, state updates, spawning
             .add_systems(
@@ -419,14 +419,14 @@ impl Plugin for TrafficPlugin {
                 Update,
                 track_vehicle_counts
                     .in_set(GameSet::CommandApply)
-                    .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                    .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
             )
             // MCP debug snapshot for vehicles (reflected component).
             .add_systems(
                 Update,
                 update_debug_vehicle_state
                     .in_set(GameSet::Ui)
-                    .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                    .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
             )
             // GPU interpolation systems for smooth 60fps rendering
             // Note: update_vehicle_positions_for_interpolation is disabled because move_vehicles
@@ -468,7 +468,7 @@ impl Plugin for TrafficPlugin {
                     .in_set(GameSet::RenderSync)
                     .run_if(
                         in_state(AppState::Paused)
-                            .and(resource_changed::<crate::game::map::MapEditVersion>),
+                            .and_then(resource_changed::<crate::game::map::MapEditVersion>),
                     ),
             );
     }

@@ -3,13 +3,15 @@ use super::*;
 use bevy_egui::{EguiContexts, egui};
 
 /// Bottom toolbar with categorized tools
+// egui 0.34 deprecates top-level `Panel::show(ctx)` without a non-deprecated replacement yet.
+#[allow(deprecated)]
 pub(super) fn bottom_toolbar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
 
-    egui::TopBottomPanel::bottom("toolbar")
-        .exact_height(48.0)
+    egui::Panel::bottom("toolbar")
+        .exact_size(48.0)
         .show(&*ctx, |ui| {
             ui.horizontal_centered(|ui| {
                 // Roads category

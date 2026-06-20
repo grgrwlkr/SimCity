@@ -28,7 +28,7 @@ impl Plugin for ServicesPlugin {
             Update,
             systems::sync_service_stations_from_buildings
                 .in_set(GameSet::Sim)
-                .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
         )
         .add_systems(
             FixedUpdate,
@@ -42,13 +42,13 @@ impl Plugin for ServicesPlugin {
             FixedUpdate,
             coverage::compute_service_coverage_index
                 .in_set(GameSet::PostSim)
-                .run_if(in_state(AppState::InGame).and(resource_changed::<MapEditVersion>)),
+                .run_if(in_state(AppState::InGame).and_then(resource_changed::<MapEditVersion>)),
         )
         .add_systems(
             Update,
             overlay::render_service_coverage_overlay
                 .in_set(GameSet::RenderSync)
-                .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
         );
     }
 }

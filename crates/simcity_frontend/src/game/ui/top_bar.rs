@@ -5,13 +5,15 @@ use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy_egui::{EguiContexts, egui};
 
 /// Compact top status bar with key metrics
+// egui 0.34 deprecates top-level `Panel::show(ctx)` without a non-deprecated replacement yet.
+#[allow(deprecated)]
 pub(super) fn top_status_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
 
-    egui::TopBottomPanel::top("status_bar")
-        .exact_height(32.0)
+    egui::Panel::top("status_bar")
+        .exact_size(32.0)
         .show(&*ctx, |ui| {
             ui.horizontal_centered(|ui| {
                 // Money (color-coded: green/red)

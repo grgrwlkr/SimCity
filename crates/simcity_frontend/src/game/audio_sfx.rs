@@ -22,7 +22,7 @@ impl Plugin for AudioSfxPlugin {
                 Update,
                 play_sfx_on_commands
                     .in_set(GameSet::Ui)
-                    .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                    .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
             );
     }
 }
@@ -77,17 +77,15 @@ fn play_sfx_on_commands(
         match cmd {
             GameCommand::SetRoad { .. }
             | GameCommand::SetZone { .. }
-            | GameCommand::PlaceBuilding { .. } => {
-                if !played_build {
-                    play_once_opt(&mut commands, sfx.build.as_ref());
-                    played_build = true;
-                }
+            | GameCommand::PlaceBuilding { .. }
+                if !played_build =>
+            {
+                play_once_opt(&mut commands, sfx.build.as_ref());
+                played_build = true;
             }
-            GameCommand::EraseTile { .. } => {
-                if !played_erase {
-                    play_once_opt(&mut commands, sfx.erase.as_ref());
-                    played_erase = true;
-                }
+            GameCommand::EraseTile { .. } if !played_erase => {
+                play_once_opt(&mut commands, sfx.erase.as_ref());
+                played_erase = true;
             }
             _ => {}
         }

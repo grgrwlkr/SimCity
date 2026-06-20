@@ -172,7 +172,7 @@ pub(super) fn cursor_paint_to_command(
 
     // Prevent UI clicks from triggering map edits.
     if let Ok(ctx) = egui_contexts.ctx_mut()
-        && ctx.wants_pointer_input()
+        && ctx.egui_wants_pointer_input()
     {
         return;
     }

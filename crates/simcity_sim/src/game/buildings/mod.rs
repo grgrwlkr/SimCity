@@ -62,17 +62,17 @@ impl Plugin for BuildingsPlugin {
                 (
                     reset_growth_rng_on_new_map
                         .in_set(GameSet::CommandApply)
-                        .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                        .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
                     update_construction_progress
                         .in_set(GameSet::Sim)
-                        .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                        .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
                     update_occupancy
                         .in_set(GameSet::Sim)
-                        .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                        .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
                     population::update_city_population
                         .after(update_occupancy)
                         .in_set(GameSet::PostSim)
-                        .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                        .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
                 ),
             )
             .add_systems(

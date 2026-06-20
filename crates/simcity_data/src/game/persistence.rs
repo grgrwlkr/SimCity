@@ -38,7 +38,7 @@ impl Plugin for PersistencePlugin {
             Update,
             (handle_save_commands, handle_load_commands)
                 .in_set(GameSet::CommandApply)
-                .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
         );
     }
 }

@@ -37,7 +37,7 @@ fn main() {
 
 #[cfg(not(target_family = "wasm"))]
 fn remote_plugin() -> RemotePlugin {
-    RemotePlugin::default().with_method("bevy_debugger/screenshot", screenshot_handler)
+    RemotePlugin::default().with_method_main("bevy_debugger/screenshot", screenshot_handler)
 }
 
 #[cfg(target_family = "wasm")]

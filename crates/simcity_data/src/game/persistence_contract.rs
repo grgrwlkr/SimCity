@@ -31,7 +31,7 @@ impl Plugin for PersistenceContractPlugin {
             Update,
             dump_save_contract
                 .in_set(GameSet::CommandApply)
-                .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
         );
     }
 }

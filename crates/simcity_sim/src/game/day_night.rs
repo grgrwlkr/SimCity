@@ -25,7 +25,7 @@ impl Plugin for DayNightPlugin {
                 Update,
                 render_day_night_overlay
                     .in_set(GameSet::RenderSync)
-                    .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                    .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
             )
             .add_systems(
                 FixedUpdate,

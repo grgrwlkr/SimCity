@@ -44,14 +44,14 @@ impl Plugin for EmergenciesPlugin {
                 Update,
                 systems::track_emergency_index
                     .in_set(GameSet::CommandApply)
-                    .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                    .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
             )
             // Sync visual markers to emergency locations (spawn/despawn/blink).
             .add_systems(
                 Update,
                 systems::sync_emergency_markers
                     .in_set(GameSet::RenderSync)
-                    .run_if(in_state(AppState::InGame).or(in_state(AppState::Paused))),
+                    .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
             )
             .add_systems(OnExit(AppState::InGame), systems::cleanup_emergency_markers);
     }

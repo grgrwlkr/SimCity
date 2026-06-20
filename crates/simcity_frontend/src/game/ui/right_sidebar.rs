@@ -3,6 +3,8 @@ use super::*;
 use bevy_egui::{EguiContexts, egui};
 
 /// Right sidebar with minimap, info panel, and statistics
+// egui 0.34 deprecates top-level `Panel::show(ctx)` without a non-deprecated replacement yet.
+#[allow(deprecated)]
 pub(super) fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -12,8 +14,8 @@ pub(super) fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams
         return;
     }
 
-    egui::SidePanel::right("sidebar")
-        .exact_width(200.0)
+    egui::Panel::right("sidebar")
+        .exact_size(200.0)
         .show(&*ctx, |ui| {
             if p.ui_settings.show_minimap {
                 // Minimap (collapsible)
