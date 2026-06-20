@@ -16,7 +16,7 @@ fn scan_dir(dir: &Path, hits: &mut Vec<String>) {
             continue;
         }
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        // Skip test files (co-located test modules live in tests.rs / tests_*.rs / tests/).
+        // Skip dedicated test files (co-located test modules live in tests.rs / tests_*.rs / tests/).
         if name == "tests.rs"
             || name.starts_with("tests_")
             || path.components().any(|c| c.as_os_str() == "tests")
@@ -25,18 +25,42 @@ fn scan_dir(dir: &Path, hits: &mut Vec<String>) {
             continue;
         }
         let src = std::fs::read_to_string(&path).expect("read file");
-        let mut in_test_cfg = false;
+        let mut next_is_test_item = false;
+        // When > 0 we are inside an inline `#[cfg(test)] mod ... { ... }` body.
+        // Brace counting: `{` increments, `}` decrements; we exit at depth 0.
+        let mut test_block_depth: usize = 0;
         for (i, line) in src.lines().enumerate() {
             let trimmed = line.trim_start();
-            if trimmed.starts_with("#[cfg(test)]") {
-                in_test_cfg = true;
+
+            // Already inside an inline cfg(test) module body — count braces, skip scanning.
+            if test_block_depth > 0 {
+                test_block_depth += line.chars().filter(|&c| c == '{').count();
+                test_block_depth -= line.chars().filter(|&c| c == '}').count();
                 continue;
             }
-            if in_test_cfg {
-                // Heuristic: the cfg(test) attribute guards the next item only;
-                // once we leave indentation 0 module decl, treat following module body as test.
-                in_test_cfg = false; // attribute consumed by next line; body handled below
+
+            if trimmed.starts_with("#[cfg(test)]") {
+                next_is_test_item = true;
+                continue;
             }
+
+            if next_is_test_item {
+                next_is_test_item = false;
+                if trimmed.ends_with(';') {
+                    // `mod foo;` — file module; the file itself is skipped by filename rules.
+                    // Nothing to brace-count inline; just don't scan this declaration line.
+                    continue;
+                }
+                // `mod foo { ... }` or `mod foo {` — enter brace-counting mode.
+                // Count any opening braces on this line (the `{` that opens the module body),
+                // then subtract closing braces; if still > 0 the block continues on next lines.
+                let open = line.chars().filter(|&c| c == '{').count();
+                let close = line.chars().filter(|&c| c == '}').count();
+                test_block_depth = open.saturating_sub(close);
+                // Do not scan this line for RNG calls — it's the `mod` declaration itself.
+                continue;
+            }
+
             if line.contains("rand::rng()") || line.contains("thread_rng()") {
                 hits.push(format!("{}:{}: {}", path.display(), i + 1, trimmed));
             }
