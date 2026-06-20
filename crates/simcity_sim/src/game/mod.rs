@@ -59,6 +59,18 @@ fn auto_start_test_city(
     }
 }
 
+pub(crate) fn apply_fixed_update_set_order(app: &mut App) {
+    app.configure_sets(
+        FixedUpdate,
+        (
+            crate::game::sets::GameSet::GraphUpdate,
+            crate::game::sets::GameSet::Sim,
+            crate::game::sets::GameSet::PostSim,
+        )
+            .chain(),
+    );
+}
+
 pub struct SimPlugin;
 
 impl Plugin for SimPlugin {
@@ -86,16 +98,9 @@ impl Plugin for SimPlugin {
                     crate::game::sets::GameSet::Ui,
                 )
                     .chain(),
-            )
-            .configure_sets(
-                FixedUpdate,
-                (
-                    crate::game::sets::GameSet::GraphUpdate,
-                    crate::game::sets::GameSet::Sim,
-                    crate::game::sets::GameSet::PostSim,
-                )
-                    .chain(),
-            )
+            );
+        apply_fixed_update_set_order(app);
+        app
             .add_message::<commands::GameCommand>()
             .add_message::<trips::TripRequested>()
             .add_message::<trips::TripFinished>()
@@ -171,8 +176,7 @@ mod ordering_tests {
         grid
     }
 
-    #[test]
-    fn graph_rebuild_runs_before_sim_consumer_on_fixed_update() {
+    fn build_probe_app() -> App {
         let mut app = App::new();
         app.insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
             1.0 / 10.0,
@@ -182,15 +186,6 @@ mod ordering_tests {
         .insert_resource(GraphVersion(7))
         .init_resource::<RoadGraph>()
         .init_resource::<ProbeSawVersion>()
-        .configure_sets(
-            FixedUpdate,
-            (
-                crate::game::sets::GameSet::GraphUpdate,
-                crate::game::sets::GameSet::Sim,
-                crate::game::sets::GameSet::PostSim,
-            )
-                .chain(),
-        )
         .add_systems(
             FixedUpdate,
             rebuild_in_graphupdate.in_set(crate::game::sets::GameSet::GraphUpdate),
@@ -199,8 +194,16 @@ mod ordering_tests {
             FixedUpdate,
             probe_in_sim.in_set(crate::game::sets::GameSet::Sim),
         );
+        app
+    }
 
-        // Run the FixedUpdate schedule directly without time accumulation.
+    /// Positive test: uses the PRODUCTION helper — if the helper body is reverted to drop
+    /// GraphUpdate from the FixedUpdate chain, this test fails.
+    #[test]
+    fn graph_rebuild_runs_before_sim_consumer_on_fixed_update() {
+        let mut app = build_probe_app();
+        // Use the production helper, NOT a locally-redeclared chain.
+        apply_fixed_update_set_order(&mut app);
         app.world_mut().run_schedule(FixedUpdate);
 
         let probe = app.world().resource::<ProbeSawVersion>();
@@ -208,6 +211,33 @@ mod ordering_tests {
             probe.0, 7,
             "Sim consumer must observe RoadGraph already rebuilt for current GraphVersion \
              (GraphUpdate must run before Sim on FixedUpdate)"
+        );
+    }
+
+    /// Negative-control: wires the REVERSE order (Sim before GraphUpdate) so the graph rebuild
+    /// happens AFTER the probe reads it. The probe must then see version 0 (unbuilt), proving
+    /// the assertion in the positive test above is not a tautology.
+    #[test]
+    fn ordering_harness_is_sensitive_to_set_order() {
+        let mut app = build_probe_app();
+        // Reverse order: Sim runs before GraphUpdate.
+        app.configure_sets(
+            FixedUpdate,
+            (
+                crate::game::sets::GameSet::Sim,
+                crate::game::sets::GameSet::PostSim,
+                crate::game::sets::GameSet::GraphUpdate,
+            )
+                .chain(),
+        );
+        app.world_mut().run_schedule(FixedUpdate);
+
+        let probe = app.world().resource::<ProbeSawVersion>();
+        assert_eq!(
+            probe.0, 0,
+            "With reversed order (Sim before GraphUpdate) the probe must see the stale \
+             RoadGraph (version 0, not yet rebuilt), confirming the harness is sensitive \
+             to set ordering"
         );
     }
 }
