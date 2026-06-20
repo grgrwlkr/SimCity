@@ -89,12 +89,22 @@ pub(super) fn spawn_trip_vehicles(
             .and_then(|lg| lg.get_rightmost_lane(goal, goal_cell.road.dir))
             .unwrap_or(LaneId::INVALID);
 
+        // Per-OD deterministic tie-break seed from the seeded SimRng (P0-1).
+        // Drawn once per planned trip so identical OD pairs spread across corridors.
+        let jitter_seed: u64 = p.sim_rng.rng.random_range(1..=u64::MAX);
+
         // Use lane-based pathfinding if LaneGraph is available
         let lane_path = if let (Some(lg), true) = (
             p.lane_graph.as_ref(),
             start_lane != LaneId::INVALID && goal_lane != LaneId::INVALID,
         ) {
-            crate::game::transport::find_lane_path(lg, start_lane, goal_lane)
+            let lane_ctx = crate::game::transport::LaneCostCtx {
+                grid: &p.grid,
+                traffic: &p.traffic,
+                cfg: &p.path_cfg,
+                jitter_seed,
+            };
+            crate::game::transport::find_lane_path(lg, &lane_ctx, start_lane, goal_lane)
         } else {
             Vec::new()
         };

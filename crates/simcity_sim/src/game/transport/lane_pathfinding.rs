@@ -3,12 +3,32 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use crate::game::map::TilePos;
+use crate::game::map::{MapGrid, TilePos};
+use crate::game::traffic::TrafficOccupancy;
+use crate::game::transport::pathfinding::PathfindingConfig;
 
 use super::lane_graph::{LaneGraph, LaneId};
 
-/// Find a path through the lane graph.
-pub fn find_lane_path(graph: &LaneGraph, start: LaneId, goal: LaneId) -> Vec<LaneId> {
+/// Context for congestion-aware lane edge costs.
+///
+/// Mirrors the road-A* congestion model in `pathfinding/cost.rs`, evaluated per
+/// destination lane-tile. `jitter_seed` adds a small deterministic per-OD tie-break
+/// so identical OD pairs don't all collapse onto a single corridor (0 = disabled).
+pub struct LaneCostCtx<'a> {
+    pub grid: &'a MapGrid,
+    pub traffic: &'a TrafficOccupancy,
+    pub cfg: &'a PathfindingConfig,
+    /// Per-OD deterministic jitter seed (0 disables tie-break). Drawn from `SimRng` at the call site.
+    pub jitter_seed: u64,
+}
+
+/// Find a path through the lane graph, weighting edges by speed limit + live congestion.
+pub fn find_lane_path(
+    graph: &LaneGraph,
+    ctx: &LaneCostCtx<'_>,
+    start: LaneId,
+    goal: LaneId,
+) -> Vec<LaneId> {
     if start == goal {
         return vec![start];
     }
@@ -35,13 +55,13 @@ pub fn find_lane_path(graph: &LaneGraph, start: LaneId, goal: LaneId) -> Vec<Lan
 
         // Explore neighbors
         for &next_id in graph.get_connections(idx) {
-            let step_cost = 1u32; // Base cost per lane transition
-            let ng = g + step_cost;
+            let step_cost = lane_edge_cost(ctx, graph, next_id);
+            let ng = g.saturating_add(step_cost);
 
             if ng < best_g[next_id.as_usize()] {
                 best_g[next_id.as_usize()] = ng;
                 came_from[next_id.as_usize()] = Some(idx);
-                let f = ng + heuristic_lane(next_id, goal, graph);
+                let f = ng.saturating_add(heuristic_lane(next_id, goal, graph));
                 heap.push(HeapState {
                     g: ng,
                     f,
@@ -54,6 +74,54 @@ pub fn find_lane_path(graph: &LaneGraph, start: LaneId, goal: LaneId) -> Vec<Lan
     Vec::new() // No path found
 }
 
+/// Integer edge cost for entering `next_id`. Mirrors `pathfinding::cost::step_cost_for_edge`
+/// (speed/desirability base + congestion factor + cost_scale), keyed on the destination
+/// lane-tile, plus a deterministic per-OD tie-break.
+fn lane_edge_cost(ctx: &LaneCostCtx<'_>, graph: &LaneGraph, next_id: LaneId) -> u32 {
+    let Some(lane) = graph.get_lane(next_id) else {
+        return 1;
+    };
+    let kind = lane.kind;
+
+    let speed = kind.speed_limit().max(1.0);
+    let capacity = (kind.capacity_per_lane_tile() as f32).max(1.0);
+    let desirability = kind.desirability().max(0.1);
+
+    let occupancy = ctx
+        .grid
+        .idx(lane.pos)
+        .and_then(|i| ctx.traffic.per_tick_vehicles.get(i).copied())
+        .unwrap_or(0) as f32;
+    let congestion = (occupancy / capacity).clamp(0.0, ctx.cfg.congestion_max.max(0.0));
+
+    let base_cost = (1.0 / speed) * (1.0 / desirability);
+    let congestion_factor = 1.0 + ctx.cfg.congestion_k * congestion;
+    let raw = base_cost * congestion_factor * ctx.cfg.cost_scale.max(1.0);
+
+    let base = raw.max(1.0) as u32;
+    base.saturating_add(lane_jitter(ctx.jitter_seed, next_id))
+}
+
+/// Deterministic per-edge tie-break, derived from a per-OD seed and the destination lane id.
+/// Range stays a small fraction of base costs so it only breaks ties, never reroutes around
+/// real congestion. Pure integer hashing => no RNG state, fully reproducible.
+fn lane_jitter(seed: u64, next_id: LaneId) -> u32 {
+    if seed == 0 {
+        return 0;
+    }
+    // splitmix64-style mix of (seed, lane id).
+    let mut z = seed ^ (next_id.0 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    (z % (LANE_JITTER_RANGE as u64)) as u32
+}
+
+/// Max additive tie-break in integer A* units. Base lane costs are
+/// `(1/speed)*(1/desirability)*cost_scale` ≈ 25 for TwoLane (cost_scale=1000),
+/// so a jitter ceiling of 8 only separates otherwise-equal alternatives.
+const LANE_JITTER_RANGE: u32 = 8;
+
 #[derive(Copy, Clone, Eq, PartialEq)]
 struct HeapState {
     f: u32,
@@ -63,7 +131,11 @@ struct HeapState {
 
 impl Ord for HeapState {
     fn cmp(&self, other: &Self) -> Ordering {
-        other.f.cmp(&self.f).then_with(|| other.g.cmp(&self.g))
+        other
+            .f
+            .cmp(&self.f)
+            .then_with(|| other.g.cmp(&self.g))
+            .then_with(|| other.idx.0.cmp(&self.idx.0))
     }
 }
 
@@ -108,4 +180,170 @@ pub fn lane_path_to_tiles(path: &[LaneId], graph: &LaneGraph) -> Vec<TilePos> {
     path.iter()
         .filter_map(|&lane_id| graph.get_lane(lane_id).map(|l| l.pos))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::map::MapGrid;
+    use crate::game::roads::{LaneType, RoadCell, RoadDir, RoadFlow, RoadKind};
+    use crate::game::traffic::TrafficOccupancy;
+    use crate::game::transport::GraphVersion;
+    use crate::game::transport::lane_graph::build_lane_graph_inner;
+    use crate::game::transport::pathfinding::PathfindingConfig;
+
+    fn set_lane(grid: &mut MapGrid, pos: TilePos, lane: u8, dir: RoadDir) {
+        let Some(mut cell) = grid.get(pos) else {
+            return;
+        };
+        cell.water = false;
+        cell.road = RoadCell {
+            kind: RoadKind::TwoLane,
+            dir,
+            lane,
+            flow: RoadFlow::TwoWay,
+            lane_type: LaneType::Regular,
+        };
+        grid.set(pos, cell);
+    }
+
+    /// Two parallel eastbound corridors over x=0..4 (y=0 lane0, y=1 lane1).
+    fn parallel_corridors() -> MapGrid {
+        let mut grid = MapGrid::new(4, 2);
+        for x in 0..4 {
+            set_lane(&mut grid, TilePos { x, y: 0 }, 0, RoadDir::East);
+            set_lane(&mut grid, TilePos { x, y: 1 }, 1, RoadDir::East);
+        }
+        grid
+    }
+
+    #[test]
+    fn congestion_pushes_lane_path_onto_parallel_corridor() {
+        let grid = parallel_corridors();
+        let graph = build_lane_graph_inner(&grid, &GraphVersion(1));
+
+        // Congest the lower corridor (y=0) at x=1 and x=2.
+        let mut traffic = TrafficOccupancy::default();
+        traffic.ensure_len(grid.len());
+        let i10 = grid.idx(TilePos { x: 1, y: 0 }).unwrap();
+        let i20 = grid.idx(TilePos { x: 2, y: 0 }).unwrap();
+        traffic.per_tick_vehicles[i10] = 8;
+        traffic.per_tick_vehicles[i20] = 8;
+
+        let cfg = PathfindingConfig::default();
+        let ctx = LaneCostCtx {
+            grid: &grid,
+            traffic: &traffic,
+            cfg: &cfg,
+            jitter_seed: 0, // tie-break disabled: isolate congestion behavior
+        };
+
+        let start = graph
+            .get_lane_id(TilePos { x: 0, y: 0 }, 0)
+            .expect("start lane");
+        let goal = graph
+            .get_lane_id(TilePos { x: 3, y: 0 }, 0)
+            .expect("goal lane");
+
+        let path = find_lane_path(&graph, &ctx, start, goal);
+        assert_eq!(path.first().copied(), Some(start));
+        assert_eq!(path.last().copied(), Some(goal));
+
+        // Path must detour onto the y=1 corridor to avoid congested y=0 tiles.
+        let visited_y1 = path
+            .iter()
+            .any(|id| graph.get_lane(*id).map(|l| l.pos.y == 1).unwrap_or(false));
+        assert!(visited_y1, "expected detour onto parallel corridor y=1");
+
+        let touches_congested = path.iter().any(|id| {
+            graph
+                .get_lane(*id)
+                .map(|l| l.pos == TilePos { x: 1, y: 0 } || l.pos == TilePos { x: 2, y: 0 })
+                .unwrap_or(false)
+        });
+        assert!(!touches_congested, "expected to avoid congested y=0 tiles");
+    }
+
+    #[test]
+    fn single_trip_returns_valid_connected_path() {
+        let grid = parallel_corridors();
+        let graph = build_lane_graph_inner(&grid, &GraphVersion(1));
+
+        let mut traffic = TrafficOccupancy::default();
+        traffic.ensure_len(grid.len());
+        let cfg = PathfindingConfig::default();
+        let ctx = LaneCostCtx {
+            grid: &grid,
+            traffic: &traffic,
+            cfg: &cfg,
+            jitter_seed: 0,
+        };
+
+        let start = graph
+            .get_lane_id(TilePos { x: 0, y: 0 }, 0)
+            .expect("start lane");
+        let goal = graph
+            .get_lane_id(TilePos { x: 3, y: 0 }, 0)
+            .expect("goal lane");
+
+        let path = find_lane_path(&graph, &ctx, start, goal);
+        assert!(!path.is_empty(), "expected a non-empty path");
+        assert_eq!(path.first().copied(), Some(start));
+        assert_eq!(path.last().copied(), Some(goal));
+
+        // Every consecutive pair must be a real graph edge (connected path).
+        for w in path.windows(2) {
+            let from = w[0];
+            let to = w[1];
+            assert!(
+                graph.get_connections(from).contains(&to),
+                "path edge {from:?} -> {to:?} is not a graph connection",
+            );
+        }
+    }
+
+    #[test]
+    fn distinct_seeds_spread_equal_parallel_corridors() {
+        let grid = parallel_corridors();
+        let graph = build_lane_graph_inner(&grid, &GraphVersion(1));
+
+        // No congestion: both corridors are equal-cost, so only the tie-break can differ.
+        let mut traffic = TrafficOccupancy::default();
+        traffic.ensure_len(grid.len());
+        let cfg = PathfindingConfig::default();
+
+        // Endpoints on opposite corridors so the y=0-first and y=1-first routes
+        // are equal in hop count *and* equal in base cost: (0,0)->(3,1) costs the
+        // same whether you switch lanes early (x=0) or late (x=3). Only the
+        // per-edge jitter can break that tie.
+        let start = graph
+            .get_lane_id(TilePos { x: 0, y: 0 }, 0)
+            .expect("start lane");
+        let goal = graph
+            .get_lane_id(TilePos { x: 3, y: 1 }, 1)
+            .expect("goal lane");
+
+        let path_for = |seed: u64| {
+            let ctx = LaneCostCtx {
+                grid: &grid,
+                traffic: &traffic,
+                cfg: &cfg,
+                jitter_seed: seed,
+            };
+            find_lane_path(&graph, &ctx, start, goal)
+        };
+
+        // Different seeds should pick different corridors for at least one of many
+        // seed pairs. Scan a handful and require that not every seed produces the
+        // identical corridor.
+        let baseline = path_for(1);
+        let spread = (1u64..64).any(|s| path_for(s) != baseline);
+        assert!(
+            spread,
+            "expected seeded tie-break to spread identical OD pairs across corridors"
+        );
+
+        // Determinism: same seed always yields the same path.
+        assert_eq!(path_for(7), path_for(7), "same seed must be reproducible");
+    }
 }
