@@ -1,15 +1,62 @@
 use bevy::prelude::*;
 use bevy::time::{Fixed, TimeSystems, Virtual};
+use rand::{SeedableRng, rngs::StdRng};
 
 use crate::game::sets::GameSet;
 use crate::game::sim_events::{DayAdvanced, HourAdvanced};
 use crate::game::state::AppState;
 use crate::game::ui_state::{SimSpeed, UiState};
 
+/// Single seeded RNG for the whole simulation path. Reproducibility of
+/// FixedUpdate@10Hz hinges on every sim-side random draw pulling from here.
+#[derive(Resource)]
+pub struct SimRng {
+    pub rng: StdRng,
+}
+
+impl Default for SimRng {
+    fn default() -> Self {
+        Self {
+            rng: StdRng::seed_from_u64(1),
+        }
+    }
+}
+
+/// Re-seed at InGame entry from the current map seed (mirrors BuildingGrowthRng).
+pub fn seed_sim_rng_from_map(
+    seed: Res<crate::game::map::MapSeed>,
+    mut rng: ResMut<SimRng>,
+) {
+    rng.rng = StdRng::seed_from_u64(seed.0);
+}
+
+/// Re-seed when a fresh map is generated.
+pub fn reset_sim_rng_on_new_map(
+    mut reader: bevy::ecs::message::MessageReader<crate::game::commands::GameCommand>,
+    seed: Res<crate::game::map::MapSeed>,
+    mut rng: ResMut<SimRng>,
+) {
+    for cmd in reader.read() {
+        if matches!(cmd, crate::game::commands::GameCommand::GenerateMap { .. }) {
+            rng.rng = StdRng::seed_from_u64(seed.0);
+        }
+    }
+}
+
 pub struct SimPlugin;
 
 impl Plugin for SimPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<SimRng>()
+            .add_systems(OnEnter(AppState::InGame), seed_sim_rng_from_map)
+            .add_systems(
+                Update,
+                reset_sim_rng_on_new_map
+                    .in_set(GameSet::CommandApply)
+                    .run_if(
+                        in_state(AppState::InGame).or_else(in_state(AppState::Paused)),
+                    ),
+            );
         app.init_resource::<City>()
             .init_resource::<SimClock>()
             .add_message::<HourAdvanced>()
@@ -192,4 +239,70 @@ fn emit_initial_day_advanced(
     mut day_out: bevy::ecs::message::MessageWriter<DayAdvanced>,
 ) {
     day_out.write(DayAdvanced { day: city.day });
+}
+
+#[cfg(test)]
+mod sim_rng_tests {
+    use super::*;
+    use crate::game::map::MapSeed;
+    use rand::RngExt;
+
+    #[test]
+    fn sim_rng_default_is_deterministic_for_same_seed() {
+        let mut a = SimRng::default();
+        let mut b = SimRng::default();
+        let sa: Vec<u64> = (0..32).map(|_| a.rng.random::<u64>()).collect();
+        let sb: Vec<u64> = (0..32).map(|_| b.rng.random::<u64>()).collect();
+        assert_eq!(sa, sb, "same seed must produce identical stream");
+    }
+
+    #[test]
+    fn sim_rng_diverges_for_different_seed() {
+        let mut a = SimRng { rng: StdRng::seed_from_u64(1) };
+        let mut b = SimRng { rng: StdRng::seed_from_u64(2) };
+        let sa: Vec<u64> = (0..32).map(|_| a.rng.random::<u64>()).collect();
+        let sb: Vec<u64> = (0..32).map(|_| b.rng.random::<u64>()).collect();
+        assert_ne!(sa, sb);
+    }
+
+    #[test]
+    fn seed_sim_rng_from_map_uses_map_seed() {
+        let mut app = App::new();
+        app.insert_resource(MapSeed(424242))
+            .init_resource::<SimRng>()
+            .add_systems(Update, seed_sim_rng_from_map);
+        app.update();
+
+        let stream: Vec<u64> = {
+            let mut rng = app.world_mut().resource_mut::<SimRng>();
+            (0..16).map(|_| rng.rng.random::<u64>()).collect()
+        };
+
+        let mut reference = StdRng::seed_from_u64(424242);
+        let expected: Vec<u64> = (0..16).map(|_| reference.random::<u64>()).collect();
+        assert_eq!(stream, expected, "system must re-seed from MapSeed value");
+    }
+
+    #[test]
+    fn reset_sim_rng_on_new_map_reseeds() {
+        let mut app = App::new();
+        app.insert_resource(MapSeed(7))
+            .init_resource::<SimRng>()
+            .add_message::<crate::game::commands::GameCommand>()
+            .add_systems(Update, reset_sim_rng_on_new_map);
+
+        // Burn the default stream, then fire GenerateMap to force a re-seed.
+        {
+            let mut rng = app.world_mut().resource_mut::<SimRng>();
+            let _ = rng.rng.random::<u64>();
+        }
+        app.world_mut()
+            .resource_mut::<bevy::ecs::message::Messages<crate::game::commands::GameCommand>>()
+            .write(crate::game::commands::GameCommand::GenerateMap { seed: 7 });
+        app.update();
+
+        let after: u64 = app.world_mut().resource_mut::<SimRng>().rng.random::<u64>();
+        let mut reference = StdRng::seed_from_u64(7);
+        assert_eq!(after, reference.random::<u64>());
+    }
 }
