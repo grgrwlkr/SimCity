@@ -4,6 +4,8 @@
 > 
 > Для текущего состояния проекта сначала смотри `docs/README.md`, `docs/architecture.md` и `docs/gameplay.md`.
 > Этот файл полезен как perf-аудит и roadmap масштабирования, но не как единственный источник истины по текущей архитектуре.
+>
+> **Пути ниже — до сплита на крейты.** `src/game/...` теперь живёт в `crates/simcity_*/src/game/...` (в основном `simcity_sim`; `ui` — `simcity_frontend`, `sets` — `simcity_core`). Часть предложенных здесь сплитов монолитов (`traffic.rs`, `ui.rs`, `map/`, …) уже выполнена. Актуальная раскладка — `docs/crate-workspace.md`.
 
 ### Контекст и цель
 
@@ -29,9 +31,9 @@
 
 Проект использует два расписания:
 - **`Update`**: каждый кадр (UI, рендер-синк, обработка команд, обновление графов/кэшей)
-- **`FixedUpdate`**: фиксированный шаг симуляции (установлен 10 Гц в `src/game/mod.rs`)
+- **`FixedUpdate`**: фиксированный шаг симуляции (установлен 10 Гц в `crates/simcity_sim/src/game/mod.rs`)
 
-Глобальная группировка задана `GameSet` (`src/game/sets.rs`):
+Глобальная группировка задана `GameSet` (`crates/simcity_core/src/game/sets.rs`):
 - **Input → CommandApply → GraphUpdate → RenderSync → Ui** (в `Update`)
 - **Sim → PostSim** (в `FixedUpdate`)
 
@@ -78,8 +80,8 @@ ECS даёт выигрыши, когда:
 ### 1) Пешеходная оценка “можно ли дойти пешком” (BFS + аллокация на всю карту)
 
 Файлы:
-- `src/game/citizens.rs`: `choose_tour_mode()`
-- `src/game/pedestrians.rs`: `PedestrianGraph::shortest_path_steps()`
+- `crates/simcity_sim/src/game/citizens.rs`: `choose_tour_mode()`
+- `crates/simcity_sim/src/game/pedestrians.rs`: `PedestrianGraph::shortest_path_steps()`
 
 Проблема:
 - `choose_tour_mode()` пытается выбрать `TripMode::Walk` и вызывает `shortest_path_steps()`.
@@ -94,7 +96,7 @@ ECS даёт выигрыши, когда:
 
 ### 2) `traffic.rs`: повторное построение временных индексов каждый тик
 
-Файл: `src/game/traffic.rs`
+Файл: `crates/simcity_sim/src/game/traffic.rs`
 
 Проблема:
 - `plan_lane_changes()` строит `by_tile: HashMap<TilePos, Vec<(Entity, progress, speed)>>` и сортирует.
@@ -118,7 +120,7 @@ ECS даёт выигрыши, когда:
 
 ### 3) `OverlayMode::Path`: отрисовка маршрутов всех машин каждый кадр (аллокации + gizmos)
 
-Файл: `src/game/map/mod.rs`: `vehicle_routes_overlay_render()`
+Файл: `crates/simcity_sim/src/game/map/mod.rs`: `vehicle_routes_overlay_render()`
 
 Проблема:
 Исторически при активном `OverlayMode::Path` на **каждую машину** создавался `Vec<Vec2>` точек и рисовался `gizmos.linestrip_2d` (per-frame O(N) + аллокации).
@@ -136,8 +138,8 @@ ECS даёт выигрыши, когда:
 ### 4) Оверлеи, которые пересоздают сущности каждый кадр (spawn/despawn churn)
 
 Файлы:
-- `src/game/zone_placement.rs`: `render_zone_placement_overlay()` — **каждый `Update`** despawn всех overlay tiles и spawn заново (когда выбран zone-tool).
-- `src/game/services.rs`: `render_service_coverage_overlay()` — **каждый `Update`** despawn всех overlay tiles и spawn заново (когда включён ServiceCoverage overlay).
+- `crates/simcity_sim/src/game/zone_placement.rs`: `render_zone_placement_overlay()` — **каждый `Update`** despawn всех overlay tiles и spawn заново (когда выбран zone-tool).
+- `crates/simcity_sim/src/game/services.rs`: `render_service_coverage_overlay()` — **каждый `Update`** despawn всех overlay tiles и spawn заново (когда включён ServiceCoverage overlay).
 
 Следствие:
 - Это создаёт сильные пики CPU и нагрузку на ECS/renderer при активных оверлеях.
@@ -145,10 +147,10 @@ ECS даёт выигрыши, когда:
 ### 5) PostSim пересчёты “по всей карте” каждый тик симуляции (10 Гц)
 
 Файлы/системы:
-- `src/game/land_value.rs`: `compute_land_value()` — двойной цикл по карте.
-- `src/game/pollution.rs`: `compute_pollution()` — полный reset + “радиус” вокруг индустрии.
-- `src/game/public_transport.rs`: `compute_public_transport_index()` — полный проход, `HashSet`.
-- `src/game/services.rs`: `compute_service_coverage_index()` — два прохода по карте + “покраска” зон покрытия.
+- `crates/simcity_sim/src/game/land_value.rs`: `compute_land_value()` — двойной цикл по карте.
+- `crates/simcity_sim/src/game/pollution.rs`: `compute_pollution()` — полный reset + “радиус” вокруг индустрии.
+- `crates/simcity_sim/src/game/public_transport.rs`: `compute_public_transport_index()` — полный проход, `HashSet`.
+- `crates/simcity_sim/src/game/services.rs`: `compute_service_coverage_index()` — два прохода по карте + “покраска” зон покрытия.
 
 Следствие:
 - При увеличении карты и числа зданий это гарантированно будет дорого.
@@ -156,7 +158,7 @@ ECS даёт выигрыши, когда:
 
 ### 6) UI: многократные проходы по сущностям и линейные “поиски по всему миру”
 
-Файл: `src/game/ui.rs`
+Файл: `crates/simcity_frontend/src/game/ui.rs`
 
 Проблема:
 - Исторически `update_ui_metrics()` делал `q_vehicles.iter().count()`, `q_citizens.iter().count()`, `q_buildings.iter().count()` каждый кадр.
@@ -173,7 +175,7 @@ ECS даёт выигрыши, когда:
 Даже если оптимизировать отдельные функции, останутся фундаментальные ограничения:
 
 - **Entity-per-vehicle + per-frame системные проходы O(N)**  
-  Пример (исторически): `cull_vehicle_lod()` в `src/game/traffic.rs` итерировал все `Vehicle` каждый кадр (**Done: удалено**), но фундаментальная проблема “1M entity-per-agent” остаётся.
+  Пример (исторически): `cull_vehicle_lod()` в `crates/simcity_sim/src/game/traffic.rs` итерировал все `Vehicle` каждый кадр (**Done: удалено**), но фундаментальная проблема “1M entity-per-agent” остаётся.
 
 - **Память и маршруты**  
   `Vehicle { route: Vec<TilePos> }`: миллион `Vec` + маршруты = огромная память и churn при перепланировании.
@@ -189,7 +191,7 @@ ECS даёт выигрыши, когда:
 
 ### Проблема больших файлов
 
-`src/game/traffic.rs` (5000+ строк) и `src/game/ui.rs` уже выполняют роли “монолитов”.  
+`crates/simcity_sim/src/game/traffic.rs` (5000+ строк) и `crates/simcity_frontend/src/game/ui.rs` уже выполняют роли “монолитов”.  
 Это мешает:
 - локализовать ответственность,
 - переиспользовать индексы/кэши между системами,
@@ -198,7 +200,7 @@ ECS даёт выигрыши, когда:
 
 ### Предлагаемая структура папок
 
-#### `src/game/traffic/`
+#### `crates/simcity_sim/src/game/traffic/`
 
 - `mod.rs` — `TrafficPlugin`, публичные re-export’ы
 - `components.rs` — `Vehicle`, `Parked`, `VehicleTrafficState`, маркеры (`LaneChangeCooldown`, `Overtaking`, …)
@@ -215,14 +217,14 @@ ECS даёт выигрыши, когда:
 - `render.rs` — `render_traffic_overlay`, `update_parked_vehicle_positions`
 - `tests/` — вынести хвост тестов из `traffic.rs` в отдельные файлы
 
-#### `src/game/ui/`
+#### `crates/simcity_frontend/src/game/ui/`
 
 - `mod.rs` — `UiPlugin`
 - `top_bar.rs`, `toolbar.rs`, `sidebar.rs`, `minimap.rs`, `stats.rs`, `debug_dump.rs`
 
-#### `src/game/map/`
+#### `crates/simcity_sim/src/game/map/`
 
-Текущий `src/game/map/mod.rs` стоит разбить по ответственности:
+Текущий `crates/simcity_sim/src/game/map/mod.rs` стоит разбить по ответственности:
 - `input.rs`, `commands_apply.rs`
 - `tile_render.rs`, `dirty_sync.rs`
 - `overlays/` (`path.rs`, `lane_markings.rs`, …)
@@ -235,7 +237,7 @@ ECS даёт выигрыши, когда:
 
 **Сделано (реализовано в коде):**
 
-- Добавлен `TrafficSpatialIndex` (bucketed per-tile индекс без `HashMap<TilePos, Vec<...>>`) в `src/game/traffic/traffic_spatial_index.rs`.
+- Добавлен `TrafficSpatialIndex` (bucketed per-tile индекс без `HashMap<TilePos, Vec<...>>`) в `crates/simcity_sim/src/game/traffic/traffic_spatial_index.rs`.
 - В `traffic.rs` добавлены системы:
   - `build_traffic_spatial_index_pre_lane_changes` (строит индекс перед `plan_lane_changes`)
   - `build_traffic_spatial_index` (перестраивает индекс после lane changes; далее его читают `plan_oncoming_overtakes` и `move_vehicles`)
@@ -399,7 +401,7 @@ ECS даёт выигрыши, когда:
 - **Save dump to file**: сохранить в файл `debug_dumps/simcity_dump_<unix_ms>.ron`.
 
 Где реализовано:
-- `src/game/ui.rs`: `DebugDumpUiState`, `DebugTelemetry`, `collect_debug_telemetry`, `debug_dump_ui`, `build_debug_dump`.
+- `crates/simcity_frontend/src/game/ui.rs`: `DebugDumpUiState`, `DebugTelemetry`, `collect_debug_telemetry`, `debug_dump_ui`, `build_debug_dump`.
 
 Что попадает в dump (высокоуровнево):
 - **Контекст**: `app_state`, `sim_speed`, `tool`, `overlay`, карта (`width/height/tile_size`), камера, (опционально) hovered tile.
@@ -445,15 +447,15 @@ ECS даёт выигрыши, когда:
 Цель: разнести ответственность и подготовить площадку для оптимизаций.
 
 **Крупные файлы, которые нужно разрезать:**
-- `src/game/traffic.rs` → `src/game/traffic/*` (см. структуру выше)
-- `src/game/map/mod.rs` → `src/game/map/*` + `src/game/map/overlays/*`
-- `src/game/ui.rs` → `src/game/ui/*`
-- `src/game/transport.rs` → `src/game/transport/*`
-- `src/game/pedestrians.rs` → `src/game/pedestrians/*`
-- `src/game/intersections.rs` → `src/game/intersections/*`
-- `src/game/buildings.rs` (593) → `src/game/buildings/*`
-- `src/game/services.rs` (544) → `src/game/services/*`
-- `src/game/emergencies.rs` (700+) → `src/game/emergencies/*`
+- `crates/simcity_sim/src/game/traffic.rs` → `crates/simcity_sim/src/game/traffic/*` (см. структуру выше)
+- `crates/simcity_sim/src/game/map/mod.rs` → `crates/simcity_sim/src/game/map/*` + `crates/simcity_sim/src/game/map/overlays/*`
+- `crates/simcity_frontend/src/game/ui.rs` → `crates/simcity_frontend/src/game/ui/*`
+- `crates/simcity_sim/src/game/transport.rs` → `crates/simcity_sim/src/game/transport/*`
+- `crates/simcity_sim/src/game/pedestrians.rs` → `crates/simcity_sim/src/game/pedestrians/*`
+- `crates/simcity_sim/src/game/intersections.rs` → `crates/simcity_sim/src/game/intersections/*`
+- `crates/simcity_sim/src/game/buildings.rs` (593) → `crates/simcity_sim/src/game/buildings/*`
+- `crates/simcity_sim/src/game/services.rs` (544) → `crates/simcity_sim/src/game/services/*`
+- `crates/simcity_sim/src/game/emergencies.rs` (700+) → `crates/simcity_sim/src/game/emergencies/*`
 
 Правило: “много файлов, но каждый делает одно”.
 
@@ -534,7 +536,7 @@ Deliverable:
 
 Ниже — конкретный “раскрой” (ориентир). Реальное разбиение уточняется по мере переноса функций.
 
-### `src/game/transport.rs` (≈1779) → `src/game/transport/`
+### `crates/simcity_sim/src/game/transport.rs` (≈1779) → `crates/simcity_sim/src/game/transport/`
 
 - `mod.rs` (TransportPlugin + wiring)
 - `graph_version.rs` (`GraphVersion`, bump rules)
@@ -547,7 +549,7 @@ Deliverable:
   - `cached.rs` (`PathCache`, `find_road_path_cached`)
 - `tests/*`
 
-### `src/game/pedestrians.rs` (≈1419) → `src/game/pedestrians/`
+### `crates/simcity_sim/src/game/pedestrians.rs` (≈1419) → `crates/simcity_sim/src/game/pedestrians/`
 
 - `mod.rs` (PedestriansPlugin)
 - `config.rs`
@@ -557,7 +559,7 @@ Deliverable:
 - `routing.rs` (очередь запросов/кэш, если вводим)
 - `tests/*`
 
-### `src/game/intersections.rs` (≈856) → `src/game/intersections/`
+### `crates/simcity_sim/src/game/intersections.rs` (≈856) → `crates/simcity_sim/src/game/intersections/`
 
 - `mod.rs` (IntersectionsPlugin)
 - `index.rs` (`IntersectionIndex`, clustering)
@@ -566,7 +568,7 @@ Deliverable:
 - `render.rs` (render_traffic_lights)
 - `tests/*`
 
-### `src/game/map/mod.rs` (≈2200) → `src/game/map/`
+### `crates/simcity_sim/src/game/map/mod.rs` (≈2200) → `crates/simcity_sim/src/game/map/`
 
 - `mod.rs` (MapPlugin)
 - `config.rs`
@@ -577,7 +579,7 @@ Deliverable:
 - `overlays/` (`path`, `lane_markings`, `zone_placement`-hook)
 - `tests/*`
 
-### `src/game/ui.rs` (≈2200+) → `src/game/ui/`
+### `crates/simcity_frontend/src/game/ui.rs` (≈2200+) → `crates/simcity_frontend/src/game/ui/`
 
 - `mod.rs` (UiPlugin)
 - `metrics.rs` (UiMetrics + update)
@@ -585,7 +587,7 @@ Deliverable:
 - `top_bar.rs`, `toolbar.rs`, `sidebar.rs`
 - `minimap.rs`, `stats.rs`
 
-### `src/game/buildings.rs` (≈593) → `src/game/buildings/`
+### `crates/simcity_sim/src/game/buildings.rs` (≈593) → `crates/simcity_sim/src/game/buildings/`
 
 - `mod.rs`
 - `components.rs` (`Building`, decay marker)
@@ -594,7 +596,7 @@ Deliverable:
 - `upgrade.rs` (upgrade_buildings)
 - `tuning.rs` (BuildingTuning, clocks, rng)
 
-### `src/game/services.rs` (≈544) → `src/game/services/`
+### `crates/simcity_sim/src/game/services.rs` (≈544) → `crates/simcity_sim/src/game/services/`
 
 - `mod.rs`
 - `stations.rs` (sync from buildings)
@@ -602,7 +604,7 @@ Deliverable:
 - `coverage.rs` (compute_service_coverage_index)
 - `render.rs` (service overlay, без spawn/despawn churn)
 
-### `src/game/emergencies.rs` (≈700+) → `src/game/emergencies/`
+### `crates/simcity_sim/src/game/emergencies.rs` (≈700+) → `crates/simcity_sim/src/game/emergencies/`
 
 - `mod.rs`
 - `model.rs` (`Emergency`, `EmergencyManager`, stats)
@@ -742,23 +744,23 @@ cargo run --release --features profile_tracy
 
 |   ID | Area        | What (оптимизация)                                                                               | Where (файл/система)                                                 | Why (проблема)                                    | Type                  | Priority | Effort | Risk | Success metric (как мерим)                                          |
 | ---: | ----------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- | ------------------------------------------------- | --------------------- | -------- | ------ | ---- | ------------------------------------------------------------------- |
-|    1 | Pedestrians | Убрать BFS+аллокации `dist=vec![..len..]` на каждый запрос                                       | `PedestrianGraph::shortest_path_steps()` (`src/game/pedestrians.rs`) | Пики CPU/аллокаций при росте граждан              | Algorithm/Data layout | P0       | M      | M    | Tracy: исчезают spikes; 10k граждан без GC/аллока-пиков             |
-|    2 | Citizens    | Не вызывать “дорогие” проверки пешего маршрута при каждом решении                                | `choose_tour_mode()` (`src/game/citizens.rs`)                        | BFS в горячем выборе режима                       | Scheduling/Algorithm  | P0       | S–M    | L    | Стабильный `FixedUpdate` при 1k–10k citizens                        |
-|    3 | Traffic     | Убрать дублирующее построение `HashMap by_tile` в нескольких системах                            | `plan_lane_changes()`, `move_vehicles()` (`src/game/traffic.rs`)     | Повторная работа/аллокации каждый тик             | Data layout           | P0       | M      | M    | Tracy: снижение времени `traffic::Sim` на N=10k/100k                |
-|    4 | Traffic     | **DONE:** кэшировать “светофор по ключу” вместо `iter().find()`                                   | `update_vehicle_traffic_state()` (`src/game/traffic.rs`)             | Потенциальное O(vehicles×lights)                  | Data layout           | P1       | S      | L    | Время системы растёт ~O(N), не O(N×M)                               |
-|    5 | Traffic     | Разделить данные и логику: `Vehicle` без `Vec route`; `PathHandle` + `PathPool`                  | `Vehicle` (`src/game/traffic.rs`) + transport/path                   | 1M `Vec` = память+churn                           | Data layout           | P1       | L      | H    | Память на 100k–1M авто не взрывается; меньше аллокаций/клонирований |
+|    1 | Pedestrians | Убрать BFS+аллокации `dist=vec![..len..]` на каждый запрос                                       | `PedestrianGraph::shortest_path_steps()` (`crates/simcity_sim/src/game/pedestrians.rs`) | Пики CPU/аллокаций при росте граждан              | Algorithm/Data layout | P0       | M      | M    | Tracy: исчезают spikes; 10k граждан без GC/аллока-пиков             |
+|    2 | Citizens    | Не вызывать “дорогие” проверки пешего маршрута при каждом решении                                | `choose_tour_mode()` (`crates/simcity_sim/src/game/citizens.rs`)                        | BFS в горячем выборе режима                       | Scheduling/Algorithm  | P0       | S–M    | L    | Стабильный `FixedUpdate` при 1k–10k citizens                        |
+|    3 | Traffic     | Убрать дублирующее построение `HashMap by_tile` в нескольких системах                            | `plan_lane_changes()`, `move_vehicles()` (`crates/simcity_sim/src/game/traffic.rs`)     | Повторная работа/аллокации каждый тик             | Data layout           | P0       | M      | M    | Tracy: снижение времени `traffic::Sim` на N=10k/100k                |
+|    4 | Traffic     | **DONE:** кэшировать “светофор по ключу” вместо `iter().find()`                                   | `update_vehicle_traffic_state()` (`crates/simcity_sim/src/game/traffic.rs`)             | Потенциальное O(vehicles×lights)                  | Data layout           | P1       | S      | L    | Время системы растёт ~O(N), не O(N×M)                               |
+|    5 | Traffic     | Разделить данные и логику: `Vehicle` без `Vec route`; `PathHandle` + `PathPool`                  | `Vehicle` (`crates/simcity_sim/src/game/traffic.rs`) + transport/path                   | 1M `Vec` = память+churn                           | Data layout           | P1       | L      | H    | Память на 100k–1M авто не взрывается; меньше аллокаций/клонирований |
 |    6 | Pathfinding | Очередь запросов + budget per tick; async задачи                                                 | transport/pathfinding                                                | Нельзя планировать путь “сразу” для массы агентов | Scheduling/Tooling    | P1       | L      | M    | 100k запросов не стопорят сим; latency bounded                      |
 |    7 | Traffic     | Перейти на lane/segment модель (lane-index) для O(1) leader                                      | traffic+transport                                                    | HashMap+sort не выживет на 1M                     | Algorithm/Data layout | P2       | XL     | H    | 1M авто: время тика ~O(N) с малым коэффициентом                     |
 |    8 | Traffic     | Перекрёсток как контроллер: admission сверху вниз + токены                                       | `plan_intersection_reservations`/move                                | Сложные проверки в цикле по авто                  | Algorithm             | P2       | L      | M    | Перекрёстки не увеличивают стоимость нелинейно                      |
 |    9 | Rendering   | Перейти на instance-render для машин (1M инстансов)                                              | render pipeline (новый модуль)                                       | Нельзя 1M `Sprite` entity                         | Rendering             | P2       | XL     | H    | 1M видимых: FPS зависит от GPU, CPU стабилен                        |
 |   10 | Rendering   | GPU-интерполяция позиций (CPU пишет keyframes на sim-rate)                                       | render pipeline                                                      | Обновление 1M трансформов/кадр дорого             | Rendering             | P2       | L–XL   | M    | CPU time per frame почти не растёт с N                              |
-|   11 | UI          | UI читает только агрегированные метрики, не `iter().count()`                                     | `src/game/ui.rs`                                                     | UI станет bottleneck на больших N                 | Data layout           | P1       | M      | M    | `Update::Ui` ~constant-time при росте N                             |
+|   11 | UI          | UI читает только агрегированные метрики, не `iter().count()`                                     | `crates/simcity_frontend/src/game/ui.rs`                                                     | UI станет bottleneck на больших N                 | Data layout           | P1       | M      | M    | `Update::Ui` ~constant-time при росте N                             |
 |   12 | Overlays    | Убрать spawn/despawn churn; сделать пул/дифф                                                     | `zone_placement.rs`, `services.rs`, map overlays                     | churn на кадр при оверлеях                        | Data layout/Rendering | P0       | M      | M    | включение оверлеев не вызывает фризов                               |
 |   13 | Map         | Chunked tile rendering уже есть: расширить на оверлеи                                            | `map/mod.rs`                                                         | Оверлеи не должны спавнить по тайлу               | Rendering             | P1       | M      | M    | Overlay cost bounded O(changed)                                     |
 |   14 | PostSim     | Перевести пересчёты карты на “по событию” (GraphVersion/DirtyTiles)                              | land_value/pollution/services/public_transport                       | Полный проход по карте 10 Гц                      | Scheduling            | P1       | M      | M    | Постсим не растёт линейно с картой при отсутствии изменений         |
 |   15 | PostSim     | Частоты: часть read-model пересчитывать реже (DayAdvanced)                                       | economy/demand/land_value/etc                                        | 10 Гц может быть избыточно                        | Scheduling            | P1       | S      | L    | Уменьшение времени PostSim без регресса геймплея                    |
 |   16 | Traffic     | **DONE:** убрать `cull_vehicle_lod()` (O(N)/frame). Next: instancing / chunked visibility index  | `traffic.rs` render sync                                             | O(N) per frame при 1M                             | Rendering             | P2       | L      | M    | `Update::RenderSync` не O(N) по авто                                |
-|   17 | Debug       | Телеметрия не должна итерировать всех авто                                                       | `collect_debug_telemetry()` (`src/game/ui.rs`)                       | O(N) сборки в Update                              | Scheduling            | P0       | S      | L    | Debug off: cost ~0; Debug on: бюджет/лимит                          |
+|   17 | Debug       | Телеметрия не должна итерировать всех авто                                                       | `collect_debug_telemetry()` (`crates/simcity_frontend/src/game/ui.rs`)                       | O(N) сборки в Update                              | Scheduling            | P0       | S      | L    | Debug off: cost ~0; Debug on: бюджет/лимит                          |
 |   18 | Traffic     | Уменьшить ветвления/сложность в `move_vehicles` через ранние “fast paths”                        | `move_vehicles`                                                      | Большая функция, много логики                     | Algorithm             | P1       | M      | M    | снижение инструкции/ветвлений, рост throughput                      |
 |   19 | Transport   | Предварительно вычислять часто нужные “adjacent road endpoints”                                  | `adjacent_road_towards` usages                                       | Повторные grid-lookups                            | Data layout           | P1       | M      | M    | снижение времени pathfinding prep                                   |
 |   20 | Parallelism | Использовать `par_iter` на независимых чанках lane/tiles                                         | traffic/postsim                                                      | 1M требует многопоточности                        | Scheduling            | P2       | M      | M    | линейное ускорение на 8–16 ядрах                                    |

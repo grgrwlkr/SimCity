@@ -4,6 +4,8 @@
 > 
 > Для current-state обзора сначала смотри `docs/README.md`, `docs/architecture.md` и `docs/gameplay.md`.
 > Этот файл полезен как подробный UI reference, но не должен заменять сверку с кодом и текущими документами.
+>
+> **Пути ниже — до сплита на крейты.** UI-модули теперь в `crates/simcity_frontend/src/game/` (а `ui_state`, `commands` — в `crates/simcity_core/src/game/`). Актуальная раскладка — `docs/crate-workspace.md`.
 
 ## Оглавление
 
@@ -79,7 +81,7 @@
 ### Файловая структура
 
 ```
-src/game/
+crates/simcity_frontend/src/game/   # ui_state.rs и commands.rs теперь в simcity_core
 ├── ui.rs              # Основной UI модуль
 │   ├── UiPlugin
 │   ├── UiMetrics, UiHistory (resources)
@@ -1753,6 +1755,6 @@ fn context_menu_ui(
 **Документ создан:** 2025-12-19  
 **Последнее обновление:** 2025-01  
 **Версия кодовой базы:** SimCity commit `7a0d844`  
-**Модули:** `src/game/ui.rs`, `src/game/ui_state.rs`, `src/game/ui_settings.rs`, `src/game/notifications.rs`, `src/game/command_history.rs`, `src/game/camera.rs`, `src/game/commands.rs`
+**Модули:** `crates/simcity_frontend/src/game/ui/`, `crates/simcity_core/src/game/ui_state.rs`, `crates/simcity_frontend/src/game/ui_settings.rs`, `crates/simcity_sim/src/game/notifications.rs`, `crates/simcity_sim/src/game/command_history.rs`, `crates/simcity_frontend/src/game/camera.rs`, `crates/simcity_core/src/game/commands.rs`
 
 

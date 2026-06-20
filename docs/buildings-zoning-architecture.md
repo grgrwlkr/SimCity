@@ -4,6 +4,8 @@
 > 
 > Для текущего implemented state сначала смотри `docs/README.md`, `docs/architecture.md` и `docs/gameplay.md`.
 > Этот документ оставлен как подробный subsystem reference и может содержать design intent шире текущей реализации.
+>
+> **Пути ниже — до сплита на крейты.** Все эти модули теперь в `crates/simcity_sim/src/game/...`. Актуальная раскладка — `docs/crate-workspace.md`.
 
 ## Оглавление
 
@@ -60,7 +62,7 @@
 ### Файловая структура
 
 ```
-src/game/
+crates/simcity_sim/src/game/
 ├── buildings.rs         # Основной модуль зданий
 │   ├── BuildingsPlugin
 │   ├── Building (component)
@@ -1758,6 +1760,6 @@ pub struct BuildingModelLoader {
 **Документ создан:** 2025-12-19  
 **Последнее обновление:** 2025-01  
 **Версия кодовой базы:** SimCity commit `7a0d844`  
-**Модули:** `src/game/buildings.rs`, `src/game/zone_placement.rs`, `src/game/demand.rs`, `src/game/employment.rs`, `src/game/services.rs`, `src/game/land_value.rs`, `src/game/pollution.rs`
+**Модули:** `crates/simcity_sim/src/game/buildings.rs`, `crates/simcity_sim/src/game/zone_placement.rs`, `crates/simcity_sim/src/game/demand.rs`, `crates/simcity_sim/src/game/employment.rs`, `crates/simcity_sim/src/game/services.rs`, `crates/simcity_sim/src/game/land_value.rs`, `crates/simcity_sim/src/game/pollution.rs`
 
 
