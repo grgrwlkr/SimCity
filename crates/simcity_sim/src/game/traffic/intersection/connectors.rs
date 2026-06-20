@@ -588,15 +588,23 @@ pub(crate) fn connector_tiles_for_maneuver(
     traffic_cfg: &TrafficConfig,
 ) -> Option<Vec<TilePos>> {
     let cache = build_cluster_cache(cluster);
-    let (connector, _anchor) = build_connector_path(
+    match build_connector_path(
         entry_tile,
         exit_tile,
         entry_dir,
         exit_dir,
         &cache,
         traffic_cfg,
-    )?;
-    Some(connector)
+    ) {
+        Some((connector, _anchor)) => Some(connector),
+        // Degenerate single-tile cluster: the connector path collapses to length 1, so
+        // `build_connector_path` returns `None`. The maneuver still physically occupies that
+        // one cluster tile, so expose it explicitly. Without this, the candidate's tile set
+        // is empty and `can_reserve` falls back to the coarse mask, which wrongly admits two
+        // crossing maneuvers (disjoint corner zones) on the same single cell.
+        None if cache.tiles.len() == 1 => Some(vec![cache.tiles[0]]),
+        None => None,
+    }
 }
 
 /// Build left turn connector that EXPLICITLY exits on the correct (rightmost) lane.

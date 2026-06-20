@@ -602,3 +602,160 @@ fn intersection_per_tile_blocks_two_crossing_left_turns_through_center() {
         "crossing left turns through CENTER must not double-admit"
     );
 }
+
+#[test]
+fn intersection_single_tile_blocks_two_crossing_left_turns() {
+    // Single-tile cluster at the one center tile (2,2). This is the most common grid
+    // intersection. Two perpendicular LEFT turns whose COARSE zones are disjoint
+    // (ZONE_NW vs ZONE_NE) but which physically share the one cluster tile must NOT
+    // both be admitted.
+    let center = TilePos { x: 2, y: 2 };
+    let cluster_tiles = vec![center];
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(MapConfig {
+            width: 5,
+            height: 5,
+            tile_size: 16.0,
+        })
+        .insert_resource(TrafficConfig::default())
+        .insert_resource({
+            let mut grid = MapGrid::new(5, 5);
+            // Approach + exit road cells (dir != None) around the single cluster tile.
+            for (pos, dir) in [
+                (TilePos { x: 2, y: 1 }, RoadDir::North), // A approach (south of center, going north)
+                (TilePos { x: 1, y: 2 }, RoadDir::West), // A exit lane (north->west turn lands west)
+                (TilePos { x: 2, y: 3 }, RoadDir::North), // B exit lane (east->north turn lands north)
+            ] {
+                if let Some(mut cell) = grid.get(pos) {
+                    cell.road = RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    };
+                    grid.set(pos, cell);
+                }
+            }
+            // B approach (west of center, going east). Must be a road tile (dir != None).
+            if let Some(mut cell) = grid.get(TilePos { x: 1, y: 2 }) {
+                // Already set as West exit above; B enters FROM (1,2) heading East into center.
+                // Keep it as a road cell; dir does not gate the approach.
+                cell.road = RoadCell {
+                    kind: RoadKind::TwoLane,
+                    dir: RoadDir::West,
+                    lane: 0,
+                    flow: RoadFlow::TwoWay,
+                    lane_type: LaneType::Regular,
+                };
+                grid.set(TilePos { x: 1, y: 2 }, cell);
+            }
+            // Single cluster tile: dir = None.
+            for &pos in &cluster_tiles {
+                if let Some(mut cell) = grid.get(pos) {
+                    cell.road = RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir: RoadDir::None,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    };
+                    grid.set(pos, cell);
+                }
+            }
+            grid
+        })
+        .insert_resource({
+            let id = IntersectionId(0);
+            let key = IntersectionKey {
+                aabb_min: center,
+                aabb_max: center,
+                tile_count: 1,
+                tiles_hash: 777,
+            };
+            let mut idx = IntersectionIndex::default();
+            idx.clusters
+                .push(crate::game::intersections::IntersectionCluster {
+                    id,
+                    key,
+                    tiles: cluster_tiles.clone(),
+                    aabb_min: center,
+                    aabb_max: center,
+                    centroid_tile: center,
+                });
+            for &t in &cluster_tiles {
+                idx.tile_to_intersection.insert(t, id);
+            }
+            idx
+        })
+        .insert_resource(IntersectionReservations::default())
+        .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .add_systems(Update, plan_intersection_reservations);
+
+    let id = app
+        .world()
+        .resource::<IntersectionIndex>()
+        .intersection_id_at(center)
+        .unwrap();
+
+    // A: from south, enters center (2,2), exits West (1,2). Entry North, exit West => LEFT (ZONE_NW).
+    // B: from west, enters center (2,2), exits North (2,3). Entry East, exit North => LEFT (ZONE_NE).
+    let (vehicle_a, vehicle_b) = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        (
+            create_vehicle_with_route(
+                &mut path_pool,
+                vec![TilePos { x: 2, y: 1 }, center, TilePos { x: 1, y: 2 }],
+                0,
+                0.9,
+                1.0,
+                60.0,
+                20.0,
+                1.0,
+            ),
+            create_vehicle_with_route(
+                &mut path_pool,
+                vec![TilePos { x: 1, y: 2 }, center, TilePos { x: 2, y: 3 }],
+                0,
+                0.9,
+                1.0,
+                60.0,
+                20.0,
+                1.0,
+            ),
+        )
+    };
+    let _a = app
+        .world_mut()
+        .spawn((vehicle_a, VehicleTrafficState::FreeFlow))
+        .id();
+    let _b = app
+        .world_mut()
+        .spawn((vehicle_b, VehicleTrafficState::FreeFlow))
+        .id();
+
+    app.update();
+
+    let rs = app
+        .world()
+        .resource::<IntersectionReservations>()
+        .by_intersection
+        .get(&id)
+        .cloned()
+        .unwrap_or_default();
+    // Both maneuvers physically occupy the single cluster tile (2,2): only ONE may hold the box.
+    assert_eq!(
+        rs.len(),
+        1,
+        "crossing left turns on a single-tile cluster must not double-admit"
+    );
+}

@@ -283,12 +283,15 @@ fn left_turn_conflicts_with_straight_flow() {
     let list = res.by_intersection.get(&id).cloned().unwrap_or_default();
     assert!(list.iter().any(|r| r.vehicle == straight));
 
-    // FIXED: Left turn from South→West (ZONE_NW) does NOT conflict with
-    // straight from West→East (ZONE_SW|ZONE_SE). They use different zones!
-    // This allows opposing left turns and perpendicular straights to proceed simultaneously.
+    // The northbound left turn (South→West) physically crosses the eastbound straight's path
+    // through the single intersection tile: the left-turner must sweep across the lane the
+    // straight occupies. The coarse mask wrongly reported these as disjoint (ZONE_NW vs
+    // ZONE_SW|ZONE_SE); per-tile admission now correctly blocks the lower-priority left turn
+    // while the higher-priority straight proceeds. This is the same crossing-vs-coarse-mask
+    // bug class P0-2 targets, now covered on single-tile clusters.
     assert!(
-        list.iter().any(|r| r.vehicle == left),
-        "left turn should be reserved - it doesn't conflict with perpendicular straight flow"
+        !list.iter().any(|r| r.vehicle == left),
+        "left turn crosses the perpendicular straight on the shared tile and must yield"
     );
 }
 

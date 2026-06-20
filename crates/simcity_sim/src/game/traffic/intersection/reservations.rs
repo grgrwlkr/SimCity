@@ -93,13 +93,22 @@ impl IntersectionReservations {
                 continue;
             }
 
-            // Opposite-direction straights through a 1-tile box don't physically conflict in the
-            // coarse model (they keep to their own side); preserve prior throughput behavior.
+            // Opposite-direction straights through a 1-tile box don't physically conflict (they
+            // keep to their own side of the road); preserve prior throughput behavior. For a
+            // straight, entry == exit, so "opposite" means the two entry directions are opposites.
             let opposite_straights = maneuver == ManeuverKind::Straight
                 && r.maneuver == ManeuverKind::Straight
-                && stream.entry == r.stream.exit
-                && stream.exit == r.stream.entry;
+                && stream.entry == r.stream.entry.opposite();
             if opposite_straights {
+                continue;
+            }
+
+            // Two right turns hug their own (distinct) near-side corner, so right turns from
+            // different approach directions never physically cross. Same-approach right turns are
+            // the same stream (handled above). Gate on disjoint coarse corner zones for safety.
+            let both_right =
+                maneuver == ManeuverKind::RightTurn && r.maneuver == ManeuverKind::RightTurn;
+            if both_right && (r.zones & zones) == 0 {
                 continue;
             }
 
