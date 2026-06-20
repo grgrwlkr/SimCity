@@ -335,3 +335,97 @@ fn stop_sign_vehicle_gets_reserved_and_enters_intersection_tile() {
         "vehicle did not advance after being released/reserved"
     );
 }
+
+#[test]
+fn same_tile_follower_cannot_overlap_leader_after_large_step() {
+    use std::time::Duration;
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .add_message::<TripFinished>()
+        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(MapConfig {
+            width: 4,
+            height: 1,
+            tile_size: 16.0,
+        })
+        .insert_resource({
+            let mut grid = MapGrid::new(4, 1);
+            for x in 0..4i32 {
+                let pos = TilePos { x, y: 0 };
+                let Some(mut cell) = grid.get(pos) else {
+                    continue;
+                };
+                cell.road = RoadCell {
+                    kind: RoadKind::TwoLane,
+                    dir: RoadDir::East,
+                    lane: 0,
+                    flow: RoadFlow::TwoWay,
+                    lane_type: LaneType::Regular,
+                };
+                grid.set(pos, cell);
+            }
+            grid
+        })
+        .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficConfig::default())
+        .insert_resource(IntersectionIndex::default())
+        .insert_resource(IntersectionReservations::default())
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(VehicleAggSnapshot::default())
+        .insert_resource(ParkedVehicleTileIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .add_systems(Update, (build_traffic_spatial_index, move_vehicles).chain());
+
+    let route = vec![
+        TilePos { x: 0, y: 0 },
+        TilePos { x: 1, y: 0 },
+        TilePos { x: 2, y: 0 },
+        TilePos { x: 3, y: 0 },
+    ];
+
+    // Leader: stationary, slightly ahead on the same tile (progress 0.3).
+    let leader_comp = {
+        let mut pp = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(&mut pp, route.clone(), 0, 0.3, 0.0, 50.0, 20.0, 1.0)
+    };
+    let _leader = app
+        .world_mut()
+        .spawn((leader_comp, VehicleTrafficState::FreeFlow))
+        .id();
+
+    // Ego: behind on same tile (progress 0.0) with an absurd speed so a single 0.1s step
+    // would, unclamped, push it well past the leader.
+    let ego_comp = {
+        let mut pp = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(&mut pp, route.clone(), 0, 0.0, 200.0, 200.0, 50.0, 1.0)
+    };
+    let ego = app
+        .world_mut()
+        .spawn((ego_comp, VehicleTrafficState::FreeFlow))
+        .id();
+
+    app.world_mut()
+        .resource_mut::<bevy::time::Time<bevy::time::Fixed>>()
+        .advance_by(Duration::from_secs_f32(0.1));
+
+    app.update();
+
+    let ego_v = app.world().get::<Vehicle>(ego).unwrap();
+    // Both must still be on tile 0 for this comparison to be meaningful.
+    assert_eq!(
+        ego_v.path_cursor, 0,
+        "ego left the tile; test setup invalid"
+    );
+    // Strong no-overlap form: ego must be strictly behind leader.
+    assert!(
+        ego_v.progress < 0.3,
+        "ego ({}) reached or passed leader (0.3) — overlap",
+        ego_v.progress
+    );
+}

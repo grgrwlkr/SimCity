@@ -34,6 +34,8 @@ pub struct TrafficSpatialIndex {
 
     /// For each vehicle that has a leader on the same tile: (gap_world, leader_speed).
     leader_same_tile: HashMap<Entity, (f32, f32)>,
+    /// Absolute progress of the same-tile leader (in tile fractions) for hard clamp.
+    leader_same_tile_progress: HashMap<Entity, f32>,
 }
 
 impl TrafficSpatialIndex {
@@ -60,6 +62,7 @@ impl TrafficSpatialIndex {
             self.touched_lens.clear();
             self.entries.clear();
             self.leader_same_tile.clear();
+            self.leader_same_tile_progress.clear();
         } else {
             // Reset last-tick touched tiles in O(touched) instead of O(grid.len()).
             for &idx in self.touched.iter() {
@@ -70,6 +73,7 @@ impl TrafficSpatialIndex {
             self.touched_lens.clear();
             self.entries.clear();
             self.leader_same_tile.clear();
+            self.leader_same_tile_progress.clear();
         }
 
         // Pass 1: count vehicles per tile, track touched tiles.
@@ -164,12 +168,16 @@ impl TrafficSpatialIndex {
             let Some(slice) = self.entries.get(start..end) else {
                 continue;
             };
+            let vehicle_len_world = crate::game::traffic::VEHICLE_VISUAL_LENGTH_TILES * tile_size;
             for w in slice.windows(2) {
                 let ego = w[0];
                 let lead = w[1];
-                let gap_world = ((lead.progress - ego.progress).max(0.0)) * tile_size;
+                let center_gap = ((lead.progress - ego.progress).max(0.0)) * tile_size;
+                let gap_world = (center_gap - vehicle_len_world).max(0.0);
                 self.leader_same_tile
                     .insert(ego.entity, (gap_world, lead.speed));
+                self.leader_same_tile_progress
+                    .insert(ego.entity, lead.progress);
             }
         }
     }
@@ -217,6 +225,12 @@ impl TrafficSpatialIndex {
     #[inline]
     pub fn leader_same_tile(&self, ego: Entity) -> Option<(f32, f32)> {
         self.leader_same_tile.get(&ego).copied()
+    }
+
+    /// Absolute progress of the immediate same-tile leader of `ego` (if any), in tile fractions.
+    #[inline]
+    pub fn leader_same_tile_progress(&self, ego: Entity) -> Option<f32> {
+        self.leader_same_tile_progress.get(&ego).copied()
     }
 
     /// True if there exists a vehicle on `tile_idx` with progress within `radius` of `center`.

@@ -234,7 +234,9 @@ pub fn move_vehicles(
             && let Some((min_p, lead_v)) = spatial.tile_min_progress_speed(next_idx)
         {
             let gap_tiles = (1.0_f32 - v.progress) + min_p;
-            let gap_world = gap_tiles.max(0.0) * cfg.tile_size.max(0.1);
+            let gap_world = (gap_tiles.max(0.0) * cfg.tile_size.max(0.1)
+                - VEHICLE_VISUAL_LENGTH_TILES * cfg.tile_size.max(0.1))
+            .max(0.0);
             leader = Some(match leader {
                 Some((g, gv)) if g <= gap_world => (g, gv),
                 _ => (gap_world, lead_v),
@@ -491,7 +493,18 @@ pub fn move_vehicles(
             // Reset reverse distance when moving forward
             v.reverse_distance = 0.0;
         } else {
-            v.progress = prev_p + desired_dprog;
+            let mut next_p = prev_p + desired_dprog;
+            if let Some(lead_p) = spatial.leader_same_tile_progress(entity) {
+                let min_gap_tiles = (idm.s0 + VEHICLE_VISUAL_LENGTH_TILES * tile_size) / tile_size;
+                let max_p = (lead_p - min_gap_tiles).max(prev_p);
+                if next_p > max_p {
+                    next_p = max_p;
+                    let actual_dprog = (next_p - prev_p).max(0.0);
+                    let denom = dt.max(1e-6);
+                    v.speed = (actual_dprog * tile_size) / denom;
+                }
+            }
+            v.progress = next_p;
             // Reset reverse distance when moving forward
             v.reverse_distance = 0.0;
         }
