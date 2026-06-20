@@ -100,8 +100,7 @@ impl Plugin for SimPlugin {
                     .chain(),
             );
         apply_fixed_update_set_order(app);
-        app
-            .add_message::<commands::GameCommand>()
+        app.add_message::<commands::GameCommand>()
             .add_message::<trips::TripRequested>()
             .add_message::<trips::TripFinished>()
             .add_message::<sim_events::DayAdvanced>()

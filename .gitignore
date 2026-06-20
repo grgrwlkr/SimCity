@@ -11,3 +11,4 @@
 # Local Cursor hook state
 /.cursor/hooks/state/
 
+.superpowers/

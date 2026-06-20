@@ -190,8 +190,10 @@ fn spawn_citizens_from_residential(
             continue;
         }
 
-        let decision = Timer::from_seconds(sim_rng.rng.random_range(1.0..3.0), TimerMode::Repeating);
-        let shopping_need = Timer::from_seconds(sim_rng.rng.random_range(9.0..18.0), TimerMode::Repeating);
+        let decision =
+            Timer::from_seconds(sim_rng.rng.random_range(1.0..3.0), TimerMode::Repeating);
+        let shopping_need =
+            Timer::from_seconds(sim_rng.rng.random_range(9.0..18.0), TimerMode::Repeating);
         let work_stay = Timer::from_seconds(sim_rng.rng.random_range(5.0..9.0), TimerMode::Once);
         let shop_stay = Timer::from_seconds(sim_rng.rng.random_range(2.0..5.0), TimerMode::Once);
 

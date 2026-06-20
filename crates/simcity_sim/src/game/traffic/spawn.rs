@@ -155,7 +155,8 @@ pub(super) fn spawn_trip_vehicles(
                 v.path_cursor = 0;
                 v.progress = 0.0;
                 v.speed = 0.0;
-                v.max_speed = sample_driver_max_speed_world(&p.cfg, &p.traffic_cfg, &mut p.sim_rng.rng);
+                v.max_speed =
+                    sample_driver_max_speed_world(&p.cfg, &p.traffic_cfg, &mut p.sim_rng.rng);
                 // Driver behavior is trip-bound: sample a fresh profile for each new trip.
                 v.speed_factor = sample_driver_speed_factor(&mut p.sim_rng.rng);
                 v.max_accel = idm.a;

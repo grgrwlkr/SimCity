@@ -23,10 +23,7 @@ impl Default for SimRng {
 }
 
 /// Re-seed at InGame entry from the current map seed (mirrors BuildingGrowthRng).
-pub fn seed_sim_rng_from_map(
-    seed: Res<crate::game::map::MapSeed>,
-    mut rng: ResMut<SimRng>,
-) {
+pub fn seed_sim_rng_from_map(seed: Res<crate::game::map::MapSeed>, mut rng: ResMut<SimRng>) {
     rng.rng = StdRng::seed_from_u64(seed.0);
 }
 
@@ -53,9 +50,7 @@ impl Plugin for SimPlugin {
                 Update,
                 reset_sim_rng_on_new_map
                     .in_set(GameSet::CommandApply)
-                    .run_if(
-                        in_state(AppState::InGame).or_else(in_state(AppState::Paused)),
-                    ),
+                    .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
             );
         app.init_resource::<City>()
             .init_resource::<SimClock>()
@@ -258,8 +253,12 @@ mod sim_rng_tests {
 
     #[test]
     fn sim_rng_diverges_for_different_seed() {
-        let mut a = SimRng { rng: StdRng::seed_from_u64(1) };
-        let mut b = SimRng { rng: StdRng::seed_from_u64(2) };
+        let mut a = SimRng {
+            rng: StdRng::seed_from_u64(1),
+        };
+        let mut b = SimRng {
+            rng: StdRng::seed_from_u64(2),
+        };
         let sa: Vec<u64> = (0..32).map(|_| a.rng.random::<u64>()).collect();
         let sb: Vec<u64> = (0..32).map(|_| b.rng.random::<u64>()).collect();
         assert_ne!(sa, sb);
