@@ -150,6 +150,7 @@ pub fn sync_traffic_light_entities(
     mut index: ResMut<IntersectionIndex>,
     mut commands: Commands,
     q_existing: Query<(Entity, &TrafficLight)>,
+    mut sim_rng: ResMut<crate::game::sim::SimRng>,
 ) {
     let mut needs_sync = index.lights_dirty;
     if !needs_sync {
@@ -176,7 +177,6 @@ pub fn sync_traffic_light_entities(
     }
 
     // Spawn new lights
-    let mut rng = rand::rng();
     for cluster in index.clusters.iter() {
         if !index.traffic_lights.contains(&cluster.id) {
             continue;
@@ -192,7 +192,7 @@ pub fn sync_traffic_light_entities(
 
         // CRITICAL: Random phase offset to prevent synchronized lights (green wave)
         // Each intersection starts at a random point in its cycle
-        let random_offset = rng.random_range(0.0..10.0); // Random 0-10 second offset
+        let random_offset = sim_rng.rng.random_range(0.0..10.0); // Random 0-10 second offset
 
         commands.spawn((
             TrafficLight {

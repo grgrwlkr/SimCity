@@ -40,7 +40,6 @@ pub(super) fn spawn_trip_vehicles(
         .map(|c| c.active as usize)
         .unwrap_or_else(|| p.q_vehicles.iter().count());
     let idm = idm_params_world(&p.cfg, &p.traffic_cfg);
-    let mut rng = rand::rng();
     // If the network is already gridlocked, stop spawning new cars until it clears.
     let congested = p.traffic_idx.max_congestion >= SPAWN_THROTTLE_MAX_CONG
         || p.traffic_idx.avg_congestion >= SPAWN_THROTTLE_AVG_CONG;
@@ -156,9 +155,9 @@ pub(super) fn spawn_trip_vehicles(
                 v.path_cursor = 0;
                 v.progress = 0.0;
                 v.speed = 0.0;
-                v.max_speed = sample_driver_max_speed_world(&p.cfg, &p.traffic_cfg, &mut rng);
+                v.max_speed = sample_driver_max_speed_world(&p.cfg, &p.traffic_cfg, &mut p.sim_rng.rng);
                 // Driver behavior is trip-bound: sample a fresh profile for each new trip.
-                v.speed_factor = sample_driver_speed_factor(&mut rng);
+                v.speed_factor = sample_driver_speed_factor(&mut p.sim_rng.rng);
                 v.max_accel = idm.a;
 
                 tf.translation.x = world_pos.x;
@@ -194,8 +193,8 @@ pub(super) fn spawn_trip_vehicles(
         }
 
         let world_pos = tile_to_world(&p.cfg, start);
-        let speed_factor = sample_driver_speed_factor(&mut rng);
-        let max_speed = sample_driver_max_speed_world(&p.cfg, &p.traffic_cfg, &mut rng);
+        let speed_factor = sample_driver_speed_factor(&mut p.sim_rng.rng);
+        let max_speed = sample_driver_max_speed_world(&p.cfg, &p.traffic_cfg, &mut p.sim_rng.rng);
 
         // Get the start lane for lane-based navigation
         let start_lane = if start_lane != LaneId::INVALID {
@@ -282,6 +281,7 @@ pub(super) struct SpawnTripVehiclesParams<'w, 's> {
         With<Parked>,
     >,
     traffic_cfg: Res<'w, TrafficConfig>,
+    sim_rng: bevy::prelude::ResMut<'w, crate::game::sim::SimRng>,
 }
 
 /// Despawn all vehicles when GameCommand::GenerateMap is received.

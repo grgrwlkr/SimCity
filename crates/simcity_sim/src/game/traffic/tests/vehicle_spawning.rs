@@ -196,6 +196,7 @@ fn car_trip_spawns_from_citizen_car_parked_at_not_from() {
         .insert_resource(TrafficConfig::default())
         .insert_resource(IntersectionIndex::default())
         .insert_resource(crate::game::transport::PathPool::default())
+        .init_resource::<crate::game::sim::SimRng>()
         .add_systems(Update, spawn_trip_vehicles);
 
     // Citizen's car is parked at "work" building (0,2), but trip is requested from (0,0).

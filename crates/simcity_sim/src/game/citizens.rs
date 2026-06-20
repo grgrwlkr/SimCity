@@ -166,14 +166,13 @@ fn spawn_citizens_from_residential(
     mut id_gen: ResMut<CitizenIdGen>,
     q_buildings: Query<&Building>,
     q_citizens: Query<&Citizen>,
+    mut sim_rng: ResMut<crate::game::sim::SimRng>,
 ) {
     // Spawn up to building residential capacity per home tile (MVP).
     let mut have_home = HashMap::<TilePos, usize>::new();
     for c in &q_citizens {
         *have_home.entry(c.home).or_insert(0) += 1;
     }
-
-    let mut rng = rand::rng();
 
     for b in &q_buildings {
         if b.kind != BuildingKind::Residential {
@@ -191,10 +190,10 @@ fn spawn_citizens_from_residential(
             continue;
         }
 
-        let decision = Timer::from_seconds(rng.random_range(1.0..3.0), TimerMode::Repeating);
-        let shopping_need = Timer::from_seconds(rng.random_range(9.0..18.0), TimerMode::Repeating);
-        let work_stay = Timer::from_seconds(rng.random_range(5.0..9.0), TimerMode::Once);
-        let shop_stay = Timer::from_seconds(rng.random_range(2.0..5.0), TimerMode::Once);
+        let decision = Timer::from_seconds(sim_rng.rng.random_range(1.0..3.0), TimerMode::Repeating);
+        let shopping_need = Timer::from_seconds(sim_rng.rng.random_range(9.0..18.0), TimerMode::Repeating);
+        let work_stay = Timer::from_seconds(sim_rng.rng.random_range(5.0..9.0), TimerMode::Once);
+        let shop_stay = Timer::from_seconds(sim_rng.rng.random_range(2.0..5.0), TimerMode::Once);
 
         let mut spawned_here = 0usize;
         let max_spawn_here = (target - current).min(8); // guardrail
@@ -242,7 +241,6 @@ fn citizen_trip_planner(
         }
     }
 
-    let mut rng = rand::rng();
     let walk_tour_max_m = p.ped_cfg.walk_tour_max_m.max(0.0);
     let tile_meters = p.traffic_cfg.tile_meters().max(0.1);
     mode_cache.invalidate_if_needed(p.ped_graph.version, walk_tour_max_m, tile_meters);
@@ -276,7 +274,7 @@ fn citizen_trip_planner(
                 // Prefer shopping if need timer triggers.
                 if c.shopping_need.just_finished() {
                     shopping.demand_events = shopping.demand_events.saturating_add(1);
-                    if let Some(&shop) = shops.choose(&mut rng) {
+                    if let Some(&shop) = shops.choose(&mut p.sim_rng.rng) {
                         let mode = choose_tour_mode(&mut p, &mut mode_cache, c.home, shop);
                         c.tour_mode = Some(mode);
                         out.write(TripRequested {
@@ -386,6 +384,7 @@ struct CitizenTripPlannerParams<'w> {
     ped_routing: ResMut<'w, PedestrianRoutingScratch>,
     ped_cfg: Res<'w, PedestrianConfig>,
     traffic_cfg: Res<'w, TrafficConfig>,
+    sim_rng: ResMut<'w, crate::game::sim::SimRng>,
 }
 
 fn choose_tour_mode(

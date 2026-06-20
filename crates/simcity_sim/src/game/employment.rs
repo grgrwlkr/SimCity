@@ -311,6 +311,7 @@ struct AssignJobsParams<'w, 's> {
     cfg: Res<'w, EmploymentConfig>,
     unreachable_cache: ResMut<'w, EmploymentUnreachablePairCache>,
     stats: ResMut<'w, EmploymentStats>,
+    sim_rng: ResMut<'w, crate::game::sim::SimRng>,
 }
 
 fn assign_jobs(mut p: AssignJobsParams) {
@@ -370,8 +371,7 @@ fn assign_jobs(mut p: AssignJobsParams) {
         return;
     }
 
-    let mut rng = rand::rng();
-    jobs.shuffle(&mut rng);
+    jobs.shuffle(&mut p.sim_rng.rng);
 
     let mut assigned = 0usize;
     let mut pathfind_attempts = 0usize;
