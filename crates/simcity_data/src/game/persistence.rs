@@ -5,6 +5,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use rand::SeedableRng;
+
 use bevy::ecs::message::MessageReader;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
@@ -574,6 +576,7 @@ struct LoadParams<'w, 's> {
     next_state: ResMut<'w, NextState<AppState>>,
     cfg: Res<'w, MapConfig>,
     seed: ResMut<'w, MapSeed>,
+    sim_rng: ResMut<'w, simcity_sim::game::sim::SimRng>,
     grid: ResMut<'w, MapGrid>,
     city: ResMut<'w, City>,
     id_gen: ResMut<'w, CitizenIdGen>,
@@ -629,6 +632,9 @@ fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParam
 
         // Apply resources.
         p.seed.0 = save.seed;
+        // Reproducibility: re-seed the sim RNG from the restored map seed,
+        // mirroring seed_sim_rng_from_map at InGame entry.
+        p.sim_rng.rng = rand::rngs::StdRng::seed_from_u64(save.seed);
         apply_map_from_v1(&mut p.grid, &save.map);
         *p.city = save.city.clone();
         p.id_gen.set_next(save.next_citizen_id);

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 bevy = { workspace = true }
+rand = { workspace = true }
 ron = { workspace = true }
 serde = { workspace = true }
 simcity_core = { path = "../simcity_core" }
