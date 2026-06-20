@@ -575,6 +575,30 @@ fn build_connector_path(
     Some((connector, anchor))
 }
 
+/// Tiles physically occupied by a maneuver's connector path through a cluster.
+///
+/// Reuses `build_connector_path` (the source of truth) so reservation admission and the
+/// rendered/driven path agree on which cluster tiles a maneuver claims.
+pub(crate) fn connector_tiles_for_maneuver(
+    cluster: &IntersectionCluster,
+    entry_tile: TilePos,
+    exit_tile: TilePos,
+    entry_dir: RoadDir,
+    exit_dir: RoadDir,
+    traffic_cfg: &TrafficConfig,
+) -> Option<Vec<TilePos>> {
+    let cache = build_cluster_cache(cluster);
+    let (connector, _anchor) = build_connector_path(
+        entry_tile,
+        exit_tile,
+        entry_dir,
+        exit_dir,
+        &cache,
+        traffic_cfg,
+    )?;
+    Some(connector)
+}
+
 /// Build left turn connector that EXPLICITLY exits on the correct (rightmost) lane.
 ///
 /// For right-hand traffic:

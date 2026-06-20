@@ -342,6 +342,7 @@ fn right_turn_on_red_releases_when_reserved() {
                 state: ReservationState::Approaching,
                 created_at_sec: 0.0,
                 zones: ZONE_ALL,
+                tiles: Vec::new(),
                 stream: StreamKey {
                     entry: RoadDir::None,
                     exit: RoadDir::None,

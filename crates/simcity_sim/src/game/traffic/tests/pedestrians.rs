@@ -246,6 +246,7 @@ fn vehicle_does_not_enter_uncontrolled_intersection_while_pedestrian_is_crossing
                 state: ReservationState::Approaching,
                 created_at_sec: 0.0,
                 zones: ZONE_ALL,
+                tiles: Vec::new(),
                 stream: StreamKey {
                     entry: RoadDir::None,
                     exit: RoadDir::None,

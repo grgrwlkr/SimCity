@@ -7,8 +7,8 @@ mod zones;
 
 #[allow(unused_imports)]
 pub(crate) use connectors::{
-    mark_vehicles_needing_connector_rewrite, rewrite_intersection_connectors,
-    rewrite_marked_intersection_connectors,
+    connector_tiles_for_maneuver, mark_vehicles_needing_connector_rewrite,
+    rewrite_intersection_connectors, rewrite_marked_intersection_connectors,
 };
 #[allow(unused_imports)]
 pub(crate) use reservations::{

@@ -292,6 +292,7 @@ fn right_turn_on_red_is_only_admitted_when_intersection_is_clear() {
                 state: ReservationState::Approaching,
                 created_at_sec: 0.0,
                 zones: ZONE_NW,
+                tiles: Vec::new(),
                 stream: StreamKey {
                     entry: RoadDir::None,
                     exit: RoadDir::None,

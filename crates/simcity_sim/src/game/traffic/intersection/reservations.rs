@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use std::collections::HashMap;
 
 use crate::game::intersections::{IntersectionId, IntersectionIndex};
-use crate::game::map::MapGrid;
+use crate::game::map::{MapGrid, TilePos};
 use crate::game::roads::RoadDir;
 
 use super::super::components::VehicleTrafficState;
@@ -25,12 +25,13 @@ pub enum ReservationState {
     Inside,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub struct IntersectionReservation {
     pub vehicle: Entity,
     pub state: ReservationState,
     pub created_at_sec: f64,
     pub zones: ConflictMask,
+    pub tiles: Vec<TilePos>,
     pub stream: StreamKey,
     pub maneuver: ManeuverKind,
 }
@@ -55,11 +56,13 @@ impl IntersectionReservations {
             })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn can_reserve(
         &self,
         id: IntersectionId,
         vehicle: Entity,
         zones: ConflictMask,
+        tiles: &[TilePos],
         stream: StreamKey,
         maneuver: ManeuverKind,
     ) -> bool {
@@ -71,12 +74,9 @@ impl IntersectionReservations {
             if r.vehicle == vehicle {
                 continue;
             }
-            if (r.zones & zones) == 0 {
-                continue;
-            }
 
-            // Unlimited "platooning" for the same flow: if the maneuver and lane-path are the same
-            // (same entry->exit, therefore same zone path), allow multiple vehicles concurrently.
+            // Unlimited "platooning" for the same flow: identical entry->exit follows the same
+            // connector path, so concurrent admission is safe.
             if r.stream == stream {
                 continue;
             }
@@ -93,19 +93,45 @@ impl IntersectionReservations {
                 continue;
             }
 
-            return false;
+            // Opposite-direction straights through a 1-tile box don't physically conflict in the
+            // coarse model (they keep to their own side); preserve prior throughput behavior.
+            let opposite_straights = maneuver == ManeuverKind::Straight
+                && r.maneuver == ManeuverKind::Straight
+                && stream.entry == r.stream.exit
+                && stream.exit == r.stream.entry;
+            if opposite_straights {
+                continue;
+            }
+
+            // Precise gate: when both maneuvers expose a connector tile set, conflict iff they
+            // actually share a cluster tile. The coarse mask is NOT used here: on multi-tile
+            // clusters two crossing maneuvers can have disjoint coarse zones yet share the
+            // CENTER tile, so a mask-based pre-filter would wrongly admit both.
+            if !tiles.is_empty() && !r.tiles.is_empty() {
+                if tiles.iter().any(|t| r.tiles.contains(t)) {
+                    return false;
+                }
+                continue;
+            }
+
+            // Fallback when a precise tile set is unavailable (e.g. the ZONE_ALL safety-net
+            // reservation): use the coarse mask. Overlapping coarse zones = blocked.
+            if (r.zones & zones) != 0 {
+                return false;
+            }
         }
 
         true
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub(crate) struct IntersectionReservationCandidate {
     priority: u8,
     dist_to_entry: f32,
     vehicle: Entity,
     zones: ConflictMask,
+    tiles: Vec<TilePos>,
     stream: StreamKey,
     maneuver: ManeuverKind,
     is_right_on_red: bool,
@@ -439,6 +465,7 @@ fn collect_intersection_reservation_candidates_inner(
                 state: ReservationState::Inside,
                 created_at_sec: now,
                 zones: ZONE_ALL,
+                tiles: Vec::new(),
                 stream: StreamKey {
                     entry: RoadDir::None,
                     exit: RoadDir::None,
@@ -566,12 +593,38 @@ fn collect_intersection_reservation_candidates_inner(
             continue;
         };
 
+        // Last intersection tile of the cluster traversal (the tile right before the exit lane).
+        let cluster_exit_tile = rem.and_then(|route| {
+            route.iter().position(|t| *t == next).and_then(|start_i| {
+                let mut i = start_i;
+                let mut last = None;
+                while i < route.len() && is_intersection_tile(grid, route[i]) {
+                    last = Some(route[i]);
+                    i += 1;
+                }
+                last
+            })
+        });
+        let tiles = cluster_exit_tile
+            .zip(intersections.cluster_by_id(id))
+            .and_then(|(cex, cluster)| {
+                super::connector_tiles_for_maneuver(
+                    cluster,
+                    next,
+                    cex,
+                    entry_dir,
+                    exit_dir,
+                    traffic_cfg,
+                )
+            })
+            .unwrap_or_default();
+
         let stream = StreamKey {
             entry: entry_dir,
             exit: exit_dir,
         };
         let maneuver = maneuver_kind(traffic_cfg, entry_dir, exit_dir);
-        if !reservations.can_reserve(id, e, zones, stream, maneuver) {
+        if !reservations.can_reserve(id, e, zones, &tiles, stream, maneuver) {
             continue;
         }
 
@@ -650,6 +703,7 @@ fn collect_intersection_reservation_candidates_inner(
             dist_to_entry: dist,
             vehicle: e,
             zones,
+            tiles,
             stream,
             maneuver,
             is_right_on_red,
@@ -682,7 +736,7 @@ fn apply_intersection_reservation_candidates_inner(
                 .then_with(|| a.vehicle.to_bits().cmp(&b.vehicle.to_bits()))
         });
 
-        for cand in cands.iter().copied() {
+        for cand in cands.iter().cloned() {
             // Right turn on red is a yield-maneuver: only allow it when the intersection is clear.
             if cand.is_right_on_red && reservations.is_reserved(id) {
                 continue;
@@ -710,7 +764,14 @@ fn apply_intersection_reservation_candidates_inner(
             if *used >= cand.exit_tile_cap {
                 continue;
             }
-            if !reservations.can_reserve(id, cand.vehicle, cand.zones, cand.stream, cand.maneuver) {
+            if !reservations.can_reserve(
+                id,
+                cand.vehicle,
+                cand.zones,
+                &cand.tiles,
+                cand.stream,
+                cand.maneuver,
+            ) {
                 continue;
             }
             reservations
@@ -722,6 +783,7 @@ fn apply_intersection_reservation_candidates_inner(
                     state: ReservationState::Approaching,
                     created_at_sec: now,
                     zones: cand.zones,
+                    tiles: cand.tiles,
                     stream: cand.stream,
                     maneuver: cand.maneuver,
                 });
