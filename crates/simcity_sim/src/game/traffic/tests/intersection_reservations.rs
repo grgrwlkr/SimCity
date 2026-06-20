@@ -549,3 +549,158 @@ fn opposing_stuck_cars_at_uncontrolled_intersection_grant_at_most_one_per_tick()
         "exactly one stuck car should get an emergency grant"
     );
 }
+
+#[test]
+fn perpendicular_stuck_cars_at_uncontrolled_intersection_grant_at_most_one_per_tick() {
+    // Covers the ORIGINAL force_entry collision scenario: two genuinely-conflicting maneuvers
+    // (East-West straight vs North-South straight) both stuck past INTERSECTION_FORCE_ENTRY_SECS.
+    // They cross the same center tile and are NOT carved out by opposite_straights/same-stream/merge/
+    // both-right → neither can reserve normally → both hit the ZONE_ALL emergency path → at most one
+    // must land (ZONE_ALL conflicts with everything, so can_reserve() blocks the second).
+    use crate::game::traffic::stuck::StuckTimer;
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(MapConfig {
+            width: 3,
+            height: 3,
+            tile_size: 16.0,
+        })
+        .insert_resource({
+            // 3x3 grid with a single intersection tile at (1,1).
+            // Vehicle A: West→East  — route (0,1) → (1,1) → (2,1)
+            // Vehicle B: North→South (y increases southward) — route (1,2) → (1,1) → (1,0)
+            // Both cross the same center tile; no carve-out applies.
+            let mut grid = MapGrid::new(3, 3);
+            let i = TilePos { x: 1, y: 1 };
+            for (pos, dir) in [
+                // East-West road
+                (TilePos { x: 0, y: 1 }, RoadDir::East),
+                (TilePos { x: 2, y: 1 }, RoadDir::East),
+                // North-South road
+                (TilePos { x: 1, y: 2 }, RoadDir::South),
+                (TilePos { x: 1, y: 0 }, RoadDir::South),
+                // Intersection tile
+                (i, RoadDir::None),
+            ] {
+                let Some(mut cell) = grid.get(pos) else {
+                    continue;
+                };
+                cell.road = RoadCell {
+                    kind: RoadKind::TwoLane,
+                    dir,
+                    lane: 0,
+                    flow: RoadFlow::TwoWay,
+                    lane_type: LaneType::Regular,
+                };
+                grid.set(pos, cell);
+            }
+            grid
+        })
+        .insert_resource({
+            let i = TilePos { x: 1, y: 1 };
+            let id = IntersectionId(0);
+            let key = IntersectionKey {
+                aabb_min: i,
+                aabb_max: i,
+                tile_count: 1,
+                tiles_hash: 1,
+            };
+            let mut idx = IntersectionIndex::default();
+            idx.clusters
+                .push(crate::game::intersections::IntersectionCluster {
+                    id,
+                    key,
+                    tiles: vec![i],
+                    aabb_min: i,
+                    aabb_max: i,
+                    centroid_tile: i,
+                });
+            idx.tile_to_intersection.insert(i, id);
+            idx
+        })
+        .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficConfig::default())
+        .insert_resource(IntersectionReservations::default())
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .add_systems(Update, plan_intersection_reservations);
+
+    let i = TilePos { x: 1, y: 1 };
+    let id = app
+        .world()
+        .resource::<IntersectionIndex>()
+        .intersection_id_at(i)
+        .unwrap();
+
+    // Vehicle A: West→East straight through (1,1).
+    // Vehicle B: North→South straight through (1,1).
+    let (ew_v, ns_v) = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        (
+            create_vehicle_with_route(
+                &mut path_pool,
+                vec![TilePos { x: 0, y: 1 }, i, TilePos { x: 2, y: 1 }],
+                0,
+                TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+                0.0,
+                60.0,
+                20.0,
+                1.0,
+            ),
+            create_vehicle_with_route(
+                &mut path_pool,
+                vec![TilePos { x: 1, y: 2 }, i, TilePos { x: 1, y: 0 }],
+                0,
+                TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+                0.0,
+                60.0,
+                20.0,
+                1.0,
+            ),
+        )
+    };
+
+    // Both have been stuck long enough to trigger the emergency ZONE_ALL path.
+    let stuck = StuckTimer {
+        secs: INTERSECTION_FORCE_ENTRY_SECS,
+        last_tile: TilePos { x: 0, y: 1 },
+        last_progress: 0.0,
+        uturn_attempted: false,
+    };
+
+    let e_ew = app
+        .world_mut()
+        .spawn((ew_v, VehicleTrafficState::FreeFlow, stuck))
+        .id();
+    let e_ns = app
+        .world_mut()
+        .spawn((ns_v, VehicleTrafficState::FreeFlow, stuck))
+        .id();
+
+    app.update();
+
+    // ZONE_ALL conflicts with everything: can_reserve() must block the second grant.
+    // Exactly one perpendicular vehicle must be admitted — the real collision scenario
+    // that the old force_entry bypass admitted both of.
+    let res = app.world().resource::<IntersectionReservations>();
+    let rs: Vec<_> = res
+        .by_intersection
+        .get(&id)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| r.vehicle == e_ew || r.vehicle == e_ns)
+        .collect();
+    assert_eq!(
+        rs.len(),
+        1,
+        "emergency serialization must admit exactly 1 of the 2 perpendicular-conflict vehicles; got {}",
+        rs.len()
+    );
+}
