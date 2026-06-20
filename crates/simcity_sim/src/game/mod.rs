@@ -79,9 +79,9 @@ impl Plugin for SimPlugin {
                 (
                     crate::game::sets::GameSet::Input,
                     crate::game::sets::GameSet::CommandApply,
+                    crate::game::sets::GameSet::GraphUpdate,
                     crate::game::sets::GameSet::Sim,
                     crate::game::sets::GameSet::PostSim,
-                    crate::game::sets::GameSet::GraphUpdate,
                     crate::game::sets::GameSet::RenderSync,
                     crate::game::sets::GameSet::Ui,
                 )
@@ -90,6 +90,7 @@ impl Plugin for SimPlugin {
             .configure_sets(
                 FixedUpdate,
                 (
+                    crate::game::sets::GameSet::GraphUpdate,
                     crate::game::sets::GameSet::Sim,
                     crate::game::sets::GameSet::PostSim,
                 )
@@ -130,5 +131,83 @@ impl Plugin for SimPlugin {
                 Update,
                 auto_start_test_city.in_set(crate::game::sets::GameSet::Input),
             );
+    }
+}
+
+#[cfg(test)]
+mod ordering_tests {
+    use super::*;
+    use crate::game::map::{MapGrid, TilePos};
+    use crate::game::roads::{RoadCell, RoadDir, RoadKind};
+    use crate::game::transport::GraphVersion;
+    use crate::game::transport::road_graph::{RoadGraph, rebuild_road_graph_inner};
+
+    #[derive(Resource, Default)]
+    struct ProbeSawVersion(u64);
+
+    fn rebuild_in_graphupdate(
+        grid: Res<MapGrid>,
+        gv: Res<GraphVersion>,
+        mut graph: ResMut<RoadGraph>,
+    ) {
+        rebuild_road_graph_inner(&grid, &gv, &mut graph);
+    }
+
+    // Sim consumer: records the RoadGraph.version it observed this tick.
+    fn probe_in_sim(graph: Res<RoadGraph>, mut probe: ResMut<ProbeSawVersion>) {
+        probe.0 = graph.version;
+    }
+
+    fn build_grid_with_one_road() -> MapGrid {
+        let mut grid = MapGrid::new(8, 8);
+        let pos = TilePos { x: 1, y: 1 };
+        let mut c = grid.get(pos).unwrap_or_default();
+        c.road = RoadCell {
+            kind: RoadKind::TwoLane,
+            dir: RoadDir::East,
+            ..Default::default()
+        };
+        grid.set(pos, c);
+        grid
+    }
+
+    #[test]
+    fn graph_rebuild_runs_before_sim_consumer_on_fixed_update() {
+        let mut app = App::new();
+        app.insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(build_grid_with_one_road())
+        // Fresh version that the (initially empty) RoadGraph has NOT been built for.
+        .insert_resource(GraphVersion(7))
+        .init_resource::<RoadGraph>()
+        .init_resource::<ProbeSawVersion>()
+        .configure_sets(
+            FixedUpdate,
+            (
+                crate::game::sets::GameSet::GraphUpdate,
+                crate::game::sets::GameSet::Sim,
+                crate::game::sets::GameSet::PostSim,
+            )
+                .chain(),
+        )
+        .add_systems(
+            FixedUpdate,
+            rebuild_in_graphupdate.in_set(crate::game::sets::GameSet::GraphUpdate),
+        )
+        .add_systems(
+            FixedUpdate,
+            probe_in_sim.in_set(crate::game::sets::GameSet::Sim),
+        );
+
+        // Run the FixedUpdate schedule directly without time accumulation.
+        app.world_mut().run_schedule(FixedUpdate);
+
+        let probe = app.world().resource::<ProbeSawVersion>();
+        assert_eq!(
+            probe.0, 7,
+            "Sim consumer must observe RoadGraph already rebuilt for current GraphVersion \
+             (GraphUpdate must run before Sim on FixedUpdate)"
+        );
     }
 }
