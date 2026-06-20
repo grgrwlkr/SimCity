@@ -342,6 +342,7 @@ fn stop_sign_vehicle_gets_reserved_and_enters_intersection_tile() {
 /// Unit math (tile_size=16, tile_meters=1.0 ⇒ world_per_meter = 16):
 ///   * v0 (SixLane 80 km/h)   = (80/3.6) * 16 ≈ 355.6 world/s ⇒ dprog ≈ 2.22 tiles per 0.1s step.
 ///   * idm_min_gap_m = 0       ⇒ s0 = 0 ⇒ min_gap_tiles = VEHICLE_VISUAL_LENGTH_TILES = 1.4 tiles.
+///
 /// IDM's max decel (b_max = 7*16 = 112 world/s²) cannot brake 355 world/s down enough in one step,
 /// so soft braking is insufficient — only the hard clamp prevents the overlap.
 fn overlap_clamp_app() -> App {
