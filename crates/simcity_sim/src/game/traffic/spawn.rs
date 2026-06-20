@@ -89,8 +89,10 @@ pub(super) fn spawn_trip_vehicles(
             .and_then(|lg| lg.get_rightmost_lane(goal, goal_cell.road.dir))
             .unwrap_or(LaneId::INVALID);
 
-        // Per-OD deterministic tie-break seed from the seeded SimRng (P0-1).
-        // Drawn once per planned trip so identical OD pairs spread across corridors.
+        // Per-trip-instance tie-break seed, drawn fresh from SimRng for every spawned trip.
+        // MUST remain per-trip (not keyed to OD pair): if all vehicles sharing the same
+        // origin+destination got the same seed, they would pick the identical route and
+        // within-OD spread would collapse (Rank-4 regression: one corridor saturates).
         let jitter_seed: u64 = p.sim_rng.rng.random_range(1..=u64::MAX);
 
         // Use lane-based pathfinding if LaneGraph is available

@@ -12,13 +12,18 @@ use super::lane_graph::{LaneGraph, LaneId};
 /// Context for congestion-aware lane edge costs.
 ///
 /// Mirrors the road-A* congestion model in `pathfinding/cost.rs`, evaluated per
-/// destination lane-tile. `jitter_seed` adds a small deterministic per-OD tie-break
-/// so identical OD pairs don't all collapse onto a single corridor (0 = disabled).
+/// destination lane-tile. `jitter_seed` adds a small deterministic per-trip tie-break
+/// so vehicles sharing the same OD pair don't all collapse onto a single corridor
+/// (0 = disabled).
 pub struct LaneCostCtx<'a> {
     pub grid: &'a MapGrid,
     pub traffic: &'a TrafficOccupancy,
     pub cfg: &'a PathfindingConfig,
-    /// Per-OD deterministic jitter seed (0 disables tie-break). Drawn from `SimRng` at the call site.
+    /// Per-trip-instance jitter seed (0 disables tie-break). MUST be drawn fresh per
+    /// spawned trip (e.g. `sim_rng.rng.random_range(1..=u64::MAX)`), NOT keyed to the
+    /// OD pair. If you key this to origin+destination, every vehicle with the same OD
+    /// gets the identical seed → identical route → within-OD spread collapses (Rank-4
+    /// regression: one corridor saturates).
     pub jitter_seed: u64,
 }
 
@@ -76,7 +81,7 @@ pub fn find_lane_path(
 
 /// Integer edge cost for entering `next_id`. Mirrors `pathfinding::cost::step_cost_for_edge`
 /// (speed/desirability base + congestion factor + cost_scale), keyed on the destination
-/// lane-tile, plus a deterministic per-OD tie-break.
+/// lane-tile, plus a deterministic per-trip tie-break jitter.
 fn lane_edge_cost(ctx: &LaneCostCtx<'_>, graph: &LaneGraph, next_id: LaneId) -> u32 {
     let Some(lane) = graph.get_lane(next_id) else {
         return 1;
@@ -102,7 +107,7 @@ fn lane_edge_cost(ctx: &LaneCostCtx<'_>, graph: &LaneGraph, next_id: LaneId) -> 
     base.saturating_add(lane_jitter(ctx.jitter_seed, next_id))
 }
 
-/// Deterministic per-edge tie-break, derived from a per-OD seed and the destination lane id.
+/// Deterministic per-edge tie-break, derived from a per-trip-instance seed and the destination lane id.
 /// Range stays a small fraction of base costs so it only breaks ties, never reroutes around
 /// real congestion. Pure integer hashing => no RNG state, fully reproducible.
 fn lane_jitter(seed: u64, next_id: LaneId) -> u32 {
@@ -333,14 +338,30 @@ mod tests {
             find_lane_path(&graph, &ctx, start, goal)
         };
 
-        // Different seeds should pick different corridors for at least one of many
-        // seed pairs. Scan a handful and require that not every seed produces the
-        // identical corridor.
-        let baseline = path_for(1);
-        let spread = (1u64..64).any(|s| path_for(s) != baseline);
+        // Collect distinct route classes across 64 deterministic seeds.
+        // The 4×2 grid (x=0..3, y=0..1) supports up to 4 switch points (x=0,1,2,3),
+        // so up to 4 structurally different routes exist. We assert robust spread:
+        // at least 2 distinct routes appear AND no single route monopolises all seeds.
+        use std::collections::HashSet;
+        let routes: Vec<Vec<LaneId>> = (1u64..=64).map(&path_for).collect();
+        let distinct: HashSet<Vec<LaneId>> = routes.iter().cloned().collect();
+        let distinct_count = distinct.len();
+        let max_freq = distinct
+            .iter()
+            .map(|r| routes.iter().filter(|x| *x == r).count())
+            .max()
+            .unwrap_or(0);
+
         assert!(
-            spread,
-            "expected seeded tie-break to spread identical OD pairs across corridors"
+            distinct_count >= 2,
+            "expected >= 2 distinct route classes across 64 seeds (got {}); \
+             jitter tie-break must spread equal-cost corridors",
+            distinct_count
+        );
+        assert!(
+            max_freq < routes.len(),
+            "one route class claimed all {} seeds — spread is absent",
+            routes.len()
         );
 
         // Determinism: same seed always yields the same path.
