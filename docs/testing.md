@@ -14,31 +14,31 @@ cargo test
 
 ## Where Tests Live
 
-Co-located subsystem tests:
+Co-located subsystem tests (`simcity_sim`):
 
-- `src/game/map/tests.rs`
-- `src/game/buildings/tests.rs`
-- `src/game/emergencies/tests.rs`
-- `src/game/transport/tests.rs`
-- `src/game/pedestrians/tests_graph.rs`
-- `src/game/pedestrians/tests_signalized.rs`
-- `src/game/pedestrians/tests_uncontrolled.rs`
+- `crates/simcity_sim/src/game/map/tests.rs`
+- `crates/simcity_sim/src/game/buildings/tests.rs`
+- `crates/simcity_sim/src/game/emergencies/tests.rs`
+- `crates/simcity_sim/src/game/transport/tests.rs`
+- `crates/simcity_sim/src/game/pedestrians/tests_graph.rs`
+- `crates/simcity_sim/src/game/pedestrians/tests_signalized.rs`
+- `crates/simcity_sim/src/game/pedestrians/tests_uncontrolled.rs`
 
-Traffic-heavy suite:
+Traffic-heavy suite (`simcity_sim`):
 
-- `src/game/traffic/tests/basic_behavior.rs`
-- `src/game/traffic/tests/intersection_reservations.rs`
-- `src/game/traffic/tests/traffic_lights.rs`
-- `src/game/traffic/tests/route_rewriting.rs`
-- `src/game/traffic/tests/right_turn_on_red.rs`
-- `src/game/traffic/tests/pedestrians.rs`
-- `src/game/traffic/tests/conflict_zones.rs`
-- `src/game/traffic/tests/vehicle_spawning.rs`
-- `src/game/traffic/tests/vehicle_parking.rs`
+- `crates/simcity_sim/src/game/traffic/tests/basic_behavior.rs`
+- `crates/simcity_sim/src/game/traffic/tests/intersection_reservations.rs`
+- `crates/simcity_sim/src/game/traffic/tests/traffic_lights.rs`
+- `crates/simcity_sim/src/game/traffic/tests/route_rewriting.rs`
+- `crates/simcity_sim/src/game/traffic/tests/right_turn_on_red.rs`
+- `crates/simcity_sim/src/game/traffic/tests/pedestrians.rs`
+- `crates/simcity_sim/src/game/traffic/tests/conflict_zones.rs`
+- `crates/simcity_sim/src/game/traffic/tests/vehicle_spawning.rs`
+- `crates/simcity_sim/src/game/traffic/tests/vehicle_parking.rs`
 
 Additional parse / contract tests:
 
-- `src/game/config_loader.rs` — parse всех `RON` configs/scenarios и `SaveGameV3` roundtrip
+- `crates/simcity_data/src/game/config_loader.rs` — parse всех `RON` configs/scenarios и `SaveGameV3` roundtrip
 - разные `#[cfg(test)]` блоки в subsystem files
 
 ## What Is Covered Well Enough Today
