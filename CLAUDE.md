@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-SimCity — градостроительный симулятор на **Rust + Bevy 0.18** с упором на ECS, детальную транспортную модель и наблюдаемость через MCP/BRP. Toolchain пинится: `rust-toolchain.toml` → `1.92.0`, edition `2024`.
+SimCity — градостроительный симулятор на **Rust + Bevy 0.19** (`bevy_egui 0.40`) с упором на ECS, детальную транспортную модель и наблюдаемость через MCP/BRP. Toolchain пинится: `rust-toolchain.toml` → `1.96.0`, edition `2024`.
 
 ## Commands
 
@@ -38,7 +38,7 @@ simcity_app ─┬─> simcity_frontend ─┬─> simcity_debug ─┐
 - **`simcity_sim`** (~25k строк, ядро) — вся симуляция: `buildings`, `citizens`, `economy`, `employment`, `demand`, `land_value`, `pollution`, `intersections`, `traffic`, `transport` (pathfinding), `pedestrians`, `public_transport`, `services`, `emergencies`, `zone_placement`, `day_night`, `map`, `sim`. Тяжёлые подсистемы — `traffic/` и `transport/`.
 - **`simcity_data`** — `config_loader`, `custom_buildings` (registry), `persistence` (+ `persistence_contract`, формат `SaveGameV3`), `scenarios`, генерация test city.
 - **`simcity_debug`** — `mcp_status` (BRP/MCP), `debug_world` (ECS-снапшоты для живого дебага).
-- **`simcity_frontend`** — `camera`, `ui` (egui: top bar, toolbar, sidebar, building popup, debug dump window), `audio_sfx`, `ui_settings`, input→command.
+- **`simcity_frontend`** — `camera`, `ui` (egui: top bar, toolbar, sidebar, building popup, debug dump window), `audio_sfx`, `ui_settings`, input→command. Footgun: в egui 0.40/0.34 top-level `Panel::show(ctx)` deprecated без не-deprecated замены → panel-функции (`top_bar`/`toolbar`/`right_sidebar`) помечены `#[allow(deprecated)]`.
 
 **Composition root** — `src/game/mod.rs`: тонкий шим. Делает `pub use simcity_*::game::{...}` (поэтому старые пути вида `game::map`, `game::sim` ещё работают) и собирает `GamePlugin` из `SimPlugin → DataPlugin → DebugPlugin → FrontendPlugin`. Каждый крейт экспонирует один корневой `Plugin`, который добавляет вложенные плагины подсистем.
 
@@ -60,15 +60,13 @@ simcity_app ─┬─> simcity_frontend ─┬─> simcity_debug ─┐
 
 ## Tests
 
-Тесты **co-located** рядом с кодом (нет корневого `tests/`). Почти всё в `simcity_sim` (29 файлов с тестами): `map/tests.rs`, `buildings/tests.rs`, `emergencies/tests.rs`, `transport/tests.rs`, `pedestrians/tests_{graph,signalized,uncontrolled}.rs`, и крупный набор `traffic/tests/*.rs` (reservations, traffic_lights, route_rewriting, right_turn_on_red, parking, spawning, conflict_zones). Plus persistence/config parse-тесты в `simcity_data`.
-
-> `docs/testing.md` ссылается на старые пути `src/game/...` — они устарели после сплита на крейты; фактические пути теперь `crates/simcity_sim/src/game/...`.
+Тесты **co-located** рядом с кодом (нет корневого `tests/`). Почти всё в `simcity_sim` (29 файлов с тестами): `map/tests.rs`, `buildings/tests.rs`, `emergencies/tests.rs`, `transport/tests.rs`, `pedestrians/tests_{graph,signalized,uncontrolled}.rs`, и крупный набор `traffic/tests/*.rs` (reservations, traffic_lights, route_rewriting, right_turn_on_red, parking, spawning, conflict_zones). Plus persistence/config parse-тесты в `simcity_data`. Текущий прогон: `simcity_sim` 80 + `simcity_data` 3 = 83 теста.
 
 Упавший тест ≠ всегда баг кода: возможно изменилось ожидаемое поведение. Правь тест только с обоснованием, почему новое поведение корректно.
 
 ## Debugging / Observability
 
-Игра поднимает `RemotePlugin` + `RemoteHttpPlugin` (Bevy BRP) и кастомный BRP-метод `bevy_debugger/screenshot`. Для дебага живого состояния используется MCP-сервер `bevy-debugger` — читать сущности/компоненты/ресурсы из работающей игры, а не только из кода/логов. Любой новый функционал должен быть наблюдаем через MCP (экспорт состояния/метрик). При закрытии окна и на выходе из `InGame`/`MainMenu` печатается/копируется полный RON debug dump (`F8` — окно дампа, `F9` — копировать). Перед запуском новой копии игры — гасить уже запущенный экземпляр.
+Игра поднимает `RemotePlugin` + `RemoteHttpPlugin` (Bevy BRP, `127.0.0.1:15702`) и кастомный BRP-метод `bevy_debugger/screenshot` (регистрация: `with_method_main` — в 0.19 `with_method` стал приватным). Для дебага живого состояния используется MCP-сервер `bevy_brp_mcp` (зарегистрирован в Claude Code как `bevy-brp`; версия крейта трекает minor Bevy — линия `0.20.x` под Bevy 0.19) — читать/мутировать сущности/компоненты/ресурсы и звать кастомные методы (`bevy_debugger/screenshot` через `brp_execute`) в работающей игре, а не только из кода/логов. Любой новый функционал должен быть наблюдаем через MCP (экспорт состояния/метрик). При закрытии окна и на выходе из `InGame`/`MainMenu` печатается/копируется полный RON debug dump (`F8` — окно дампа, `F9` — копировать). Перед запуском новой копии игры — гасить уже запущенный экземпляр.
 
 ## Conventions
 
