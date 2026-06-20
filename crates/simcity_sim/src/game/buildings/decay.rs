@@ -341,7 +341,7 @@ pub fn building_decay_economic(
         // Estimate daily loss based on low occupancy
         // This is simplified - real economy would track actual money flow
         let estimated_daily_loss = if occupancy_ratio < 0.5 {
-            ((0.5 - occupancy_ratio) * 20.0) as i64 // Up to -10 per day
+            -(((0.5 - occupancy_ratio) * 20.0) as i64) // Up to -10 per day
         } else {
             0
         };
@@ -365,7 +365,7 @@ pub fn building_decay_economic(
         let days_with_losses = current_day.saturating_sub(decay_start_day);
         let cumulative_losses = (days_with_losses as i64) * estimated_daily_loss;
 
-        if cumulative_losses >= ECONOMIC_LOSSES_THRESHOLD {
+        if cumulative_losses > ECONOMIC_LOSSES_THRESHOLD {
             // Add/update decay component
             if decay.is_none() {
                 commands.entity(e).insert(EconomicDecay {

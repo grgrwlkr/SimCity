@@ -443,3 +443,90 @@ fn calculate_parking_spots_respects_footprint_bounds() {
 // ============================================================================
 
 // NOTE: footprint preference is validated indirectly via growth/placement integration tests.
+
+// ============================================================================
+// Tests for economic decay system
+// ============================================================================
+
+#[test]
+fn economic_decay_abandons_unprofitable_building() {
+    use bevy::prelude::{App, MinimalPlugins, Update};
+
+    use super::components::EconomicDecay;
+    use crate::game::map::DirtyTiles;
+    use crate::game::sim::City;
+    use crate::game::sim_events::DayAdvanced;
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .add_message::<DayAdvanced>()
+        .insert_resource(City::default()) // day = 1
+        .insert_resource(DirtyTiles::new(8 * 8))
+        .insert_resource({
+            let mut grid = MapGrid::new(8, 8);
+            // Mark footprint tiles as Commercial so demolish_building clears them.
+            for dx in 0..3u32 {
+                for dy in 0..3u32 {
+                    let p = TilePos {
+                        x: 2 + dx as i32,
+                        y: 2 + dy as i32,
+                    };
+                    let mut cell = grid.get(p).unwrap();
+                    cell.building = Some(BuildingKind::Commercial);
+                    cell.zone = BuildingKind::Commercial.as_zone();
+                    grid.set(p, cell);
+                }
+            }
+            grid
+        })
+        .add_systems(Update, super::decay::building_decay_economic);
+
+    let e = app
+        .world_mut()
+        .spawn(Building {
+            kind: BuildingKind::Commercial,
+            anchor_pos: TilePos { x: 2, y: 2 },
+            footprint_width: 3,
+            footprint_length: 3,
+            level: 1,
+            phase: BuildingPhase::Operational,
+            construction_start_day: 0,
+            capacity_residents: 0,
+            capacity_jobs: 10,
+            occupancy_residents: 0,
+            occupancy_jobs: 0, // ratio = 0.0 -> max daily loss
+            target_occupancy_residents: 0,
+            target_occupancy_jobs: 0,
+            parking_spots: Vec::new(),
+        })
+        .id();
+
+    // Day 1: arms EconomicDecay (decay_start_day = 1), not yet abandoned.
+    app.world_mut()
+        .resource_mut::<bevy::ecs::message::Messages<DayAdvanced>>()
+        .write(DayAdvanced { day: 1 });
+    app.update();
+    assert!(
+        app.world().get::<EconomicDecay>(e).is_some(),
+        "EconomicDecay should be armed after first day of losses"
+    );
+    assert!(
+        app.world().get_entity(e).is_ok(),
+        "building must survive the grace day"
+    );
+
+    // Advance enough days so |cumulative_losses| exceeds 100.
+    // daily_loss = -10 (occ ratio 0). Need days_with_losses * 10 > 100 => >10 days.
+    for d in 2..=13u32 {
+        app.world_mut().resource_mut::<City>().day = d;
+        app.world_mut()
+            .resource_mut::<bevy::ecs::message::Messages<DayAdvanced>>()
+            .write(DayAdvanced { day: d });
+        app.update();
+    }
+
+    assert!(
+        app.world().get_entity(e).is_err(),
+        "building with sustained economic losses must be abandoned (demolished)"
+    );
+}
