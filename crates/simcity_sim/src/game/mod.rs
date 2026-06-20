@@ -11,6 +11,8 @@ pub mod employment;
 pub mod intersections;
 pub mod land_value;
 pub mod map;
+#[cfg(test)]
+mod no_thread_rng_guard;
 pub mod notifications;
 pub mod pedestrians;
 pub mod pollution;
