@@ -148,6 +148,10 @@ pub struct SaveGameV3 {
     pub next_citizen_id: u64,
     pub service_stations: Vec<ServiceStationSnapshot>,
     pub emergency_stats: EmergencyStats,
+    /// User-placed traffic lights: one representative tile per controlled intersection cluster.
+    /// Additive field (P0-7); absent in pre-P0-7 saves → defaults to empty vec.
+    #[serde(default)]
+    pub traffic_light_tiles: Vec<TilePos>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Copy, Clone)]
@@ -333,6 +337,8 @@ fn snapshot_savegame_v3(
         next_citizen_id: v2.next_citizen_id,
         service_stations: v2.service_stations,
         emergency_stats: v2.emergency_stats,
+        // Contract dump has no live intersection index access; traffic lights default empty.
+        traffic_light_tiles: Vec::new(),
     }
 }
 

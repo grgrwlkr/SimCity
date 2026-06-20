@@ -16,6 +16,7 @@ use crate::game::citizens::{Citizen, CitizenWorkplace};
 use crate::game::commands::GameCommand;
 use crate::game::emergencies::{Emergency, EmergencyManager, EmergencyStats};
 use crate::game::ids::{CitizenIdComp, CitizenIdGen};
+use crate::game::intersections::{IntersectionIndex, build_intersection_clusters};
 use crate::game::map::{
     BuildingKind, MapCell, MapConfig, MapEditVersion, MapGrid, MapSeed, TilePos,
 };
@@ -163,6 +164,26 @@ fn snapshot_buildings(q: &Query<BuildingSnapshotQueryItem>) -> Vec<BuildingSnaps
     out
 }
 
+/// Snapshot user-placed traffic lights as one representative tile per cluster.
+///
+/// Uses `cluster.tiles.first()` rather than `centroid_tile` because the centroid is an
+/// arithmetic mean and may land outside the tile set for L-shaped clusters, causing
+/// `tile_to_intersection.get(centroid)` to return `None` on reload.
+fn snapshot_traffic_lights(index: &IntersectionIndex) -> Vec<TilePos> {
+    let mut out: Vec<TilePos> = index
+        .traffic_lights
+        .iter()
+        .filter_map(|id| {
+            index
+                .cluster_by_id(*id)
+                .and_then(|c| c.tiles.first().copied())
+        })
+        .collect();
+    // Deterministic order for stable save diffs.
+    out.sort_by_key(|p| (p.y, p.x));
+    out
+}
+
 fn snapshot_building_phase(phase: BuildingPhase) -> BuildingPhaseSnapshot {
     match phase {
         BuildingPhase::UnderConstruction { days_remaining } => {
@@ -253,6 +274,7 @@ struct SaveParams<'w, 's> {
     q_citizens: Query<'w, 's, CitizenSnapshotQueryItem>,
     q_stations: Query<'w, 's, &'static ServiceStation>,
     emergency_manager: Option<Res<'w, EmergencyManager>>,
+    intersections: Res<'w, IntersectionIndex>,
 }
 
 fn handle_save_commands(mut reader: MessageReader<GameCommand>, p: SaveParams) {
@@ -275,6 +297,7 @@ fn handle_save_commands(mut reader: MessageReader<GameCommand>, p: SaveParams) {
                 .as_deref()
                 .map(|m| m.stats.clone())
                 .unwrap_or_default(),
+            traffic_light_tiles: snapshot_traffic_lights(&p.intersections),
         };
 
         let path = slot_path(*slot);
@@ -514,6 +537,7 @@ fn upgrade_v2_to_v3(v2: SaveGameV2) -> SaveGameV3 {
         next_citizen_id: v2.next_citizen_id,
         service_stations: v2.service_stations,
         emergency_stats: v2.emergency_stats,
+        traffic_light_tiles: Vec::new(),
     }
 }
 
@@ -530,6 +554,7 @@ fn upgrade_v1_to_v3(v1: SaveGameV1) -> SaveGameV3 {
         next_citizen_id: v1.next_citizen_id,
         service_stations,
         emergency_stats: EmergencyStats::default(),
+        traffic_light_tiles: Vec::new(),
     }
 }
 
@@ -585,6 +610,7 @@ struct LoadParams<'w, 's> {
     dirty: ResMut<'w, crate::game::map::DirtyTiles>,
     graph_version: ResMut<'w, GraphVersion>,
     map_edit_version: ResMut<'w, MapEditVersion>,
+    intersections: ResMut<'w, IntersectionIndex>,
     q_buildings: Query<'w, 's, Entity, With<Building>>,
     q_vehicles: Query<'w, 's, Entity, With<Vehicle>>,
     q_vehicle_markers: Query<'w, 's, Entity, With<ServiceVehicleMarker>>,
@@ -636,6 +662,28 @@ fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParam
         // mirroring seed_sim_rng_from_map at InGame entry.
         p.sim_rng.rng = rand::rngs::StdRng::seed_from_u64(save.seed);
         apply_map_from_v1(&mut p.grid, &save.map);
+
+        // Restore user-placed traffic lights (P0-7).
+        // Rebuild clusters from the freshly restored grid to resolve saved tiles → keys.
+        // detect_intersections (GraphUpdate, triggered by graph_version.bump below) will
+        // re-map traffic_light_keys → traffic_lights and sync_traffic_light_entities will
+        // respawn the light entities.
+        {
+            let (clusters, tile_to_id) = build_intersection_clusters(&p.grid);
+            p.intersections.traffic_light_keys.clear();
+            p.intersections.traffic_lights.clear();
+            for pos in &save.traffic_light_tiles {
+                if let Some(id) = tile_to_id.get(pos)
+                    && let Some(cluster) = clusters.get(id.as_usize())
+                {
+                    p.intersections.traffic_light_keys.insert(cluster.key);
+                }
+            }
+            // Force detect_intersections to re-run and remap keys onto fresh ids.
+            p.intersections.version = 0;
+            p.intersections.lights_dirty = true;
+        }
+
         *p.city = save.city.clone();
         p.id_gen.set_next(save.next_citizen_id);
 

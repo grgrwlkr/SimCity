@@ -245,3 +245,123 @@ pub fn update_traffic_lights(time: Res<Time<Fixed>>, mut q_lights: Query<&mut Tr
         }
     }
 }
+
+#[cfg(test)]
+mod tests_persist {
+    use super::*;
+    use crate::game::map::{MapCell, MapGrid, TilePos};
+    use crate::game::roads::{RoadCell, RoadDir, RoadKind};
+
+    /// Build a plus-shaped intersection:
+    /// center tile (1,1) has dir=None (intersection node),
+    /// four arms have directional road tiles so `is_some()` is true.
+    fn grid_with_intersection() -> MapGrid {
+        let mut grid = MapGrid::new(3, 3);
+
+        let intersection_cell = MapCell {
+            road: RoadCell {
+                kind: RoadKind::TwoLane,
+                dir: RoadDir::None,
+                ..RoadCell::default()
+            },
+            ..MapCell::default()
+        };
+        let arm = |dir: RoadDir| MapCell {
+            road: RoadCell {
+                kind: RoadKind::TwoLane,
+                dir,
+                ..RoadCell::default()
+            },
+            ..MapCell::default()
+        };
+
+        grid.set(TilePos { x: 1, y: 1 }, intersection_cell);
+        grid.set(TilePos { x: 1, y: 0 }, arm(RoadDir::South));
+        grid.set(TilePos { x: 1, y: 2 }, arm(RoadDir::North));
+        grid.set(TilePos { x: 0, y: 1 }, arm(RoadDir::East));
+        grid.set(TilePos { x: 2, y: 1 }, arm(RoadDir::West));
+        grid
+    }
+
+    /// Mirror of `snapshot_traffic_lights` in persistence.rs: one representative tile
+    /// per user-placed light cluster, using `tiles.first()` to match the save path.
+    fn snapshot_lights(index: &IntersectionIndex) -> Vec<TilePos> {
+        let mut out: Vec<TilePos> = index
+            .traffic_lights
+            .iter()
+            .filter_map(|id| {
+                index
+                    .cluster_by_id(*id)
+                    .and_then(|c| c.tiles.first().copied())
+            })
+            .collect();
+        out.sort_by_key(|p| (p.y, p.x));
+        out
+    }
+
+    #[test]
+    fn user_light_survives_snapshot_and_restore() {
+        let grid = grid_with_intersection();
+        let (clusters, tile_to_intersection) = build_intersection_clusters(&grid);
+
+        // Place a light: emulate handle_traffic_light_commands for center tile (1,1).
+        let center = TilePos { x: 1, y: 1 };
+        let id = *tile_to_intersection
+            .get(&center)
+            .expect("center tile must map to an intersection");
+        let key = clusters[id.as_usize()].key;
+
+        let mut index = IntersectionIndex {
+            clusters: clusters.clone(),
+            tile_to_intersection: tile_to_intersection.clone(),
+            ..Default::default()
+        };
+        index.traffic_light_keys.insert(key);
+        index.traffic_lights.insert(id);
+
+        // Snapshot (save side).
+        let saved = snapshot_lights(&index);
+        assert_eq!(saved.len(), 1, "expected exactly one light tile");
+        let rep_tile = saved[0];
+        // The representative tile must be resolvable in the original tile_to_intersection.
+        assert!(
+            tile_to_intersection.contains_key(&rep_tile),
+            "representative tile {:?} must be a known intersection tile",
+            rep_tile
+        );
+
+        // Simulate reload: fresh default index + rebuilt clusters, then restore from saved tiles.
+        let (clusters2, tile2id) = build_intersection_clusters(&grid);
+        let mut restored = IntersectionIndex {
+            clusters: clusters2,
+            tile_to_intersection: tile2id.clone(),
+            ..Default::default()
+        };
+        // Restore path mirrors handle_load_commands in persistence.rs.
+        for pos in &saved {
+            if let Some(rid) = tile2id.get(pos) {
+                if let Some(cluster) = restored.clusters.get(rid.as_usize()) {
+                    restored.traffic_light_keys.insert(cluster.key);
+                }
+            }
+        }
+        // detect_intersections would remap keys → ids; simulate it inline.
+        let mut next_ids = std::collections::HashSet::new();
+        for c in restored.clusters.iter() {
+            if restored.traffic_light_keys.contains(&c.key) {
+                next_ids.insert(c.id);
+            }
+        }
+        restored.traffic_lights = next_ids;
+
+        assert!(
+            restored.has_traffic_light_at(center),
+            "center tile must have a traffic light after restore"
+        );
+        assert_eq!(
+            restored.traffic_light_keys.len(),
+            1,
+            "exactly one light key must survive restore"
+        );
+    }
+}

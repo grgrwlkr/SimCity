@@ -70,7 +70,7 @@ mod tests {
 
     use super::*;
     use crate::game::emergencies::EmergencyStats;
-    use crate::game::map::{TileKind, ZoneKind};
+    use crate::game::map::{TileKind, TilePos, ZoneKind};
     use crate::game::persistence_contract::{MapGridV1, MapTileV1, SaveGameV3};
     use crate::game::roads::RoadCell;
     use crate::game::scenarios::Scenario;
@@ -84,6 +84,21 @@ mod tests {
         let text = fs::read_to_string(&full_path)
             .unwrap_or_else(|e| panic!("Failed to read {}: {e}", full_path.display()));
         ron::from_str::<T>(&text).unwrap_or_else(|e| panic!("Failed to parse {path}: {e}"))
+    }
+
+    fn minimal_map() -> MapGridV1 {
+        MapGridV1 {
+            width: 1,
+            height: 1,
+            tiles: vec![MapTileV1 {
+                height: 0,
+                water: false,
+                terrain: TileKind::Grass,
+                road: RoadCell::none(),
+                zone: ZoneKind::None,
+                building: None,
+            }],
+        }
     }
 
     #[test]
@@ -106,18 +121,48 @@ mod tests {
         let save = SaveGameV3 {
             save_version: 3,
             seed: 1,
-            map: MapGridV1 {
-                width: 1,
-                height: 1,
-                tiles: vec![MapTileV1 {
-                    height: 0,
-                    water: false,
-                    terrain: TileKind::Grass,
-                    road: RoadCell::none(),
-                    zone: ZoneKind::None,
-                    building: None,
-                }],
-            },
+            map: minimal_map(),
+            city: City::default(),
+            buildings: Vec::new(),
+            citizens: Vec::new(),
+            next_citizen_id: 1,
+            service_stations: Vec::new(),
+            emergency_stats: EmergencyStats::default(),
+            traffic_light_tiles: vec![TilePos { x: 3, y: 4 }],
+        };
+
+        let pretty = ron::ser::PrettyConfig::new();
+        let text = ron::ser::to_string_pretty(&save, pretty).expect("serialize SaveGameV3");
+        let parsed: SaveGameV3 = ron::from_str(&text).expect("deserialize SaveGameV3");
+        assert_eq!(parsed.save_version, 3);
+        assert_eq!(parsed.traffic_light_tiles, vec![TilePos { x: 3, y: 4 }]);
+    }
+
+    /// Old saves without the `traffic_light_tiles` field must still deserialize
+    /// (additive field with `#[serde(default)]` → empty vec).
+    ///
+    /// We generate a V3 RON string via a shadow struct that lacks `traffic_light_tiles`,
+    /// then parse it as `SaveGameV3`. This is the closest simulation of a pre-P0-7 save file.
+    #[test]
+    fn savegame_v3_old_save_compat_missing_traffic_lights() {
+        // Shadow struct identical to SaveGameV3 but WITHOUT traffic_light_tiles.
+        #[derive(serde::Serialize)]
+        struct SaveGameV3Pre {
+            save_version: u32,
+            seed: u64,
+            map: MapGridV1,
+            city: City,
+            buildings: Vec<crate::game::persistence_contract::BuildingSnapshot>,
+            citizens: Vec<crate::game::persistence_contract::CitizenSnapshotV1>,
+            next_citizen_id: u64,
+            service_stations: Vec<crate::game::persistence_contract::ServiceStationSnapshot>,
+            emergency_stats: EmergencyStats,
+        }
+
+        let pre_p0_7 = SaveGameV3Pre {
+            save_version: 3,
+            seed: 42,
+            map: minimal_map(),
             city: City::default(),
             buildings: Vec::new(),
             citizens: Vec::new(),
@@ -127,8 +172,14 @@ mod tests {
         };
 
         let pretty = ron::ser::PrettyConfig::new();
-        let text = ron::ser::to_string_pretty(&save, pretty).expect("serialize SaveGameV3");
-        let parsed: SaveGameV3 = ron::from_str(&text).expect("deserialize SaveGameV3");
+        let text = ron::ser::to_string_pretty(&pre_p0_7, pretty).expect("serialize pre-P0-7 save");
+
+        let parsed: SaveGameV3 = ron::from_str(&text)
+            .expect("old V3 save without traffic_light_tiles must parse successfully");
         assert_eq!(parsed.save_version, 3);
+        assert!(
+            parsed.traffic_light_tiles.is_empty(),
+            "missing field should default to empty vec"
+        );
     }
 }
