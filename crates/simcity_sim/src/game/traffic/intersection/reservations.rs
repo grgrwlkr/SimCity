@@ -144,6 +144,7 @@ pub(crate) struct IntersectionReservationCandidate {
     stream: StreamKey,
     maneuver: ManeuverKind,
     is_right_on_red: bool,
+    is_emergency: bool,
     exit_tile_idx: usize,
     exit_tile_cap: u16,
 }
@@ -213,7 +214,12 @@ pub(crate) struct PlanIntersectionReservationParams<'w, 's> {
     q_vehicles: Query<
         'w,
         's,
-        (Entity, &'static Vehicle, &'static VehicleTrafficState),
+        (
+            Entity,
+            &'static Vehicle,
+            &'static VehicleTrafficState,
+            Option<&'static crate::game::traffic::stuck::StuckTimer>,
+        ),
         Without<super::super::Parked>,
     >,
     fallback_lights_by_id: Local<
@@ -242,7 +248,12 @@ pub(crate) struct CollectIntersectionReservationParams<'w, 's> {
     q_vehicles: Query<
         'w,
         's,
-        (Entity, &'static Vehicle, &'static VehicleTrafficState),
+        (
+            Entity,
+            &'static Vehicle,
+            &'static VehicleTrafficState,
+            Option<&'static crate::game::traffic::stuck::StuckTimer>,
+        ),
         Without<super::super::Parked>,
     >,
     fallback_lights_by_id: Local<
@@ -451,13 +462,21 @@ fn collect_intersection_reservation_candidates_inner(
     traffic_cfg: &TrafficConfig,
     path_pool: &super::super::super::transport::PathPool,
     reservations: &mut IntersectionReservations,
-    q_vehicles: &Query<(Entity, &Vehicle, &VehicleTrafficState), Without<super::super::Parked>>,
+    q_vehicles: &Query<
+        (
+            Entity,
+            &Vehicle,
+            &VehicleTrafficState,
+            Option<&crate::game::traffic::stuck::StuckTimer>,
+        ),
+        Without<super::super::Parked>,
+    >,
     lights_by_id: &HashMap<IntersectionId, crate::game::intersections::TrafficLight>,
     ped_axis_mask: &HashMap<IntersectionId, u8>,
     candidates_by_intersection: &mut HashMap<IntersectionId, Vec<IntersectionReservationCandidate>>,
 ) {
     // Ensure any vehicle currently inside an intersection cluster owns a reservation (safety net).
-    for (e, v, _) in q_vehicles.iter() {
+    for (e, v, _, _) in q_vehicles.iter() {
         let Some(cur) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
@@ -486,7 +505,7 @@ fn collect_intersection_reservation_candidates_inner(
 
     // Greedy admission: allow multiple approaching vehicles per intersection as long as their
     // conflict zones don't overlap (coarse safety).
-    for (e, v, state) in q_vehicles.iter() {
+    for (e, v, state, stuck) in q_vehicles.iter() {
         if v.path_cursor + 1 >= path_pool.len(v.path_handle) {
             continue;
         }
@@ -521,6 +540,36 @@ fn collect_intersection_reservation_candidates_inner(
         } else {
             RoadDir::None
         };
+
+        // Emergency failsafe: a vehicle stuck approaching an intersection for too long gets an
+        // atomic ZONE_ALL grant. apply() serializes these via can_reserve(), so at most one
+        // emergency grant lands per intersection per tick — move_vehicles still only enters on a
+        // held reservation, so no two cars can barge in unreserved (replaces the drive.rs bypass).
+        let is_stuck_emergency = stuck
+            .is_some_and(|st| st.secs >= super::super::INTERSECTION_FORCE_ENTRY_SECS)
+            && !reservations.is_reserved(id);
+        if is_stuck_emergency {
+            let dist = (TILE_CENTER_TO_EDGE_TILES - v.progress).clamp(0.0, 1.0);
+            candidates_by_intersection.entry(id).or_default().push(
+                IntersectionReservationCandidate {
+                    priority: u8::MAX,
+                    dist_to_entry: dist,
+                    vehicle: e,
+                    zones: ZONE_ALL,
+                    tiles: Vec::new(),
+                    stream: StreamKey {
+                        entry: entry_dir,
+                        exit: exit_dir,
+                    },
+                    maneuver: ManeuverKind::Other,
+                    is_right_on_red: false,
+                    is_emergency: true,
+                    exit_tile_idx: 0,
+                    exit_tile_cap: 0,
+                },
+            );
+            continue;
+        }
 
         // Yield to pedestrians: block only maneuvers that conflict with the currently-crossing axis.
         if let Some(mask) = ped_axis_mask.get(&id).copied() {
@@ -716,6 +765,7 @@ fn collect_intersection_reservation_candidates_inner(
             stream,
             maneuver,
             is_right_on_red,
+            is_emergency: false,
             exit_tile_idx: exit_idx,
             exit_tile_cap: cap,
         };
@@ -750,28 +800,33 @@ fn apply_intersection_reservation_candidates_inner(
             if cand.is_right_on_red && reservations.is_reserved(id) {
                 continue;
             }
-            // Capacity gate: reserve exit tile capacity as well, so we never admit more vehicles
-            // than the exit lane tile can accept in the same tick (prevents "queue inside box").
-            let used = exit_tile_reserved
-                .entry((id, cand.exit_tile_idx))
-                .or_insert_with(|| {
-                    let occ = traffic
-                        .per_tick_vehicles
-                        .get(cand.exit_tile_idx)
-                        .copied()
-                        .unwrap_or(0);
-                    let entry_clear = occ >= cand.exit_tile_cap
-                        && spatial
-                            .tile_first(cand.exit_tile_idx)
-                            .is_some_and(|e| e.progress > exit_clear_progress);
-                    if entry_clear {
-                        occ.saturating_sub(1)
-                    } else {
-                        occ
-                    }
-                });
-            if *used >= cand.exit_tile_cap {
-                continue;
+            // Emergency grants bypass the exit-capacity gate (failsafe for deadlocked clusters) but
+            // STILL go through can_reserve below — ZONE_ALL conflicts with everything, so only one
+            // emergency (or nothing, if a normal grant already holds) lands this tick.
+            if !cand.is_emergency {
+                // Capacity gate: reserve exit tile capacity as well, so we never admit more vehicles
+                // than the exit lane tile can accept in the same tick (prevents "queue inside box").
+                let used = exit_tile_reserved
+                    .entry((id, cand.exit_tile_idx))
+                    .or_insert_with(|| {
+                        let occ = traffic
+                            .per_tick_vehicles
+                            .get(cand.exit_tile_idx)
+                            .copied()
+                            .unwrap_or(0);
+                        let entry_clear = occ >= cand.exit_tile_cap
+                            && spatial
+                                .tile_first(cand.exit_tile_idx)
+                                .is_some_and(|e| e.progress > exit_clear_progress);
+                        if entry_clear {
+                            occ.saturating_sub(1)
+                        } else {
+                            occ
+                        }
+                    });
+                if *used >= cand.exit_tile_cap {
+                    continue;
+                }
             }
             if !reservations.can_reserve(
                 id,
@@ -796,7 +851,11 @@ fn apply_intersection_reservation_candidates_inner(
                     stream: cand.stream,
                     maneuver: cand.maneuver,
                 });
-            *used = used.saturating_add(1);
+            if !cand.is_emergency
+                && let Some(used) = exit_tile_reserved.get_mut(&(id, cand.exit_tile_idx))
+            {
+                *used = used.saturating_add(1);
+            }
         }
     }
 }

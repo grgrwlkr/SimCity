@@ -418,3 +418,134 @@ fn intersection_tile_with_kind_none_does_not_force_speed_to_zero() {
     );
     assert!(v.progress > 0.0, "vehicle did not advance while crossing");
 }
+
+#[test]
+fn opposing_stuck_cars_at_uncontrolled_intersection_grant_at_most_one_per_tick() {
+    use crate::game::traffic::stuck::StuckTimer;
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(MapConfig {
+            width: 3,
+            height: 3,
+            tile_size: 16.0,
+        })
+        .insert_resource({
+            let mut grid = MapGrid::new(3, 3);
+            let i = TilePos { x: 1, y: 1 };
+            for (pos, dir) in [
+                (TilePos { x: 0, y: 1 }, RoadDir::East),
+                (TilePos { x: 2, y: 1 }, RoadDir::West),
+                (i, RoadDir::None),
+            ] {
+                let Some(mut cell) = grid.get(pos) else {
+                    continue;
+                };
+                cell.road = RoadCell {
+                    kind: RoadKind::TwoLane,
+                    dir,
+                    lane: 0,
+                    flow: RoadFlow::TwoWay,
+                    lane_type: LaneType::Regular,
+                };
+                grid.set(pos, cell);
+            }
+            grid
+        })
+        .insert_resource({
+            let i = TilePos { x: 1, y: 1 };
+            let id = IntersectionId(0);
+            let key = IntersectionKey {
+                aabb_min: i,
+                aabb_max: i,
+                tile_count: 1,
+                tiles_hash: 1,
+            };
+            let mut idx = IntersectionIndex::default();
+            idx.clusters
+                .push(crate::game::intersections::IntersectionCluster {
+                    id,
+                    key,
+                    tiles: vec![i],
+                    aabb_min: i,
+                    aabb_max: i,
+                    centroid_tile: i,
+                });
+            idx.tile_to_intersection.insert(i, id);
+            idx
+        })
+        .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficConfig::default())
+        .insert_resource(IntersectionReservations::default())
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .add_systems(Update, plan_intersection_reservations);
+
+    let i = TilePos { x: 1, y: 1 };
+    let id = app
+        .world()
+        .resource::<IntersectionIndex>()
+        .intersection_id_at(i)
+        .unwrap();
+
+    let (east_v, west_v) = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        (
+            create_vehicle_with_route(
+                &mut path_pool,
+                vec![TilePos { x: 0, y: 1 }, i, TilePos { x: 2, y: 1 }],
+                0,
+                TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+                0.0,
+                60.0,
+                20.0,
+                1.0,
+            ),
+            create_vehicle_with_route(
+                &mut path_pool,
+                vec![TilePos { x: 2, y: 1 }, i, TilePos { x: 0, y: 1 }],
+                0,
+                TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+                0.0,
+                60.0,
+                20.0,
+                1.0,
+            ),
+        )
+    };
+
+    let stuck = StuckTimer {
+        secs: INTERSECTION_FORCE_ENTRY_SECS,
+        last_tile: TilePos { x: 0, y: 1 },
+        last_progress: 0.0,
+        uturn_attempted: false,
+    };
+
+    let e_east = app
+        .world_mut()
+        .spawn((east_v, VehicleTrafficState::FreeFlow, stuck))
+        .id();
+    let e_west = app
+        .world_mut()
+        .spawn((west_v, VehicleTrafficState::FreeFlow, stuck))
+        .id();
+
+    app.update();
+
+    let res = app.world().resource::<IntersectionReservations>();
+    let granted =
+        usize::from(res.is_reserved_by(id, e_east)) + usize::from(res.is_reserved_by(id, e_west));
+    assert!(
+        granted <= 1,
+        "emergency entry must serialize: got {granted} reservations in one tick"
+    );
+    assert_eq!(
+        granted, 1,
+        "exactly one stuck car should get an emergency grant"
+    );
+}

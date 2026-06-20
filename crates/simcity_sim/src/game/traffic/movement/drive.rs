@@ -283,20 +283,11 @@ pub fn move_vehicles(
                         false
                     };
                     if !ok {
-                        let force_entry =
-                            intersections
-                                .intersection_id_at(next_tile)
-                                .is_some_and(|id| {
-                                    !reservations.is_reserved(id)
-                                        && grid
-                                            .idx(next_tile)
-                                            .is_some_and(|idx| spatial.tile_count(idx) == 0)
-                                })
-                                && stuck_timer
-                                    .is_some_and(|st| st.secs >= INTERSECTION_FORCE_ENTRY_SECS);
-                        if !force_entry {
-                            blocked_next = true;
-                        }
+                        // Entry into an intersection requires a held reservation — full stop.
+                        // The stuck-vehicle failsafe is now an atomic emergency reservation issued
+                        // in collect/apply (ZONE_ALL, serialized per cluster), so two opposing
+                        // stuck cars can never both barge in unreserved the same tick.
+                        blocked_next = true;
                     }
 
                     // Yield to pedestrians already crossing.
