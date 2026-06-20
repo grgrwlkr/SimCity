@@ -494,9 +494,44 @@ pub fn move_vehicles(
             v.reverse_distance = 0.0;
         } else {
             let mut next_p = prev_p + desired_dprog;
+
+            // Hard overlap safety floor (pure safety net under the soft IDM model).
+            //
+            // Work in a CONTINUOUS longitudinal coordinate along the route: a vehicle's position is
+            // `path_cursor + progress` (tile units). The follower's post-step position must satisfy
+            //   follower_pos_next <= leader_pos - min_gap_tiles
+            // where `min_gap_tiles` is the bumper-to-bumper minimum gap. We translate that bound into
+            // a clamp on `next_p` for the CURRENT tile (the follower's cursor is the reference, so the
+            // leader contributes a `+1.0` per cursor it is ahead).
+            //
+            // The leader is whichever is nearest-ahead — the SAME leader IDM already uses:
+            //   * same-tile leader  -> leader_pos = lead_p           (same cursor)
+            //   * next-tile leader  -> leader_pos = 1.0 + next_min_p (one cursor ahead)
+            // If both exist we clamp to the NEARER one (the smaller positional cap). This makes the
+            // hard clamp a strict floor under the soft model: it can only REDUCE next_p, never below
+            // prev_p, and is a no-op whenever IDM already keeps a safe gap.
+            let min_gap_tiles =
+                ((idm.s0 + VEHICLE_VISUAL_LENGTH_TILES * tile_size) / tile_size).max(0.0);
+
+            let mut leader_cap: Option<f32> = None;
+            // Same-tile leader (continuous pos == lead_p, same cursor).
             if let Some(lead_p) = spatial.leader_same_tile_progress(entity) {
-                let min_gap_tiles = (idm.s0 + VEHICLE_VISUAL_LENGTH_TILES * tile_size) / tile_size;
-                let max_p = (lead_p - min_gap_tiles).max(prev_p);
+                let cap = lead_p - min_gap_tiles;
+                leader_cap = Some(leader_cap.map_or(cap, |c: f32| c.min(cap)));
+            }
+            // Next-tile (boundary-crossing) leader (continuous pos == 1.0 + next_min_p, +1 cursor).
+            // This is the realistic overlap case: a leader that just crossed onto the next tile while
+            // the follower sits near the boundary, protected only by the soft virtual leader above.
+            if let Some(next_tile) = path_pool.get_tile(v.path_handle, v.path_cursor + 1)
+                && let Some(next_idx) = grid.idx(next_tile)
+                && let Some((next_min_p, _lead_v)) = spatial.tile_min_progress_speed(next_idx)
+            {
+                let cap = (1.0 + next_min_p) - min_gap_tiles;
+                leader_cap = Some(leader_cap.map_or(cap, |c: f32| c.min(cap)));
+            }
+
+            if let Some(cap) = leader_cap {
+                let max_p = cap.max(prev_p);
                 if next_p > max_p {
                     next_p = max_p;
                     let actual_dprog = (next_p - prev_p).max(0.0);
@@ -504,6 +539,7 @@ pub fn move_vehicles(
                     v.speed = (actual_dprog * tile_size) / denom;
                 }
             }
+
             v.progress = next_p;
             // Reset reverse distance when moving forward
             v.reverse_distance = 0.0;
