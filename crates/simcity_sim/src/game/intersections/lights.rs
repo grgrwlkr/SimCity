@@ -339,10 +339,10 @@ mod tests_persist {
         };
         // Restore path mirrors handle_load_commands in persistence.rs.
         for pos in &saved {
-            if let Some(rid) = tile2id.get(pos) {
-                if let Some(cluster) = restored.clusters.get(rid.as_usize()) {
-                    restored.traffic_light_keys.insert(cluster.key);
-                }
+            if let Some(rid) = tile2id.get(pos)
+                && let Some(cluster) = restored.clusters.get(rid.as_usize())
+            {
+                restored.traffic_light_keys.insert(cluster.key);
             }
         }
         // detect_intersections would remap keys → ids; simulate it inline.

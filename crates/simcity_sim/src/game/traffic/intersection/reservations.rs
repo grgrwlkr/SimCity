@@ -451,6 +451,62 @@ fn clear_candidate_buffers(
     }
 }
 
+/// Cross-intersection spillback gate (P1-1, Root-cause Rank 3).
+///
+/// Walk the vehicle's remaining route FORWARD from this cluster's exit tile until the next
+/// intersection cluster (or up to `max_link_tiles` link tiles, whichever comes first) and
+/// report whether the short downstream link can accept this vehicle.
+///
+/// Returns `false` (refuse admission) if ANY link tile in the horizon is at/over capacity
+/// (`occ >= cap`): a fully-jammed bottleneck right before the next intersection means the
+/// admitted car would fill the exit tile and then be unable to advance, sitting in/just past
+/// this cluster's box and blocking perpendicular flow. Deterministic: integer comparisons over
+/// the stable route slice, no RNG, no HashMap-order dependence.
+fn downstream_link_has_headroom(
+    grid: &MapGrid,
+    traffic: &TrafficOccupancy,
+    intersections: &IntersectionIndex,
+    route: &[TilePos],
+    exit_tile: TilePos,
+    max_link_tiles: usize,
+) -> bool {
+    let Some(start_i) = route.iter().position(|t| *t == exit_tile) else {
+        // Exit tile not on the route (shouldn't happen): fail open, defer to other gates.
+        return true;
+    };
+
+    let mut walked = 0usize;
+    let mut i = start_i;
+    while i < route.len() && walked < max_link_tiles {
+        let t = route[i];
+
+        // Stop at the next intersection cluster: the link ends here.
+        if is_intersection_tile(grid, t) || intersections.intersection_id_at(t).is_some() {
+            break;
+        }
+
+        if let Some(cell) = grid.get(t)
+            && cell.road.is_some()
+            && cell.road.dir != RoadDir::None
+            && let Some(idx) = grid.idx(t)
+        {
+            let cap = cell.road.kind.capacity_per_lane_tile();
+            if cap > 0 {
+                let occ = traffic.per_tick_vehicles.get(idx).copied().unwrap_or(0);
+                if occ >= cap {
+                    // Jammed bottleneck on the link toward the next intersection: refuse.
+                    return false;
+                }
+            }
+        }
+
+        walked += 1;
+        i += 1;
+    }
+
+    true
+}
+
 #[allow(clippy::too_many_arguments)]
 fn collect_intersection_reservation_candidates_inner(
     now: f64,
@@ -644,6 +700,26 @@ fn collect_intersection_reservation_candidates_inner(
             occ
         };
         if effective_occ >= cap {
+            continue;
+        }
+
+        // P1-1: cross-intersection downstream-horizon admission. The old single-exit-tile gate
+        // above only proves THIS exit tile has room; it never asks whether the link toward the
+        // NEXT intersection is already jammed. Walk a short downstream run and refuse admission
+        // if any link tile up to the next cluster is at/over capacity (spillback bottleneck).
+        // Emergency candidates (is_stuck_emergency above) `continue` earlier and bypass this gate
+        // by design: the deadlock-breaking failsafe must not be choked by the spillback check.
+        const DOWNSTREAM_LINK_HORIZON_TILES: usize = 3;
+        if let Some(route) = rem
+            && !downstream_link_has_headroom(
+                grid,
+                traffic,
+                intersections,
+                route,
+                exit_tile,
+                DOWNSTREAM_LINK_HORIZON_TILES,
+            )
+        {
             continue;
         }
 

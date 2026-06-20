@@ -704,3 +704,298 @@ fn perpendicular_stuck_cars_at_uncontrolled_intersection_grant_at_most_one_per_t
         rs.len()
     );
 }
+
+#[test]
+fn downstream_jammed_link_blocks_admission_into_upstream_intersection() {
+    // 2-intersection chain on a single eastbound lane (1x6):
+    //  x=0 approach | x=1 cluster A | x=2 exit-of-A/link | x=3 link (JAMMED) | x=4 cluster B | x=5 exit-of-B
+    // Vehicle approaches A routed A->B->exit. The exit tile of A (x=2) is FREE, so the old
+    // single-exit-tile gate would admit it. But the link tile x=3 (right before cluster B) is
+    // FULL (occ == cap), so the car would cross A, fill x=2, then be unable to advance into the
+    // jammed link toward B -> sits in/just past A's box -> classic cross-intersection spillback.
+    // P1-1 must REFUSE admission: no reservation for this vehicle.
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(MapConfig {
+            width: 6,
+            height: 1,
+            tile_size: 16.0,
+        })
+        .insert_resource({
+            let mut grid = MapGrid::new(6, 1);
+            for (pos, dir) in [
+                (TilePos { x: 0, y: 0 }, RoadDir::East), // approach
+                (TilePos { x: 1, y: 0 }, RoadDir::None), // cluster A
+                (TilePos { x: 2, y: 0 }, RoadDir::East), // exit-of-A / link tile 1
+                (TilePos { x: 3, y: 0 }, RoadDir::East), // link tile 2 (will be jammed)
+                (TilePos { x: 4, y: 0 }, RoadDir::None), // cluster B
+                (TilePos { x: 5, y: 0 }, RoadDir::East), // exit-of-B
+            ] {
+                let Some(mut cell) = grid.get(pos) else {
+                    continue;
+                };
+                cell.road = RoadCell {
+                    kind: RoadKind::TwoLane,
+                    dir,
+                    lane: 0,
+                    flow: RoadFlow::TwoWay,
+                    lane_type: LaneType::Regular,
+                };
+                grid.set(pos, cell);
+            }
+            grid
+        })
+        .insert_resource({
+            let mut idx = IntersectionIndex::default();
+            // Cluster A at (1,0).
+            let a = TilePos { x: 1, y: 0 };
+            let id_a = IntersectionId(0);
+            idx.clusters
+                .push(crate::game::intersections::IntersectionCluster {
+                    id: id_a,
+                    key: IntersectionKey {
+                        aabb_min: a,
+                        aabb_max: a,
+                        tile_count: 1,
+                        tiles_hash: 1,
+                    },
+                    tiles: vec![a],
+                    aabb_min: a,
+                    aabb_max: a,
+                    centroid_tile: a,
+                });
+            idx.tile_to_intersection.insert(a, id_a);
+            // Cluster B at (4,0).
+            let b = TilePos { x: 4, y: 0 };
+            let id_b = IntersectionId(1);
+            idx.clusters
+                .push(crate::game::intersections::IntersectionCluster {
+                    id: id_b,
+                    key: IntersectionKey {
+                        aabb_min: b,
+                        aabb_max: b,
+                        tile_count: 1,
+                        tiles_hash: 2,
+                    },
+                    tiles: vec![b],
+                    aabb_min: b,
+                    aabb_max: b,
+                    centroid_tile: b,
+                });
+            idx.tile_to_intersection.insert(b, id_b);
+            idx
+        })
+        .insert_resource({
+            let mut occ = TrafficOccupancy::default();
+            occ.ensure_len(6);
+            // Jam the link tile RIGHT BEFORE cluster B (x=3): occ == cap (TwoLane => 2).
+            // exit-of-A (x=2) stays FREE so the OLD single-exit-tile gate would still admit.
+            let jam = TilePos { x: 3, y: 0 };
+            let jam_idx = (jam.x as usize) + (jam.y as usize) * 6;
+            occ.per_tick_vehicles[jam_idx] = RoadKind::TwoLane.capacity_per_lane_tile();
+            occ
+        })
+        .insert_resource(TrafficConfig::default())
+        .insert_resource(IntersectionReservations::default())
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .add_systems(Update, plan_intersection_reservations);
+
+    let id_a = app
+        .world()
+        .resource::<IntersectionIndex>()
+        .intersection_id_at(TilePos { x: 1, y: 0 })
+        .unwrap();
+    let key_a = app
+        .world()
+        .resource::<IntersectionIndex>()
+        .cluster_key_at(TilePos { x: 1, y: 0 })
+        .unwrap();
+
+    let vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(
+            &mut path_pool,
+            vec![
+                TilePos { x: 0, y: 0 },
+                TilePos { x: 1, y: 0 },
+                TilePos { x: 2, y: 0 },
+                TilePos { x: 3, y: 0 },
+                TilePos { x: 4, y: 0 },
+                TilePos { x: 5, y: 0 },
+            ],
+            0,
+            TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+            0.0,
+            60.0,
+            20.0,
+            1.0,
+        )
+    };
+    let e = app
+        .world_mut()
+        .spawn((
+            vehicle,
+            VehicleTrafficState::Stopped {
+                intersection: key_a,
+                stop_tile: TilePos { x: 0, y: 0 },
+                queue_position: 0,
+            },
+        ))
+        .id();
+
+    app.update();
+
+    let res = app.world().resource::<IntersectionReservations>();
+    assert!(
+        !res.is_reserved_by(id_a, e),
+        "vehicle must NOT be admitted into cluster A: the link tile toward cluster B is jammed \
+         (cross-intersection spillback), even though A's own exit tile is free"
+    );
+}
+
+#[test]
+fn downstream_free_link_allows_admission_into_upstream_intersection() {
+    // Same 2-intersection chain, but the link toward B is EMPTY -> admission MUST succeed.
+    // Contrast case proving P1-1 does not over-block when the downstream link has room.
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(MapConfig {
+            width: 6,
+            height: 1,
+            tile_size: 16.0,
+        })
+        .insert_resource({
+            let mut grid = MapGrid::new(6, 1);
+            for (pos, dir) in [
+                (TilePos { x: 0, y: 0 }, RoadDir::East),
+                (TilePos { x: 1, y: 0 }, RoadDir::None),
+                (TilePos { x: 2, y: 0 }, RoadDir::East),
+                (TilePos { x: 3, y: 0 }, RoadDir::East),
+                (TilePos { x: 4, y: 0 }, RoadDir::None),
+                (TilePos { x: 5, y: 0 }, RoadDir::East),
+            ] {
+                let Some(mut cell) = grid.get(pos) else {
+                    continue;
+                };
+                cell.road = RoadCell {
+                    kind: RoadKind::TwoLane,
+                    dir,
+                    lane: 0,
+                    flow: RoadFlow::TwoWay,
+                    lane_type: LaneType::Regular,
+                };
+                grid.set(pos, cell);
+            }
+            grid
+        })
+        .insert_resource({
+            let mut idx = IntersectionIndex::default();
+            let a = TilePos { x: 1, y: 0 };
+            let id_a = IntersectionId(0);
+            idx.clusters
+                .push(crate::game::intersections::IntersectionCluster {
+                    id: id_a,
+                    key: IntersectionKey {
+                        aabb_min: a,
+                        aabb_max: a,
+                        tile_count: 1,
+                        tiles_hash: 1,
+                    },
+                    tiles: vec![a],
+                    aabb_min: a,
+                    aabb_max: a,
+                    centroid_tile: a,
+                });
+            idx.tile_to_intersection.insert(a, id_a);
+            let b = TilePos { x: 4, y: 0 };
+            let id_b = IntersectionId(1);
+            idx.clusters
+                .push(crate::game::intersections::IntersectionCluster {
+                    id: id_b,
+                    key: IntersectionKey {
+                        aabb_min: b,
+                        aabb_max: b,
+                        tile_count: 1,
+                        tiles_hash: 2,
+                    },
+                    tiles: vec![b],
+                    aabb_min: b,
+                    aabb_max: b,
+                    centroid_tile: b,
+                });
+            idx.tile_to_intersection.insert(b, id_b);
+            idx
+        })
+        .insert_resource({
+            let mut occ = TrafficOccupancy::default();
+            occ.ensure_len(6); // all link tiles free
+            occ
+        })
+        .insert_resource(TrafficConfig::default())
+        .insert_resource(IntersectionReservations::default())
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .add_systems(Update, plan_intersection_reservations);
+
+    let id_a = app
+        .world()
+        .resource::<IntersectionIndex>()
+        .intersection_id_at(TilePos { x: 1, y: 0 })
+        .unwrap();
+    let key_a = app
+        .world()
+        .resource::<IntersectionIndex>()
+        .cluster_key_at(TilePos { x: 1, y: 0 })
+        .unwrap();
+
+    let vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(
+            &mut path_pool,
+            vec![
+                TilePos { x: 0, y: 0 },
+                TilePos { x: 1, y: 0 },
+                TilePos { x: 2, y: 0 },
+                TilePos { x: 3, y: 0 },
+                TilePos { x: 4, y: 0 },
+                TilePos { x: 5, y: 0 },
+            ],
+            0,
+            TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+            0.0,
+            60.0,
+            20.0,
+            1.0,
+        )
+    };
+    let e = app
+        .world_mut()
+        .spawn((
+            vehicle,
+            VehicleTrafficState::Stopped {
+                intersection: key_a,
+                stop_tile: TilePos { x: 0, y: 0 },
+                queue_position: 0,
+            },
+        ))
+        .id();
+
+    app.update();
+
+    let res = app.world().resource::<IntersectionReservations>();
+    assert!(
+        res.is_reserved_by(id_a, e),
+        "vehicle MUST be admitted: the downstream link toward cluster B has free capacity"
+    );
+}
