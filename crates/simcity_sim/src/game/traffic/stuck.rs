@@ -1,3 +1,4 @@
+use super::swap_break::SwapDeadlocked;
 use super::*;
 
 /// Per-vehicle jam detector (in fixed-time seconds).
@@ -83,6 +84,7 @@ pub(super) fn resolve_stuck_vehicles(
             Option<&TripPassenger>,
             Option<&ServiceVehicle>,
             &mut StuckTimer,
+            Option<&SwapDeadlocked>,
         ),
         Without<Parked>,
     >,
@@ -101,12 +103,30 @@ pub(super) fn resolve_stuck_vehicles(
         max_iterations: None,
     };
 
-    for (e, mut v, state, passenger, service_vehicle, mut stuck) in q.iter_mut() {
+    for (e, mut v, state, passenger, service_vehicle, mut stuck, swap_deadlocked) in q.iter_mut() {
         if handled >= MAX_UNSTUCK_PER_TICK {
             break;
         }
         if v.path_cursor >= path_pool.len(v.path_handle) {
             stuck.secs = 0.0;
+            continue;
+        }
+        // Swap-deadlock failsafe: a vehicle the swap breaker flagged as having no straight escape is
+        // removed after a short grace, bypassing the reroute/reverse resets below (which would
+        // otherwise keep its timer pinned and never let it despawn). The flag is re-evaluated every
+        // tick, so it only persists for a genuinely unbreakable swap.
+        if swap_deadlocked.is_some()
+            && service_vehicle.is_none()
+            && stuck.secs >= SWAP_DEADLOCK_DESPAWN_SECS
+        {
+            if let Some(p) = passenger {
+                finished.write(TripFinished {
+                    citizen: p.citizen,
+                    purpose: p.purpose,
+                });
+            }
+            commands.entity(e).despawn();
+            handled += 1;
             continue;
         }
         if matches!(
@@ -129,15 +149,18 @@ pub(super) fn resolve_stuck_vehicles(
             )
             .unwrap_or(current);
 
-        // 1) Emergency re-route: try to find an alternative path to the same goal.
+        // 1) Emergency re-route: try to find an alternative path to the same goal. Only count it as a
+        //    real unstick (reset the timer + restart the path) when the route ACTUALLY changes. If the
+        //    only path found is the same blocked one, do NOT reset stuck.secs — let it keep climbing so
+        //    the despawn guardrail can eventually fire instead of resetting the timer forever (the bug
+        //    that left deadlocked cars frozen indefinitely).
         let route = find_road_path_cached(&mut ctx, current, goal);
-        if !route.is_empty() {
-            let old_route = path_pool.remaining_from(v.path_handle, v.path_cursor);
-            if Some(route.as_slice()) != old_route {
-                path_pool.release(v.path_handle);
-                v.path_handle = path_pool.intern(route);
-                v.path_cursor = 0;
-            }
+        if !route.is_empty()
+            && Some(route.as_slice()) != path_pool.remaining_from(v.path_handle, v.path_cursor)
+        {
+            path_pool.release(v.path_handle);
+            v.path_handle = path_pool.intern(route);
+            v.path_cursor = 0;
             v.progress = 0.0;
             v.speed = v.speed.min(v.max_speed * 0.5);
             // Reset reverse state after reroute
@@ -229,7 +252,7 @@ pub(super) fn resolve_stuck_vehicles(
         }
 
         // 3) Last-resort guardrail: despawn non-service trip vehicles after a very long time stuck.
-        if stuck.secs >= STUCK_DESPAWN_SECS && service_vehicle.is_none() && passenger.is_some() {
+        if stuck.secs >= STUCK_DESPAWN_SECS && service_vehicle.is_none() {
             if let Some(p) = passenger {
                 finished.write(TripFinished {
                     citizen: p.citizen,

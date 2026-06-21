@@ -600,6 +600,112 @@ fn stuck_dead_end_uturn_rewrites_route_on_two_lane() {
     assert!(route.len() >= 2, "Route should have at least 2 tiles");
 }
 
+/// ROOT B regression: a passenger-less, non-service vehicle wedged on its ONLY path must eventually
+/// despawn instead of freezing forever. Before the fix, the emergency reroute reset `stuck.secs` to 0
+/// every call even when it returned the same blocked path (so the despawn threshold was unreachable),
+/// AND the despawn guardrail required a passenger. A straight single-lane road has exactly one path,
+/// so the reroute returns the unchanged route; with `secs == STUCK_DESPAWN_SECS` injected the vehicle
+/// must be removed in one resolve tick.
+#[test]
+fn stuck_passengerless_vehicle_on_only_path_despawns_instead_of_freezing() {
+    use crate::game::transport::{
+        GraphVersion, PathCache, PathfindingConfig, RegionGraph, RoadGraph,
+        rebuild_road_graph_inner,
+    };
+
+    let mut grid = MapGrid::new(4, 1);
+    for x in 0..4 {
+        let p = TilePos { x, y: 0 };
+        let Some(mut c) = grid.get(p) else {
+            continue;
+        };
+        c.water = false;
+        c.road = RoadCell {
+            kind: RoadKind::TwoLane,
+            dir: RoadDir::East,
+            lane: 0,
+            flow: RoadFlow::TwoWay,
+            lane_type: LaneType::Regular,
+        };
+        grid.set(p, c);
+    }
+
+    let gv = GraphVersion(1);
+    let mut graph = RoadGraph::default();
+    rebuild_road_graph_inner(&grid, &gv, &mut graph);
+
+    let mut occ = TrafficOccupancy::default();
+    occ.ensure_len(grid.len());
+
+    let cfg = PathfindingConfig {
+        enable_hierarchical: false,
+        ..Default::default()
+    };
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .add_message::<TripFinished>()
+        .insert_resource(Time::<Fixed>::from_seconds(1.0 / 10.0))
+        .insert_resource(MapConfig {
+            width: 4,
+            height: 1,
+            tile_size: 16.0,
+        })
+        .insert_resource(grid)
+        .insert_resource(graph)
+        .insert_resource(RegionGraph::default())
+        .insert_resource(cfg)
+        .insert_resource(PathCache::default())
+        .insert_resource(IntersectionIndex::default())
+        .insert_resource(occ)
+        .insert_resource(crate::game::transport::PathPool::default())
+        .add_systems(Update, resolve_stuck_vehicles);
+
+    let current = TilePos { x: 0, y: 0 };
+    let goal = TilePos { x: 3, y: 0 };
+    let vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(
+            &mut path_pool,
+            vec![
+                current,
+                TilePos { x: 1, y: 0 },
+                TilePos { x: 2, y: 0 },
+                goal,
+            ],
+            0,
+            0.0,
+            0.0,
+            60.0,
+            20.0,
+            1.0,
+        )
+    };
+    // No TripPassenger, no ServiceVehicle: the kind the old guardrail never removed.
+    let e = app
+        .world_mut()
+        .spawn((
+            vehicle,
+            VehicleTrafficState::FreeFlow,
+            StuckTimer {
+                secs: STUCK_DESPAWN_SECS,
+                last_tile: current,
+                last_progress: 0.0,
+                uturn_attempted: false,
+            },
+        ))
+        .id();
+
+    app.update();
+
+    assert!(
+        app.world().get_entity(e).is_err(),
+        "passenger-less vehicle wedged on its only path must despawn, not freeze forever"
+    );
+}
+
 /// Verifies speed-dependent lane preference: slow vehicles keep right, fast vehicles prefer left.
 /// Uses separate tests to avoid vehicles blocking each other's lane changes.
 #[test]

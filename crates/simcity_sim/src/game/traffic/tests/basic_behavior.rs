@@ -61,6 +61,224 @@ fn vehicle_arrival_emits_trip_finished() {
     assert!(app.world().get_entity(vehicle).is_err());
 }
 
+/// REPRO (live freeze, Day 69): a permanent off-intersection gridlock formed from two same-direction
+/// vehicles on adjacent lanes whose routes SWAP the same pair of tiles — each one's next tile is the
+/// tile the other currently occupies. Both are held at speed 0 forever by the car-following
+/// next-tile leader (each is the other's zero-gap leader), and nothing arbitrates a 2-cycle tile
+/// swap off an intersection (reservations only govern intersection tiles).
+///
+/// Two westbound lanes y=0 / y=1 (both dir=West). Vehicle A sits on (2,0) and its route changes lane
+/// to (2,1) then continues west. Vehicle B sits on (2,1) and its route changes lane to (2,0) then
+/// continues west. A wants B's tile, B wants A's tile.
+///
+/// This is the integration repro that the earlier (reservation-only) test never exercised: it runs
+/// the real `move_vehicles` movement tick. It asserts the DESIRED behavior — at least one vehicle
+/// eventually breaks the swap and advances — so it FAILS today (both pinned at cursor 0) and must
+/// pass once a tile-swap deadlock breaker exists.
+#[test]
+fn lateral_tile_swap_on_same_direction_lanes_does_not_deadlock_forever() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .add_message::<TripFinished>()
+        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(MapConfig {
+            width: 4,
+            height: 2,
+            tile_size: 16.0,
+        })
+        .insert_resource({
+            let mut grid = MapGrid::new(4, 2);
+            for y in 0..2i32 {
+                for x in 0..4i32 {
+                    let pos = TilePos { x, y };
+                    let Some(mut cell) = grid.get(pos) else {
+                        continue;
+                    };
+                    cell.road = RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir: RoadDir::West,
+                        lane: y as u8,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    };
+                    grid.set(pos, cell);
+                }
+            }
+            grid
+        })
+        .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficConfig::default())
+        .insert_resource(IntersectionIndex::default())
+        .insert_resource(IntersectionReservations::default())
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(VehicleAggSnapshot::default())
+        .insert_resource(ParkedVehicleTileIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .insert_resource(FinishCount::default())
+        .add_systems(
+            Update,
+            (build_traffic_spatial_index, break_tile_swaps, move_vehicles).chain(),
+        );
+
+    // A on (2,0): lane-change to (2,1), then west.
+    // B on (2,1): lane-change to (2,0), then west. Each one's next tile holds the other.
+    let (a, b) = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        let a = create_vehicle_with_route(
+            &mut path_pool,
+            vec![
+                TilePos { x: 2, y: 0 },
+                TilePos { x: 2, y: 1 },
+                TilePos { x: 1, y: 1 },
+                TilePos { x: 0, y: 1 },
+            ],
+            0,
+            0.0,
+            0.0,
+            60.0,
+            20.0,
+            1.0,
+        );
+        let b = create_vehicle_with_route(
+            &mut path_pool,
+            vec![
+                TilePos { x: 2, y: 1 },
+                TilePos { x: 2, y: 0 },
+                TilePos { x: 1, y: 0 },
+                TilePos { x: 0, y: 0 },
+            ],
+            0,
+            0.0,
+            0.0,
+            60.0,
+            20.0,
+            1.0,
+        );
+        (a, b)
+    };
+    let a = app
+        .world_mut()
+        .spawn((a, Transform::default(), VehicleTrafficState::FreeFlow))
+        .id();
+    let b = app
+        .world_mut()
+        .spawn((b, Transform::default(), VehicleTrafficState::FreeFlow))
+        .id();
+
+    for _ in 0..200 {
+        app.world_mut()
+            .resource_mut::<bevy::time::Time<bevy::time::Fixed>>()
+            .advance_by(Duration::from_secs_f32(0.1));
+        app.update();
+    }
+
+    let a_cursor = app.world().get::<Vehicle>(a).map(|v| v.path_cursor);
+    let b_cursor = app.world().get::<Vehicle>(b).map(|v| v.path_cursor);
+    // Despawn-on-arrival counts as "got through" too.
+    let a_done = a_cursor.map(|c| c > 0).unwrap_or(true);
+    let b_done = b_cursor.map(|c| c > 0).unwrap_or(true);
+    assert!(
+        a_done || b_done,
+        "tile-swap deadlock: both vehicles pinned at cursor 0 after 200 ticks \
+         (A={a_cursor:?}, B={b_cursor:?}) — nothing breaks the off-intersection 2-cycle swap"
+    );
+}
+
+/// The swap breaker must be a strict no-op for normal same-lane queueing: a follower whose next tile
+/// is the leader's tile is NOT a mutual swap (the leader's next is a different tile), so neither route
+/// may be rewritten.
+#[test]
+fn swap_breaker_is_inert_for_normal_queueing() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .add_message::<TripFinished>()
+        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(MapConfig {
+            width: 4,
+            height: 1,
+            tile_size: 16.0,
+        })
+        .insert_resource({
+            let mut grid = MapGrid::new(4, 1);
+            for x in 0..4i32 {
+                let pos = TilePos { x, y: 0 };
+                let Some(mut cell) = grid.get(pos) else {
+                    continue;
+                };
+                cell.road = RoadCell {
+                    kind: RoadKind::TwoLane,
+                    dir: RoadDir::West,
+                    lane: 0,
+                    flow: RoadFlow::TwoWay,
+                    lane_type: LaneType::Regular,
+                };
+                grid.set(pos, cell);
+            }
+            grid
+        })
+        .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficConfig::default())
+        .insert_resource(IntersectionIndex::default())
+        .insert_resource(IntersectionReservations::default())
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(VehicleAggSnapshot::default())
+        .insert_resource(ParkedVehicleTileIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .insert_resource(FinishCount::default())
+        .add_systems(
+            Update,
+            (build_traffic_spatial_index, break_tile_swaps).chain(),
+        );
+
+    // A behind B on the same westbound lane: A(3,0)->(2,0)->.., B(2,0)->(1,0)->.. A's next is B's
+    // tile, but B's next (1,0) is NOT A's tile (3,0) — normal following, not a swap.
+    let (a, b, route_a, route_b) = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        let ra = vec![
+            TilePos { x: 3, y: 0 },
+            TilePos { x: 2, y: 0 },
+            TilePos { x: 1, y: 0 },
+            TilePos { x: 0, y: 0 },
+        ];
+        let rb = vec![
+            TilePos { x: 2, y: 0 },
+            TilePos { x: 1, y: 0 },
+            TilePos { x: 0, y: 0 },
+        ];
+        let a = create_vehicle_with_route(&mut path_pool, ra.clone(), 0, 0.0, 0.0, 60.0, 20.0, 1.0);
+        let b = create_vehicle_with_route(&mut path_pool, rb.clone(), 0, 0.0, 0.0, 60.0, 20.0, 1.0);
+        (a, b, ra, rb)
+    };
+    let a = app
+        .world_mut()
+        .spawn((a, Transform::default(), VehicleTrafficState::FreeFlow))
+        .id();
+    let b = app
+        .world_mut()
+        .spawn((b, Transform::default(), VehicleTrafficState::FreeFlow))
+        .id();
+
+    app.update();
+
+    let read_route = |app: &App, e| {
+        let v = app.world().get::<Vehicle>(e).unwrap();
+        let pp = app.world().resource::<crate::game::transport::PathPool>();
+        (0..pp.len(v.path_handle))
+            .filter_map(|i| pp.get_tile(v.path_handle, i))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(read_route(&app, a), route_a, "follower route was rewritten");
+    assert_eq!(read_route(&app, b), route_b, "leader route was rewritten");
+}
+
 #[test]
 fn stop_sign_release_does_not_oscillate_crossing_state() {
     let mut app = App::new();

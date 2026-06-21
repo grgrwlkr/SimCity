@@ -53,6 +53,9 @@ use spawn::{clear_vehicles, spawn_trip_vehicles};
 mod stuck;
 use stuck::{init_stuck_timers, resolve_stuck_vehicles, update_stuck_timers};
 
+mod swap_break;
+use swap_break::break_tile_swaps;
+
 mod lane_change;
 use lane_change::{
     build_traffic_spatial_index, build_traffic_spatial_index_pre_lane_changes, plan_lane_changes,
@@ -139,6 +142,10 @@ const INTERSECTION_FORCE_ENTRY_SECS: f32 = 8.0;
 pub(crate) const STUCK_REROUTE_SECS: f32 = 60.0;
 /// After this many seconds without progressing, despawn non-service trip vehicles as an emergency guardrail.
 const STUCK_DESPAWN_SECS: f32 = 180.0;
+/// A vehicle flagged `SwapDeadlocked` (in an off-intersection tile-swap with no straight escape) is
+/// removed after this short grace — the swap breaker re-checks every tick and clears the flag the
+/// moment the swap resolves, so a still-flagged car is genuinely wedged and must not pin the road.
+const SWAP_DEADLOCK_DESPAWN_SECS: f32 = 3.0;
 /// Maximum number of unstuck operations per tick (guardrail).
 const MAX_UNSTUCK_PER_TICK: usize = 8;
 /// Throttle new car spawns when congestion is extreme (keeps sim stable).
@@ -406,6 +413,9 @@ impl Plugin for TrafficPlugin {
                         .before(move_vehicles),
                     apply_intersection_reservation_candidates
                         .after(collect_intersection_reservation_candidates)
+                        .before(move_vehicles),
+                    break_tile_swaps
+                        .after(apply_intersection_reservation_candidates)
                         .before(move_vehicles),
                     move_vehicles.after(apply_intersection_reservation_candidates),
                     cleanup_right_on_red_markers.after(move_vehicles),
