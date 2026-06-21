@@ -859,6 +859,138 @@ fn downstream_jammed_link_blocks_admission_into_upstream_intersection() {
     );
 }
 
+/// A single approaching vehicle must accumulate at most ONE reservation per intersection across
+/// multiple plan_intersection_reservations ticks while it stays stationary on the approach tile.
+///
+/// Live evidence: a vehicle held 11 near-identical Approaching reservations (one per 0.1 s tick)
+/// because the candidate-emission path never checked is_reserved_by before pushing a fresh
+/// candidate → apply() happily pushed another Approaching entry each tick.
+///
+/// After the fix the Vec length must be exactly 1 after 3 ticks.
+#[test]
+fn approaching_vehicle_accumulates_at_most_one_reservation_across_ticks() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(MapConfig {
+            width: 3,
+            height: 1,
+            tile_size: 16.0,
+        })
+        .insert_resource({
+            let mut grid = MapGrid::new(3, 1);
+            let approach = TilePos { x: 0, y: 0 };
+            let intersection_tile = TilePos { x: 1, y: 0 };
+            let exit = TilePos { x: 2, y: 0 };
+            for (pos, kind, dir) in [
+                (approach, RoadKind::TwoLane, RoadDir::East),
+                (intersection_tile, RoadKind::TwoLane, RoadDir::None),
+                (exit, RoadKind::TwoLane, RoadDir::East),
+            ] {
+                let Some(mut cell) = grid.get(pos) else {
+                    continue;
+                };
+                cell.road = RoadCell {
+                    kind,
+                    dir,
+                    lane: 0,
+                    flow: RoadFlow::TwoWay,
+                    lane_type: LaneType::Regular,
+                };
+                grid.set(pos, cell);
+            }
+            grid
+        })
+        .insert_resource({
+            let intersection_tile = TilePos { x: 1, y: 0 };
+            let id = IntersectionId(0);
+            let key = IntersectionKey {
+                aabb_min: intersection_tile,
+                aabb_max: intersection_tile,
+                tile_count: 1,
+                tiles_hash: 1,
+            };
+            let mut idx = IntersectionIndex::default();
+            idx.clusters
+                .push(crate::game::intersections::IntersectionCluster {
+                    id,
+                    key,
+                    tiles: vec![intersection_tile],
+                    aabb_min: intersection_tile,
+                    aabb_max: intersection_tile,
+                    centroid_tile: intersection_tile,
+                });
+            idx.tile_to_intersection.insert(intersection_tile, id);
+            idx
+        })
+        .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficConfig::default())
+        .insert_resource(IntersectionReservations::default())
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .add_systems(Update, plan_intersection_reservations);
+
+    let approach = TilePos { x: 0, y: 0 };
+    let intersection_tile = TilePos { x: 1, y: 0 };
+    let exit = TilePos { x: 2, y: 0 };
+    let key = app
+        .world()
+        .resource::<IntersectionIndex>()
+        .cluster_key_at(intersection_tile)
+        .unwrap();
+
+    let vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(
+            &mut path_pool,
+            vec![approach, intersection_tile, exit],
+            0,
+            TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+            0.0,
+            60.0,
+            20.0,
+            1.0,
+        )
+    };
+    let e = app
+        .world_mut()
+        .spawn((
+            vehicle,
+            VehicleTrafficState::Stopped {
+                intersection: key,
+                stop_tile: approach,
+                queue_position: 0,
+            },
+        ))
+        .id();
+
+    let id = app
+        .world()
+        .resource::<IntersectionIndex>()
+        .intersection_id_at(intersection_tile)
+        .unwrap();
+
+    // Run the full collect→apply pipeline 3 times without moving the vehicle.
+    app.update();
+    app.update();
+    app.update();
+
+    let res = app.world().resource::<IntersectionReservations>();
+    let count = res
+        .by_intersection
+        .get(&id)
+        .map(|v| v.iter().filter(|r| r.vehicle == e).count())
+        .unwrap_or(0);
+    assert_eq!(
+        count, 1,
+        "approaching vehicle must hold exactly 1 reservation after 3 ticks, got {count}"
+    );
+}
+
 #[test]
 fn downstream_free_link_allows_admission_into_upstream_intersection() {
     // Same 2-intersection chain, but the link toward B is EMPTY -> admission MUST succeed.

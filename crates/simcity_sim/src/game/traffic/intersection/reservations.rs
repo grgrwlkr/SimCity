@@ -586,6 +586,12 @@ fn collect_intersection_reservation_candidates_inner(
         let Some(id) = intersections.intersection_id_at(next) else {
             continue;
         };
+        // A vehicle already holds exactly one reservation per intersection.
+        // Emitting another candidate would cause apply() to push a duplicate Approaching entry
+        // every tick while the vehicle stays on the approach tile (confirmed live: 11 dupes/tick).
+        if reservations.is_reserved_by(id, e) {
+            continue;
+        }
         // Must have a non-conflicting zone set.
         let entry_dir = super::super::dir_between_adjacent(cur, next);
         if entry_dir == RoadDir::None {
