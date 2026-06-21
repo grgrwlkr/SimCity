@@ -1,6 +1,6 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::game::intersections::{IntersectionId, IntersectionIndex};
 use crate::game::map::{MapGrid, TilePos};
@@ -39,6 +39,12 @@ pub struct IntersectionReservation {
 #[derive(Resource, Default)]
 pub struct IntersectionReservations {
     pub by_intersection: std::collections::HashMap<IntersectionId, Vec<IntersectionReservation>>,
+    /// Per-cluster consecutive sim ticks where ≥1 approach was refused by a capacity/spillback gate
+    /// (don't-block-the-box exit gate or downstream-link gate) and could not be admitted. Drives the
+    /// starvation-free escape valve (see `INTERSECTION_STALL_FORCE_TICKS`): once a cluster is
+    /// capacity-starved past the threshold it force-admits one refused approach to break a
+    /// cross-intersection circular wait. Reset on the tick a force-admit lands or normal flow resumes.
+    stall_ticks: std::collections::HashMap<IntersectionId, u32>,
 }
 
 impl IntersectionReservations {
@@ -274,6 +280,7 @@ pub(crate) struct ApplyIntersectionReservationParams<'w, 's> {
 
 pub(crate) fn reset_intersection_reservations(mut reservations: ResMut<IntersectionReservations>) {
     reservations.by_intersection.clear();
+    reservations.stall_ticks.clear();
 }
 
 /// Collect reservation candidates into a shared per-tick buffer.
@@ -457,18 +464,27 @@ fn clear_candidate_buffers(
 /// intersection cluster (or up to `max_link_tiles` link tiles, whichever comes first) and
 /// report whether the short downstream link can accept this vehicle.
 ///
-/// Returns `false` (refuse admission) if ANY link tile in the horizon is at/over capacity
-/// (`occ >= cap`): a fully-jammed bottleneck right before the next intersection means the
-/// admitted car would fill the exit tile and then be unable to advance, sitting in/just past
-/// this cluster's box and blocking perpendicular flow. Deterministic: integer comparisons over
-/// the stable route slice, no RNG, no HashMap-order dependence.
+/// Returns `false` (refuse admission) if ANY link tile in the horizon is jammed by *effective*
+/// occupancy (`effective_occ >= cap`): a fully-jammed bottleneck right before the next intersection
+/// means the admitted car would fill the exit tile and then be unable to advance, sitting in/just
+/// past this cluster's box and blocking perpendicular flow.
+///
+/// Drain-aware: a tile at capacity whose lead vehicle is already advancing past the entry zone will
+/// free a slot this tick, so it is NOT counted as jammed (mirrors the don't-block-the-box exit
+/// gate). With ~1.4-tile-long vehicles `capacity_per_lane_tile` is intentionally small (2 for every
+/// road kind), so a naive `occ >= cap` would refuse on at-capacity-but-moving links — exactly the
+/// over-eager refusal that turned spillback protection into a freeze. Deterministic: integer
+/// comparisons over the stable route slice, no RNG, no HashMap-order dependence.
+#[allow(clippy::too_many_arguments)]
 fn downstream_link_has_headroom(
     grid: &MapGrid,
     traffic: &TrafficOccupancy,
+    spatial: &TrafficSpatialIndex,
     intersections: &IntersectionIndex,
     route: &[TilePos],
     exit_tile: TilePos,
     max_link_tiles: usize,
+    exit_clear_progress: f32,
 ) -> bool {
     let Some(start_i) = route.iter().position(|t| *t == exit_tile) else {
         // Exit tile not on the route (shouldn't happen): fail open, defer to other gates.
@@ -493,7 +509,16 @@ fn downstream_link_has_headroom(
             let cap = cell.road.kind.capacity_per_lane_tile();
             if cap > 0 {
                 let occ = traffic.per_tick_vehicles.get(idx).copied().unwrap_or(0);
-                if occ >= cap {
+                let entry_clear = occ >= cap
+                    && spatial
+                        .tile_first(idx)
+                        .is_some_and(|e| e.progress > exit_clear_progress);
+                let effective_occ = if entry_clear {
+                    occ.saturating_sub(1)
+                } else {
+                    occ
+                };
+                if effective_occ >= cap {
                     // Jammed bottleneck on the link toward the next intersection: refuse.
                     return false;
                 }
@@ -549,7 +574,13 @@ fn collect_intersection_reservation_candidates_inner(
                 state: ReservationState::Inside,
                 created_at_sec: now,
                 zones: ZONE_ALL,
-                tiles: Vec::new(),
+                // Scope the safety-net reservation to the cluster tile the vehicle physically
+                // occupies. `can_reserve` then uses precise per-tile conflict for it, so a car
+                // wedged inside the box (e.g. waiting on a full exit link) only blocks maneuvers
+                // that actually cross its tile — not every approach to the cluster. The old
+                // `tiles: Vec::new()` fell back to the coarse ZONE_ALL mask, letting one frozen
+                // in-box car freeze admission to the entire intersection.
+                tiles: vec![cur],
                 stream: StreamKey {
                     entry: RoadDir::None,
                     exit: RoadDir::None,
@@ -558,6 +589,20 @@ fn collect_intersection_reservation_candidates_inner(
             });
         }
     }
+
+    // Starvation-free escape valve (cross-intersection deadlock breaker). Clusters whose stall
+    // counter has crossed the threshold may force-admit ONE refused approach this tick. We track
+    // which clusters were capacity-starved this tick and which actually force-admitted, then update
+    // the persistent counter at the end (accumulate while starved, reset on a successful force or
+    // normal flow).
+    let force_clusters: HashSet<IntersectionId> = reservations
+        .stall_ticks
+        .iter()
+        .filter(|&(_, &ticks)| ticks >= super::super::INTERSECTION_STALL_FORCE_TICKS)
+        .map(|(&id, _)| id)
+        .collect();
+    let mut starved_this_tick: HashSet<IntersectionId> = HashSet::new();
+    let mut forced_used: HashSet<IntersectionId> = HashSet::new();
 
     // Greedy admission: allow multiple approaching vehicles per intersection as long as their
     // conflict zones don't overlap (coarse safety).
@@ -664,6 +709,13 @@ fn collect_intersection_reservation_candidates_inner(
             }
         }
 
+        // Escape valve: this cluster may force-admit ONE refused approach this tick (once it has
+        // been capacity-starved past the threshold and hasn't already forced a car this tick). A
+        // forced candidate bypasses the two capacity gates below but still goes through
+        // `can_reserve`, so crossing conflicts are never violated.
+        let force_admit_here = force_clusters.contains(&id) && !forced_used.contains(&id);
+        let mut used_force_bypass = false;
+
         // Don't block the box: only admit if the planned exit lane tile has space.
         let rem = path_pool.remaining_from(v.path_handle, v.path_cursor);
         let exit_tile = rem.and_then(|route| {
@@ -706,7 +758,12 @@ fn collect_intersection_reservation_candidates_inner(
             occ
         };
         if effective_occ >= cap {
-            continue;
+            starved_this_tick.insert(id);
+            if force_admit_here {
+                used_force_bypass = true;
+            } else {
+                continue;
+            }
         }
 
         // P1-1: cross-intersection downstream-horizon admission. The old single-exit-tile gate
@@ -720,13 +777,20 @@ fn collect_intersection_reservation_candidates_inner(
             && !downstream_link_has_headroom(
                 grid,
                 traffic,
+                spatial,
                 intersections,
                 route,
                 exit_tile,
                 DOWNSTREAM_LINK_HORIZON_TILES,
+                exit_clear_progress,
             )
         {
-            continue;
+            starved_this_tick.insert(id);
+            if force_admit_here {
+                used_force_bypass = true;
+            } else {
+                continue;
+            }
         }
 
         let Some(zones) = reservation_zones_for_maneuver(traffic_cfg, entry_dir, exit_dir) else {
@@ -847,13 +911,32 @@ fn collect_intersection_reservation_candidates_inner(
             stream,
             maneuver,
             is_right_on_red,
-            is_emergency: false,
+            // A force-admitted candidate carries its REAL zones/tiles (unlike the ZONE_ALL stuck
+            // emergency), but is flagged emergency so apply() lets it bypass the exit-tile capacity
+            // accounting. Physical safety still holds: `can_reserve` blocks crossing conflicts and
+            // the drive.rs overlap clamp prevents same-lane overlap even at an at-capacity exit.
+            is_emergency: used_force_bypass,
             exit_tile_idx: exit_idx,
             exit_tile_cap: cap,
         };
 
         candidates_by_intersection.entry(id).or_default().push(cand);
+        if used_force_bypass {
+            forced_used.insert(id);
+        }
     }
+
+    // Update persistent per-cluster stall counters. Every cluster capacity-starved this tick
+    // accumulates (stays/becomes force-eligible); clusters that flowed normally (not starved) drop
+    // out entirely. The window is reset in apply() only when a reservation actually LANDS for the
+    // cluster (reset-on-grant, not reset-on-attempt): a force-admit candidate rejected by
+    // `can_reserve` must keep retrying next tick instead of wasting the whole stall window.
+    let mut new_stall: HashMap<IntersectionId, u32> = HashMap::new();
+    for &id in starved_this_tick.iter() {
+        let prev = reservations.stall_ticks.get(&id).copied().unwrap_or(0);
+        new_stall.insert(id, prev.saturating_add(1));
+    }
+    reservations.stall_ticks = new_stall;
 }
 
 fn apply_intersection_reservation_candidates_inner(
@@ -933,6 +1016,9 @@ fn apply_intersection_reservation_candidates_inner(
                     stream: cand.stream,
                     maneuver: cand.maneuver,
                 });
+            // Reset-on-grant: a reservation actually landed for this cluster, so it is making
+            // progress — clear its starvation window (see the escape valve in collect).
+            reservations.stall_ticks.remove(&id);
             if !cand.is_emergency
                 && let Some(used) = exit_tile_reserved.get_mut(&(id, cand.exit_tile_idx))
             {

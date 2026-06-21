@@ -136,6 +136,14 @@ pub(crate) const DRIVER_MAX_SPEED_KMH_MAX: f32 = 130.0;
 const SERVICE_VEHICLE_SPEED_LIMIT_FACTOR: f32 = 1.50;
 /// Failsafe: if a vehicle is blocked at a clear intersection for too long, allow entry.
 const INTERSECTION_FORCE_ENTRY_SECS: f32 = 8.0;
+/// Starvation-free escape valve (cross-intersection deadlock breaker). If an intersection has had at
+/// least one approach refused by a capacity/spillback gate (don't-block-the-box exit gate or the
+/// downstream-link gate) for this many consecutive sim ticks (FixedUpdate, 10 Hz) without admitting
+/// it, force-admit ONE refused approach this tick — bypassing those capacity gates but NOT the
+/// `can_reserve` crossing-conflict check. This breaks the cross-intersection circular wait where
+/// two adjacent clusters mutually refuse admission across a saturated short link. 30 ticks = 3 s:
+/// long enough to ignore transient congestion, far below the 60 s reroute / 180 s despawn fallbacks.
+pub(crate) const INTERSECTION_STALL_FORCE_TICKS: u32 = 30;
 
 /// After this many seconds without progressing, try to resolve a traffic jam (reroute).
 /// (v2 policy: avoid "cheat" behavior by default; only intervene after a long timeout.)

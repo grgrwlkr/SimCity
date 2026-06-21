@@ -859,6 +859,169 @@ fn downstream_jammed_link_blocks_admission_into_upstream_intersection() {
     );
 }
 
+#[test]
+fn sustained_downstream_jam_force_admits_one_car_via_escape_valve() {
+    // Same 2-intersection chain as downstream_jammed_link_..., but the link toward cluster B stays
+    // jammed indefinitely (cyclic-deadlock proxy: occupancy never drains because nothing moves it).
+    // The downstream-link gate refuses admission EVERY tick, so without an escape valve the upstream
+    // intersection would never admit anyone -> permanent freeze. The starvation-free escape valve
+    // must force-admit ONE car once the cluster has been capacity-starved for
+    // INTERSECTION_STALL_FORCE_TICKS consecutive ticks, breaking the circular wait.
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(MapConfig {
+            width: 6,
+            height: 1,
+            tile_size: 16.0,
+        })
+        .insert_resource({
+            let mut grid = MapGrid::new(6, 1);
+            for (pos, dir) in [
+                (TilePos { x: 0, y: 0 }, RoadDir::East), // approach
+                (TilePos { x: 1, y: 0 }, RoadDir::None), // cluster A
+                (TilePos { x: 2, y: 0 }, RoadDir::East), // exit-of-A / link tile 1
+                (TilePos { x: 3, y: 0 }, RoadDir::East), // link tile 2 (jammed)
+                (TilePos { x: 4, y: 0 }, RoadDir::None), // cluster B
+                (TilePos { x: 5, y: 0 }, RoadDir::East), // exit-of-B
+            ] {
+                let Some(mut cell) = grid.get(pos) else {
+                    continue;
+                };
+                cell.road = RoadCell {
+                    kind: RoadKind::TwoLane,
+                    dir,
+                    lane: 0,
+                    flow: RoadFlow::TwoWay,
+                    lane_type: LaneType::Regular,
+                };
+                grid.set(pos, cell);
+            }
+            grid
+        })
+        .insert_resource({
+            let mut idx = IntersectionIndex::default();
+            let a = TilePos { x: 1, y: 0 };
+            let id_a = IntersectionId(0);
+            idx.clusters
+                .push(crate::game::intersections::IntersectionCluster {
+                    id: id_a,
+                    key: IntersectionKey {
+                        aabb_min: a,
+                        aabb_max: a,
+                        tile_count: 1,
+                        tiles_hash: 1,
+                    },
+                    tiles: vec![a],
+                    aabb_min: a,
+                    aabb_max: a,
+                    centroid_tile: a,
+                });
+            idx.tile_to_intersection.insert(a, id_a);
+            let b = TilePos { x: 4, y: 0 };
+            let id_b = IntersectionId(1);
+            idx.clusters
+                .push(crate::game::intersections::IntersectionCluster {
+                    id: id_b,
+                    key: IntersectionKey {
+                        aabb_min: b,
+                        aabb_max: b,
+                        tile_count: 1,
+                        tiles_hash: 2,
+                    },
+                    tiles: vec![b],
+                    aabb_min: b,
+                    aabb_max: b,
+                    centroid_tile: b,
+                });
+            idx.tile_to_intersection.insert(b, id_b);
+            idx
+        })
+        .insert_resource({
+            let mut occ = TrafficOccupancy::default();
+            occ.ensure_len(6);
+            let jam = TilePos { x: 3, y: 0 };
+            let jam_idx = (jam.x as usize) + (jam.y as usize) * 6;
+            occ.per_tick_vehicles[jam_idx] = RoadKind::TwoLane.capacity_per_lane_tile();
+            occ
+        })
+        .insert_resource(TrafficConfig::default())
+        .insert_resource(IntersectionReservations::default())
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .add_systems(Update, plan_intersection_reservations);
+
+    let id_a = app
+        .world()
+        .resource::<IntersectionIndex>()
+        .intersection_id_at(TilePos { x: 1, y: 0 })
+        .unwrap();
+    let key_a = app
+        .world()
+        .resource::<IntersectionIndex>()
+        .cluster_key_at(TilePos { x: 1, y: 0 })
+        .unwrap();
+
+    let vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(
+            &mut path_pool,
+            vec![
+                TilePos { x: 0, y: 0 },
+                TilePos { x: 1, y: 0 },
+                TilePos { x: 2, y: 0 },
+                TilePos { x: 3, y: 0 },
+                TilePos { x: 4, y: 0 },
+                TilePos { x: 5, y: 0 },
+            ],
+            0,
+            TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+            0.0,
+            60.0,
+            20.0,
+            1.0,
+        )
+    };
+    let e = app
+        .world_mut()
+        .spawn((
+            vehicle,
+            VehicleTrafficState::Stopped {
+                intersection: key_a,
+                stop_tile: TilePos { x: 0, y: 0 },
+                queue_position: 0,
+            },
+        ))
+        .id();
+
+    // Tick 1: the valve must NOT fire prematurely — single-tick behavior stays "refuse".
+    app.update();
+    assert!(
+        !app.world()
+            .resource::<IntersectionReservations>()
+            .is_reserved_by(id_a, e),
+        "escape valve must not fire on the first stalled tick (would defeat spillback protection)"
+    );
+
+    // Keep stalling well past the threshold. The valve fires once the cluster has been
+    // capacity-starved for INTERSECTION_STALL_FORCE_TICKS consecutive ticks.
+    for _ in 0..(crate::game::traffic::INTERSECTION_STALL_FORCE_TICKS + 2) {
+        app.update();
+    }
+
+    assert!(
+        app.world()
+            .resource::<IntersectionReservations>()
+            .is_reserved_by(id_a, e),
+        "after sustained downstream-jam starvation the escape valve must force-admit the car to \
+         break the cross-intersection circular wait"
+    );
+}
+
 /// A single approaching vehicle must accumulate at most ONE reservation per intersection across
 /// multiple plan_intersection_reservations ticks while it stays stationary on the approach tile.
 ///
