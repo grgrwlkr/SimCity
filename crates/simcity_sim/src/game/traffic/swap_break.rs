@@ -5,7 +5,7 @@ use crate::game::map::{MapGrid, TilePos};
 use crate::game::roads::RoadDir;
 use crate::game::transport::{PathHandle, PathPool};
 
-use super::{Parked, Vehicle, is_intersection_tile};
+use super::{Parked, TrafficSpatialIndex, Vehicle, is_intersection_tile};
 
 /// Marks a vehicle wedged in an off-intersection tile-swap deadlock for which no one-tile-deferred
 /// lane-change escape exists. `resolve_stuck_vehicles` despawns it after a short grace so a genuinely
@@ -101,6 +101,7 @@ fn deferred_route(grid: &MapGrid, path_pool: &PathPool, rec: &IntentRec) -> Opti
 #[allow(clippy::type_complexity)]
 pub(crate) fn break_tile_swaps(
     grid: Res<MapGrid>,
+    spatial: Res<TrafficSpatialIndex>,
     mut path_pool: ResMut<PathPool>,
     mut commands: Commands,
     flagged: Query<Entity, With<SwapDeadlocked>>,
@@ -108,15 +109,13 @@ pub(crate) fn break_tile_swaps(
         Query<(Entity, &Vehicle), Without<Parked>>,
         Query<&mut Vehicle, Without<Parked>>,
     )>,
-    mut occ: Local<HashMap<TilePos, Vec<Entity>>>,
     mut intent: Local<HashMap<Entity, IntentRec>>,
 ) {
-    occ.clear();
     intent.clear();
 
-    // Phase 1: snapshot current-tile occupants and per-vehicle forward intent. Reversing vehicles are
-    // already mid-unstick and move toward cursor-1, so their forward cursor+1 "next" is meaningless
-    // here — exclude them.
+    // Phase 1: snapshot per-vehicle forward intent (current-tile occupancy is read from the already
+    // built TrafficSpatialIndex, so we don't rebuild a tile map here). Reversing vehicles are already
+    // mid-unstick and move toward cursor-1, so their forward cursor+1 "next" is meaningless — exclude.
     {
         let q = vehicles.p0();
         for (e, v) in q.iter() {
@@ -126,7 +125,6 @@ pub(crate) fn break_tile_swaps(
             let Some(cur) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
                 continue;
             };
-            occ.entry(cur).or_default().push(e);
             if let Some(next) = path_pool.get_tile(v.path_handle, v.path_cursor + 1)
                 && next != cur
             {
@@ -142,9 +140,13 @@ pub(crate) fn break_tile_swaps(
             }
         }
     }
-    // Deterministic occupant order so the chosen swap partner never depends on insertion order.
-    for occupants in occ.values_mut() {
-        occupants.sort_unstable_by_key(|e| e.to_bits());
+    if intent.len() < 2 {
+        // No possible mutual swap, but a previously-flagged vehicle may have recovered — still clear
+        // stale flags below before returning.
+        for e in flagged.iter() {
+            commands.entity(e).remove::<SwapDeadlocked>();
+        }
+        return;
     }
 
     // Phase 2: detect mutual 2-swaps and pick a victim + its surgery, deterministically.
@@ -163,18 +165,24 @@ pub(crate) fn break_tile_swaps(
             continue;
         }
         // The swap partner is whichever occupant of e's next tile wants e's current tile (a tile can
-        // hold two ~1.4-tile cars, so scan all occupants, not just one).
-        let Some(occupants) = occ.get(&rec_e.next) else {
+        // hold two ~1.4-tile cars, so scan all occupants and pick the deterministic min-Entity one).
+        let Some(next_idx) = grid.idx(rec_e.next) else {
             continue;
         };
-        let mut partner = None;
-        for &f in occupants.iter() {
+        let Some(occupants) = spatial.tile_entries(next_idx) else {
+            continue;
+        };
+        let mut partner: Option<Entity> = None;
+        for entry in occupants {
+            let f = entry.entity;
             if f == e {
                 continue;
             }
             if intent.get(&f).is_some_and(|rec_f| rec_f.next == rec_e.cur) {
-                partner = Some(f);
-                break;
+                partner = Some(match partner {
+                    Some(p) if p.to_bits() <= f.to_bits() => p,
+                    _ => f,
+                });
             }
         }
         let Some(f) = partner else {
