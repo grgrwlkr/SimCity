@@ -37,7 +37,9 @@ fn main() {
 
 #[cfg(not(target_family = "wasm"))]
 fn remote_plugin() -> RemotePlugin {
-    RemotePlugin::default().with_method_main("bevy_debugger/screenshot", screenshot_handler)
+    RemotePlugin::default()
+        .with_method_main("bevy_debugger/screenshot", screenshot_handler)
+        .with_method_main("bevy_debugger/debug_dump", debug_dump_handler)
 }
 
 #[cfg(target_family = "wasm")]
@@ -100,6 +102,57 @@ fn dump_on_window_close_system(
         println!("{}", dump_ron);
         println!("\n🎯 Debug dump printed to console on exit");
     }
+}
+
+/// Custom BRP handler that builds the same RON debug dump as the F9 hotkey and returns it inline,
+/// so the live game state (city/economy/employment/telemetry) can be pulled over BRP on demand
+/// without a human pressing F9. Mirrors `dump_on_window_close_system`'s params.
+#[cfg(not(target_family = "wasm"))]
+#[allow(clippy::too_many_arguments)] // Bevy systems often need many parameters
+fn debug_dump_handler(
+    In(_params): In<Option<Value>>,
+    state: Res<State<game::state::AppState>>,
+    ui_state: Res<game::ui_state::UiState>,
+    city: Res<game::sim::City>,
+    metrics: Res<game::ui::UiMetrics>,
+    hist: Res<game::ui::UiHistory>,
+    map_cfg: Res<game::map::MapConfig>,
+    grid: Res<game::map::MapGrid>,
+    hovered: Res<game::map::HoveredTile>,
+    q_camera: Query<
+        (
+            &bevy::transform::components::Transform,
+            &bevy::prelude::Projection,
+        ),
+        With<game::camera::MainCamera>,
+    >,
+    dump_ui: Res<game::ui::DebugDumpUiState>,
+    telemetry: Res<game::ui::DebugTelemetry>,
+) -> BrpResult {
+    let dump = game::ui::debug_dump::build::build_debug_dump(
+        &state,
+        &ui_state,
+        &city,
+        &metrics,
+        &hist,
+        &map_cfg,
+        &grid,
+        &hovered,
+        q_camera.single().ok(),
+        &dump_ui,
+        &telemetry,
+        None,
+    );
+
+    let pretty = ron::ser::PrettyConfig::new();
+    let dump_ron = ron::ser::to_string_pretty(&dump, pretty).unwrap_or_else(|e| {
+        format!(
+            "(dump_version: 3, error: \"failed to serialize dump: {:?}\")",
+            e
+        )
+    });
+
+    Ok(json!({ "dump_ron": dump_ron }))
 }
 
 /// Custom BRP handler for screenshot requests from the debugger
