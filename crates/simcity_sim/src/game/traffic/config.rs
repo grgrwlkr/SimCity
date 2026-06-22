@@ -39,6 +39,12 @@ pub struct TrafficConfig {
     /// IDM acceleration exponent \(\delta\).
     #[serde(default = "default_idm_delta")]
     pub idm_delta: f32,
+
+    /// Phase-gate for the experimental lanelet/conflict-point intersection system (see
+    /// docs/superpowers/specs/2026-06-22-lanelet-intersection-architecture-design.md). When false,
+    /// the legacy connector/admission pipeline runs (unchanged).
+    #[serde(default)]
+    pub experimental_lanelet_intersections: bool,
 }
 
 impl TrafficConfig {
@@ -98,6 +104,19 @@ impl Default for TrafficConfig {
             idm_comfortable_decel_mps2: default_idm_comfortable_decel_mps2(),
             idm_max_decel_mps2: default_idm_max_decel_mps2(),
             idm_delta: default_idm_delta(),
+            experimental_lanelet_intersections: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn experimental_lanelet_flag_defaults_false() {
+        let ron = "(max_active_vehicles: 1500, max_route_plans_per_tick: 64, heat_ema_decay: 0.92, drive_on_right: true)";
+        let cfg: TrafficConfig = ron::from_str(ron).expect("parse");
+        assert!(!cfg.experimental_lanelet_intersections);
     }
 }

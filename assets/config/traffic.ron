@@ -4,4 +4,5 @@
     heat_ema_decay: 0.92,
     // true = right-hand traffic (US/Russia), false = left-hand traffic (UK/Japan)
     drive_on_right: true,
+    // experimental_lanelet_intersections: false,  // phase-gate; keep false until lanelet rework lands
 )
