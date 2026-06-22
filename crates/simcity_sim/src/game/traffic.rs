@@ -51,7 +51,10 @@ mod spawn;
 use spawn::{clear_vehicles, spawn_trip_vehicles};
 
 mod stuck;
-use stuck::{init_stuck_timers, resolve_stuck_vehicles, update_stuck_timers};
+use stuck::{
+    init_stuck_timers, recover_stuck_returning_service_vehicles, resolve_stuck_vehicles,
+    update_stuck_timers,
+};
 
 mod swap_break;
 use swap_break::break_tile_swaps;
@@ -466,6 +469,7 @@ impl Plugin for TrafficPlugin {
                     init_stuck_timers,
                     update_stuck_timers.after(move_vehicles),
                     resolve_stuck_vehicles.after(update_stuck_timers),
+                    recover_stuck_returning_service_vehicles.after(update_stuck_timers),
                 )
                     .in_set(GameSet::Sim)
                     .run_if(in_state(AppState::InGame)),

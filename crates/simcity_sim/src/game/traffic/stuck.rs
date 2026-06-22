@@ -264,3 +264,27 @@ pub(super) fn resolve_stuck_vehicles(
         }
     }
 }
+
+/// Recover a *Returning* service vehicle that is hopelessly stuck.
+///
+/// A service vehicle is never despawned by the guardrail above (that would leak its station's
+/// `available_vehicles` count), and rerouting only loops it back into the same jam — so a wedged one
+/// blocks a road lane forever. Observed live: Returning service vehicles pinned at the oversized
+/// intersection approach (where a lane-change tile-swap can't be deferred because the forward tile is
+/// the cluster), permanently choking the corridor while passenger cars churn behind them.
+///
+/// Fix: consume the remaining route so `park_returned_service_vehicles` snaps it to its home station
+/// next tick — the exact same safe path as a normally-completed return (restores the station count).
+/// Only triggers for the `Returning` state, so a vehicle mid-mission (EnRoute/OnScene) is never
+/// teleported away.
+pub(super) fn recover_stuck_returning_service_vehicles(
+    path_pool: Res<super::super::transport::PathPool>,
+    mut q: Query<(&ServiceVehicle, &mut Vehicle, &StuckTimer), Without<Parked>>,
+) {
+    for (sv, mut v, stuck) in &mut q {
+        if sv.state == ServiceVehicleState::Returning && stuck.secs >= STUCK_REROUTE_SECS {
+            v.path_cursor = path_pool.len(v.path_handle);
+            v.speed = 0.0;
+        }
+    }
+}

@@ -856,3 +856,88 @@ fn lane_preference_test_setup() -> bevy::prelude::App {
 
     app
 }
+
+#[test]
+fn stuck_returning_service_vehicle_is_sent_home_to_park_not_left_to_block() {
+    use crate::game::services::{ServiceKind, ServiceVehicle, ServiceVehicleState};
+
+    // A Returning service vehicle is never despawned by the stuck guardrail (that would leak its
+    // station's vehicle count) and rerouting loops it back into the same jam — so a wedged one blocks
+    // a lane forever (live: Returning service vehicles pinned at the oversized intersection). Recovery
+    // must consume its route so park_returned_service_vehicles snaps it to its station.
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(crate::game::transport::PathPool::default())
+        .add_systems(
+            Update,
+            super::stuck::recover_stuck_returning_service_vehicles,
+        );
+
+    let station = app.world_mut().spawn(()).id();
+    let route = vec![
+        TilePos { x: 0, y: 0 },
+        TilePos { x: 1, y: 0 },
+        TilePos { x: 2, y: 0 },
+        TilePos { x: 3, y: 0 },
+    ];
+    let mk = |app: &mut App, state: ServiceVehicleState, stuck_secs: f32| {
+        let v = {
+            let mut pp = app
+                .world_mut()
+                .resource_mut::<crate::game::transport::PathPool>();
+            create_vehicle_with_route(&mut pp, route.clone(), 0, 0.0, 0.0, 60.0, 20.0, 1.0)
+        };
+        app.world_mut()
+            .spawn((
+                v,
+                VehicleTrafficState::FreeFlow,
+                ServiceVehicle {
+                    kind: ServiceKind::Fire,
+                    home_station: station,
+                    home_road: TilePos { x: 9, y: 9 },
+                    mission: None,
+                    state,
+                },
+                StuckTimer {
+                    secs: stuck_secs,
+                    last_tile: TilePos { x: 0, y: 0 },
+                    last_progress: 0.0,
+                    uturn_attempted: false,
+                },
+            ))
+            .id()
+    };
+
+    // Stuck + Returning -> route consumed (will be parked at station).
+    let stuck_returning = mk(&mut app, ServiceVehicleState::Returning, STUCK_REROUTE_SECS);
+    // Returning but not yet stuck -> untouched.
+    let fresh_returning = mk(&mut app, ServiceVehicleState::Returning, 0.0);
+    // Stuck but mid-mission (EnRoute) -> must NOT be teleported away.
+    let stuck_enroute = mk(&mut app, ServiceVehicleState::EnRoute, STUCK_REROUTE_SECS);
+
+    app.update();
+
+    let len = {
+        let w = app.world();
+        let pp = w.resource::<crate::game::transport::PathPool>();
+        let v = w.get::<Vehicle>(stuck_returning).unwrap();
+        pp.len(v.path_handle)
+    };
+    let cursor = |app: &App, e| app.world().get::<Vehicle>(e).unwrap().path_cursor;
+
+    assert_eq!(
+        cursor(&app, stuck_returning),
+        len,
+        "stuck Returning service vehicle must have its route consumed so it parks at the station"
+    );
+    assert_eq!(
+        cursor(&app, fresh_returning),
+        0,
+        "a Returning vehicle not yet stuck must be left alone"
+    );
+    assert_eq!(
+        cursor(&app, stuck_enroute),
+        0,
+        "a stuck mid-mission (EnRoute) vehicle must NOT be teleported home"
+    );
+}
