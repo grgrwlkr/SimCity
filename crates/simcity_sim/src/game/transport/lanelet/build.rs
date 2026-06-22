@@ -428,6 +428,96 @@ mod tests {
     }
 
     #[test]
+    fn internal_path_is_strictly_4_adjacent_never_diagonal() {
+        let cluster: HashSet<TilePos> = (31..=34)
+            .flat_map(|x| (61..=66).map(move |y| TilePos { x, y }))
+            .collect();
+        let entry = TilePos { x: 34, y: 64 };
+        let exit = TilePos { x: 30, y: 64 };
+        let path = build_internal_path(&cluster, entry, exit).expect("path exists");
+        assert!(path.len() >= 2);
+        for w in path.windows(2) {
+            let d = (w[1].x - w[0].x).abs() + (w[1].y - w[0].y).abs();
+            assert_eq!(d, 1, "non-orthogonal step {:?}->{:?}", w[0], w[1]);
+        }
+        assert!(
+            path.iter().all(|t| cluster.contains(t)),
+            "path stays inside the cluster"
+        );
+        assert_eq!(path[0], entry);
+    }
+
+    #[test]
+    fn turn_shape_ends_adjacent_to_south_exit() {
+        let cluster: HashSet<TilePos> = (31..=34)
+            .flat_map(|x| (61..=66).map(move |y| TilePos { x, y }))
+            .collect();
+        let entry = TilePos { x: 34, y: 64 };
+        let exit = TilePos { x: 32, y: 60 };
+        let path = build_internal_path(&cluster, entry, exit).expect("path exists");
+        for w in path.windows(2) {
+            let d = (w[1].x - w[0].x).abs() + (w[1].y - w[0].y).abs();
+            assert_eq!(d, 1, "non-orthogonal step {:?}->{:?}", w[0], w[1]);
+        }
+        assert!(
+            path.iter().all(|t| cluster.contains(t)),
+            "path stays inside the cluster"
+        );
+        assert_eq!(path[0], entry);
+        let last = *path.last().unwrap();
+        let dist = (last.x - exit.x).abs() + (last.y - exit.y).abs();
+        assert_eq!(
+            dist, 1,
+            "path does not end adjacent to exit: last={:?}, exit={:?}",
+            last, exit
+        );
+    }
+
+    #[test]
+    fn entry_not_in_cluster_returns_none() {
+        let cluster: HashSet<TilePos> = (31..=34)
+            .flat_map(|x| (61..=66).map(move |y| TilePos { x, y }))
+            .collect();
+        let entry = TilePos { x: 99, y: 99 };
+        let exit = TilePos { x: 30, y: 64 };
+        assert!(build_internal_path(&cluster, entry, exit).is_none());
+    }
+
+    #[test]
+    fn entry_is_the_goal_returns_single_tile_path() {
+        let cluster: HashSet<TilePos> = [(31, 61)].iter().map(|&(x, y)| TilePos { x, y }).collect();
+        let entry = TilePos { x: 31, y: 61 };
+        let exit = TilePos { x: 30, y: 61 };
+        let path = build_internal_path(&cluster, entry, exit).expect("path exists");
+        assert_eq!(path.len(), 1);
+        assert_eq!(path[0], entry);
+    }
+
+    #[test]
+    fn equidistant_goals_xy_min_wins() {
+        let cluster: HashSet<TilePos> = [(3, 4), (4, 4), (5, 4), (3, 5), (4, 5)]
+            .iter()
+            .map(|&(x, y)| TilePos { x, y })
+            .collect();
+        let entry = TilePos { x: 3, y: 4 };
+        let exit = TilePos { x: 5, y: 5 };
+        let path = build_internal_path(&cluster, entry, exit).expect("path exists");
+        let last = *path.last().unwrap();
+        assert_eq!(
+            last,
+            TilePos { x: 4, y: 5 },
+            "expected (x,y)-min goal (4,5) but got {:?}",
+            last
+        );
+        assert_eq!(path[0], entry);
+        for w in path.windows(2) {
+            let d = (w[1].x - w[0].x).abs() + (w[1].y - w[0].y).abs();
+            assert_eq!(d, 1);
+        }
+        assert!(path.iter().all(|t| cluster.contains(t)));
+    }
+
+    #[test]
     fn build_lanelet_graph_flag_on_populates_graph() {
         let (grid, intersection_index) = build_cross_grid();
         let gv = GraphVersion(1);
