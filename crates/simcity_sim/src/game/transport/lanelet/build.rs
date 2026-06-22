@@ -1,6 +1,33 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::game::map::TilePos;
+use crate::game::roads::{LaneType, RoadDir};
+use crate::game::traffic::ManeuverKind;
+
+/// Whether an approach lane of `lane_type` may feed a lanelet of `maneuver`. Encodes lane
+/// discipline: turn-only lanes feed only their turn; a Regular lane feeds Straight plus the
+/// near-side turn (right for right-hand traffic, left for left-hand traffic).
+/// `dir` is the approach travel direction (unused in Phase 1, reserved for future per-lane
+/// positional refinement).
+#[allow(dead_code)]
+pub(crate) fn lane_allows_maneuver(
+    lane_type: LaneType,
+    maneuver: ManeuverKind,
+    _dir: RoadDir,
+    drive_on_right: bool,
+) -> bool {
+    match lane_type {
+        LaneType::LeftTurnOnly => matches!(maneuver, ManeuverKind::LeftTurn),
+        LaneType::RightTurnOnly => matches!(maneuver, ManeuverKind::RightTurn),
+        LaneType::StraightOnly => matches!(maneuver, ManeuverKind::Straight),
+        LaneType::Regular => match maneuver {
+            ManeuverKind::Straight => true,
+            ManeuverKind::RightTurn => drive_on_right,
+            ManeuverKind::LeftTurn => !drive_on_right,
+            ManeuverKind::Other => false,
+        },
+    }
+}
 
 /// Shortest strictly-4-adjacent path through `cluster_tiles` from `entry_tile` to the cluster tile
 /// orthogonally adjacent to `exit_tile`. Returns the tile sequence (entry .. last-in-cluster), all
@@ -191,5 +218,123 @@ mod tests {
             assert_eq!(d, 1);
         }
         assert!(path.iter().all(|t| cluster.contains(t)));
+    }
+
+    #[test]
+    fn lane_type_gates_maneuvers() {
+        use crate::game::roads::{LaneType, RoadDir};
+        use crate::game::traffic::ManeuverKind;
+
+        // LeftTurnOnly feeds only LeftTurn
+        assert!(lane_allows_maneuver(
+            LaneType::LeftTurnOnly,
+            ManeuverKind::LeftTurn,
+            RoadDir::North,
+            true
+        ));
+        assert!(!lane_allows_maneuver(
+            LaneType::LeftTurnOnly,
+            ManeuverKind::Straight,
+            RoadDir::North,
+            true
+        ));
+        assert!(!lane_allows_maneuver(
+            LaneType::LeftTurnOnly,
+            ManeuverKind::RightTurn,
+            RoadDir::North,
+            true
+        ));
+        assert!(!lane_allows_maneuver(
+            LaneType::LeftTurnOnly,
+            ManeuverKind::Other,
+            RoadDir::North,
+            true
+        ));
+
+        // RightTurnOnly feeds only RightTurn
+        assert!(lane_allows_maneuver(
+            LaneType::RightTurnOnly,
+            ManeuverKind::RightTurn,
+            RoadDir::North,
+            true
+        ));
+        assert!(!lane_allows_maneuver(
+            LaneType::RightTurnOnly,
+            ManeuverKind::Straight,
+            RoadDir::North,
+            true
+        ));
+        assert!(!lane_allows_maneuver(
+            LaneType::RightTurnOnly,
+            ManeuverKind::LeftTurn,
+            RoadDir::North,
+            true
+        ));
+
+        // StraightOnly feeds only Straight
+        assert!(lane_allows_maneuver(
+            LaneType::StraightOnly,
+            ManeuverKind::Straight,
+            RoadDir::North,
+            true
+        ));
+        assert!(!lane_allows_maneuver(
+            LaneType::StraightOnly,
+            ManeuverKind::RightTurn,
+            RoadDir::North,
+            true
+        ));
+        assert!(!lane_allows_maneuver(
+            LaneType::StraightOnly,
+            ManeuverKind::LeftTurn,
+            RoadDir::North,
+            true
+        ));
+
+        // Regular feeds Straight and right-side turn on right-hand traffic
+        assert!(lane_allows_maneuver(
+            LaneType::Regular,
+            ManeuverKind::Straight,
+            RoadDir::North,
+            true
+        ));
+        assert!(lane_allows_maneuver(
+            LaneType::Regular,
+            ManeuverKind::RightTurn,
+            RoadDir::North,
+            true
+        ));
+        assert!(!lane_allows_maneuver(
+            LaneType::Regular,
+            ManeuverKind::LeftTurn,
+            RoadDir::North,
+            true
+        ));
+        assert!(!lane_allows_maneuver(
+            LaneType::Regular,
+            ManeuverKind::Other,
+            RoadDir::North,
+            true
+        ));
+
+        // Regular feeds Straight and left-side turn on left-hand traffic
+        assert!(lane_allows_maneuver(
+            LaneType::Regular,
+            ManeuverKind::Straight,
+            RoadDir::North,
+            false
+        ));
+        assert!(lane_allows_maneuver(
+            LaneType::Regular,
+            ManeuverKind::LeftTurn,
+            RoadDir::North,
+            false
+        ));
+        assert!(!lane_allows_maneuver(
+            LaneType::Regular,
+            ManeuverKind::RightTurn,
+            RoadDir::North,
+            false
+        ));
     }
 }
