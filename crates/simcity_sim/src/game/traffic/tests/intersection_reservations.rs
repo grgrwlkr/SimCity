@@ -1415,3 +1415,44 @@ fn diagonal_cluster_exit_is_admitted_not_refused_no_zones() {
          refused forever with no_zones"
     );
 }
+
+#[test]
+fn exit_direction_falls_back_to_road_dir_on_diagonal_cluster_exit() {
+    // After exit-lane correction a route can leave a multi-tile cluster on a DIAGONAL step (last
+    // cluster tile -> laterally-shifted exit lane), e.g. (4,2)->(5,1). dir_between_adjacent yields
+    // None for a diagonal, which previously made intersection admission treat the maneuver as
+    // having no zone mapping and refuse it forever (no_zones deadlock at large clusters, live:
+    // intersection 7). The exit direction must instead come from the road the vehicle exits onto.
+    let mut grid = MapGrid::new(6, 6);
+    for (pos, dir) in [
+        (TilePos { x: 5, y: 3 }, RoadDir::West),  // approach
+        (TilePos { x: 4, y: 3 }, RoadDir::None),  // cluster tile
+        (TilePos { x: 4, y: 2 }, RoadDir::None),  // cluster tile
+        (TilePos { x: 5, y: 1 }, RoadDir::South), // exit lane, diagonal from (4,2)
+        (TilePos { x: 5, y: 0 }, RoadDir::South),
+    ] {
+        if let Some(mut c) = grid.get(pos) {
+            c.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                dir,
+                lane: 0,
+                flow: RoadFlow::TwoWay,
+                lane_type: LaneType::Regular,
+            };
+            grid.set(pos, c);
+        }
+    }
+    let route = vec![
+        TilePos { x: 5, y: 3 },
+        TilePos { x: 4, y: 3 },
+        TilePos { x: 4, y: 2 },
+        TilePos { x: 5, y: 1 },
+        TilePos { x: 5, y: 0 },
+    ];
+    let dir = compute_exit_direction(&route, &grid, TilePos { x: 4, y: 3 });
+    assert_eq!(
+        dir,
+        RoadDir::South,
+        "diagonal cluster exit must resolve to the exit road's direction, not None"
+    );
+}

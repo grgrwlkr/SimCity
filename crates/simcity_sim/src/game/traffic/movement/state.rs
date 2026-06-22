@@ -333,7 +333,19 @@ pub fn compute_exit_direction(
     }
     let last_intersection = route[i - 1];
     let exit_tile = route[i];
-    dir_between_adjacent(last_intersection, exit_tile)
+    let dir = dir_between_adjacent(last_intersection, exit_tile);
+    if dir != RoadDir::None {
+        return dir;
+    }
+    // The connector's exit-lane correction shifts the exit tile laterally onto the correct-side
+    // lane, which on a large multi-tile cluster leaves a DIAGONAL step from the last cluster tile to
+    // the exit lane. `dir_between_adjacent` is None for a diagonal, and a None exit direction made
+    // intersection admission classify the maneuver as having no zone mapping and refuse it forever
+    // (the no_zones admission deadlock at the 4x6 intersection). Fall back to the direction of the
+    // road the vehicle exits onto — that IS its post-intersection travel direction.
+    grid.get(exit_tile)
+        .map(|c| c.road.dir)
+        .unwrap_or(RoadDir::None)
 }
 
 pub fn check_intersection_priority(
