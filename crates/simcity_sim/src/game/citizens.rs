@@ -18,6 +18,16 @@ use crate::game::trips::{TripFinished, TripMode, TripPurpose, TripRequested};
 
 const MAX_TRIP_MODE_CACHE_ENTRIES: usize = 16_384;
 
+/// Recover a citizen that has been in a transit state (To*) longer than this without a `TripFinished`.
+/// `citizen_trip_planner` commits `state = To*` the instant it emits a `TripRequested`, but the agent
+/// that should deliver `TripFinished` may never spawn (pedestrian layer at cap dropping the expiring
+/// message, no drivable route, or a despawned stuck vehicle). The planner is a no-op in transit
+/// states, so such a citizen is orphaned forever and stops generating trips — left unchecked the whole
+/// population drains into To* and the economy freezes. This timeout is well above a typical completed
+/// trip (and above the stuck-vehicle despawn at 180s would be borderline, so keep it generous) so it
+/// only reverts genuinely orphaned citizens, not trips still in progress. Game-seconds (Time<Fixed>).
+const CITIZEN_TRIP_TIMEOUT_SECS: f64 = 180.0;
+
 pub struct CitizensPlugin;
 
 impl Plugin for CitizensPlugin {
@@ -34,6 +44,7 @@ impl Plugin for CitizensPlugin {
                     spawn_citizens_from_residential,
                     citizen_trip_planner,
                     handle_trip_finished,
+                    recover_stuck_trips,
                 )
                     .in_set(GameSet::Sim)
                     .run_if(in_state(AppState::InGame)),
@@ -484,6 +495,18 @@ fn handle_trip_finished(
             continue;
         };
         if let Ok(mut c) = q_citizens.get_mut(entity) {
+            // Ignore stale completions: only apply if the citizen is still awaiting THIS leg. A
+            // citizen reverted by `recover_stuck_trips` (now AtHome) or already advanced to another
+            // leg must not be teleported by a late `TripFinished` from an abandoned trip.
+            let expected = match msg.purpose {
+                TripPurpose::Work => CitizenState::ToWork,
+                TripPurpose::Shop => CitizenState::ToShop,
+                TripPurpose::ReturnHome => CitizenState::ToHome,
+            };
+            if c.state != expected {
+                continue;
+            }
+
             // Update commute stats when we have a departure timestamp.
             if let Some(t0) = c.trip_departed_at_sec {
                 let dt = (time.elapsed_secs_f64() - t0).max(0.0) as f32;
@@ -531,6 +554,39 @@ fn handle_trip_finished(
     }
 }
 
+/// Revert citizens orphaned mid-trip back to `AtHome` so they re-decide.
+///
+/// See `CITIZEN_TRIP_TIMEOUT_SECS`: a `TripRequested` whose agent never spawns (pedestrian cap /
+/// expired message / no route / despawned stuck vehicle) never yields a `TripFinished`, and the
+/// planner does nothing in transit states, so the citizen is stuck forever and the whole population
+/// can drain into To* and freeze the economy. This is the citizen-FSM analogue of the traffic
+/// stuck-recovery: a starvation-free escape valve that guarantees the trip loop always makes progress.
+fn recover_stuck_trips(time: Res<Time<Fixed>>, mut q_citizens: Query<&mut Citizen>) {
+    let now = time.elapsed_secs_f64();
+    for mut c in &mut q_citizens {
+        let in_transit = matches!(
+            c.state,
+            CitizenState::ToWork | CitizenState::ToShop | CitizenState::ToHome
+        );
+        if !in_transit {
+            continue;
+        }
+        let Some(departed) = c.trip_departed_at_sec else {
+            continue;
+        };
+        if now - departed > CITIZEN_TRIP_TIMEOUT_SECS {
+            c.state = CitizenState::AtHome;
+            c.car_parked_at = c.home;
+            c.tour_mode = None;
+            c.trip_departed_at_sec = None;
+            c.trip_purpose = None;
+            // Re-decide after the normal think delay rather than immediately, to avoid a thundering
+            // herd of simultaneous re-requests on the tick a large backlog times out together.
+            c.decision_timer.reset();
+        }
+    }
+}
+
 fn cleanup_homeless_citizens(
     mut commands: Commands,
     grid: Res<MapGrid>,
@@ -554,5 +610,78 @@ fn rebuild_citizen_tile_index(q: Query<&Citizen>, mut idx: ResMut<CitizenTileInd
     for c in q.iter() {
         *idx.home_counts.entry(c.home).or_insert(0) += 1;
         *idx.place_counts.entry(c.last_place).or_insert(0) += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::app::App;
+
+    fn citizen(state: CitizenState, departed: f64, purpose: TripPurpose) -> Citizen {
+        Citizen {
+            home: TilePos { x: 1, y: 1 },
+            state,
+            last_place: TilePos { x: 5, y: 5 },
+            tour_mode: Some(TripMode::Walk),
+            car_parked_at: TilePos { x: 9, y: 9 },
+            decision_timer: Timer::from_seconds(2.0, TimerMode::Repeating),
+            shopping_need: Timer::from_seconds(10.0, TimerMode::Repeating),
+            work_stay: Timer::from_seconds(5.0, TimerMode::Once),
+            shop_stay: Timer::from_seconds(3.0, TimerMode::Once),
+            trip_departed_at_sec: Some(departed),
+            trip_purpose: Some(purpose),
+        }
+    }
+
+    #[test]
+    fn recover_stuck_trips_reverts_orphaned_but_keeps_in_progress_and_stable() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(Time::<Fixed>::from_seconds(0.1))
+            .add_systems(Update, recover_stuck_trips);
+
+        // Orphaned: in transit, departed far past the timeout (negative => huge elapsed-since at now≈0).
+        let stuck = app
+            .world_mut()
+            .spawn(citizen(
+                CitizenState::ToShop,
+                -(CITIZEN_TRIP_TIMEOUT_SECS + 50.0),
+                TripPurpose::Shop,
+            ))
+            .id();
+        // Fresh trip in progress: must NOT be reverted.
+        let fresh = app
+            .world_mut()
+            .spawn(citizen(CitizenState::ToWork, -1.0, TripPurpose::Work))
+            .id();
+        // Stable state: untouched regardless of timestamp.
+        let home = app
+            .world_mut()
+            .spawn(citizen(
+                CitizenState::AtWork,
+                -(CITIZEN_TRIP_TIMEOUT_SECS + 50.0),
+                TripPurpose::Work,
+            ))
+            .id();
+
+        app.update();
+
+        let w = app.world();
+        assert_eq!(
+            w.get::<Citizen>(stuck).unwrap().state,
+            CitizenState::AtHome,
+            "orphaned in-transit citizen must be reverted to AtHome"
+        );
+        assert_eq!(
+            w.get::<Citizen>(fresh).unwrap().state,
+            CitizenState::ToWork,
+            "an in-progress trip within the timeout must not be reverted"
+        );
+        assert_eq!(
+            w.get::<Citizen>(home).unwrap().state,
+            CitizenState::AtWork,
+            "a stable-state citizen must never be touched by trip recovery"
+        );
     }
 }
