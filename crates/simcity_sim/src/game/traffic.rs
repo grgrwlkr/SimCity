@@ -298,6 +298,7 @@ fn idm_accel_world(
 
 mod intersection;
 pub use intersection::IntersectionReservations;
+pub(crate) use intersection::maneuver_kind;
 #[cfg(test)]
 use intersection::plan_intersection_reservations;
 #[cfg(test)]

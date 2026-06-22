@@ -23,4 +23,5 @@ pub use zones::ManeuverKind;
 #[allow(unused_imports)]
 pub(crate) use zones::{
     ConflictMask, StreamKey, ZONE_ALL, ZONE_CENTER, ZONE_NE, ZONE_NW, ZONE_SE, ZONE_SW,
+    maneuver_kind,
 };

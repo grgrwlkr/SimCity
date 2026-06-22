@@ -6,7 +6,7 @@ use crate::game::map::TilePos;
 /// `rows[i]` is a bitset; bit j set => i conflicts with j. Symmetric; diagonal NOT set (a lanelet
 /// doesn't conflict with itself). Index = local lanelet index within the intersection.
 #[allow(dead_code)]
-pub(crate) struct ConflictMatrix {
+pub struct ConflictMatrix {
     rows: Vec<Vec<u64>>,
     n: usize,
 }

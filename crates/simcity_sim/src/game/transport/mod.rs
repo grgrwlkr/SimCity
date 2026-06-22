@@ -15,7 +15,7 @@ pub mod turn_lanes;
 pub use lane_graph::{LaneGraph, LaneId, build_lane_graph};
 pub use lane_occupancy::VehicleId;
 pub use lane_pathfinding::{LaneCostCtx, find_lane_path, lane_path_to_tiles};
-pub use lanelet::{Lanelet, LaneletGraph, LaneletId};
+pub use lanelet::{Lanelet, LaneletConflictMatrices, LaneletGraph, LaneletId, build_lanelet_graph};
 pub use path_pool::{PathHandle, PathPool};
 pub use pathfinding::{PathCache, PathfindingConfig, PathfindingCtx, find_road_path_cached};
 pub use region_graph::RegionGraph;
@@ -26,6 +26,8 @@ pub use simcity_core::game::transport::GraphVersion;
 
 use crate::game::map::{MapGrid, TilePos};
 use crate::game::roads::RoadDir;
+use crate::game::sets::GameSet;
+use crate::game::traffic::TrafficConfig;
 use bevy::prelude::*;
 
 /// Find a road tile adjacent to `pos` that points towards `target`.
@@ -116,18 +118,27 @@ impl Plugin for TransportPlugin {
             .init_resource::<RoadGraph>()
             .init_resource::<RegionGraph>()
             .init_resource::<LaneGraph>()
+            .init_resource::<LaneletGraph>()
+            .init_resource::<LaneletConflictMatrices>()
             .add_plugins(pathfinding::r#async::AsyncPathfindingPlugin)
             .add_systems(
                 FixedUpdate,
-                road_graph::rebuild_road_graph.in_set(crate::game::sets::GameSet::GraphUpdate),
+                road_graph::rebuild_road_graph.in_set(GameSet::GraphUpdate),
             )
             .add_systems(
                 FixedUpdate,
-                region_graph::rebuild_region_graph.in_set(crate::game::sets::GameSet::GraphUpdate),
+                region_graph::rebuild_region_graph.in_set(GameSet::GraphUpdate),
             )
             .add_systems(
                 FixedUpdate,
-                lane_graph::build_lane_graph.in_set(crate::game::sets::GameSet::GraphUpdate),
+                lane_graph::build_lane_graph.in_set(GameSet::GraphUpdate),
+            )
+            .add_systems(
+                FixedUpdate,
+                build_lanelet_graph
+                    .in_set(GameSet::GraphUpdate)
+                    .run_if(|c: Res<TrafficConfig>| c.experimental_lanelet_intersections)
+                    .after(lane_graph::build_lane_graph),
             );
     }
 }

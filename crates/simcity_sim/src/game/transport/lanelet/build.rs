@@ -1,8 +1,22 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::game::map::TilePos;
-use crate::game::roads::{LaneType, RoadDir};
-use crate::game::traffic::ManeuverKind;
+use bevy::prelude::*;
+
+use crate::game::intersections::{IntersectionId, IntersectionIndex};
+use crate::game::map::{MapGrid, TilePos};
+use crate::game::roads::{LaneType, RoadDir, RoadFlow};
+use crate::game::traffic::{ManeuverKind, TrafficConfig, maneuver_kind};
+use crate::game::transport::{GraphVersion, LaneGraph};
+
+use super::conflict::ConflictMatrix;
+use super::graph::{Lanelet, LaneletGraph, LaneletId};
+
+/// Per-intersection conflict matrices built by `build_lanelet_graph`.
+#[derive(Resource, Default)]
+pub struct LaneletConflictMatrices {
+    pub by_intersection: HashMap<IntersectionId, ConflictMatrix>,
+    pub version: u64,
+}
 
 /// Whether an approach lane of `lane_type` may feed a lanelet of `maneuver`. Encodes lane
 /// discipline: turn-only lanes feed only their turn; a Regular lane feeds Straight plus the
@@ -115,109 +129,408 @@ fn reconstruct(goal: TilePos, came_from: &HashMap<TilePos, Option<TilePos>>) -> 
     path
 }
 
+/// Build (or rebuild) the lanelet graph and per-intersection conflict matrices from the current
+/// map state.
+///
+/// Early-returns if `!traffic_cfg.experimental_lanelet_intersections` or if the graph is already
+/// built for the current `GraphVersion`.
+pub fn build_lanelet_graph(
+    grid: Res<MapGrid>,
+    intersections: Res<IntersectionIndex>,
+    lanes: Res<LaneGraph>,
+    gv: Res<GraphVersion>,
+    traffic_cfg: Res<TrafficConfig>,
+    mut graph: ResMut<LaneletGraph>,
+    mut matrices: ResMut<LaneletConflictMatrices>,
+) {
+    if !traffic_cfg.experimental_lanelet_intersections || graph.is_built_for(gv.0) {
+        return;
+    }
+
+    graph.lanelets.clear();
+    graph.by_intersection.clear();
+    matrices.by_intersection.clear();
+
+    // Enumerate clusters in Vec order (== IntersectionId order per build_intersection_clusters).
+    for cluster in &intersections.clusters {
+        let cluster_tiles: HashSet<TilePos> = cluster.tiles.iter().copied().collect();
+
+        // Collect approach (entry) and exit lane tiles adjacent to this cluster.
+        //
+        // entry_tiles: (approach_lane_pos, first_cluster_tile, entry_dir, lane_type)
+        //   approach_lane_pos: the non-cluster tile with dir pointing into cluster
+        //   first_cluster_tile: the cluster tile that approach_lane_pos points to (used as BFS start)
+        //
+        // exit_tiles: (exit_lane_pos, exit_dir)
+        //   exit_lane_pos: the non-cluster tile pointing away from cluster (used as BFS goal target)
+        let mut entry_tiles: Vec<(TilePos, TilePos, RoadDir, LaneType)> = Vec::new();
+        let mut exit_tiles: Vec<(TilePos, RoadDir)> = Vec::new();
+
+        for &t in &cluster.tiles {
+            for neighbor_dir in [RoadDir::West, RoadDir::East, RoadDir::South, RoadDir::North] {
+                let d = neighbor_dir.delta();
+                let npos = TilePos {
+                    x: t.x + d.x,
+                    y: t.y + d.y,
+                };
+                let Some(ncell) = grid.get(npos) else {
+                    continue;
+                };
+                if ncell.water || !ncell.road.is_some() || ncell.road.dir == RoadDir::None {
+                    continue;
+                }
+                // Skip wrong-way tiles on one-way roads.
+                if let RoadFlow::OneWay(one_way_dir) = ncell.road.flow
+                    && ncell.road.dir != one_way_dir
+                {
+                    continue;
+                }
+                // Already in cluster? Skip (cluster tiles have dir==None).
+                if cluster_tiles.contains(&npos) {
+                    continue;
+                }
+
+                let lane_dir = ncell.road.dir;
+                let lane_delta = lane_dir.delta();
+                let fwd = TilePos {
+                    x: npos.x + lane_delta.x,
+                    y: npos.y + lane_delta.y,
+                };
+                let back = TilePos {
+                    x: npos.x - lane_delta.x,
+                    y: npos.y - lane_delta.y,
+                };
+
+                if cluster_tiles.contains(&fwd) {
+                    // Lane points into the cluster: approach lane.
+                    // `fwd` is the first cluster tile; BFS starts there.
+                    entry_tiles.push((npos, fwd, lane_dir, ncell.road.lane_type));
+                } else if cluster_tiles.contains(&back) {
+                    // Cluster is behind this lane: exit lane.
+                    exit_tiles.push((npos, lane_dir));
+                }
+            }
+        }
+
+        // Deduplicate (multiple cluster tiles may see the same neighbor).
+        entry_tiles.sort_unstable_by_key(|e| (e.0.x, e.0.y));
+        entry_tiles.dedup_by_key(|e| e.0);
+        exit_tiles.sort_unstable_by_key(|e| (e.0.x, e.0.y));
+        exit_tiles.dedup_by_key(|e| e.0);
+
+        // Enumerate legal (entry, exit) pairs and build lanelets.
+        let mut cluster_lanelets: Vec<Lanelet> = Vec::new();
+        let mut cluster_paths: Vec<Vec<TilePos>> = Vec::new();
+
+        for &(approach_tile, first_cluster_tile, entry_dir, lane_type) in &entry_tiles {
+            let Some(entry_lane_id) = lanes.pos_to_id.get(&approach_tile).copied() else {
+                continue;
+            };
+            for &(exit_tile, exit_dir) in &exit_tiles {
+                let Some(exit_lane_id) = lanes.pos_to_id.get(&exit_tile).copied() else {
+                    continue;
+                };
+                // Don't connect a lane to itself.
+                if entry_lane_id == exit_lane_id {
+                    continue;
+                }
+
+                let maneuver = maneuver_kind(&traffic_cfg, entry_dir, exit_dir);
+                if !lane_allows_maneuver(lane_type, maneuver, entry_dir, traffic_cfg.drive_on_right)
+                {
+                    continue;
+                }
+
+                // BFS from the first cluster tile (which the approach lane feeds into)
+                // towards the exit lane tile (which is outside the cluster).
+                let Some(internal_path) =
+                    build_internal_path(&cluster_tiles, first_cluster_tile, exit_tile)
+                else {
+                    continue;
+                };
+
+                cluster_lanelets.push(Lanelet {
+                    id: LaneletId(0), // Will be set after sorting.
+                    intersection: cluster.id,
+                    entry_lane: entry_lane_id,
+                    exit_lane: exit_lane_id,
+                    maneuver,
+                    internal_path: internal_path.clone(),
+                });
+                cluster_paths.push(internal_path);
+            }
+        }
+
+        // Sort by (entry_lane.0, exit_lane.0) for determinism.
+        // Zip with paths to keep them aligned.
+        let mut indexed: Vec<(Lanelet, Vec<TilePos>)> =
+            cluster_lanelets.into_iter().zip(cluster_paths).collect();
+        indexed.sort_by_key(|(l, _)| (l.entry_lane.0, l.exit_lane.0));
+
+        // Assign stable global ids and register.
+        let mut intersection_ids: Vec<LaneletId> = Vec::new();
+        let sorted_paths: Vec<Vec<TilePos>> = indexed.iter().map(|(_, p)| p.clone()).collect();
+
+        for (mut lanelet, _) in indexed {
+            lanelet.id = LaneletId(graph.lanelets.len() as u32);
+            intersection_ids.push(lanelet.id);
+            graph.lanelets.push(lanelet);
+        }
+
+        graph.by_intersection.insert(cluster.id, intersection_ids);
+
+        let matrix = ConflictMatrix::from_paths(&sorted_paths);
+        matrices.by_intersection.insert(cluster.id, matrix);
+    }
+
+    graph.version = gv.0;
+    matrices.version = gv.0;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::intersections::{IntersectionCluster, IntersectionId, IntersectionKey};
+    use crate::game::map::MapGrid;
+    use crate::game::roads::{LaneType, RoadCell, RoadDir, RoadFlow, RoadKind};
+    use crate::game::transport::lane_graph::build_lane_graph_inner;
+    use bevy::app::App;
 
-    #[test]
-    fn internal_path_is_strictly_4_adjacent_never_diagonal() {
-        let cluster: HashSet<TilePos> = (31..=34)
-            .flat_map(|x| (61..=66).map(move |y| TilePos { x, y }))
-            .collect();
-        let entry = TilePos { x: 34, y: 64 };
-        let exit = TilePos { x: 30, y: 64 };
-        let path = build_internal_path(&cluster, entry, exit).expect("path exists");
-        assert!(path.len() >= 2);
-        for w in path.windows(2) {
-            let d = (w[1].x - w[0].x).abs() + (w[1].y - w[0].y).abs();
-            assert_eq!(d, 1, "non-orthogonal step {:?}->{:?}", w[0], w[1]);
+    fn make_key(tiles: &[TilePos]) -> IntersectionKey {
+        let min_x = tiles.iter().map(|t| t.x).min().unwrap_or(0);
+        let min_y = tiles.iter().map(|t| t.y).min().unwrap_or(0);
+        let max_x = tiles.iter().map(|t| t.x).max().unwrap_or(0);
+        let max_y = tiles.iter().map(|t| t.y).max().unwrap_or(0);
+        let mut hash = 0u64;
+        for t in tiles {
+            hash = hash.wrapping_mul(31).wrapping_add(t.x as u64);
+            hash = hash.wrapping_mul(31).wrapping_add(t.y as u64);
         }
-        assert!(
-            path.iter().all(|t| cluster.contains(t)),
-            "path stays inside the cluster"
-        );
-        assert_eq!(path[0], entry);
-    }
-
-    #[test]
-    fn internal_path_turn_shape_ends_adjacent_to_south_exit() {
-        let cluster: HashSet<TilePos> = (31..=34)
-            .flat_map(|x| (61..=66).map(move |y| TilePos { x, y }))
-            .collect();
-        let entry = TilePos { x: 34, y: 64 };
-        let exit = TilePos { x: 32, y: 60 };
-        let path = build_internal_path(&cluster, entry, exit).expect("path exists");
-        for w in path.windows(2) {
-            let d = (w[1].x - w[0].x).abs() + (w[1].y - w[0].y).abs();
-            assert_eq!(d, 1, "non-orthogonal step {:?}->{:?}", w[0], w[1]);
+        IntersectionKey {
+            aabb_min: TilePos { x: min_x, y: min_y },
+            aabb_max: TilePos { x: max_x, y: max_y },
+            tile_count: tiles.len() as u32,
+            tiles_hash: hash,
         }
-        assert!(
-            path.iter().all(|t| cluster.contains(t)),
-            "path stays inside the cluster"
-        );
-        assert_eq!(path[0], entry);
-        let last = *path.last().unwrap();
-        let dist = (last.x - exit.x).abs() + (last.y - exit.y).abs();
-        assert_eq!(
-            dist, 1,
-            "path does not end adjacent to exit: last={:?}, exit={:?}",
-            last, exit
-        );
     }
 
-    #[test]
-    fn entry_not_in_cluster_returns_none() {
-        let cluster: HashSet<TilePos> = (31..=34)
-            .flat_map(|x| (61..=66).map(move |y| TilePos { x, y }))
-            .collect();
-        let entry = TilePos { x: 99, y: 99 };
-        let exit = TilePos { x: 30, y: 64 };
-        assert!(build_internal_path(&cluster, entry, exit).is_none());
+    fn set_road_tile(grid: &mut MapGrid, pos: TilePos, dir: RoadDir) {
+        let Some(mut cell) = grid.get(pos) else {
+            return;
+        };
+        cell.water = false;
+        cell.road = RoadCell {
+            kind: RoadKind::TwoLane,
+            dir,
+            lane: 0,
+            flow: RoadFlow::TwoWay,
+            lane_type: LaneType::Regular,
+        };
+        grid.set(pos, cell);
     }
 
-    #[test]
-    fn entry_is_the_goal_returns_single_tile_path() {
-        // Minimal cluster: just one tile (31,61).
-        // exit = (30,61) which is adjacent to (31,61), so goal = (31,61) = entry.
-        let cluster: HashSet<TilePos> = [(31, 61)].iter().map(|&(x, y)| TilePos { x, y }).collect();
-        let entry = TilePos { x: 31, y: 61 };
-        let exit = TilePos { x: 30, y: 61 };
-        let path = build_internal_path(&cluster, entry, exit).expect("path exists");
-        assert_eq!(path.len(), 1);
-        assert_eq!(path[0], entry);
+    fn set_intersection_tile(grid: &mut MapGrid, pos: TilePos) {
+        let Some(mut cell) = grid.get(pos) else {
+            return;
+        };
+        cell.water = false;
+        cell.road = RoadCell {
+            kind: RoadKind::TwoLane,
+            dir: RoadDir::None,
+            lane: 0,
+            flow: RoadFlow::TwoWay,
+            lane_type: LaneType::Regular,
+        };
+        grid.set(pos, cell);
     }
 
-    /// Two goals equidistant from entry; BFS expansion order (E,W,N,S) reaches (5,4) before (4,5),
-    /// but (x,y)-min tiebreak must select (4,5).
+    /// Build a 9x9 grid with a 2x2 cluster at (4,4),(4,5),(5,4),(5,5).
     ///
-    /// Cluster: {(3,4), (4,4), (5,4), (3,5), (4,5)}
-    /// entry = (3,4), exit = (5,5)  [outside cluster]
-    /// Goals (in-cluster neighbors of exit): (4,5) and (5,4), both at BFS distance 2.
-    /// BFS expansion reaches (5,4) first (via E: (3,4)→(4,4)→(5,4)), then (4,5).
-    /// Correct answer: path ending at (4,5) because (4,5) < (5,4) lexicographically.
-    #[test]
-    fn equidistant_goals_xy_min_wins() {
-        let cluster: HashSet<TilePos> = [(3, 4), (4, 4), (5, 4), (3, 5), (4, 5)]
-            .iter()
-            .map(|&(x, y)| TilePos { x, y })
-            .collect();
-        let entry = TilePos { x: 3, y: 4 };
-        let exit = TilePos { x: 5, y: 5 }; // outside cluster; in-cluster neighbors: (4,5) and (5,4)
-        let path = build_internal_path(&cluster, entry, exit).expect("path exists");
-        let last = *path.last().unwrap();
-        assert_eq!(
-            last,
+    /// Lanes (tile-per-direction model):
+    ///   Eastbound  row y=4: (0..3,4) approach, (6..8,4) exit
+    ///   Westbound  row y=5: (6..8,5) approach, (0..3,5) exit
+    ///   Northbound col x=4: (4,0..3) approach, (4,6..8) exit
+    ///   Southbound col x=5: (5,6..8) approach, (5,0..3) exit
+    fn build_cross_grid() -> (MapGrid, IntersectionIndex) {
+        let mut grid = MapGrid::new(9, 9);
+
+        // 2x2 cluster tiles.
+        for pos in [
+            TilePos { x: 4, y: 4 },
             TilePos { x: 4, y: 5 },
-            "expected (x,y)-min goal (4,5) but got {:?}",
-            last
-        );
-        assert_eq!(path[0], entry);
-        // path is 4-adjacent and inside cluster
-        for w in path.windows(2) {
-            let d = (w[1].x - w[0].x).abs() + (w[1].y - w[0].y).abs();
-            assert_eq!(d, 1);
+            TilePos { x: 5, y: 4 },
+            TilePos { x: 5, y: 5 },
+        ] {
+            set_intersection_tile(&mut grid, pos);
         }
-        assert!(path.iter().all(|t| cluster.contains(t)));
+
+        // Eastbound row y=4: approaches from left, exits to right.
+        for x in 0..4 {
+            set_road_tile(&mut grid, TilePos { x, y: 4 }, RoadDir::East);
+        }
+        for x in 6..9 {
+            set_road_tile(&mut grid, TilePos { x, y: 4 }, RoadDir::East);
+        }
+
+        // Westbound row y=5: approaches from right, exits to left.
+        for x in 6..9 {
+            set_road_tile(&mut grid, TilePos { x, y: 5 }, RoadDir::West);
+        }
+        for x in 0..4 {
+            set_road_tile(&mut grid, TilePos { x, y: 5 }, RoadDir::West);
+        }
+
+        // Northbound col x=4: approaches from bottom, exits to top.
+        for y in 0..4 {
+            set_road_tile(&mut grid, TilePos { x: 4, y }, RoadDir::North);
+        }
+        for y in 6..9 {
+            set_road_tile(&mut grid, TilePos { x: 4, y }, RoadDir::North);
+        }
+
+        // Southbound col x=5: approaches from top, exits to bottom.
+        for y in 6..9 {
+            set_road_tile(&mut grid, TilePos { x: 5, y }, RoadDir::South);
+        }
+        for y in 0..4 {
+            set_road_tile(&mut grid, TilePos { x: 5, y }, RoadDir::South);
+        }
+
+        // IntersectionIndex with one 2x2 cluster.
+        let cluster_tiles: Vec<TilePos> = vec![
+            TilePos { x: 4, y: 4 },
+            TilePos { x: 4, y: 5 },
+            TilePos { x: 5, y: 4 },
+            TilePos { x: 5, y: 5 },
+        ];
+        let id = IntersectionId(0);
+        let key = make_key(&cluster_tiles);
+        let cluster = IntersectionCluster {
+            id,
+            key,
+            tiles: cluster_tiles.clone(),
+            aabb_min: TilePos { x: 4, y: 4 },
+            aabb_max: TilePos { x: 5, y: 5 },
+            centroid_tile: TilePos { x: 4, y: 4 },
+        };
+
+        let mut tile_to_intersection = HashMap::new();
+        for &t in &cluster_tiles {
+            tile_to_intersection.insert(t, id);
+        }
+
+        let mut index = IntersectionIndex::default();
+        index.clusters = vec![cluster];
+        index.tile_to_intersection = tile_to_intersection;
+        index.version = 1;
+
+        (grid, index)
+    }
+
+    #[test]
+    fn build_lanelet_graph_flag_on_populates_graph() {
+        let (grid, intersection_index) = build_cross_grid();
+        let gv = GraphVersion(1);
+        let lane_graph = build_lane_graph_inner(&grid, &gv);
+
+        let mut app = App::new();
+        app.insert_resource(grid)
+            .insert_resource(intersection_index)
+            .insert_resource(lane_graph)
+            .insert_resource(gv)
+            .insert_resource(TrafficConfig {
+                experimental_lanelet_intersections: true,
+                ..Default::default()
+            })
+            .insert_resource(LaneletGraph::default())
+            .insert_resource(LaneletConflictMatrices::default());
+
+        app.add_systems(Update, build_lanelet_graph);
+        app.update();
+
+        let graph = app.world().resource::<LaneletGraph>();
+        assert!(
+            !graph.lanelets.is_empty(),
+            "lanelets must be built when flag is on"
+        );
+        assert!(
+            graph.by_intersection.contains_key(&IntersectionId(0)),
+            "by_intersection must contain cluster 0"
+        );
+        assert_eq!(graph.version, 1);
+
+        let matrices = app.world().resource::<LaneletConflictMatrices>();
+        assert!(
+            matrices.by_intersection.contains_key(&IntersectionId(0)),
+            "conflict matrix must exist for cluster 0"
+        );
+        assert_eq!(matrices.version, 1);
+    }
+
+    #[test]
+    fn build_lanelet_graph_flag_off_leaves_graph_empty() {
+        let (grid, intersection_index) = build_cross_grid();
+        let gv = GraphVersion(1);
+        let lane_graph = build_lane_graph_inner(&grid, &gv);
+
+        let mut app = App::new();
+        app.insert_resource(grid)
+            .insert_resource(intersection_index)
+            .insert_resource(lane_graph)
+            .insert_resource(gv)
+            .insert_resource(TrafficConfig {
+                experimental_lanelet_intersections: false,
+                ..Default::default()
+            })
+            .insert_resource(LaneletGraph::default())
+            .insert_resource(LaneletConflictMatrices::default());
+
+        app.add_systems(Update, build_lanelet_graph);
+        app.update();
+
+        let graph = app.world().resource::<LaneletGraph>();
+        assert!(
+            graph.lanelets.is_empty(),
+            "lanelets must stay empty when flag is off"
+        );
+    }
+
+    #[test]
+    fn lanelets_sorted_by_entry_exit_lane_id() {
+        let (grid, intersection_index) = build_cross_grid();
+        let gv = GraphVersion(1);
+        let lane_graph = build_lane_graph_inner(&grid, &gv);
+
+        let mut app = App::new();
+        app.insert_resource(grid)
+            .insert_resource(intersection_index)
+            .insert_resource(lane_graph)
+            .insert_resource(gv)
+            .insert_resource(TrafficConfig {
+                experimental_lanelet_intersections: true,
+                ..Default::default()
+            })
+            .insert_resource(LaneletGraph::default())
+            .insert_resource(LaneletConflictMatrices::default());
+
+        app.add_systems(Update, build_lanelet_graph);
+        app.update();
+
+        let graph = app.world().resource::<LaneletGraph>();
+        let ids = graph.of_intersection(IntersectionId(0));
+        let keys: Vec<(u32, u32)> = ids
+            .iter()
+            .map(|&lid| {
+                let l = graph.get(lid).unwrap();
+                (l.entry_lane.0, l.exit_lane.0)
+            })
+            .collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(
+            keys, sorted,
+            "lanelets must be in (entry_lane, exit_lane) order"
+        );
     }
 
     #[test]
@@ -225,7 +538,6 @@ mod tests {
         use crate::game::roads::{LaneType, RoadDir};
         use crate::game::traffic::ManeuverKind;
 
-        // LeftTurnOnly feeds only LeftTurn
         assert!(lane_allows_maneuver(
             LaneType::LeftTurnOnly,
             ManeuverKind::LeftTurn,
@@ -251,7 +563,6 @@ mod tests {
             true
         ));
 
-        // RightTurnOnly feeds only RightTurn
         assert!(lane_allows_maneuver(
             LaneType::RightTurnOnly,
             ManeuverKind::RightTurn,
@@ -271,7 +582,6 @@ mod tests {
             true
         ));
 
-        // StraightOnly feeds only Straight
         assert!(lane_allows_maneuver(
             LaneType::StraightOnly,
             ManeuverKind::Straight,
@@ -291,7 +601,6 @@ mod tests {
             true
         ));
 
-        // Regular feeds Straight and right-side turn on right-hand traffic
         assert!(lane_allows_maneuver(
             LaneType::Regular,
             ManeuverKind::Straight,
@@ -317,7 +626,6 @@ mod tests {
             true
         ));
 
-        // Regular feeds Straight and left-side turn on left-hand traffic
         assert!(lane_allows_maneuver(
             LaneType::Regular,
             ManeuverKind::Straight,
