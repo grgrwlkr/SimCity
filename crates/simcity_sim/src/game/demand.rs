@@ -52,6 +52,13 @@ pub struct DemandModifiers {
     pub industrial_mod: f32,
 }
 
+/// Target residents served per commercial building. Drives the commercial demand bootstrap:
+/// residents are latent customers even before any shop exists, so commercial demand can rise from
+/// population alone (like residential from jobs/pop and industrial from the employment gap). The
+/// shortfall against this target decays to 0 as commercial development catches up to population,
+/// after which real unmet shopping takes over. Tunable.
+const COMMERCIAL_RESIDENTS_PER_BUILDING: f32 = 40.0;
+
 /// Compute RCI demand with inter-zone dependencies.
 ///
 /// Formula overview:
@@ -86,14 +93,14 @@ fn compute_rci_demand(
     // Total job capacity provided by commercial + industrial buildings.
     let mut jobs_capacity = 0.0f32;
     let mut residential_buildings = 0u32;
-    let mut _commercial_buildings = 0u32;
+    let mut commercial_buildings = 0u32;
     let mut industrial_buildings = 0u32;
 
     for b in q_buildings.iter() {
         jobs_capacity += b.capacity_jobs as f32;
         match b.kind {
             crate::game::map::BuildingKind::Residential => residential_buildings += 1,
-            crate::game::map::BuildingKind::Commercial => _commercial_buildings += 1,
+            crate::game::map::BuildingKind::Commercial => commercial_buildings += 1,
             crate::game::map::BuildingKind::Industrial => industrial_buildings += 1,
             _ => {}
         }
@@ -132,8 +139,22 @@ fn compute_rci_demand(
     // =========================================================================
     // Commercial Demand
     // =========================================================================
-    // Base: unmet shopping desire from citizens.
-    let commercial_base = shopping.unmet_ratio.clamp(0.0, 1.0);
+    // Base: unmet shopping desire from citizens, OR — when too few shops exist to even register
+    // unmet demand — a population-driven bootstrap floor. Residents are latent customers, so
+    // commercial demand must be able to rise from population alone before any shop is built (the
+    // density/industrial bonuses below are MULTIPLIERS on this base; a zero base annihilates them,
+    // which previously pinned commercial demand at 0 forever and left zoned commercial undeveloped).
+    // The shortfall against a population-scaled target decays to 0 as commercial catches up, after
+    // which real unmet shopping drives steady-state demand. Mirrors residential (jobs/pop) and
+    // industrial (employment gap), which both bootstrap additively from population/employment.
+    let target_commercial_buildings = citizens / COMMERCIAL_RESIDENTS_PER_BUILDING;
+    let commercial_shortfall = ((target_commercial_buildings - commercial_buildings as f32)
+        / target_commercial_buildings.max(1.0))
+    .clamp(0.0, 1.0);
+    let commercial_base = shopping
+        .unmet_ratio
+        .max(commercial_shortfall)
+        .clamp(0.0, 1.0);
 
     // Modifier 1: Population density bonus (more citizens = more customers).
     // Density = citizens / (residential_buildings + 1).
@@ -245,6 +266,40 @@ mod tests {
         let high_density: f32 = 100.0;
         let bonus = (high_density / 10.0).min(0.5);
         assert_eq!(bonus, 0.5); // capped at 0.5
+    }
+
+    #[test]
+    fn commercial_demand_bootstraps_from_population_with_zero_shops() {
+        // Regression: commercial demand was driven ONLY by shopping.unmet_ratio, and population
+        // entered solely as a MULTIPLIER (density_bonus) on that base. With zero commercial
+        // buildings the base is 0, so a populated city could never generate commercial demand ->
+        // zoned commercial tiles never developed -> mass unemployment -> empty roads. A populated
+        // city with no shops MUST produce positive commercial demand so the first shops can grow
+        // (mirrors residential/industrial, which bootstrap from population/employment).
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(City {
+                population: 1000,
+                ..Default::default()
+            })
+            .insert_resource(EmploymentStats::default())
+            .insert_resource(ShoppingDemandStats::default()) // unmet_ratio = 0
+            .insert_resource(TrafficIndex::default())
+            .insert_resource(LandValueIndex::default())
+            .insert_resource(RciDemand::default())
+            .insert_resource(DemandModifiers::default())
+            .add_systems(Update, compute_rci_demand);
+
+        // No Building entities spawned -> zero commercial buildings.
+        app.update();
+
+        let demand = app.world().resource::<RciDemand>();
+        assert!(
+            demand.commercial > 0.0,
+            "a populated city with zero commercial buildings must have positive commercial demand \
+             to bootstrap shops, got {}",
+            demand.commercial
+        );
     }
 
     #[test]
