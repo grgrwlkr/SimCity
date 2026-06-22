@@ -793,9 +793,15 @@ fn collect_intersection_reservation_candidates_inner(
             }
         }
 
-        let Some(zones) = reservation_zones_for_maneuver(traffic_cfg, entry_dir, exit_dir) else {
-            continue;
-        };
+        // Admission robustness: if the exit direction through the cluster is undeterminable — e.g. a
+        // route that leaves a large multi-tile cluster on a diagonal step, for which
+        // `dir_between_adjacent` (and thus `reservation_zones_for_maneuver`) yields None — do NOT
+        // refuse the already-routed vehicle forever. That refusal is a guaranteed admission deadlock
+        // (live: intersection 7, a 4x6 block, where every approach piled up unadmitted). Fall back to
+        // reserving the WHOLE cluster exclusively (ZONE_ALL); `can_reserve` serializes it to one such
+        // vehicle at a time, so it crosses safely. Normal maneuvers keep their precise zones.
+        let zones =
+            reservation_zones_for_maneuver(traffic_cfg, entry_dir, exit_dir).unwrap_or(ZONE_ALL);
 
         // Last intersection tile of the cluster traversal (the tile right before the exit lane).
         let cluster_exit_tile = rem.and_then(|route| {

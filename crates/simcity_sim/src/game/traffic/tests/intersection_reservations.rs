@@ -1294,3 +1294,124 @@ fn downstream_free_link_allows_admission_into_upstream_intersection() {
         "vehicle MUST be admitted: the downstream link toward cluster B has free capacity"
     );
 }
+
+#[test]
+fn diagonal_cluster_exit_is_admitted_not_refused_no_zones() {
+    // Regression: a multi-tile intersection cluster whose lane route EXITS diagonally produces an
+    // undeterminable exit direction (dir_between_adjacent returns None for a non-orthogonal step).
+    // The admission gate then called reservation_zones_for_maneuver(entry, None) -> None and refused
+    // the vehicle ("no_zones") on EVERY tick, so cars routed through the big cluster (live:
+    // intersection 7, a 4x6 block) could never enter -> permanent admission deadlock. A vehicle that
+    // is already routed THROUGH the cluster must be admitted (exclusively, via the ZONE_ALL fallback)
+    // rather than refused forever.
+    //
+    // Route through a 2-tile cluster that exits diagonally:
+    //   (4,3) approach -> (3,3) cluster -> (3,2) cluster -> (4,1) exit  [ (3,2)->(4,1) is diagonal ]
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(MapConfig {
+            width: 6,
+            height: 6,
+            tile_size: 16.0,
+        })
+        .insert_resource({
+            let mut grid = MapGrid::new(6, 6);
+            for (pos, dir) in [
+                (TilePos { x: 4, y: 3 }, RoadDir::West),  // approach
+                (TilePos { x: 3, y: 3 }, RoadDir::None),  // cluster tile
+                (TilePos { x: 3, y: 2 }, RoadDir::None),  // cluster tile
+                (TilePos { x: 4, y: 1 }, RoadDir::North), // exit (diagonal from (3,2))
+                (TilePos { x: 4, y: 0 }, RoadDir::North), // downstream link
+            ] {
+                let Some(mut cell) = grid.get(pos) else {
+                    continue;
+                };
+                cell.road = RoadCell {
+                    kind: RoadKind::TwoLane,
+                    dir,
+                    lane: 0,
+                    flow: RoadFlow::TwoWay,
+                    lane_type: LaneType::Regular,
+                };
+                grid.set(pos, cell);
+            }
+            grid
+        })
+        .insert_resource({
+            let mut idx = IntersectionIndex::default();
+            let a = TilePos { x: 3, y: 3 };
+            let b = TilePos { x: 3, y: 2 };
+            let id = IntersectionId(0);
+            idx.clusters
+                .push(crate::game::intersections::IntersectionCluster {
+                    id,
+                    key: IntersectionKey {
+                        aabb_min: b,
+                        aabb_max: a,
+                        tile_count: 2,
+                        tiles_hash: 7,
+                    },
+                    tiles: vec![a, b],
+                    aabb_min: b,
+                    aabb_max: a,
+                    centroid_tile: a,
+                });
+            idx.tile_to_intersection.insert(a, id);
+            idx.tile_to_intersection.insert(b, id);
+            idx
+        })
+        .insert_resource({
+            let mut occ = TrafficOccupancy::default();
+            occ.ensure_len(36);
+            occ
+        })
+        .insert_resource(TrafficConfig::default())
+        .insert_resource(IntersectionReservations::default())
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .add_systems(Update, plan_intersection_reservations);
+
+    let id = app
+        .world()
+        .resource::<IntersectionIndex>()
+        .intersection_id_at(TilePos { x: 3, y: 3 })
+        .unwrap();
+
+    let vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(
+            &mut path_pool,
+            vec![
+                TilePos { x: 4, y: 3 },
+                TilePos { x: 3, y: 3 },
+                TilePos { x: 3, y: 2 },
+                TilePos { x: 4, y: 1 },
+                TilePos { x: 4, y: 0 },
+            ],
+            0,
+            TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+            0.0,
+            60.0,
+            20.0,
+            1.0,
+        )
+    };
+    let e = app
+        .world_mut()
+        .spawn((vehicle, VehicleTrafficState::FreeFlow))
+        .id();
+
+    app.update();
+
+    let res = app.world().resource::<IntersectionReservations>();
+    assert!(
+        res.is_reserved_by(id, e),
+        "vehicle routed to exit the cluster diagonally must be admitted (ZONE_ALL fallback), not \
+         refused forever with no_zones"
+    );
+}
