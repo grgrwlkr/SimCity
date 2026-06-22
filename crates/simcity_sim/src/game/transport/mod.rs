@@ -5,6 +5,7 @@
 pub mod lane_graph;
 pub mod lane_occupancy;
 pub mod lane_pathfinding;
+pub mod lanelet;
 pub mod path_pool;
 pub mod pathfinding;
 pub mod region_graph;
@@ -14,6 +15,7 @@ pub mod turn_lanes;
 pub use lane_graph::{LaneGraph, LaneId, build_lane_graph};
 pub use lane_occupancy::VehicleId;
 pub use lane_pathfinding::{LaneCostCtx, find_lane_path, lane_path_to_tiles};
+pub use lanelet::{Lanelet, LaneletGraph, LaneletId};
 pub use path_pool::{PathHandle, PathPool};
 pub use pathfinding::{PathCache, PathfindingConfig, PathfindingCtx, find_road_path_cached};
 pub use region_graph::RegionGraph;
