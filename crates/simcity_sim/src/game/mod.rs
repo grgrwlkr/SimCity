@@ -31,13 +31,25 @@ pub use simcity_core::game::{
 #[derive(Resource, Debug, Copy, Clone)]
 struct AutoStartTestCity {
     pending: bool,
+    /// InGame frames waited before firing LoadTestCity. The scenario system auto-applies on
+    /// `OnEnter(InGame)` and writes `GenerateMap`, whose map regeneration clobbers the test city if we
+    /// load it on the same frame. Letting it settle a couple frames makes our LoadTestCity the last
+    /// writer to win (mirrors a manual "Load Test City" click, which always lands after the scenario).
+    settle: u8,
 }
 
 impl Default for AutoStartTestCity {
     fn default() -> Self {
-        Self { pending: true }
+        Self {
+            pending: true,
+            settle: 0,
+        }
     }
 }
+
+/// Frames to wait in InGame before auto-loading the test city, so the one-shot scenario `GenerateMap`
+/// (and its cascade: terrain regen, vehicle clear, growth reset) is fully applied first.
+const AUTO_START_SETTLE_FRAMES: u8 = 2;
 
 fn auto_start_test_city(
     mut commands: bevy::ecs::message::MessageWriter<commands::GameCommand>,
@@ -53,6 +65,10 @@ fn auto_start_test_city(
             NextState::set_if_neq(&mut *next, state::AppState::InGame);
         }
         state::AppState::InGame | state::AppState::Paused => {
+            if auto.settle < AUTO_START_SETTLE_FRAMES {
+                auto.settle += 1;
+                return;
+            }
             commands.write(commands::GameCommand::LoadTestCity);
             auto.pending = false;
         }
