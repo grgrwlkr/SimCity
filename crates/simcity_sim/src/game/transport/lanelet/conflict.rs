@@ -13,7 +13,7 @@ pub struct ConflictMatrix {
 
 #[allow(dead_code)]
 impl ConflictMatrix {
-    pub(crate) fn from_paths(internal_paths: &[Vec<TilePos>]) -> Self {
+    pub fn from_paths(internal_paths: &[Vec<TilePos>]) -> Self {
         let n = internal_paths.len();
         let words = n.div_ceil(64);
         let mut rows: Vec<Vec<u64>> = vec![vec![0u64; words]; n];
@@ -45,15 +45,19 @@ impl ConflictMatrix {
         (self.rows[a][b / 64] >> (b % 64)) & 1 == 1
     }
 
-    pub(crate) fn row(&self, a: usize) -> &[u64] {
+    pub fn row(&self, a: usize) -> &[u64] {
         if a >= self.n {
             return &[];
         }
         &self.rows[a]
     }
 
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.n
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
     }
 }
 

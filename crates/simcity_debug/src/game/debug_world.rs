@@ -31,7 +31,8 @@ use crate::game::traffic::{
     TrafficOccupancy, TrafficVehicleCounts,
 };
 use crate::game::transport::{
-    GraphVersion, LaneGraph, PathCache, PathPool, PathfindingConfig, RegionGraph, RoadGraph,
+    GraphVersion, LaneGraph, LaneletConflictMatrices, LaneletGraph, PathCache, PathPool,
+    PathfindingConfig, RegionGraph, RoadGraph,
 };
 use crate::game::trips::{TripFinished, TripMode, TripPurpose, TripRequested};
 use crate::game::ui_state::{OverlayMode, SimSpeed, UiState};
@@ -622,6 +623,8 @@ struct DebugSnapshotBundle {
     demand: DebugDemandSnapshot,
     /// Config snapshot.
     config: DebugConfigSnapshot,
+    /// Lanelet graph mirror.
+    lanelet: DebugLaneletState,
 }
 
 impl DebugSnapshotBundle {
@@ -644,6 +647,7 @@ impl DebugSnapshotBundle {
             environment: DebugEnvironmentSnapshot::default(),
             demand: DebugDemandSnapshot::default(),
             config: DebugConfigSnapshot::default(),
+            lanelet: DebugLaneletState::default(),
         }
     }
 }
@@ -665,6 +669,7 @@ struct DebugSnapshotEnsureQueries<'w, 's> {
     q_environment: Query<'w, 's, (), With<DebugEnvironmentSnapshot>>,
     q_demand: Query<'w, 's, (), With<DebugDemandSnapshot>>,
     q_config: Query<'w, 's, (), With<DebugConfigSnapshot>>,
+    q_lanelet: Query<'w, 's, (), With<DebugLaneletState>>,
 }
 
 /// Plugin that exposes a small debug snapshot component for MCP inspection.
@@ -687,6 +692,7 @@ impl Plugin for DebugWorldPlugin {
             .register_type::<DebugEnvironmentSnapshot>()
             .register_type::<DebugDemandSnapshot>()
             .register_type::<DebugConfigSnapshot>()
+            .register_type::<DebugLaneletState>()
             .init_resource::<DebugSnapshotEntity>()
             .add_systems(Startup, spawn_debug_snapshot)
             .add_systems(Update, ensure_debug_snapshot_entity.in_set(GameSet::Ui))
@@ -716,7 +722,8 @@ impl Plugin for DebugWorldPlugin {
                 update_debug_environment_snapshot.in_set(GameSet::Ui),
             )
             .add_systems(Update, update_debug_demand_snapshot.in_set(GameSet::Ui))
-            .add_systems(Update, update_debug_config_snapshot.in_set(GameSet::Ui));
+            .add_systems(Update, update_debug_config_snapshot.in_set(GameSet::Ui))
+            .add_systems(Update, update_debug_lanelet_state.in_set(GameSet::Ui));
     }
 }
 
@@ -762,6 +769,7 @@ fn ensure_debug_snapshot_entity(
     ensure_component::<DebugEnvironmentSnapshot>(&mut entity_cmd, entity, &queries.q_environment);
     ensure_component::<DebugDemandSnapshot>(&mut entity_cmd, entity, &queries.q_demand);
     ensure_component::<DebugConfigSnapshot>(&mut entity_cmd, entity, &queries.q_config);
+    ensure_component::<DebugLaneletState>(&mut entity_cmd, entity, &queries.q_lanelet);
 
     holder.entity = Some(entity);
 }
@@ -1974,9 +1982,133 @@ fn update_debug_config_snapshot(
     snapshot.building_growth_period_secs = building_tuning.growth_period_secs;
 }
 
+/// Lanelet graph observability mirror for BRP/MCP inspection.
+#[derive(Component, Reflect, Default, Copy, Clone)]
+#[reflect(Component)]
+pub struct DebugLaneletState {
+    pub built_version: u64,
+    pub lanelet_count: u32,
+    pub intersection_count: u32,
+    pub max_lanelets_per_intersection: u32,
+    pub max_conflicts_per_lanelet: u32,
+}
+
+/// Update lanelet graph debug mirror.
+fn update_debug_lanelet_state(
+    graph: Option<Res<LaneletGraph>>,
+    matrices: Option<Res<LaneletConflictMatrices>>,
+    holder: Res<DebugSnapshotEntity>,
+    mut q_snapshot: Query<&mut DebugLaneletState>,
+) {
+    let Some(entity) = holder.entity else {
+        return;
+    };
+    let Ok(mut snapshot) = q_snapshot.get_mut(entity) else {
+        return;
+    };
+
+    if let Some(g) = graph.as_deref() {
+        snapshot.built_version = g.version;
+        snapshot.lanelet_count = g.lanelets.len() as u32;
+        snapshot.intersection_count = g.by_intersection.len() as u32;
+        snapshot.max_lanelets_per_intersection = g
+            .by_intersection
+            .values()
+            .map(|v| v.len() as u32)
+            .max()
+            .unwrap_or(0);
+    } else {
+        snapshot.built_version = 0;
+        snapshot.lanelet_count = 0;
+        snapshot.intersection_count = 0;
+        snapshot.max_lanelets_per_intersection = 0;
+    }
+
+    snapshot.max_conflicts_per_lanelet = matrices
+        .as_deref()
+        .map(|m| {
+            m.by_intersection
+                .values()
+                .flat_map(|mat| {
+                    (0..mat.len()).map(|i| mat.row(i).iter().map(|w| w.count_ones()).sum::<u32>())
+                })
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+}
+
 fn set_string(target: &mut String, value: &str) {
     target.clear();
     target.push_str(value);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::intersections::IntersectionId;
+    use crate::game::traffic::ManeuverKind;
+    use crate::game::transport::LaneId;
+    use crate::game::transport::lanelet::graph::Lanelet;
+    use crate::game::transport::{
+        ConflictMatrix, LaneletConflictMatrices, LaneletGraph, LaneletId,
+    };
+
+    fn make_lanelet(id: u32, intersection: IntersectionId, entry: u32, exit: u32) -> Lanelet {
+        Lanelet {
+            id: LaneletId(id),
+            intersection,
+            entry_lane: LaneId(entry),
+            exit_lane: LaneId(exit),
+            maneuver: ManeuverKind::Straight,
+            internal_path: vec![],
+        }
+    }
+
+    #[test]
+    fn update_lanelet_state_reflects_graph_and_matrix() {
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+
+        let iid = IntersectionId(0);
+        let mut graph = LaneletGraph::default();
+        graph.version = 7;
+        graph.lanelets = vec![make_lanelet(0, iid, 0, 1), make_lanelet(1, iid, 2, 3)];
+        graph
+            .by_intersection
+            .insert(iid, vec![LaneletId(0), LaneletId(1)]);
+
+        let p0 = vec![
+            crate::game::map::TilePos { x: 0, y: 0 },
+            crate::game::map::TilePos { x: 1, y: 0 },
+        ];
+        let p1 = vec![
+            crate::game::map::TilePos { x: 0, y: 0 },
+            crate::game::map::TilePos { x: 0, y: 1 },
+        ];
+        let mat = ConflictMatrix::from_paths(&[p0, p1]);
+        let mut matrices = LaneletConflictMatrices::default();
+        matrices.by_intersection.insert(iid, mat);
+
+        app.insert_resource(graph);
+        app.insert_resource(matrices);
+
+        let entity = app.world_mut().spawn(DebugLaneletState::default()).id();
+        app.insert_resource(DebugSnapshotEntity {
+            entity: Some(entity),
+        });
+
+        app.add_systems(Update, update_debug_lanelet_state);
+        app.update();
+
+        let state = app.world().get::<DebugLaneletState>(entity).unwrap();
+        assert_eq!(state.built_version, 7);
+        assert_eq!(state.lanelet_count, 2);
+        assert_eq!(state.intersection_count, 1);
+        assert_eq!(state.max_lanelets_per_intersection, 2);
+        assert_eq!(state.max_conflicts_per_lanelet, 1);
+    }
 }
 
 fn app_state_label(state: &AppState) -> &'static str {
