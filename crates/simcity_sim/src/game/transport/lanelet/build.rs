@@ -1,10 +1,12 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::game::map::TilePos;
 
 /// Shortest strictly-4-adjacent path through `cluster_tiles` from `entry_tile` to the cluster tile
 /// orthogonally adjacent to `exit_tile`. Returns the tile sequence (entry .. last-in-cluster), all
 /// inside the cluster, every consecutive pair Manhattan-distance 1. None if no in-cluster path exists.
+///
+/// Among goals equidistant from `entry_tile`, picks the `(x,y)`-minimum deterministically.
 #[allow(dead_code)]
 pub(crate) fn build_internal_path(
     cluster_tiles: &HashSet<TilePos>,
@@ -16,40 +18,31 @@ pub(crate) fn build_internal_path(
     }
 
     // Find goal candidates: cluster tiles orthogonally adjacent to exit_tile.
-    // Deterministic tie-break: sort by (x, y).
     let neighbors_of_exit = orthogonal_neighbors(exit_tile);
-    let mut goals: Vec<TilePos> = neighbors_of_exit
+    let goals: HashSet<TilePos> = neighbors_of_exit
         .into_iter()
         .filter(|t| cluster_tiles.contains(t))
         .collect();
-    goals.sort_by_key(|t| (t.x, t.y));
 
     if goals.is_empty() {
         return None;
     }
 
-    // If entry is already one of the goals, return immediately (len-1 path).
-    // Pick the nearest goal via BFS; for that we run BFS from entry and stop at first goal hit.
-    // Because goals are tried in BFS order, the first goal reached is the BFS-nearest.
-    // Ties between goals at equal distance are broken by (x,y) via goals sort order — BFS
-    // visits E,W,N,S deterministically, so tie-break is implicit in traversal order.
-
-    let mut came_from: std::collections::HashMap<TilePos, Option<TilePos>> =
-        std::collections::HashMap::new();
+    // BFS to completion: record came_from for all reachable cluster tiles.
+    // For each goal reached, record the BFS distance (depth).
+    // After BFS, pick the goal with minimum distance; break ties by (x, y).
+    let mut came_from: HashMap<TilePos, Option<TilePos>> = HashMap::new();
+    let mut dist: HashMap<TilePos, u32> = HashMap::new();
     let mut queue: VecDeque<TilePos> = VecDeque::new();
 
     came_from.insert(entry_tile, None);
+    dist.insert(entry_tile, 0);
     queue.push_back(entry_tile);
 
     // Deterministic neighbor order: E, W, N, S.
     const DIRS: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 
     while let Some(cur) = queue.pop_front() {
-        // Check if cur is one of the goals.
-        if goals.contains(&cur) {
-            return Some(reconstruct(cur, &came_from));
-        }
-
         for (dx, dy) in DIRS {
             let nb = TilePos {
                 x: cur.x + dx,
@@ -57,12 +50,19 @@ pub(crate) fn build_internal_path(
             };
             if cluster_tiles.contains(&nb) && !came_from.contains_key(&nb) {
                 came_from.insert(nb, Some(cur));
+                dist.insert(nb, dist[&cur] + 1);
                 queue.push_back(nb);
             }
         }
     }
 
-    None
+    // Among reached goals, pick minimum distance then (x, y)-minimum tiebreak.
+    let best_goal = goals
+        .iter()
+        .filter(|g| dist.contains_key(g))
+        .min_by_key(|g| (dist[g], g.x, g.y))?;
+
+    Some(reconstruct(*best_goal, &came_from))
 }
 
 fn orthogonal_neighbors(t: TilePos) -> [TilePos; 4] {
@@ -74,10 +74,7 @@ fn orthogonal_neighbors(t: TilePos) -> [TilePos; 4] {
     ]
 }
 
-fn reconstruct(
-    goal: TilePos,
-    came_from: &std::collections::HashMap<TilePos, Option<TilePos>>,
-) -> Vec<TilePos> {
+fn reconstruct(goal: TilePos, came_from: &HashMap<TilePos, Option<TilePos>>) -> Vec<TilePos> {
     let mut path = Vec::new();
     let mut cur = goal;
     loop {
@@ -97,12 +94,11 @@ mod tests {
 
     #[test]
     fn internal_path_is_strictly_4_adjacent_never_diagonal() {
-        use std::collections::HashSet;
         let cluster: HashSet<TilePos> = (31..=34)
             .flat_map(|x| (61..=66).map(move |y| TilePos { x, y }))
             .collect();
-        let entry = TilePos { x: 34, y: 64 }; // enters from the east edge
-        let exit = TilePos { x: 30, y: 64 }; // straight-through west exit (outside cluster)
+        let entry = TilePos { x: 34, y: 64 };
+        let exit = TilePos { x: 30, y: 64 };
         let path = build_internal_path(&cluster, entry, exit).expect("path exists");
         assert!(path.len() >= 2);
         for w in path.windows(2) {
@@ -118,27 +114,21 @@ mod tests {
 
     #[test]
     fn internal_path_turn_shape_ends_adjacent_to_south_exit() {
-        use std::collections::HashSet;
         let cluster: HashSet<TilePos> = (31..=34)
             .flat_map(|x| (61..=66).map(move |y| TilePos { x, y }))
             .collect();
         let entry = TilePos { x: 34, y: 64 };
-        let exit = TilePos { x: 32, y: 60 }; // south exit, outside cluster
-        // goal = in-cluster tile adjacent to exit = (32, 61)
+        let exit = TilePos { x: 32, y: 60 };
         let path = build_internal_path(&cluster, entry, exit).expect("path exists");
-        // 4-adjacent
         for w in path.windows(2) {
             let d = (w[1].x - w[0].x).abs() + (w[1].y - w[0].y).abs();
             assert_eq!(d, 1, "non-orthogonal step {:?}->{:?}", w[0], w[1]);
         }
-        // inside cluster
         assert!(
             path.iter().all(|t| cluster.contains(t)),
             "path stays inside the cluster"
         );
-        // starts at entry
         assert_eq!(path[0], entry);
-        // ends at the in-cluster tile adjacent to the exit
         let last = *path.last().unwrap();
         let dist = (last.x - exit.x).abs() + (last.y - exit.y).abs();
         assert_eq!(
@@ -150,7 +140,6 @@ mod tests {
 
     #[test]
     fn entry_not_in_cluster_returns_none() {
-        use std::collections::HashSet;
         let cluster: HashSet<TilePos> = (31..=34)
             .flat_map(|x| (61..=66).map(move |y| TilePos { x, y }))
             .collect();
@@ -161,7 +150,6 @@ mod tests {
 
     #[test]
     fn entry_is_the_goal_returns_single_tile_path() {
-        use std::collections::HashSet;
         // Minimal cluster: just one tile (31,61).
         // exit = (30,61) which is adjacent to (31,61), so goal = (31,61) = entry.
         let cluster: HashSet<TilePos> = [(31, 61)].iter().map(|&(x, y)| TilePos { x, y }).collect();
@@ -170,5 +158,38 @@ mod tests {
         let path = build_internal_path(&cluster, entry, exit).expect("path exists");
         assert_eq!(path.len(), 1);
         assert_eq!(path[0], entry);
+    }
+
+    /// Two goals equidistant from entry; BFS expansion order (E,W,N,S) reaches (5,4) before (4,5),
+    /// but (x,y)-min tiebreak must select (4,5).
+    ///
+    /// Cluster: {(3,4), (4,4), (5,4), (3,5), (4,5)}
+    /// entry = (3,4), exit = (5,5)  [outside cluster]
+    /// Goals (in-cluster neighbors of exit): (4,5) and (5,4), both at BFS distance 2.
+    /// BFS expansion reaches (5,4) first (via E: (3,4)→(4,4)→(5,4)), then (4,5).
+    /// Correct answer: path ending at (4,5) because (4,5) < (5,4) lexicographically.
+    #[test]
+    fn equidistant_goals_xy_min_wins() {
+        let cluster: HashSet<TilePos> = [(3, 4), (4, 4), (5, 4), (3, 5), (4, 5)]
+            .iter()
+            .map(|&(x, y)| TilePos { x, y })
+            .collect();
+        let entry = TilePos { x: 3, y: 4 };
+        let exit = TilePos { x: 5, y: 5 }; // outside cluster; in-cluster neighbors: (4,5) and (5,4)
+        let path = build_internal_path(&cluster, entry, exit).expect("path exists");
+        let last = *path.last().unwrap();
+        assert_eq!(
+            last,
+            TilePos { x: 4, y: 5 },
+            "expected (x,y)-min goal (4,5) but got {:?}",
+            last
+        );
+        assert_eq!(path[0], entry);
+        // path is 4-adjacent and inside cluster
+        for w in path.windows(2) {
+            let d = (w[1].x - w[0].x).abs() + (w[1].y - w[0].y).abs();
+            assert_eq!(d, 1);
+        }
+        assert!(path.iter().all(|t| cluster.contains(t)));
     }
 }
