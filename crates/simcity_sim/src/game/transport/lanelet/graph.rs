@@ -32,6 +32,7 @@ pub struct LaneletGraph {
     /// Index == LaneletId.0 as usize.
     pub lanelets: Vec<Lanelet>,
     pub by_intersection: HashMap<IntersectionId, Vec<LaneletId>>,
+    pub by_entry_lane: HashMap<LaneId, Vec<LaneletId>>,
     pub version: u64,
 }
 
@@ -49,6 +50,14 @@ impl LaneletGraph {
     pub fn of_intersection(&self, id: IntersectionId) -> &[LaneletId] {
         self.by_intersection
             .get(&id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Returns the lanelet ids whose entry lane is `l`, or an empty slice if absent.
+    pub fn lanelets_from(&self, l: LaneId) -> &[LaneletId] {
+        self.by_entry_lane
+            .get(&l)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
     }

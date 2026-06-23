@@ -149,6 +149,7 @@ pub fn build_lanelet_graph(
 
     graph.lanelets.clear();
     graph.by_intersection.clear();
+    graph.by_entry_lane.clear();
     matrices.by_intersection.clear();
 
     // Enumerate clusters in Vec order (== IntersectionId order per build_intersection_clusters).
@@ -274,6 +275,11 @@ pub fn build_lanelet_graph(
         for (mut lanelet, _) in indexed {
             lanelet.id = LaneletId(graph.lanelets.len() as u32);
             intersection_ids.push(lanelet.id);
+            graph
+                .by_entry_lane
+                .entry(lanelet.entry_lane)
+                .or_default()
+                .push(lanelet.id);
             graph.lanelets.push(lanelet);
         }
 
@@ -621,6 +627,55 @@ mod tests {
             keys, sorted,
             "lanelets must be in (entry_lane, exit_lane) order"
         );
+    }
+
+    #[test]
+    fn by_entry_lane_index_populated_and_ascending_by_exit() {
+        let (grid, intersection_index) = build_cross_grid();
+        let gv = GraphVersion(1);
+        let lane_graph = build_lane_graph_inner(&grid, &gv);
+
+        let mut app = App::new();
+        app.insert_resource(grid)
+            .insert_resource(intersection_index)
+            .insert_resource(lane_graph)
+            .insert_resource(gv)
+            .insert_resource(TrafficConfig {
+                experimental_lanelet_intersections: true,
+                ..Default::default()
+            })
+            .insert_resource(LaneletGraph::default())
+            .insert_resource(LaneletConflictMatrices::default());
+
+        app.add_systems(Update, build_lanelet_graph);
+        app.update();
+
+        let graph = app.world().resource::<LaneletGraph>();
+        use crate::game::transport::LaneId;
+
+        let e = graph.lanelets[0].entry_lane;
+        let from = graph.lanelets_from(e);
+        assert!(!from.is_empty(), "entry lane must be indexed");
+
+        let expected: Vec<LaneletId> = graph
+            .lanelets
+            .iter()
+            .filter(|l| l.entry_lane == e)
+            .map(|l| l.id)
+            .collect();
+        assert_eq!(from, expected.as_slice());
+
+        let exits: Vec<u32> = from
+            .iter()
+            .map(|id| graph.get(*id).unwrap().exit_lane.0)
+            .collect();
+        assert!(
+            exits.windows(2).all(|w| w[0] <= w[1]),
+            "exit lanes must be ascending: {:?}",
+            exits
+        );
+
+        assert!(graph.lanelets_from(LaneId(u32::MAX)).is_empty());
     }
 
     #[test]
