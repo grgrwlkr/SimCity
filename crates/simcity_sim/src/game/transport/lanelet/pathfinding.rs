@@ -10,11 +10,14 @@
 // the `find_route` task; until then they are exercised only by tests.
 #![allow(dead_code)]
 
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+
 use crate::game::map::TilePos;
 use crate::game::roads::RoadDir;
 use crate::game::transport::lane_graph::{LaneGraph, LaneId};
 use crate::game::transport::lane_pathfinding::{
-    LaneCostCtx, base_tile_cost, lane_edge_cost, lane_jitter,
+    LaneCostCtx, base_tile_cost, heuristic_tiles, lane_edge_cost, lane_jitter,
 };
 use crate::game::transport::lanelet::graph::{LaneletGraph, LaneletId};
 
@@ -129,6 +132,126 @@ pub(crate) fn for_each_succ(
             }
         }
     }
+}
+
+/// A* open-set entry over packed combined-node ids. Min-heap on `f`, mirroring the lane A*
+/// tie-break (`f` then `g` then node id) so pops are a total order and fully deterministic.
+#[derive(PartialEq, Eq)]
+struct CombinedHeapState {
+    f: u32,
+    g: u32,
+    idx: usize,
+}
+
+impl Ord for CombinedHeapState {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .f
+            .cmp(&self.f)
+            .then_with(|| other.g.cmp(&self.g))
+            .then_with(|| other.idx.cmp(&self.idx))
+    }
+}
+
+impl PartialOrd for CombinedHeapState {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Admissible heuristic from a combined node to the goal tile. A lanelet is represented by the last
+/// tile of its internal path (just before its exit); under-counting the EXIT step keeps it a lower
+/// bound. Reuses the scaled-Manhattan [`heuristic_tiles`].
+fn combined_heuristic(
+    node: CombinedNode,
+    lg: &LaneGraph,
+    llg: &LaneletGraph,
+    goal: TilePos,
+) -> u32 {
+    let pos = match node {
+        CombinedNode::Road(l) => lg.get_lane(l).map(|lane| lane.pos),
+        CombinedNode::Lanelet(ll) => llg.get(ll).and_then(|l| l.internal_path.last().copied()),
+    };
+    pos.map(|p| heuristic_tiles(p, goal)).unwrap_or(u32::MAX)
+}
+
+fn reconstruct(
+    came_from: &[Option<usize>],
+    space: &NodeSpace,
+    start_idx: usize,
+    goal_idx: usize,
+) -> Vec<CombinedNode> {
+    let mut path = vec![space.unpack(goal_idx)];
+    let mut cur = goal_idx;
+    while cur != start_idx {
+        let Some(prev) = came_from[cur] else {
+            break;
+        };
+        path.push(space.unpack(prev));
+        cur = prev;
+    }
+    path.reverse();
+    path
+}
+
+/// A* over the combined RoadLane+Lanelet graph. Structural clone of [`find_lane_path`]: dense
+/// `best_g`/`came_from` indexed by packed node id, lazy stale-pop, saturating cost. Road edges reuse
+/// `lane_edge_cost` verbatim (congestion + per-trip jitter); lanelet ENTER/EXIT edges come from
+/// [`for_each_succ`]. Returns the node path (start road .. goal road) or `None` if unreachable.
+pub(crate) fn find_combined_path(
+    lg: &LaneGraph,
+    llg: &LaneletGraph,
+    ctx: &LaneCostCtx<'_>,
+    start: LaneId,
+    goal: LaneId,
+) -> Option<Vec<CombinedNode>> {
+    if start == goal {
+        return Some(vec![CombinedNode::Road(start)]);
+    }
+
+    let goal_pos = lg.get_lane(goal)?.pos;
+    let space = NodeSpace::new(lg);
+    let n = space.len(llg);
+    let start_idx = space.pack(CombinedNode::Road(start));
+    let goal_idx = space.pack(CombinedNode::Road(goal));
+
+    let mut came_from: Vec<Option<usize>> = vec![None; n];
+    let mut best_g: Vec<u32> = vec![u32::MAX; n];
+    let mut heap = BinaryHeap::<CombinedHeapState>::new();
+
+    best_g[start_idx] = 0;
+    heap.push(CombinedHeapState {
+        f: combined_heuristic(CombinedNode::Road(start), lg, llg, goal_pos),
+        g: 0,
+        idx: start_idx,
+    });
+
+    while let Some(CombinedHeapState { g, idx, .. }) = heap.pop() {
+        if g != best_g[idx] {
+            continue; // Stale entry.
+        }
+        if idx == goal_idx {
+            return Some(reconstruct(&came_from, &space, start_idx, goal_idx));
+        }
+
+        let node = space.unpack(idx);
+        for_each_succ(node, lg, llg, ctx, |succ, step| {
+            let sidx = space.pack(succ);
+            let ng = g.saturating_add(step);
+            if ng < best_g[sidx] {
+                best_g[sidx] = ng;
+                came_from[sidx] = Some(idx);
+                let f = ng.saturating_add(combined_heuristic(succ, lg, llg, goal_pos));
+                heap.push(CombinedHeapState {
+                    f,
+                    g: ng,
+                    idx: sidx,
+                });
+            }
+        });
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -271,5 +394,73 @@ mod tests {
             |n, c| lex.push((n, c)),
         );
         assert_eq!(lex, vec![(CombinedNode::Road(exit), 1)]);
+    }
+
+    /// Two parallel eastbound corridors over x=0..4 (y=0 lane0, y=1 lane1).
+    fn parallel_corridors() -> MapGrid {
+        let mut grid = MapGrid::new(4, 2);
+        for x in 0..4 {
+            set_lane(&mut grid, TilePos { x, y: 0 }, 0, RoadDir::East);
+            set_lane(&mut grid, TilePos { x, y: 1 }, 1, RoadDir::East);
+        }
+        grid
+    }
+
+    #[test]
+    fn combined_path_deterministic_reduces_to_lane_path_and_spreads() {
+        use crate::game::transport::lane_pathfinding::{find_lane_path, lane_path_to_tiles};
+        use std::collections::HashSet;
+
+        let grid = parallel_corridors();
+        let lg = build_lane_graph_inner(&grid, &GraphVersion(1));
+        let llg = LaneletGraph::default(); // intersection-free: no lanelets
+        let mut traffic = TrafficOccupancy::default();
+        traffic.ensure_len(grid.len());
+        let cfg = PathfindingConfig::default();
+        let start = lg.get_lane_id(TilePos { x: 0, y: 0 }, 0).unwrap();
+        let goal = lg.get_lane_id(TilePos { x: 3, y: 0 }, 0).unwrap();
+        let ctx = |seed: u64| LaneCostCtx {
+            grid: &grid,
+            traffic: &traffic,
+            cfg: &cfg,
+            jitter_seed: seed,
+        };
+
+        // (a) Determinism: same seed -> identical node path.
+        let p1 = find_combined_path(&lg, &llg, &ctx(7), start, goal);
+        let p2 = find_combined_path(&lg, &llg, &ctx(7), start, goal);
+        assert_eq!(p1, p2);
+
+        // (b) Reduction: with no lanelets the combined graph is the road graph, so the flattened
+        // tiles equal find_lane_path's tiles (same edges, same costs, same tie-break).
+        let combined = find_combined_path(&lg, &llg, &ctx(0), start, goal).expect("combined path");
+        let combined_tiles: Vec<TilePos> = combined
+            .iter()
+            .map(|n| match n {
+                CombinedNode::Road(l) => lg.get_lane(*l).unwrap().pos,
+                CombinedNode::Lanelet(_) => unreachable!("no lanelets in this grid"),
+            })
+            .collect();
+        let lane_tiles = lane_path_to_tiles(&find_lane_path(&lg, &ctx(0), start, goal), &lg);
+        assert_eq!(combined_tiles, lane_tiles);
+
+        // (c) Spread: opposite-corridor endpoints make the y=0-first and y=1-first routes equal cost,
+        // so the per-trip jitter (preserved through the combined search) spreads the switch point.
+        let goal2 = lg.get_lane_id(TilePos { x: 3, y: 1 }, 1).unwrap();
+        let routes: Vec<Vec<CombinedNode>> = (1u64..=64)
+            .map(|s| find_combined_path(&lg, &llg, &ctx(s), start, goal2).unwrap())
+            .collect();
+        let distinct: HashSet<&Vec<CombinedNode>> = routes.iter().collect();
+        let max_freq = distinct
+            .iter()
+            .map(|r| routes.iter().filter(|x| x == r).count())
+            .max()
+            .unwrap();
+        assert!(
+            distinct.len() >= 2,
+            "expected >=2 route classes, got {}",
+            distinct.len()
+        );
+        assert!(max_freq < 64, "one route monopolized all 64 seeds");
     }
 }

@@ -169,19 +169,21 @@ impl PartialOrd for HeapState {
 /// heuristic (added only to real edges), so `h` stays a lower bound on the true cost (admissible).
 pub(crate) const MIN_PER_TILE_BASE: u32 = 7;
 
-/// Scaled Manhattan distance heuristic for lanes. Admissible because every real edge costs at least
-/// `MIN_PER_TILE_BASE` and a path of Manhattan length `m` costs at least `m * MIN_PER_TILE_BASE`.
-pub(crate) fn heuristic_lane(a: LaneId, b: LaneId, graph: &LaneGraph) -> u32 {
-    let Some(lane_a) = graph.get_lane(a) else {
-        return u32::MAX;
-    };
-    let Some(lane_b) = graph.get_lane(b) else {
-        return u32::MAX;
-    };
-
-    let dx = (lane_a.pos.x - lane_b.pos.x).unsigned_abs();
-    let dy = (lane_a.pos.y - lane_b.pos.y).unsigned_abs();
+/// Scaled Manhattan distance heuristic between two tiles. Admissible because every real edge costs
+/// at least `MIN_PER_TILE_BASE` and a path of Manhattan length `m` costs at least
+/// `m * MIN_PER_TILE_BASE`.
+pub(crate) fn heuristic_tiles(a: TilePos, b: TilePos) -> u32 {
+    let dx = (a.x - b.x).unsigned_abs();
+    let dy = (a.y - b.y).unsigned_abs();
     (dx + dy).saturating_mul(MIN_PER_TILE_BASE)
+}
+
+/// Scaled Manhattan distance heuristic for lanes (see [`heuristic_tiles`]).
+pub(crate) fn heuristic_lane(a: LaneId, b: LaneId, graph: &LaneGraph) -> u32 {
+    match (graph.get_lane(a), graph.get_lane(b)) {
+        (Some(lane_a), Some(lane_b)) => heuristic_tiles(lane_a.pos, lane_b.pos),
+        _ => u32::MAX,
+    }
 }
 
 fn reconstruct_lane_path(came_from: &[Option<LaneId>], start: LaneId, goal: LaneId) -> Vec<LaneId> {
