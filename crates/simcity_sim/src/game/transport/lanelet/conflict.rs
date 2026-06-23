@@ -14,6 +14,10 @@ pub struct ConflictMatrix {
     // reconsidering SmallVec if cluster lanelet counts or rebuild frequency grow enough to matter.
     rows: Vec<Vec<u64>>,
     n: usize,
+    /// Row index where the appended pedestrian-crosswalk rows begin. Rows `[0, crosswalk_base)` are
+    /// vehicle lanelets; rows `[crosswalk_base, n)` are crosswalks. Equals `n` when there are no
+    /// crosswalk rows (the `from_paths` constructor).
+    crosswalk_base: usize,
 }
 
 #[allow(dead_code)]
@@ -40,7 +44,35 @@ impl ConflictMatrix {
             }
         }
 
-        Self { rows, n }
+        Self {
+            rows,
+            n,
+            crosswalk_base: n,
+        }
+    }
+
+    /// Like `from_paths`, but appends `crosswalk_cells` as extra rows after the vehicle lanelets.
+    /// A vehicle lanelet conflicts with a crosswalk iff their tile sets overlap (same overlap logic
+    /// as lanelet-vs-lanelet). The first crosswalk row is at `crosswalk_base()`. The arbiter ORs a
+    /// crosswalk's row into `active_mask` when a pedestrian occupies it (wired in P3b).
+    pub fn from_paths_with_crosswalks(
+        lanelet_paths: &[Vec<TilePos>],
+        crosswalk_cells: &[Vec<TilePos>],
+    ) -> Self {
+        let n_lanelets = lanelet_paths.len();
+        let all: Vec<Vec<TilePos>> = lanelet_paths
+            .iter()
+            .chain(crosswalk_cells.iter())
+            .cloned()
+            .collect();
+        let mut m = Self::from_paths(&all);
+        m.crosswalk_base = n_lanelets;
+        m
+    }
+
+    /// Row index where crosswalk rows begin (== `len()` when there are none).
+    pub fn crosswalk_base(&self) -> usize {
+        self.crosswalk_base
     }
 
     pub(crate) fn conflicts(&self, a: usize, b: usize) -> bool {
@@ -89,6 +121,37 @@ mod tests {
         assert_eq!(m.row(0), m2.row(0));
         assert_eq!(m.row(1), m2.row(1));
         assert_eq!(m.len(), 3);
+    }
+
+    #[test]
+    fn vehicle_lanelet_conflicts_with_crossed_crosswalk() {
+        // Lanelet [(0,0),(1,0)] and crosswalk [(1,0),(1,1)] share (1,0).
+        let m = ConflictMatrix::from_paths_with_crosswalks(
+            &[vec![TilePos { x: 0, y: 0 }, TilePos { x: 1, y: 0 }]],
+            &[vec![TilePos { x: 1, y: 0 }, TilePos { x: 1, y: 1 }]],
+        );
+        let cw = m.crosswalk_base();
+        assert_eq!(cw, 1, "one vehicle lanelet row, crosswalk rows start at 1");
+        assert_eq!(m.len(), 2);
+        assert!(
+            m.conflicts(0, cw),
+            "vehicle lanelet crossing the crosswalk must conflict with it"
+        );
+        assert!(m.conflicts(cw, 0), "symmetric");
+
+        // A crosswalk that shares no cell with the lanelet does not conflict.
+        let m2 = ConflictMatrix::from_paths_with_crosswalks(
+            &[vec![TilePos { x: 0, y: 0 }, TilePos { x: 1, y: 0 }]],
+            &[vec![TilePos { x: 5, y: 5 }]],
+        );
+        assert!(
+            !m2.conflicts(0, m2.crosswalk_base()),
+            "disjoint crosswalk must not conflict"
+        );
+
+        // No crosswalks: crosswalk_base == len.
+        let m3 = ConflictMatrix::from_paths(&[vec![TilePos { x: 0, y: 0 }]]);
+        assert_eq!(m3.crosswalk_base(), m3.len());
     }
 
     #[test]

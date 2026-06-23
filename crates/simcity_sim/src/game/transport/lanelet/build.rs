@@ -2,14 +2,14 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use bevy::prelude::*;
 
-use crate::game::intersections::{IntersectionId, IntersectionIndex};
+use crate::game::intersections::{IntersectionCluster, IntersectionId, IntersectionIndex};
 use crate::game::map::{MapGrid, TilePos};
 use crate::game::roads::{LaneType, RoadDir, RoadFlow};
 use crate::game::traffic::{ManeuverKind, TrafficConfig, maneuver_kind};
 use crate::game::transport::{GraphVersion, LaneGraph};
 
 use super::conflict::ConflictMatrix;
-use super::graph::{Lanelet, LaneletGraph, LaneletId};
+use super::graph::{CrosswalkId, Lanelet, LaneletGraph, LaneletId};
 
 /// Per-intersection conflict matrices built by `build_lanelet_graph`.
 #[derive(Resource, Default)]
@@ -289,6 +289,48 @@ fn reconstruct(goal: TilePos, came_from: &HashMap<TilePos, Option<TilePos>>) -> 
     path
 }
 
+/// Derive the pedestrian crosswalk cells for a cluster: one crosswalk per cluster side that has an
+/// adjacent road, each being the set of cluster-boundary cells facing that side (the cells a
+/// pedestrian crossing that approach road occupies, and that an entering/exiting vehicle's internal
+/// path passes through). Deterministic: sides scanned in `[West, East, South, North]` order, cells
+/// sorted by `(x, y)`, `CrosswalkId` assigned by emission order. A side with no adjacent road is
+/// skipped (no crosswalk emitted).
+pub(crate) fn crosswalk_cells(
+    cluster: &IntersectionCluster,
+    grid: &MapGrid,
+) -> Vec<(CrosswalkId, Vec<TilePos>)> {
+    let cluster_tiles: HashSet<TilePos> = cluster.tiles.iter().copied().collect();
+    let mut out: Vec<(CrosswalkId, Vec<TilePos>)> = Vec::new();
+
+    for side in [RoadDir::West, RoadDir::East, RoadDir::South, RoadDir::North] {
+        let d = side.delta();
+        let mut cells: Vec<TilePos> = Vec::new();
+        for &t in &cluster.tiles {
+            let n = TilePos {
+                x: t.x + d.x,
+                y: t.y + d.y,
+            };
+            if cluster_tiles.contains(&n) {
+                continue;
+            }
+            let Some(ncell) = grid.get(n) else {
+                continue;
+            };
+            if ncell.water || !ncell.road.is_some() || ncell.road.dir == RoadDir::None {
+                continue;
+            }
+            cells.push(t);
+        }
+        if cells.is_empty() {
+            continue;
+        }
+        cells.sort_unstable_by_key(|p| (p.x, p.y));
+        out.push((CrosswalkId(out.len() as u32), cells));
+    }
+
+    out
+}
+
 /// Build (or rebuild) the lanelet graph and per-intersection conflict matrices from the current
 /// map state.
 ///
@@ -447,7 +489,13 @@ pub fn build_lanelet_graph(
 
         graph.by_intersection.insert(cluster.id, intersection_ids);
 
-        let matrix = ConflictMatrix::from_paths(&sorted_paths);
+        // Pedestrian crosswalks become first-class conflict rows appended after the vehicle
+        // lanelets, so a maneuver that crosses a crosswalk conflicts with it (row-activation in P3b).
+        let crosswalk_paths: Vec<Vec<TilePos>> = crosswalk_cells(cluster, &grid)
+            .into_iter()
+            .map(|(_, cells)| cells)
+            .collect();
+        let matrix = ConflictMatrix::from_paths_with_crosswalks(&sorted_paths, &crosswalk_paths);
         matrices.by_intersection.insert(cluster.id, matrix);
     }
 
@@ -1068,6 +1116,34 @@ mod tests {
             assert_eq!((w[1].x - w[0].x).abs() + (w[1].y - w[0].y).abs(), 1);
         }
         assert!(pa.iter().all(|t| cluster.contains(t)));
+    }
+
+    #[test]
+    fn crosswalk_cells_one_per_approach_on_cluster_edge() {
+        let (grid, index) = build_cross_grid();
+        let cluster = &index.clusters[0];
+        let cws = crosswalk_cells(cluster, &grid);
+        assert_eq!(
+            cws.len(),
+            4,
+            "4-way cross yields one crosswalk per approach side"
+        );
+        let cluster_set: HashSet<TilePos> = cluster.tiles.iter().copied().collect();
+        for (_, cells) in &cws {
+            assert!(!cells.is_empty(), "each crosswalk has cells");
+            assert!(
+                cells.iter().all(|c| cluster_set.contains(c)),
+                "crosswalk cells lie on the cluster boundary"
+            );
+        }
+        // Ids assigned 0..n in emission order.
+        let ids: Vec<u32> = cws.iter().map(|(id, _)| id.0).collect();
+        assert_eq!(ids, vec![0, 1, 2, 3]);
+        // Deterministic across calls.
+        let pairs: Vec<(u32, Vec<TilePos>)> = cws.iter().map(|(i, c)| (i.0, c.clone())).collect();
+        let cws2 = crosswalk_cells(cluster, &grid);
+        let pairs2: Vec<(u32, Vec<TilePos>)> = cws2.iter().map(|(i, c)| (i.0, c.clone())).collect();
+        assert_eq!(pairs, pairs2, "crosswalk derivation is deterministic");
     }
 
     #[test]

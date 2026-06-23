@@ -14,6 +14,12 @@ impl LaneletId {
     pub const INVALID: LaneletId = LaneletId(u32::MAX);
 }
 
+/// Per-cluster pedestrian crosswalk identity (local index within its intersection cluster, in the
+/// order `crosswalk_cells` emits crosswalks). Distinct from `LaneletId` (a global lanelet index):
+/// crosswalks are matrix rows appended after the vehicle lanelets of an intersection.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct CrosswalkId(pub u32);
+
 /// A directed connector path from one approach lane through an intersection cluster to an exit lane.
 #[derive(Debug, Clone)]
 pub struct Lanelet {
