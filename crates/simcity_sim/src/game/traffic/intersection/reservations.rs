@@ -85,6 +85,10 @@ pub(crate) struct IntersectionLedger {
     /// (holder entity, its held local lanelet index). Source of truth for rebuilding `active_mask`.
     holders: Vec<(Entity, u32)>,
     /// Matrix `GraphVersion` these local indices are valid for; reset when the graph rebuilds.
+    /// NOT validated inside `try_admit` — the arbiter (T9) is responsible for calling
+    /// `reset_for_version` on a version change BEFORE any `try_admit`, so a stale ledger is never
+    /// mixed with a fresh matrix (the one-hot index bits and conflict-row bits would otherwise refer
+    /// to different lanelet numberings).
     built_for_version: u64,
 }
 
@@ -204,6 +208,26 @@ impl IntersectionReservations {
 
     pub(crate) fn exit_slot_count(&self, exit_tile_idx: usize) -> usize {
         self.exit_slots.get(&exit_tile_idx).map_or(0, Vec::len)
+    }
+
+    /// Read-only predicate mirroring `try_acquire_exit_slot`'s gate, so the arbiter can pre-check a
+    /// slot before committing a ledger admission (keeping the two writes atomic: never admit in the
+    /// ledger then fail to reserve the exit slot). True iff `entity` already holds a slot, or a new
+    /// slot fits within both the runtime `cap` (`phys_occ + slots.len() < cap`) and `EXIT_SLOT_CAP`.
+    pub(crate) fn exit_slot_available(
+        &self,
+        exit_tile_idx: usize,
+        phys_occ: u16,
+        cap: u16,
+        entity: Entity,
+    ) -> bool {
+        match self.exit_slots.get(&exit_tile_idx) {
+            Some(slots) if slots.contains(&entity) => true,
+            Some(slots) => {
+                slots.len() < EXIT_SLOT_CAP && (phys_occ as usize) + slots.len() < cap as usize
+            }
+            None => (phys_occ as usize) < cap as usize,
+        }
     }
 }
 
@@ -638,7 +662,7 @@ fn clear_candidate_buffers(
 /// over-eager refusal that turned spillback protection into a freeze. Deterministic: integer
 /// comparisons over the stable route slice, no RNG, no HashMap-order dependence.
 #[allow(clippy::too_many_arguments)]
-fn downstream_link_has_headroom(
+pub(crate) fn downstream_link_has_headroom(
     grid: &MapGrid,
     traffic: &TrafficOccupancy,
     spatial: &TrafficSpatialIndex,

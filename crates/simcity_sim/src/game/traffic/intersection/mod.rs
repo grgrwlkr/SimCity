@@ -7,6 +7,8 @@ mod reservations;
 mod zones;
 
 #[allow(unused_imports)]
+pub(crate) use arbiter::{ArbiterIndexCache, arbitrate_lanelet_reservations};
+#[allow(unused_imports)]
 pub(crate) use connectors::{
     connector_tiles_for_maneuver, mark_vehicles_needing_connector_rewrite,
     rewrite_intersection_connectors, rewrite_marked_intersection_connectors,

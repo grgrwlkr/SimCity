@@ -178,6 +178,13 @@ pub(crate) fn legacy_connectors_enabled_for(cfg: &TrafficConfig) -> bool {
     !cfg.experimental_lanelet_intersections
 }
 
+/// Run condition for the flag-on lanelet intersection arbiter (the inverse of
+/// [`legacy_connectors_enabled`]): the arbiter is the sole reservation producer when the
+/// experimental flag is set.
+fn lanelet_arbiter_enabled(cfg: Res<TrafficConfig>) -> bool {
+    cfg.experimental_lanelet_intersections
+}
+
 #[cfg(test)]
 mod tests_connector_gate {
     use super::*;
@@ -337,13 +344,14 @@ pub(crate) use intersection::maneuver_kind;
 use intersection::plan_intersection_reservations;
 #[cfg(test)]
 use intersection::rewrite_intersection_connectors;
-pub use intersection::{ManeuverKind, ReservationState};
 use intersection::{
-    apply_intersection_reservation_candidates, cache_intersection_light_state,
-    cache_pedestrian_crossing_state, cleanup_intersection_reservations,
-    collect_intersection_reservation_candidates, mark_vehicles_needing_connector_rewrite,
-    reset_intersection_reservations, rewrite_marked_intersection_connectors,
+    ArbiterIndexCache, apply_intersection_reservation_candidates, arbitrate_lanelet_reservations,
+    cache_intersection_light_state, cache_pedestrian_crossing_state,
+    cleanup_intersection_reservations, collect_intersection_reservation_candidates,
+    mark_vehicles_needing_connector_rewrite, reset_intersection_reservations,
+    rewrite_marked_intersection_connectors,
 };
+pub use intersection::{ManeuverKind, ReservationState};
 
 #[derive(Component, Debug, Copy, Clone)]
 struct TripPassenger {
@@ -363,6 +371,7 @@ impl Plugin for TrafficPlugin {
             .init_resource::<intersection::IntersectionReservationCandidates>()
             .init_resource::<intersection::IntersectionLightStateCache>()
             .init_resource::<intersection::PedestrianCrossingStateCache>()
+            .init_resource::<ArbiterIndexCache>()
             .init_resource::<TrafficSpatialIndex>()
             .init_resource::<VehicleAggSnapshot>()
             .init_resource::<ParkedVehicleTileIndex>()
@@ -462,6 +471,16 @@ impl Plugin for TrafficPlugin {
                     apply_intersection_reservation_candidates
                         .after(collect_intersection_reservation_candidates)
                         .before(move_vehicles),
+                    // Flag-on sole reservation producer. Ordered after the legacy apply so the two
+                    // never race the shared IntersectionReservations (when the flag is on, legacy
+                    // collect/apply are gated off in T10, making this `.after` vacuous).
+                    arbitrate_lanelet_reservations
+                        .after(apply_intersection_reservation_candidates)
+                        .after(cache_intersection_light_state)
+                        .after(cache_pedestrian_crossing_state)
+                        .before(break_tile_swaps)
+                        .before(move_vehicles)
+                        .run_if(lanelet_arbiter_enabled),
                     break_tile_swaps
                         .after(apply_intersection_reservation_candidates)
                         .before(move_vehicles),
