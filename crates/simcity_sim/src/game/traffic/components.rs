@@ -14,6 +14,19 @@ pub struct VehicleLaneletPlan {
     pub entries: Vec<(usize, IntersectionId, LaneletId)>,
 }
 
+impl VehicleLaneletPlan {
+    /// The lanelet the vehicle is one tile before entering: the entry whose `cursor_offset`
+    /// equals `cursor + 1`. `None` if no entry matches (empty plan, or the vehicle is not one tile
+    /// before a lanelet seam). The arbiter calls this to resolve the cluster/lanelet a vehicle is
+    /// about to enter when admitting GRANT-ON-ENTRY-ONLY.
+    pub fn upcoming_lanelet_at(&self, cursor: usize) -> Option<(IntersectionId, LaneletId)> {
+        self.entries
+            .iter()
+            .find(|(off, _, _)| *off == cursor + 1)
+            .map(|(_, i, l)| (*i, *l))
+    }
+}
+
 /// Vehicle entity – stores route handle and visual offset.
 /// Optimized memory layout for cache efficiency.
 #[derive(Component)]
@@ -314,4 +327,33 @@ pub struct CarOwner {
 #[derive(Component, Debug, Clone, Copy)]
 pub struct RightTurnOnRed {
     pub intersection_id: IntersectionId,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upcoming_lanelet_resolves_at_offset_minus_one() {
+        let plan = VehicleLaneletPlan {
+            entries: vec![
+                (3, IntersectionId(7), LaneletId(2)),
+                (9, IntersectionId(8), LaneletId(5)),
+            ],
+        };
+        // cursor+1 == 3 -> first entry.
+        assert_eq!(
+            plan.upcoming_lanelet_at(2),
+            Some((IntersectionId(7), LaneletId(2)))
+        );
+        // cursor+1 == 9 -> second entry.
+        assert_eq!(
+            plan.upcoming_lanelet_at(8),
+            Some((IntersectionId(8), LaneletId(5)))
+        );
+        // No entry at cursor+1 == 6.
+        assert_eq!(plan.upcoming_lanelet_at(5), None);
+        // Empty plan.
+        assert_eq!(VehicleLaneletPlan::default().upcoming_lanelet_at(0), None);
+    }
 }
