@@ -43,15 +43,12 @@ pub fn should_yield_at_uncontrolled_intersection(
 
 /// Определить, является ли дорога главной на основе её типа/ширины.
 ///
-/// Правило: более широкая дорога = главная.
-/// Если равны - дороги равнозначны.
+/// Правило: более широкая дорога (больше полос) = главная. Если равны — дороги равнозначны
+/// (не главная). Сравниваем по `RoadKind::lanes()` (2/4/6), а НЕ по `capacity_per_lane_tile()`:
+/// последний округляет capacity/lanes до 2 для всех типов, поэтому никогда не различает ширину.
 #[allow(dead_code)] // Reserved for future PDD-based admission rules
 pub fn is_main_road(road_kind: RoadKind, other_road_kind: RoadKind) -> bool {
-    // Сравнение по ширине (используем capacity_per_lane_tile как прокси для ширины)
-    // Более широкая дорога имеет больше capacity
-    let cap_self = road_kind.capacity_per_lane_tile();
-    let cap_other = other_road_kind.capacity_per_lane_tile();
-    cap_self > cap_other
+    road_kind.lanes() > other_road_kind.lanes()
 }
 
 /// Проверить "помеху справа" для равнозначных дорог.
@@ -62,4 +59,21 @@ pub fn has_right_of_way_obstacle(entry_dir: RoadDir, other_entry_dir: RoadDir) -
     // Определить, находится ли other_entry_dir справа от entry_dir
     let right_dir = entry_dir.right();
     other_entry_dir == right_dir
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::roads::RoadKind;
+
+    #[test]
+    fn main_road_is_the_wider_kind() {
+        assert!(is_main_road(RoadKind::SixLane, RoadKind::TwoLane));
+        assert!(is_main_road(RoadKind::FourLane, RoadKind::TwoLane));
+        assert!(is_main_road(RoadKind::SixLane, RoadKind::FourLane));
+        assert!(!is_main_road(RoadKind::TwoLane, RoadKind::FourLane));
+        // Equal width: not main (равнозначные дороги).
+        assert!(!is_main_road(RoadKind::TwoLane, RoadKind::TwoLane));
+        assert!(!is_main_road(RoadKind::FourLane, RoadKind::FourLane));
+    }
 }
