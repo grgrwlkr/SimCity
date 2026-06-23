@@ -43,13 +43,179 @@ pub(crate) fn lane_allows_maneuver(
     }
 }
 
-/// Shortest strictly-4-adjacent path through `cluster_tiles` from `entry_tile` to the cluster tile
-/// orthogonally adjacent to `exit_tile`. Returns the tile sequence (entry .. last-in-cluster), all
-/// inside the cluster, every consecutive pair Manhattan-distance 1. None if no in-cluster path exists.
+/// Lane-faithful strictly-4-adjacent path through `cluster_tiles`.
 ///
-/// Among goals equidistant from `entry_tile`, picks the `(x,y)`-minimum deterministically.
+/// Tries an L-path first: travel in `entry_dir` from `entry_tile`, bend once into `exit_dir`,
+/// reach the goal tile (`exit_tile - exit_dir.delta()`). For a straight (entry_dir == exit_dir)
+/// there is no bend. Falls back to BFS when the L-path is invalid (goal not in cluster, any
+/// intermediate tile outside cluster, or direction inconsistency).
+///
+/// Returns tile sequence (entry_tile .. last-in-cluster), all inside the cluster, consecutive
+/// pairs Manhattan-distance 1. None if no path exists.
 #[allow(dead_code)]
 pub(crate) fn build_internal_path(
+    cluster_tiles: &HashSet<TilePos>,
+    entry_tile: TilePos,
+    entry_dir: RoadDir,
+    exit_tile: TilePos,
+    exit_dir: RoadDir,
+) -> Option<Vec<TilePos>> {
+    if !cluster_tiles.contains(&entry_tile) {
+        return None;
+    }
+
+    let ed = entry_dir.delta();
+    let xd = exit_dir.delta();
+    let goal = TilePos {
+        x: exit_tile.x - xd.x,
+        y: exit_tile.y - xd.y,
+    };
+
+    if cluster_tiles.contains(&goal)
+        && let Some(path) = build_l_path(cluster_tiles, entry_tile, ed, xd, goal)
+    {
+        return Some(path);
+    }
+
+    build_internal_path_bfs(cluster_tiles, entry_tile, exit_tile)
+}
+
+fn build_l_path(
+    cluster_tiles: &HashSet<TilePos>,
+    entry_tile: TilePos,
+    entry_delta: IVec2,
+    exit_delta: IVec2,
+    goal: TilePos,
+) -> Option<Vec<TilePos>> {
+    if entry_tile == goal {
+        return Some(vec![entry_tile]);
+    }
+
+    let mut path: Vec<TilePos> = Vec::new();
+    path.push(entry_tile);
+
+    if entry_delta == exit_delta {
+        // Straight: step in entry_delta from entry_tile until reaching goal.
+        // Verify they are collinear and entry_delta points toward goal.
+        let dx = goal.x - entry_tile.x;
+        let dy = goal.y - entry_tile.y;
+        // Collinear check: if entry_delta is horizontal, dy must be 0; if vertical, dx must be 0.
+        if entry_delta.x != 0 && dy != 0 {
+            return None;
+        }
+        if entry_delta.y != 0 && dx != 0 {
+            return None;
+        }
+        // Direction must point from entry toward goal.
+        if entry_delta.x != 0 && dx.signum() != entry_delta.x.signum() {
+            return None;
+        }
+        if entry_delta.y != 0 && dy.signum() != entry_delta.y.signum() {
+            return None;
+        }
+        let mut cur = entry_tile;
+        loop {
+            let next = TilePos {
+                x: cur.x + entry_delta.x,
+                y: cur.y + entry_delta.y,
+            };
+            if !cluster_tiles.contains(&next) {
+                return None;
+            }
+            path.push(next);
+            if next == goal {
+                break;
+            }
+            cur = next;
+        }
+    } else {
+        // Turn: entry_delta and exit_delta are perpendicular.
+        // Verify they are actually perpendicular (dot product == 0).
+        if entry_delta.x * exit_delta.x + entry_delta.y * exit_delta.y != 0 {
+            return None;
+        }
+        // Bend point B: has the entry_delta axis coordinate of goal and
+        // the exit_delta axis coordinate of entry_tile.
+        //
+        // entry_delta changes one axis (E). exit_delta changes the other (X).
+        // B.E = goal.E, B.X = entry_tile.X.
+        let bend = if entry_delta.x != 0 {
+            // entry moves in x; exit moves in y
+            TilePos {
+                x: goal.x,
+                y: entry_tile.y,
+            }
+        } else {
+            // entry moves in y; exit moves in x
+            TilePos {
+                x: entry_tile.x,
+                y: goal.y,
+            }
+        };
+
+        // Segment 1: entry_tile → bend in entry_delta direction.
+        if bend != entry_tile {
+            let dx = bend.x - entry_tile.x;
+            let dy = bend.y - entry_tile.y;
+            // entry_delta must point toward bend.
+            if entry_delta.x != 0 && dx.signum() != entry_delta.x.signum() {
+                return None;
+            }
+            if entry_delta.y != 0 && dy.signum() != entry_delta.y.signum() {
+                return None;
+            }
+            let mut cur = entry_tile;
+            loop {
+                let next = TilePos {
+                    x: cur.x + entry_delta.x,
+                    y: cur.y + entry_delta.y,
+                };
+                if !cluster_tiles.contains(&next) {
+                    return None;
+                }
+                path.push(next);
+                if next == bend {
+                    break;
+                }
+                cur = next;
+            }
+        }
+
+        // Segment 2: bend → goal in exit_delta direction.
+        if bend != goal {
+            let dx = goal.x - bend.x;
+            let dy = goal.y - bend.y;
+            if exit_delta.x != 0 && dx.signum() != exit_delta.x.signum() {
+                return None;
+            }
+            if exit_delta.y != 0 && dy.signum() != exit_delta.y.signum() {
+                return None;
+            }
+            let mut cur = bend;
+            loop {
+                let next = TilePos {
+                    x: cur.x + exit_delta.x,
+                    y: cur.y + exit_delta.y,
+                };
+                if !cluster_tiles.contains(&next) {
+                    return None;
+                }
+                path.push(next);
+                if next == goal {
+                    break;
+                }
+                cur = next;
+            }
+        }
+    }
+
+    Some(path)
+}
+
+/// BFS fallback: shortest strictly-4-adjacent path inside `cluster_tiles` from `entry_tile`
+/// to the cluster tile orthogonally adjacent to `exit_tile`. Among equidistant goals picks
+/// `(x,y)`-minimum deterministically.
+pub(crate) fn build_internal_path_bfs(
     cluster_tiles: &HashSet<TilePos>,
     entry_tile: TilePos,
     exit_tile: TilePos,
@@ -58,7 +224,6 @@ pub(crate) fn build_internal_path(
         return None;
     }
 
-    // Find goal candidates: cluster tiles orthogonally adjacent to exit_tile.
     let neighbors_of_exit = orthogonal_neighbors(exit_tile);
     let goals: HashSet<TilePos> = neighbors_of_exit
         .into_iter()
@@ -69,9 +234,6 @@ pub(crate) fn build_internal_path(
         return None;
     }
 
-    // BFS to completion: record came_from for all reachable cluster tiles.
-    // For each goal reached, record the BFS distance (depth).
-    // After BFS, pick the goal with minimum distance; break ties by (x, y).
     let mut came_from: HashMap<TilePos, Option<TilePos>> = HashMap::new();
     let mut dist: HashMap<TilePos, u32> = HashMap::new();
     let mut queue: VecDeque<TilePos> = VecDeque::new();
@@ -80,7 +242,6 @@ pub(crate) fn build_internal_path(
     dist.insert(entry_tile, 0);
     queue.push_back(entry_tile);
 
-    // Deterministic neighbor order: E, W, N, S.
     const DIRS: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 
     while let Some(cur) = queue.pop_front() {
@@ -97,7 +258,6 @@ pub(crate) fn build_internal_path(
         }
     }
 
-    // Among reached goals, pick minimum distance then (x, y)-minimum tiebreak.
     let best_goal = goals
         .iter()
         .filter(|g| dist.contains_key(g))
@@ -242,11 +402,13 @@ pub fn build_lanelet_graph(
                     continue;
                 }
 
-                // BFS from the first cluster tile (which the approach lane feeds into)
-                // towards the exit lane tile (which is outside the cluster).
-                let Some(internal_path) =
-                    build_internal_path(&cluster_tiles, first_cluster_tile, exit_tile)
-                else {
+                let Some(internal_path) = build_internal_path(
+                    &cluster_tiles,
+                    first_cluster_tile,
+                    entry_dir,
+                    exit_tile,
+                    exit_dir,
+                ) else {
                     continue;
                 };
 
@@ -437,12 +599,15 @@ mod tests {
 
     #[test]
     fn internal_path_is_strictly_4_adjacent_never_diagonal() {
+        // Westbound straight: entry from east side, exit to west side on same row.
+        // L-path stays on y=64 (no bend for straight).
         let cluster: HashSet<TilePos> = (31..=34)
             .flat_map(|x| (61..=66).map(move |y| TilePos { x, y }))
             .collect();
         let entry = TilePos { x: 34, y: 64 };
         let exit = TilePos { x: 30, y: 64 };
-        let path = build_internal_path(&cluster, entry, exit).expect("path exists");
+        let path = build_internal_path(&cluster, entry, RoadDir::West, exit, RoadDir::West)
+            .expect("path exists");
         assert!(path.len() >= 2);
         for w in path.windows(2) {
             let d = (w[1].x - w[0].x).abs() + (w[1].y - w[0].y).abs();
@@ -453,16 +618,24 @@ mod tests {
             "path stays inside the cluster"
         );
         assert_eq!(path[0], entry);
+        // Straight L-path stays on row 64.
+        assert!(
+            path.iter().all(|t| t.y == 64),
+            "straight westbound path must stay on y=64"
+        );
     }
 
     #[test]
     fn turn_shape_ends_adjacent_to_south_exit() {
+        // Westbound entry, southbound exit: L-path bends from y=64 down to y=61.
+        // exit_dir=South means delta=(0,-1); goal = {x:32, y:60} - (0,-1) = {x:32, y:61}.
         let cluster: HashSet<TilePos> = (31..=34)
             .flat_map(|x| (61..=66).map(move |y| TilePos { x, y }))
             .collect();
         let entry = TilePos { x: 34, y: 64 };
         let exit = TilePos { x: 32, y: 60 };
-        let path = build_internal_path(&cluster, entry, exit).expect("path exists");
+        let path = build_internal_path(&cluster, entry, RoadDir::West, exit, RoadDir::South)
+            .expect("path exists");
         for w in path.windows(2) {
             let d = (w[1].x - w[0].x).abs() + (w[1].y - w[0].y).abs();
             assert_eq!(d, 1, "non-orthogonal step {:?}->{:?}", w[0], w[1]);
@@ -488,28 +661,36 @@ mod tests {
             .collect();
         let entry = TilePos { x: 99, y: 99 };
         let exit = TilePos { x: 30, y: 64 };
-        assert!(build_internal_path(&cluster, entry, exit).is_none());
+        assert!(build_internal_path(&cluster, entry, RoadDir::West, exit, RoadDir::West).is_none());
     }
 
     #[test]
     fn entry_is_the_goal_returns_single_tile_path() {
+        // Single-tile cluster; entry == goal (exit_tile - exit_dir.delta() = {31,61}).
         let cluster: HashSet<TilePos> = [(31, 61)].iter().map(|&(x, y)| TilePos { x, y }).collect();
         let entry = TilePos { x: 31, y: 61 };
         let exit = TilePos { x: 30, y: 61 };
-        let path = build_internal_path(&cluster, entry, exit).expect("path exists");
+        let path = build_internal_path(&cluster, entry, RoadDir::West, exit, RoadDir::West)
+            .expect("path exists");
         assert_eq!(path.len(), 1);
         assert_eq!(path[0], entry);
     }
 
     #[test]
     fn equidistant_goals_xy_min_wins() {
+        // cluster has two goals equidistant from entry; BFS fallback is exercised because the
+        // L-path (entry_dir=East straight) fails: goal {4,5} has dy=1 from entry {3,4} but
+        // entry_delta.y=0, so the straight check rejects it and we fall through to BFS.
+        // BFS picks the (x,y)-min goal {4,5} over any other equidistant candidate.
         let cluster: HashSet<TilePos> = [(3, 4), (4, 4), (5, 4), (3, 5), (4, 5)]
             .iter()
             .map(|&(x, y)| TilePos { x, y })
             .collect();
         let entry = TilePos { x: 3, y: 4 };
+        // exit_tile={5,5} outside cluster; exit_dir=East → goal={4,5} (in cluster).
         let exit = TilePos { x: 5, y: 5 };
-        let path = build_internal_path(&cluster, entry, exit).expect("path exists");
+        let path = build_internal_path(&cluster, entry, RoadDir::East, exit, RoadDir::East)
+            .expect("path exists");
         let last = *path.last().unwrap();
         assert_eq!(
             last,
@@ -678,6 +859,39 @@ mod tests {
         );
 
         assert!(graph.lanelets_from(LaneId(u32::MAX)).is_empty());
+    }
+
+    #[test]
+    fn parallel_through_lanes_take_disjoint_internal_paths() {
+        use std::collections::HashSet;
+        let cluster: HashSet<TilePos> = (31..=34)
+            .flat_map(|x| (61..=66).map(move |y| TilePos { x, y }))
+            .collect();
+        let pa = build_internal_path(
+            &cluster,
+            TilePos { x: 34, y: 63 },
+            RoadDir::West,
+            TilePos { x: 30, y: 63 },
+            RoadDir::West,
+        )
+        .unwrap();
+        let pb = build_internal_path(
+            &cluster,
+            TilePos { x: 34, y: 64 },
+            RoadDir::West,
+            TilePos { x: 30, y: 64 },
+            RoadDir::West,
+        )
+        .unwrap();
+        let sa: HashSet<&TilePos> = pa.iter().collect();
+        assert!(
+            pb.iter().all(|t| !sa.contains(t)),
+            "parallel lanes must not share internal tiles: {pa:?} vs {pb:?}"
+        );
+        for w in pa.windows(2) {
+            assert_eq!((w[1].x - w[0].x).abs() + (w[1].y - w[0].y).abs(), 1);
+        }
+        assert!(pa.iter().all(|t| cluster.contains(t)));
     }
 
     #[test]
