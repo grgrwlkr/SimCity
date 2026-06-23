@@ -1991,6 +1991,8 @@ pub struct DebugLaneletState {
     pub intersection_count: u32,
     pub max_lanelets_per_intersection: u32,
     pub max_conflicts_per_lanelet: u32,
+    /// Phase-2: number of approach lanes that feed at least one lanelet (the `by_entry_lane` index).
+    pub entry_lane_index_size: u32,
 }
 
 /// Update lanelet graph debug mirror.
@@ -2017,11 +2019,13 @@ fn update_debug_lanelet_state(
             .map(|v| v.len() as u32)
             .max()
             .unwrap_or(0);
+        snapshot.entry_lane_index_size = g.by_entry_lane.len() as u32;
     } else {
         snapshot.built_version = 0;
         snapshot.lanelet_count = 0;
         snapshot.intersection_count = 0;
         snapshot.max_lanelets_per_intersection = 0;
+        snapshot.entry_lane_index_size = 0;
     }
 
     snapshot.max_conflicts_per_lanelet = matrices
@@ -2078,6 +2082,8 @@ mod tests {
         graph
             .by_intersection
             .insert(iid, vec![LaneletId(0), LaneletId(1)]);
+        graph.by_entry_lane.insert(LaneId(0), vec![LaneletId(0)]);
+        graph.by_entry_lane.insert(LaneId(2), vec![LaneletId(1)]);
 
         let p0 = vec![
             crate::game::map::TilePos { x: 0, y: 0 },
@@ -2108,6 +2114,7 @@ mod tests {
         assert_eq!(state.intersection_count, 1);
         assert_eq!(state.max_lanelets_per_intersection, 2);
         assert_eq!(state.max_conflicts_per_lanelet, 1);
+        assert_eq!(state.entry_lane_index_size, 2);
     }
 }
 
