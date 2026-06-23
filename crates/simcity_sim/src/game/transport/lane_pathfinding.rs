@@ -150,7 +150,15 @@ impl PartialOrd for HeapState {
     }
 }
 
-/// Manhattan distance heuristic for lanes.
+/// Minimum possible per-tile lane edge base cost. Scales the admissible heuristic so A* does not
+/// degrade to Dijkstra once turn/lane-change penalties exist on the combined lane+lanelet graph.
+/// Global minimum over `RoadKind` of `floor((1/speed_limit) * (1/desirability) * cost_scale)`:
+/// SixLane `(1/80) * (1/1.6) * 1000 = 7.81 -> 7`. Penalties and jitter are excluded from the
+/// heuristic (added only to real edges), so `h` stays a lower bound on the true cost (admissible).
+pub(crate) const MIN_PER_TILE_BASE: u32 = 7;
+
+/// Scaled Manhattan distance heuristic for lanes. Admissible because every real edge costs at least
+/// `MIN_PER_TILE_BASE` and a path of Manhattan length `m` costs at least `m * MIN_PER_TILE_BASE`.
 fn heuristic_lane(a: LaneId, b: LaneId, graph: &LaneGraph) -> u32 {
     let Some(lane_a) = graph.get_lane(a) else {
         return u32::MAX;
@@ -161,7 +169,7 @@ fn heuristic_lane(a: LaneId, b: LaneId, graph: &LaneGraph) -> u32 {
 
     let dx = (lane_a.pos.x - lane_b.pos.x).unsigned_abs();
     let dy = (lane_a.pos.y - lane_b.pos.y).unsigned_abs();
-    dx + dy
+    (dx + dy).saturating_mul(MIN_PER_TILE_BASE)
 }
 
 fn reconstruct_lane_path(came_from: &[Option<LaneId>], start: LaneId, goal: LaneId) -> Vec<LaneId> {
@@ -220,6 +228,49 @@ mod tests {
             set_lane(&mut grid, TilePos { x, y: 1 }, 1, RoadDir::East);
         }
         grid
+    }
+
+    #[test]
+    fn heuristic_is_scaled_and_admissible_on_optimal_path() {
+        let grid = parallel_corridors();
+        let graph = build_lane_graph_inner(&grid, &GraphVersion(1));
+        let start = graph.get_lane_id(TilePos { x: 0, y: 0 }, 0).unwrap();
+        let goal = graph.get_lane_id(TilePos { x: 3, y: 0 }, 0).unwrap();
+
+        // Scaled property: heuristic == Manhattan * MIN_PER_TILE_BASE (fails on the old raw dx+dy).
+        let pa = graph.get_lane(start).unwrap().pos;
+        let pg = graph.get_lane(goal).unwrap().pos;
+        let manhattan = (pa.x - pg.x).unsigned_abs() + (pa.y - pg.y).unsigned_abs();
+        assert_eq!(
+            heuristic_lane(start, goal, &graph),
+            manhattan * MIN_PER_TILE_BASE
+        );
+
+        // Admissibility on the optimal path: with an admissible heuristic, find_lane_path returns the
+        // optimal path, so the true min cost from path[i] to goal is the suffix sum of real edge
+        // costs. Assert h(node, goal) <= that true remaining cost for every node on the path.
+        let mut traffic = TrafficOccupancy::default();
+        traffic.ensure_len(grid.len());
+        let cfg = PathfindingConfig::default();
+        let ctx = LaneCostCtx {
+            grid: &grid,
+            traffic: &traffic,
+            cfg: &cfg,
+            jitter_seed: 0,
+        };
+        let path = find_lane_path(&graph, &ctx, start, goal);
+        assert!(!path.is_empty());
+        let mut suffix = 0u32;
+        for i in (0..path.len()).rev() {
+            let h = heuristic_lane(path[i], goal, &graph);
+            assert!(
+                h <= suffix,
+                "heuristic {h} exceeds true remaining cost {suffix} at path idx {i}"
+            );
+            if i > 0 {
+                suffix = suffix.saturating_add(lane_edge_cost(&ctx, &graph, path[i]));
+            }
+        }
     }
 
     #[test]

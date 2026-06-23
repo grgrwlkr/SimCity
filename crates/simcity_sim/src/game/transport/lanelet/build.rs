@@ -425,10 +425,12 @@ mod tests {
             tile_to_intersection.insert(t, id);
         }
 
-        let mut index = IntersectionIndex::default();
-        index.clusters = vec![cluster];
-        index.tile_to_intersection = tile_to_intersection;
-        index.version = 1;
+        let index = IntersectionIndex {
+            clusters: vec![cluster],
+            tile_to_intersection,
+            version: 1,
+            ..Default::default()
+        };
 
         (grid, index)
     }
