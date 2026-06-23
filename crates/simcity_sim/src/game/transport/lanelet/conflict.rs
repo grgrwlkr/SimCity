@@ -7,6 +7,11 @@ use crate::game::map::TilePos;
 /// doesn't conflict with itself). Index = local lanelet index within the intersection.
 #[allow(dead_code)]
 pub struct ConflictMatrix {
+    // Each row is a dynamic, uncapped bitset (no per-cluster lanelet cap). `SmallVec<[u64; 2]>` was
+    // proposed (inline storage for up to 128 lanelets, avoiding a heap alloc per row); kept as
+    // `Vec<u64>` because `smallvec` is not a workspace dependency and the matrix is rebuilt only once
+    // per `GraphVersion` (not per tick), so the inline-allocation win is negligible. Worth
+    // reconsidering SmallVec if cluster lanelet counts or rebuild frequency grow enough to matter.
     rows: Vec<Vec<u64>>,
     n: usize,
 }
