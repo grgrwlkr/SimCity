@@ -3,7 +3,16 @@ use bevy::prelude::*;
 use crate::game::intersections::{IntersectionId, IntersectionKey};
 use crate::game::map::TilePos;
 use crate::game::roads::RoadDir;
-use crate::game::transport::{LaneId, PathHandle, VehicleId};
+use crate::game::transport::{LaneId, LaneletId, PathHandle, VehicleId};
+
+/// Per-vehicle lanelet plan (Phase-2 sidecar to the `Vec<TilePos>` route). Each entry pairs the
+/// route cursor offset where a lanelet's internal path begins with that lanelet's identity, for the
+/// Phase-3 intersection arbiter to consume. Empty when the lanelet flag is off or the route fell
+/// back to road-level pathfinding. Cleared on any mid-trip reroute (the offsets are absolute).
+#[derive(Component, Default)]
+pub struct VehicleLaneletPlan {
+    pub entries: Vec<(usize, IntersectionId, LaneletId)>,
+}
 
 /// Vehicle entity – stores route handle and visual offset.
 /// Optimized memory layout for cache efficiency.

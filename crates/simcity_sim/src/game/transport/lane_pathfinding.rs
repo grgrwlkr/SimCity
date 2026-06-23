@@ -111,8 +111,6 @@ pub(crate) fn lane_edge_cost(ctx: &LaneCostCtx<'_>, graph: &LaneGraph, next_id: 
 /// Uncongested per-tile base cost for a road kind: `floor((1/speed)*(1/desirability)*cost_scale)`.
 /// This is the floor of `lane_edge_cost` with zero congestion and no jitter. Used to price lanelet
 /// internal-path tiles, which have no road kind of their own (they carry `dir == None`).
-// Wired into production with the lanelet pathfinder (find_route task); test-only until then.
-#[allow(dead_code)]
 pub(crate) fn base_tile_cost(kind: RoadKind, cfg: &PathfindingConfig) -> u32 {
     let speed = kind.speed_limit().max(1.0);
     let desirability = kind.desirability().max(0.1);

@@ -21,7 +21,8 @@ use crate::game::trips::{TripFinished, TripMode, TripRequested};
 mod components;
 pub use components::{
     CarOwner, DebugIntersectionConnectorState, DebugManeuverKind, DebugRoadDir, DebugVehicleState,
-    DebugVehicleTrafficState, Parked, RightTurnOnRed, Vehicle, VehicleTrafficState,
+    DebugVehicleTrafficState, Parked, RightTurnOnRed, Vehicle, VehicleLaneletPlan,
+    VehicleTrafficState,
 };
 
 mod config;

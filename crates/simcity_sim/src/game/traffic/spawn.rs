@@ -1,5 +1,6 @@
 use super::*;
-use crate::game::transport::{LaneGraph, LaneId, PathPool, VehicleId};
+use crate::game::transport::lanelet::pathfinding::find_route;
+use crate::game::transport::{LaneCostCtx, LaneGraph, LaneId, LaneletGraph, PathPool, VehicleId};
 use rand::{Rng, RngExt};
 
 fn sample_non_medium_driver_speed_factor(rng: &mut impl Rng) -> f32 {
@@ -95,25 +96,34 @@ pub(super) fn spawn_trip_vehicles(
         // within-OD spread would collapse (Rank-4 regression: one corridor saturates).
         let jitter_seed: u64 = p.sim_rng.rng.random_range(1..=u64::MAX);
 
-        // Use lane-based pathfinding if LaneGraph is available
-        let lane_path = if let (Some(lg), true) = (
+        // Lane-level routing (lanelet-aware when the experimental flag is on). Returns the unchanged
+        // Vec<TilePos> route plus a lanelet sidecar; an empty route triggers the road-A* fallback.
+        let (lane_tiles, lanelet_plan) = if let (Some(lg), true) = (
             p.lane_graph.as_ref(),
             start_lane != LaneId::INVALID && goal_lane != LaneId::INVALID,
         ) {
-            let lane_ctx = crate::game::transport::LaneCostCtx {
+            let lane_ctx = LaneCostCtx {
                 grid: &p.grid,
                 traffic: &p.traffic,
                 cfg: &p.path_cfg,
                 jitter_seed,
             };
-            crate::game::transport::find_lane_path(lg, &lane_ctx, start_lane, goal_lane)
+            let empty_llg = LaneletGraph::default();
+            let llg = p.lanelet_graph.as_deref().unwrap_or(&empty_llg);
+            find_route(
+                p.traffic_cfg.experimental_lanelet_intersections,
+                lg,
+                llg,
+                &lane_ctx,
+                start_lane,
+                goal_lane,
+            )
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
 
-        // Convert lane path to tile path for backward compatibility
-        let route = if lane_path.is_empty() {
-            // Fallback to tile-based pathfinding
+        let route = if lane_tiles.is_empty() {
+            // Road-A* fallback when no lane route exists (degenerate maps / missing lane endpoints).
             let mut ctx = PathfindingCtx {
                 time_now_sec: p.time.elapsed_secs_f64(),
                 cfg: &p.path_cfg,
@@ -126,10 +136,8 @@ pub(super) fn spawn_trip_vehicles(
                 max_iterations: None,
             };
             find_road_path_cached(&mut ctx, start, goal)
-        } else if let Some(lg) = p.lane_graph.as_ref() {
-            crate::game::transport::lane_path_to_tiles(&lane_path, lg)
         } else {
-            Vec::new()
+            lane_tiles
         };
 
         // No fallback to astar_path - vehicles must follow lane rules.
@@ -195,6 +203,9 @@ pub(super) fn spawn_trip_vehicles(
                             citizen: msg.citizen,
                             purpose: msg.purpose,
                         },
+                        VehicleLaneletPlan {
+                            entries: lanelet_plan.clone(),
+                        },
                     ));
                 planned += 1;
                 total += 1;
@@ -252,6 +263,9 @@ pub(super) fn spawn_trip_vehicles(
                 citizen: msg.citizen,
                 purpose: msg.purpose,
             },
+            VehicleLaneletPlan {
+                entries: lanelet_plan,
+            },
         ));
         if msg.mode == TripMode::Car {
             e.insert(CarOwner {
@@ -272,6 +286,7 @@ pub(super) struct SpawnTripVehiclesParams<'w, 's> {
     graph: Res<'w, RoadGraph>,
     regions: Res<'w, RegionGraph>,
     lane_graph: Option<Res<'w, LaneGraph>>,
+    lanelet_graph: Option<Res<'w, LaneletGraph>>,
     traffic: Res<'w, TrafficOccupancy>,
     traffic_idx: Res<'w, TrafficIndex>,
     path_cfg: Res<'w, PathfindingConfig>,
