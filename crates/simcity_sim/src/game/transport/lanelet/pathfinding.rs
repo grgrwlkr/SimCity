@@ -13,6 +13,7 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
+use crate::game::intersections::IntersectionId;
 use crate::game::map::TilePos;
 use crate::game::roads::RoadDir;
 use crate::game::transport::lane_graph::{LaneGraph, LaneId};
@@ -254,6 +255,44 @@ pub(crate) fn find_combined_path(
     None
 }
 
+/// Flatten a combined node path into a tile route (the unchanged `Vec<TilePos>` format consumed by
+/// `PathPool`/`drive.rs`) plus a cursor-indexed sidecar: each `(offset, intersection, lanelet)`
+/// records the route-tile index where that lanelet's internal path begins. The route is strictly
+/// 4-adjacent end-to-end (approach -> internal_path[0] -> .. -> internal_path.last() -> exit are all
+/// adjacent by the Phase-1 lanelet build geometry); a defensive guard drops any duplicate seam tile.
+pub(crate) fn flatten(
+    nodes: &[CombinedNode],
+    lg: &LaneGraph,
+    llg: &LaneletGraph,
+) -> (Vec<TilePos>, Vec<(usize, IntersectionId, LaneletId)>) {
+    let mut tiles: Vec<TilePos> = Vec::new();
+    let mut sidecar: Vec<(usize, IntersectionId, LaneletId)> = Vec::new();
+
+    for node in nodes {
+        match node {
+            CombinedNode::Road(l) => {
+                if let Some(lane) = lg.get_lane(*l)
+                    && tiles.last() != Some(&lane.pos)
+                {
+                    tiles.push(lane.pos);
+                }
+            }
+            CombinedNode::Lanelet(ll) => {
+                if let Some(lanelet) = llg.get(*ll) {
+                    sidecar.push((tiles.len(), lanelet.intersection, lanelet.id));
+                    for &t in &lanelet.internal_path {
+                        if tiles.last() != Some(&t) {
+                            tiles.push(t);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (tiles, sidecar)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,5 +501,63 @@ mod tests {
             distinct.len()
         );
         assert!(max_freq < 64, "one route monopolized all 64 seeds");
+    }
+
+    #[test]
+    fn flatten_is_4_adjacent_and_sidecar_offsets_match() {
+        // Approach lanes (0,0)E,(1,0)E + exit lane (3,0)E; cluster tile (2,0) is bridged by the
+        // lanelet internal_path (it is not a road lane in the grid).
+        let mut grid = MapGrid::new(4, 1);
+        set_lane(&mut grid, TilePos { x: 0, y: 0 }, 0, RoadDir::East);
+        set_lane(&mut grid, TilePos { x: 1, y: 0 }, 0, RoadDir::East);
+        set_lane(&mut grid, TilePos { x: 3, y: 0 }, 0, RoadDir::East);
+        let lg = build_lane_graph_inner(&grid, &GraphVersion(1));
+        let a = lg.get_lane_id(TilePos { x: 0, y: 0 }, 0).unwrap();
+        let entry = lg.get_lane_id(TilePos { x: 1, y: 0 }, 0).unwrap();
+        let exit = lg.get_lane_id(TilePos { x: 3, y: 0 }, 0).unwrap();
+
+        let ll = Lanelet {
+            id: LaneletId(0),
+            intersection: IntersectionId(5),
+            entry_lane: entry,
+            exit_lane: exit,
+            maneuver: ManeuverKind::Straight,
+            internal_path: vec![TilePos { x: 2, y: 0 }],
+        };
+        let llg = LaneletGraph {
+            lanelets: vec![ll],
+            version: 1,
+            ..Default::default()
+        };
+
+        let nodes = vec![
+            CombinedNode::Road(a),
+            CombinedNode::Road(entry),
+            CombinedNode::Lanelet(LaneletId(0)),
+            CombinedNode::Road(exit),
+        ];
+        let (tiles, sidecar) = flatten(&nodes, &lg, &llg);
+
+        // Strictly 4-adjacent end-to-end, no duplicate consecutive tile.
+        for w in tiles.windows(2) {
+            assert_eq!((w[1].x - w[0].x).abs() + (w[1].y - w[0].y).abs(), 1);
+            assert_ne!(w[0], w[1]);
+        }
+        assert_eq!(
+            tiles,
+            vec![
+                TilePos { x: 0, y: 0 },
+                TilePos { x: 1, y: 0 },
+                TilePos { x: 2, y: 0 },
+                TilePos { x: 3, y: 0 },
+            ]
+        );
+
+        // Sidecar: one entry whose offset indexes internal_path[0] with matching ids.
+        assert_eq!(sidecar.len(), 1);
+        let (off, isx, llid) = sidecar[0];
+        assert_eq!(tiles[off], llg.get(llid).unwrap().internal_path[0]);
+        assert_eq!(isx, IntersectionId(5));
+        assert_eq!(llid, LaneletId(0));
     }
 }
