@@ -206,6 +206,16 @@ impl IntersectionReservations {
         }
     }
 
+    /// Release `entity` from any exit-tile slot it holds (used on cluster exit, when the entity's
+    /// reservation is dropped). Scans all exit tiles — there are few — so no per-vehicle exit-tile
+    /// bookkeeping is needed. Drops emptied tile entries.
+    pub(crate) fn release_exit_slots_for_entity(&mut self, entity: Entity) {
+        self.exit_slots.retain(|_, slots| {
+            slots.retain(|&e| e != entity);
+            !slots.is_empty()
+        });
+    }
+
     pub(crate) fn exit_slot_count(&self, exit_tile_idx: usize) -> usize {
         self.exit_slots.get(&exit_tile_idx).map_or(0, Vec::len)
     }
@@ -1220,6 +1230,73 @@ fn apply_intersection_reservation_candidates_inner(
     }
 }
 
+/// Whether a reservation should survive this cleanup tick. Mutates `r.state` (Approaching -> Inside
+/// once the vehicle is on a cluster tile). Returns false to drop (vehicle gone / off-route / timed
+/// out / has exited the cluster).
+fn reservation_survives(
+    r: &mut IntersectionReservation,
+    q_vehicles: &Query<&Vehicle>,
+    path_pool: &super::super::super::transport::PathPool,
+    intersections: &IntersectionIndex,
+    id: IntersectionId,
+    now: f64,
+    timeout_secs: f64,
+) -> bool {
+    let Ok(v) = q_vehicles.get(r.vehicle) else {
+        return false;
+    };
+    if v.path_cursor >= path_pool.len(v.path_handle) {
+        return false;
+    }
+    let Some(cur) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
+        return false;
+    };
+    let cur_id = intersections.intersection_id_at(cur);
+    if cur_id == Some(id) {
+        r.state = ReservationState::Inside;
+    }
+    match r.state {
+        ReservationState::Approaching => {
+            // Vehicle rerouted away: drop.
+            let next_id = path_pool
+                .remaining_from(v.path_handle, v.path_cursor)
+                .and_then(|route| route.get(1))
+                .and_then(|t| intersections.intersection_id_at(*t));
+            if next_id != Some(id) {
+                return false;
+            }
+            // If it doesn't enter within a small time budget, release to avoid deadlocks.
+            if now - r.created_at_sec > timeout_secs {
+                return false;
+            }
+        }
+        ReservationState::Inside => {
+            // Release once the vehicle exits the intersection cluster.
+            if cur_id != Some(id) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Release the lanelet ledger holders + exit slots for vehicles whose reservation was dropped this
+/// tick (cluster exit / reroute / timeout). Flag-off both maps are empty so every call is a no-op —
+/// keeping cleanup byte-identical when the arbiter is disabled. This closes the flag-on lifecycle:
+/// `try_admit`/`try_acquire_exit_slot` (arbiter) add, this removes on exit, so `active_mask` and
+/// `exit_slots` never grow unboundedly.
+pub(crate) fn release_intersection_holds(
+    reservations: &mut IntersectionReservations,
+    dropped: &[(IntersectionId, Entity)],
+) {
+    for &(id, entity) in dropped {
+        if let Some(ledger) = reservations.ledger.get_mut(&id) {
+            ledger.release(entity);
+        }
+        reservations.release_exit_slots_for_entity(entity);
+    }
+}
+
 pub fn cleanup_intersection_reservations(
     time: Res<Time<Fixed>>,
     intersections: Res<IntersectionIndex>,
@@ -1230,6 +1307,8 @@ pub fn cleanup_intersection_reservations(
     let now = time.elapsed_secs_f64();
     let timeout_secs = 6.0;
 
+    let mut dropped: Vec<(IntersectionId, Entity)> = Vec::new();
+
     // Snapshot keys to avoid borrowing issues while mutating.
     let ids: Vec<IntersectionId> = reservations.by_intersection.keys().copied().collect();
     for id in ids {
@@ -1238,50 +1317,27 @@ pub fn cleanup_intersection_reservations(
         };
 
         (list as &mut Vec<IntersectionReservation>).retain_mut(|r| {
-            let Ok(v) = q_vehicles.get(r.vehicle) else {
-                return false;
-            };
-            if v.path_cursor >= path_pool.len(v.path_handle) {
-                return false;
+            let keep = reservation_survives(
+                r,
+                &q_vehicles,
+                &path_pool,
+                &intersections,
+                id,
+                now,
+                timeout_secs,
+            );
+            if !keep {
+                dropped.push((id, r.vehicle));
             }
-
-            let Some(cur) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
-                return false;
-            };
-            let cur_id = intersections.intersection_id_at(cur);
-            if cur_id == Some(id) {
-                r.state = ReservationState::Inside;
-            }
-
-            match r.state {
-                ReservationState::Approaching => {
-                    // Vehicle rerouted away: drop.
-                    let next_id = path_pool
-                        .remaining_from(v.path_handle, v.path_cursor)
-                        .and_then(|route| route.get(1))
-                        .and_then(|t| intersections.intersection_id_at(*t));
-                    if next_id != Some(id) {
-                        return false;
-                    }
-                    // If it doesn't enter within a small time budget, release to avoid deadlocks.
-                    if now - r.created_at_sec > timeout_secs {
-                        return false;
-                    }
-                }
-                ReservationState::Inside => {
-                    // Release once the vehicle exits the intersection cluster.
-                    if cur_id != Some(id) {
-                        return false;
-                    }
-                }
-            }
-            true
+            keep
         });
 
         if list.is_empty() {
             reservations.by_intersection.remove(&id);
         }
     }
+
+    release_intersection_holds(&mut reservations, &dropped);
 }
 
 #[cfg(test)]
@@ -1355,5 +1411,35 @@ mod tests_ledger {
 
         // Physical occupancy counts against capacity (phys_occ=2, cap=2 -> no headroom).
         assert!(!res.try_acquire_exit_slot(idx, 2, 2, ent(9)));
+    }
+
+    #[test]
+    fn release_intersection_holds_frees_ledger_and_exit_slots() {
+        use crate::game::transport::ConflictMatrix;
+        let m = ConflictMatrix::from_paths(&[
+            vec![TilePos { x: 0, y: 0 }, TilePos { x: 1, y: 0 }],
+            vec![TilePos { x: 1, y: 0 }, TilePos { x: 1, y: 1 }], // conflicts lanelet 0
+        ]);
+        let id = IntersectionId(0);
+        let (e0, e1) = (ent(1), ent(2));
+
+        let mut res = IntersectionReservations::default();
+        // Admit lanelet 0 (e0) into the ledger and give it an exit slot.
+        assert!(res.ledger_mut(id).try_admit(e0, 0, m.row(0)));
+        assert!(res.try_acquire_exit_slot(100, 0, 2, e0));
+        // While e0 holds lanelet 0, conflicting lanelet 1 (e1) is refused.
+        assert!(!res.ledger_mut(id).try_admit(e1, 1, m.row(1)));
+        assert_eq!(res.exit_slot_count(100), 1);
+
+        // e0 exits the cluster -> its reservation drops -> release frees the ledger holder + slot.
+        release_intersection_holds(&mut res, &[(id, e0)]);
+        assert_eq!(res.exit_slot_count(100), 0, "exit slot freed on exit");
+        assert!(
+            res.ledger_mut(id).try_admit(e1, 1, m.row(1)),
+            "lanelet 1 admittable once e0 released"
+        );
+
+        // Releasing an unknown entity / unknown intersection is a harmless no-op.
+        release_intersection_holds(&mut res, &[(IntersectionId(99), ent(123))]);
     }
 }

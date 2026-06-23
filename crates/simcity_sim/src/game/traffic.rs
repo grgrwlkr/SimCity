@@ -164,22 +164,24 @@ const MAX_UNSTUCK_PER_TICK: usize = 8;
 const SPAWN_THROTTLE_MAX_CONG: f32 = 0.95;
 const SPAWN_THROTTLE_AVG_CONG: f32 = 0.85;
 
-/// Run-condition: the legacy per-vehicle connector-rewrite pipeline
-/// (`mark_vehicles_needing_connector_rewrite` + `rewrite_marked_intersection_connectors`) runs only
-/// when the experimental lanelet routing is OFF. Under the flag the spawned route is already
-/// lanelet-correct, so rewriting its intersection segments with the legacy connector logic would
-/// clobber the route (and invalidate the `VehicleLaneletPlan` cursor offsets).
-fn legacy_connectors_enabled(cfg: Res<TrafficConfig>) -> bool {
-    legacy_connectors_enabled_for(&cfg)
+/// Run-condition: the legacy intersection pipeline — the per-vehicle connector rewrite
+/// (`mark_vehicles_needing_connector_rewrite` + `rewrite_marked_intersection_connectors`) AND the
+/// reservation producers (`collect_/apply_intersection_reservation_candidates`) — runs only when the
+/// experimental lanelet routing is OFF. Under the flag the spawned route is already lanelet-correct
+/// (rewriting it would clobber the route + invalidate `VehicleLaneletPlan` cursor offsets) and the
+/// `arbitrate_lanelet_reservations` arbiter is the sole reservation producer. Exactly one producer
+/// per tick: this predicate and `lanelet_arbiter_enabled` are mutually exclusive.
+fn legacy_intersection_pipeline_enabled(cfg: Res<TrafficConfig>) -> bool {
+    legacy_intersection_pipeline_enabled_for(&cfg)
 }
 
-/// Pure form of [`legacy_connectors_enabled`] for tests.
-pub(crate) fn legacy_connectors_enabled_for(cfg: &TrafficConfig) -> bool {
+/// Pure form of [`legacy_intersection_pipeline_enabled`] for tests.
+pub(crate) fn legacy_intersection_pipeline_enabled_for(cfg: &TrafficConfig) -> bool {
     !cfg.experimental_lanelet_intersections
 }
 
 /// Run condition for the flag-on lanelet intersection arbiter (the inverse of
-/// [`legacy_connectors_enabled`]): the arbiter is the sole reservation producer when the
+/// [`legacy_intersection_pipeline_enabled`]): the arbiter is the sole reservation producer when the
 /// experimental flag is set.
 fn lanelet_arbiter_enabled(cfg: Res<TrafficConfig>) -> bool {
     cfg.experimental_lanelet_intersections
@@ -190,16 +192,26 @@ mod tests_connector_gate {
     use super::*;
 
     #[test]
-    fn legacy_connectors_gated_by_lanelet_flag() {
+    fn legacy_pipeline_and_arbiter_are_mutually_exclusive() {
         let mut cfg = TrafficConfig::default();
+        // Flag off: legacy pipeline runs, arbiter does not.
         assert!(
-            legacy_connectors_enabled_for(&cfg),
-            "legacy connector rewrite must run when the lanelet flag is off"
+            legacy_intersection_pipeline_enabled_for(&cfg),
+            "legacy intersection pipeline must run when the lanelet flag is off"
         );
+        assert!(
+            !cfg.experimental_lanelet_intersections,
+            "arbiter must not run when the flag is off"
+        );
+        // Flag on: arbiter runs, legacy pipeline does not.
         cfg.experimental_lanelet_intersections = true;
         assert!(
-            !legacy_connectors_enabled_for(&cfg),
-            "legacy connector rewrite must be disabled when the lanelet flag is on"
+            !legacy_intersection_pipeline_enabled_for(&cfg),
+            "legacy intersection pipeline must be disabled when the lanelet flag is on"
+        );
+        assert!(
+            cfg.experimental_lanelet_intersections,
+            "arbiter must be the sole producer when the flag is on"
         );
     }
 }
@@ -449,13 +461,13 @@ impl Plugin for TrafficPlugin {
                         .before(cache_intersection_light_state)
                         .before(cache_pedestrian_crossing_state)
                         .before(collect_intersection_reservation_candidates)
-                        .run_if(legacy_connectors_enabled),
+                        .run_if(legacy_intersection_pipeline_enabled),
                     rewrite_marked_intersection_connectors
                         .after(mark_vehicles_needing_connector_rewrite)
                         .before(cache_intersection_light_state)
                         .before(cache_pedestrian_crossing_state)
                         .before(collect_intersection_reservation_candidates)
-                        .run_if(legacy_connectors_enabled),
+                        .run_if(legacy_intersection_pipeline_enabled),
                     cache_intersection_light_state
                         .after(rewrite_marked_intersection_connectors)
                         .before(collect_intersection_reservation_candidates),
@@ -467,13 +479,16 @@ impl Plugin for TrafficPlugin {
                         .after(cache_intersection_light_state)
                         .after(cache_pedestrian_crossing_state)
                         .before(apply_intersection_reservation_candidates)
-                        .before(move_vehicles),
+                        .before(move_vehicles)
+                        .run_if(legacy_intersection_pipeline_enabled),
                     apply_intersection_reservation_candidates
                         .after(collect_intersection_reservation_candidates)
-                        .before(move_vehicles),
+                        .before(move_vehicles)
+                        .run_if(legacy_intersection_pipeline_enabled),
                     // Flag-on sole reservation producer. Ordered after the legacy apply so the two
-                    // never race the shared IntersectionReservations (when the flag is on, legacy
-                    // collect/apply are gated off in T10, making this `.after` vacuous).
+                    // never race the shared IntersectionReservations; flag-on the legacy
+                    // collect/apply are gated off (mutually-exclusive run conditions), making this
+                    // `.after` vacuous.
                     arbitrate_lanelet_reservations
                         .after(apply_intersection_reservation_candidates)
                         .after(cache_intersection_light_state)
