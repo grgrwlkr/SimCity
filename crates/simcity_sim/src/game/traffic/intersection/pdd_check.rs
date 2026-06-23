@@ -64,7 +64,6 @@ pub fn has_right_of_way_obstacle(entry_dir: RoadDir, other_entry_dir: RoadDir) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::roads::RoadKind;
 
     #[test]
     fn main_road_is_the_wider_kind() {

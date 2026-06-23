@@ -316,6 +316,9 @@ pub(crate) fn crosswalk_cells(
             let Some(ncell) = grid.get(n) else {
                 continue;
             };
+            // Intentionally NOT the strict mirror of the lanelet entry/exit predicate: we omit the
+            // one-way wrong-way skip. A pedestrian crosses the full physical roadway on this side
+            // regardless of the road's flow direction, so any road-bearing tile counts.
             if ncell.water || !ncell.road.is_some() || ncell.road.dir == RoadDir::None {
                 continue;
             }
