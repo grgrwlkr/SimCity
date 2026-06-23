@@ -164,6 +164,39 @@ const MAX_UNSTUCK_PER_TICK: usize = 8;
 const SPAWN_THROTTLE_MAX_CONG: f32 = 0.95;
 const SPAWN_THROTTLE_AVG_CONG: f32 = 0.85;
 
+/// Run-condition: the legacy per-vehicle connector-rewrite pipeline
+/// (`mark_vehicles_needing_connector_rewrite` + `rewrite_marked_intersection_connectors`) runs only
+/// when the experimental lanelet routing is OFF. Under the flag the spawned route is already
+/// lanelet-correct, so rewriting its intersection segments with the legacy connector logic would
+/// clobber the route (and invalidate the `VehicleLaneletPlan` cursor offsets).
+fn legacy_connectors_enabled(cfg: Res<TrafficConfig>) -> bool {
+    legacy_connectors_enabled_for(&cfg)
+}
+
+/// Pure form of [`legacy_connectors_enabled`] for tests.
+pub(crate) fn legacy_connectors_enabled_for(cfg: &TrafficConfig) -> bool {
+    !cfg.experimental_lanelet_intersections
+}
+
+#[cfg(test)]
+mod tests_connector_gate {
+    use super::*;
+
+    #[test]
+    fn legacy_connectors_gated_by_lanelet_flag() {
+        let mut cfg = TrafficConfig::default();
+        assert!(
+            legacy_connectors_enabled_for(&cfg),
+            "legacy connector rewrite must run when the lanelet flag is off"
+        );
+        cfg.experimental_lanelet_intersections = true;
+        assert!(
+            !legacy_connectors_enabled_for(&cfg),
+            "legacy connector rewrite must be disabled when the lanelet flag is on"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Stage C (initial): lane-change heuristics (keep-right + overtake) with guardrails
 // ---------------------------------------------------------------------------
@@ -406,12 +439,14 @@ impl Plugin for TrafficPlugin {
                         .before(rewrite_marked_intersection_connectors)
                         .before(cache_intersection_light_state)
                         .before(cache_pedestrian_crossing_state)
-                        .before(collect_intersection_reservation_candidates),
+                        .before(collect_intersection_reservation_candidates)
+                        .run_if(legacy_connectors_enabled),
                     rewrite_marked_intersection_connectors
                         .after(mark_vehicles_needing_connector_rewrite)
                         .before(cache_intersection_light_state)
                         .before(cache_pedestrian_crossing_state)
-                        .before(collect_intersection_reservation_candidates),
+                        .before(collect_intersection_reservation_candidates)
+                        .run_if(legacy_connectors_enabled),
                     cache_intersection_light_state
                         .after(rewrite_marked_intersection_connectors)
                         .before(collect_intersection_reservation_candidates),
