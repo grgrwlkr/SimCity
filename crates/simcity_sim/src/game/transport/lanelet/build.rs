@@ -597,6 +597,82 @@ mod tests {
         (grid, index)
     }
 
+    /// Build a 12x12 grid with a 4x4 cluster at x,y in 4..=7.
+    ///
+    /// Two lanes per direction (lane-tile model, one tile per lane):
+    ///   Eastbound  rows y=4,y=5 : (0..3,y) approach, (8..11,y) exit
+    ///   Westbound  rows y=6,y=7 : (8..11,y) approach, (0..3,y) exit
+    ///   Northbound cols x=4,x=5 : (x,0..3) approach, (x,8..11) exit
+    ///   Southbound cols x=6,x=7 : (x,8..11) approach, (x,0..3) exit
+    fn build_two_lane_cross_grid() -> (MapGrid, IntersectionIndex) {
+        let mut grid = MapGrid::new(12, 12);
+
+        let cluster_tiles: Vec<TilePos> = (4..=7)
+            .flat_map(|x| (4..=7).map(move |y| TilePos { x, y }))
+            .collect();
+        for &pos in &cluster_tiles {
+            set_intersection_tile(&mut grid, pos);
+        }
+
+        for y in [4, 5] {
+            for x in 0..4 {
+                set_road_tile(&mut grid, TilePos { x, y }, RoadDir::East);
+            }
+            for x in 8..12 {
+                set_road_tile(&mut grid, TilePos { x, y }, RoadDir::East);
+            }
+        }
+        for y in [6, 7] {
+            for x in 8..12 {
+                set_road_tile(&mut grid, TilePos { x, y }, RoadDir::West);
+            }
+            for x in 0..4 {
+                set_road_tile(&mut grid, TilePos { x, y }, RoadDir::West);
+            }
+        }
+        for x in [4, 5] {
+            for y in 0..4 {
+                set_road_tile(&mut grid, TilePos { x, y }, RoadDir::North);
+            }
+            for y in 8..12 {
+                set_road_tile(&mut grid, TilePos { x, y }, RoadDir::North);
+            }
+        }
+        for x in [6, 7] {
+            for y in 8..12 {
+                set_road_tile(&mut grid, TilePos { x, y }, RoadDir::South);
+            }
+            for y in 0..4 {
+                set_road_tile(&mut grid, TilePos { x, y }, RoadDir::South);
+            }
+        }
+
+        let id = IntersectionId(0);
+        let key = make_key(&cluster_tiles);
+        let cluster = IntersectionCluster {
+            id,
+            key,
+            tiles: cluster_tiles.clone(),
+            aabb_min: TilePos { x: 4, y: 4 },
+            aabb_max: TilePos { x: 7, y: 7 },
+            centroid_tile: TilePos { x: 4, y: 4 },
+        };
+
+        let mut tile_to_intersection = HashMap::new();
+        for &t in &cluster_tiles {
+            tile_to_intersection.insert(t, id);
+        }
+
+        let index = IntersectionIndex {
+            clusters: vec![cluster],
+            tile_to_intersection,
+            version: 1,
+            ..Default::default()
+        };
+
+        (grid, index)
+    }
+
     #[test]
     fn internal_path_is_strictly_4_adjacent_never_diagonal() {
         // Westbound straight: entry from east side, exit to west side on same row.
@@ -859,6 +935,106 @@ mod tests {
         );
 
         assert!(graph.lanelets_from(LaneId(u32::MAX)).is_empty());
+    }
+
+    #[test]
+    fn matrix_does_not_over_report_parallel_or_opposite_straights() {
+        let (grid, intersection_index) = build_two_lane_cross_grid();
+        let gv = GraphVersion(1);
+        let lane_graph = build_lane_graph_inner(&grid, &gv);
+
+        let mut app = App::new();
+        app.insert_resource(grid)
+            .insert_resource(intersection_index)
+            .insert_resource(lane_graph)
+            .insert_resource(gv)
+            .insert_resource(TrafficConfig {
+                experimental_lanelet_intersections: true,
+                ..Default::default()
+            })
+            .insert_resource(LaneletGraph::default())
+            .insert_resource(LaneletConflictMatrices::default());
+
+        app.add_systems(Update, build_lanelet_graph);
+        app.update();
+
+        let graph = app.world().resource::<LaneletGraph>();
+        let matrices = app.world().resource::<LaneletConflictMatrices>();
+        let ids = graph.of_intersection(IntersectionId(0));
+        let matrix = matrices
+            .by_intersection
+            .get(&IntersectionId(0))
+            .expect("matrix for cluster 0");
+
+        // Classify each lanelet's through-straight axis from its lane-faithful internal path.
+        // A horizontal (eastbound/westbound) through stays on one row; a vertical
+        // (north/south) through stays on one column. Local index == position in `ids`.
+        let mut eastbound: Vec<usize> = Vec::new();
+        let mut westbound: Vec<usize> = Vec::new();
+        let mut northbound: Vec<usize> = Vec::new();
+        for (local, &lid) in ids.iter().enumerate() {
+            let l = graph.get(lid).unwrap();
+            if l.maneuver != ManeuverKind::Straight || l.internal_path.len() < 2 {
+                continue;
+            }
+            let first = l.internal_path[0];
+            let last = *l.internal_path.last().unwrap();
+            let dx = last.x - first.x;
+            let dy = last.y - first.y;
+            match (dx.signum(), dy.signum()) {
+                (1, 0) => eastbound.push(local),
+                (-1, 0) => westbound.push(local),
+                (0, 1) => northbound.push(local),
+                _ => {}
+            }
+        }
+
+        let dump = |local: usize| {
+            let lid = ids[local];
+            graph.get(lid).unwrap().internal_path.clone()
+        };
+
+        assert!(
+            eastbound.len() >= 2,
+            "expected two parallel eastbound throughs, got {} ({:?})",
+            eastbound.len(),
+            eastbound.iter().map(|&i| dump(i)).collect::<Vec<_>>()
+        );
+        assert!(
+            !westbound.is_empty(),
+            "expected at least one westbound through"
+        );
+        assert!(
+            !northbound.is_empty(),
+            "expected at least one northbound through"
+        );
+
+        // PARALLEL same-direction straights: two eastbound throughs must not conflict.
+        let (pa, pb) = (eastbound[0], eastbound[1]);
+        assert!(
+            !matrix.conflicts(pa, pb),
+            "parallel eastbound straights over-report a conflict; paths {:?} vs {:?}",
+            dump(pa),
+            dump(pb)
+        );
+
+        // OPPOSITE straights: an eastbound and a westbound through must not conflict.
+        let (oa, ob) = (eastbound[0], westbound[0]);
+        assert!(
+            !matrix.conflicts(oa, ob),
+            "opposite eastbound/westbound straights over-report a conflict; paths {:?} vs {:?}",
+            dump(oa),
+            dump(ob)
+        );
+
+        // CROSSING pair: an eastbound and a northbound through physically cross the cluster.
+        let (ew, ns) = (eastbound[0], northbound[0]);
+        assert!(
+            matrix.conflicts(ew, ns),
+            "genuinely crossing eastbound/northbound straights must conflict; paths {:?} vs {:?}",
+            dump(ew),
+            dump(ns)
+        );
     }
 
     #[test]
