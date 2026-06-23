@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use crate::game::intersections::{IntersectionId, IntersectionIndex};
 use crate::game::map::{MapGrid, TilePos};
 use crate::game::roads::RoadDir;
+use crate::game::transport::lanelet::conflict::rows_overlap;
 
 use super::super::components::VehicleTrafficState;
 use super::super::{
@@ -45,6 +46,165 @@ pub struct IntersectionReservations {
     /// capacity-starved past the threshold it force-admits one refused approach to break a
     /// cross-intersection circular wait. Reset on the tick a force-admit lands or normal flow resumes.
     stall_ticks: std::collections::HashMap<IntersectionId, u32>,
+    /// Per-intersection lanelet admission ledger (flag-on arbiter substrate; stays empty and unread
+    /// when `experimental_lanelet_intersections` is off, so flag-off is byte-identical).
+    #[allow(dead_code)]
+    ledger: std::collections::HashMap<IntersectionId, IntersectionLedger>,
+    /// Persistent per-exit-tile reserved slots, keyed by exit-tile grid index. A vehicle granted a
+    /// slot holds it across ticks until it physically occupies the tile (then the slot is released),
+    /// so the arbiter never over-admits to one exit tile across ticks. `ArrayVec<Entity, 4>` was
+    /// proposed (compile cap N=4, no heap alloc); kept as `Vec<Entity>` because `arrayvec` is not a
+    /// workspace dependency and slot counts are tiny/short-lived — same precedent as
+    /// `ConflictMatrix`'s `Vec<u64>` over `SmallVec`. `EXIT_SLOT_CAP` enforces the N=4 bound.
+    #[allow(dead_code)]
+    exit_slots: std::collections::HashMap<usize, Vec<Entity>>,
+}
+
+/// Compile-time headroom cap on per-exit-tile reserved slots. The binding runtime gate is
+/// `phys_occ + slots.len() < capacity_per_lane_tile()` (≤2); N=4 is slack, mirroring an
+/// `ArrayVec<Entity, 4>` bound.
+#[allow(dead_code)]
+const EXIT_SLOT_CAP: usize = 4;
+
+/// Per-intersection lanelet admission ledger: which lanelets are currently held, as a bitset of
+/// local lanelet indices (`active_mask`). A candidate lanelet `L` is admissible iff its conflict
+/// row (`ConflictMatrix::row(L)`) shares no bit with `active_mask` — i.e. it conflicts with no
+/// current holder. Collision-safe by construction: an all-or-nothing AND against the held set.
+///
+/// NOTE on semantics (deviation from the plan's informal sketch): `active_mask` is the bitset of
+/// HELD LOCAL INDICES, not the OR of holders' conflict rows. Admission is `!rows_overlap(row(L),
+/// active_mask)` — "does L conflict with any held lanelet". The two readings the plan conflated
+/// ("OR the row in" + "rows_overlap") are only mutually consistent under this index-set reading; the
+/// row-OR reading would admit a genuinely crossing maneuver. Holders store `(Entity, local_idx)`;
+/// `release` rebuilds `active_mask` from the survivors' one-hot index bits.
+#[derive(Default)]
+#[allow(dead_code)]
+pub(crate) struct IntersectionLedger {
+    /// Bitset of currently-held local lanelet indices (NOT the OR of their conflict rows).
+    active_mask: Vec<u64>,
+    /// (holder entity, its held local lanelet index). Source of truth for rebuilding `active_mask`.
+    holders: Vec<(Entity, u32)>,
+    /// Matrix `GraphVersion` these local indices are valid for; reset when the graph rebuilds.
+    built_for_version: u64,
+}
+
+#[allow(dead_code)]
+impl IntersectionLedger {
+    /// Clear all holders and stamp the matrix version these indices are valid for. Called by the
+    /// arbiter when the lanelet graph/matrix is rebuilt (local indices + row widths change).
+    pub(crate) fn reset_for_version(&mut self, version: u64) {
+        self.active_mask.clear();
+        self.holders.clear();
+        self.built_for_version = version;
+    }
+
+    pub(crate) fn built_for_version(&self) -> u64 {
+        self.built_for_version
+    }
+
+    /// Atomically admit lanelet `local_idx` (conflict row `row`) iff it conflicts with no current
+    /// holder (`!rows_overlap(row, active_mask)`). On success set bit `local_idx` in `active_mask`
+    /// and record the holder. A holder already present (same entity) returns `true` without
+    /// re-recording (idempotent within a tick).
+    pub(crate) fn try_admit(&mut self, entity: Entity, local_idx: u32, row: &[u64]) -> bool {
+        if self.holders.iter().any(|&(e, _)| e == entity) {
+            return true;
+        }
+        if rows_overlap(row, &self.active_mask) {
+            return false;
+        }
+        set_bit(&mut self.active_mask, local_idx as usize);
+        self.holders.push((entity, local_idx));
+        true
+    }
+
+    /// Remove `entity` as a holder and rebuild `active_mask` as the OR-fold of the survivors' index
+    /// bits (never XOR). No-op if `entity` is not a holder.
+    pub(crate) fn release(&mut self, entity: Entity) {
+        let before = self.holders.len();
+        self.holders.retain(|&(e, _)| e != entity);
+        if self.holders.len() != before {
+            self.active_mask.clear();
+            for &(_, idx) in &self.holders {
+                set_bit(&mut self.active_mask, idx as usize);
+            }
+        }
+    }
+
+    pub(crate) fn active_mask(&self) -> &[u64] {
+        &self.active_mask
+    }
+
+    pub(crate) fn holder_count(&self) -> usize {
+        self.holders.len()
+    }
+
+    pub(crate) fn holds(&self, entity: Entity) -> bool {
+        self.holders.iter().any(|&(e, _)| e == entity)
+    }
+}
+
+/// Set bit `bit` in a growable bitset, zero-extending as needed.
+#[allow(dead_code)]
+fn set_bit(mask: &mut Vec<u64>, bit: usize) {
+    let word = bit / 64;
+    if mask.len() <= word {
+        mask.resize(word + 1, 0);
+    }
+    mask[word] |= 1u64 << (bit % 64);
+}
+
+#[allow(dead_code)]
+impl IntersectionReservations {
+    /// Mutable per-intersection ledger (created empty on first access).
+    pub(crate) fn ledger_mut(&mut self, id: IntersectionId) -> &mut IntersectionLedger {
+        self.ledger.entry(id).or_default()
+    }
+
+    pub(crate) fn ledger(&self, id: IntersectionId) -> Option<&IntersectionLedger> {
+        self.ledger.get(&id)
+    }
+
+    /// Try to reserve a persistent slot on exit tile `exit_tile_idx` for `entity`. Succeeds iff the
+    /// tile's physical occupancy plus already-reserved slots is below `cap` (the runtime
+    /// `capacity_per_lane_tile`) and the `EXIT_SLOT_CAP` (N=4) headroom is not exceeded. Idempotent:
+    /// an entity already holding a slot returns `true`. Slots are PERSISTENT — released only via
+    /// `release_exit_slot` when the holder physically occupies the tile.
+    pub(crate) fn try_acquire_exit_slot(
+        &mut self,
+        exit_tile_idx: usize,
+        phys_occ: u16,
+        cap: u16,
+        entity: Entity,
+    ) -> bool {
+        let slots = self.exit_slots.entry(exit_tile_idx).or_default();
+        if slots.contains(&entity) {
+            return true;
+        }
+        if slots.len() >= EXIT_SLOT_CAP {
+            return false;
+        }
+        if (phys_occ as usize) + slots.len() >= cap as usize {
+            return false;
+        }
+        slots.push(entity);
+        true
+    }
+
+    /// Release `entity`'s slot on `exit_tile_idx` (it now physically occupies the tile, so it is
+    /// counted in `phys_occ` and no longer needs a reserved slot). No-op if absent.
+    pub(crate) fn release_exit_slot(&mut self, exit_tile_idx: usize, entity: Entity) {
+        if let Some(slots) = self.exit_slots.get_mut(&exit_tile_idx) {
+            slots.retain(|&e| e != entity);
+            if slots.is_empty() {
+                self.exit_slots.remove(&exit_tile_idx);
+            }
+        }
+    }
+
+    pub(crate) fn exit_slot_count(&self, exit_tile_idx: usize) -> usize {
+        self.exit_slots.get(&exit_tile_idx).map_or(0, Vec::len)
+    }
 }
 
 impl IntersectionReservations {
@@ -281,6 +441,8 @@ pub(crate) struct ApplyIntersectionReservationParams<'w, 's> {
 pub(crate) fn reset_intersection_reservations(mut reservations: ResMut<IntersectionReservations>) {
     reservations.by_intersection.clear();
     reservations.stall_ticks.clear();
+    reservations.ledger.clear();
+    reservations.exit_slots.clear();
 }
 
 /// Collect reservation candidates into a shared per-tick buffer.
@@ -1095,5 +1257,79 @@ pub fn cleanup_intersection_reservations(
         if list.is_empty() {
             reservations.by_intersection.remove(&id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests_ledger {
+    use super::*;
+    use crate::game::map::TilePos;
+    use crate::game::transport::ConflictMatrix;
+
+    fn ent(i: u32) -> Entity {
+        Entity::from_raw_u32(i).expect("valid test entity")
+    }
+
+    #[test]
+    fn ledger_atomic_admit_and_or_fold_release() {
+        // Lanelets 0 and 1 share tile (1,0) -> conflict; lanelet 2 is disjoint.
+        let m = ConflictMatrix::from_paths(&[
+            vec![TilePos { x: 0, y: 0 }, TilePos { x: 1, y: 0 }],
+            vec![TilePos { x: 1, y: 0 }, TilePos { x: 1, y: 1 }],
+            vec![TilePos { x: 5, y: 5 }],
+        ]);
+        let (e0, e1, e2) = (ent(1), ent(2), ent(3));
+
+        let mut ledger = IntersectionLedger::default();
+        assert!(ledger.try_admit(e0, 0, m.row(0)), "first admit succeeds");
+        assert!(
+            !ledger.try_admit(e1, 1, m.row(1)),
+            "lanelet 1 conflicts with held lanelet 0 -> refused (no collision)"
+        );
+        assert!(
+            ledger.try_admit(e2, 2, m.row(2)),
+            "disjoint lanelet 2 admits alongside held lanelet 0"
+        );
+        assert_eq!(ledger.holder_count(), 2);
+
+        // Idempotent: re-admitting a current holder is a no-op success.
+        assert!(ledger.try_admit(e0, 0, m.row(0)));
+        assert_eq!(ledger.holder_count(), 2);
+
+        // Release the holder of lanelet 0; active_mask becomes the OR-fold of {2} only, so lanelet 1
+        // (which conflicts only with 0) becomes admittable.
+        ledger.release(e0);
+        assert!(!ledger.holds(e0));
+        assert_eq!(ledger.holder_count(), 1);
+        assert!(
+            ledger.try_admit(e1, 1, m.row(1)),
+            "after releasing lanelet 0, lanelet 1 admits"
+        );
+    }
+
+    #[test]
+    fn exit_slots_persist_until_occupy_and_respect_capacity() {
+        let mut res = IntersectionReservations::default();
+        let idx = 42usize;
+        let (e1, e2, e3) = (ent(1), ent(2), ent(3));
+
+        // cap=2, no physical occupancy: two reserved slots fit, the third is refused.
+        assert!(res.try_acquire_exit_slot(idx, 0, 2, e1));
+        assert!(res.try_acquire_exit_slot(idx, 0, 2, e2));
+        assert!(!res.try_acquire_exit_slot(idx, 0, 2, e3));
+        assert_eq!(res.exit_slot_count(idx), 2);
+
+        // Idempotent re-acquire by an existing holder.
+        assert!(res.try_acquire_exit_slot(idx, 0, 2, e1));
+        assert_eq!(res.exit_slot_count(idx), 2);
+
+        // Release e1 on occupy -> frees a slot -> e3 now fits.
+        res.release_exit_slot(idx, e1);
+        assert_eq!(res.exit_slot_count(idx), 1);
+        assert!(res.try_acquire_exit_slot(idx, 0, 2, e3));
+        assert_eq!(res.exit_slot_count(idx), 2);
+
+        // Physical occupancy counts against capacity (phys_occ=2, cap=2 -> no headroom).
+        assert!(!res.try_acquire_exit_slot(idx, 2, 2, ent(9)));
     }
 }

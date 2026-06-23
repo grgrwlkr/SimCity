@@ -98,6 +98,14 @@ impl ConflictMatrix {
     }
 }
 
+/// True iff bitset rows `a` and `b` share any set bit. Differing lengths are tolerated (the shorter
+/// is zero-extended, since absent words are implicitly 0). The intersection arbiter ANDs a
+/// candidate lanelet's conflict row against the ledger's held-index mask via this helper.
+#[allow(dead_code)]
+pub(crate) fn rows_overlap(a: &[u64], b: &[u64]) -> bool {
+    a.iter().zip(b.iter()).any(|(x, y)| x & y != 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +160,22 @@ mod tests {
         // No crosswalks: crosswalk_base == len.
         let m3 = ConflictMatrix::from_paths(&[vec![TilePos { x: 0, y: 0 }]]);
         assert_eq!(m3.crosswalk_base(), m3.len());
+    }
+
+    #[test]
+    fn rows_overlap_detects_shared_bits_and_tolerates_lengths() {
+        assert!(rows_overlap(&[0b0010], &[0b0011]), "share bit 1");
+        assert!(!rows_overlap(&[0b0100], &[0b0011]), "disjoint bits");
+        assert!(!rows_overlap(&[], &[0b1111]), "empty never overlaps");
+        // Differing lengths: only the overlapping prefix words are compared.
+        assert!(
+            rows_overlap(&[0, 0b1], &[0, 0b1, 0]),
+            "shared bit in 2nd word"
+        );
+        assert!(
+            !rows_overlap(&[0b1], &[0, 0b1]),
+            "bit in a word the shorter side lacks does not overlap"
+        );
     }
 
     #[test]
