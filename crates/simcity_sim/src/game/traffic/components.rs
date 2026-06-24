@@ -318,6 +318,18 @@ pub struct DebugIntersectionConnectorState {
     pub intersection_id: u32,
 }
 
+/// Per-vehicle continuous motion timers (debug/observability for gridlock detection): how long the
+/// vehicle has been continuously moving vs stopped. `stopped_secs` resets when it moves, `moving_secs`
+/// resets when it stops — so a frozen vehicle's `stopped_secs` climbs unbounded (even across stuck
+/// reroutes, since those don't make it move), which is exactly the signal for catching a jam.
+#[derive(Component, Debug, Default, Clone, Copy)]
+pub struct VehicleMotionTimer {
+    /// Seconds the vehicle has been continuously moving (resets to 0 when it stops).
+    pub moving_secs: f32,
+    /// Seconds the vehicle has been continuously stopped (resets to 0 when it moves).
+    pub stopped_secs: f32,
+}
+
 /// Marker component for parked vehicles.
 /// Parked vehicles are visually offset to the side of the road and do not block traffic.
 #[derive(Component, Debug, Clone, Copy)]

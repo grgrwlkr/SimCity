@@ -2,7 +2,71 @@ use bevy::prelude::*;
 
 use crate::game::ids::CitizenId;
 
-use super::{CarOwner, Parked, Vehicle};
+use super::{CarOwner, Parked, Vehicle, VehicleMotionTimer};
+
+/// A vehicle stopped for this long (sim seconds, continuously) is counted "frozen" — past the 60 s
+/// stuck-reroute, so a non-zero `frozen_count` means jam recovery is failing to unstick it.
+const VEHICLE_FROZEN_SECS: f32 = 30.0;
+/// World-units/sec below which a vehicle is "stopped" for motion tracking.
+const VEHICLE_MOTION_SPEED_EPS: f32 = 0.05;
+
+/// Aggregate motion telemetry (debug): the worst continuous stopped/moving streaks + how many
+/// vehicles are frozen. Drives gridlock detection in the Vehicle Debug panel + BRP mirror.
+#[derive(Resource, Debug, Default, Clone, Copy)]
+pub struct VehicleMotionStats {
+    pub max_stopped_secs: f32,
+    pub max_moving_secs: f32,
+    pub frozen_count: u32,
+    /// Tile of the most-stopped vehicle (for locating the jam), or (-1,-1) if none.
+    pub worst_tile_x: i32,
+    pub worst_tile_y: i32,
+}
+
+/// Insert a `VehicleMotionTimer` on every vehicle that lacks one.
+pub(super) fn init_vehicle_motion_timers(
+    mut commands: Commands,
+    q: Query<Entity, (With<Vehicle>, Without<VehicleMotionTimer>)>,
+) {
+    for e in q.iter() {
+        commands.entity(e).insert(VehicleMotionTimer::default());
+    }
+}
+
+/// Update each vehicle's continuous moving/stopped streak from its speed, and aggregate the worst
+/// streaks + frozen count into `VehicleMotionStats`.
+pub(super) fn track_vehicle_motion(
+    time: Res<Time<Fixed>>,
+    mut stats: ResMut<VehicleMotionStats>,
+    mut q: Query<(&Vehicle, &mut VehicleMotionTimer), Without<Parked>>,
+) {
+    let dt = time.delta_secs();
+    let mut max_stopped = 0.0f32;
+    let mut max_moving = 0.0f32;
+    let mut frozen = 0u32;
+    let mut worst = (-1i32, -1i32);
+    for (v, mut mt) in q.iter_mut() {
+        if v.speed.abs() > VEHICLE_MOTION_SPEED_EPS {
+            mt.moving_secs += dt;
+            mt.stopped_secs = 0.0;
+        } else {
+            mt.stopped_secs += dt;
+            mt.moving_secs = 0.0;
+        }
+        if mt.stopped_secs > max_stopped {
+            max_stopped = mt.stopped_secs;
+            worst = (v.tile_pos.x, v.tile_pos.y);
+        }
+        max_moving = max_moving.max(mt.moving_secs);
+        if mt.stopped_secs >= VEHICLE_FROZEN_SECS {
+            frozen += 1;
+        }
+    }
+    stats.max_stopped_secs = max_stopped;
+    stats.max_moving_secs = max_moving;
+    stats.frozen_count = frozen;
+    stats.worst_tile_x = worst.0;
+    stats.worst_tile_y = worst.1;
+}
 
 /// O(1) lookup for persistent citizen-owned cars (CarTour Variant B).
 ///

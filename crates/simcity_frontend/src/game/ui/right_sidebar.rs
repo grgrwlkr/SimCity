@@ -199,6 +199,21 @@ pub(super) fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams
                     ));
                     ui.label(format!("  Stopped: {}, Wait: {}", agg.stopped, agg.waiting));
                     ui.label(format!("  Brake: {}, Accel: {}", braking, agg.accelerating));
+                    if let Some(m) = p.vehicle_motion.as_deref() {
+                        ui.label(format!(
+                            "  Max moving: {:.0}s, max stopped: {:.0}s",
+                            m.max_moving_secs, m.max_stopped_secs
+                        ));
+                        if m.frozen_count > 0 {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(230, 120, 60),
+                                format!(
+                                    "  ⚠ Frozen (>30s): {} @ ({}, {})",
+                                    m.frozen_count, m.worst_tile_x, m.worst_tile_y
+                                ),
+                            );
+                        }
+                    }
                     ui.separator();
                     ui.label("Service vehicles:");
                     ui.label(format!(

@@ -23,7 +23,7 @@ pub(crate) use components::clear_lanelet_plan_on_reroute;
 pub use components::{
     CarOwner, DebugIntersectionConnectorState, DebugManeuverKind, DebugRoadDir, DebugVehicleState,
     DebugVehicleTrafficState, Parked, RightTurnOnRed, Vehicle, VehicleLaneletPlan,
-    VehicleTrafficState,
+    VehicleMotionTimer, VehicleTrafficState,
 };
 
 mod config;
@@ -46,8 +46,11 @@ mod parking;
 use parking::update_parked_vehicle_positions;
 
 mod indices;
-pub use indices::TrafficVehicleCounts;
-use indices::{CarOwnerIndex, track_car_owner_index, track_vehicle_counts};
+use indices::{
+    CarOwnerIndex, init_vehicle_motion_timers, track_car_owner_index, track_vehicle_counts,
+    track_vehicle_motion,
+};
+pub use indices::{TrafficVehicleCounts, VehicleMotionStats};
 
 mod spawn;
 use spawn::{clear_vehicles, spawn_trip_vehicles};
@@ -396,6 +399,7 @@ impl Plugin for TrafficPlugin {
             .init_resource::<TrafficRoadCache>()
             .init_resource::<CarOwnerIndex>()
             .init_resource::<TrafficVehicleCounts>()
+            .init_resource::<VehicleMotionStats>()
             .register_type::<DebugIntersectionConnectorState>()
             .register_type::<DebugManeuverKind>()
             .register_type::<DebugRoadDir>()
@@ -552,6 +556,9 @@ impl Plugin for TrafficPlugin {
                 FixedUpdate,
                 (
                     init_stuck_timers,
+                    init_vehicle_motion_timers,
+                    // Per-vehicle moving/stopped time tracking + gridlock detection (debug).
+                    track_vehicle_motion.after(move_vehicles),
                     update_stuck_timers.after(move_vehicles),
                     // Flag-on mandatory-merge: force a reroute for vehicles whose lanelet never
                     // resolves, after update_stuck_timers (so the bump survives) and before reroute.

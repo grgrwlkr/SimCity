@@ -28,7 +28,7 @@ use crate::game::sim::City;
 use crate::game::state::AppState;
 use crate::game::traffic::{
     ArbiterTickStats, IntersectionReservations, ManeuverKind, ReservationState, TrafficConfig,
-    TrafficIndex, TrafficOccupancy, TrafficVehicleCounts,
+    TrafficIndex, TrafficOccupancy, TrafficVehicleCounts, VehicleMotionStats,
 };
 use crate::game::transport::{
     GraphVersion, LaneGraph, LaneletConflictMatrices, LaneletGraph, PathCache, PathPool,
@@ -152,6 +152,15 @@ pub struct DebugTrafficSnapshot {
     pub occupancy_nonzero_tiles: u32,
     /// Maximum vehicles on a single tile in the latest tick.
     pub occupancy_max_vehicles: u16,
+    /// Longest continuous time (s) any active vehicle has been stopped — gridlock detector.
+    pub max_stopped_secs: f32,
+    /// Longest continuous time (s) any active vehicle has been moving.
+    pub max_moving_secs: f32,
+    /// Active vehicles stopped >= the frozen threshold (a non-zero count means jam recovery is failing).
+    pub frozen_vehicles: u32,
+    /// Tile of the most-stopped vehicle (locate the jam); (-1,-1) when none.
+    pub worst_stopped_tile_x: i32,
+    pub worst_stopped_tile_y: i32,
 }
 
 /// Intersection subsystem snapshot for MCP inspection.
@@ -1179,6 +1188,7 @@ fn update_debug_traffic_snapshot(
     traffic: Option<Res<TrafficIndex>>,
     occupancy: Option<Res<TrafficOccupancy>>,
     counts: Option<Res<TrafficVehicleCounts>>,
+    motion: Option<Res<VehicleMotionStats>>,
     holder: Res<DebugSnapshotEntity>,
     mut q_snapshot: Query<&mut DebugTrafficSnapshot>,
 ) {
@@ -1197,6 +1207,20 @@ fn update_debug_traffic_snapshot(
         snapshot.active_vehicles = 0;
         snapshot.total_vehicles = 0;
         snapshot.parked_vehicles = 0;
+    }
+
+    if let Some(m) = motion.as_deref() {
+        snapshot.max_stopped_secs = m.max_stopped_secs;
+        snapshot.max_moving_secs = m.max_moving_secs;
+        snapshot.frozen_vehicles = m.frozen_count;
+        snapshot.worst_stopped_tile_x = m.worst_tile_x;
+        snapshot.worst_stopped_tile_y = m.worst_tile_y;
+    } else {
+        snapshot.max_stopped_secs = 0.0;
+        snapshot.max_moving_secs = 0.0;
+        snapshot.frozen_vehicles = 0;
+        snapshot.worst_stopped_tile_x = -1;
+        snapshot.worst_stopped_tile_y = -1;
     }
 
     if let Some(idx) = traffic.as_deref() {
