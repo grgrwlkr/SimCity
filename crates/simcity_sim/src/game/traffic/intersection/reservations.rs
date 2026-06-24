@@ -83,6 +83,11 @@ const EXIT_SLOT_CAP: usize = 4;
 pub(crate) struct IntersectionLedger {
     /// Bitset of currently-held local lanelet indices (NOT the OR of their conflict rows).
     active_mask: Vec<u64>,
+    /// Per-tick bitset of crosswalk row indices occupied by pedestrians (P3b). Cleared and re-seeded
+    /// every tick (NOT a persisted holder, never released): a vehicle lanelet whose conflict row
+    /// crosses an active crosswalk fails admission. Index space is the same matrix-row space as
+    /// `active_mask` (crosswalk rows live at `[crosswalk_base, n)`).
+    ped_mask: Vec<u64>,
     /// (holder entity, its held local lanelet index). Source of truth for rebuilding `active_mask`.
     holders: Vec<(Entity, u32)>,
     /// Matrix `GraphVersion` these local indices are valid for; reset when the graph rebuilds.
@@ -99,8 +104,20 @@ impl IntersectionLedger {
     /// arbiter when the lanelet graph/matrix is rebuilt (local indices + row widths change).
     pub(crate) fn reset_for_version(&mut self, version: u64) {
         self.active_mask.clear();
+        self.ped_mask.clear();
         self.holders.clear();
         self.built_for_version = version;
+    }
+
+    /// Clear the per-tick pedestrian crosswalk mask (called before re-seeding each tick).
+    pub(crate) fn clear_ped_mask(&mut self) {
+        self.ped_mask.clear();
+    }
+
+    /// Mark a crosswalk row index as pedestrian-occupied this tick; vehicle lanelets crossing it then
+    /// fail `try_admit`. `crosswalk_row_idx` is a matrix row index (`crosswalk_base + i`).
+    pub(crate) fn set_ped_crosswalk(&mut self, crosswalk_row_idx: usize) {
+        set_bit(&mut self.ped_mask, crosswalk_row_idx);
     }
 
     pub(crate) fn built_for_version(&self) -> u64 {
@@ -115,7 +132,8 @@ impl IntersectionLedger {
         if self.holders.iter().any(|&(e, _)| e == entity) {
             return true;
         }
-        if rows_overlap(row, &self.active_mask) {
+        // Refuse if the lanelet conflicts with a current holder OR an active pedestrian crosswalk.
+        if rows_overlap(row, &self.active_mask) || rows_overlap(row, &self.ped_mask) {
             return false;
         }
         set_bit(&mut self.active_mask, local_idx as usize);
@@ -1423,6 +1441,35 @@ mod tests_ledger {
             ledger.try_admit(e1, 1, m.row(1)),
             "after releasing lanelet 0, lanelet 1 admits"
         );
+    }
+
+    #[test]
+    fn ped_mask_blocks_crossing_lanelet() {
+        // Lanelet 0 [(0,0),(1,0)] crosses crosswalk [(1,0),(1,1)] (shares (1,0)); lanelet 1 doesn't.
+        let m = ConflictMatrix::from_paths_with_crosswalks(
+            &[
+                vec![TilePos { x: 0, y: 0 }, TilePos { x: 1, y: 0 }],
+                vec![TilePos { x: 5, y: 5 }],
+            ],
+            &[vec![TilePos { x: 1, y: 0 }, TilePos { x: 1, y: 1 }]],
+        );
+        let cw = m.crosswalk_base(); // first crosswalk row index
+        let (e0, e1) = (ent(1), ent(2));
+
+        let mut ledger = IntersectionLedger::default();
+        ledger.set_ped_crosswalk(cw);
+        assert!(
+            !ledger.try_admit(e0, 0, m.row(0)),
+            "lanelet crossing an occupied crosswalk is refused"
+        );
+        assert!(
+            ledger.try_admit(e1, 1, m.row(1)),
+            "lanelet not crossing the crosswalk still admits"
+        );
+
+        // Clearing the ped mask re-opens the crossing lanelet (no holder conflicts).
+        ledger.clear_ped_mask();
+        assert!(ledger.try_admit(e0, 0, m.row(0)));
     }
 
     #[test]
