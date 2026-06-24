@@ -678,6 +678,7 @@ mod tests {
                 ]),
             )]),
             version: 1,
+            ..Default::default()
         };
         let ordered = vec![IntersectionId(0)];
 
@@ -772,6 +773,7 @@ mod tests {
                 ]),
             )]),
             version: 1,
+            ..Default::default()
         };
         let ordered = vec![IntersectionId(0)];
         let dirs = [RoadDir::North, RoadDir::East, RoadDir::South, RoadDir::West];
@@ -905,6 +907,7 @@ mod tests {
                 ]),
             )]),
             version: 1,
+            ..Default::default()
         };
         let ordered = vec![IntersectionId(0)];
         let (e0, e1, e2) = (ent(1), ent(2), ent(3));

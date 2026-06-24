@@ -15,6 +15,9 @@ use super::graph::{CrosswalkId, Lanelet, LaneletGraph, LaneletId};
 #[derive(Resource, Default)]
 pub struct LaneletConflictMatrices {
     pub by_intersection: HashMap<IntersectionId, ConflictMatrix>,
+    /// Per-intersection crosswalk sides, in emission order: index `i` here is matrix row
+    /// `crosswalk_base() + i`. The arbiter maps a pedestrian crossing axis to crosswalk row bits.
+    pub crosswalk_sides: HashMap<IntersectionId, Vec<RoadDir>>,
     pub version: u64,
 }
 
@@ -294,13 +297,14 @@ fn reconstruct(goal: TilePos, came_from: &HashMap<TilePos, Option<TilePos>>) -> 
 /// pedestrian crossing that approach road occupies, and that an entering/exiting vehicle's internal
 /// path passes through). Deterministic: sides scanned in `[West, East, South, North]` order, cells
 /// sorted by `(x, y)`, `CrosswalkId` assigned by emission order. A side with no adjacent road is
-/// skipped (no crosswalk emitted).
+/// skipped (no crosswalk emitted). Each entry carries the cluster side (`RoadDir`) it faces, so the
+/// arbiter can map a pedestrian crossing axis to the crosswalks they occupy.
 pub(crate) fn crosswalk_cells(
     cluster: &IntersectionCluster,
     grid: &MapGrid,
-) -> Vec<(CrosswalkId, Vec<TilePos>)> {
+) -> Vec<(CrosswalkId, RoadDir, Vec<TilePos>)> {
     let cluster_tiles: HashSet<TilePos> = cluster.tiles.iter().copied().collect();
-    let mut out: Vec<(CrosswalkId, Vec<TilePos>)> = Vec::new();
+    let mut out: Vec<(CrosswalkId, RoadDir, Vec<TilePos>)> = Vec::new();
 
     for side in [RoadDir::West, RoadDir::East, RoadDir::South, RoadDir::North] {
         let d = side.delta();
@@ -328,7 +332,7 @@ pub(crate) fn crosswalk_cells(
             continue;
         }
         cells.sort_unstable_by_key(|p| (p.x, p.y));
-        out.push((CrosswalkId(out.len() as u32), cells));
+        out.push((CrosswalkId(out.len() as u32), side, cells));
     }
 
     out
@@ -356,6 +360,7 @@ pub fn build_lanelet_graph(
     graph.by_intersection.clear();
     graph.by_entry_lane.clear();
     matrices.by_intersection.clear();
+    matrices.crosswalk_sides.clear();
 
     // Enumerate clusters in Vec order (== IntersectionId order per build_intersection_clusters).
     for cluster in &intersections.clusters {
@@ -494,12 +499,13 @@ pub fn build_lanelet_graph(
 
         // Pedestrian crosswalks become first-class conflict rows appended after the vehicle
         // lanelets, so a maneuver that crosses a crosswalk conflicts with it (row-activation in P3b).
-        let crosswalk_paths: Vec<Vec<TilePos>> = crosswalk_cells(cluster, &grid)
-            .into_iter()
-            .map(|(_, cells)| cells)
-            .collect();
+        let crosswalks = crosswalk_cells(cluster, &grid);
+        let crosswalk_sides: Vec<RoadDir> = crosswalks.iter().map(|(_, side, _)| *side).collect();
+        let crosswalk_paths: Vec<Vec<TilePos>> =
+            crosswalks.into_iter().map(|(_, _, cells)| cells).collect();
         let matrix = ConflictMatrix::from_paths_with_crosswalks(&sorted_paths, &crosswalk_paths);
         matrices.by_intersection.insert(cluster.id, matrix);
+        matrices.crosswalk_sides.insert(cluster.id, crosswalk_sides);
     }
 
     graph.version = gv.0;
@@ -1132,21 +1138,66 @@ mod tests {
             "4-way cross yields one crosswalk per approach side"
         );
         let cluster_set: HashSet<TilePos> = cluster.tiles.iter().copied().collect();
-        for (_, cells) in &cws {
+        for (_, _side, cells) in &cws {
             assert!(!cells.is_empty(), "each crosswalk has cells");
             assert!(
                 cells.iter().all(|c| cluster_set.contains(c)),
                 "crosswalk cells lie on the cluster boundary"
             );
         }
-        // Ids assigned 0..n in emission order.
-        let ids: Vec<u32> = cws.iter().map(|(id, _)| id.0).collect();
+        // Ids assigned 0..n in emission order; sides in [W, E, S, N] scan order.
+        let ids: Vec<u32> = cws.iter().map(|(id, _, _)| id.0).collect();
         assert_eq!(ids, vec![0, 1, 2, 3]);
+        let sides: Vec<RoadDir> = cws.iter().map(|(_, s, _)| *s).collect();
+        assert_eq!(
+            sides,
+            vec![RoadDir::West, RoadDir::East, RoadDir::South, RoadDir::North]
+        );
         // Deterministic across calls.
-        let pairs: Vec<(u32, Vec<TilePos>)> = cws.iter().map(|(i, c)| (i.0, c.clone())).collect();
+        let pairs: Vec<(u32, RoadDir, Vec<TilePos>)> =
+            cws.iter().map(|(i, s, c)| (i.0, *s, c.clone())).collect();
         let cws2 = crosswalk_cells(cluster, &grid);
-        let pairs2: Vec<(u32, Vec<TilePos>)> = cws2.iter().map(|(i, c)| (i.0, c.clone())).collect();
+        let pairs2: Vec<(u32, RoadDir, Vec<TilePos>)> =
+            cws2.iter().map(|(i, s, c)| (i.0, *s, c.clone())).collect();
         assert_eq!(pairs, pairs2, "crosswalk derivation is deterministic");
+    }
+
+    #[test]
+    fn build_stores_crosswalk_sides_per_intersection() {
+        let (grid, intersection_index) = build_cross_grid();
+        let gv = GraphVersion(1);
+        let lane_graph = build_lane_graph_inner(&grid, &gv);
+
+        let mut app = App::new();
+        app.insert_resource(grid)
+            .insert_resource(intersection_index)
+            .insert_resource(lane_graph)
+            .insert_resource(gv)
+            .insert_resource(TrafficConfig {
+                experimental_lanelet_intersections: true,
+                ..Default::default()
+            })
+            .insert_resource(LaneletGraph::default())
+            .insert_resource(LaneletConflictMatrices::default());
+        app.add_systems(Update, build_lanelet_graph);
+        app.update();
+
+        let matrices = app.world().resource::<LaneletConflictMatrices>();
+        let sides = matrices
+            .crosswalk_sides
+            .get(&IntersectionId(0))
+            .expect("crosswalk sides stored for cluster 0");
+        assert_eq!(
+            sides,
+            &vec![RoadDir::West, RoadDir::East, RoadDir::South, RoadDir::North]
+        );
+        // The crosswalk rows are appended after the vehicle lanelets.
+        let matrix = matrices.by_intersection.get(&IntersectionId(0)).unwrap();
+        assert_eq!(
+            matrix.len() - matrix.crosswalk_base(),
+            sides.len(),
+            "one matrix crosswalk row per stored side"
+        );
     }
 
     #[test]
