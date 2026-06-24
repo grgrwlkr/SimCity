@@ -350,7 +350,6 @@ fn idm_accel_world(
 // (moved to `traffic/lane_change.rs`)
 
 mod intersection;
-pub use intersection::IntersectionReservations;
 pub(crate) use intersection::maneuver_kind;
 #[cfg(test)]
 use intersection::plan_intersection_reservations;
@@ -363,6 +362,7 @@ use intersection::{
     mark_vehicles_needing_connector_rewrite, reset_intersection_reservations,
     rewrite_marked_intersection_connectors,
 };
+pub use intersection::{ArbiterTickStats, IntersectionReservations};
 pub use intersection::{ManeuverKind, ReservationState};
 
 #[derive(Component, Debug, Copy, Clone)]
@@ -384,6 +384,7 @@ impl Plugin for TrafficPlugin {
             .init_resource::<intersection::IntersectionLightStateCache>()
             .init_resource::<intersection::PedestrianCrossingStateCache>()
             .init_resource::<ArbiterIndexCache>()
+            .init_resource::<ArbiterTickStats>()
             .init_resource::<TrafficSpatialIndex>()
             .init_resource::<VehicleAggSnapshot>()
             .init_resource::<ParkedVehicleTileIndex>()

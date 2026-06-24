@@ -99,6 +99,20 @@ pub(crate) struct ArbiterInboxVehicle {
     pub tile: TilePos,
 }
 
+/// Flat per-tick arbiter observability, mirrored to BRP by `simcity_debug`. Default (all zero) when
+/// the flag is off (the arbiter never runs).
+#[derive(Resource, Default, Clone, Copy)]
+pub struct ArbiterTickStats {
+    pub admitted: u32,
+    pub refused: u32,
+    pub held_points_max: u32,
+    pub reserved_exit_slots: u32,
+    pub max_approaching_age_ms: u32,
+    /// 1 if any cluster's `stall_ticks` is non-empty (must stay 0 flag-on — the arbiter never
+    /// increments it; non-zero would signal a leaked legacy write).
+    pub stall_tripwire_fired: u32,
+}
+
 /// Pure grant core: emit in-box safety-net rows, then sweep intersections in `ordered_ids` order,
 /// granting candidates atomically against the per-intersection ledger + exit slots, writing the
 /// shared `is_reserved_by` truth (`by_intersection`). Collision-safe by construction (all-or-nothing
@@ -108,6 +122,10 @@ pub(crate) struct ArbiterInboxVehicle {
 /// entry gate (`drive.rs`) step the vehicle in next tick. NEVER touches `stall_ticks` (tripwire).
 ///
 /// The caller MUST have reset each ledger to the current matrix version before calling (T7 contract).
+///
+/// Returns `(admitted, refused)` counts for this tick's observability. Fully order-independent: the
+/// inbox is sorted by entity here and per-id candidates are sorted below, so the input collection
+/// order never affects the output.
 pub(crate) fn arbitrate_grants_inner(
     now: f64,
     ordered_ids: &[IntersectionId],
@@ -115,11 +133,17 @@ pub(crate) fn arbitrate_grants_inner(
     matrices: &LaneletConflictMatrices,
     inbox: &[ArbiterInboxVehicle],
     reservations: &mut IntersectionReservations,
-) {
+) -> (u32, u32) {
+    let mut admitted = 0u32;
+    let mut refused = 0u32;
+
     // In-box safety net (mirrors the legacy collect net, which is gated off flag-on): a car wedged
     // inside the box gets a precise single-tile Inside row so it stays visible to the entry gate and
-    // cleanup, and only blocks maneuvers that actually cross its tile.
-    for iv in inbox {
+    // cleanup, and only blocks maneuvers that actually cross its tile. Sorted by entity so the row
+    // order is input-order independent.
+    let mut inbox_order: Vec<&ArbiterInboxVehicle> = inbox.iter().collect();
+    inbox_order.sort_by_key(|iv| iv.vehicle.to_bits());
+    for iv in inbox_order {
         if reservations.is_reserved_by(iv.intersection, iv.vehicle) {
             continue;
         }
@@ -166,8 +190,10 @@ pub(crate) fn arbitrate_grants_inner(
 
         for cand in order {
             if !cand.ready || !cand.has_downstream_headroom {
+                refused += 1;
                 continue;
             }
+            // Already admitted in a prior tick (still crossing): not a fresh attempt, not refused.
             if reservations.is_reserved_by(id, cand.vehicle) || ledger.holds(cand.vehicle) {
                 continue;
             }
@@ -180,9 +206,11 @@ pub(crate) fn arbitrate_grants_inner(
                 cand.exit_tile_cap,
                 cand.vehicle,
             ) {
+                refused += 1;
                 continue;
             }
             if !ledger.try_admit(cand.vehicle, cand.local_idx as u32, row) {
+                refused += 1;
                 continue;
             }
             // Guaranteed to succeed (pre-checked; single-threaded sweep).
@@ -205,10 +233,13 @@ pub(crate) fn arbitrate_grants_inner(
                     stream: cand.stream,
                     maneuver: cand.maneuver,
                 });
+            admitted += 1;
         }
 
         *reservations.ledger_mut(id) = ledger;
     }
+
+    (admitted, refused)
 }
 
 #[derive(SystemParam)]
@@ -223,6 +254,7 @@ pub(crate) struct ArbitrateLaneletParams<'w, 's> {
     matrices: Res<'w, LaneletConflictMatrices>,
     reservations: ResMut<'w, IntersectionReservations>,
     cache: ResMut<'w, ArbiterIndexCache>,
+    stats: ResMut<'w, ArbiterTickStats>,
     q_lights: Query<'w, 's, &'static TrafficLight>,
     q_vehicles: Query<
         'w,
@@ -412,10 +444,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
             });
     }
 
-    // Deterministic safety-net order.
-    inbox.sort_by_key(|iv| iv.vehicle.to_bits());
-
-    arbitrate_grants_inner(
+    let (admitted, refused) = arbitrate_grants_inner(
         now,
         &ordered,
         &candidates_by_id,
@@ -423,6 +452,20 @@ pub(crate) fn arbitrate_lanelet_reservations(
         &inbox,
         &mut p.reservations,
     );
+
+    // Flat per-tick observability mirror (BRP).
+    let reservations = p.reservations.as_ref();
+    let stall_tripwire_fired = u32::from(reservations.stall_tripwire());
+    let held_points_max = reservations.held_points_max();
+    let reserved_exit_slots = reservations.total_exit_slots();
+    let max_approaching_age_ms = reservations.max_approaching_age_ms(now);
+    let stats = &mut *p.stats;
+    stats.admitted = admitted;
+    stats.refused = refused;
+    stats.held_points_max = held_points_max;
+    stats.reserved_exit_slots = reserved_exit_slots;
+    stats.max_approaching_age_ms = max_approaching_age_ms;
+    stats.stall_tripwire_fired = stall_tripwire_fired;
 }
 
 /// Downstream-link horizon for the spillback gate (mirrors the legacy collect constant).
@@ -576,6 +619,91 @@ mod tests {
             res3.is_reserved_by(IntersectionId(0), inbox_e),
             "in-box vehicle gets a safety-net reservation"
         );
+    }
+
+    #[test]
+    fn arbiter_output_is_input_order_independent() {
+        // Cluster 0: lanelet 0 conflicts 1; lanelet 2 disjoint.
+        let m = LaneletConflictMatrices {
+            by_intersection: HashMap::from([(
+                IntersectionId(0),
+                crate::game::transport::ConflictMatrix::from_paths(&[
+                    vec![TilePos { x: 0, y: 0 }, TilePos { x: 1, y: 0 }],
+                    vec![TilePos { x: 1, y: 0 }, TilePos { x: 1, y: 1 }],
+                    vec![TilePos { x: 5, y: 5 }],
+                ]),
+            )]),
+            version: 1,
+        };
+        let ordered = vec![IntersectionId(0)];
+        let (e0, e1, e2) = (ent(1), ent(2), ent(3));
+
+        let run = |cand_order: Vec<ArbiterGrantCandidate>, inbox: Vec<ArbiterInboxVehicle>| {
+            let mut cands = HashMap::new();
+            cands.insert(IntersectionId(0), cand_order);
+            let mut res = IntersectionReservations::default();
+            let counts = arbitrate_grants_inner(0.0, &ordered, &cands, &m, &inbox, &mut res);
+            // Project to an order+membership-comparable form.
+            let rows: Vec<(u64, ReservationState)> = res
+                .by_intersection
+                .get(&IntersectionId(0))
+                .map(|v| v.iter().map(|r| (r.vehicle.to_bits(), r.state)).collect())
+                .unwrap_or_default();
+            (rows, res.total_exit_slots(), counts)
+        };
+
+        let inbox_a = || {
+            vec![
+                ArbiterInboxVehicle {
+                    vehicle: ent(50),
+                    intersection: IntersectionId(0),
+                    tile: TilePos { x: 9, y: 9 },
+                },
+                ArbiterInboxVehicle {
+                    vehicle: ent(40),
+                    intersection: IntersectionId(0),
+                    tile: TilePos { x: 8, y: 8 },
+                },
+            ]
+        };
+        let inbox_b = || {
+            vec![
+                ArbiterInboxVehicle {
+                    vehicle: ent(40),
+                    intersection: IntersectionId(0),
+                    tile: TilePos { x: 8, y: 8 },
+                },
+                ArbiterInboxVehicle {
+                    vehicle: ent(50),
+                    intersection: IntersectionId(0),
+                    tile: TilePos { x: 9, y: 9 },
+                },
+            ]
+        };
+
+        let out_a = run(
+            vec![
+                cand(e0, 0, 3, vec![TilePos { x: 0, y: 0 }]),
+                cand(e1, 1, 3, vec![TilePos { x: 1, y: 1 }]),
+                cand(e2, 2, 3, vec![TilePos { x: 5, y: 5 }]),
+            ],
+            inbox_a(),
+        );
+        let out_b = run(
+            vec![
+                cand(e2, 2, 3, vec![TilePos { x: 5, y: 5 }]),
+                cand(e1, 1, 3, vec![TilePos { x: 1, y: 1 }]),
+                cand(e0, 0, 3, vec![TilePos { x: 0, y: 0 }]),
+            ],
+            inbox_b(),
+        );
+
+        assert_eq!(
+            out_a, out_b,
+            "arbiter output (rows, exit slots, counts) must be independent of input order"
+        );
+        // Sanity: e0 (conflicts e1, lower entity bits) + e2 granted; e1 refused; 2 inbox safety nets.
+        assert_eq!(out_a.2, (2, 1), "2 admitted, 1 refused");
     }
 
     #[test]

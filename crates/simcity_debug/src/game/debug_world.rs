@@ -27,8 +27,8 @@ use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
 use crate::game::traffic::{
-    IntersectionReservations, ManeuverKind, ReservationState, TrafficConfig, TrafficIndex,
-    TrafficOccupancy, TrafficVehicleCounts,
+    ArbiterTickStats, IntersectionReservations, ManeuverKind, ReservationState, TrafficConfig,
+    TrafficIndex, TrafficOccupancy, TrafficVehicleCounts,
 };
 use crate::game::transport::{
     GraphVersion, LaneGraph, LaneletConflictMatrices, LaneletGraph, PathCache, PathPool,
@@ -625,6 +625,8 @@ struct DebugSnapshotBundle {
     config: DebugConfigSnapshot,
     /// Lanelet graph mirror.
     lanelet: DebugLaneletState,
+    /// Lanelet arbiter ledger mirror.
+    arbiter_ledger: DebugArbiterLedgerState,
 }
 
 impl DebugSnapshotBundle {
@@ -648,6 +650,7 @@ impl DebugSnapshotBundle {
             demand: DebugDemandSnapshot::default(),
             config: DebugConfigSnapshot::default(),
             lanelet: DebugLaneletState::default(),
+            arbiter_ledger: DebugArbiterLedgerState::default(),
         }
     }
 }
@@ -670,6 +673,7 @@ struct DebugSnapshotEnsureQueries<'w, 's> {
     q_demand: Query<'w, 's, (), With<DebugDemandSnapshot>>,
     q_config: Query<'w, 's, (), With<DebugConfigSnapshot>>,
     q_lanelet: Query<'w, 's, (), With<DebugLaneletState>>,
+    q_arbiter_ledger: Query<'w, 's, (), With<DebugArbiterLedgerState>>,
 }
 
 /// Plugin that exposes a small debug snapshot component for MCP inspection.
@@ -693,6 +697,7 @@ impl Plugin for DebugWorldPlugin {
             .register_type::<DebugDemandSnapshot>()
             .register_type::<DebugConfigSnapshot>()
             .register_type::<DebugLaneletState>()
+            .register_type::<DebugArbiterLedgerState>()
             .init_resource::<DebugSnapshotEntity>()
             .add_systems(Startup, spawn_debug_snapshot)
             .add_systems(Update, ensure_debug_snapshot_entity.in_set(GameSet::Ui))
@@ -723,7 +728,11 @@ impl Plugin for DebugWorldPlugin {
             )
             .add_systems(Update, update_debug_demand_snapshot.in_set(GameSet::Ui))
             .add_systems(Update, update_debug_config_snapshot.in_set(GameSet::Ui))
-            .add_systems(Update, update_debug_lanelet_state.in_set(GameSet::Ui));
+            .add_systems(Update, update_debug_lanelet_state.in_set(GameSet::Ui))
+            .add_systems(
+                Update,
+                update_debug_arbiter_ledger_state.in_set(GameSet::Ui),
+            );
     }
 }
 
@@ -770,6 +779,7 @@ fn ensure_debug_snapshot_entity(
     ensure_component::<DebugDemandSnapshot>(&mut entity_cmd, entity, &queries.q_demand);
     ensure_component::<DebugConfigSnapshot>(&mut entity_cmd, entity, &queries.q_config);
     ensure_component::<DebugLaneletState>(&mut entity_cmd, entity, &queries.q_lanelet);
+    ensure_component::<DebugArbiterLedgerState>(&mut entity_cmd, entity, &queries.q_arbiter_ledger);
 
     holder.entity = Some(entity);
 }
@@ -2042,6 +2052,54 @@ fn update_debug_lanelet_state(
         .unwrap_or(0);
 }
 
+/// Lanelet intersection arbiter observability mirror for BRP/MCP inspection (flat scalars; all zero
+/// when the experimental flag is off — the arbiter never runs).
+#[derive(Component, Reflect, Default, Copy, Clone)]
+#[reflect(Component)]
+pub struct DebugArbiterLedgerState {
+    /// Reservations the arbiter granted this tick.
+    pub admitted_this_tick: u32,
+    /// Fresh candidates the arbiter refused this tick.
+    pub refused_this_tick: u32,
+    /// Max held conflict points across all per-intersection ledgers.
+    pub held_points_max: u32,
+    /// Total reserved exit slots across all exit tiles.
+    pub reserved_exit_slots: u32,
+    /// Largest age of any currently-approaching reservation (ms).
+    pub max_approaching_age_ms: u32,
+    /// 1 if any cluster's stall tripwire fired (must stay 0 flag-on; the arbiter never increments it).
+    pub stall_tripwire_fired: u32,
+    /// Reserved for the P3c ring-free force-admit counter; always 0 in P3a.
+    pub ring_force_admits: u32,
+}
+
+/// Update the arbiter ledger debug mirror from the per-tick `ArbiterTickStats`.
+fn update_debug_arbiter_ledger_state(
+    stats: Option<Res<ArbiterTickStats>>,
+    holder: Res<DebugSnapshotEntity>,
+    mut q_snapshot: Query<&mut DebugArbiterLedgerState>,
+) {
+    let Some(entity) = holder.entity else {
+        return;
+    };
+    let Ok(mut snapshot) = q_snapshot.get_mut(entity) else {
+        return;
+    };
+
+    if let Some(s) = stats.as_deref() {
+        snapshot.admitted_this_tick = s.admitted;
+        snapshot.refused_this_tick = s.refused;
+        snapshot.held_points_max = s.held_points_max;
+        snapshot.reserved_exit_slots = s.reserved_exit_slots;
+        snapshot.max_approaching_age_ms = s.max_approaching_age_ms;
+        snapshot.stall_tripwire_fired = s.stall_tripwire_fired;
+    } else {
+        *snapshot = DebugArbiterLedgerState::default();
+    }
+    // P3c liveness counter not yet wired.
+    snapshot.ring_force_admits = 0;
+}
+
 fn set_string(target: &mut String, value: &str) {
     target.clear();
     target.push_str(value);
@@ -2115,6 +2173,40 @@ mod tests {
         assert_eq!(state.max_lanelets_per_intersection, 2);
         assert_eq!(state.max_conflicts_per_lanelet, 1);
         assert_eq!(state.entry_lane_index_size, 2);
+    }
+
+    #[test]
+    fn arbiter_ledger_mirror_reflects_tick_stats() {
+        let mut app = App::new();
+        app.insert_resource(ArbiterTickStats {
+            admitted: 4,
+            refused: 1,
+            held_points_max: 3,
+            reserved_exit_slots: 2,
+            max_approaching_age_ms: 250,
+            stall_tripwire_fired: 0,
+        });
+        let entity = app
+            .world_mut()
+            .spawn(DebugArbiterLedgerState::default())
+            .id();
+        app.insert_resource(DebugSnapshotEntity {
+            entity: Some(entity),
+        });
+        app.add_systems(Update, update_debug_arbiter_ledger_state);
+        app.update();
+
+        let state = app.world().get::<DebugArbiterLedgerState>(entity).unwrap();
+        assert_eq!(state.admitted_this_tick, 4);
+        assert_eq!(state.refused_this_tick, 1);
+        assert_eq!(state.held_points_max, 3);
+        assert_eq!(state.reserved_exit_slots, 2);
+        assert_eq!(state.max_approaching_age_ms, 250);
+        assert_eq!(
+            state.stall_tripwire_fired, 0,
+            "tripwire must stay 0 (arbiter never increments stall_ticks)"
+        );
+        assert_eq!(state.ring_force_admits, 0);
     }
 }
 

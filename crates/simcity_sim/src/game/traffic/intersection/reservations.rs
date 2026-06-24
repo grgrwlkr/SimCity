@@ -51,8 +51,9 @@ pub struct IntersectionReservations {
     #[allow(dead_code)]
     ledger: std::collections::HashMap<IntersectionId, IntersectionLedger>,
     /// Persistent per-exit-tile reserved slots, keyed by exit-tile grid index. A vehicle granted a
-    /// slot holds it across ticks until it physically occupies the tile (then the slot is released),
-    /// so the arbiter never over-admits to one exit tile across ticks. `ArrayVec<Entity, 4>` was
+    /// slot holds it across ticks until its reservation is dropped on cluster exit (then cleanup
+    /// releases it via `release_exit_slots_for_entity`), so the arbiter never over-admits to one
+    /// exit tile across ticks. `ArrayVec<Entity, 4>` was
     /// proposed (compile cap N=4, no heap alloc); kept as `Vec<Entity>` because `arrayvec` is not a
     /// workspace dependency and slot counts are tiny/short-lived — same precedent as
     /// `ConflictMatrix`'s `Vec<u64>` over `SmallVec`. `EXIT_SLOT_CAP` enforces the N=4 bound.
@@ -146,6 +147,11 @@ impl IntersectionLedger {
     pub(crate) fn holds(&self, entity: Entity) -> bool {
         self.holders.iter().any(|&(e, _)| e == entity)
     }
+
+    /// Number of currently-held conflict points (popcount of `active_mask`). Observability.
+    pub(crate) fn active_points(&self) -> u32 {
+        self.active_mask.iter().map(|w| w.count_ones()).sum()
+    }
 }
 
 /// Set bit `bit` in a growable bitset, zero-extending as needed.
@@ -238,6 +244,38 @@ impl IntersectionReservations {
             }
             None => (phys_occ as usize) < cap as usize,
         }
+    }
+
+    /// Max held conflict points across all per-intersection ledgers (observability).
+    pub(crate) fn held_points_max(&self) -> u32 {
+        self.ledger
+            .values()
+            .map(IntersectionLedger::active_points)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Total reserved exit slots across all exit tiles (observability).
+    pub(crate) fn total_exit_slots(&self) -> u32 {
+        self.exit_slots.values().map(|s| s.len() as u32).sum()
+    }
+
+    /// True if any cluster's stall counter is non-empty. Flag-on this MUST stay false — the arbiter
+    /// never increments `stall_ticks`; a non-empty value signals a leaked legacy write (tripwire).
+    pub(crate) fn stall_tripwire(&self) -> bool {
+        !self.stall_ticks.is_empty()
+    }
+
+    /// Largest age (ms) of any currently-Approaching reservation, given the current sim time
+    /// `now` (seconds). Observability for admission latency / starvation.
+    pub(crate) fn max_approaching_age_ms(&self, now: f64) -> u32 {
+        self.by_intersection
+            .values()
+            .flatten()
+            .filter(|r| matches!(r.state, ReservationState::Approaching))
+            .map(|r| ((now - r.created_at_sec).max(0.0) * 1000.0) as u32)
+            .max()
+            .unwrap_or(0)
     }
 }
 

@@ -6,6 +6,7 @@ mod pdd_check;
 mod reservations;
 mod zones;
 
+pub use arbiter::ArbiterTickStats;
 #[allow(unused_imports)]
 pub(crate) use arbiter::{ArbiterIndexCache, arbitrate_lanelet_reservations};
 #[allow(unused_imports)]
