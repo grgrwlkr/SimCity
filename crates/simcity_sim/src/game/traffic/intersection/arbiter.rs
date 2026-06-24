@@ -7,7 +7,7 @@ use crate::game::map::{MapGrid, TilePos};
 use crate::game::pedestrians::PedestrianCrossing;
 use crate::game::roads::RoadDir;
 use crate::game::transport::lanelet::{LaneletGraph, LaneletId};
-use crate::game::transport::{LaneletConflictMatrices, PathPool};
+use crate::game::transport::{LaneGraph, LaneletConflictMatrices, PathPool};
 
 use super::super::components::{VehicleLaneletPlan, VehicleTrafficState};
 use super::super::{
@@ -212,6 +212,25 @@ pub(crate) fn candidate_priority(
     };
     // width step (16) > maneuver max (8) + dir max (3); maneuver step (4) > dir max (3).
     entry_lanes * 16 + maneuver_rank * 4 + dir_precedence(entry_dir)
+}
+
+/// Resolve the lanelet a vehicle is about to enter from the route geometry, used when the sidecar
+/// plan was cleared by a mid-trip reroute (P3c precise-fallback). Maps the approach tile `cur` to its
+/// entry lane and the post-cluster `exit_tile` to its exit lane, then finds the unique lanelet of
+/// intersection `id` with that entry→exit lane pair.
+pub(crate) fn resolve_lanelet_fallback(
+    llg: &LaneletGraph,
+    lanes: &LaneGraph,
+    id: IntersectionId,
+    cur: TilePos,
+    exit_tile: TilePos,
+) -> Option<LaneletId> {
+    let entry_lane = lanes.pos_to_id.get(&cur).copied()?;
+    let exit_lane = lanes.pos_to_id.get(&exit_tile).copied()?;
+    llg.lanelets_from(entry_lane).iter().copied().find(|lid| {
+        llg.get(*lid)
+            .is_some_and(|l| l.exit_lane == exit_lane && l.intersection == id)
+    })
 }
 
 /// A vehicle physically on a cluster tile that needs a safety-net reservation row.
@@ -444,6 +463,7 @@ pub(crate) struct ArbitrateLaneletParams<'w, 's> {
     path_pool: Res<'w, PathPool>,
     llg: Res<'w, LaneletGraph>,
     matrices: Res<'w, LaneletConflictMatrices>,
+    lanes: Res<'w, LaneGraph>,
     reservations: ResMut<'w, IntersectionReservations>,
     cache: ResMut<'w, ArbiterIndexCache>,
     stats: ResMut<'w, ArbiterTickStats>,
@@ -521,6 +541,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
     let spatial = p.spatial.as_ref();
     let path_pool = p.path_pool.as_ref();
     let llg = p.llg.as_ref();
+    let lanes = p.lanes.as_ref();
     let cache = p.cache.as_ref();
     let drive_on_right = p.traffic_cfg.drive_on_right;
 
@@ -554,19 +575,6 @@ pub(crate) fn arbitrate_lanelet_reservations(
         let Some(id) = intersections.intersection_id_at(next) else {
             continue;
         };
-        // Resolve the lanelet the vehicle is about to enter from its sidecar plan.
-        let Some((plan_id, lanelet_id)) = plan.upcoming_lanelet_at(v.path_cursor) else {
-            continue;
-        };
-        if plan_id != id {
-            continue;
-        }
-        let Some(&local_idx) = cache.local_idx.get(&id).and_then(|m| m.get(&lanelet_id)) else {
-            continue;
-        };
-        let Some(lanelet) = llg.get(lanelet_id) else {
-            continue;
-        };
 
         let entry_dir = dir_between_adjacent(cur, next);
         if entry_dir == RoadDir::None {
@@ -590,6 +598,25 @@ pub(crate) fn arbitrate_lanelet_reservations(
         let Some(exit_tile) = exit_tile else {
             continue;
         };
+
+        // Resolve the lanelet: sidecar plan first, else precise-fallback from route geometry (the
+        // plan was cleared by a mid-trip reroute).
+        let lanelet_id = match plan.upcoming_lanelet_at(v.path_cursor) {
+            Some((plan_id, lid)) if plan_id == id => lid,
+            _ => {
+                let Some(lid) = resolve_lanelet_fallback(llg, lanes, id, cur, exit_tile) else {
+                    continue;
+                };
+                lid
+            }
+        };
+        let Some(&local_idx) = cache.local_idx.get(&id).and_then(|m| m.get(&lanelet_id)) else {
+            continue;
+        };
+        let Some(lanelet) = llg.get(lanelet_id) else {
+            continue;
+        };
+
         let Some(exit_cell) = grid.get(exit_tile) else {
             continue;
         };
@@ -1082,6 +1109,82 @@ mod tests {
         assert!(
             ledger.try_admit(ent(2), 1, matrix.row(1)),
             "lanelet crossing the inactive North crosswalk admits"
+        );
+    }
+
+    #[test]
+    fn precise_fallback_resolves_lanelet_from_geometry() {
+        use crate::game::transport::LaneGraph;
+        let mut llg = LaneletGraph::default();
+        llg.lanelets.push(Lanelet {
+            id: LaneletId(0),
+            intersection: IntersectionId(0),
+            entry_lane: LaneId(5),
+            exit_lane: LaneId(9),
+            maneuver: ManeuverKind::Straight,
+            internal_path: vec![TilePos { x: 1, y: 1 }],
+        });
+        llg.lanelets.push(Lanelet {
+            id: LaneletId(1),
+            intersection: IntersectionId(0),
+            entry_lane: LaneId(5),
+            exit_lane: LaneId(8),
+            maneuver: ManeuverKind::RightTurn,
+            internal_path: vec![TilePos { x: 2, y: 1 }],
+        });
+        llg.by_entry_lane
+            .insert(LaneId(5), vec![LaneletId(0), LaneletId(1)]);
+        llg.by_intersection
+            .insert(IntersectionId(0), vec![LaneletId(0), LaneletId(1)]);
+
+        let mut lanes = LaneGraph::default();
+        lanes.pos_to_id.insert(TilePos { x: 0, y: 1 }, LaneId(5)); // approach
+        lanes.pos_to_id.insert(TilePos { x: 9, y: 1 }, LaneId(9)); // straight exit
+        lanes.pos_to_id.insert(TilePos { x: 9, y: 2 }, LaneId(8)); // right-turn exit
+
+        let approach = TilePos { x: 0, y: 1 };
+        assert_eq!(
+            resolve_lanelet_fallback(
+                &llg,
+                &lanes,
+                IntersectionId(0),
+                approach,
+                TilePos { x: 9, y: 1 }
+            ),
+            Some(LaneletId(0)),
+            "entry lane 5 + exit lane 9 -> lanelet 0"
+        );
+        assert_eq!(
+            resolve_lanelet_fallback(
+                &llg,
+                &lanes,
+                IntersectionId(0),
+                approach,
+                TilePos { x: 9, y: 2 }
+            ),
+            Some(LaneletId(1)),
+            "entry lane 5 + exit lane 8 -> lanelet 1"
+        );
+        // Unknown exit tile / wrong intersection -> None.
+        assert_eq!(
+            resolve_lanelet_fallback(
+                &llg,
+                &lanes,
+                IntersectionId(0),
+                approach,
+                TilePos { x: 99, y: 99 }
+            ),
+            None
+        );
+        assert_eq!(
+            resolve_lanelet_fallback(
+                &llg,
+                &lanes,
+                IntersectionId(7),
+                approach,
+                TilePos { x: 9, y: 1 }
+            ),
+            None
         );
     }
 
