@@ -2117,6 +2117,38 @@ fn set_string(target: &mut String, value: &str) {
     target.push_str(value);
 }
 
+fn app_state_label(state: &AppState) -> &'static str {
+    match state {
+        AppState::MainMenu => "MainMenu",
+        AppState::InGame => "InGame",
+        AppState::Paused => "Paused",
+    }
+}
+
+fn sim_speed_label(speed: SimSpeed) -> &'static str {
+    match speed {
+        SimSpeed::Paused => "Paused",
+        SimSpeed::X1 => "X1",
+        SimSpeed::X2 => "X2",
+        SimSpeed::X3 => "X3",
+    }
+}
+
+fn overlay_label(overlay: OverlayMode) -> &'static str {
+    match overlay {
+        OverlayMode::None => "None",
+        OverlayMode::Water => "Water",
+        OverlayMode::Height => "Height",
+        OverlayMode::Zones => "Zones",
+        OverlayMode::Roads => "Roads",
+        OverlayMode::Traffic => "Traffic",
+        OverlayMode::Path => "Path",
+        OverlayMode::ServiceCoverage => "ServiceCoverage",
+        OverlayMode::LandValue => "LandValue",
+        OverlayMode::Pollution => "Pollution",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2146,9 +2178,11 @@ mod tests {
         let mut app = App::new();
 
         let iid = IntersectionId(0);
-        let mut graph = LaneletGraph::default();
-        graph.version = 7;
-        graph.lanelets = vec![make_lanelet(0, iid, 0, 1), make_lanelet(1, iid, 2, 3)];
+        let mut graph = LaneletGraph {
+            version: 7,
+            lanelets: vec![make_lanelet(0, iid, 0, 1), make_lanelet(1, iid, 2, 3)],
+            ..Default::default()
+        };
         graph
             .by_intersection
             .insert(iid, vec![LaneletId(0), LaneletId(1)]);
@@ -2227,37 +2261,5 @@ mod tests {
         assert_eq!(state.yield_refusals, 3);
         assert_eq!(state.left_protected_active, 1);
         assert_eq!(state.ring_force_admits, 0);
-    }
-}
-
-fn app_state_label(state: &AppState) -> &'static str {
-    match state {
-        AppState::MainMenu => "MainMenu",
-        AppState::InGame => "InGame",
-        AppState::Paused => "Paused",
-    }
-}
-
-fn sim_speed_label(speed: SimSpeed) -> &'static str {
-    match speed {
-        SimSpeed::Paused => "Paused",
-        SimSpeed::X1 => "X1",
-        SimSpeed::X2 => "X2",
-        SimSpeed::X3 => "X3",
-    }
-}
-
-fn overlay_label(overlay: OverlayMode) -> &'static str {
-    match overlay {
-        OverlayMode::None => "None",
-        OverlayMode::Water => "Water",
-        OverlayMode::Height => "Height",
-        OverlayMode::Zones => "Zones",
-        OverlayMode::Roads => "Roads",
-        OverlayMode::Traffic => "Traffic",
-        OverlayMode::Path => "Path",
-        OverlayMode::ServiceCoverage => "ServiceCoverage",
-        OverlayMode::LandValue => "LandValue",
-        OverlayMode::Pollution => "Pollution",
     }
 }

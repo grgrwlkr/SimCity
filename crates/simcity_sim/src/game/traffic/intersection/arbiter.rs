@@ -1086,6 +1086,44 @@ mod tests {
     }
 
     #[test]
+    fn ped_seeding_is_crossing_order_independent() {
+        // Two crosswalks (West idx0, North idx1); two crossings on different axes.
+        let m = crate::game::transport::ConflictMatrix::from_paths_with_crosswalks(
+            &[
+                vec![TilePos { x: 0, y: 0 }, TilePos { x: 1, y: 0 }], // lanelet 0 crosses West
+                vec![TilePos { x: 0, y: 2 }, TilePos { x: 1, y: 2 }], // lanelet 1 crosses North
+            ],
+            &[vec![TilePos { x: 1, y: 0 }], vec![TilePos { x: 1, y: 2 }]],
+        );
+        let mut matrices = LaneletConflictMatrices {
+            version: 1,
+            ..Default::default()
+        };
+        matrices.by_intersection.insert(IntersectionId(0), m);
+        matrices
+            .crosswalk_sides
+            .insert(IntersectionId(0), vec![RoadDir::West, RoadDir::North]);
+        let ordered = vec![IntersectionId(0)];
+
+        // axis_ns=true -> West active (blocks lanelet 0); axis_ns=false -> North active (blocks 1).
+        let crossings_a = [(IntersectionId(0), true), (IntersectionId(0), false)];
+        let crossings_b = [(IntersectionId(0), false), (IntersectionId(0), true)];
+
+        let block_result = |crossings: &[(IntersectionId, bool)]| {
+            let mut res = IntersectionReservations::default();
+            let n = seed_ped_masks(&ordered, crossings, &matrices, &mut res);
+            let matrix = matrices.by_intersection.get(&IntersectionId(0)).unwrap();
+            let ledger = res.ledger_mut(IntersectionId(0));
+            let b0 = !ledger.try_admit(ent(1), 0, matrix.row(0));
+            let b1 = !ledger.try_admit(ent(2), 1, matrix.row(1));
+            (n, b0, b1)
+        };
+        assert_eq!(block_result(&crossings_a), block_result(&crossings_b));
+        // Both axes active -> both lanelets blocked (commutative OR seeding).
+        assert_eq!(block_result(&crossings_a), (2, true, true));
+    }
+
+    #[test]
     fn arbiter_output_is_input_order_independent() {
         // Cluster 0: lanelet 0 conflicts 1; lanelet 2 disjoint.
         let m = LaneletConflictMatrices {
