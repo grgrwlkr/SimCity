@@ -357,10 +357,11 @@ use intersection::plan_intersection_reservations;
 #[cfg(test)]
 use intersection::rewrite_intersection_connectors;
 use intersection::{
-    ApproachFairness, ArbiterIndexCache, apply_intersection_reservation_candidates,
-    arbitrate_lanelet_reservations, cache_intersection_light_state,
-    cache_pedestrian_crossing_state, cleanup_intersection_reservations,
-    collect_intersection_reservation_candidates, mark_vehicles_needing_connector_rewrite,
+    ApproachFairness, ArbiterIndexCache, LaneletStallTracker,
+    apply_intersection_reservation_candidates, arbitrate_lanelet_reservations,
+    cache_intersection_light_state, cache_pedestrian_crossing_state,
+    cleanup_intersection_reservations, collect_intersection_reservation_candidates,
+    mark_vehicles_needing_connector_rewrite, nudge_lanelet_stall_reroute,
     reset_intersection_reservations, rewrite_marked_intersection_connectors,
 };
 pub use intersection::{ArbiterTickStats, IntersectionReservations};
@@ -387,6 +388,7 @@ impl Plugin for TrafficPlugin {
             .init_resource::<ArbiterIndexCache>()
             .init_resource::<ArbiterTickStats>()
             .init_resource::<ApproachFairness>()
+            .init_resource::<LaneletStallTracker>()
             .init_resource::<TrafficSpatialIndex>()
             .init_resource::<VehicleAggSnapshot>()
             .init_resource::<ParkedVehicleTileIndex>()
@@ -542,6 +544,12 @@ impl Plugin for TrafficPlugin {
                 (
                     init_stuck_timers,
                     update_stuck_timers.after(move_vehicles),
+                    // Flag-on mandatory-merge: force a reroute for vehicles whose lanelet never
+                    // resolves, after update_stuck_timers (so the bump survives) and before reroute.
+                    nudge_lanelet_stall_reroute
+                        .after(update_stuck_timers)
+                        .before(resolve_stuck_vehicles)
+                        .run_if(lanelet_arbiter_enabled),
                     resolve_stuck_vehicles.after(update_stuck_timers),
                     recover_stuck_returning_service_vehicles.after(update_stuck_timers),
                 )

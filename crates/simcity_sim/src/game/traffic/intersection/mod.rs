@@ -8,7 +8,10 @@ mod zones;
 
 pub use arbiter::ArbiterTickStats;
 #[allow(unused_imports)]
-pub(crate) use arbiter::{ApproachFairness, ArbiterIndexCache, arbitrate_lanelet_reservations};
+pub(crate) use arbiter::{
+    ApproachFairness, ArbiterIndexCache, LaneletStallTracker, arbitrate_lanelet_reservations,
+    nudge_lanelet_stall_reroute,
+};
 #[allow(unused_imports)]
 pub(crate) use connectors::{
     connector_tiles_for_maneuver, mark_vehicles_needing_connector_rewrite,

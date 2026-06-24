@@ -107,6 +107,19 @@ pub struct ApproachFairness {
     pub wait_ticks: HashMap<(IntersectionId, RoadDir), u16>,
 }
 
+/// Per-vehicle count of consecutive ticks a vehicle was approaching a cluster but its lanelet could
+/// NOT be resolved (neither sidecar nor route-geometry fallback) — a genuine routing error, not
+/// normal yielding. Past `LANELET_STALL_REROUTE_TICKS` the mandatory-merge nudge forces a reroute.
+#[derive(Resource, Default)]
+pub struct LaneletStallTracker {
+    pub unresolved: HashMap<Entity, u32>,
+}
+
+/// Ticks of unresolved-lanelet approach before forcing a reroute (P3c mandatory-merge). 20 ticks =
+/// 2 s at 10 Hz — short, because an unresolved lanelet is an error state, not a normal wait (a red
+/// light yields with a resolved lanelet and is NOT tracked here).
+const LANELET_STALL_REROUTE_TICKS: u32 = 20;
+
 /// Outcome of the ПДД readiness check for one approaching vehicle.
 pub(crate) struct Readiness {
     pub ready: bool,
@@ -517,6 +530,7 @@ pub(crate) struct ArbitrateLaneletParams<'w, 's> {
     cache: ResMut<'w, ArbiterIndexCache>,
     stats: ResMut<'w, ArbiterTickStats>,
     fairness: ResMut<'w, ApproachFairness>,
+    stall_tracker: ResMut<'w, LaneletStallTracker>,
     left_turn_demand: ResMut<'w, LeftTurnDemand>,
     q_lights: Query<'w, 's, &'static TrafficLight>,
     q_pedestrians: Query<'w, 's, &'static PedestrianCrossing>,
@@ -599,6 +613,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
 
     let mut candidates_by_id: HashMap<IntersectionId, Vec<ArbiterGrantCandidate>> = HashMap::new();
     let mut inbox: Vec<ArbiterInboxVehicle> = Vec::new();
+    let mut unresolved_this_tick: HashSet<Entity> = HashSet::new();
 
     for (e, v, state, plan) in p.q_vehicles.iter() {
         let Some(cur) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
@@ -671,12 +686,15 @@ pub(crate) fn arbitrate_lanelet_reservations(
         // plan was cleared by a mid-trip reroute).
         let lanelet_id = match plan.upcoming_lanelet_at(v.path_cursor) {
             Some((plan_id, lid)) if plan_id == id => lid,
-            _ => {
-                let Some(lid) = resolve_lanelet_fallback(llg, lanes, id, cur, exit_tile) else {
+            _ => match resolve_lanelet_fallback(llg, lanes, id, cur, exit_tile) {
+                Some(lid) => lid,
+                None => {
+                    // Approaching a cluster but no lanelet resolves -> a routing error; track it for
+                    // the mandatory-merge reroute (P3c).
+                    unresolved_this_tick.insert(e);
                     continue;
-                };
-                lid
-            }
+                }
+            },
         };
         let Some(&local_idx) = cache.local_idx.get(&id).and_then(|m| m.get(&lanelet_id)) else {
             continue;
@@ -811,6 +829,17 @@ pub(crate) fn arbitrate_lanelet_reservations(
         }
     }
 
+    // P3c mandatory-merge: count consecutive unresolved-lanelet approaches; drop entities that
+    // resolved or stopped approaching. The nudge system reroutes those over the threshold.
+    let tracker = &mut *p.stall_tracker;
+    tracker
+        .unresolved
+        .retain(|e, _| unresolved_this_tick.contains(e));
+    for e in unresolved_this_tick {
+        let c = tracker.unresolved.entry(e).or_insert(0);
+        *c = c.saturating_add(1);
+    }
+
     // Flat per-tick observability mirror (BRP).
     let reservations = p.reservations.as_ref();
     let stall_tripwire_fired = u32::from(reservations.stall_tripwire());
@@ -832,6 +861,23 @@ pub(crate) fn arbitrate_lanelet_reservations(
 
 /// Downstream-link horizon for the spillback gate (mirrors the legacy collect constant).
 const DOWNSTREAM_LINK_HORIZON_TILES: usize = 3;
+
+/// Mandatory-merge nudge (P3c): a vehicle that has been approaching a cluster with an unresolvable
+/// lanelet for `LANELET_STALL_REROUTE_TICKS` is forced to reroute by maxing its stuck timer, so
+/// `resolve_stuck_vehicles` re-paths it from its actual tile next tick (clearing the stale sidecar).
+/// Reuses the existing reroute machinery rather than a forbidden force-admit. Flag-on only.
+pub(crate) fn nudge_lanelet_stall_reroute(
+    tracker: Res<LaneletStallTracker>,
+    mut q: Query<&mut super::super::stuck::StuckTimer>,
+) {
+    for (&e, &ticks) in tracker.unresolved.iter() {
+        if ticks >= LANELET_STALL_REROUTE_TICKS
+            && let Ok(mut st) = q.get_mut(e)
+        {
+            st.secs = st.secs.max(super::super::STUCK_REROUTE_SECS);
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1252,6 +1298,38 @@ mod tests {
         assert!(
             ledger.try_admit(ent(2), 1, matrix.row(1)),
             "lanelet crossing the inactive North crosswalk admits"
+        );
+    }
+
+    #[test]
+    fn mandatory_merge_nudge_bumps_stuck_timer_over_threshold() {
+        use super::super::super::stuck::StuckTimer;
+        let mk = || StuckTimer {
+            secs: 0.0,
+            last_tile: TilePos { x: 0, y: 0 },
+            last_progress: 0.0,
+            uturn_attempted: false,
+        };
+        let mut app = App::new();
+        let over = app.world_mut().spawn(mk()).id();
+        let under = app.world_mut().spawn(mk()).id();
+
+        let mut tracker = LaneletStallTracker::default();
+        tracker.unresolved.insert(over, LANELET_STALL_REROUTE_TICKS);
+        tracker.unresolved.insert(under, 1);
+        app.insert_resource(tracker);
+        app.add_systems(Update, nudge_lanelet_stall_reroute);
+        app.update();
+
+        assert!(
+            app.world().get::<StuckTimer>(over).unwrap().secs
+                >= super::super::super::STUCK_REROUTE_SECS,
+            "an over-threshold unresolved vehicle is forced to reroute"
+        );
+        assert_eq!(
+            app.world().get::<StuckTimer>(under).unwrap().secs,
+            0.0,
+            "an under-threshold vehicle is untouched"
         );
     }
 
