@@ -78,6 +78,9 @@ pub fn create_vehicle_with_route(
 // Basic vehicle behavior and trip completion
 mod basic_behavior;
 
+// Flag-on lanelet arbiter end-to-end integration (P3c gate)
+mod lanelet_arbiter;
+
 // Intersection reservation system
 mod intersection_reservations;
 
