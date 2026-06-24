@@ -2,7 +2,9 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 
-use crate::game::intersections::{IntersectionId, IntersectionIndex, LeftTurnDemand, TrafficLight};
+use crate::game::intersections::{
+    IntersectionId, IntersectionIndex, LeftTurnDemand, TrafficLight, cluster_has_open_exit,
+};
 use crate::game::map::{MapGrid, TilePos};
 use crate::game::pedestrians::PedestrianCrossing;
 use crate::game::roads::RoadDir;
@@ -862,6 +864,39 @@ pub(crate) fn arbitrate_lanelet_reservations(
 /// Downstream-link horizon for the spillback gate (mirrors the legacy collect constant).
 const DOWNSTREAM_LINK_HORIZON_TILES: usize = 3;
 
+/// Advisory ring-free topology status (P3c, WARN-only — the user chose to warn, not block). Counts
+/// clusters with no open-road exit; a likely gridlock-ring the arbiter's liveness assumes away.
+#[derive(Resource, Default)]
+pub struct RingTopologyStatus {
+    pub clusters_without_open_exit: u32,
+}
+
+/// Flag-on advisory: on a graph rebuild, count clusters with no open-road exit and `warn!` once per
+/// version. Never blocks a road edit — it only surfaces a likely ring (no drain) to the log + BRP.
+pub(crate) fn check_ring_free_topology(
+    intersections: Res<IntersectionIndex>,
+    grid: Res<MapGrid>,
+    mut status: ResMut<RingTopologyStatus>,
+    mut last_version: Local<u64>,
+) {
+    if *last_version == intersections.version {
+        return;
+    }
+    *last_version = intersections.version;
+    let count = intersections
+        .clusters
+        .iter()
+        .filter(|c| !cluster_has_open_exit(c, &grid, &intersections))
+        .count() as u32;
+    status.clusters_without_open_exit = count;
+    if count > 0 {
+        warn!(
+            "ring-free topology: {count} intersection cluster(s) have no open-road exit (possible \
+             gridlock ring); the lanelet arbiter's liveness assumes drainable clusters"
+        );
+    }
+}
+
 /// Mandatory-merge nudge (P3c): a vehicle that has been approaching a cluster with an unresolvable
 /// lanelet for `LANELET_STALL_REROUTE_TICKS` is forced to reroute by maxing its stuck timer, so
 /// `resolve_stuck_vehicles` re-paths it from its actual tile next tick (clearing the stale sidecar).
@@ -1299,6 +1334,40 @@ mod tests {
             ledger.try_admit(ent(2), 1, matrix.row(1)),
             "lanelet crossing the inactive North crosswalk admits"
         );
+    }
+
+    #[test]
+    fn cluster_open_exit_true_with_adjacent_road_false_when_enclosed() {
+        use crate::game::intersections::{IntersectionCluster, IntersectionIndex, IntersectionKey};
+        let center = TilePos { x: 2, y: 2 };
+        let cluster = IntersectionCluster {
+            id: IntersectionId(0),
+            key: IntersectionKey {
+                aabb_min: center,
+                aabb_max: center,
+                tile_count: 1,
+                tiles_hash: 0,
+            },
+            tiles: vec![center],
+            aabb_min: center,
+            aabb_max: center,
+            centroid_tile: center,
+        };
+        let mut index = IntersectionIndex {
+            clusters: vec![cluster.clone()],
+            version: 1,
+            ..Default::default()
+        };
+        index.tile_to_intersection.insert(center, IntersectionId(0));
+
+        // No adjacent road -> no open exit (a fully enclosed cluster).
+        let grid_enclosed = MapGrid::new(5, 5);
+        assert!(!cluster_has_open_exit(&cluster, &grid_enclosed, &index));
+
+        // An adjacent non-cluster road tile -> open exit.
+        let mut grid_open = MapGrid::new(5, 5);
+        set_road(&mut grid_open, TilePos { x: 1, y: 2 }, RoadKind::TwoLane);
+        assert!(cluster_has_open_exit(&cluster, &grid_open, &index));
     }
 
     #[test]

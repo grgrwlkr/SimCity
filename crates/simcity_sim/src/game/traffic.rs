@@ -357,9 +357,9 @@ use intersection::plan_intersection_reservations;
 #[cfg(test)]
 use intersection::rewrite_intersection_connectors;
 use intersection::{
-    ApproachFairness, ArbiterIndexCache, LaneletStallTracker,
+    ApproachFairness, ArbiterIndexCache, LaneletStallTracker, RingTopologyStatus,
     apply_intersection_reservation_candidates, arbitrate_lanelet_reservations,
-    cache_intersection_light_state, cache_pedestrian_crossing_state,
+    cache_intersection_light_state, cache_pedestrian_crossing_state, check_ring_free_topology,
     cleanup_intersection_reservations, collect_intersection_reservation_candidates,
     mark_vehicles_needing_connector_rewrite, nudge_lanelet_stall_reroute,
     reset_intersection_reservations, rewrite_marked_intersection_connectors,
@@ -389,6 +389,7 @@ impl Plugin for TrafficPlugin {
             .init_resource::<ArbiterTickStats>()
             .init_resource::<ApproachFairness>()
             .init_resource::<LaneletStallTracker>()
+            .init_resource::<RingTopologyStatus>()
             .init_resource::<TrafficSpatialIndex>()
             .init_resource::<VehicleAggSnapshot>()
             .init_resource::<ParkedVehicleTileIndex>()
@@ -414,6 +415,14 @@ impl Plugin for TrafficPlugin {
                 clear_vehicles
                     .in_set(GameSet::CommandApply)
                     .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
+            )
+            // Flag-on advisory: warn (never block) when a cluster has no open-road exit (ring).
+            .add_systems(
+                Update,
+                check_ring_free_topology
+                    .in_set(GameSet::GraphUpdate)
+                    .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused)))
+                    .run_if(lanelet_arbiter_enabled),
             )
             // Simulation - Part 1: occupancy, state updates, spawning
             .add_systems(

@@ -107,6 +107,39 @@ impl IntersectionIndex {
     }
 }
 
+/// True iff this cluster has an "open exit" — at least one adjacent road tile that is NOT itself a
+/// cluster tile, i.e. it touches open road and can drain off the cluster. A cluster with no open exit
+/// (fully enclosed by other clusters) is a likely ring-topology problem: the flag-on arbiter's
+/// liveness argument (the ascending-`IntersectionId` sweep is a DAG only on drainable maps) assumes
+/// every cluster is drainable. This is a COARSE local check (it catches enclosed clusters, not every
+/// large cluster-cycle); full cluster-cycle (SCC) drainage analysis is a future refinement. Used by
+/// the flag-on advisory `RingTopologyStatus` warning — it never blocks a road edit.
+pub fn cluster_has_open_exit(
+    cluster: &IntersectionCluster,
+    grid: &MapGrid,
+    index: &IntersectionIndex,
+) -> bool {
+    for &t in &cluster.tiles {
+        for dir in [RoadDir::West, RoadDir::East, RoadDir::South, RoadDir::North] {
+            let d = dir.delta();
+            let n = TilePos {
+                x: t.x + d.x,
+                y: t.y + d.y,
+            };
+            let Some(cell) = grid.get(n) else {
+                continue;
+            };
+            if cell.water || !cell.road.is_some() || cell.road.dir == RoadDir::None {
+                continue;
+            }
+            if index.intersection_id_at(n).is_none() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub fn reset_intersections(mut index: ResMut<IntersectionIndex>) {
     index.version = 0;
     index.clusters.clear();

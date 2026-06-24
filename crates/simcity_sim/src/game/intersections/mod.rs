@@ -11,7 +11,7 @@ mod render;
 pub use index::IntersectionCluster;
 pub use index::{
     IntersectionId, IntersectionIndex, IntersectionKey, IntersectionPriority,
-    IntersectionPriorityMarker, build_intersection_clusters,
+    IntersectionPriorityMarker, build_intersection_clusters, cluster_has_open_exit,
 };
 pub use lights::{LeftTurnDemand, LightPhase, TrafficLight};
 pub(crate) use render::{render_traffic_lights, sync_traffic_light_visuals};
