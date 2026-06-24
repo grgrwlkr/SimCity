@@ -1,6 +1,6 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::game::intersections::{IntersectionId, IntersectionIndex, LeftTurnDemand, TrafficLight};
 use crate::game::map::{MapGrid, TilePos};
@@ -90,10 +90,21 @@ pub(crate) struct ArbiterGrantCandidate {
     /// True when admission is a right-turn-on-red (a yield maneuver: only granted when the cluster
     /// is otherwise clear).
     pub is_right_on_red: bool,
+    /// Approach travel direction — the post-distance помеха-справа sort tiebreak (P3c).
+    pub entry_dir: RoadDir,
     pub stream: StreamKey,
     pub maneuver: ManeuverKind,
     /// The lanelet's internal-path tiles (precise reservation tiles for cleanup/observability).
     pub tiles: Vec<TilePos>,
+}
+
+/// Per-approach starvation aging (P3c cross-feeder fairness): consecutive ticks an approach
+/// `(intersection, entry direction)` had a candidate present but none granted. Feeds the capped
+/// `aging` term of `candidate_priority` so a long-refused approach climbs WITHIN its width+maneuver
+/// class and is eventually served (bounded fairness). Empty / unused flag-off.
+#[derive(Resource, Default)]
+pub struct ApproachFairness {
+    pub wait_ticks: HashMap<(IntersectionId, RoadDir), u16>,
 }
 
 /// Outcome of the ПДД readiness check for one approaching vehicle.
@@ -197,21 +208,21 @@ fn dir_precedence(dir: RoadDir) -> u8 {
     }
 }
 
-/// ПДД admission priority (Task 2), folded into one `u8` so the grant sweep's sort stays a valid
-/// total order: width (approach lanes) dominates, then maneuver (Straight > Right > Left/Other),
-/// then помеха-справа direction precedence. `entity.to_bits` remains the final tiebreak in the sweep.
-pub(crate) fn candidate_priority(
-    entry_lanes: u8,
-    maneuver: ManeuverKind,
-    entry_dir: RoadDir,
-) -> u8 {
+/// ПДД admission priority (Task 2 + P3c fairness): width (approach lanes) dominates, then maneuver
+/// (Straight > Right > Left/Other), then a fairness `aging` term — CAPPED so it can only reorder
+/// candidates WITHIN the same width+maneuver class, never crossing the width or maneuver boundary (a
+/// side road never out-prioritises the main road by waiting). помеха-справа direction precedence is
+/// NOT folded in here: it is a post-distance tiebreak in the sweep, so it can never dominate distance
+/// (which would starve a low-precedence approach — the P3b-review finding).
+pub(crate) fn candidate_priority(entry_lanes: u8, maneuver: ManeuverKind, aging: u8) -> u8 {
+    let width_rank = (entry_lanes / 2).saturating_sub(1); // Two->0, Four->1, Six->2
     let maneuver_rank: u8 = match maneuver {
         ManeuverKind::Straight => 2,
         ManeuverKind::RightTurn => 1,
         ManeuverKind::LeftTurn | ManeuverKind::Other => 0,
     };
-    // width step (16) > maneuver max (8) + dir max (3); maneuver step (4) > dir max (3).
-    entry_lanes * 16 + maneuver_rank * 4 + dir_precedence(entry_dir)
+    // width step (64) > maneuver max (32) + aging max (15); maneuver step (16) > aging max (15).
+    width_rank * 64 + maneuver_rank * 16 + aging.min(15)
 }
 
 /// Resolve the lanelet a vehicle is about to enter from the route geometry, used when the sidecar
@@ -417,6 +428,9 @@ pub(crate) fn arbitrate_grants_inner(
             b.priority
                 .cmp(&a.priority)
                 .then_with(|| a.dist_to_entry.total_cmp(&b.dist_to_entry))
+                // помеха-справа: a post-distance tiebreak (higher precedence wins) so it never
+                // dominates distance — a closer/long-waiting approach is not starved by direction.
+                .then_with(|| dir_precedence(b.entry_dir).cmp(&dir_precedence(a.entry_dir)))
                 .then_with(|| a.vehicle.to_bits().cmp(&b.vehicle.to_bits()))
         });
 
@@ -502,6 +516,7 @@ pub(crate) struct ArbitrateLaneletParams<'w, 's> {
     reservations: ResMut<'w, IntersectionReservations>,
     cache: ResMut<'w, ArbiterIndexCache>,
     stats: ResMut<'w, ArbiterTickStats>,
+    fairness: ResMut<'w, ApproachFairness>,
     left_turn_demand: ResMut<'w, LeftTurnDemand>,
     q_lights: Query<'w, 's, &'static TrafficLight>,
     q_pedestrians: Query<'w, 's, &'static PedestrianCrossing>,
@@ -729,7 +744,14 @@ pub(crate) fn arbitrate_lanelet_reservations(
         }
 
         let entry_lanes = grid.get(cur).map(|c| c.road.kind.lanes()).unwrap_or(0);
-        let priority = candidate_priority(entry_lanes, lanelet.maneuver, entry_dir);
+        let aging = p
+            .fairness
+            .wait_ticks
+            .get(&(id, entry_dir))
+            .copied()
+            .unwrap_or(0)
+            .min(u8::MAX as u16) as u8;
+        let priority = candidate_priority(entry_lanes, lanelet.maneuver, aging);
         let dist_to_entry = (TILE_CENTER_TO_EDGE_TILES - v.progress).clamp(0.0, 1.0);
 
         candidates_by_id
@@ -746,6 +768,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
                 has_downstream_headroom,
                 ready: readiness.ready,
                 is_right_on_red: readiness.is_right_on_red,
+                entry_dir,
                 stream: StreamKey {
                     entry: entry_dir,
                     exit: exit_dir,
@@ -763,6 +786,30 @@ pub(crate) fn arbitrate_lanelet_reservations(
         &inbox,
         &mut p.reservations,
     );
+
+    // P3c cross-feeder fairness: age every approach that had a candidate but no grant this tick;
+    // reset served approaches; prune approaches no longer present (bounded).
+    let mut present: HashSet<(IntersectionId, RoadDir)> = HashSet::new();
+    let mut served: HashSet<(IntersectionId, RoadDir)> = HashSet::new();
+    for (id, cands) in &candidates_by_id {
+        for c in cands {
+            let key = (*id, c.entry_dir);
+            present.insert(key);
+            if p.reservations.is_reserved_by(*id, c.vehicle) {
+                served.insert(key);
+            }
+        }
+    }
+    let fairness = &mut *p.fairness;
+    fairness.wait_ticks.retain(|k, _| present.contains(k));
+    for key in present {
+        if served.contains(&key) {
+            fairness.wait_ticks.remove(&key);
+        } else {
+            let e = fairness.wait_ticks.entry(key).or_insert(0);
+            *e = e.saturating_add(1);
+        }
+    }
 
     // Flat per-tick observability mirror (BRP).
     let reservations = p.reservations.as_ref();
@@ -854,6 +901,7 @@ mod tests {
             has_downstream_headroom: true,
             ready: true,
             is_right_on_red: false,
+            entry_dir: RoadDir::East,
             stream: StreamKey {
                 entry: RoadDir::East,
                 exit: RoadDir::East,
@@ -939,21 +987,26 @@ mod tests {
     }
 
     #[test]
-    fn priority_width_dominates_then_maneuver_then_direction() {
-        // Width dominates: SixLane straight outranks TwoLane straight regardless of direction.
+    fn priority_width_dominates_maneuver_then_capped_aging() {
+        // Width dominates regardless of maneuver/aging.
         assert!(
-            candidate_priority(6, ManeuverKind::Straight, RoadDir::West)
-                > candidate_priority(2, ManeuverKind::Straight, RoadDir::North)
+            candidate_priority(6, ManeuverKind::LeftTurn, 15)
+                > candidate_priority(4, ManeuverKind::Straight, 15)
         );
-        // Same width: maneuver ranks straight over left turn.
+        // Same width: maneuver ranks straight over left turn (even with the left aged).
         assert!(
-            candidate_priority(4, ManeuverKind::Straight, RoadDir::West)
-                > candidate_priority(4, ManeuverKind::LeftTurn, RoadDir::North)
+            candidate_priority(4, ManeuverKind::Straight, 0)
+                > candidate_priority(4, ManeuverKind::LeftTurn, 15)
         );
-        // Same width + maneuver: помеха-справа direction precedence breaks the tie deterministically.
+        // Same width + maneuver: aging breaks the tie (bounded fairness).
         assert!(
-            candidate_priority(4, ManeuverKind::Straight, RoadDir::North)
-                > candidate_priority(4, ManeuverKind::Straight, RoadDir::South)
+            candidate_priority(4, ManeuverKind::Straight, 5)
+                > candidate_priority(4, ManeuverKind::Straight, 0)
+        );
+        // Aging is capped so it can never cross the width boundary (a side road never out-ranks main).
+        assert!(
+            candidate_priority(4, ManeuverKind::Straight, 255)
+                < candidate_priority(6, ManeuverKind::Straight, 0)
         );
     }
 
@@ -974,13 +1027,12 @@ mod tests {
             ..Default::default()
         };
         let ordered = vec![IntersectionId(0)];
-        let dirs = [RoadDir::North, RoadDir::East, RoadDir::South, RoadDir::West];
         let v: Vec<ArbiterGrantCandidate> = (0..4)
             .map(|i| {
                 cand(
                     ent(i as u32 + 1),
                     i,
-                    candidate_priority(4, ManeuverKind::Straight, dirs[i]),
+                    candidate_priority(4, ManeuverKind::Straight, 0),
                     vec![center],
                 )
             })
@@ -993,6 +1045,44 @@ mod tests {
             counts.admitted, 1,
             "exactly one of four mutually-conflicting candidates is granted"
         );
+    }
+
+    #[test]
+    fn dir_precedence_is_post_distance_tiebreak() {
+        let center = TilePos { x: 0, y: 0 };
+        let m = LaneletConflictMatrices {
+            by_intersection: HashMap::from([(
+                IntersectionId(0),
+                crate::game::transport::ConflictMatrix::from_paths(&[vec![center], vec![center]]),
+            )]),
+            version: 1,
+            ..Default::default()
+        };
+        let ordered = vec![IntersectionId(0)];
+        let mut north = cand(
+            ent(1),
+            0,
+            candidate_priority(4, ManeuverKind::Straight, 0),
+            vec![center],
+        );
+        north.entry_dir = RoadDir::North;
+        let mut south = cand(
+            ent(2),
+            1,
+            candidate_priority(4, ManeuverKind::Straight, 0),
+            vec![center],
+        );
+        south.entry_dir = RoadDir::South;
+        // Equal priority + equal distance -> помеха-справа dir precedence breaks the tie: North wins.
+        let mut cands = HashMap::new();
+        cands.insert(IntersectionId(0), vec![south, north]); // input order south-first
+        let mut res = IntersectionReservations::default();
+        arbitrate_grants_inner(0.0, &ordered, &cands, &m, &[], &mut res);
+        assert!(
+            res.is_reserved_by(IntersectionId(0), ent(1)),
+            "North (higher dir precedence) wins the post-distance tiebreak"
+        );
+        assert!(!res.is_reserved_by(IntersectionId(0), ent(2)));
     }
 
     #[test]

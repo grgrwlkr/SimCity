@@ -357,11 +357,11 @@ use intersection::plan_intersection_reservations;
 #[cfg(test)]
 use intersection::rewrite_intersection_connectors;
 use intersection::{
-    ArbiterIndexCache, apply_intersection_reservation_candidates, arbitrate_lanelet_reservations,
-    cache_intersection_light_state, cache_pedestrian_crossing_state,
-    cleanup_intersection_reservations, collect_intersection_reservation_candidates,
-    mark_vehicles_needing_connector_rewrite, reset_intersection_reservations,
-    rewrite_marked_intersection_connectors,
+    ApproachFairness, ArbiterIndexCache, apply_intersection_reservation_candidates,
+    arbitrate_lanelet_reservations, cache_intersection_light_state,
+    cache_pedestrian_crossing_state, cleanup_intersection_reservations,
+    collect_intersection_reservation_candidates, mark_vehicles_needing_connector_rewrite,
+    reset_intersection_reservations, rewrite_marked_intersection_connectors,
 };
 pub use intersection::{ArbiterTickStats, IntersectionReservations};
 pub use intersection::{ManeuverKind, ReservationState};
@@ -386,6 +386,7 @@ impl Plugin for TrafficPlugin {
             .init_resource::<intersection::PedestrianCrossingStateCache>()
             .init_resource::<ArbiterIndexCache>()
             .init_resource::<ArbiterTickStats>()
+            .init_resource::<ApproachFairness>()
             .init_resource::<TrafficSpatialIndex>()
             .init_resource::<VehicleAggSnapshot>()
             .init_resource::<ParkedVehicleTileIndex>()
