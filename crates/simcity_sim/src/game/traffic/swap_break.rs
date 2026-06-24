@@ -5,7 +5,10 @@ use crate::game::map::{MapGrid, TilePos};
 use crate::game::roads::RoadDir;
 use crate::game::transport::{PathHandle, PathPool};
 
-use super::{Parked, TrafficSpatialIndex, Vehicle, is_intersection_tile};
+use super::{
+    Parked, TrafficSpatialIndex, Vehicle, VehicleLaneletPlan, clear_lanelet_plan_on_reroute,
+    is_intersection_tile,
+};
 
 /// Marks a vehicle wedged in an off-intersection tile-swap deadlock for which no one-tile-deferred
 /// lane-change escape exists. `resolve_stuck_vehicles` despawns it after a short grace so a genuinely
@@ -107,7 +110,7 @@ pub(crate) fn break_tile_swaps(
     flagged: Query<Entity, With<SwapDeadlocked>>,
     mut vehicles: ParamSet<(
         Query<(Entity, &Vehicle), Without<Parked>>,
-        Query<&mut Vehicle, Without<Parked>>,
+        Query<(&mut Vehicle, Option<&mut VehicleLaneletPlan>), Without<Parked>>,
     )>,
     mut intent: Local<HashMap<Entity, IntentRec>>,
 ) {
@@ -242,7 +245,7 @@ pub(crate) fn break_tile_swaps(
     // Phase 3: apply.
     let mut q = vehicles.p1();
     for (victim, route) in actions {
-        let Ok(mut v) = q.get_mut(victim) else {
+        let Ok((mut v, mut v_plan)) = q.get_mut(victim) else {
             continue;
         };
         match route {
@@ -251,6 +254,7 @@ pub(crate) fn break_tile_swaps(
                 path_pool.release(v.path_handle);
                 v.path_handle = path_pool.intern(new_route);
                 v.path_cursor = 0;
+                clear_lanelet_plan_on_reroute(v_plan.as_deref_mut());
                 // Snap to the start of `cur`: the deferral changes which tile is "next" (lateral L ->
                 // forward S), so keeping the old progress would jump the rendered position laterally.
                 // The car is stalled in a deadlock, so a longitudinal reset is benign.

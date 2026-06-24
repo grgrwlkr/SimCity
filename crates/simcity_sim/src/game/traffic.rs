@@ -19,6 +19,7 @@ use crate::game::transport::{
 use crate::game::trips::{TripFinished, TripMode, TripRequested};
 
 mod components;
+pub(crate) use components::clear_lanelet_plan_on_reroute;
 pub use components::{
     CarOwner, DebugIntersectionConnectorState, DebugManeuverKind, DebugRoadDir, DebugVehicleState,
     DebugVehicleTrafficState, Parked, RightTurnOnRed, Vehicle, VehicleLaneletPlan,

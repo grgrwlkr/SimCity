@@ -85,6 +85,7 @@ pub(super) fn resolve_stuck_vehicles(
             Option<&ServiceVehicle>,
             &mut StuckTimer,
             Option<&SwapDeadlocked>,
+            Option<&mut VehicleLaneletPlan>,
         ),
         Without<Parked>,
     >,
@@ -103,7 +104,17 @@ pub(super) fn resolve_stuck_vehicles(
         max_iterations: None,
     };
 
-    for (e, mut v, state, passenger, service_vehicle, mut stuck, swap_deadlocked) in q.iter_mut() {
+    for (
+        e,
+        mut v,
+        state,
+        passenger,
+        service_vehicle,
+        mut stuck,
+        swap_deadlocked,
+        mut lanelet_plan,
+    ) in q.iter_mut()
+    {
         if handled >= MAX_UNSTUCK_PER_TICK {
             break;
         }
@@ -163,6 +174,7 @@ pub(super) fn resolve_stuck_vehicles(
             v.path_cursor = 0;
             v.progress = 0.0;
             v.speed = v.speed.min(v.max_speed * 0.5);
+            clear_lanelet_plan_on_reroute(lanelet_plan.as_deref_mut());
             // Reset reverse state after reroute
             v.is_reversing = false;
             v.reverse_distance = 0.0;
@@ -237,6 +249,7 @@ pub(super) fn resolve_stuck_vehicles(
                         v.path_cursor = 0;
                         v.progress = 0.0;
                         v.speed = 0.0;
+                        clear_lanelet_plan_on_reroute(lanelet_plan.as_deref_mut());
 
                         stuck.secs = 0.0;
                         stuck.last_tile = current;

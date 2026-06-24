@@ -1,3 +1,4 @@
+use super::super::{VehicleLaneletPlan, clear_lanelet_plan_on_reroute};
 use super::*;
 use crate::game::transport::{PathHandle, PathPool};
 
@@ -140,7 +141,7 @@ pub(in super::super) fn plan_lane_changes(
             ),
             Without<Parked>,
         >,
-        Query<(Entity, &mut Vehicle), Without<Parked>>,
+        Query<(Entity, &mut Vehicle, Option<&mut VehicleLaneletPlan>), Without<Parked>>,
     )>,
     mut reserved: Local<std::collections::HashMap<TilePos, Vec<f32>>>,
 ) {
@@ -408,7 +409,7 @@ pub(in super::super) fn plan_lane_changes(
         }
 
         // Update vehicle route for lane change
-        if let Ok((_e, mut v)) = vehicles.p1().get_mut(d.e) {
+        if let Ok((_e, mut v, mut v_plan)) = vehicles.p1().get_mut(d.e) {
             // Keep current tile; insert lane-change as the first step.
             let mut new_route = Vec::with_capacity(route_from_target.len() + 1);
             new_route.push(current);
@@ -417,6 +418,7 @@ pub(in super::super) fn plan_lane_changes(
             path_pool.release(v.path_handle);
             v.path_handle = path_pool.intern(new_route);
             v.path_cursor = 0;
+            clear_lanelet_plan_on_reroute(v_plan.as_deref_mut());
         } else {
             continue;
         }

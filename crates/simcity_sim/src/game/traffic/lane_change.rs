@@ -126,7 +126,7 @@ pub(super) fn plan_oncoming_overtakes(
             ),
             Without<Parked>,
         >,
-        Query<(Entity, &mut Vehicle), Without<Parked>>,
+        Query<(Entity, &mut Vehicle, Option<&mut VehicleLaneletPlan>), Without<Parked>>,
     )>,
 ) {
     #[derive(Copy, Clone)]
@@ -308,7 +308,7 @@ pub(super) fn plan_oncoming_overtakes(
     // Apply route rewrites in a second pass to satisfy the borrow checker.
     let mut q_mut = vehicles.p1();
     for p in plans {
-        let Ok((_ent, mut vv)) = q_mut.get_mut(p.e) else {
+        let Ok((_ent, mut vv, mut vv_plan)) = q_mut.get_mut(p.e) else {
             continue;
         };
 
@@ -349,6 +349,7 @@ pub(super) fn plan_oncoming_overtakes(
         path_pool.release(vv.path_handle);
         vv.path_handle = path_pool.intern(new_route);
         vv.path_cursor = 0;
+        clear_lanelet_plan_on_reroute(vv_plan.as_deref_mut());
 
         commands.entity(p.e).insert(LaneChangeCooldown {
             remaining_secs: ONCOMING_OVERTAKE_COOLDOWN_SECS,

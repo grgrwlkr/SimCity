@@ -27,6 +27,19 @@ impl VehicleLaneletPlan {
     }
 }
 
+/// Clear a vehicle's lanelet sidecar after a mid-trip re-intern (P3c): the plan's cursor offsets are
+/// absolute to the OLD route, so they are invalid for the new one. Flag-off (and for any vehicle
+/// without a plan) the entries are already empty, so this is a no-op that does NOT trigger
+/// change-detection (the `is_empty` guard) — keeping the legacy reroute path byte-identical. The
+/// arbiter's precise-fallback re-resolves the lanelet from route geometry once the plan is cleared.
+pub(crate) fn clear_lanelet_plan_on_reroute(plan: Option<&mut VehicleLaneletPlan>) {
+    if let Some(p) = plan
+        && !p.entries.is_empty()
+    {
+        p.entries.clear();
+    }
+}
+
 /// Vehicle entity – stores route handle and visual offset.
 /// Optimized memory layout for cache efficiency.
 #[derive(Component)]
@@ -355,5 +368,22 @@ mod tests {
         assert_eq!(plan.upcoming_lanelet_at(5), None);
         // Empty plan.
         assert_eq!(VehicleLaneletPlan::default().upcoming_lanelet_at(0), None);
+    }
+
+    #[test]
+    fn clear_lanelet_plan_on_reroute_clears_and_no_ops() {
+        let mut plan = VehicleLaneletPlan {
+            entries: vec![(3, IntersectionId(7), LaneletId(2))],
+        };
+        clear_lanelet_plan_on_reroute(Some(&mut plan));
+        assert!(
+            plan.entries.is_empty(),
+            "non-empty plan is cleared on reroute"
+        );
+        // None + already-empty are no-ops.
+        clear_lanelet_plan_on_reroute(None);
+        let mut empty = VehicleLaneletPlan::default();
+        clear_lanelet_plan_on_reroute(Some(&mut empty));
+        assert!(empty.entries.is_empty());
     }
 }
