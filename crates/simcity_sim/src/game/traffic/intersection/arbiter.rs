@@ -171,6 +171,37 @@ pub(crate) fn lanelet_readiness(
     }
 }
 
+/// Fixed per-direction precedence — the deterministic помеха-справа ("yield to the right") stand-in
+/// (Task 2). True pairwise помеха-справа at a simultaneous-arrival 4-way is undefined in ПДД and a
+/// pairwise yield can gridlock a 3-way cycle; a fixed total-order precedence is by-construction
+/// deadlock-free (always exactly one winner per conflict set) and deterministic. The geometric
+/// matrix (ledger) still guarantees collision-safety regardless of this ordering.
+fn dir_precedence(dir: RoadDir) -> u8 {
+    match dir {
+        RoadDir::North => 3,
+        RoadDir::East => 2,
+        RoadDir::South => 1,
+        RoadDir::West | RoadDir::None => 0,
+    }
+}
+
+/// ПДД admission priority (Task 2), folded into one `u8` so the grant sweep's sort stays a valid
+/// total order: width (approach lanes) dominates, then maneuver (Straight > Right > Left/Other),
+/// then помеха-справа direction precedence. `entity.to_bits` remains the final tiebreak in the sweep.
+pub(crate) fn candidate_priority(
+    entry_lanes: u8,
+    maneuver: ManeuverKind,
+    entry_dir: RoadDir,
+) -> u8 {
+    let maneuver_rank: u8 = match maneuver {
+        ManeuverKind::Straight => 2,
+        ManeuverKind::RightTurn => 1,
+        ManeuverKind::LeftTurn | ManeuverKind::Other => 0,
+    };
+    // width step (16) > maneuver max (8) + dir max (3); maneuver step (4) > dir max (3).
+    entry_lanes * 16 + maneuver_rank * 4 + dir_precedence(entry_dir)
+}
+
 /// A vehicle physically on a cluster tile that needs a safety-net reservation row.
 pub(crate) struct ArbiterInboxVehicle {
     pub vehicle: Entity,
@@ -503,11 +534,8 @@ pub(crate) fn arbitrate_lanelet_reservations(
             drive_on_right,
         );
 
-        let priority = match lanelet.maneuver {
-            ManeuverKind::Straight => 3u8,
-            ManeuverKind::RightTurn => 2,
-            _ => 1,
-        };
+        let entry_lanes = grid.get(cur).map(|c| c.road.kind.lanes()).unwrap_or(0);
+        let priority = candidate_priority(entry_lanes, lanelet.maneuver, entry_dir);
         let dist_to_entry = (TILE_CENTER_TO_EDGE_TILES - v.progress).clamp(0.0, 1.0);
 
         candidates_by_id
@@ -708,6 +736,62 @@ mod tests {
         assert!(
             res3.is_reserved_by(IntersectionId(0), inbox_e),
             "in-box vehicle gets a safety-net reservation"
+        );
+    }
+
+    #[test]
+    fn priority_width_dominates_then_maneuver_then_direction() {
+        // Width dominates: SixLane straight outranks TwoLane straight regardless of direction.
+        assert!(
+            candidate_priority(6, ManeuverKind::Straight, RoadDir::West)
+                > candidate_priority(2, ManeuverKind::Straight, RoadDir::North)
+        );
+        // Same width: maneuver ranks straight over left turn.
+        assert!(
+            candidate_priority(4, ManeuverKind::Straight, RoadDir::West)
+                > candidate_priority(4, ManeuverKind::LeftTurn, RoadDir::North)
+        );
+        // Same width + maneuver: помеха-справа direction precedence breaks the tie deterministically.
+        assert!(
+            candidate_priority(4, ManeuverKind::Straight, RoadDir::North)
+                > candidate_priority(4, ManeuverKind::Straight, RoadDir::South)
+        );
+    }
+
+    #[test]
+    fn four_way_all_conflicting_grants_exactly_one() {
+        let center = TilePos { x: 0, y: 0 };
+        let m = LaneletConflictMatrices {
+            by_intersection: HashMap::from([(
+                IntersectionId(0),
+                crate::game::transport::ConflictMatrix::from_paths(&[
+                    vec![center],
+                    vec![center],
+                    vec![center],
+                    vec![center],
+                ]),
+            )]),
+            version: 1,
+        };
+        let ordered = vec![IntersectionId(0)];
+        let dirs = [RoadDir::North, RoadDir::East, RoadDir::South, RoadDir::West];
+        let v: Vec<ArbiterGrantCandidate> = (0..4)
+            .map(|i| {
+                cand(
+                    ent(i as u32 + 1),
+                    i,
+                    candidate_priority(4, ManeuverKind::Straight, dirs[i]),
+                    vec![center],
+                )
+            })
+            .collect();
+        let mut cands = HashMap::new();
+        cands.insert(IntersectionId(0), v);
+        let mut res = IntersectionReservations::default();
+        let (admitted, _) = arbitrate_grants_inner(0.0, &ordered, &cands, &m, &[], &mut res);
+        assert_eq!(
+            admitted, 1,
+            "exactly one of four mutually-conflicting candidates is granted"
         );
     }
 
