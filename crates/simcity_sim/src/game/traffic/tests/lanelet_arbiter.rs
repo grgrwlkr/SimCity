@@ -8,7 +8,7 @@ use super::*;
 use crate::game::intersections::{IntersectionCluster, LeftTurnDemand};
 use crate::game::traffic::intersection::{
     ApproachFairness, ArbiterIndexCache, ArbiterTickStats, LaneletStallTracker, RingTopologyStatus,
-    arbitrate_lanelet_reservations,
+    arbitrate_lanelet_reservations, cleanup_intersection_reservations,
 };
 use crate::game::transport::lane_graph::build_lane_graph_inner;
 use crate::game::transport::{
@@ -100,10 +100,11 @@ fn cross_grid() -> (MapGrid, IntersectionIndex) {
     (grid, idx)
 }
 
-/// Build a flag-on arbiter app on the cross grid, spawn an eastbound + a northbound through vehicle
-/// (both one tile before the box, empty sidecar -> precise-fallback), run build + arbiter once, and
-/// return whether each is reserved + the tripwire state.
-fn run_arbiter_once() -> (bool, bool, bool) {
+/// Build a flag-on arbiter app on the cross grid (build + arbiter + cleanup chained) and spawn an
+/// eastbound + a northbound through vehicle, both one tile before the box with EMPTY sidecars (so the
+/// arbiter's precise-fallback resolves their lanelets). Their lanelets share the (4,4) entry corner
+/// -> they conflict. Returns the app (not yet run) + the (east, north) entities.
+fn build_arbiter_app() -> (App, Entity, Entity) {
     let (grid, idx) = cross_grid();
     let gv = GraphVersion(1);
     let lanes = build_lane_graph_inner(&grid, &gv);
@@ -141,11 +142,14 @@ fn run_arbiter_once() -> (bool, bool, bool) {
 
     app.add_systems(
         Update,
-        (build_lanelet_graph, arbitrate_lanelet_reservations).chain(),
+        (
+            build_lanelet_graph,
+            arbitrate_lanelet_reservations,
+            cleanup_intersection_reservations,
+        )
+            .chain(),
     );
 
-    // Eastbound through (approach (3,4) -> cluster -> exit (6,4)); northbound through (approach
-    // (4,3) -> cluster -> exit (4,6)). Their lanelets share the (4,4) entry corner -> they conflict.
     let east_route = vec![
         TilePos { x: 3, y: 4 },
         TilePos { x: 4, y: 4 },
@@ -183,15 +187,58 @@ fn run_arbiter_once() -> (bool, bool, bool) {
             VehicleLaneletPlan::default(),
         ))
         .id();
+    (app, east, north)
+}
 
+fn run_arbiter_once() -> (bool, bool, bool) {
+    let (mut app, east, north) = build_arbiter_app();
     app.update();
-
     let res = app.world().resource::<IntersectionReservations>();
     (
         res.is_reserved_by(IntersectionId(0), east),
         res.is_reserved_by(IntersectionId(0), north),
         res.stall_tripwire(),
     )
+}
+
+/// Move a vehicle to a new route cursor (simulates crossing/exiting the box between ticks).
+fn set_cursor(app: &mut App, e: Entity, cursor: usize) {
+    let mut v = app.world_mut().get_mut::<Vehicle>(e).unwrap();
+    v.path_cursor = cursor;
+    v.progress = 0.4;
+}
+
+#[test]
+fn flag_on_arbiter_drains_conflicting_vehicles_over_ticks() {
+    let (mut app, east, north) = build_arbiter_app();
+
+    // Tick 1: the arbiter admits exactly one (North wins the post-distance dir tiebreak); East waits.
+    app.update();
+    {
+        let res = app.world().resource::<IntersectionReservations>();
+        assert!(res.is_reserved_by(IntersectionId(0), north));
+        assert!(!res.is_reserved_by(IntersectionId(0), east));
+        assert!(!res.stall_tripwire());
+    }
+
+    // Drain North across the box: into the cluster, then out the far side. Cleanup transitions it to
+    // Inside, then (once it leaves the cluster) drops its row and releases the ledger holder.
+    set_cursor(&mut app, north, 1); // (4,4) — a cluster tile (Inside)
+    app.update();
+    set_cursor(&mut app, north, 3); // (4,6) — left the cluster (exit lane)
+    app.update();
+
+    // After North drains, the previously-blocked East is admitted: serialization clears -> liveness.
+    app.update();
+    let res = app.world().resource::<IntersectionReservations>();
+    assert!(
+        res.is_reserved_by(IntersectionId(0), east),
+        "after North drains, the blocked East is admitted (multi-tick liveness)"
+    );
+    assert!(
+        !res.stall_tripwire(),
+        "stall tripwire stays empty across the whole drain"
+    );
 }
 
 #[test]
