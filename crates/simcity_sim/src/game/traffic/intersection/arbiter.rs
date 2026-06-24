@@ -221,6 +221,17 @@ pub(crate) struct ArbiterInboxVehicle {
     pub tile: TilePos,
 }
 
+/// Per-tick grant-sweep counters returned by `arbitrate_grants_inner` (Task 7 observability).
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct ArbiterCounts {
+    pub admitted: u32,
+    pub refused: u32,
+    /// Grants that were right-turn-on-red.
+    pub rtor_grants: u32,
+    /// Refusals because the candidate was not ПДД-ready (signalized red / yield).
+    pub yield_refusals: u32,
+}
+
 /// Flat per-tick arbiter observability, mirrored to BRP by `simcity_debug`. Default (all zero) when
 /// the flag is off (the arbiter never runs).
 #[derive(Resource, Default, Clone, Copy)]
@@ -233,6 +244,14 @@ pub struct ArbiterTickStats {
     /// 1 if any cluster's `stall_ticks` is non-empty (must stay 0 flag-on — the arbiter never
     /// increments it; non-zero would signal a leaked legacy write).
     pub stall_tripwire_fired: u32,
+    /// Crosswalk activations seeded from pedestrians this tick (P3b).
+    pub ped_blocked: u32,
+    /// Grants that were right-turn-on-red this tick (P3b).
+    pub rtor_grants: u32,
+    /// Refusals because the candidate was not ПДД-ready (signalized red / yield) this tick (P3b).
+    pub yield_refusals: u32,
+    /// Traffic lights currently in a protected-left interval (P3b).
+    pub left_protected_active: u32,
 }
 
 /// Seed each ledger's per-tick `ped_mask` from active pedestrian crossings (Task 5). A crossing with
@@ -245,10 +264,11 @@ pub(crate) fn seed_ped_masks(
     crossings: &[(IntersectionId, bool)],
     matrices: &LaneletConflictMatrices,
     reservations: &mut IntersectionReservations,
-) {
+) -> u32 {
     for &id in ordered_ids {
         reservations.ledger_mut(id).clear_ped_mask();
     }
+    let mut activated = 0u32;
     for &(id, axis_ns) in crossings {
         let (Some(sides), Some(matrix)) = (
             matrices.crosswalk_sides.get(&id),
@@ -265,9 +285,11 @@ pub(crate) fn seed_ped_masks(
             };
             if active {
                 reservations.ledger_mut(id).set_ped_crosswalk(base + i);
+                activated += 1;
             }
         }
     }
+    activated
 }
 
 /// Pure grant core: emit in-box safety-net rows, then sweep intersections in `ordered_ids` order,
@@ -290,9 +312,8 @@ pub(crate) fn arbitrate_grants_inner(
     matrices: &LaneletConflictMatrices,
     inbox: &[ArbiterInboxVehicle],
     reservations: &mut IntersectionReservations,
-) -> (u32, u32) {
-    let mut admitted = 0u32;
-    let mut refused = 0u32;
+) -> ArbiterCounts {
+    let mut counts = ArbiterCounts::default();
 
     // In-box safety net (mirrors the legacy collect net, which is gated off flag-on): a car wedged
     // inside the box gets a precise single-tile Inside row so it stays visible to the entry gate and
@@ -346,14 +367,19 @@ pub(crate) fn arbitrate_grants_inner(
         });
 
         for cand in order {
-            if !cand.ready || !cand.has_downstream_headroom {
-                refused += 1;
+            if !cand.ready {
+                counts.refused += 1;
+                counts.yield_refusals += 1;
+                continue;
+            }
+            if !cand.has_downstream_headroom {
+                counts.refused += 1;
                 continue;
             }
             // Right-turn-on-red is a yield maneuver: only admit when the cluster is otherwise clear
             // (no holders / in-box / earlier grants this tick).
             if cand.is_right_on_red && reservations.is_reserved(id) {
-                refused += 1;
+                counts.refused += 1;
                 continue;
             }
             // Already admitted in a prior tick (still crossing): not a fresh attempt, not refused.
@@ -369,11 +395,11 @@ pub(crate) fn arbitrate_grants_inner(
                 cand.exit_tile_cap,
                 cand.vehicle,
             ) {
-                refused += 1;
+                counts.refused += 1;
                 continue;
             }
             if !ledger.try_admit(cand.vehicle, cand.local_idx as u32, row) {
-                refused += 1;
+                counts.refused += 1;
                 continue;
             }
             // Guaranteed to succeed (pre-checked; single-threaded sweep).
@@ -396,13 +422,16 @@ pub(crate) fn arbitrate_grants_inner(
                     stream: cand.stream,
                     maneuver: cand.maneuver,
                 });
-            admitted += 1;
+            counts.admitted += 1;
+            if cand.is_right_on_red {
+                counts.rtor_grants += 1;
+            }
         }
 
         *reservations.ledger_mut(id) = ledger;
     }
 
-    (admitted, refused)
+    counts
 }
 
 #[derive(SystemParam)]
@@ -470,7 +499,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
         .iter()
         .map(|c| (c.intersection_id, c.axis_ns))
         .collect();
-    seed_ped_masks(
+    let ped_blocked = seed_ped_masks(
         &ordered,
         &crossings,
         p.matrices.as_ref(),
@@ -481,6 +510,10 @@ pub(crate) fn arbitrate_lanelet_reservations(
     for light in p.q_lights.iter() {
         lights_by_id.insert(light.intersection_id, light.clone());
     }
+    let left_protected_active = lights_by_id
+        .values()
+        .filter(|l| l.is_left_protected(RoadDir::North) || l.is_left_protected(RoadDir::East))
+        .count() as u32;
 
     let grid = p.grid.as_ref();
     let intersections = p.intersections.as_ref();
@@ -642,7 +675,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
             });
     }
 
-    let (admitted, refused) = arbitrate_grants_inner(
+    let counts = arbitrate_grants_inner(
         now,
         &ordered,
         &candidates_by_id,
@@ -658,12 +691,16 @@ pub(crate) fn arbitrate_lanelet_reservations(
     let reserved_exit_slots = reservations.total_exit_slots();
     let max_approaching_age_ms = reservations.max_approaching_age_ms(now);
     let stats = &mut *p.stats;
-    stats.admitted = admitted;
-    stats.refused = refused;
+    stats.admitted = counts.admitted;
+    stats.refused = counts.refused;
     stats.held_points_max = held_points_max;
     stats.reserved_exit_slots = reserved_exit_slots;
     stats.max_approaching_age_ms = max_approaching_age_ms;
     stats.stall_tripwire_fired = stall_tripwire_fired;
+    stats.ped_blocked = ped_blocked;
+    stats.rtor_grants = counts.rtor_grants;
+    stats.yield_refusals = counts.yield_refusals;
+    stats.left_protected_active = left_protected_active;
 }
 
 /// Downstream-link horizon for the spillback gate (mirrors the legacy collect constant).
@@ -871,9 +908,9 @@ mod tests {
         let mut cands = HashMap::new();
         cands.insert(IntersectionId(0), v);
         let mut res = IntersectionReservations::default();
-        let (admitted, _) = arbitrate_grants_inner(0.0, &ordered, &cands, &m, &[], &mut res);
+        let counts = arbitrate_grants_inner(0.0, &ordered, &cands, &m, &[], &mut res);
         assert_eq!(
-            admitted, 1,
+            counts.admitted, 1,
             "exactly one of four mutually-conflicting candidates is granted"
         );
     }
@@ -1131,7 +1168,11 @@ mod tests {
             "arbiter output (rows, exit slots, counts) must be independent of input order"
         );
         // Sanity: e0 (conflicts e1, lower entity bits) + e2 granted; e1 refused; 2 inbox safety nets.
-        assert_eq!(out_a.2, (2, 1), "2 admitted, 1 refused");
+        assert_eq!(
+            (out_a.2.admitted, out_a.2.refused),
+            (2, 1),
+            "2 admitted, 1 refused"
+        );
     }
 
     #[test]

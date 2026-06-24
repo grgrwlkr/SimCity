@@ -2069,7 +2069,15 @@ pub struct DebugArbiterLedgerState {
     pub max_approaching_age_ms: u32,
     /// 1 if any cluster's stall tripwire fired (must stay 0 flag-on; the arbiter never increments it).
     pub stall_tripwire_fired: u32,
-    /// Reserved for the P3c ring-free force-admit counter; always 0 in P3a.
+    /// Pedestrian crosswalk activations seeded this tick (P3b).
+    pub ped_blocked: u32,
+    /// Right-turn-on-red grants this tick (P3b).
+    pub rtor_grants: u32,
+    /// ПДД-yield refusals (signalized red / not ready) this tick (P3b).
+    pub yield_refusals: u32,
+    /// Traffic lights in a protected-left interval (P3b).
+    pub left_protected_active: u32,
+    /// Reserved for the P3c ring-free force-admit counter; always 0 in P3a/P3b.
     pub ring_force_admits: u32,
 }
 
@@ -2093,6 +2101,10 @@ fn update_debug_arbiter_ledger_state(
         snapshot.reserved_exit_slots = s.reserved_exit_slots;
         snapshot.max_approaching_age_ms = s.max_approaching_age_ms;
         snapshot.stall_tripwire_fired = s.stall_tripwire_fired;
+        snapshot.ped_blocked = s.ped_blocked;
+        snapshot.rtor_grants = s.rtor_grants;
+        snapshot.yield_refusals = s.yield_refusals;
+        snapshot.left_protected_active = s.left_protected_active;
     } else {
         *snapshot = DebugArbiterLedgerState::default();
     }
@@ -2185,6 +2197,10 @@ mod tests {
             reserved_exit_slots: 2,
             max_approaching_age_ms: 250,
             stall_tripwire_fired: 0,
+            ped_blocked: 2,
+            rtor_grants: 1,
+            yield_refusals: 3,
+            left_protected_active: 1,
         });
         let entity = app
             .world_mut()
@@ -2206,6 +2222,10 @@ mod tests {
             state.stall_tripwire_fired, 0,
             "tripwire must stay 0 (arbiter never increments stall_ticks)"
         );
+        assert_eq!(state.ped_blocked, 2);
+        assert_eq!(state.rtor_grants, 1);
+        assert_eq!(state.yield_refusals, 3);
+        assert_eq!(state.left_protected_active, 1);
         assert_eq!(state.ring_force_admits, 0);
     }
 }
