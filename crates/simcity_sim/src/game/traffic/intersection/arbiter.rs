@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use crate::game::intersections::{IntersectionId, IntersectionIndex, TrafficLight};
 use crate::game::map::{MapGrid, TilePos};
+use crate::game::pedestrians::PedestrianCrossing;
 use crate::game::roads::RoadDir;
 use crate::game::transport::lanelet::{LaneletGraph, LaneletId};
 use crate::game::transport::{LaneletConflictMatrices, PathPool};
@@ -223,6 +224,41 @@ pub struct ArbiterTickStats {
     pub stall_tripwire_fired: u32,
 }
 
+/// Seed each ledger's per-tick `ped_mask` from active pedestrian crossings (Task 5). A crossing with
+/// `axis_ns` true (ped moves N/S, crossing the E-W roadway) occupies the West/East crosswalks; false
+/// → North/South. Each occupied crosswalk's matrix row bit (`crosswalk_base + i`) is set, so a
+/// vehicle lanelet crossing it fails `try_admit` (collision model, no out-of-band yield). Clears
+/// every ledger's ped_mask first (the ledger persists across ticks; ped bits must not).
+pub(crate) fn seed_ped_masks(
+    ordered_ids: &[IntersectionId],
+    crossings: &[(IntersectionId, bool)],
+    matrices: &LaneletConflictMatrices,
+    reservations: &mut IntersectionReservations,
+) {
+    for &id in ordered_ids {
+        reservations.ledger_mut(id).clear_ped_mask();
+    }
+    for &(id, axis_ns) in crossings {
+        let (Some(sides), Some(matrix)) = (
+            matrices.crosswalk_sides.get(&id),
+            matrices.by_intersection.get(&id),
+        ) else {
+            continue;
+        };
+        let base = matrix.crosswalk_base();
+        for (i, &side) in sides.iter().enumerate() {
+            let active = if axis_ns {
+                matches!(side, RoadDir::West | RoadDir::East)
+            } else {
+                matches!(side, RoadDir::North | RoadDir::South)
+            };
+            if active {
+                reservations.ledger_mut(id).set_ped_crosswalk(base + i);
+            }
+        }
+    }
+}
+
 /// Pure grant core: emit in-box safety-net rows, then sweep intersections in `ordered_ids` order,
 /// granting candidates atomically against the per-intersection ledger + exit slots, writing the
 /// shared `is_reserved_by` truth (`by_intersection`). Collision-safe by construction (all-or-nothing
@@ -372,6 +408,7 @@ pub(crate) struct ArbitrateLaneletParams<'w, 's> {
     cache: ResMut<'w, ArbiterIndexCache>,
     stats: ResMut<'w, ArbiterTickStats>,
     q_lights: Query<'w, 's, &'static TrafficLight>,
+    q_pedestrians: Query<'w, 's, &'static PedestrianCrossing>,
     q_vehicles: Query<
         'w,
         's,
@@ -410,6 +447,14 @@ pub(crate) fn arbitrate_lanelet_reservations(
             ledger.reset_for_version(version);
         }
     }
+
+    // Seed pedestrian crosswalk activation into each ledger's per-tick ped_mask (Task 5).
+    let crossings: Vec<(IntersectionId, bool)> = p
+        .q_pedestrians
+        .iter()
+        .map(|c| (c.intersection_id, c.axis_ns))
+        .collect();
+    seed_ped_masks(&ordered, &crossings, p.matrices.as_ref(), &mut p.reservations);
 
     let mut lights_by_id: HashMap<IntersectionId, TrafficLight> = HashMap::new();
     for light in p.q_lights.iter() {
@@ -892,6 +937,45 @@ mod tests {
             true,
         );
         assert!(!r.ready);
+    }
+
+    #[test]
+    fn ped_activation_blocks_crossing_axis() {
+        // lanelet 0 crosses the West crosswalk; lanelet 1 crosses the North crosswalk.
+        let m = crate::game::transport::ConflictMatrix::from_paths_with_crosswalks(
+            &[
+                vec![TilePos { x: 0, y: 0 }, TilePos { x: 1, y: 0 }],
+                vec![TilePos { x: 0, y: 2 }, TilePos { x: 1, y: 2 }],
+            ],
+            &[
+                vec![TilePos { x: 1, y: 0 }], // West-side crosswalk (shares (1,0) with lanelet 0)
+                vec![TilePos { x: 1, y: 2 }], // North-side crosswalk (shares (1,2) with lanelet 1)
+            ],
+        );
+        let mut matrices = LaneletConflictMatrices {
+            version: 1,
+            ..Default::default()
+        };
+        matrices.by_intersection.insert(IntersectionId(0), m);
+        matrices
+            .crosswalk_sides
+            .insert(IntersectionId(0), vec![RoadDir::West, RoadDir::North]);
+        let ordered = vec![IntersectionId(0)];
+
+        let mut res = IntersectionReservations::default();
+        // axis_ns=true -> West/East crosswalks active -> the West crosswalk is seeded.
+        seed_ped_masks(&ordered, &[(IntersectionId(0), true)], &matrices, &mut res);
+
+        let matrix = matrices.by_intersection.get(&IntersectionId(0)).unwrap();
+        let ledger = res.ledger_mut(IntersectionId(0));
+        assert!(
+            !ledger.try_admit(ent(1), 0, matrix.row(0)),
+            "lanelet crossing the active West crosswalk is blocked by the pedestrian"
+        );
+        assert!(
+            ledger.try_admit(ent(2), 1, matrix.row(1)),
+            "lanelet crossing the inactive North crosswalk admits"
+        );
     }
 
     #[test]
