@@ -12,14 +12,35 @@ use super::index::*;
 /// Light phase for traffic lights
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum LightPhase {
+    /// Protected left-turn interval for North/South (only N/S lefts proceed; opposing through is
+    /// red). Inserted before `NorthSouthGreen` ONLY when there is N/S left-turn demand (actuated,
+    /// flag-on only — see [`LeftTurnDemand`]).
+    NorthSouthLeftProtected,
     NorthSouthGreen,
     NorthSouthYellow,
     /// All directions red; clearance interval before switching to East/West green.
     AllRedToEastWest,
+    /// Protected left-turn interval for East/West (actuated, flag-on only).
+    EastWestLeftProtected,
     EastWestGreen,
     EastWestYellow,
     /// All directions red; clearance interval before switching to North/South green.
     AllRedToNorthSouth,
+}
+
+/// Duration of a protected left-turn interval (seconds).
+const LEFT_PROTECTED_DURATION: f32 = 4.0;
+
+/// Per-tick left-turn demand signal, keyed by intersection. Populated flag-ON by the lanelet arbiter
+/// from waiting left-turn vehicles; read by [`update_traffic_lights`] to actuate the protected-left
+/// phase. Empty flag-OFF (the arbiter never runs) → the light cycle is byte-identical to the
+/// original 6-phase sequence (the protected-left phases are never entered).
+#[derive(Resource, Default)]
+pub struct LeftTurnDemand {
+    /// Intersections with a vehicle waiting to turn left from the North/South approach.
+    pub ns: HashSet<IntersectionId>,
+    /// Intersections with a vehicle waiting to turn left from the East/West approach.
+    pub ew: HashSet<IntersectionId>,
 }
 
 /// Traffic light component for intersection entities.
@@ -103,6 +124,21 @@ impl TrafficLight {
         matches!(
             self.phase,
             LightPhase::AllRedToEastWest | LightPhase::AllRedToNorthSouth
+        )
+    }
+
+    /// True during a protected left-turn interval for `dir`'s axis (only that axis's left turns may
+    /// proceed; through/opposing is red). The arbiter grants protected lefts during this phase.
+    pub fn is_left_protected(&self, dir: crate::game::roads::RoadDir) -> bool {
+        matches!(
+            (self.phase, dir),
+            (
+                LightPhase::NorthSouthLeftProtected,
+                crate::game::roads::RoadDir::North | crate::game::roads::RoadDir::South
+            ) | (
+                LightPhase::EastWestLeftProtected,
+                crate::game::roads::RoadDir::East | crate::game::roads::RoadDir::West
+            )
         )
     }
 }
@@ -208,8 +244,46 @@ pub fn sync_traffic_light_entities(
     }
 }
 
-/// Update traffic light phases
-pub fn update_traffic_lights(time: Res<Time<Fixed>>, mut q_lights: Query<&mut TrafficLight>) {
+/// Next light phase. Protected-left is inserted after the matching all-red ONLY when that axis has
+/// left-turn demand; with no demand it goes straight to green — the original 6-phase sequence. With
+/// both demand flags false (flag-off: `LeftTurnDemand` is empty) this is byte-identical to the
+/// pre-P3b cycle.
+fn next_light_phase(phase: LightPhase, ns_demand: bool, ew_demand: bool) -> LightPhase {
+    match phase {
+        LightPhase::NorthSouthLeftProtected => LightPhase::NorthSouthGreen,
+        LightPhase::NorthSouthGreen => LightPhase::NorthSouthYellow,
+        LightPhase::NorthSouthYellow => LightPhase::AllRedToEastWest,
+        LightPhase::AllRedToEastWest => {
+            if ew_demand {
+                LightPhase::EastWestLeftProtected
+            } else {
+                LightPhase::EastWestGreen
+            }
+        }
+        LightPhase::EastWestLeftProtected => LightPhase::EastWestGreen,
+        LightPhase::EastWestGreen => LightPhase::EastWestYellow,
+        LightPhase::EastWestYellow => LightPhase::AllRedToNorthSouth,
+        LightPhase::AllRedToNorthSouth => {
+            if ns_demand {
+                LightPhase::NorthSouthLeftProtected
+            } else {
+                LightPhase::NorthSouthGreen
+            }
+        }
+    }
+}
+
+/// Update traffic light phases.
+///
+/// Actuated protected-left: after an all-red clearance, if there is left-turn demand for the
+/// upcoming axis (flag-on, via [`LeftTurnDemand`]), the cycle inserts a protected-left interval
+/// before that axis's green; with no demand it goes straight to green (the original 6-phase
+/// sequence). Flag-off `demand` is empty, so the cycle is byte-identical.
+pub fn update_traffic_lights(
+    time: Res<Time<Fixed>>,
+    demand: Res<LeftTurnDemand>,
+    mut q_lights: Query<&mut TrafficLight>,
+) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
         return;
@@ -221,15 +295,12 @@ pub fn update_traffic_lights(time: Res<Time<Fixed>>, mut q_lights: Query<&mut Tr
         // Catch up multiple phase transitions if we had a large delta (pause/resume or hitch).
         let mut guard = 0;
         while light.phase_timer <= 0.0 && guard < 8 {
-            // Transition to next phase
-            light.phase = match light.phase {
-                LightPhase::NorthSouthGreen => LightPhase::NorthSouthYellow,
-                LightPhase::NorthSouthYellow => LightPhase::AllRedToEastWest,
-                LightPhase::AllRedToEastWest => LightPhase::EastWestGreen,
-                LightPhase::EastWestGreen => LightPhase::EastWestYellow,
-                LightPhase::EastWestYellow => LightPhase::AllRedToNorthSouth,
-                LightPhase::AllRedToNorthSouth => LightPhase::NorthSouthGreen,
-            };
+            let id = light.intersection_id;
+            light.phase = next_light_phase(
+                light.phase,
+                demand.ns.contains(&id),
+                demand.ew.contains(&id),
+            );
 
             let next = match light.phase {
                 LightPhase::NorthSouthGreen | LightPhase::EastWestGreen => light.green_duration,
@@ -237,12 +308,64 @@ pub fn update_traffic_lights(time: Res<Time<Fixed>>, mut q_lights: Query<&mut Tr
                 LightPhase::AllRedToEastWest | LightPhase::AllRedToNorthSouth => {
                     light.all_red_duration
                 }
+                LightPhase::NorthSouthLeftProtected | LightPhase::EastWestLeftProtected => {
+                    LEFT_PROTECTED_DURATION
+                }
             }
             .max(0.01);
 
             light.phase_timer += next;
             guard += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests_protected_left {
+    use super::*;
+
+    #[test]
+    fn light_cycle_actuates_protected_left_only_on_demand() {
+        use LightPhase::*;
+        // No demand -> the original 6-phase sequence (byte-identical to the pre-P3b cycle).
+        let mut seq = vec![NorthSouthGreen];
+        for _ in 0..6 {
+            seq.push(next_light_phase(*seq.last().unwrap(), false, false));
+        }
+        assert_eq!(
+            seq,
+            vec![
+                NorthSouthGreen,
+                NorthSouthYellow,
+                AllRedToEastWest,
+                EastWestGreen,
+                EastWestYellow,
+                AllRedToNorthSouth,
+                NorthSouthGreen
+            ]
+        );
+        // Demand inserts the protected-left interval before the matching green.
+        assert_eq!(
+            next_light_phase(AllRedToNorthSouth, true, false),
+            NorthSouthLeftProtected
+        );
+        assert_eq!(
+            next_light_phase(NorthSouthLeftProtected, true, false),
+            NorthSouthGreen
+        );
+        assert_eq!(
+            next_light_phase(AllRedToEastWest, false, true),
+            EastWestLeftProtected
+        );
+        // No demand at those all-reds -> straight to green (no protected interval).
+        assert_eq!(
+            next_light_phase(AllRedToNorthSouth, false, false),
+            NorthSouthGreen
+        );
+        assert_eq!(
+            next_light_phase(AllRedToEastWest, false, false),
+            EastWestGreen
+        );
     }
 }
 

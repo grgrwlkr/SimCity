@@ -13,7 +13,7 @@ pub use index::{
     IntersectionId, IntersectionIndex, IntersectionKey, IntersectionPriority,
     IntersectionPriorityMarker, build_intersection_clusters,
 };
-pub use lights::{LightPhase, TrafficLight};
+pub use lights::{LeftTurnDemand, LightPhase, TrafficLight};
 pub(crate) use render::{render_traffic_lights, sync_traffic_light_visuals};
 
 use crate::game::sets::GameSet;
@@ -25,6 +25,7 @@ pub struct IntersectionsPlugin;
 impl Plugin for IntersectionsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<IntersectionIndex>()
+            .init_resource::<LeftTurnDemand>()
             .add_systems(OnEnter(AppState::MainMenu), index::reset_intersections)
             .add_systems(
                 Update,

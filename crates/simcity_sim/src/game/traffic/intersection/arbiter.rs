@@ -2,7 +2,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use std::collections::HashMap;
 
-use crate::game::intersections::{IntersectionId, IntersectionIndex, TrafficLight};
+use crate::game::intersections::{IntersectionId, IntersectionIndex, LeftTurnDemand, TrafficLight};
 use crate::game::map::{MapGrid, TilePos};
 use crate::game::pedestrians::PedestrianCrossing;
 use crate::game::roads::RoadDir;
@@ -107,11 +107,13 @@ pub(crate) struct Readiness {
 /// red (the vehicle is stopped/waiting for THIS stop tile and its exit is the near-side turn).
 /// Uncontrolled → ready (priority/yield is resolved by the width + помеха-справа sort, Task 2).
 /// Ports the legacy signalized/RTOR admission (the legacy collect path, gated off flag-on).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn lanelet_readiness(
     signalized: bool,
     light: Option<&TrafficLight>,
     entry_dir: RoadDir,
     exit_dir: RoadDir,
+    maneuver: ManeuverKind,
     state: &VehicleTrafficState,
     cur: TilePos,
     drive_on_right: bool,
@@ -129,6 +131,15 @@ pub(crate) fn lanelet_readiness(
             is_right_on_red: false,
         };
     };
+    // Protected left interval (Task 6): only this axis's left turns proceed; opposing through is red.
+    // A left turn here is ready (exclusive window); through/right fall through (through stays red,
+    // right may still go via RTOR below). The matrix still prevents any collision.
+    if light.is_left_protected(entry_dir) && maneuver == ManeuverKind::LeftTurn {
+        return Readiness {
+            ready: true,
+            is_right_on_red: false,
+        };
+    }
     if light.is_green(entry_dir) || light.is_yellow(entry_dir) {
         return Readiness {
             ready: true,
@@ -407,6 +418,7 @@ pub(crate) struct ArbitrateLaneletParams<'w, 's> {
     reservations: ResMut<'w, IntersectionReservations>,
     cache: ResMut<'w, ArbiterIndexCache>,
     stats: ResMut<'w, ArbiterTickStats>,
+    left_turn_demand: ResMut<'w, LeftTurnDemand>,
     q_lights: Query<'w, 's, &'static TrafficLight>,
     q_pedestrians: Query<'w, 's, &'static PedestrianCrossing>,
     q_vehicles: Query<
@@ -436,6 +448,10 @@ pub(crate) fn arbitrate_lanelet_reservations(
     let now = time.elapsed_secs_f64();
     let exit_clear_progress = (VEHICLE_HALF_LENGTH_TILES + STOP_LINE_MARGIN_TILES).clamp(0.0, 1.0);
 
+    // Rebuild left-turn demand from this tick's waiting lefts (read next tick by the light cycle).
+    p.left_turn_demand.ns.clear();
+    p.left_turn_demand.ew.clear();
+
     let version = p.matrices.version;
     p.cache.ensure_built_for(version, &p.llg, &p.grid);
 
@@ -454,7 +470,12 @@ pub(crate) fn arbitrate_lanelet_reservations(
         .iter()
         .map(|c| (c.intersection_id, c.axis_ns))
         .collect();
-    seed_ped_masks(&ordered, &crossings, p.matrices.as_ref(), &mut p.reservations);
+    seed_ped_masks(
+        &ordered,
+        &crossings,
+        p.matrices.as_ref(),
+        &mut p.reservations,
+    );
 
     let mut lights_by_id: HashMap<IntersectionId, TrafficLight> = HashMap::new();
     for light in p.q_lights.iter() {
@@ -574,10 +595,25 @@ pub(crate) fn arbitrate_lanelet_reservations(
             lights_by_id.get(&id),
             entry_dir,
             exit_dir,
+            lanelet.maneuver,
             state,
             cur,
             drive_on_right,
         );
+
+        // A signalized left turn that is not yet eligible is left-turn demand: it actuates the
+        // protected-left phase for its axis (read next tick by the light cycle).
+        if signalized && lanelet.maneuver == ManeuverKind::LeftTurn && !readiness.ready {
+            match entry_dir {
+                RoadDir::North | RoadDir::South => {
+                    p.left_turn_demand.ns.insert(id);
+                }
+                RoadDir::East | RoadDir::West => {
+                    p.left_turn_demand.ew.insert(id);
+                }
+                RoadDir::None => {}
+            }
+        }
 
         let entry_lanes = grid.get(cur).map(|c| c.road.kind.lanes()).unwrap_or(0);
         let priority = candidate_priority(entry_lanes, lanelet.maneuver, entry_dir);
@@ -870,6 +906,7 @@ mod tests {
                 None,
                 RoadDir::North,
                 RoadDir::North,
+                ManeuverKind::Straight,
                 &free,
                 stop,
                 true
@@ -883,6 +920,7 @@ mod tests {
             Some(&light(LightPhase::NorthSouthGreen)),
             RoadDir::North,
             RoadDir::North,
+            ManeuverKind::Straight,
             &free,
             stop,
             true,
@@ -895,6 +933,7 @@ mod tests {
             Some(&light(LightPhase::EastWestGreen)),
             RoadDir::North,
             RoadDir::North,
+            ManeuverKind::Straight,
             &free,
             stop,
             true,
@@ -907,6 +946,7 @@ mod tests {
             Some(&light(LightPhase::AllRedToEastWest)),
             RoadDir::North,
             RoadDir::North,
+            ManeuverKind::Straight,
             &stopped,
             stop,
             true,
@@ -920,6 +960,7 @@ mod tests {
             Some(&light(LightPhase::EastWestGreen)),
             RoadDir::North,
             near,
+            ManeuverKind::RightTurn,
             &stopped,
             stop,
             true,
@@ -932,11 +973,40 @@ mod tests {
             Some(&light(LightPhase::EastWestGreen)),
             RoadDir::North,
             RoadDir::North,
+            ManeuverKind::Straight,
             &stopped,
             stop,
             true,
         );
         assert!(!r.ready);
+
+        // Protected-left (Task 6): during NorthSouthLeftProtected a North LEFT turn is ready
+        // (exclusive window, not RTOR); a North through is NOT (opposing/through is red).
+        let r = lanelet_readiness(
+            true,
+            Some(&light(LightPhase::NorthSouthLeftProtected)),
+            RoadDir::North,
+            RoadDir::North.left(),
+            ManeuverKind::LeftTurn,
+            &free,
+            stop,
+            true,
+        );
+        assert!(r.ready && !r.is_right_on_red, "protected left is ready");
+        let r = lanelet_readiness(
+            true,
+            Some(&light(LightPhase::NorthSouthLeftProtected)),
+            RoadDir::North,
+            RoadDir::North,
+            ManeuverKind::Straight,
+            &free,
+            stop,
+            true,
+        );
+        assert!(
+            !r.ready,
+            "through is red during the protected-left interval"
+        );
     }
 
     #[test]
