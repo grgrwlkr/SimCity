@@ -86,6 +86,7 @@ pub(super) fn resolve_stuck_vehicles(
             &mut StuckTimer,
             Option<&SwapDeadlocked>,
             Option<&mut VehicleLaneletPlan>,
+            Option<&VehicleMotionTimer>,
         ),
         Without<Parked>,
     >,
@@ -113,11 +114,20 @@ pub(super) fn resolve_stuck_vehicles(
         mut stuck,
         swap_deadlocked,
         mut lanelet_plan,
+        motion,
     ) in q.iter_mut()
     {
         if handled >= MAX_UNSTUCK_PER_TICK {
             break;
         }
+        // "Wedged" = continuously stopped (by actual speed, never reset by state) far longer than any
+        // legitimate light cycle. `StuckTimer.secs` is reset to 0 every tick while WaitingForGreen /
+        // Stopped (so a vehicle genuinely waiting at a red doesn't reroute), but that same reset hides
+        // a vehicle that is PERMANENTLY wedged in those states — recovery never fires and it becomes a
+        // forever-blocker that cascades into gridlock. The motion timer (Without state-based resets)
+        // is the authority for "this is not a normal wait, get it moving (reroute) or, last resort,
+        // despawn". Threshold = the reroute timeout, well past the ~34 s max signal cycle.
+        let wedged = motion.is_some_and(|m| m.stopped_secs >= STUCK_REROUTE_SECS);
         if v.path_cursor >= path_pool.len(v.path_handle) {
             stuck.secs = 0.0;
             continue;
@@ -140,13 +150,16 @@ pub(super) fn resolve_stuck_vehicles(
             handled += 1;
             continue;
         }
+        // A legitimately-waiting vehicle is skipped — UNLESS it has been wedged far past any light
+        // cycle, in which case it is not really waiting, it is stuck and must be rerouted/cleared.
         if matches!(
             *state,
             VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. }
-        ) {
+        ) && !wedged
+        {
             continue;
         }
-        if stuck.secs < STUCK_REROUTE_SECS {
+        if stuck.secs < STUCK_REROUTE_SECS && !wedged {
             continue;
         }
 
@@ -188,8 +201,11 @@ pub(super) fn resolve_stuck_vehicles(
         }
 
         // 1.5) If reroute failed and vehicle is still stuck, try reverse movement (GDD: max 10 km/h, 2-3 tiles)
-        // This happens before U-turn attempt, as reverse is simpler and safer
-        if v.path_cursor > 0 && v.reverse_distance < 2.5 {
+        // This happens before U-turn attempt, as reverse is simpler and safer.
+        // NOT for a wedged vehicle: pinning stuck.secs back to 48 s every tick is exactly what made the
+        // 180 s despawn guardrail unreachable (the car reverses 0 tiles because it is boxed in, so this
+        // branch fires forever). A wedged car falls through to the despawn last resort instead.
+        if v.path_cursor > 0 && v.reverse_distance < 2.5 && !wedged {
             // Allow reverse movement - the move_vehicles system will handle it
             // Just reset stuck timer slightly to give reverse a chance
             stuck.secs = STUCK_REROUTE_SECS * 0.8; // Give some time for reverse to work
@@ -265,7 +281,12 @@ pub(super) fn resolve_stuck_vehicles(
         }
 
         // 3) Last-resort guardrail: despawn non-service trip vehicles after a very long time stuck.
-        if stuck.secs >= STUCK_DESPAWN_SECS && service_vehicle.is_none() {
+        // Trigger on EITHER the state-resettable timer OR the never-reset motion timer, so a vehicle
+        // wedged in WaitingForGreen/Stopped (where stuck.secs is pinned/reset) can still be cleared
+        // once it has been physically motionless past the despawn horizon — the guardrail was dead
+        // code for exactly that population before.
+        let motion_despawn = motion.is_some_and(|m| m.stopped_secs >= STUCK_DESPAWN_SECS);
+        if (stuck.secs >= STUCK_DESPAWN_SECS || motion_despawn) && service_vehicle.is_none() {
             if let Some(p) = passenger {
                 finished.write(TripFinished {
                     citizen: p.citizen,
