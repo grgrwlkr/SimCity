@@ -189,6 +189,10 @@ pub struct DebugIntersectionSnapshot {
     pub reservation_left: u32,
     /// Reservations for other maneuvers.
     pub reservation_other: u32,
+    /// Count of traffic lights currently in each LightPhase (index = phase discriminant 0..8:
+    /// NSLeftProtected, NSGreen, NSYellow, AllRedToEW, EWLeftProtected, EWGreen, EWYellow,
+    /// AllRedToNS). Poll over time: if the distribution never changes, the lights are stuck.
+    pub light_phase_counts: [u32; 8],
 }
 
 /// Transport/pathfinding snapshot for MCP inspection.
@@ -1277,6 +1281,7 @@ fn update_debug_intersection_snapshot(
     intersections: Option<Res<IntersectionIndex>>,
     reservations: Option<Res<IntersectionReservations>>,
     holder: Res<DebugSnapshotEntity>,
+    q_lights: Query<&crate::game::intersections::TrafficLight>,
     mut q_snapshot: Query<&mut DebugIntersectionSnapshot>,
 ) {
     let Some(entity) = holder.entity else {
@@ -1294,6 +1299,22 @@ fn update_debug_intersection_snapshot(
         snapshot.intersection_count = 0;
         snapshot.intersection_tiles = 0;
         snapshot.traffic_light_count = 0;
+    }
+
+    snapshot.light_phase_counts = [0; 8];
+    for light in q_lights.iter() {
+        use crate::game::intersections::LightPhase::*;
+        let i = match light.phase {
+            NorthSouthLeftProtected => 0,
+            NorthSouthGreen => 1,
+            NorthSouthYellow => 2,
+            AllRedToEastWest => 3,
+            EastWestLeftProtected => 4,
+            EastWestGreen => 5,
+            EastWestYellow => 6,
+            AllRedToNorthSouth => 7,
+        };
+        snapshot.light_phase_counts[i] += 1;
     }
 
     snapshot.reservation_intersection_count = 0;
