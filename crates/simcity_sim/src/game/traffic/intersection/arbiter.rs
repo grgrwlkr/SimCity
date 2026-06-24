@@ -84,12 +84,91 @@ pub(crate) struct ArbiterGrantCandidate {
     pub exit_tile_cap: u16,
     pub exit_tile_phys_occ: u16,
     pub has_downstream_headroom: bool,
-    /// Stub ПДД readiness: signalized → green/yellow for the entry direction; uncontrolled → true.
+    /// ПДД readiness (Task 1): signalized green/yellow OR right-turn-on-red OR uncontrolled.
     pub ready: bool,
+    /// True when admission is a right-turn-on-red (a yield maneuver: only granted when the cluster
+    /// is otherwise clear).
+    pub is_right_on_red: bool,
     pub stream: StreamKey,
     pub maneuver: ManeuverKind,
     /// The lanelet's internal-path tiles (precise reservation tiles for cleanup/observability).
     pub tiles: Vec<TilePos>,
+}
+
+/// Outcome of the ПДД readiness check for one approaching vehicle.
+pub(crate) struct Readiness {
+    pub ready: bool,
+    pub is_right_on_red: bool,
+}
+
+/// ПДД eligibility for a vehicle one tile before the box (Task 1). Signalized: green/yellow for the
+/// entry direction → ready; all-red → not ready; red (not all-red) → ready ONLY as a right-turn-on-
+/// red (the vehicle is stopped/waiting for THIS stop tile and its exit is the near-side turn).
+/// Uncontrolled → ready (priority/yield is resolved by the width + помеха-справа sort, Task 2).
+/// Ports the legacy signalized/RTOR admission (the legacy collect path, gated off flag-on).
+pub(crate) fn lanelet_readiness(
+    signalized: bool,
+    light: Option<&TrafficLight>,
+    entry_dir: RoadDir,
+    exit_dir: RoadDir,
+    state: &VehicleTrafficState,
+    cur: TilePos,
+    drive_on_right: bool,
+) -> Readiness {
+    if !signalized {
+        return Readiness {
+            ready: true,
+            is_right_on_red: false,
+        };
+    }
+    let Some(light) = light else {
+        // Signalized cluster with no cached light this tick: do not admit.
+        return Readiness {
+            ready: false,
+            is_right_on_red: false,
+        };
+    };
+    if light.is_green(entry_dir) || light.is_yellow(entry_dir) {
+        return Readiness {
+            ready: true,
+            is_right_on_red: false,
+        };
+    }
+    if light.is_all_red() {
+        return Readiness {
+            ready: false,
+            is_right_on_red: false,
+        };
+    }
+    // Red (not all-red): right-turn-on-red only, after coming to a stop for THIS stop tile.
+    let stopped_for_this = matches!(
+        state,
+        VehicleTrafficState::Stopped { stop_tile, .. }
+            | VehicleTrafficState::WaitingForGreen { stop_tile, .. }
+            if *stop_tile == cur
+    );
+    if !stopped_for_this {
+        return Readiness {
+            ready: false,
+            is_right_on_red: false,
+        };
+    }
+    let near_side = if drive_on_right {
+        entry_dir.right()
+    } else {
+        entry_dir.left()
+    };
+    if exit_dir == near_side {
+        Readiness {
+            ready: true,
+            is_right_on_red: true,
+        }
+    } else {
+        Readiness {
+            ready: false,
+            is_right_on_red: false,
+        }
+    }
 }
 
 /// A vehicle physically on a cluster tile that needs a safety-net reservation row.
@@ -190,6 +269,12 @@ pub(crate) fn arbitrate_grants_inner(
 
         for cand in order {
             if !cand.ready || !cand.has_downstream_headroom {
+                refused += 1;
+                continue;
+            }
+            // Right-turn-on-red is a yield maneuver: only admit when the cluster is otherwise clear
+            // (no holders / in-box / earlier grants this tick).
+            if cand.is_right_on_red && reservations.is_reserved(id) {
                 refused += 1;
                 continue;
             }
@@ -307,11 +392,12 @@ pub(crate) fn arbitrate_lanelet_reservations(
     let path_pool = p.path_pool.as_ref();
     let llg = p.llg.as_ref();
     let cache = p.cache.as_ref();
+    let drive_on_right = p.traffic_cfg.drive_on_right;
 
     let mut candidates_by_id: HashMap<IntersectionId, Vec<ArbiterGrantCandidate>> = HashMap::new();
     let mut inbox: Vec<ArbiterInboxVehicle> = Vec::new();
 
-    for (e, v, _state, plan) in p.q_vehicles.iter() {
+    for (e, v, state, plan) in p.q_vehicles.iter() {
         let Some(cur) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
@@ -406,14 +492,16 @@ pub(crate) fn arbitrate_lanelet_reservations(
             )
         });
 
-        let ready = if intersections.traffic_lights.contains(&id) {
-            match lights_by_id.get(&id) {
-                Some(light) => light.is_green(entry_dir) || light.is_yellow(entry_dir),
-                None => false,
-            }
-        } else {
-            true
-        };
+        let signalized = intersections.traffic_lights.contains(&id);
+        let readiness = lanelet_readiness(
+            signalized,
+            lights_by_id.get(&id),
+            entry_dir,
+            exit_dir,
+            state,
+            cur,
+            drive_on_right,
+        );
 
         let priority = match lanelet.maneuver {
             ManeuverKind::Straight => 3u8,
@@ -434,7 +522,8 @@ pub(crate) fn arbitrate_lanelet_reservations(
                 exit_tile_cap: cap,
                 exit_tile_phys_occ: phys_occ,
                 has_downstream_headroom,
-                ready,
+                ready: readiness.ready,
+                is_right_on_red: readiness.is_right_on_red,
                 stream: StreamKey {
                     entry: entry_dir,
                     exit: exit_dir,
@@ -538,6 +627,7 @@ mod tests {
             exit_tile_phys_occ: 0,
             has_downstream_headroom: true,
             ready: true,
+            is_right_on_red: false,
             stream: StreamKey {
                 entry: RoadDir::East,
                 exit: RoadDir::East,
@@ -619,6 +709,103 @@ mod tests {
             res3.is_reserved_by(IntersectionId(0), inbox_e),
             "in-box vehicle gets a safety-net reservation"
         );
+    }
+
+    #[test]
+    fn readiness_signalized_green_red_rtor_allred() {
+        use crate::game::intersections::{IntersectionKey, LightPhase, TrafficLight};
+        let light = |phase| TrafficLight {
+            phase,
+            ..Default::default()
+        };
+        let stop = TilePos { x: 5, y: 5 };
+        let key = IntersectionKey {
+            aabb_min: TilePos { x: 0, y: 0 },
+            aabb_max: TilePos { x: 0, y: 0 },
+            tile_count: 0,
+            tiles_hash: 0,
+        };
+        let free = VehicleTrafficState::FreeFlow;
+        let stopped = VehicleTrafficState::Stopped {
+            intersection: key,
+            stop_tile: stop,
+            queue_position: 0,
+        };
+
+        // Uncontrolled -> always ready.
+        assert!(
+            lanelet_readiness(
+                false,
+                None,
+                RoadDir::North,
+                RoadDir::North,
+                &free,
+                stop,
+                true
+            )
+            .ready
+        );
+
+        // Signalized green for a North entry -> ready, not RTOR.
+        let r = lanelet_readiness(
+            true,
+            Some(&light(LightPhase::NorthSouthGreen)),
+            RoadDir::North,
+            RoadDir::North,
+            &free,
+            stop,
+            true,
+        );
+        assert!(r.ready && !r.is_right_on_red);
+
+        // Red for North (E/W green), straight, not stopped -> not ready.
+        let r = lanelet_readiness(
+            true,
+            Some(&light(LightPhase::EastWestGreen)),
+            RoadDir::North,
+            RoadDir::North,
+            &free,
+            stop,
+            true,
+        );
+        assert!(!r.ready);
+
+        // All-red -> never ready.
+        let r = lanelet_readiness(
+            true,
+            Some(&light(LightPhase::AllRedToEastWest)),
+            RoadDir::North,
+            RoadDir::North,
+            &stopped,
+            stop,
+            true,
+        );
+        assert!(!r.ready);
+
+        // Red for North, stopped for this tile, exit == near-side turn -> RTOR.
+        let near = RoadDir::North.right();
+        let r = lanelet_readiness(
+            true,
+            Some(&light(LightPhase::EastWestGreen)),
+            RoadDir::North,
+            near,
+            &stopped,
+            stop,
+            true,
+        );
+        assert!(r.ready && r.is_right_on_red);
+
+        // Red for North, stopped, going straight (not near-side) -> not ready.
+        let r = lanelet_readiness(
+            true,
+            Some(&light(LightPhase::EastWestGreen)),
+            RoadDir::North,
+            RoadDir::North,
+            &stopped,
+            stop,
+            true,
+        );
+        assert!(!r.ready);
     }
 
     #[test]
