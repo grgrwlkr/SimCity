@@ -88,6 +88,11 @@ pub(crate) struct IntersectionLedger {
     /// crosses an active crosswalk fails admission. Index space is the same matrix-row space as
     /// `active_mask` (crosswalk rows live at `[crosswalk_base, n)`).
     ped_mask: Vec<u64>,
+    /// Per-tick bitset of lanelet indices currently occupied by IN-BOX vehicles (P3c). Re-derived
+    /// every tick from the vehicles physically inside the cluster, so `active_mask` representation of
+    /// in-box vehicles survives a graph rebuild that cleared their persistent holders (closes the
+    /// graph-rebuild-mid-box window). Like `ped_mask`: transient, never a holder, never released.
+    inbox_mask: Vec<u64>,
     /// (holder entity, its held local lanelet index). Source of truth for rebuilding `active_mask`.
     holders: Vec<(Entity, u32)>,
     /// Matrix `GraphVersion` these local indices are valid for; reset when the graph rebuilds.
@@ -105,6 +110,7 @@ impl IntersectionLedger {
     pub(crate) fn reset_for_version(&mut self, version: u64) {
         self.active_mask.clear();
         self.ped_mask.clear();
+        self.inbox_mask.clear();
         self.holders.clear();
         self.built_for_version = version;
     }
@@ -120,6 +126,17 @@ impl IntersectionLedger {
         set_bit(&mut self.ped_mask, crosswalk_row_idx);
     }
 
+    /// Clear the per-tick in-box mask (called before re-seeding from current in-box vehicles).
+    pub(crate) fn clear_inbox_mask(&mut self) {
+        self.inbox_mask.clear();
+    }
+
+    /// Mark a lanelet index as occupied by an in-box vehicle this tick; a conflicting entrant then
+    /// fails `try_admit` even if the holder was lost to a graph rebuild.
+    pub(crate) fn set_inbox_lanelet(&mut self, local_idx: u32) {
+        set_bit(&mut self.inbox_mask, local_idx as usize);
+    }
+
     pub(crate) fn built_for_version(&self) -> u64 {
         self.built_for_version
     }
@@ -132,8 +149,12 @@ impl IntersectionLedger {
         if self.holders.iter().any(|&(e, _)| e == entity) {
             return true;
         }
-        // Refuse if the lanelet conflicts with a current holder OR an active pedestrian crosswalk.
-        if rows_overlap(row, &self.active_mask) || rows_overlap(row, &self.ped_mask) {
+        // Refuse if the lanelet conflicts with a current holder, an active pedestrian crosswalk, or
+        // an in-box vehicle (the last covers holders lost to a graph rebuild this tick).
+        if rows_overlap(row, &self.active_mask)
+            || rows_overlap(row, &self.ped_mask)
+            || rows_overlap(row, &self.inbox_mask)
+        {
             return false;
         }
         set_bit(&mut self.active_mask, local_idx as usize);
@@ -1470,6 +1491,25 @@ mod tests_ledger {
         // Clearing the ped mask re-opens the crossing lanelet (no holder conflicts).
         ledger.clear_ped_mask();
         assert!(ledger.try_admit(e0, 0, m.row(0)));
+    }
+
+    #[test]
+    fn inbox_mask_blocks_conflicting_entrant_without_holder() {
+        // lanelet 0 conflicts lanelet 1 (share (1,0)).
+        let m = ConflictMatrix::from_paths(&[
+            vec![TilePos { x: 0, y: 0 }, TilePos { x: 1, y: 0 }],
+            vec![TilePos { x: 1, y: 0 }, TilePos { x: 1, y: 1 }],
+        ]);
+        let mut ledger = IntersectionLedger::default();
+        // No persistent holder (a graph rebuild cleared it), but lanelet 0 is occupied in-box.
+        ledger.set_inbox_lanelet(0);
+        assert!(
+            !ledger.try_admit(ent(1), 1, m.row(1)),
+            "conflicting entrant refused by inbox_mask even without a holder"
+        );
+        // Clearing the in-box mask re-opens admission (the vehicle drained).
+        ledger.clear_inbox_mask();
+        assert!(ledger.try_admit(ent(1), 1, m.row(1)));
     }
 
     #[test]

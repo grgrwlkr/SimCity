@@ -7,7 +7,7 @@ use crate::game::map::{MapGrid, TilePos};
 use crate::game::pedestrians::PedestrianCrossing;
 use crate::game::roads::RoadDir;
 use crate::game::transport::lanelet::{LaneletGraph, LaneletId};
-use crate::game::transport::{LaneGraph, LaneletConflictMatrices, PathPool};
+use crate::game::transport::{LaneGraph, LaneletConflictMatrices, PathHandle, PathPool};
 
 use super::super::components::{VehicleLaneletPlan, VehicleTrafficState};
 use super::super::{
@@ -231,6 +231,41 @@ pub(crate) fn resolve_lanelet_fallback(
         llg.get(*lid)
             .is_some_and(|l| l.exit_lane == exit_lane && l.intersection == id)
     })
+}
+
+/// Resolve the lanelet an IN-BOX vehicle is traversing (P3c), by scanning its route for the approach
+/// tile just before the cluster and the exit tile just after, then `resolve_lanelet_fallback`. Used
+/// to re-seed `inbox_mask` each tick so in-box vehicles stay represented across a graph rebuild.
+pub(crate) fn resolve_inbox_lanelet(
+    path_pool: &PathPool,
+    grid: &MapGrid,
+    llg: &LaneletGraph,
+    lanes: &LaneGraph,
+    handle: PathHandle,
+    cursor: usize,
+    id: IntersectionId,
+) -> Option<LaneletId> {
+    let len = path_pool.len(handle);
+    // Exit tile: first non-cluster route tile at/after the cursor.
+    let mut k = cursor;
+    while k < len {
+        let t = path_pool.get_tile(handle, k)?;
+        if !is_intersection_tile(grid, t) {
+            break;
+        }
+        k += 1;
+    }
+    let exit_tile = path_pool.get_tile(handle, k)?;
+    // Approach tile: last non-cluster route tile before the cursor.
+    let mut j = cursor;
+    while j > 0 {
+        j -= 1;
+        let t = path_pool.get_tile(handle, j)?;
+        if !is_intersection_tile(grid, t) {
+            return resolve_lanelet_fallback(llg, lanes, id, t, exit_tile);
+        }
+    }
+    None
 }
 
 /// A vehicle physically on a cluster tile that needs a safety-net reservation row.
@@ -506,11 +541,13 @@ pub(crate) fn arbitrate_lanelet_reservations(
 
     let ordered = ordered_intersection_ids(&p.llg);
     // T7 contract: reset any ledger whose indices predate the current matrix version BEFORE admitting.
+    // Also clear last tick's transient in-box mask (re-derived from current in-box vehicles below).
     for &id in &ordered {
         let ledger = p.reservations.ledger_mut(id);
         if ledger.built_for_version() != version {
             ledger.reset_for_version(version);
         }
+        ledger.clear_inbox_mask();
     }
 
     // Seed pedestrian crosswalk activation into each ledger's per-tick ped_mask (Task 5).
@@ -552,7 +589,9 @@ pub(crate) fn arbitrate_lanelet_reservations(
         let Some(cur) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
-        // In-box vehicles get a safety-net row; they are not entry candidates.
+        // In-box vehicles get a safety-net row; they are not entry candidates. Also re-seed the
+        // ledger's inbox_mask with their lanelet so a conflicting entrant is refused even if the
+        // holder was lost to a graph rebuild this tick.
         if is_intersection_tile(grid, cur) {
             if let Some(id) = intersections.intersection_id_at(cur) {
                 inbox.push(ArbiterInboxVehicle {
@@ -560,6 +599,20 @@ pub(crate) fn arbitrate_lanelet_reservations(
                     intersection: id,
                     tile: cur,
                 });
+                if let Some(lid) = resolve_inbox_lanelet(
+                    path_pool,
+                    grid,
+                    llg,
+                    lanes,
+                    v.path_handle,
+                    v.path_cursor,
+                    id,
+                ) && let Some(&local_idx) = cache.local_idx.get(&id).and_then(|m| m.get(&lid))
+                {
+                    p.reservations
+                        .ledger_mut(id)
+                        .set_inbox_lanelet(local_idx as u32);
+                }
             }
             continue;
         }
