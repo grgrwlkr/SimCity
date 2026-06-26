@@ -2173,11 +2173,10 @@ fn update_debug_arbiter_ledger_state(
         snapshot.drop_other_collection = s.drop_other_collection;
         snapshot.refused_capacity = s.refused_capacity;
         snapshot.refused_matrix = s.refused_matrix;
+        snapshot.ring_force_admits = s.force_admits;
     } else {
         *snapshot = DebugArbiterLedgerState::default();
     }
-    // P3c liveness counter not yet wired.
-    snapshot.ring_force_admits = 0;
 }
 
 fn set_string(target: &mut String, value: &str) {

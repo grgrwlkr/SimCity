@@ -9,8 +9,9 @@ mod zones;
 pub use arbiter::ArbiterTickStats;
 #[allow(unused_imports)]
 pub(crate) use arbiter::{
-    ApproachFairness, ArbiterIndexCache, LaneletStallTracker, RingTopologyStatus,
-    arbitrate_lanelet_reservations, check_ring_free_topology, nudge_lanelet_stall_reroute,
+    ApproachFairness, ArbiterIndexCache, ClusterStarvation, LaneletStallTracker,
+    RingTopologyStatus, arbitrate_lanelet_reservations, check_ring_free_topology,
+    nudge_lanelet_stall_reroute,
 };
 #[allow(unused_imports)]
 pub(crate) use connectors::{

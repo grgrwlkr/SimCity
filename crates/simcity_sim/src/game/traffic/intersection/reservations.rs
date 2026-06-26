@@ -101,6 +101,12 @@ pub(crate) struct IntersectionLedger {
     /// mixed with a fresh matrix (the one-hot index bits and conflict-row bits would otherwise refer
     /// to different lanelet numberings).
     built_for_version: u64,
+    /// Coarse whole-box holder: a vehicle approaching with an UNRESOLVABLE lanelet (sidecar empty +
+    /// route-geometry fallback failed — common after road-A* reroutes) is admitted via a coarse
+    /// fallback that reserves the ENTIRE box exclusively (like the legacy ZONE_ALL emergency grant),
+    /// admitted only when the box is completely clear. Without this, ~94% of approaching vehicles are
+    /// dropped at the unresolved-lanelet gate on a populated city and the arbiter admits nothing.
+    coarse_held: Option<Entity>,
 }
 
 #[allow(dead_code)]
@@ -112,6 +118,7 @@ impl IntersectionLedger {
         self.ped_mask.clear();
         self.inbox_mask.clear();
         self.holders.clear();
+        self.coarse_held = None;
         self.built_for_version = version;
     }
 
@@ -149,9 +156,11 @@ impl IntersectionLedger {
         if self.holders.iter().any(|&(e, _)| e == entity) {
             return true;
         }
-        // Refuse if the lanelet conflicts with a current holder, an active pedestrian crosswalk, or
-        // an in-box vehicle (the last covers holders lost to a graph rebuild this tick).
-        if rows_overlap(row, &self.active_mask)
+        // Refuse if a coarse whole-box holder owns the cluster, or the lanelet conflicts with a
+        // current holder, an active pedestrian crosswalk, or an in-box vehicle (the last covers
+        // holders lost to a graph rebuild this tick).
+        if self.coarse_held.is_some()
+            || rows_overlap(row, &self.active_mask)
             || rows_overlap(row, &self.ped_mask)
             || rows_overlap(row, &self.inbox_mask)
         {
@@ -162,9 +171,35 @@ impl IntersectionLedger {
         true
     }
 
+    /// True iff the box is completely clear: no held lanelets, no in-box vehicles, no active
+    /// pedestrian crosswalk, and no existing coarse holder.
+    fn box_is_clear(&self) -> bool {
+        self.coarse_held.is_none()
+            && self.active_mask.iter().all(|&w| w == 0)
+            && self.ped_mask.iter().all(|&w| w == 0)
+            && self.inbox_mask.iter().all(|&w| w == 0)
+    }
+
+    /// Coarse fallback admission for an UNRESOLVABLE-lanelet vehicle: admit iff the box is completely
+    /// clear, then reserve the WHOLE box exclusively (no other vehicle — precise or coarse — may enter
+    /// until it releases). Collision-safe by exclusion (stricter than any precise grant). Idempotent.
+    pub(crate) fn try_admit_coarse(&mut self, entity: Entity) -> bool {
+        if self.coarse_held == Some(entity) {
+            return true;
+        }
+        if !self.box_is_clear() {
+            return false;
+        }
+        self.coarse_held = Some(entity);
+        true
+    }
+
     /// Remove `entity` as a holder and rebuild `active_mask` as the OR-fold of the survivors' index
     /// bits (never XOR). No-op if `entity` is not a holder.
     pub(crate) fn release(&mut self, entity: Entity) {
+        if self.coarse_held == Some(entity) {
+            self.coarse_held = None;
+        }
         let before = self.holders.len();
         self.holders.retain(|&(e, _)| e != entity);
         if self.holders.len() != before {
@@ -184,7 +219,7 @@ impl IntersectionLedger {
     }
 
     pub(crate) fn holds(&self, entity: Entity) -> bool {
-        self.holders.iter().any(|&(e, _)| e == entity)
+        self.coarse_held == Some(entity) || self.holders.iter().any(|&(e, _)| e == entity)
     }
 
     /// Number of currently-held conflict points (popcount of `active_mask`). Observability.
@@ -238,6 +273,17 @@ impl IntersectionReservations {
         }
         slots.push(entity);
         true
+    }
+
+    /// Force-reserve an exit slot for the liveness valve, bypassing the capacity/headroom check (but
+    /// NOT the conflict matrix — the caller still goes through `try_admit`). Idempotent. Over-admits
+    /// the exit tile by one to break a saturated-grid circular wait, exactly like the legacy
+    /// force-admit; the over-admission resolves as the cascade drains downstream.
+    pub(crate) fn force_acquire_exit_slot(&mut self, exit_tile_idx: usize, entity: Entity) {
+        let slots = self.exit_slots.entry(exit_tile_idx).or_default();
+        if !slots.contains(&entity) {
+            slots.push(entity);
+        }
     }
 
     /// Release `entity`'s slot on `exit_tile_idx` (it now physically occupies the tile, so it is

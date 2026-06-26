@@ -7,8 +7,8 @@
 use super::*;
 use crate::game::intersections::{IntersectionCluster, LeftTurnDemand};
 use crate::game::traffic::intersection::{
-    ApproachFairness, ArbiterIndexCache, ArbiterTickStats, LaneletStallTracker, RingTopologyStatus,
-    arbitrate_lanelet_reservations, cleanup_intersection_reservations,
+    ApproachFairness, ArbiterIndexCache, ArbiterTickStats, ClusterStarvation, LaneletStallTracker,
+    RingTopologyStatus, arbitrate_lanelet_reservations, cleanup_intersection_reservations,
 };
 use crate::game::transport::lane_graph::build_lane_graph_inner;
 use crate::game::transport::{
@@ -137,6 +137,7 @@ fn build_arbiter_app() -> (App, Entity, Entity) {
         .init_resource::<ArbiterIndexCache>()
         .init_resource::<ArbiterTickStats>()
         .init_resource::<ApproachFairness>()
+        .init_resource::<ClusterStarvation>()
         .init_resource::<LaneletStallTracker>()
         .init_resource::<RingTopologyStatus>();
 

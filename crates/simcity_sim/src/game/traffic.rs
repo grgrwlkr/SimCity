@@ -363,8 +363,8 @@ use intersection::plan_intersection_reservations;
 #[cfg(test)]
 use intersection::rewrite_intersection_connectors;
 use intersection::{
-    ApproachFairness, ArbiterIndexCache, LaneletStallTracker, RingTopologyStatus,
-    apply_intersection_reservation_candidates, arbitrate_lanelet_reservations,
+    ApproachFairness, ArbiterIndexCache, ClusterStarvation, LaneletStallTracker,
+    RingTopologyStatus, apply_intersection_reservation_candidates, arbitrate_lanelet_reservations,
     cache_intersection_light_state, cache_pedestrian_crossing_state, check_ring_free_topology,
     cleanup_intersection_reservations, collect_intersection_reservation_candidates,
     mark_vehicles_needing_connector_rewrite, nudge_lanelet_stall_reroute,
@@ -394,6 +394,7 @@ impl Plugin for TrafficPlugin {
             .init_resource::<ArbiterIndexCache>()
             .init_resource::<ArbiterTickStats>()
             .init_resource::<ApproachFairness>()
+            .init_resource::<ClusterStarvation>()
             .init_resource::<LaneletStallTracker>()
             .init_resource::<RingTopologyStatus>()
             .init_resource::<TrafficSpatialIndex>()
