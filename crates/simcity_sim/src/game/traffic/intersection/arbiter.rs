@@ -310,6 +310,11 @@ pub(crate) struct ArbiterCounts {
     pub rtor_grants: u32,
     /// Refusals because the candidate was not ПДД-ready (signalized red / yield).
     pub yield_refusals: u32,
+    /// Refusals at a capacity/spillback gate (no exit slot OR no downstream headroom) — the
+    /// valve-addressable ones. Anomalous on a near-empty network.
+    pub refused_capacity: u32,
+    /// Refusals at the conflict matrix (try_admit) — collision-safety, never bypassable.
+    pub refused_matrix: u32,
 }
 
 /// Flat per-tick arbiter observability, mirrored to BRP by `simcity_debug`. Default (all zero) when
@@ -332,6 +337,25 @@ pub struct ArbiterTickStats {
     pub yield_refusals: u32,
     /// Traffic lights currently in a protected-left interval (P3b).
     pub left_protected_active: u32,
+    /// Vehicles that reached the "approaching a cluster" point in the collection phase this tick (the
+    /// denominator for candidate yield). admitted+refused is only a fraction of this — the gap is the
+    /// silent collection-phase drops below.
+    pub cand_approaching: u32,
+    /// Collection-phase drops because the lanelet could not be resolved (sidecar empty AND
+    /// precise-fallback returned None) — the prime suspect for admitted=0/refused=0: these vehicles
+    /// never become grant candidates and so are counted in NEITHER admitted nor refused.
+    pub drop_unresolved_lanelet: u32,
+    /// Approaching vehicles that survived ALL collection gates and became real grant candidates. If
+    /// this is 0 while cand_approaching > 0, the problem is 100% collection-phase; if > 0 while
+    /// admitted=0, the problem is in the grant-phase gates (ready/headroom/exit-slot/matrix).
+    pub candidates_built: u32,
+    /// Collection-phase drops OTHER than unresolved-lanelet: bad entry dir, no exit tile, missing
+    /// local_idx / lanelet object, or an unusable exit cell.
+    pub drop_other_collection: u32,
+    /// Grant-phase refusals at a capacity/spillback gate (exit slot / downstream headroom).
+    pub refused_capacity: u32,
+    /// Grant-phase refusals at the conflict matrix (try_admit).
+    pub refused_matrix: u32,
 }
 
 /// Seed each ledger's per-tick `ped_mask` from active pedestrian crossings (Task 5). A crossing with
@@ -457,6 +481,7 @@ pub(crate) fn arbitrate_grants_inner(
             }
             if !cand.has_downstream_headroom {
                 counts.refused += 1;
+                counts.refused_capacity += 1;
                 continue;
             }
             // Right-turn-on-red is a yield maneuver: only admit when the cluster is otherwise clear
@@ -479,10 +504,12 @@ pub(crate) fn arbitrate_grants_inner(
                 cand.vehicle,
             ) {
                 counts.refused += 1;
+                counts.refused_capacity += 1;
                 continue;
             }
             if !ledger.try_admit(cand.vehicle, cand.local_idx as u32, row) {
                 counts.refused += 1;
+                counts.refused_matrix += 1;
                 continue;
             }
             // Guaranteed to succeed (pre-checked; single-threaded sweep).
@@ -616,6 +643,12 @@ pub(crate) fn arbitrate_lanelet_reservations(
     let mut candidates_by_id: HashMap<IntersectionId, Vec<ArbiterGrantCandidate>> = HashMap::new();
     let mut inbox: Vec<ArbiterInboxVehicle> = Vec::new();
     let mut unresolved_this_tick: HashSet<Entity> = HashSet::new();
+    // Collection-phase observability (step 0): how many vehicles approach a cluster, how many drop at
+    // each silent gate, and how many survive to become real grant candidates.
+    let mut cand_approaching = 0u32;
+    let mut drop_unresolved = 0u32;
+    let mut drop_other = 0u32;
+    let mut candidates_built = 0u32;
 
     for (e, v, state, plan) in p.q_vehicles.iter() {
         let Some(cur) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
@@ -660,9 +693,11 @@ pub(crate) fn arbitrate_lanelet_reservations(
         let Some(id) = intersections.intersection_id_at(next) else {
             continue;
         };
+        cand_approaching += 1;
 
         let entry_dir = dir_between_adjacent(cur, next);
         if entry_dir == RoadDir::None {
+            drop_other += 1;
             continue;
         }
         let rem = path_pool.remaining_from(v.path_handle, v.path_cursor);
@@ -681,6 +716,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
             })
         });
         let Some(exit_tile) = exit_tile else {
+            drop_other += 1;
             continue;
         };
 
@@ -693,29 +729,36 @@ pub(crate) fn arbitrate_lanelet_reservations(
                 None => {
                     // Approaching a cluster but no lanelet resolves -> a routing error; track it for
                     // the mandatory-merge reroute (P3c).
+                    drop_unresolved += 1;
                     unresolved_this_tick.insert(e);
                     continue;
                 }
             },
         };
         let Some(&local_idx) = cache.local_idx.get(&id).and_then(|m| m.get(&lanelet_id)) else {
+            drop_other += 1;
             continue;
         };
         let Some(lanelet) = llg.get(lanelet_id) else {
+            drop_other += 1;
             continue;
         };
 
         let Some(exit_cell) = grid.get(exit_tile) else {
+            drop_other += 1;
             continue;
         };
         if !exit_cell.road.is_some() || exit_cell.road.dir == RoadDir::None {
+            drop_other += 1;
             continue;
         }
         let Some(exit_idx) = grid.idx(exit_tile) else {
+            drop_other += 1;
             continue;
         };
         let cap = exit_cell.road.kind.capacity_per_lane_tile();
         if cap == 0 {
+            drop_other += 1;
             continue;
         }
         let phys_occ = traffic
@@ -774,6 +817,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
         let priority = candidate_priority(entry_lanes, lanelet.maneuver, aging);
         let dist_to_entry = (TILE_CENTER_TO_EDGE_TILES - v.progress).clamp(0.0, 1.0);
 
+        candidates_built += 1;
         candidates_by_id
             .entry(id)
             .or_default()
@@ -859,6 +903,12 @@ pub(crate) fn arbitrate_lanelet_reservations(
     stats.rtor_grants = counts.rtor_grants;
     stats.yield_refusals = counts.yield_refusals;
     stats.left_protected_active = left_protected_active;
+    stats.cand_approaching = cand_approaching;
+    stats.drop_unresolved_lanelet = drop_unresolved;
+    stats.candidates_built = candidates_built;
+    stats.drop_other_collection = drop_other;
+    stats.refused_capacity = counts.refused_capacity;
+    stats.refused_matrix = counts.refused_matrix;
 }
 
 /// Downstream-link horizon for the spillback gate (mirrors the legacy collect constant).

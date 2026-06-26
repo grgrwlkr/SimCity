@@ -2124,6 +2124,23 @@ pub struct DebugArbiterLedgerState {
     pub left_protected_active: u32,
     /// Reserved for the P3c ring-free force-admit counter; always 0 in P3a/P3b.
     pub ring_force_admits: u32,
+    /// Vehicles approaching a cluster this tick (collection-phase denominator). The gap between this
+    /// and admitted+refused is the silent collection-phase drop count.
+    pub cand_approaching: u32,
+    /// Collection-phase drops because the lanelet could not be resolved (sidecar empty + fallback
+    /// None) — if this ≈ cand_approaching, rerouted cars losing their sidecar is the under-admission.
+    pub drop_unresolved_lanelet: u32,
+    /// Approaching vehicles that became real grant candidates. 0 here + cand_approaching>0 ⇒ the loss
+    /// is 100% in the collection phase; >0 + admitted=0 ⇒ the loss is in the grant-phase gates.
+    pub candidates_built: u32,
+    /// Collection-phase drops other than unresolved-lanelet (bad dir / no exit tile / missing
+    /// local_idx or lanelet / unusable exit cell).
+    pub drop_other_collection: u32,
+    /// Grant-phase refusals at a capacity/spillback gate (exit slot / downstream headroom). Anomalous
+    /// on a near-empty network ⇒ an over-strict gate (valve-addressable / possible bug).
+    pub refused_capacity: u32,
+    /// Grant-phase refusals at the conflict matrix (collision-safety; must NOT be bypassed).
+    pub refused_matrix: u32,
 }
 
 /// Update the arbiter ledger debug mirror from the per-tick `ArbiterTickStats`.
@@ -2150,6 +2167,12 @@ fn update_debug_arbiter_ledger_state(
         snapshot.rtor_grants = s.rtor_grants;
         snapshot.yield_refusals = s.yield_refusals;
         snapshot.left_protected_active = s.left_protected_active;
+        snapshot.cand_approaching = s.cand_approaching;
+        snapshot.drop_unresolved_lanelet = s.drop_unresolved_lanelet;
+        snapshot.candidates_built = s.candidates_built;
+        snapshot.drop_other_collection = s.drop_other_collection;
+        snapshot.refused_capacity = s.refused_capacity;
+        snapshot.refused_matrix = s.refused_matrix;
     } else {
         *snapshot = DebugArbiterLedgerState::default();
     }
