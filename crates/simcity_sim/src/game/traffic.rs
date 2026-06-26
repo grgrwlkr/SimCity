@@ -61,6 +61,9 @@ use stuck::{
     update_stuck_timers,
 };
 
+mod reroute_planner;
+pub(crate) use reroute_planner::{LaneletReplanRes, replan_route_with_lanelets};
+
 mod swap_break;
 use swap_break::break_tile_swaps;
 

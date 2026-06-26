@@ -50,6 +50,11 @@ fn oncoming_overtake_rewrites_route_on_two_lane() {
         .insert_resource(TrafficConfig::default())
         .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(crate::game::transport::PathPool::default())
+        .init_resource::<TrafficOccupancy>()
+        .init_resource::<crate::game::transport::PathfindingConfig>()
+        .init_resource::<crate::game::transport::LaneGraph>()
+        .init_resource::<crate::game::transport::LaneletGraph>()
+        .init_resource::<crate::game::sim::SimRng>()
         .add_systems(
             Update,
             (build_traffic_spatial_index, plan_oncoming_overtakes).chain(),
@@ -552,6 +557,10 @@ fn stuck_dead_end_uturn_rewrites_route_on_two_lane() {
         .insert_resource(IntersectionIndex::default())
         .insert_resource(occ)
         .insert_resource(crate::game::transport::PathPool::default())
+        .init_resource::<TrafficConfig>()
+        .init_resource::<crate::game::transport::LaneGraph>()
+        .init_resource::<crate::game::transport::LaneletGraph>()
+        .init_resource::<crate::game::sim::SimRng>()
         .add_systems(Update, resolve_stuck_vehicles);
 
     let current = TilePos { x: 1, y: 0 };
@@ -659,6 +668,10 @@ fn stuck_passengerless_vehicle_on_only_path_despawns_instead_of_freezing() {
         .insert_resource(IntersectionIndex::default())
         .insert_resource(occ)
         .insert_resource(crate::game::transport::PathPool::default())
+        .init_resource::<TrafficConfig>()
+        .init_resource::<crate::game::transport::LaneGraph>()
+        .init_resource::<crate::game::transport::LaneletGraph>()
+        .init_resource::<crate::game::sim::SimRng>()
         .add_systems(Update, resolve_stuck_vehicles);
 
     let current = TilePos { x: 0, y: 0 };
@@ -845,6 +858,9 @@ fn lane_preference_test_setup() -> bevy::prelude::App {
         .insert_resource(TrafficConfig::default())
         .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(crate::game::transport::PathPool::default())
+        .init_resource::<crate::game::transport::LaneGraph>()
+        .init_resource::<crate::game::transport::LaneletGraph>()
+        .init_resource::<crate::game::sim::SimRng>()
         .add_systems(
             Update,
             (

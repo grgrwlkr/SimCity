@@ -74,6 +74,7 @@ pub(super) fn resolve_stuck_vehicles(
     mut path_cache: ResMut<PathCache>,
     mut path_pool: ResMut<super::super::transport::PathPool>,
     intersections: Res<IntersectionIndex>,
+    mut replan: LaneletReplanRes,
     mut commands: Commands,
     mut finished: bevy::ecs::message::MessageWriter<TripFinished>,
     mut q: Query<
@@ -182,12 +183,36 @@ pub(super) fn resolve_stuck_vehicles(
         if !route.is_empty()
             && Some(route.as_slice()) != path_pool.remaining_from(v.path_handle, v.path_cursor)
         {
+            let travel_dir = grid.get(current).map_or(RoadDir::None, |c| c.road.dir);
+            let jitter_seed = replan.jitter_seed();
+            let lanelet_route = replan_route_with_lanelets(
+                replan.traffic_cfg.experimental_lanelet_intersections,
+                &replan.lane_graph,
+                &replan.lanelet_graph,
+                &grid,
+                &traffic,
+                &path_cfg,
+                jitter_seed,
+                current,
+                goal,
+                travel_dir,
+            );
             path_pool.release(v.path_handle);
-            v.path_handle = path_pool.intern(route);
+            match lanelet_route {
+                Some((tiles, sidecar)) => {
+                    v.path_handle = path_pool.intern(tiles);
+                    if let Some(plan) = lanelet_plan.as_deref_mut() {
+                        plan.entries = sidecar;
+                    }
+                }
+                None => {
+                    v.path_handle = path_pool.intern(route);
+                    clear_lanelet_plan_on_reroute(lanelet_plan.as_deref_mut());
+                }
+            }
             v.path_cursor = 0;
             v.progress = 0.0;
             v.speed = v.speed.min(v.max_speed * 0.5);
-            clear_lanelet_plan_on_reroute(lanelet_plan.as_deref_mut());
             // Reset reverse state after reroute
             v.is_reversing = false;
             v.reverse_distance = 0.0;
@@ -260,12 +285,36 @@ pub(super) fn resolve_stuck_vehicles(
                         next_route.push(uturn_tile);
                         next_route.extend(from_uturn);
 
+                        let travel_dir = cur_cell.road.dir;
+                        let jitter_seed = replan.jitter_seed();
+                        let lanelet_route = replan_route_with_lanelets(
+                            replan.traffic_cfg.experimental_lanelet_intersections,
+                            &replan.lane_graph,
+                            &replan.lanelet_graph,
+                            &grid,
+                            &traffic,
+                            &path_cfg,
+                            jitter_seed,
+                            current,
+                            goal,
+                            travel_dir,
+                        );
                         path_pool.release(v.path_handle);
-                        v.path_handle = path_pool.intern(next_route);
+                        match lanelet_route {
+                            Some((tiles, sidecar)) => {
+                                v.path_handle = path_pool.intern(tiles);
+                                if let Some(plan) = lanelet_plan.as_deref_mut() {
+                                    plan.entries = sidecar;
+                                }
+                            }
+                            None => {
+                                v.path_handle = path_pool.intern(next_route);
+                                clear_lanelet_plan_on_reroute(lanelet_plan.as_deref_mut());
+                            }
+                        }
                         v.path_cursor = 0;
                         v.progress = 0.0;
                         v.speed = 0.0;
-                        clear_lanelet_plan_on_reroute(lanelet_plan.as_deref_mut());
 
                         stuck.secs = 0.0;
                         stuck.last_tile = current;

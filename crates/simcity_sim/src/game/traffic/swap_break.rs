@@ -3,11 +3,11 @@ use std::collections::{HashMap, HashSet};
 
 use crate::game::map::{MapGrid, TilePos};
 use crate::game::roads::RoadDir;
-use crate::game::transport::{PathHandle, PathPool};
+use crate::game::transport::{PathHandle, PathPool, PathfindingConfig};
 
 use super::{
-    Parked, TrafficSpatialIndex, Vehicle, VehicleLaneletPlan, clear_lanelet_plan_on_reroute,
-    is_intersection_tile,
+    LaneletReplanRes, Parked, TrafficOccupancy, TrafficSpatialIndex, Vehicle, VehicleLaneletPlan,
+    clear_lanelet_plan_on_reroute, is_intersection_tile, replan_route_with_lanelets,
 };
 
 /// Marks a vehicle wedged in an off-intersection tile-swap deadlock for which no one-tile-deferred
@@ -101,10 +101,13 @@ fn deferred_route(grid: &MapGrid, path_pool: &PathPool, rec: &IntentRec) -> Opti
 /// `SwapDeadlocked` and removed by the stuck layer. Fully deterministic (decisions keyed on
 /// `Entity.to_bits()` and grid geometry; no RNG, no HashMap-order dependence). Strict no-op unless a
 /// mutual swap exists.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn break_tile_swaps(
     grid: Res<MapGrid>,
     spatial: Res<TrafficSpatialIndex>,
+    traffic: Res<TrafficOccupancy>,
+    path_cfg: Res<PathfindingConfig>,
+    mut replan: LaneletReplanRes,
     mut path_pool: ResMut<PathPool>,
     mut commands: Commands,
     flagged: Query<Entity, With<SwapDeadlocked>>,
@@ -251,10 +254,36 @@ pub(crate) fn break_tile_swaps(
         match route {
             Some(new_route) => {
                 let speed = v.speed;
+                let cur = new_route[0];
+                let goal = *new_route.last().unwrap_or(&cur);
+                let travel_dir = grid.get(cur).map_or(RoadDir::None, |c| c.road.dir);
+                let jitter_seed = replan.jitter_seed();
+                let lanelet_route = replan_route_with_lanelets(
+                    replan.traffic_cfg.experimental_lanelet_intersections,
+                    &replan.lane_graph,
+                    &replan.lanelet_graph,
+                    &grid,
+                    &traffic,
+                    &path_cfg,
+                    jitter_seed,
+                    cur,
+                    goal,
+                    travel_dir,
+                );
                 path_pool.release(v.path_handle);
-                v.path_handle = path_pool.intern(new_route);
+                match lanelet_route {
+                    Some((tiles, sidecar)) => {
+                        v.path_handle = path_pool.intern(tiles);
+                        if let Some(plan) = v_plan.as_deref_mut() {
+                            plan.entries = sidecar;
+                        }
+                    }
+                    None => {
+                        v.path_handle = path_pool.intern(new_route);
+                        clear_lanelet_plan_on_reroute(v_plan.as_deref_mut());
+                    }
+                }
                 v.path_cursor = 0;
-                clear_lanelet_plan_on_reroute(v_plan.as_deref_mut());
                 // Snap to the start of `cur`: the deferral changes which tile is "next" (lateral L ->
                 // forward S), so keeping the old progress would jump the rendered position laterally.
                 // The car is stalled in a deadlock, so a longitudinal reset is benign.

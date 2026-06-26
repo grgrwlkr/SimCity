@@ -117,6 +117,10 @@ fn lateral_tile_swap_on_same_direction_lanes_does_not_deadlock_forever() {
         .insert_resource(ParkedVehicleTileIndex::default())
         .insert_resource(crate::game::transport::PathPool::default())
         .insert_resource(FinishCount::default())
+        .init_resource::<crate::game::transport::PathfindingConfig>()
+        .init_resource::<crate::game::transport::LaneGraph>()
+        .init_resource::<crate::game::transport::LaneletGraph>()
+        .init_resource::<crate::game::sim::SimRng>()
         .add_systems(
             Update,
             (build_traffic_spatial_index, break_tile_swaps, move_vehicles).chain(),
@@ -231,6 +235,10 @@ fn swap_breaker_is_inert_for_normal_queueing() {
         .insert_resource(ParkedVehicleTileIndex::default())
         .insert_resource(crate::game::transport::PathPool::default())
         .insert_resource(FinishCount::default())
+        .init_resource::<crate::game::transport::PathfindingConfig>()
+        .init_resource::<crate::game::transport::LaneGraph>()
+        .init_resource::<crate::game::transport::LaneletGraph>()
+        .init_resource::<crate::game::sim::SimRng>()
         .add_systems(
             Update,
             (build_traffic_spatial_index, break_tile_swaps).chain(),

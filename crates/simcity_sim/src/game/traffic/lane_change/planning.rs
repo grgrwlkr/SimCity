@@ -1,4 +1,6 @@
-use super::super::{VehicleLaneletPlan, clear_lanelet_plan_on_reroute};
+use super::super::{
+    LaneletReplanRes, VehicleLaneletPlan, clear_lanelet_plan_on_reroute, replan_route_with_lanelets,
+};
 use super::*;
 use crate::game::transport::{PathHandle, PathPool};
 
@@ -126,6 +128,7 @@ pub(in super::super) fn plan_lane_changes(
     intersections: Res<IntersectionIndex>,
     traffic_cfg: Res<TrafficConfig>,
     spatial: Res<TrafficSpatialIndex>,
+    mut replan: LaneletReplanRes,
     mut path_pool: ResMut<PathPool>,
     mut commands: Commands,
     mut vehicles: ParamSet<(
@@ -414,11 +417,35 @@ pub(in super::super) fn plan_lane_changes(
             let mut new_route = Vec::with_capacity(route_from_target.len() + 1);
             new_route.push(current);
             new_route.extend(route_from_target);
+            let travel_dir = grid.get(current).map_or(RoadDir::None, |c| c.road.dir);
+            let jitter_seed = replan.jitter_seed();
+            let lanelet_route = replan_route_with_lanelets(
+                replan.traffic_cfg.experimental_lanelet_intersections,
+                &replan.lane_graph,
+                &replan.lanelet_graph,
+                &grid,
+                &traffic,
+                &path_cfg,
+                jitter_seed,
+                current,
+                goal,
+                travel_dir,
+            );
             // Release old path and intern new one
             path_pool.release(v.path_handle);
-            v.path_handle = path_pool.intern(new_route);
+            match lanelet_route {
+                Some((tiles, sidecar)) => {
+                    v.path_handle = path_pool.intern(tiles);
+                    if let Some(plan) = v_plan.as_deref_mut() {
+                        plan.entries = sidecar;
+                    }
+                }
+                None => {
+                    v.path_handle = path_pool.intern(new_route);
+                    clear_lanelet_plan_on_reroute(v_plan.as_deref_mut());
+                }
+            }
             v.path_cursor = 0;
-            clear_lanelet_plan_on_reroute(v_plan.as_deref_mut());
         } else {
             continue;
         }

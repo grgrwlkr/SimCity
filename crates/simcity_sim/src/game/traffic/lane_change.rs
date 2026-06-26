@@ -1,5 +1,5 @@
 use super::*;
-use crate::game::transport::PathPool;
+use crate::game::transport::{PathPool, PathfindingConfig};
 
 mod planning;
 pub(super) use planning::{oncoming_lane_offset, plan_lane_changes};
@@ -109,8 +109,10 @@ pub(super) fn build_traffic_spatial_index(
 pub(super) fn plan_oncoming_overtakes(
     cfg: Res<MapConfig>,
     grid: Res<MapGrid>,
-    traffic_cfg: Res<TrafficConfig>,
+    traffic: Res<TrafficOccupancy>,
+    path_cfg: Res<PathfindingConfig>,
     spatial: Res<TrafficSpatialIndex>,
+    mut replan: LaneletReplanRes,
     mut path_pool: ResMut<PathPool>,
     mut commands: Commands,
     mut vehicles: ParamSet<(
@@ -191,7 +193,8 @@ pub(super) fn plan_oncoming_overtakes(
         } else {
             DRIVER_PROFILE_MEDIUM_FACTOR
         };
-        let v0 = (road_speed_limit_world(&cfg, &traffic_cfg, ego_tile, &grid) * profile_factor)
+        let v0 = (road_speed_limit_world(&cfg, &replan.traffic_cfg, ego_tile, &grid)
+            * profile_factor)
             .min(v.max_speed)
             .max(0.0);
         if v0 <= 0.0 {
@@ -346,10 +349,35 @@ pub(super) fn plan_oncoming_overtakes(
 
         // Continue with the original route after the return tile.
         new_route.extend(rem.iter().copied().skip(p.pass_tiles + 1));
+        let goal = *new_route.last().unwrap_or(&current);
+        let travel_dir = grid.get(current).map_or(RoadDir::None, |c| c.road.dir);
+        let jitter_seed = replan.jitter_seed();
+        let lanelet_route = replan_route_with_lanelets(
+            replan.traffic_cfg.experimental_lanelet_intersections,
+            &replan.lane_graph,
+            &replan.lanelet_graph,
+            &grid,
+            &traffic,
+            &path_cfg,
+            jitter_seed,
+            current,
+            goal,
+            travel_dir,
+        );
         path_pool.release(vv.path_handle);
-        vv.path_handle = path_pool.intern(new_route);
+        match lanelet_route {
+            Some((tiles, sidecar)) => {
+                vv.path_handle = path_pool.intern(tiles);
+                if let Some(plan) = vv_plan.as_deref_mut() {
+                    plan.entries = sidecar;
+                }
+            }
+            None => {
+                vv.path_handle = path_pool.intern(new_route);
+                clear_lanelet_plan_on_reroute(vv_plan.as_deref_mut());
+            }
+        }
         vv.path_cursor = 0;
-        clear_lanelet_plan_on_reroute(vv_plan.as_deref_mut());
 
         commands.entity(p.e).insert(LaneChangeCooldown {
             remaining_secs: ONCOMING_OVERTAKE_COOLDOWN_SECS,
