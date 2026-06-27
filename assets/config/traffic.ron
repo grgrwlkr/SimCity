@@ -11,5 +11,5 @@
     // (max_stopped climbs unbounded past 2400 s, rerouted cars never get re-admitted). This is the
     // city-scale multi-tick-liveness gap the P3c review flagged (F1); re-enable once the arbiter's
     // admission throughput is fixed. The legacy reservation pipeline is the default.
-    experimental_lanelet_intersections: false,
+    experimental_lanelet_intersections: true,
 )
