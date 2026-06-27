@@ -676,7 +676,14 @@ pub(crate) struct ArbitrateLaneletParams<'w, 's> {
             Entity,
             &'static Vehicle,
             &'static VehicleTrafficState,
-            &'static VehicleLaneletPlan,
+            // Optional sidecar: service/emergency vehicles (and any vehicle spawned without the
+            // lanelet planner) carry no `VehicleLaneletPlan`. The arbiter must still admit them —
+            // otherwise they are invisible to admission, never get a reservation, and the entry
+            // gate (drive.rs) wedges them at every intersection forever (a permanent blocker that
+            // cascades into gridlock). None falls through to the same precise-geometry / coarse
+            // fallback used when a sidecar was cleared mid-trip, so EVERY vehicle — service or not
+            // — goes through ONE unified admission path.
+            Option<&'static VehicleLaneletPlan>,
         ),
         Without<Parked>,
     >,
@@ -832,7 +839,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
         // unresolved-lanelet drops were ~94% of approaching vehicles on a populated city, which left
         // the arbiter admitting nothing. Still tracked for the mandatory-merge reroute, which may find
         // a resolvable (precise, higher-throughput) route next time.
-        let resolved = match plan.upcoming_lanelet_at(v.path_cursor) {
+        let resolved = match plan.and_then(|p| p.upcoming_lanelet_at(v.path_cursor)) {
             Some((plan_id, lid)) if plan_id == id => Some(lid),
             _ => resolve_lanelet_fallback(llg, lanes, id, cur, exit_tile),
         };

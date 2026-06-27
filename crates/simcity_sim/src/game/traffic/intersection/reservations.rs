@@ -1353,9 +1353,19 @@ fn apply_intersection_reservation_candidates_inner(
     }
 }
 
+/// Speed below which an Approaching holder counts as "not moving into the box" for the flag-on
+/// stale-claim early release. A car genuinely entering accelerates past this within a tick or two;
+/// one parked behind a spillback/box gate stays at ~0.
+const STALE_APPROACH_SPEED_EPS: f32 = 0.1;
+/// Flag-on: how long an Approaching holder may sit STATIONARY before its entry claim is released so
+/// it stops blocking the conflict matrix for perpendicular traffic it cannot use (1.5 s @ 10 Hz =
+/// 15 ticks). Far below the 6 s `timeout_secs`; gated so flag-off cleanup stays byte-identical.
+const STALE_APPROACH_RELEASE_SECS: f64 = 1.5;
+
 /// Whether a reservation should survive this cleanup tick. Mutates `r.state` (Approaching -> Inside
 /// once the vehicle is on a cluster tile). Returns false to drop (vehicle gone / off-route / timed
 /// out / has exited the cluster).
+#[allow(clippy::too_many_arguments)]
 fn reservation_survives(
     r: &mut IntersectionReservation,
     q_vehicles: &Query<&Vehicle>,
@@ -1364,6 +1374,9 @@ fn reservation_survives(
     id: IntersectionId,
     now: f64,
     timeout_secs: f64,
+    // Flag-on stale-claim budget: an Approaching holder that is stationary longer than this drops
+    // its claim early (matrix throughput). `f64::INFINITY` flag-off => no early release.
+    stale_approach_secs: f64,
 ) -> bool {
     let Ok(v) = q_vehicles.get(r.vehicle) else {
         return false;
@@ -1386,6 +1399,15 @@ fn reservation_survives(
                 .and_then(|route| route.get(1))
                 .and_then(|t| intersections.intersection_id_at(*t));
             if next_id != Some(id) {
+                return false;
+            }
+            // Flag-on throughput: a holder that has sat STATIONARY past the stale budget is not
+            // entering (spillback / box gate / matrix) — yet its Approaching claim still holds a
+            // ledger lanelet bit + exit slot that refuse perpendicular traffic it cannot itself use.
+            // Release the claim early so the unblocked axis flows; the car re-competes the instant
+            // it can actually move in. The conflict matrix is never bypassed (this only DROPS a
+            // claim, never grants one), so collision safety is untouched.
+            if v.speed < STALE_APPROACH_SPEED_EPS && now - r.created_at_sec > stale_approach_secs {
                 return false;
             }
             // If it doesn't enter within a small time budget, release to avoid deadlocks.
@@ -1422,6 +1444,7 @@ pub(crate) fn release_intersection_holds(
 
 pub fn cleanup_intersection_reservations(
     time: Res<Time<Fixed>>,
+    traffic_cfg: Res<TrafficConfig>,
     intersections: Res<IntersectionIndex>,
     path_pool: Res<super::super::super::transport::PathPool>,
     mut reservations: ResMut<IntersectionReservations>,
@@ -1429,6 +1452,13 @@ pub fn cleanup_intersection_reservations(
 ) {
     let now = time.elapsed_secs_f64();
     let timeout_secs = 6.0;
+    // Flag-on only: release stale (stationary) Approaching claims early (matrix throughput). Flag-off
+    // => INFINITY disables the early release, keeping legacy cleanup byte-identical.
+    let stale_approach_secs = if traffic_cfg.experimental_lanelet_intersections {
+        STALE_APPROACH_RELEASE_SECS
+    } else {
+        f64::INFINITY
+    };
 
     let mut dropped: Vec<(IntersectionId, Entity)> = Vec::new();
 
@@ -1448,6 +1478,7 @@ pub fn cleanup_intersection_reservations(
                 id,
                 now,
                 timeout_secs,
+                stale_approach_secs,
             );
             if !keep {
                 dropped.push((id, r.vehicle));
