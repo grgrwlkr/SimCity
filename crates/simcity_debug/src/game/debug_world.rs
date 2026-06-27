@@ -2302,6 +2302,9 @@ mod tests {
             rtor_grants: 1,
             yield_refusals: 3,
             left_protected_active: 1,
+            // Collection/grant-phase histogram fields (added with the refusal histogram) are not
+            // exercised by this mirror test; default them so the initializer stays exhaustive.
+            ..Default::default()
         });
         let entity = app
             .world_mut()
