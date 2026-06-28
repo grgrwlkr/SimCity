@@ -339,6 +339,13 @@ pub(crate) struct ArbiterCounts {
     /// Liveness-valve force-admits this tick (one max per starved cluster; bypassed capacity, not the
     /// matrix or a red light).
     pub force_admits: u32,
+    /// Whole-box coarse admissions this tick.
+    pub coarse_admits: u32,
+    /// Per-maneuver admit split.
+    pub admitted_straight: u32,
+    pub admitted_right: u32,
+    pub admitted_left: u32,
+    pub admitted_uturn: u32,
 }
 
 /// Flat per-tick arbiter observability, mirrored to BRP by `simcity_debug`. Default (all zero) when
@@ -437,6 +444,22 @@ pub(crate) fn seed_ped_masks(
 /// GRANT-ON-ENTRY-ONLY: candidates are one tile before the box; a granted `Approaching` row lets the
 /// entry gate (`drive.rs`) step the vehicle in next tick. NEVER touches `stall_ticks` (tripwire).
 ///
+/// Increment per-maneuver or coarse-admit counters. Called at every admit site so the logic lives
+/// in one place (UTurn arm is added in Task 1.1 when the variant exists).
+fn count_admit(counts: &mut ArbiterCounts, cand: &ArbiterGrantCandidate) {
+    if cand.coarse {
+        counts.coarse_admits += 1;
+    } else {
+        match cand.maneuver {
+            ManeuverKind::Straight => counts.admitted_straight += 1,
+            ManeuverKind::RightTurn => counts.admitted_right += 1,
+            ManeuverKind::LeftTurn => counts.admitted_left += 1,
+            // ManeuverKind::UTurn arm is added in Task 1.1
+            ManeuverKind::Other => {}
+        }
+    }
+}
+
 /// The caller MUST have reset each ledger to the current matrix version before calling (T7 contract).
 ///
 /// Returns `(admitted, refused)` counts for this tick's observability. Fully order-independent: the
@@ -586,6 +609,7 @@ pub(crate) fn arbitrate_grants_inner(
                     maneuver: cand.maneuver,
                 });
             counts.admitted += 1;
+            count_admit(&mut counts, cand);
             admitted_any = true;
             if cand.is_right_on_red {
                 counts.rtor_grants += 1;
@@ -634,6 +658,7 @@ pub(crate) fn arbitrate_grants_inner(
                         maneuver: cand.maneuver,
                     });
                 counts.admitted += 1;
+                count_admit(&mut counts, cand);
                 counts.force_admits += 1;
                 admitted_any = true;
                 if cand.is_right_on_red {
@@ -1048,6 +1073,11 @@ pub(crate) fn arbitrate_lanelet_reservations(
     stats.refused_capacity = counts.refused_capacity;
     stats.refused_matrix = counts.refused_matrix;
     stats.force_admits = counts.force_admits;
+    stats.coarse_admits = counts.coarse_admits;
+    stats.admitted_straight = counts.admitted_straight;
+    stats.admitted_right = counts.admitted_right;
+    stats.admitted_left = counts.admitted_left;
+    stats.admitted_uturn = counts.admitted_uturn;
 }
 
 /// Downstream-link horizon for the spillback gate (mirrors the legacy collect constant).

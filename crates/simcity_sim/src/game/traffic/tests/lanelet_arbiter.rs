@@ -243,6 +243,17 @@ fn flag_on_arbiter_drains_conflicting_vehicles_over_ticks() {
 }
 
 #[test]
+fn arbiter_counts_one_straight_admit() {
+    let (mut app, _east, _north) = build_arbiter_app();
+    app.update();
+    let stats = app.world().resource::<ArbiterTickStats>();
+    // The cross-grid through movements are straights; exactly one is admitted (collision-safety).
+    assert_eq!(stats.admitted_straight, 1, "one straight admitted");
+    assert_eq!(stats.admitted, 1);
+    assert_eq!(stats.coarse_admits, 0, "resolved lanelets, not coarse");
+}
+
+#[test]
 fn flag_on_arbiter_admits_exactly_one_conflicting_vehicle_deterministically() {
     let (east_a, north_a, tripwire_a) = run_arbiter_once();
 
