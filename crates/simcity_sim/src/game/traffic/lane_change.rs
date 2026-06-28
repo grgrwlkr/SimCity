@@ -21,8 +21,17 @@ pub(super) struct Overtaking {
 /// This is a **local tactic** (not part of routing). While present, we suppress normal lane-change
 /// planning to avoid oscillations.
 #[derive(Component, Debug, Clone, Copy)]
-pub(super) struct OvertakeOncoming {
+pub(crate) struct OvertakeOncoming {
     remaining_secs: f32,
+}
+
+impl OvertakeOncoming {
+    #[cfg(test)]
+    pub(crate) fn default_for_test() -> Self {
+        Self {
+            remaining_secs: 5.0,
+        }
+    }
 }
 
 pub(super) fn tick_lane_change_cooldowns(

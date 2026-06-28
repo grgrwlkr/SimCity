@@ -551,6 +551,135 @@ fn protected_left_releases_left_turner() {
     );
 }
 
+/// Shared setup for the wrong-way backstop tests: a 3-tile straight TwoLane road, all tiles facing
+/// `RoadDir::East`. A vehicle whose route runs East->West (i.e. travels West along an East-facing
+/// lane) is on the opposing-direction (oncoming) tile and must be blocked + rerouted, unless exempt.
+fn wrong_way_app() -> (App, Entity) {
+    use crate::game::traffic::stuck::StuckTimer;
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(MapConfig {
+            width: 3,
+            height: 1,
+            tile_size: 16.0,
+        })
+        .insert_resource(TrafficConfig::default())
+        .insert_resource({
+            let mut grid = MapGrid::new(3, 1);
+            // All three tiles are East-facing lanes.
+            for x in 0..3 {
+                let pos = TilePos { x, y: 0 };
+                let Some(mut cell) = grid.get(pos) else {
+                    continue;
+                };
+                cell.road = RoadCell {
+                    kind: RoadKind::TwoLane,
+                    dir: RoadDir::East,
+                    lane: 0,
+                    flow: RoadFlow::TwoWay,
+                    lane_type: LaneType::Regular,
+                };
+                grid.set(pos, cell);
+            }
+            grid
+        })
+        .insert_resource(IntersectionIndex::default())
+        .insert_resource(IntersectionReservations::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .add_systems(Update, update_vehicle_traffic_state);
+
+    // Route runs East->West: from (2,0) to (0,0). The vehicle sits at cursor 1 (tile (1,0)) with the
+    // next tile (0,0) to its West, so travel_dir = West = East.opposite() == road.dir -> wrong-way.
+    let route = vec![
+        TilePos { x: 2, y: 0 },
+        TilePos { x: 1, y: 0 },
+        TilePos { x: 0, y: 0 },
+    ];
+    let vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(&mut path_pool, route, 1, 0.0, 8.0, 60.0, 20.0, 1.0)
+    };
+    let ego = app
+        .world_mut()
+        .spawn((
+            vehicle,
+            VehicleTrafficState::FreeFlow,
+            StuckTimer {
+                secs: 0.0,
+                last_tile: TilePos { x: 1, y: 0 },
+                last_progress: 0.0,
+            },
+        ))
+        .id();
+    (app, ego)
+}
+
+#[test]
+fn wrong_way_vehicle_is_blocked_and_rerouted() {
+    use crate::game::traffic::stuck::StuckTimer;
+
+    let (mut app, ego) = wrong_way_app();
+    app.update();
+
+    // Blocked: the backstop sets a stop-line state at the current tile (distance_to_stop = 0.0) so
+    // `move_vehicles` cannot advance the car further onto the oncoming tile.
+    let state = app.world().get::<VehicleTrafficState>(ego).copied();
+    assert!(
+        matches!(
+            state,
+            Some(VehicleTrafficState::Approaching {
+                distance_to_stop, ..
+            }) if distance_to_stop == 0.0
+        ),
+        "wrong-way vehicle must be stopped at the current tile, got {state:?}"
+    );
+
+    // Rerouted: the stuck timer is maxed so `resolve_stuck_vehicles` re-paths it next tick.
+    let secs = app.world().get::<StuckTimer>(ego).unwrap().secs;
+    assert!(
+        secs >= crate::game::traffic::STUCK_REROUTE_SECS,
+        "wrong-way vehicle must have its reroute trigger fired (stuck timer maxed), got {secs}"
+    );
+}
+
+#[test]
+fn overtaking_vehicle_on_oncoming_is_not_blocked() {
+    use crate::game::traffic::lane_change::OvertakeOncoming;
+    use crate::game::traffic::stuck::StuckTimer;
+
+    let (mut app, ego) = wrong_way_app();
+    // Sanctioned open-road overtake: exempt from the backstop.
+    app.world_mut()
+        .entity_mut(ego)
+        .insert(OvertakeOncoming::default_for_test());
+    app.update();
+
+    // NOT blocked: state is untouched by the wrong-way branch (no light/intersection ahead -> FreeFlow).
+    let state = app.world().get::<VehicleTrafficState>(ego).copied();
+    assert!(
+        !matches!(
+            state,
+            Some(VehicleTrafficState::Approaching {
+                distance_to_stop, ..
+            }) if distance_to_stop == 0.0
+        ),
+        "overtaking vehicle must NOT be stop-blocked by the wrong-way backstop, got {state:?}"
+    );
+
+    // NOT rerouted: the stuck timer was not maxed by this branch.
+    let secs = app.world().get::<StuckTimer>(ego).unwrap().secs;
+    assert!(
+        secs < crate::game::traffic::STUCK_REROUTE_SECS,
+        "overtaking vehicle must NOT have its reroute trigger fired, got {secs}"
+    );
+}
+
 // Moved from the deleted `conflict_zones.rs` (Task 5.1): this test exercises `move_vehicles` /
 // `update_vehicle_traffic_state` for the right-on-red SPEED cap and does not use the legacy
 // reservation producer, so it survives the legacy-pipeline removal.

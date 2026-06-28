@@ -70,6 +70,7 @@ fn compute_approach_info(
 }
 
 #[allow(clippy::too_many_arguments)] // Bevy systems often need many parameters
+#[allow(clippy::type_complexity)] // Wide vehicle query tuple (markers + reroute timer)
 pub fn update_vehicle_traffic_state(
     _time: Res<Time<Fixed>>,
     traffic_cfg: Res<TrafficConfig>,
@@ -87,6 +88,8 @@ pub fn update_vehicle_traffic_state(
             &Vehicle,
             &mut VehicleTrafficState,
             Option<&RightTurnOnRed>,
+            Option<&crate::game::traffic::lane_change::OvertakeOncoming>,
+            Option<&mut crate::game::traffic::stuck::StuckTimer>,
         ),
         Without<Parked>,
     >,
@@ -113,7 +116,7 @@ pub fn update_vehicle_traffic_state(
         }
     }
 
-    for (entity, vehicle, mut state, ror) in q_vehicles.iter_mut() {
+    for (entity, vehicle, mut state, ror, overtake, mut stuck) in q_vehicles.iter_mut() {
         let Some(cur_tile) = path_pool.get_tile(vehicle.path_handle, vehicle.path_cursor) else {
             // Invalid path handle/cursor: don't crash; let other systems clean up.
             continue;
@@ -136,10 +139,45 @@ pub fn update_vehicle_traffic_state(
             // Vehicle should follow the road direction
             // If road.dir doesn't match travel direction, vehicle is on wrong side
             let travel_dir = dir_between_adjacent(cur_tile, next_tile);
-            if travel_dir != cur_cell.road.dir && travel_dir.opposite() == cur_cell.road.dir {
-                // Vehicle is on wrong side of two-way road!
-                // This should trigger a reroute, but for now just log it
-                // TODO: Add wrong-way detection and reroute
+            if travel_dir != cur_cell.road.dir
+                && travel_dir.opposite() == cur_cell.road.dir
+                // EXEMPT: a sanctioned open-road oncoming-overtake stays (user decision).
+                && overtake.is_none()
+                // EXEMPT: a reversing car retraces its own (same-dir) lane; reversing is detected
+                // independently, so don't conflate "moving backwards along my lane" with wrong-way.
+                && !vehicle.is_reversing
+            {
+                // WRONG-WAY BACKSTOP: the vehicle is on the opposing-direction (oncoming) tile and is
+                // not a sanctioned exception. ENFORCE: (1) block it from advancing further onto
+                // oncoming this tick, and (2) trigger a reroute back onto a legal lane.
+                //
+                // (1) Block: a virtual stop-line leader at the current position (`distance_to_stop =
+                // 0.0`) makes `move_vehicles` decelerate to a standstill instead of stepping onto the
+                // next oncoming tile. We label the stop with a single-tile key derived from `cur_tile`
+                // (only `distance_to_stop` is read by movement; the key/stop_tile are identifiers).
+                *state = VehicleTrafficState::Approaching {
+                    intersection: crate::game::intersections::IntersectionKey {
+                        aabb_min: cur_tile,
+                        aabb_max: cur_tile,
+                        tile_count: 1,
+                        tiles_hash: 0,
+                    },
+                    stop_tile: cur_tile,
+                    distance_to_stop: 0.0,
+                };
+                // (2) Reroute: max the stuck timer so `resolve_stuck_vehicles` re-paths it onto a legal
+                // lanelet route next tick (same mechanism as `nudge_lanelet_stall_reroute`). The block
+                // above keeps the car from progressing, so the maxed timer survives `update_stuck_timers`
+                // (which only resets on actual progress) until the reroute fires. `Approaching` is not in
+                // the reroute skip-list, so the re-path is not suppressed.
+                if let Some(st) = stuck.as_deref_mut() {
+                    st.secs = st.secs.max(crate::game::traffic::STUCK_REROUTE_SECS);
+                }
+                // Drop any stale right-on-red marker and skip the rest of the pipeline for this vehicle.
+                if ror.is_some() {
+                    commands.entity(entity).remove::<RightTurnOnRed>();
+                }
+                continue;
             }
         }
 

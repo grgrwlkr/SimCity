@@ -3,10 +3,10 @@ use super::*;
 
 /// Per-vehicle jam detector (in fixed-time seconds).
 #[derive(Component, Debug, Clone, Copy)]
-pub(super) struct StuckTimer {
-    pub(super) secs: f32,
-    pub(super) last_tile: TilePos,
-    pub(super) last_progress: f32,
+pub(crate) struct StuckTimer {
+    pub(crate) secs: f32,
+    pub(crate) last_tile: TilePos,
+    pub(crate) last_progress: f32,
 }
 
 #[allow(clippy::type_complexity)]
