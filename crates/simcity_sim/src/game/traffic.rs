@@ -541,10 +541,6 @@ fn compute_exit_direction(
     movement::compute_exit_direction(route, grid, first_intersection_tile)
 }
 
-fn oncoming_lane_offset(grid: &MapGrid, current: TilePos, travel_dir: RoadDir) -> Option<IVec2> {
-    lane_change::oncoming_lane_offset(grid, current, travel_dir)
-}
-
 fn is_intersection_tile(grid: &MapGrid, pos: TilePos) -> bool {
     if let Some(c) = grid.get(pos)
         && c.road.is_some()

@@ -1727,7 +1727,6 @@ mod tests {
             secs: 0.0,
             last_tile: TilePos { x: 0, y: 0 },
             last_progress: 0.0,
-            uturn_attempted: false,
         };
         let mut app = App::new();
         let over = app.world_mut().spawn(mk()).id();

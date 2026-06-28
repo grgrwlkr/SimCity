@@ -7,7 +7,6 @@ pub(super) struct StuckTimer {
     pub(super) secs: f32,
     pub(super) last_tile: TilePos,
     pub(super) last_progress: f32,
-    pub(super) uturn_attempted: bool,
 }
 
 #[allow(clippy::type_complexity)]
@@ -24,7 +23,6 @@ pub(super) fn init_stuck_timers(
             secs: 0.0,
             last_tile: tile,
             last_progress: v.progress,
-            uturn_attempted: false,
         });
     }
 }
@@ -38,7 +36,6 @@ pub(super) fn update_stuck_timers(
     for (v, state, mut stuck) in q.iter_mut() {
         let Some(tile) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             stuck.secs = 0.0;
-            stuck.uturn_attempted = false;
             continue;
         };
 
@@ -52,7 +49,6 @@ pub(super) fn update_stuck_timers(
             )
         {
             stuck.secs = 0.0;
-            stuck.uturn_attempted = false;
         } else {
             stuck.secs += dt;
         }
@@ -219,13 +215,11 @@ pub(super) fn resolve_stuck_vehicles(
             stuck.secs = 0.0;
             stuck.last_tile = current;
             stuck.last_progress = 0.0;
-            stuck.uturn_attempted = false;
             handled += 1;
             continue;
         }
 
         // 1.5) If reroute failed and vehicle is still stuck, try reverse movement (GDD: max 10 km/h, 2-3 tiles)
-        // This happens before U-turn attempt, as reverse is simpler and safer.
         // NOT for a wedged vehicle: pinning stuck.secs back to 48 s every tick is exactly what made the
         // 180 s despawn guardrail unreachable (the car reverses 0 tiles because it is boxed in, so this
         // branch fires forever). A wedged car falls through to the despawn last resort instead.
@@ -237,97 +231,7 @@ pub(super) fn resolve_stuck_vehicles(
             continue;
         }
 
-        // 2) Safety U-turn (doc open question #3): if we are at a dead end on a TwoLane (1+1),
-        // try to pull into the adjacent oncoming lane tile and re-route from there.
-        //
-        // This is a conservative jam-recovery tactic, used only after re-routing fails, and only
-        // once per stuck episode.
-        if stuck.secs >= STUCK_REROUTE_SECS
-            && !stuck.uturn_attempted
-            && path_pool
-                .remaining_from(v.path_handle, v.path_cursor)
-                .map(|r| r.is_empty())
-                .unwrap_or(true)
-            && let Some(cur_cell) = grid.get(current)
-            && cur_cell.road.is_some()
-            && cur_cell.road.dir != RoadDir::None
-        {
-            let dir = cur_cell.road.dir;
-            let front = TilePos {
-                x: current.x + dir.delta().x,
-                y: current.y + dir.delta().y,
-            };
-            let has_forward = grid.get(front).is_some_and(|c| {
-                !c.water
-                    && c.road.is_some()
-                    && c.road.dir == dir
-                    && c.road.kind == cur_cell.road.kind
-            });
-
-            if !has_forward
-                && cur_cell.road.kind == RoadKind::TwoLane
-                && let Some(off) = oncoming_lane_offset(&grid, current, dir)
-            {
-                let uturn_tile = TilePos {
-                    x: current.x + off.x,
-                    y: current.y + off.y,
-                };
-
-                let is_empty = grid.idx(uturn_tile).is_some_and(|idx| {
-                    traffic.per_tick_vehicles.get(idx).copied().unwrap_or(0) == 0
-                });
-                if is_empty {
-                    let from_uturn = find_road_path_cached(&mut ctx, uturn_tile, goal);
-                    if !from_uturn.is_empty() {
-                        let mut next_route = Vec::with_capacity(from_uturn.len() + 2);
-                        next_route.push(current);
-                        next_route.push(uturn_tile);
-                        next_route.extend(from_uturn);
-
-                        let travel_dir = cur_cell.road.dir;
-                        let jitter_seed = replan.jitter_seed();
-                        let lanelet_route = replan_route_with_lanelets(
-                            &replan.lane_graph,
-                            &replan.lanelet_graph,
-                            &grid,
-                            &traffic,
-                            &path_cfg,
-                            jitter_seed,
-                            current,
-                            goal,
-                            travel_dir,
-                        );
-                        path_pool.release(v.path_handle);
-                        match lanelet_route {
-                            Some((tiles, sidecar)) => {
-                                v.path_handle = path_pool.intern(tiles);
-                                if let Some(plan) = lanelet_plan.as_deref_mut() {
-                                    plan.entries = sidecar;
-                                }
-                            }
-                            None => {
-                                v.path_handle = path_pool.intern(next_route);
-                                clear_lanelet_plan_on_reroute(lanelet_plan.as_deref_mut());
-                            }
-                        }
-                        v.path_cursor = 0;
-                        v.progress = 0.0;
-                        v.speed = 0.0;
-
-                        stuck.secs = 0.0;
-                        stuck.last_tile = current;
-                        stuck.last_progress = 0.0;
-                        stuck.uturn_attempted = false;
-                        handled += 1;
-                        continue;
-                    }
-                }
-            }
-
-            stuck.uturn_attempted = true;
-        }
-
-        // 3) Last-resort guardrail: despawn non-service trip vehicles after a very long time stuck.
+        // 2) Last-resort guardrail: despawn non-service trip vehicles after a very long time stuck.
         // Trigger on EITHER the state-resettable timer OR the never-reset motion timer, so a vehicle
         // wedged in WaitingForGreen/Stopped (where stuck.secs is pinned/reset) can still be cleared
         // once it has been physically motionless past the despawn horizon — the guardrail was dead
@@ -366,6 +270,128 @@ pub(super) fn recover_stuck_returning_service_vehicles(
         if sv.state == ServiceVehicleState::Returning && stuck.secs >= STUCK_REROUTE_SECS {
             v.path_cursor = path_pool.len(v.path_handle);
             v.speed = 0.0;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::roads::{LaneType, RoadCell, RoadFlow};
+    use crate::game::transport::{PathCache, PathPool, RegionGraph, RoadGraph};
+
+    fn put_road(grid: &mut MapGrid, pos: TilePos, dir: RoadDir) {
+        let mut cell = grid.get(pos).unwrap_or_default();
+        cell.water = false;
+        cell.road = RoadCell {
+            kind: RoadKind::TwoLane,
+            dir,
+            lane: 0,
+            flow: RoadFlow::TwoWay,
+            lane_type: LaneType::Regular,
+        };
+        grid.set(pos, cell);
+    }
+
+    /// INVARIANT: stuck-recovery must never flip a vehicle onto an oncoming
+    /// (opposing-direction) tile. U-turns are only legal through an intersection
+    /// center lanelet (the arbiter path).
+    ///
+    /// RED (pre-fix): `resolve_stuck_vehicles` had a "safety U-turn" block that, for a
+    /// dead-end TwoLane vehicle with no lanelet route, built `next_route = [current,
+    /// uturn_tile, ..]` where `uturn_tile` is the adjacent *oncoming-direction* tile, and
+    /// (since the lanelet replan returned `None`) interned that raw oncoming route into the
+    /// PathPool — a non-center U-turn onto oncoming traffic. A car set up like the one below
+    /// would end up with the oncoming tile (2,3) in its interned route.
+    ///
+    /// GREEN (post-fix): that block is deleted. A genuinely dead-end car finds no reroute,
+    /// is not eligible for reverse (cursor==0), and simply holds its route (or, past the
+    /// 180 s horizon, despawns). It is never flipped onto oncoming. We assert no tile in its
+    /// resulting route has `road.dir == travel_dir.opposite()`.
+    #[test]
+    fn stuck_recovery_never_interns_oncoming_route() {
+        // 5x5 grid. current=(2,2) heading East; forward (3,2) is NON-road -> dead end.
+        // Oncoming lane (2,3) heads West (= East.opposite()), and is empty.
+        let mut grid = MapGrid::new(5, 5);
+        let current = TilePos { x: 2, y: 2 };
+        let oncoming = TilePos { x: 2, y: 3 };
+        put_road(&mut grid, current, RoadDir::East);
+        put_road(&mut grid, oncoming, RoadDir::West);
+
+        let travel_dir = RoadDir::East;
+        let opp = travel_dir.opposite();
+        assert_eq!(grid.get(oncoming).unwrap().road.dir, opp);
+
+        let mut app = App::new();
+
+        let mut path_pool = PathPool::default();
+        let handle = path_pool.intern(vec![current]);
+
+        app.insert_resource(Time::<Fixed>::from_seconds(0.1));
+        app.insert_resource(MapConfig::default());
+        app.insert_resource(grid);
+        app.insert_resource(RoadGraph::default()); // empty -> road A* reroute fails
+        app.insert_resource(RegionGraph::default());
+        app.insert_resource(TrafficOccupancy::default());
+        app.insert_resource(PathfindingConfig::default());
+        app.insert_resource(PathCache::default());
+        app.insert_resource(path_pool);
+        app.insert_resource(IntersectionIndex::default());
+        // LaneletReplanRes deps (empty -> replan_route_with_lanelets returns None):
+        app.insert_resource(TrafficConfig::default());
+        app.insert_resource(crate::game::transport::LaneGraph::default());
+        app.insert_resource(crate::game::transport::LaneletGraph::default());
+        app.insert_resource(crate::game::sim::SimRng::default());
+        app.init_resource::<bevy::ecs::message::Messages<TripFinished>>();
+
+        // Stuck past the reroute threshold (recovery fires) but UNDER the 180 s despawn
+        // horizon, and not "wedged" (no motion timer), so the vehicle survives and we can
+        // inspect its route. cursor==0 keeps it out of the reverse branch too.
+        let vehicle = Vehicle {
+            path_handle: handle,
+            path_cursor: 0,
+            tile_pos: current,
+            ..Default::default()
+        };
+        let entity = app
+            .world_mut()
+            .spawn((
+                vehicle,
+                VehicleTrafficState::FreeFlow,
+                StuckTimer {
+                    secs: STUCK_REROUTE_SECS + 1.0,
+                    last_tile: current,
+                    last_progress: 0.0,
+                },
+            ))
+            .id();
+
+        app.add_systems(Update, resolve_stuck_vehicles);
+        app.update();
+
+        // Vehicle must still exist (not despawned at this timer level) ...
+        assert!(
+            app.world().get_entity(entity).is_ok(),
+            "vehicle should survive (under despawn horizon), not be flipped or removed"
+        );
+
+        // ... and its entire interned route must contain NO oncoming-direction tile.
+        let pool = app.world().resource::<PathPool>();
+        let v = app.world().get::<Vehicle>(entity).unwrap();
+        let len = pool.len(v.path_handle);
+        let grid = app.world().resource::<MapGrid>();
+        for i in 0..len {
+            let tile = pool.get_tile(v.path_handle, i).unwrap();
+            let dir = grid.get(tile).map_or(RoadDir::None, |c| c.road.dir);
+            assert_ne!(
+                dir, opp,
+                "stuck recovery interned an oncoming-direction tile {tile:?} (dir {dir:?}) \
+                 — U-turns must only go through the center lanelet"
+            );
+            assert_ne!(
+                tile, oncoming,
+                "stuck recovery flipped vehicle onto the oncoming tile {oncoming:?}"
+            );
         }
     }
 }
