@@ -253,11 +253,12 @@ fn arbiter_counts_one_straight_admit() {
     assert_eq!(stats.coarse_admits, 0, "resolved lanelets, not coarse");
 }
 
-/// A lone northbound vehicle whose route turns LEFT (exits West onto y=5) — with an empty sidecar
-/// (precise-fallback resolves the lanelet from route geometry). No conflicting traffic, no lights →
-/// it MUST be admitted as a LEFT lanelet, not coarse.
-#[test]
-fn left_turn_resolves_as_lanelet_not_coarse() {
+/// Shared helper: build a flag-on arbiter app on the cross grid + spawn ONE vehicle with the given
+/// route (cursor 0, progress ~0.4, empty `VehicleLaneletPlan`). Returns `(app, entity)`.
+///
+/// Use this for single-vehicle maneuver tests (left turn, U-turn, etc.) to avoid copy-pasting the
+/// ~40-line resource-setup block. The two-vehicle conflict tests keep `build_arbiter_app` as-is.
+fn build_single_vehicle_arbiter_app(route: Vec<TilePos>) -> (App, Entity) {
     let (grid, idx) = cross_grid();
     let gv = GraphVersion(1);
     let lanes = build_lane_graph_inner(&grid, &gv);
@@ -304,6 +305,29 @@ fn left_turn_resolves_as_lanelet_not_coarse() {
             .chain(),
     );
 
+    let v = {
+        let mut pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(&mut pool, route, 0, 0.4, 0.0, 60.0, 20.0, 1.0)
+    };
+    let entity = app
+        .world_mut()
+        .spawn((
+            v,
+            VehicleTrafficState::FreeFlow,
+            VehicleLaneletPlan::default(),
+        ))
+        .id();
+
+    (app, entity)
+}
+
+/// A lone northbound vehicle whose route turns LEFT (exits West onto y=5) — with an empty sidecar
+/// (precise-fallback resolves the lanelet from route geometry). No conflicting traffic, no lights →
+/// it MUST be admitted as a LEFT lanelet, not coarse.
+#[test]
+fn left_turn_resolves_as_lanelet_not_coarse() {
     // Northbound left-turn route: approach from y=3, cross box, exit West to (3,5).
     // entry_dir=North, North.left()=West => ManeuverKind::LeftTurn.
     let left_route = vec![
@@ -313,21 +337,7 @@ fn left_turn_resolves_as_lanelet_not_coarse() {
         TilePos { x: 3, y: 5 },
     ];
 
-    let vl = {
-        let mut pool = app
-            .world_mut()
-            .resource_mut::<crate::game::transport::PathPool>();
-        create_vehicle_with_route(&mut pool, left_route, 0, 0.4, 0.0, 60.0, 20.0, 1.0)
-    };
-    let left_vehicle = app
-        .world_mut()
-        .spawn((
-            vl,
-            VehicleTrafficState::FreeFlow,
-            VehicleLaneletPlan::default(),
-        ))
-        .id();
-
+    let (mut app, left_vehicle) = build_single_vehicle_arbiter_app(left_route);
     app.update();
 
     let res = app.world().resource::<IntersectionReservations>();
@@ -342,6 +352,45 @@ fn left_turn_resolves_as_lanelet_not_coarse() {
         stats.admitted_left >= 1,
         "admitted_left must be >= 1 (resolved as LEFT lanelet, not mislabeled); got {:?}",
         stats.admitted_left
+    );
+    assert_eq!(
+        stats.coarse_admits, 0,
+        "coarse_admits must be 0 (real lanelet, not coarse fallback)"
+    );
+}
+
+/// A lone northbound U-turn vehicle — entry North (x=4), exit South (x=5, heading south), route
+/// pivots through the centroid (4,4). No conflicting traffic, no lights → admitted as `UTurn`
+/// lanelet, not coarse.
+///
+/// Route geometry (derived from `cross_grid`):
+///   (4,3) North approach → (4,4) entry cluster tile → (5,4) centroid/pivot → (5,3) exit (South).
+/// entry_dir=North, exit_dir=South = North.opposite() => ManeuverKind::UTurn.
+#[test]
+fn uturn_resolves_as_lanelet_not_coarse() {
+    // Northbound U-turn: enter North lane at x=4, exit South lane at x=5.
+    let uturn_route = vec![
+        TilePos { x: 4, y: 3 },
+        TilePos { x: 4, y: 4 },
+        TilePos { x: 5, y: 4 },
+        TilePos { x: 5, y: 3 },
+    ];
+
+    let (mut app, uturn_vehicle) = build_single_vehicle_arbiter_app(uturn_route);
+    app.update();
+
+    let res = app.world().resource::<IntersectionReservations>();
+    assert!(
+        res.is_reserved_by(IntersectionId(0), uturn_vehicle),
+        "lone U-turning vehicle must be admitted (no conflict)"
+    );
+    assert!(!res.stall_tripwire(), "stall tripwire must stay empty");
+
+    let stats = app.world().resource::<ArbiterTickStats>();
+    assert!(
+        stats.admitted_uturn >= 1,
+        "admitted_uturn must be >= 1 (resolved as UTurn lanelet, not mislabeled); got {:?}",
+        stats.admitted_uturn
     );
     assert_eq!(
         stats.coarse_admits, 0,
