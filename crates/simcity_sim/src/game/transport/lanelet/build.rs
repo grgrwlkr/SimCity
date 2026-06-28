@@ -22,26 +22,33 @@ pub struct LaneletConflictMatrices {
 }
 
 /// Whether an approach lane of `lane_type` may feed a lanelet of `maneuver`. Encodes lane
-/// discipline: turn-only lanes feed only their turn; a Regular lane feeds Straight plus the
-/// near-side turn (right for right-hand traffic, left for left-hand traffic).
-/// `dir` is the approach travel direction (unused in Phase 1, reserved for future per-lane
-/// positional refinement).
+/// discipline: turn-only lanes feed only their designated turn (LeftTurnOnly also permits U-turn
+/// per ПДД 8.5 крайнее левое); a Regular lane feeds every legal maneuver because on a
+/// single-lane-per-direction road it IS the крайнее левое and must permit left + U-turn.
+/// `_dir` is the approach travel direction (reserved for future per-lane positional refinement).
+/// `_drive_on_right` is kept in the signature for caller/future-arm use; symmetry is now encoded
+/// in `maneuver_kind` which already swaps near/far by traffic handedness.
 #[allow(dead_code)]
 pub(crate) fn lane_allows_maneuver(
     lane_type: LaneType,
     maneuver: ManeuverKind,
     _dir: RoadDir,
-    drive_on_right: bool,
+    _drive_on_right: bool,
 ) -> bool {
     match lane_type {
-        LaneType::LeftTurnOnly => matches!(maneuver, ManeuverKind::LeftTurn),
+        LaneType::LeftTurnOnly => {
+            matches!(maneuver, ManeuverKind::LeftTurn | ManeuverKind::UTurn)
+        }
         LaneType::RightTurnOnly => matches!(maneuver, ManeuverKind::RightTurn),
         LaneType::StraightOnly => matches!(maneuver, ManeuverKind::Straight),
+        // A Regular lane serves every legal maneuver. On a single-lane-per-direction road this
+        // lane IS the крайнее левое (ПДД 8.5), so it must permit left + U-turn; on a multi-lane
+        // road autogen dedicates turn-only lanes and the leftover Regular lanes stay permissive.
         LaneType::Regular => match maneuver {
-            ManeuverKind::Straight => true,
-            ManeuverKind::RightTurn => drive_on_right,
-            ManeuverKind::LeftTurn => !drive_on_right,
-            ManeuverKind::UTurn => false, // Task 1.2 will enable this
+            ManeuverKind::Straight
+            | ManeuverKind::RightTurn
+            | ManeuverKind::LeftTurn
+            | ManeuverKind::UTurn => true,
             ManeuverKind::Other => false,
         },
     }
@@ -1281,7 +1288,8 @@ mod tests {
             RoadDir::North,
             true
         ));
-        assert!(!lane_allows_maneuver(
+        // Regular now serves the single-lane крайнее левое left turn (ПДД 8.5).
+        assert!(lane_allows_maneuver(
             LaneType::Regular,
             ManeuverKind::LeftTurn,
             RoadDir::North,
@@ -1306,11 +1314,42 @@ mod tests {
             RoadDir::North,
             false
         ));
-        assert!(!lane_allows_maneuver(
+        // Regular now serves all maneuvers regardless of traffic handedness.
+        assert!(lane_allows_maneuver(
             LaneType::Regular,
             ManeuverKind::RightTurn,
             RoadDir::North,
             false
+        ));
+    }
+
+    #[test]
+    fn regular_lane_allows_all_maneuvers_right_hand() {
+        use crate::game::roads::{LaneType, RoadDir};
+        use crate::game::traffic::ManeuverKind;
+        for m in [
+            ManeuverKind::Straight,
+            ManeuverKind::RightTurn,
+            ManeuverKind::LeftTurn,
+            ManeuverKind::UTurn,
+        ] {
+            assert!(
+                lane_allows_maneuver(LaneType::Regular, m, RoadDir::North, true),
+                "Regular must allow {m:?}"
+            );
+        }
+        // Turn-only lanes: left lane also serves the U-turn (ПДД 8.5 крайнее левое).
+        assert!(lane_allows_maneuver(
+            LaneType::LeftTurnOnly,
+            ManeuverKind::UTurn,
+            RoadDir::North,
+            true
+        ));
+        assert!(!lane_allows_maneuver(
+            LaneType::RightTurnOnly,
+            ManeuverKind::LeftTurn,
+            RoadDir::North,
+            true
         ));
     }
 }
