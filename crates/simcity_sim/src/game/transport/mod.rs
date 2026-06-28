@@ -122,6 +122,7 @@ impl Plugin for TransportPlugin {
             .init_resource::<LaneGraph>()
             .init_resource::<LaneletGraph>()
             .init_resource::<LaneletConflictMatrices>()
+            .init_resource::<turn_lanes::TurnLaneAutogenState>()
             .add_plugins(pathfinding::r#async::AsyncPathfindingPlugin)
             .add_systems(
                 FixedUpdate,
@@ -130,6 +131,12 @@ impl Plugin for TransportPlugin {
             .add_systems(
                 FixedUpdate,
                 region_graph::rebuild_region_graph.in_set(GameSet::GraphUpdate),
+            )
+            .add_systems(
+                FixedUpdate,
+                turn_lanes::autogen_turn_lanes
+                    .in_set(GameSet::GraphUpdate)
+                    .before(lane_graph::build_lane_graph),
             )
             .add_systems(
                 FixedUpdate,

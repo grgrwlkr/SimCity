@@ -10,12 +10,10 @@ use super::GraphVersion;
 
 /// Tracks whether derived turn-lane markings were computed for a given `GraphVersion`.
 #[derive(Resource, Default)]
-#[allow(dead_code)] // Reserved for future turn lane autogen feature
 pub struct TurnLaneAutogenState {
     pub(super) version: u64,
 }
 
-#[allow(dead_code)] // Used by autogen_turn_lanes_inner
 fn offset(pos: TilePos, d: IVec2) -> TilePos {
     TilePos {
         x: pos.x + d.x,
@@ -23,7 +21,6 @@ fn offset(pos: TilePos, d: IVec2) -> TilePos {
     }
 }
 
-#[allow(dead_code)] // Reserved for future turn lane autogen feature
 pub fn autogen_turn_lanes(
     gv: Res<GraphVersion>,
     mut grid: ResMut<MapGrid>,
@@ -37,7 +34,6 @@ pub fn autogen_turn_lanes(
     autogen_turn_lanes_inner(&mut grid);
 }
 
-#[allow(dead_code)] // Reserved for future turn lane autogen feature
 pub(super) fn autogen_turn_lanes_inner(grid: &mut MapGrid) {
     // Reset any old markings (roads may have changed).
     for y in 0..grid.height {
@@ -175,5 +171,150 @@ pub(super) fn autogen_turn_lanes_inner(grid: &mut MapGrid) {
                 grid.set(pos, cell);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::map::MapCell;
+    use crate::game::roads::{RoadCell, RoadFlow, RoadKind};
+
+    /// Helper: place a road cell at `pos`.
+    fn set_road(grid: &mut MapGrid, pos: TilePos, kind: RoadKind, dir: RoadDir, lane: u8) {
+        let mut cell = MapCell::default();
+        cell.road = RoadCell {
+            kind,
+            dir,
+            lane,
+            flow: RoadFlow::TwoWay,
+            lane_type: LaneType::Regular,
+        };
+        grid.set(pos, cell);
+    }
+
+    /// Two-lane northbound approach: tiles at (4,3) and (5,3) both pointing North into a 2-tile
+    /// cluster at (4,4)+(5,4).  Exit North (straight) at (4,5)/(5,5), exit West (left) at (3,4).
+    ///
+    /// Both approach tiles use `FourLane` (4 physical lanes total, half=2):
+    ///   - lane=0  → rightmost for the northbound carriageway (`is_rightmost_for_dir()` = true)
+    ///   - lane=1  → leftmost  for the northbound carriageway (`is_leftmost_for_dir()`  = true)
+    ///
+    /// With exits {North (straight), West (left)} and lanes_in_dir==2, the code takes the
+    /// `has_left && has_straight` branch → leftmost becomes `LeftTurnOnly`.
+    #[test]
+    fn autogen_marks_left_lane_on_multi_lane_approach() {
+        let mut grid = MapGrid::new(10, 10);
+
+        // Cluster: two None-dir tiles
+        set_road(
+            &mut grid,
+            TilePos { x: 4, y: 4 },
+            RoadKind::FourLane,
+            RoadDir::None,
+            0,
+        );
+        set_road(
+            &mut grid,
+            TilePos { x: 5, y: 4 },
+            RoadKind::FourLane,
+            RoadDir::None,
+            0,
+        );
+
+        // Two northbound approach tiles. North.delta() = (0,1), so fwd = (x, y+1).
+        // (4,3) → fwd=(4,4) in cluster ✓; (5,3) → fwd=(5,4) in cluster ✓.
+        // lane=1 is leftmost (closest to centreline) for FourLane northbound carriageway.
+        let leftmost = TilePos { x: 4, y: 3 };
+        let rightmost = TilePos { x: 5, y: 3 };
+        set_road(&mut grid, leftmost, RoadKind::FourLane, RoadDir::North, 1);
+        set_road(&mut grid, rightmost, RoadKind::FourLane, RoadDir::North, 0);
+
+        // Exit North (straight): back=(x,4) in cluster for tiles at y=5.
+        set_road(
+            &mut grid,
+            TilePos { x: 4, y: 5 },
+            RoadKind::FourLane,
+            RoadDir::North,
+            1,
+        );
+        set_road(
+            &mut grid,
+            TilePos { x: 5, y: 5 },
+            RoadKind::FourLane,
+            RoadDir::North,
+            0,
+        );
+
+        // Exit West (left turn for northbound): dir=West, opposite=East, delta=(1,0).
+        // back = (3,4)+(1,0) = (4,4) in cluster ✓.
+        set_road(
+            &mut grid,
+            TilePos { x: 3, y: 4 },
+            RoadKind::FourLane,
+            RoadDir::West,
+            0,
+        );
+
+        autogen_turn_lanes_inner(&mut grid);
+
+        let leftmost_cell = grid.get(leftmost).unwrap();
+        assert_eq!(
+            leftmost_cell.road.lane_type,
+            LaneType::LeftTurnOnly,
+            "leftmost northbound approach lane (lane=1) must become LeftTurnOnly"
+        );
+
+        // Rightmost approach lane gets StraightOnly (has_left+has_straight but no has_right).
+        let rightmost_cell = grid.get(rightmost).unwrap();
+        assert_eq!(
+            rightmost_cell.road.lane_type,
+            LaneType::StraightOnly,
+            "rightmost northbound approach lane (lane=0) must be StraightOnly (straight-only, no right exit)"
+        );
+    }
+
+    /// Single-lane approach must stay Regular — the early `continue` for lanes_in_dir <= 1.
+    #[test]
+    fn autogen_single_lane_approach_stays_regular() {
+        let mut grid = MapGrid::new(10, 10);
+
+        // Single-tile cluster
+        set_road(
+            &mut grid,
+            TilePos { x: 4, y: 4 },
+            RoadKind::TwoLane,
+            RoadDir::None,
+            0,
+        );
+
+        // One northbound approach tile (TwoLane, half=1, lane=0 is both leftmost and rightmost).
+        let approach = TilePos { x: 4, y: 3 };
+        set_road(&mut grid, approach, RoadKind::TwoLane, RoadDir::North, 0);
+
+        // Exits: North (straight) + West (left) — same rich exit set, but only 1 approach lane.
+        set_road(
+            &mut grid,
+            TilePos { x: 4, y: 5 },
+            RoadKind::TwoLane,
+            RoadDir::North,
+            0,
+        );
+        set_road(
+            &mut grid,
+            TilePos { x: 3, y: 4 },
+            RoadKind::TwoLane,
+            RoadDir::West,
+            0,
+        );
+
+        autogen_turn_lanes_inner(&mut grid);
+
+        let cell = grid.get(approach).unwrap();
+        assert_eq!(
+            cell.road.lane_type,
+            LaneType::Regular,
+            "single-lane approach must stay Regular"
+        );
     }
 }
