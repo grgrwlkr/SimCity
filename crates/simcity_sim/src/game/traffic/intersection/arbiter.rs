@@ -21,7 +21,7 @@ use super::reservations::{
     IntersectionReservation, IntersectionReservations, ReservationState,
     downstream_link_has_headroom,
 };
-use super::zones::{ManeuverKind, StreamKey, ZONE_ALL};
+use super::zones::{ManeuverKind, StreamKey, ZONE_ALL, maneuver_kind};
 
 /// Intersections swept in strict ascending `IntersectionId.0` order — the global ORD for the P3c
 /// progress-DAG (NOT width, which has ties; NOT HashMap iteration order). Deterministic.
@@ -896,7 +896,15 @@ pub(crate) fn arbitrate_lanelet_reservations(
             None => {
                 drop_unresolved += 1;
                 unresolved_this_tick.insert(e);
-                (true, 0usize, ManeuverKind::Straight, Vec::new())
+                // A turn with no resolved lanelet must NOT barge the whole box via coarse (the only
+                // remaining path onto the oncoming lane). Leave it for the stall-tracker reroute
+                // (it stays in unresolved_this_tick). Only a genuine straight may use coarse, and it
+                // carries its real maneuver (not a hardcoded Straight) so demand/priority stay correct.
+                let m = maneuver_kind(&p.traffic_cfg, entry_dir, exit_dir);
+                if m != ManeuverKind::Straight {
+                    continue;
+                }
+                (true, 0usize, m, Vec::new())
             }
         };
 

@@ -398,6 +398,121 @@ fn uturn_resolves_as_lanelet_not_coarse() {
     );
 }
 
+/// Forcing fixture for the unresolved-TURN case: same cross grid, but the northbound approach lane
+/// adjacent to the box (4,3) is made `StraightOnly` BEFORE the lane/lanelet graph is built. With the
+/// lane policy now permitting left turns from a Regular lane, a left lanelet would normally build; a
+/// `StraightOnly` approach lane suppresses it (`lane_allows_maneuver(StraightOnly, LeftTurn) == false`).
+/// The WEST exit road still exists, so a northbound-left route has `exit_dir = West` => a real
+/// `LeftTurn` maneuver whose lanelet cannot resolve (no left lanelet, empty sidecar). Returns
+/// `(app, entity)` for the lone northbound-left vehicle.
+fn build_unresolved_left_arbiter_app(route: Vec<TilePos>) -> (App, Entity) {
+    let (mut grid, idx) = cross_grid();
+    // Make the northbound approach lane adjacent to the box turn-only-straight so NO left lanelet
+    // builds from it. set_cell would reset lane_type to Regular, so mutate the cell directly.
+    if let Some(mut cell) = grid.get(TilePos { x: 4, y: 3 }) {
+        cell.road.lane_type = LaneType::StraightOnly;
+        grid.set(TilePos { x: 4, y: 3 }, cell);
+    }
+    let gv = GraphVersion(1);
+    let lanes = build_lane_graph_inner(&grid, &gv);
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(MapConfig {
+            width: 9,
+            height: 9,
+            tile_size: 16.0,
+        })
+        .insert_resource(grid)
+        .insert_resource(idx)
+        .insert_resource(lanes)
+        .insert_resource(gv)
+        .insert_resource(TrafficConfig {
+            experimental_lanelet_intersections: true,
+            ..Default::default()
+        })
+        .insert_resource(LaneletGraph::default())
+        .insert_resource(LaneletConflictMatrices::default())
+        .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(IntersectionReservations::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .init_resource::<LeftTurnDemand>()
+        .init_resource::<ArbiterIndexCache>()
+        .init_resource::<ArbiterTickStats>()
+        .init_resource::<ApproachFairness>()
+        .init_resource::<ClusterStarvation>()
+        .init_resource::<LaneletStallTracker>()
+        .init_resource::<RingTopologyStatus>();
+
+    app.add_systems(
+        Update,
+        (
+            build_lanelet_graph,
+            arbitrate_lanelet_reservations,
+            cleanup_intersection_reservations,
+        )
+            .chain(),
+    );
+
+    let v = {
+        let mut pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(&mut pool, route, 0, 0.4, 0.0, 60.0, 20.0, 1.0)
+    };
+    let entity = app
+        .world_mut()
+        .spawn((
+            v,
+            VehicleTrafficState::FreeFlow,
+            VehicleLaneletPlan::default(),
+        ))
+        .id();
+
+    (app, entity)
+}
+
+/// A northbound LEFT-turn vehicle whose left lanelet cannot resolve (the approach lane is
+/// `StraightOnly`, so no left lanelet was built, and the sidecar is empty). The unresolved TURN must
+/// NOT barge the whole box via coarse — it stays unadmitted and is handed to the stall tracker for a
+/// reroute. RED before the fix (the unresolved left was coarse-admitted: `coarse_admits == 1`,
+/// reserved); GREEN after.
+#[test]
+fn unresolved_turn_is_not_coarse_admitted() {
+    // Northbound left-turn route: approach from y=3 (StraightOnly lane), cross box, exit West to (3,5).
+    let left_route = vec![
+        TilePos { x: 4, y: 3 },
+        TilePos { x: 4, y: 4 },
+        TilePos { x: 4, y: 5 },
+        TilePos { x: 3, y: 5 },
+    ];
+
+    let (mut app, v) = build_unresolved_left_arbiter_app(left_route);
+    app.update();
+
+    let res = app.world().resource::<IntersectionReservations>();
+    assert!(
+        !res.is_reserved_by(IntersectionId(0), v),
+        "an unresolved TURN must NOT be admitted (no coarse whole-box barge onto the oncoming lane)"
+    );
+
+    let stats = app.world().resource::<ArbiterTickStats>();
+    assert_eq!(
+        stats.coarse_admits, 0,
+        "an unresolved TURN must NOT be coarse-admitted"
+    );
+
+    let tracker = app.world().resource::<LaneletStallTracker>();
+    assert!(
+        tracker.unresolved.contains_key(&v),
+        "the unresolved-turn entity must be handed to the stall tracker for reroute"
+    );
+}
+
 #[test]
 fn flag_on_arbiter_admits_exactly_one_conflicting_vehicle_deterministically() {
     let (east_a, north_a, tripwire_a) = run_arbiter_once();
