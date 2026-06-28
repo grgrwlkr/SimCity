@@ -1,5 +1,5 @@
 use super::intersection::{
-    IntersectionReservation, ManeuverKind, ReservationState, StreamKey, ZONE_ALL, ZONE_NW,
+    IntersectionReservation, ManeuverKind, ReservationState, StreamKey, ZONE_ALL,
 };
 use super::*;
 use crate::game::citizens::Citizen;
@@ -90,14 +90,8 @@ mod traffic_lights;
 // Route rewriting (overtake, stuck vehicles, U-turns)
 mod route_rewriting;
 
-// Right turn on red behavior
-mod right_turn_on_red;
-
 // Pedestrian-vehicle interactions at intersections
 mod pedestrians;
-
-// Intersection conflict zones
-mod conflict_zones;
 
 // Vehicle spawning and trip management
 mod vehicle_spawning;

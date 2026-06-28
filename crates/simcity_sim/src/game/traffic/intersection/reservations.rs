@@ -693,7 +693,9 @@ pub(crate) fn apply_intersection_reservation_candidates(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[cfg_attr(not(test), allow(dead_code))]
+// Test-only legacy wrapper kept until a later task removes the dead collect/apply pipeline (Task 5.1
+// ported its test usages to the arbiter harness, so it is now unused in both test and non-test builds).
+#[allow(dead_code)]
 pub fn plan_intersection_reservations(
     time: Res<Time<Fixed>>,
     mut p: PlanIntersectionReservationParams,

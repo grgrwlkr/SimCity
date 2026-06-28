@@ -359,8 +359,6 @@ fn idm_accel_world(
 mod intersection;
 pub(crate) use intersection::maneuver_kind;
 #[cfg(test)]
-use intersection::plan_intersection_reservations;
-#[cfg(test)]
 use intersection::rewrite_intersection_connectors;
 use intersection::{
     ApproachFairness, ArbiterIndexCache, ClusterStarvation, LaneletStallTracker,
