@@ -145,16 +145,6 @@ pub(crate) const DRIVER_MAX_SPEED_KMH_MIN: f32 = 90.0;
 pub(crate) const DRIVER_MAX_SPEED_KMH_MAX: f32 = 130.0;
 /// Service vehicles may exceed posted road limits by this factor.
 const SERVICE_VEHICLE_SPEED_LIMIT_FACTOR: f32 = 1.50;
-/// Failsafe: if a vehicle is blocked at a clear intersection for too long, allow entry.
-const INTERSECTION_FORCE_ENTRY_SECS: f32 = 8.0;
-/// Starvation-free escape valve (cross-intersection deadlock breaker). If an intersection has had at
-/// least one approach refused by a capacity/spillback gate (don't-block-the-box exit gate or the
-/// downstream-link gate) for this many consecutive sim ticks (FixedUpdate, 10 Hz) without admitting
-/// it, force-admit ONE refused approach this tick — bypassing those capacity gates but NOT the
-/// `can_reserve` crossing-conflict check. This breaks the cross-intersection circular wait where
-/// two adjacent clusters mutually refuse admission across a saturated short link. 30 ticks = 3 s:
-/// long enough to ignore transient congestion, far below the 60 s reroute / 180 s despawn fallbacks.
-pub(crate) const INTERSECTION_STALL_FORCE_TICKS: u32 = 30;
 
 /// After this many seconds without progressing, try to resolve a traffic jam (reroute).
 /// (v2 policy: avoid "cheat" behavior by default; only intervene after a long timeout.)
@@ -171,56 +161,10 @@ const MAX_UNSTUCK_PER_TICK: usize = 8;
 const SPAWN_THROTTLE_MAX_CONG: f32 = 0.95;
 const SPAWN_THROTTLE_AVG_CONG: f32 = 0.85;
 
-/// Run-condition: the legacy intersection pipeline — the per-vehicle connector rewrite
-/// (`mark_vehicles_needing_connector_rewrite` + `rewrite_marked_intersection_connectors`) AND the
-/// reservation producers (`collect_/apply_intersection_reservation_candidates`) — runs only when the
-/// experimental lanelet routing is OFF. Under the flag the spawned route is already lanelet-correct
-/// (rewriting it would clobber the route + invalidate `VehicleLaneletPlan` cursor offsets) and the
-/// `arbitrate_lanelet_reservations` arbiter is the sole reservation producer. Exactly one producer
-/// per tick: this predicate and `lanelet_arbiter_enabled` are mutually exclusive.
-fn legacy_intersection_pipeline_enabled(cfg: Res<TrafficConfig>) -> bool {
-    legacy_intersection_pipeline_enabled_for(&cfg)
-}
-
-/// Pure form of [`legacy_intersection_pipeline_enabled`] for tests.
-pub(crate) fn legacy_intersection_pipeline_enabled_for(cfg: &TrafficConfig) -> bool {
-    !cfg.experimental_lanelet_intersections
-}
-
-/// Run condition for the flag-on lanelet intersection arbiter (the inverse of
-/// [`legacy_intersection_pipeline_enabled`]): the arbiter is the sole reservation producer when the
-/// experimental flag is set.
+/// Run condition for the flag-on lanelet intersection arbiter: the arbiter is the sole reservation
+/// producer when the experimental flag is set.
 fn lanelet_arbiter_enabled(cfg: Res<TrafficConfig>) -> bool {
     cfg.experimental_lanelet_intersections
-}
-
-#[cfg(test)]
-mod tests_connector_gate {
-    use super::*;
-
-    #[test]
-    fn legacy_pipeline_and_arbiter_are_mutually_exclusive() {
-        let mut cfg = TrafficConfig::default();
-        // Flag off: legacy pipeline runs, arbiter does not.
-        assert!(
-            legacy_intersection_pipeline_enabled_for(&cfg),
-            "legacy intersection pipeline must run when the lanelet flag is off"
-        );
-        assert!(
-            !cfg.experimental_lanelet_intersections,
-            "arbiter must not run when the flag is off"
-        );
-        // Flag on: arbiter runs, legacy pipeline does not.
-        cfg.experimental_lanelet_intersections = true;
-        assert!(
-            !legacy_intersection_pipeline_enabled_for(&cfg),
-            "legacy intersection pipeline must be disabled when the lanelet flag is on"
-        );
-        assert!(
-            cfg.experimental_lanelet_intersections,
-            "arbiter must be the sole producer when the flag is on"
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -358,15 +302,11 @@ fn idm_accel_world(
 
 mod intersection;
 pub(crate) use intersection::maneuver_kind;
-#[cfg(test)]
-use intersection::rewrite_intersection_connectors;
 use intersection::{
     ApproachFairness, ArbiterIndexCache, ClusterStarvation, LaneletStallTracker,
-    RingTopologyStatus, apply_intersection_reservation_candidates, arbitrate_lanelet_reservations,
-    cache_intersection_light_state, cache_pedestrian_crossing_state, check_ring_free_topology,
-    cleanup_intersection_reservations, collect_intersection_reservation_candidates,
-    mark_vehicles_needing_connector_rewrite, nudge_lanelet_stall_reroute,
-    reset_intersection_reservations, rewrite_marked_intersection_connectors,
+    RingTopologyStatus, arbitrate_lanelet_reservations, cache_intersection_light_state,
+    cache_pedestrian_crossing_state, check_ring_free_topology, cleanup_intersection_reservations,
+    nudge_lanelet_stall_reroute, reset_intersection_reservations,
 };
 pub use intersection::{ArbiterTickStats, IntersectionReservations};
 pub use intersection::{ManeuverKind, ReservationState};
@@ -386,7 +326,6 @@ impl Plugin for TrafficPlugin {
             .init_resource::<TrafficConfig>()
             .init_resource::<TrafficOverlayPool>()
             .init_resource::<IntersectionReservations>()
-            .init_resource::<intersection::IntersectionReservationCandidates>()
             .init_resource::<intersection::IntersectionLightStateCache>()
             .init_resource::<intersection::PedestrianCrossingStateCache>()
             .init_resource::<ArbiterIndexCache>()
@@ -465,61 +404,27 @@ impl Plugin for TrafficPlugin {
                     build_traffic_spatial_index
                         .after(plan_lane_changes)
                         .before(plan_oncoming_overtakes)
-                        .before(collect_intersection_reservation_candidates)
-                        .before(apply_intersection_reservation_candidates)
                         .before(move_vehicles),
                     plan_oncoming_overtakes
                         .after(plan_lane_changes)
-                        .before(mark_vehicles_needing_connector_rewrite)
-                        .before(rewrite_marked_intersection_connectors)
-                        .before(collect_intersection_reservation_candidates)
-                        .before(apply_intersection_reservation_candidates)
                         .before(move_vehicles),
-                    mark_vehicles_needing_connector_rewrite
-                        .after(plan_oncoming_overtakes)
-                        .before(rewrite_marked_intersection_connectors)
-                        .before(cache_intersection_light_state)
-                        .before(cache_pedestrian_crossing_state)
-                        .before(collect_intersection_reservation_candidates)
-                        .run_if(legacy_intersection_pipeline_enabled),
-                    rewrite_marked_intersection_connectors
-                        .after(mark_vehicles_needing_connector_rewrite)
-                        .before(cache_intersection_light_state)
-                        .before(cache_pedestrian_crossing_state)
-                        .before(collect_intersection_reservation_candidates)
-                        .run_if(legacy_intersection_pipeline_enabled),
                     cache_intersection_light_state
-                        .after(rewrite_marked_intersection_connectors)
-                        .before(collect_intersection_reservation_candidates),
+                        .after(plan_oncoming_overtakes)
+                        .before(arbitrate_lanelet_reservations),
                     cache_pedestrian_crossing_state
-                        .after(rewrite_marked_intersection_connectors)
-                        .before(collect_intersection_reservation_candidates),
-                    collect_intersection_reservation_candidates
-                        .after(rewrite_marked_intersection_connectors)
-                        .after(cache_intersection_light_state)
-                        .after(cache_pedestrian_crossing_state)
-                        .before(apply_intersection_reservation_candidates)
-                        .before(move_vehicles)
-                        .run_if(legacy_intersection_pipeline_enabled),
-                    apply_intersection_reservation_candidates
-                        .after(collect_intersection_reservation_candidates)
-                        .before(move_vehicles)
-                        .run_if(legacy_intersection_pipeline_enabled),
-                    // Flag-on sole reservation producer. Ordered after the legacy apply so the two
-                    // never race the shared IntersectionReservations; flag-on the legacy
-                    // collect/apply are gated off (mutually-exclusive run conditions), making this
-                    // `.after` vacuous.
+                        .after(plan_oncoming_overtakes)
+                        .before(arbitrate_lanelet_reservations),
+                    // Flag-on sole reservation producer.
                     arbitrate_lanelet_reservations
-                        .after(apply_intersection_reservation_candidates)
                         .after(cache_intersection_light_state)
                         .after(cache_pedestrian_crossing_state)
                         .before(break_tile_swaps)
                         .before(move_vehicles)
                         .run_if(lanelet_arbiter_enabled),
                     break_tile_swaps
-                        .after(apply_intersection_reservation_candidates)
+                        .after(arbitrate_lanelet_reservations)
                         .before(move_vehicles),
-                    move_vehicles.after(apply_intersection_reservation_candidates),
+                    move_vehicles.after(arbitrate_lanelet_reservations),
                     cleanup_right_on_red_markers.after(move_vehicles),
                     cleanup_intersection_reservations.after(move_vehicles),
                 )

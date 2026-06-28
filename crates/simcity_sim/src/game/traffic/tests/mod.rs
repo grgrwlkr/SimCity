@@ -87,9 +87,6 @@ mod intersection_reservations;
 // Traffic light behavior
 mod traffic_lights;
 
-// Route rewriting (overtake, stuck vehicles, U-turns)
-mod route_rewriting;
-
 // Pedestrian-vehicle interactions at intersections
 mod pedestrians;
 
