@@ -513,6 +513,55 @@ fn unresolved_turn_is_not_coarse_admitted() {
     );
 }
 
+/// A northbound left-turning vehicle PLUS an active pedestrian crossing the exit road (West
+/// crosswalk, axis_ns=true). ПДД 13.1: the turning vehicle must YIELD to the pedestrian on the
+/// road it turns onto. The West crosswalk is crosswalk index 0 in the conflict matrix (emission
+/// order: West=0, East=1, South=2, North=3 per `crosswalk_cells`). axis_ns=true activates
+/// West/East crosswalks. The left-turn lanelet's internal path crosses the West boundary cells of
+/// the cluster → its conflict row has the West crosswalk bit set → `try_admit` refuses it.
+///
+/// If GREEN on first run: the existing matrix already covers the exit crosswalk (lock-in only).
+/// If RED: the turn lanelet's conflict row does NOT include the exit crosswalk bit — matrix fix
+/// needed (Step 3 of task-4.1-brief).
+#[test]
+fn turning_vehicle_yields_to_pedestrian_on_exit_crosswalk() {
+    use crate::game::pedestrians::PedestrianCrossing;
+
+    // Same left-turn route as `left_turn_resolves_as_lanelet_not_coarse`: northbound → exits West.
+    // The exit crosswalk is the WEST side of the cluster (crosswalk_cells index 0).
+    let left_route = vec![
+        TilePos { x: 4, y: 3 },
+        TilePos { x: 4, y: 4 },
+        TilePos { x: 4, y: 5 },
+        TilePos { x: 3, y: 5 },
+    ];
+
+    let (mut app, left_vehicle) = build_single_vehicle_arbiter_app(left_route);
+
+    // axis_ns=true: pedestrian moving N/S → occupies West + East crosswalks.
+    // The left-turner exits across the WEST crosswalk → must be blocked.
+    app.world_mut().spawn(PedestrianCrossing {
+        intersection_id: IntersectionId(0),
+        axis_ns: true,
+    });
+
+    app.update();
+
+    let res = app.world().resource::<IntersectionReservations>();
+    assert!(
+        !res.is_reserved_by(IntersectionId(0), left_vehicle),
+        "turning vehicle must NOT be admitted when a pedestrian is crossing the exit crosswalk (ПДД 13.1 yield)"
+    );
+
+    let stats = app.world().resource::<ArbiterTickStats>();
+    assert!(
+        stats.refused_matrix >= 1 || stats.yield_refusals >= 1,
+        "the refusal must come from the conflict matrix (ped_mask overlap) or yield gate; refused_matrix={}, yield_refusals={}",
+        stats.refused_matrix,
+        stats.yield_refusals,
+    );
+}
+
 #[test]
 fn flag_on_arbiter_admits_exactly_one_conflicting_vehicle_deterministically() {
     let (east_a, north_a, tripwire_a) = run_arbiter_once();
