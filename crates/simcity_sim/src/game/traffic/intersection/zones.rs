@@ -106,6 +106,37 @@ pub(crate) fn straight_zone(entry_dir: RoadDir) -> ConflictMask {
     }
 }
 
+pub(crate) fn reservation_zones_for_maneuver(
+    traffic_cfg: &TrafficConfig,
+    entry_dir: RoadDir,
+    exit_dir: RoadDir,
+) -> Option<ConflictMask> {
+    if entry_dir == RoadDir::None || exit_dir == RoadDir::None {
+        return None;
+    }
+    if exit_dir == entry_dir {
+        return Some(straight_zone(entry_dir));
+    }
+    let right = if traffic_cfg.drive_on_right {
+        entry_dir.right()
+    } else {
+        entry_dir.left()
+    };
+    let left = if traffic_cfg.drive_on_right {
+        entry_dir.left()
+    } else {
+        entry_dir.right()
+    };
+    if exit_dir == right {
+        return Some(right_turn_zone(entry_dir));
+    }
+    if exit_dir == left {
+        return Some(left_turn_zone(entry_dir));
+    }
+    // U-turn / unknown: be conservative.
+    Some(ZONE_CENTER)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,35 +167,4 @@ mod tests {
             ManeuverKind::Straight
         );
     }
-}
-
-pub(crate) fn reservation_zones_for_maneuver(
-    traffic_cfg: &TrafficConfig,
-    entry_dir: RoadDir,
-    exit_dir: RoadDir,
-) -> Option<ConflictMask> {
-    if entry_dir == RoadDir::None || exit_dir == RoadDir::None {
-        return None;
-    }
-    if exit_dir == entry_dir {
-        return Some(straight_zone(entry_dir));
-    }
-    let right = if traffic_cfg.drive_on_right {
-        entry_dir.right()
-    } else {
-        entry_dir.left()
-    };
-    let left = if traffic_cfg.drive_on_right {
-        entry_dir.left()
-    } else {
-        entry_dir.right()
-    };
-    if exit_dir == right {
-        return Some(right_turn_zone(entry_dir));
-    }
-    if exit_dir == left {
-        return Some(left_turn_zone(entry_dir));
-    }
-    // U-turn / unknown: be conservative.
-    Some(ZONE_CENTER)
 }

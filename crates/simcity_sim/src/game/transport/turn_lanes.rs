@@ -182,13 +182,15 @@ mod tests {
 
     /// Helper: place a road cell at `pos`.
     fn set_road(grid: &mut MapGrid, pos: TilePos, kind: RoadKind, dir: RoadDir, lane: u8) {
-        let mut cell = MapCell::default();
-        cell.road = RoadCell {
-            kind,
-            dir,
-            lane,
-            flow: RoadFlow::TwoWay,
-            lane_type: LaneType::Regular,
+        let cell = MapCell {
+            road: RoadCell {
+                kind,
+                dir,
+                lane,
+                flow: RoadFlow::TwoWay,
+                lane_type: LaneType::Regular,
+            },
+            ..Default::default()
         };
         grid.set(pos, cell);
     }
