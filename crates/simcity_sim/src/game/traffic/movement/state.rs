@@ -170,8 +170,20 @@ pub fn update_vehicle_traffic_state(
                 // above keeps the car from progressing, so the maxed timer survives `update_stuck_timers`
                 // (which only resets on actual progress) until the reroute fires. `Approaching` is not in
                 // the reroute skip-list, so the re-path is not suppressed.
+                //
+                // If the vehicle has no StuckTimer yet (1-tick window right after spawn before
+                // `init_stuck_timers` runs), insert one pre-armed at the reroute threshold so the car
+                // is never silently frozen forever.
                 if let Some(st) = stuck.as_deref_mut() {
                     st.secs = st.secs.max(crate::game::traffic::STUCK_REROUTE_SECS);
+                } else {
+                    commands
+                        .entity(entity)
+                        .insert(crate::game::traffic::stuck::StuckTimer {
+                            secs: crate::game::traffic::STUCK_REROUTE_SECS,
+                            last_tile: cur_tile,
+                            last_progress: vehicle.progress,
+                        });
                 }
                 // Drop any stale right-on-red marker and skip the rest of the pipeline for this vehicle.
                 if ror.is_some() {
