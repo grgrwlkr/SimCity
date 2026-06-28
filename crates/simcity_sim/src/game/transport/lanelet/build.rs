@@ -53,16 +53,27 @@ pub(crate) fn lane_allows_maneuver(
     }
 }
 
-/// Lane-faithful strictly-4-adjacent path through `cluster_tiles`, anchored on the intersection
-/// centroid. Straight and right turns take the shortest in-box path (right hugs the near corner —
-/// ПДД 8.6 «ближе к правому краю»). Left turns and U-turns pivot through the cluster tile nearest
-/// the centroid so they swing around the center (ПДД 8.6 «вокруг центра») instead of cutting the
-/// corner onto the oncoming half. Exit-lane correctness is guaranteed by the caller (it only offers
-/// away-pointing exit tiles), so any returned path lands on a non-oncoming lane.
+/// Lane-faithful strictly-4-adjacent path through `cluster_tiles`, routed as an ARC around the
+/// intersection's geometric **center point** `C` — the continuous-float center of the box's
+/// tile-center cloud (the vertex where the box tiles meet, NOT a tile). Straights take the direct
+/// in-box path. Turns walk the 4-adjacent box tiles from `entry_tile` to `goal` advancing
+/// monotonically around `C`, picking the rotational sense by maneuver:
+/// - **RightTurn**: the SHORT arc — hugs the near corner, `C` stays outside (ПДД 8.6 «ближе к правому краю»).
+/// - **LeftTurn**: the LONG arc — swings past `C` so the center is enclosed (around, not corner-cut).
+/// - **UTurn**: the long (~270°) arc around `C`.
+///
+/// Handedness: the maneuver classification already swaps near/far by `drive_on_right`
+/// (`maneuver_kind`), so the arc sense follows the maneuver and stays correct under left-hand traffic.
+/// Exit-lane correctness is guaranteed by the caller (it only offers away-pointing exit tiles), so
+/// any returned path lands on a non-oncoming lane.
 ///
 /// Returns tile sequence (entry_tile .. goal), all inside the cluster, consecutive pairs
-/// Manhattan-distance 1. `None` if no path exists or `maneuver == Other`. Degenerate geometry
-/// (goal not in the cluster) falls back to the shortest BFS path to a tile adjacent to the exit.
+/// Manhattan-distance 1, SIMPLE (no revisited tile). `None` if no path exists or `maneuver == Other`.
+/// Degenerate geometry (goal not in the cluster, or the angular walk dead-ends) falls back to the
+/// shortest BFS path to a tile adjacent to the exit.
+///
+/// `centroid` is retained in the signature for caller compatibility but unused: the pivot is now the
+/// box's true float center, not the integer centroid tile.
 pub(crate) fn build_internal_path(
     cluster_tiles: &HashSet<TilePos>,
     centroid: TilePos,
@@ -72,6 +83,7 @@ pub(crate) fn build_internal_path(
     exit_dir: RoadDir,
     maneuver: ManeuverKind,
 ) -> Option<Vec<TilePos>> {
+    let _ = (centroid, entry_dir); // pivot is the float center; direction encoded in the maneuver.
     if !cluster_tiles.contains(&entry_tile) {
         return None;
     }
@@ -84,29 +96,128 @@ pub(crate) fn build_internal_path(
         // Degenerate geometry: fall back to the shortest path to a tile adjacent to the exit.
         return build_internal_path_bfs(cluster_tiles, entry_tile, exit_tile);
     }
-    let _ = entry_dir; // direction is encoded in the maneuver classification; kept for symmetry/clarity.
     match maneuver {
-        ManeuverKind::Straight | ManeuverKind::RightTurn => {
-            bfs_within(cluster_tiles, entry_tile, goal)
-        }
-        ManeuverKind::LeftTurn | ManeuverKind::UTurn => {
-            let pivot = nearest_cluster_tile(cluster_tiles, centroid)?;
-            let mut path = bfs_within(cluster_tiles, entry_tile, pivot)?;
-            let tail = bfs_within(cluster_tiles, pivot, goal)?;
-            // Join, dropping the duplicated pivot tile.
-            path.extend(tail.into_iter().skip(1));
-            Some(path)
+        ManeuverKind::Straight => bfs_within(cluster_tiles, entry_tile, goal),
+        ManeuverKind::RightTurn | ManeuverKind::LeftTurn | ManeuverKind::UTurn => {
+            let center = box_center_point(cluster_tiles);
+            let want_long = matches!(maneuver, ManeuverKind::LeftTurn | ManeuverKind::UTurn);
+            arc_around_center(cluster_tiles, center, entry_tile, goal, want_long)
+                // Pathological geometry where the angular walk can't reach the goal: degrade to a
+                // shortest in-box path rather than emit nothing (still collision-safe — any in-box
+                // path is safe), so the lanelet still builds.
+                .or_else(|| build_internal_path_bfs(cluster_tiles, entry_tile, exit_tile))
         }
         ManeuverKind::Other => None,
     }
 }
 
-/// The cluster tile with minimum Manhattan distance to `target` (deterministic (x,y) tiebreak).
-fn nearest_cluster_tile(cluster_tiles: &HashSet<TilePos>, target: TilePos) -> Option<TilePos> {
-    cluster_tiles
-        .iter()
-        .copied()
-        .min_by_key(|t| ((t.x - target.x).abs() + (t.y - target.y).abs(), t.x, t.y))
+/// Geometric center point of the box: the mean of the tile **centers** (`(x+0.5, y+0.5)`), a
+/// continuous float. For an N×N box this lands on the vertex where the central tiles meet (e.g. the
+/// 2×2 `{(4,4),(4,5),(5,4),(5,5)}` → `(5.0, 5.0)`), NOT a tile center.
+fn box_center_point(cluster_tiles: &HashSet<TilePos>) -> (f64, f64) {
+    let n = cluster_tiles.len().max(1) as f64;
+    let (mut sx, mut sy) = (0.0f64, 0.0f64);
+    for t in cluster_tiles {
+        sx += t.x as f64 + 0.5;
+        sy += t.y as f64 + 0.5;
+    }
+    (sx / n, sy / n)
+}
+
+/// Angle of a tile's center about the center point `c` (radians, `atan2`).
+fn angle_about(t: TilePos, c: (f64, f64)) -> f64 {
+    ((t.y as f64 + 0.5) - c.1).atan2((t.x as f64 + 0.5) - c.0)
+}
+
+/// CCW angular travel from `a` to `b`, normalized to `[0, 2π)`.
+fn ccw_span(a: f64, b: f64) -> f64 {
+    let two_pi = std::f64::consts::TAU;
+    let mut d = b - a;
+    while d < -1e-9 {
+        d += two_pi;
+    }
+    while d >= two_pi - 1e-9 {
+        d -= two_pi;
+    }
+    d
+}
+
+/// Walk 4-adjacent in-box tiles from `entry` to `goal` as an arc around center point `c`.
+///
+/// Direction is chosen so the arc from `entry` to `goal` is the SHORT way (right turn) or the LONG
+/// way (left / U-turn), selected by `want_long`. The walk is greedy-monotonic: at each tile it steps
+/// to the unvisited in-box neighbor that advances the LEAST (but strictly positive) in the chosen
+/// rotational direction — hugging the arc — with a deterministic `(x, y)` tiebreak. Produces a
+/// SIMPLE path (visited set forbids revisits). `None` if it dead-ends before reaching `goal`.
+fn arc_around_center(
+    cluster_tiles: &HashSet<TilePos>,
+    c: (f64, f64),
+    entry: TilePos,
+    goal: TilePos,
+    want_long: bool,
+) -> Option<Vec<TilePos>> {
+    if entry == goal {
+        return Some(vec![entry]);
+    }
+    let ea = angle_about(entry, c);
+    let ga = angle_about(goal, c);
+    let span_ccw = ccw_span(ea, ga);
+    let span_cw = std::f64::consts::TAU - span_ccw;
+    // want_long => take the longer arc; else the shorter. CCW iff its span matches the wanted length.
+    let ccw = if want_long {
+        span_ccw >= span_cw
+    } else {
+        span_ccw <= span_cw
+    };
+
+    let mut path = vec![entry];
+    let mut visited: HashSet<TilePos> = HashSet::new();
+    visited.insert(entry);
+    let mut cur = entry;
+    let mut cur_ang = ea;
+    let cap = cluster_tiles.len() + 2;
+    while cur != goal {
+        if path.len() > cap {
+            return None;
+        }
+        let mut best: Option<(f64, i32, i32, TilePos, f64)> = None;
+        for d in [
+            IVec2::new(-1, 0),
+            IVec2::new(1, 0),
+            IVec2::new(0, -1),
+            IVec2::new(0, 1),
+        ] {
+            let n = TilePos {
+                x: cur.x + d.x,
+                y: cur.y + d.y,
+            };
+            if !cluster_tiles.contains(&n) || visited.contains(&n) {
+                continue;
+            }
+            let na = angle_about(n, c);
+            let mut adv = if ccw {
+                ccw_span(cur_ang, na)
+            } else {
+                ccw_span(na, cur_ang)
+            };
+            // Forbid zero/backward advance: deprioritize by pushing past a full turn so a genuine
+            // forward step (if any) always wins.
+            if adv <= 1e-9 {
+                adv += std::f64::consts::TAU;
+            }
+            let key = (adv, n.x, n.y, n, na);
+            match &best {
+                Some((ba, bx, by, _, _)) if (*ba, *bx, *by) <= (key.0, key.1, key.2) => {}
+                _ => best = Some(key),
+            }
+        }
+        let (_, _, _, next, na) = best?;
+        cur = next;
+        cur_ang = na;
+        visited.insert(cur);
+        path.push(cur);
+    }
+    Some(path)
 }
 
 /// Shortest strictly-4-adjacent path between two in-cluster tiles (inclusive of both endpoints).
@@ -466,6 +577,32 @@ mod tests {
     use crate::game::transport::lane_graph::build_lane_graph_inner;
     use bevy::app::App;
 
+    /// Render a box + path as an ASCII grid (north up): path tiles show their step index, other box
+    /// tiles `.`, non-box ` `. Used in the geometry tests so a human reading the test SEES the arc.
+    fn ascii_path(cluster: &HashSet<TilePos>, path: &[TilePos]) -> String {
+        use std::collections::HashMap;
+        let idx: HashMap<TilePos, usize> = path.iter().enumerate().map(|(i, &t)| (t, i)).collect();
+        let min_x = cluster.iter().map(|t| t.x).min().unwrap_or(0);
+        let max_x = cluster.iter().map(|t| t.x).max().unwrap_or(0);
+        let min_y = cluster.iter().map(|t| t.y).min().unwrap_or(0);
+        let max_y = cluster.iter().map(|t| t.y).max().unwrap_or(0);
+        let mut s = String::from("\n");
+        for y in (min_y..=max_y).rev() {
+            for x in min_x..=max_x {
+                let t = TilePos { x, y };
+                if let Some(i) = idx.get(&t) {
+                    s.push_str(&format!("{i:>2} "));
+                } else if cluster.contains(&t) {
+                    s.push_str(" . ");
+                } else {
+                    s.push_str("   ");
+                }
+            }
+            s.push('\n');
+        }
+        s
+    }
+
     fn make_key(tiles: &[TilePos]) -> IntersectionKey {
         let min_x = tiles.iter().map(|t| t.x).min().unwrap_or(0);
         let min_y = tiles.iter().map(|t| t.y).min().unwrap_or(0);
@@ -676,13 +813,14 @@ mod tests {
     }
 
     #[test]
-    fn centroid_router_left_turn_passes_through_center_and_stays_in_box() {
+    fn centroid_router_left_turn_arcs_around_center_not_through_it() {
         use crate::game::map::TilePos;
         use crate::game::roads::RoadDir;
         use crate::game::traffic::ManeuverKind;
-        // 3x3 box x,y in 4..=6, centroid at the true center tile (5,5) — distinct from both the
-        // entry tile (4,4) and the goal tile (4,6), so passing through the centroid is a real
-        // constraint (not vacuously satisfied by entry==centroid==goal as a 2x2 would be).
+        // 3x3 box x,y in 4..=6. Center POINT C = mean of tile centers = (5.5, 5.5) — the vertex
+        // between the four upper-right tiles, NOT the center tile (5,5). A left turn now swings the
+        // LONG way AROUND C, so it must NOT pass through the center tile (5,5) (that would be a
+        // corner-cut through the middle); it encloses C by hugging the far perimeter.
         let cluster: HashSet<TilePos> = (4..=6)
             .flat_map(|x| (4..=6).map(move |y| TilePos { x, y }))
             .collect();
@@ -712,9 +850,28 @@ mod tests {
         for t in &path {
             assert!(cluster.contains(t), "every tile inside cluster: {t:?}");
         }
+        // SIMPLE: no revisited tile.
+        let uniq: HashSet<TilePos> = path.iter().copied().collect();
+        assert_eq!(uniq.len(), path.len(), "path must be simple: {path:?}");
+        // The wide left arc goes AROUND C, not through the middle tile (5,5).
         assert!(
-            path.contains(&centroid),
-            "left turn pivots through the centroid tile: {path:?}"
+            !path.contains(&TilePos { x: 5, y: 5 }),
+            "left arc must swing around C, not cut through the center tile: {path:?}"
+        );
+        // The exact wide arc (CCW long way around C): up the entry column, across the far edge.
+        assert_eq!(
+            path,
+            vec![
+                TilePos { x: 4, y: 4 },
+                TilePos { x: 5, y: 4 },
+                TilePos { x: 6, y: 4 },
+                TilePos { x: 6, y: 5 },
+                TilePos { x: 6, y: 6 },
+                TilePos { x: 5, y: 6 },
+                TilePos { x: 4, y: 6 },
+            ],
+            "left arc tiles: {}",
+            ascii_path(&cluster, &path)
         );
         // Ends on the tile adjacent to (and feeding) the exit lane.
         assert_eq!(
@@ -792,9 +949,9 @@ mod tests {
     }
 
     #[test]
-    fn turn_shape_ends_adjacent_to_south_exit() {
+    fn turn_shape_left_arcs_around_center_ends_adjacent_to_south_exit() {
         // Westbound entry, southbound exit is a LEFT turn (West->South == entry.left()), so the
-        // centroid-pivot router swings the path through the cluster tile nearest the centroid.
+        // path swings the LONG way AROUND the box center point, not through it.
         // exit_dir=South means delta=(0,-1); goal = {x:32, y:60} - (0,-1) = {x:32, y:61}.
         let cluster: HashSet<TilePos> = (31..=34)
             .flat_map(|x| (61..=66).map(move |y| TilePos { x, y }))
@@ -821,9 +978,20 @@ mod tests {
             "path stays inside the cluster"
         );
         assert_eq!(path[0], entry);
+        // SIMPLE: no revisited tile (the old centroid-pivot join could revisit).
+        let uniq: HashSet<TilePos> = path.iter().copied().collect();
+        assert_eq!(uniq.len(), path.len(), "path must be simple: {path:?}");
+        // Center POINT C = mean of tile centers = (33.0, 64.0). The left arc must ENCLOSE C: tiles
+        // on every side of C appear (left x<33, right x>33, above y>64, below y<64), so it wraps
+        // around C rather than cutting one corner.
+        let c = (33.0_f64, 64.0_f64);
         assert!(
-            path.contains(&centroid),
-            "left turn pivots through the centroid tile: {path:?}"
+            path.iter().any(|t| (t.x as f64) < c.0)
+                && path.iter().any(|t| (t.x as f64 + 1.0) > c.0)
+                && path.iter().any(|t| (t.y as f64 + 1.0) > c.1)
+                && path.iter().any(|t| (t.y as f64) < c.1),
+            "left arc must enclose the center point C={c:?}: {}",
+            ascii_path(&cluster, &path)
         );
         let last = *path.last().unwrap();
         let dist = (last.x - exit.x).abs() + (last.y - exit.y).abs();
@@ -1375,5 +1543,288 @@ mod tests {
             RoadDir::North,
             true
         ));
+    }
+
+    // ---- arc-around-center geometry (the user invariant: turns arc AROUND the center POINT) ----
+
+    fn box_2x2() -> HashSet<TilePos> {
+        [(4, 4), (4, 5), (5, 4), (5, 5)]
+            .into_iter()
+            .map(|(x, y)| TilePos { x, y })
+            .collect()
+    }
+
+    fn box_3x3() -> HashSet<TilePos> {
+        (4..=6)
+            .flat_map(|x| (4..=6).map(move |y| TilePos { x, y }))
+            .collect()
+    }
+
+    /// True iff `path` is simple (no revisited tile).
+    fn is_simple(path: &[TilePos]) -> bool {
+        let s: HashSet<TilePos> = path.iter().copied().collect();
+        s.len() == path.len()
+    }
+
+    /// True iff `path` encloses the center POINT `c`: it has a tile on every side of `c`
+    /// (left/right/above/below), so it wraps around `c` rather than cutting one corner.
+    fn encloses_center(path: &[TilePos], c: (f64, f64)) -> bool {
+        path.iter().any(|t| (t.x as f64) < c.0)
+            && path.iter().any(|t| (t.x as f64 + 1.0) > c.0)
+            && path.iter().any(|t| (t.y as f64) < c.1)
+            && path.iter().any(|t| (t.y as f64 + 1.0) > c.1)
+    }
+
+    fn assert_path_invariants(
+        cluster: &HashSet<TilePos>,
+        path: &[TilePos],
+        entry: TilePos,
+        goal: TilePos,
+    ) {
+        assert_eq!(path.first().copied(), Some(entry), "starts at entry");
+        assert_eq!(path.last().copied(), Some(goal), "ends at goal");
+        for w in path.windows(2) {
+            let d = (w[0].x - w[1].x).abs() + (w[0].y - w[1].y).abs();
+            assert_eq!(d, 1, "4-adjacent {:?}->{:?}", w[0], w[1]);
+        }
+        assert!(
+            path.iter().all(|t| cluster.contains(t)),
+            "every tile in box"
+        );
+        assert!(is_simple(path), "path is simple: {path:?}");
+    }
+
+    #[test]
+    fn arc_2x2_straight_is_a_direct_line() {
+        // 2x2 box, center POINT C=(5.0,5.0). Eastbound straight: entry (4,4), exit_tile (6,4) East
+        // -> goal (5,4). Direct 2-tile line, unchanged from the legacy router.
+        let cluster = box_2x2();
+        let path = build_internal_path(
+            &cluster,
+            TilePos { x: 4, y: 4 },
+            TilePos { x: 4, y: 4 },
+            RoadDir::East,
+            TilePos { x: 6, y: 4 },
+            RoadDir::East,
+            ManeuverKind::Straight,
+        )
+        .expect("straight");
+        eprintln!("2x2 STRAIGHT (E):{}", ascii_path(&cluster, &path));
+        assert_eq!(
+            path,
+            vec![TilePos { x: 4, y: 4 }, TilePos { x: 5, y: 4 }],
+            "straight is the direct line"
+        );
+    }
+
+    #[test]
+    fn arc_2x2_right_turn_is_tight_near_corner() {
+        // 2x2 box, C=(5.0,5.0). Northbound right turn: entry (4,4), exit East exit_tile (6,4) ->
+        // goal (5,4). North->East under right-hand traffic is a RIGHT turn; the TIGHT arc hugs the
+        // near corner — fewest tiles (2), C stays outside.
+        let cluster = box_2x2();
+        let entry = TilePos { x: 4, y: 4 };
+        let goal = TilePos { x: 5, y: 4 };
+        let path = build_internal_path(
+            &cluster,
+            TilePos { x: 4, y: 4 },
+            entry,
+            RoadDir::North,
+            TilePos { x: 6, y: 4 },
+            RoadDir::East,
+            ManeuverKind::RightTurn,
+        )
+        .expect("right");
+        eprintln!("2x2 RIGHT (N->E):{}", ascii_path(&cluster, &path));
+        assert_path_invariants(&cluster, &path, entry, goal);
+        assert_eq!(
+            path,
+            vec![entry, goal],
+            "tight right turn = the 2-tile near-corner hug"
+        );
+        // Tightest: nothing shorter than 2 tiles for non-adjacent entry/goal; C NOT enclosed.
+        assert!(
+            !encloses_center(&path, (5.0, 5.0)),
+            "tight right turn must NOT enclose C: {path:?}"
+        );
+    }
+
+    #[test]
+    fn arc_2x2_left_turn_swings_around_center() {
+        // 2x2 box, C=(5.0,5.0). Northbound left turn: entry (4,4), exit West exit_tile (3,5) ->
+        // goal (4,5). North->West under right-hand traffic is a LEFT turn; the WIDE arc swings the
+        // long way AROUND C — all 4 box tiles, C enclosed. NOT a 2-tile corner snap.
+        let cluster = box_2x2();
+        let entry = TilePos { x: 4, y: 4 };
+        let goal = TilePos { x: 4, y: 5 };
+        let path = build_internal_path(
+            &cluster,
+            TilePos { x: 4, y: 4 },
+            entry,
+            RoadDir::North,
+            TilePos { x: 3, y: 5 },
+            RoadDir::West,
+            ManeuverKind::LeftTurn,
+        )
+        .expect("left");
+        eprintln!("2x2 LEFT (N->W):{}", ascii_path(&cluster, &path));
+        assert_path_invariants(&cluster, &path, entry, goal);
+        assert!(
+            path.len() >= 3,
+            "left arc is wide (>=3 tiles in a 2x2), not a 2-tile snap: {path:?}"
+        );
+        assert_eq!(
+            path,
+            vec![
+                TilePos { x: 4, y: 4 },
+                TilePos { x: 5, y: 4 },
+                TilePos { x: 5, y: 5 },
+                TilePos { x: 4, y: 5 },
+            ],
+            "left arc walks the full CCW loop around C"
+        );
+        assert!(
+            encloses_center(&path, (5.0, 5.0)),
+            "left arc must enclose C (go around it): {path:?}"
+        );
+    }
+
+    #[test]
+    fn arc_2x2_uturn_loops_around_center() {
+        // 2x2 box, C=(5.0,5.0). Northbound U-turn: entry (4,4) heading North, exit South exit_tile
+        // (5,3) -> goal (5,4). North->South is a U-turn; the ~270 arc loops AROUND C — all 4 tiles.
+        let cluster = box_2x2();
+        let entry = TilePos { x: 4, y: 4 };
+        let goal = TilePos { x: 5, y: 4 };
+        let path = build_internal_path(
+            &cluster,
+            TilePos { x: 4, y: 4 },
+            entry,
+            RoadDir::North,
+            TilePos { x: 5, y: 3 },
+            RoadDir::South,
+            ManeuverKind::UTurn,
+        )
+        .expect("uturn");
+        eprintln!("2x2 UTURN (N->S):{}", ascii_path(&cluster, &path));
+        assert_path_invariants(&cluster, &path, entry, goal);
+        assert_eq!(path.len(), 4, "U-turn loops all 4 box tiles around C");
+        assert_eq!(
+            path,
+            vec![
+                TilePos { x: 4, y: 4 },
+                TilePos { x: 4, y: 5 },
+                TilePos { x: 5, y: 5 },
+                TilePos { x: 5, y: 4 },
+            ],
+            "U-turn walks the full loop around C"
+        );
+        assert!(
+            encloses_center(&path, (5.0, 5.0)),
+            "U-turn must enclose C: {path:?}"
+        );
+    }
+
+    #[test]
+    fn arc_3x3_all_maneuvers() {
+        // 3x3 box x,y in 4..=6, center POINT C=(5.5,5.5) — the vertex between the four upper-right
+        // tiles, NOT the center tile (5,5).
+        let cluster = box_3x3();
+        let c = (5.5_f64, 5.5_f64);
+
+        // STRAIGHT eastbound on the middle row: entry (4,5), exit_tile (7,5) -> goal (6,5).
+        let s_entry = TilePos { x: 4, y: 5 };
+        let s_goal = TilePos { x: 6, y: 5 };
+        let straight = build_internal_path(
+            &cluster,
+            TilePos { x: 5, y: 5 },
+            s_entry,
+            RoadDir::East,
+            TilePos { x: 7, y: 5 },
+            RoadDir::East,
+            ManeuverKind::Straight,
+        )
+        .expect("straight");
+        eprintln!("3x3 STRAIGHT (E):{}", ascii_path(&cluster, &straight));
+        assert_path_invariants(&cluster, &straight, s_entry, s_goal);
+        assert_eq!(
+            straight,
+            vec![s_entry, TilePos { x: 5, y: 5 }, s_goal],
+            "straight is the direct middle-row line"
+        );
+
+        // RIGHT turn: entry (4,4) heading North, exit East exit_tile (7,4) -> goal (6,4).
+        // North->East is a right turn; TIGHT arc along the bottom edge (fewest tiles).
+        let r_entry = TilePos { x: 4, y: 4 };
+        let r_goal = TilePos { x: 6, y: 4 };
+        let right = build_internal_path(
+            &cluster,
+            TilePos { x: 5, y: 5 },
+            r_entry,
+            RoadDir::North,
+            TilePos { x: 7, y: 4 },
+            RoadDir::East,
+            ManeuverKind::RightTurn,
+        )
+        .expect("right");
+        eprintln!("3x3 RIGHT (N->E):{}", ascii_path(&cluster, &right));
+        assert_path_invariants(&cluster, &right, r_entry, r_goal);
+        assert_eq!(
+            right,
+            vec![r_entry, TilePos { x: 5, y: 4 }, r_goal],
+            "tight right turn hugs the bottom edge"
+        );
+        assert!(
+            !encloses_center(&right, c),
+            "tight right turn must NOT enclose C: {right:?}"
+        );
+
+        // LEFT turn: entry (4,4) heading East, exit North exit_tile (4,7) -> goal (4,6).
+        // East->North is a left turn; WIDE arc the long way around C.
+        let l_entry = TilePos { x: 4, y: 4 };
+        let l_goal = TilePos { x: 4, y: 6 };
+        let left = build_internal_path(
+            &cluster,
+            TilePos { x: 5, y: 5 },
+            l_entry,
+            RoadDir::East,
+            TilePos { x: 4, y: 7 },
+            RoadDir::North,
+            ManeuverKind::LeftTurn,
+        )
+        .expect("left");
+        eprintln!("3x3 LEFT (E->N):{}", ascii_path(&cluster, &left));
+        assert_path_invariants(&cluster, &left, l_entry, l_goal);
+        assert!(left.len() >= 4, "wide left arc: {left:?}");
+        assert!(
+            !left.contains(&TilePos { x: 5, y: 5 }),
+            "left arc swings around C, not through the center tile: {left:?}"
+        );
+        assert!(
+            encloses_center(&left, c),
+            "left arc must enclose C: {left:?}"
+        );
+
+        // U-TURN: entry (4,4) heading East, exit West exit_tile (3,5) -> goal (4,5).
+        // East->West is a U-turn; ~270 arc around C.
+        let u_entry = TilePos { x: 4, y: 4 };
+        let u_goal = TilePos { x: 4, y: 5 };
+        let uturn = build_internal_path(
+            &cluster,
+            TilePos { x: 5, y: 5 },
+            u_entry,
+            RoadDir::East,
+            TilePos { x: 3, y: 5 },
+            RoadDir::West,
+            ManeuverKind::UTurn,
+        )
+        .expect("uturn");
+        eprintln!("3x3 UTURN (E->W):{}", ascii_path(&cluster, &uturn));
+        assert_path_invariants(&cluster, &uturn, u_entry, u_goal);
+        assert!(uturn.len() >= 4, "wide U-turn arc: {uturn:?}");
+        assert!(
+            encloses_center(&uturn, c),
+            "U-turn must enclose C: {uturn:?}"
+        );
     }
 }
