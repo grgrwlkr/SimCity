@@ -253,6 +253,102 @@ fn arbiter_counts_one_straight_admit() {
     assert_eq!(stats.coarse_admits, 0, "resolved lanelets, not coarse");
 }
 
+/// A lone northbound vehicle whose route turns LEFT (exits West onto y=5) — with an empty sidecar
+/// (precise-fallback resolves the lanelet from route geometry). No conflicting traffic, no lights →
+/// it MUST be admitted as a LEFT lanelet, not coarse.
+#[test]
+fn left_turn_resolves_as_lanelet_not_coarse() {
+    let (grid, idx) = cross_grid();
+    let gv = GraphVersion(1);
+    let lanes = build_lane_graph_inner(&grid, &gv);
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(MapConfig {
+            width: 9,
+            height: 9,
+            tile_size: 16.0,
+        })
+        .insert_resource(grid)
+        .insert_resource(idx)
+        .insert_resource(lanes)
+        .insert_resource(gv)
+        .insert_resource(TrafficConfig {
+            experimental_lanelet_intersections: true,
+            ..Default::default()
+        })
+        .insert_resource(LaneletGraph::default())
+        .insert_resource(LaneletConflictMatrices::default())
+        .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(IntersectionReservations::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .init_resource::<LeftTurnDemand>()
+        .init_resource::<ArbiterIndexCache>()
+        .init_resource::<ArbiterTickStats>()
+        .init_resource::<ApproachFairness>()
+        .init_resource::<ClusterStarvation>()
+        .init_resource::<LaneletStallTracker>()
+        .init_resource::<RingTopologyStatus>();
+
+    app.add_systems(
+        Update,
+        (
+            build_lanelet_graph,
+            arbitrate_lanelet_reservations,
+            cleanup_intersection_reservations,
+        )
+            .chain(),
+    );
+
+    // Northbound left-turn route: approach from y=3, cross box, exit West to (3,5).
+    // entry_dir=North, North.left()=West => ManeuverKind::LeftTurn.
+    let left_route = vec![
+        TilePos { x: 4, y: 3 },
+        TilePos { x: 4, y: 4 },
+        TilePos { x: 4, y: 5 },
+        TilePos { x: 3, y: 5 },
+    ];
+
+    let vl = {
+        let mut pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(&mut pool, left_route, 0, 0.4, 0.0, 60.0, 20.0, 1.0)
+    };
+    let left_vehicle = app
+        .world_mut()
+        .spawn((
+            vl,
+            VehicleTrafficState::FreeFlow,
+            VehicleLaneletPlan::default(),
+        ))
+        .id();
+
+    app.update();
+
+    let res = app.world().resource::<IntersectionReservations>();
+    assert!(
+        res.is_reserved_by(IntersectionId(0), left_vehicle),
+        "lone left-turning vehicle must be admitted (no conflict)"
+    );
+    assert!(!res.stall_tripwire(), "stall tripwire must stay empty");
+
+    let stats = app.world().resource::<ArbiterTickStats>();
+    assert!(
+        stats.admitted_left >= 1,
+        "admitted_left must be >= 1 (resolved as LEFT lanelet, not mislabeled); got {:?}",
+        stats.admitted_left
+    );
+    assert_eq!(
+        stats.coarse_admits, 0,
+        "coarse_admits must be 0 (real lanelet, not coarse fallback)"
+    );
+}
+
 #[test]
 fn flag_on_arbiter_admits_exactly_one_conflicting_vehicle_deterministically() {
     let (east_a, north_a, tripwire_a) = run_arbiter_once();
