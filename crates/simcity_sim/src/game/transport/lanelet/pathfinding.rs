@@ -14,8 +14,7 @@ use crate::game::map::TilePos;
 use crate::game::roads::RoadDir;
 use crate::game::transport::lane_graph::{LaneGraph, LaneId};
 use crate::game::transport::lane_pathfinding::{
-    LaneCostCtx, base_tile_cost, find_lane_path, heuristic_tiles, lane_edge_cost, lane_jitter,
-    lane_path_to_tiles,
+    LaneCostCtx, base_tile_cost, heuristic_tiles, lane_edge_cost, lane_jitter,
 };
 use crate::game::transport::lanelet::graph::{LaneletGraph, LaneletId};
 
@@ -290,22 +289,16 @@ pub(crate) fn flatten(
     (tiles, sidecar)
 }
 
-/// Routing seam at vehicle spawn. With the flag OFF, delegates to the legacy lane pathfinder
-/// (byte-identical tiles, empty sidecar). With the flag ON, runs the combined lane+lanelet A* and
-/// flattens it. Returns the unchanged `Vec<TilePos>` route plus the lanelet sidecar; an EMPTY route
-/// signals the caller to fall back to road-level pathfinding.
+/// Routing seam at vehicle spawn. Runs the combined lane+lanelet A* and flattens it. Returns the
+/// `Vec<TilePos>` route plus the lanelet sidecar; an EMPTY route signals the caller to fall back to
+/// road-level pathfinding.
 pub(crate) fn find_route(
-    flag: bool,
     lg: &LaneGraph,
     llg: &LaneletGraph,
     ctx: &LaneCostCtx<'_>,
     start: LaneId,
     goal: LaneId,
 ) -> (Vec<TilePos>, Vec<(usize, IntersectionId, LaneletId)>) {
-    if !flag {
-        let tiles = lane_path_to_tiles(&find_lane_path(lg, ctx, start, goal), lg);
-        return (tiles, Vec::new());
-    }
     match find_combined_path(lg, llg, ctx, start, goal) {
         Some(nodes) => flatten(&nodes, lg, llg),
         None => (Vec::new(), Vec::new()),
@@ -581,31 +574,9 @@ mod tests {
     }
 
     #[test]
-    fn find_route_flag_off_matches_legacy_flag_on_emits_sidecar() {
-        use crate::game::transport::lane_pathfinding::{find_lane_path, lane_path_to_tiles};
-
-        // Flag OFF: byte-identical to the legacy lane route, empty sidecar.
-        let grid = parallel_corridors();
-        let lg = build_lane_graph_inner(&grid, &GraphVersion(1));
-        let llg = LaneletGraph::default();
-        let mut traffic = TrafficOccupancy::default();
-        traffic.ensure_len(grid.len());
+    fn find_route_emits_sidecar_through_lanelet() {
         let cfg = PathfindingConfig::default();
-        let ctx = LaneCostCtx {
-            grid: &grid,
-            traffic: &traffic,
-            cfg: &cfg,
-            jitter_seed: 11,
-        };
-        let start = lg.get_lane_id(TilePos { x: 0, y: 0 }, 0).unwrap();
-        let goal = lg.get_lane_id(TilePos { x: 3, y: 0 }, 0).unwrap();
-        let (tiles_off, side_off) = find_route(false, &lg, &llg, &ctx, start, goal);
-        let legacy = lane_path_to_tiles(&find_lane_path(&lg, &ctx, start, goal), &lg);
-        assert_eq!(tiles_off, legacy);
-        assert!(!tiles_off.is_empty());
-        assert!(side_off.is_empty());
-
-        // Flag ON: the only route from (1,0) to (3,0) bridges the (2,0) gap via a lanelet, so the
+        // The only route from (1,0) to (3,0) bridges the (2,0) gap via a lanelet, so the
         // sidecar is non-empty and the route steps through the lanelet's internal tile.
         let mut g2 = MapGrid::new(4, 1);
         set_lane(&mut g2, TilePos { x: 0, y: 0 }, 0, RoadDir::East);
@@ -637,7 +608,7 @@ mod tests {
             cfg: &cfg,
             jitter_seed: 0,
         };
-        let (tiles_on, side_on) = find_route(true, &lg2, &llg2, &ctx2, s2, exit);
+        let (tiles_on, side_on) = find_route(&lg2, &llg2, &ctx2, s2, exit);
         assert_eq!(
             tiles_on,
             vec![

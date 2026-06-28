@@ -5,9 +5,7 @@ use crate::game::map::{MapGrid, TilePos};
 use crate::game::roads::RoadDir;
 use crate::game::transport::lanelet::conflict::rows_overlap;
 
-use super::super::{
-    TrafficConfig, TrafficOccupancy, TrafficSpatialIndex, Vehicle, is_intersection_tile,
-};
+use super::super::{TrafficOccupancy, TrafficSpatialIndex, Vehicle, is_intersection_tile};
 use crate::game::pedestrians::PedestrianCrossing;
 
 use super::zones::{ConflictMask, ManeuverKind, StreamKey};
@@ -38,8 +36,7 @@ pub struct IntersectionReservations {
     /// the lanelet arbiter never writes it, so a non-empty value signals a leaked legacy write.
     /// Cleared on reset/cleanup; must stay empty at runtime.
     stall_ticks: std::collections::HashMap<IntersectionId, u32>,
-    /// Per-intersection lanelet admission ledger (flag-on arbiter substrate; stays empty and unread
-    /// when `experimental_lanelet_intersections` is off, so flag-off is byte-identical).
+    /// Per-intersection lanelet admission ledger (arbiter substrate).
     #[allow(dead_code)]
     ledger: std::collections::HashMap<IntersectionId, IntersectionLedger>,
     /// Persistent per-exit-tile reserved slots, keyed by exit-tile grid index. A vehicle granted a
@@ -587,7 +584,6 @@ pub(crate) fn release_intersection_holds(
 
 pub fn cleanup_intersection_reservations(
     time: Res<Time<Fixed>>,
-    traffic_cfg: Res<TrafficConfig>,
     intersections: Res<IntersectionIndex>,
     path_pool: Res<super::super::super::transport::PathPool>,
     mut reservations: ResMut<IntersectionReservations>,
@@ -595,13 +591,8 @@ pub fn cleanup_intersection_reservations(
 ) {
     let now = time.elapsed_secs_f64();
     let timeout_secs = 6.0;
-    // Flag-on only: release stale (stationary) Approaching claims early (matrix throughput). Flag-off
-    // => INFINITY disables the early release, keeping legacy cleanup byte-identical.
-    let stale_approach_secs = if traffic_cfg.experimental_lanelet_intersections {
-        STALE_APPROACH_RELEASE_SECS
-    } else {
-        f64::INFINITY
-    };
+    // Release stale (stationary) Approaching claims early (matrix throughput).
+    let stale_approach_secs = STALE_APPROACH_RELEASE_SECS;
 
     let mut dropped: Vec<(IntersectionId, Entity)> = Vec::new();
 

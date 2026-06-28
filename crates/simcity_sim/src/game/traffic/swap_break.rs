@@ -259,7 +259,6 @@ pub(crate) fn break_tile_swaps(
                 let travel_dir = grid.get(cur).map_or(RoadDir::None, |c| c.road.dir);
                 let jitter_seed = replan.jitter_seed();
                 let lanelet_route = replan_route_with_lanelets(
-                    replan.traffic_cfg.experimental_lanelet_intersections,
                     &replan.lane_graph,
                     &replan.lanelet_graph,
                     &grid,

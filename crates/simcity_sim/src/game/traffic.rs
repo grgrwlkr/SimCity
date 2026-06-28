@@ -161,12 +161,6 @@ const MAX_UNSTUCK_PER_TICK: usize = 8;
 const SPAWN_THROTTLE_MAX_CONG: f32 = 0.95;
 const SPAWN_THROTTLE_AVG_CONG: f32 = 0.85;
 
-/// Run condition for the flag-on lanelet intersection arbiter: the arbiter is the sole reservation
-/// producer when the experimental flag is set.
-fn lanelet_arbiter_enabled(cfg: Res<TrafficConfig>) -> bool {
-    cfg.experimental_lanelet_intersections
-}
-
 // ---------------------------------------------------------------------------
 // Stage C (initial): lane-change heuristics (keep-right + overtake) with guardrails
 // ---------------------------------------------------------------------------
@@ -366,8 +360,7 @@ impl Plugin for TrafficPlugin {
                 Update,
                 check_ring_free_topology
                     .in_set(GameSet::GraphUpdate)
-                    .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused)))
-                    .run_if(lanelet_arbiter_enabled),
+                    .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
             )
             // Simulation - Part 1: occupancy, state updates, spawning
             .add_systems(
@@ -414,13 +407,12 @@ impl Plugin for TrafficPlugin {
                     cache_pedestrian_crossing_state
                         .after(plan_oncoming_overtakes)
                         .before(arbitrate_lanelet_reservations),
-                    // Flag-on sole reservation producer.
+                    // Sole reservation producer.
                     arbitrate_lanelet_reservations
                         .after(cache_intersection_light_state)
                         .after(cache_pedestrian_crossing_state)
                         .before(break_tile_swaps)
-                        .before(move_vehicles)
-                        .run_if(lanelet_arbiter_enabled),
+                        .before(move_vehicles),
                     break_tile_swaps
                         .after(arbitrate_lanelet_reservations)
                         .before(move_vehicles),
@@ -467,12 +459,11 @@ impl Plugin for TrafficPlugin {
                     // Per-vehicle moving/stopped time tracking + gridlock detection (debug).
                     track_vehicle_motion.after(move_vehicles),
                     update_stuck_timers.after(move_vehicles),
-                    // Flag-on mandatory-merge: force a reroute for vehicles whose lanelet never
+                    // Mandatory-merge: force a reroute for vehicles whose lanelet never
                     // resolves, after update_stuck_timers (so the bump survives) and before reroute.
                     nudge_lanelet_stall_reroute
                         .after(update_stuck_timers)
-                        .before(resolve_stuck_vehicles)
-                        .run_if(lanelet_arbiter_enabled),
+                        .before(resolve_stuck_vehicles),
                     resolve_stuck_vehicles.after(update_stuck_timers),
                     recover_stuck_returning_service_vehicles.after(update_stuck_timers),
                 )

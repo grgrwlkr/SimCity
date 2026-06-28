@@ -721,17 +721,13 @@ pub(crate) struct ArbitrateLaneletParams<'w, 's> {
     >,
 }
 
-/// Flag-on intersection admission arbiter: the SOLE producer of `IntersectionReservations` when
-/// `experimental_lanelet_intersections` is set (legacy collect/apply gated off in T10). Builds the
+/// Intersection admission arbiter: the SOLE producer of `IntersectionReservations`. Builds the
 /// per-version index cache, resets ledgers on a graph rebuild, collects approaching/in-box vehicles,
 /// and runs the deterministic grant sweep. Stub ПДД readiness (P3b refines it).
 pub(crate) fn arbitrate_lanelet_reservations(
     time: Res<Time<Fixed>>,
     mut p: ArbitrateLaneletParams,
 ) {
-    if !p.traffic_cfg.experimental_lanelet_intersections {
-        return;
-    }
     let now = time.elapsed_secs_f64();
     let exit_clear_progress = (VEHICLE_HALF_LENGTH_TILES + STOP_LINE_MARGIN_TILES).clamp(0.0, 1.0);
 

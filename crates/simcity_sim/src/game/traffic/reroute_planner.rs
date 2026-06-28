@@ -36,12 +36,10 @@ impl LaneletReplanRes<'_> {
 /// permanently loses its sidecar (only spawn writes it), the arbiter can't resolve a maneuver-legal
 /// lanelet for it, drops it as a grant candidate, and the intersection under-admits into gridlock.
 ///
-/// Returns `None` when the flag is off, start/goal lanes are unresolvable, or `find_route` yields an
-/// empty route — in every such case the caller keeps its existing road-A* path + cleared sidecar
-/// (byte-identical to the legacy behavior).
+/// Returns `None` when start/goal lanes are unresolvable, or `find_route` yields an empty route — in
+/// every such case the caller keeps its existing road-A* path + cleared sidecar.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn replan_route_with_lanelets(
-    flag: bool,
     lg: &LaneGraph,
     llg: &LaneletGraph,
     grid: &MapGrid,
@@ -65,7 +63,7 @@ pub(crate) fn replan_route_with_lanelets(
         cfg: path_cfg,
         jitter_seed,
     };
-    let (tiles, sidecar) = find_route(flag, lg, llg, &ctx, start_lane, goal_lane);
+    let (tiles, sidecar) = find_route(lg, llg, &ctx, start_lane, goal_lane);
     if tiles.is_empty() {
         return None;
     }

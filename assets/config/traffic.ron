@@ -4,12 +4,4 @@
     heat_ema_decay: 0.92,
     // true = right-hand traffic (US/Russia), false = left-hand traffic (UK/Japan)
     drive_on_right: true,
-    // Lanelet intersection arbiter (P3a–P3c): geometric collision-safe admission + full ПДД +
-    // liveness. DEFAULT OFF: live verification on the test city showed the arbiter under-admits over
-    // time (admitted=0, reservations=0) and gridlocks the network WORSE than the legacy path — the
-    // jam-recovery fix bounds the legacy path (max_stopped ~60-80 s) but cannot rescue flag-on
-    // (max_stopped climbs unbounded past 2400 s, rerouted cars never get re-admitted). This is the
-    // city-scale multi-tick-liveness gap the P3c review flagged (F1); re-enable once the arbiter's
-    // admission throughput is fixed. The legacy reservation pipeline is the default.
-    experimental_lanelet_intersections: true,
 )

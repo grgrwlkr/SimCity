@@ -123,10 +123,7 @@ fn build_arbiter_app() -> (App, Entity, Entity) {
         .insert_resource(idx)
         .insert_resource(lanes)
         .insert_resource(gv)
-        .insert_resource(TrafficConfig {
-            experimental_lanelet_intersections: true,
-            ..Default::default()
-        })
+        .insert_resource(TrafficConfig::default())
         .insert_resource(LaneletGraph::default())
         .insert_resource(LaneletConflictMatrices::default())
         .insert_resource(TrafficOccupancy::default())
@@ -277,10 +274,7 @@ fn build_single_vehicle_arbiter_app(route: Vec<TilePos>) -> (App, Entity) {
         .insert_resource(idx)
         .insert_resource(lanes)
         .insert_resource(gv)
-        .insert_resource(TrafficConfig {
-            experimental_lanelet_intersections: true,
-            ..Default::default()
-        })
+        .insert_resource(TrafficConfig::default())
         .insert_resource(LaneletGraph::default())
         .insert_resource(LaneletConflictMatrices::default())
         .insert_resource(TrafficOccupancy::default())
@@ -430,10 +424,7 @@ fn build_unresolved_left_arbiter_app(route: Vec<TilePos>) -> (App, Entity) {
         .insert_resource(idx)
         .insert_resource(lanes)
         .insert_resource(gv)
-        .insert_resource(TrafficConfig {
-            experimental_lanelet_intersections: true,
-            ..Default::default()
-        })
+        .insert_resource(TrafficConfig::default())
         .insert_resource(LaneletGraph::default())
         .insert_resource(LaneletConflictMatrices::default())
         .insert_resource(TrafficOccupancy::default())
@@ -595,10 +586,7 @@ fn build_bare_arbiter_app(customize: impl FnOnce(&mut App)) -> App {
         .insert_resource(idx)
         .insert_resource(lanes)
         .insert_resource(gv)
-        .insert_resource(TrafficConfig {
-            experimental_lanelet_intersections: true,
-            ..Default::default()
-        })
+        .insert_resource(TrafficConfig::default())
         .insert_resource(LaneletGraph::default())
         .insert_resource(LaneletConflictMatrices::default())
         .insert_resource(TrafficOccupancy::default())
@@ -1130,10 +1118,7 @@ fn stop_sign_vehicle_is_reserved_and_advances_under_arbiter() {
         .insert_resource(idx)
         .insert_resource(lanes)
         .insert_resource(gv)
-        .insert_resource(TrafficConfig {
-            experimental_lanelet_intersections: true,
-            ..Default::default()
-        })
+        .insert_resource(TrafficConfig::default())
         .insert_resource(LaneletGraph::default())
         .insert_resource(LaneletConflictMatrices::default())
         .insert_resource(TrafficOccupancy::default())

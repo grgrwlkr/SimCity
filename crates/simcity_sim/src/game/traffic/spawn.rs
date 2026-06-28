@@ -96,8 +96,8 @@ pub(super) fn spawn_trip_vehicles(
         // within-OD spread would collapse (Rank-4 regression: one corridor saturates).
         let jitter_seed: u64 = p.sim_rng.rng.random_range(1..=u64::MAX);
 
-        // Lane-level routing (lanelet-aware when the experimental flag is on). Returns the unchanged
-        // Vec<TilePos> route plus a lanelet sidecar; an empty route triggers the road-A* fallback.
+        // Lane-level lanelet-aware routing. Returns the Vec<TilePos> route plus a lanelet sidecar;
+        // an empty route triggers the road-A* fallback.
         let (lane_tiles, lanelet_plan) = if let (Some(lg), true) = (
             p.lane_graph.as_ref(),
             start_lane != LaneId::INVALID && goal_lane != LaneId::INVALID,
@@ -110,14 +110,7 @@ pub(super) fn spawn_trip_vehicles(
             };
             let empty_llg = LaneletGraph::default();
             let llg = p.lanelet_graph.as_deref().unwrap_or(&empty_llg);
-            find_route(
-                p.traffic_cfg.experimental_lanelet_intersections,
-                lg,
-                llg,
-                &lane_ctx,
-                start_lane,
-                goal_lane,
-            )
+            find_route(lg, llg, &lane_ctx, start_lane, goal_lane)
         } else {
             (Vec::new(), Vec::new())
         };

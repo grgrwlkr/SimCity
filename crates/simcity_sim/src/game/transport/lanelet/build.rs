@@ -286,8 +286,7 @@ pub(crate) fn crosswalk_cells(
 /// Build (or rebuild) the lanelet graph and per-intersection conflict matrices from the current
 /// map state.
 ///
-/// Early-returns if `!traffic_cfg.experimental_lanelet_intersections` or if the graph is already
-/// built for the current `GraphVersion`.
+/// Early-returns if the graph is already built for the current `GraphVersion`.
 pub fn build_lanelet_graph(
     grid: Res<MapGrid>,
     intersections: Res<IntersectionIndex>,
@@ -297,7 +296,7 @@ pub fn build_lanelet_graph(
     mut graph: ResMut<LaneletGraph>,
     mut matrices: ResMut<LaneletConflictMatrices>,
 ) {
-    if !traffic_cfg.experimental_lanelet_intersections || graph.is_built_for(gv.0) {
+    if graph.is_built_for(gv.0) {
         return;
     }
 
@@ -923,10 +922,7 @@ mod tests {
             .insert_resource(intersection_index)
             .insert_resource(lane_graph)
             .insert_resource(gv)
-            .insert_resource(TrafficConfig {
-                experimental_lanelet_intersections: true,
-                ..Default::default()
-            })
+            .insert_resource(TrafficConfig::default())
             .insert_resource(LaneletGraph::default())
             .insert_resource(LaneletConflictMatrices::default());
 
@@ -953,34 +949,6 @@ mod tests {
     }
 
     #[test]
-    fn build_lanelet_graph_flag_off_leaves_graph_empty() {
-        let (grid, intersection_index) = build_cross_grid();
-        let gv = GraphVersion(1);
-        let lane_graph = build_lane_graph_inner(&grid, &gv);
-
-        let mut app = App::new();
-        app.insert_resource(grid)
-            .insert_resource(intersection_index)
-            .insert_resource(lane_graph)
-            .insert_resource(gv)
-            .insert_resource(TrafficConfig {
-                experimental_lanelet_intersections: false,
-                ..Default::default()
-            })
-            .insert_resource(LaneletGraph::default())
-            .insert_resource(LaneletConflictMatrices::default());
-
-        app.add_systems(Update, build_lanelet_graph);
-        app.update();
-
-        let graph = app.world().resource::<LaneletGraph>();
-        assert!(
-            graph.lanelets.is_empty(),
-            "lanelets must stay empty when flag is off"
-        );
-    }
-
-    #[test]
     fn lanelets_sorted_by_entry_exit_lane_id() {
         let (grid, intersection_index) = build_cross_grid();
         let gv = GraphVersion(1);
@@ -991,10 +959,7 @@ mod tests {
             .insert_resource(intersection_index)
             .insert_resource(lane_graph)
             .insert_resource(gv)
-            .insert_resource(TrafficConfig {
-                experimental_lanelet_intersections: true,
-                ..Default::default()
-            })
+            .insert_resource(TrafficConfig::default())
             .insert_resource(LaneletGraph::default())
             .insert_resource(LaneletConflictMatrices::default());
 
@@ -1029,10 +994,7 @@ mod tests {
             .insert_resource(intersection_index)
             .insert_resource(lane_graph)
             .insert_resource(gv)
-            .insert_resource(TrafficConfig {
-                experimental_lanelet_intersections: true,
-                ..Default::default()
-            })
+            .insert_resource(TrafficConfig::default())
             .insert_resource(LaneletGraph::default())
             .insert_resource(LaneletConflictMatrices::default());
 
@@ -1078,10 +1040,7 @@ mod tests {
             .insert_resource(intersection_index)
             .insert_resource(lane_graph)
             .insert_resource(gv)
-            .insert_resource(TrafficConfig {
-                experimental_lanelet_intersections: true,
-                ..Default::default()
-            })
+            .insert_resource(TrafficConfig::default())
             .insert_resource(LaneletGraph::default())
             .insert_resource(LaneletConflictMatrices::default());
 
@@ -1250,10 +1209,7 @@ mod tests {
             .insert_resource(intersection_index)
             .insert_resource(lane_graph)
             .insert_resource(gv)
-            .insert_resource(TrafficConfig {
-                experimental_lanelet_intersections: true,
-                ..Default::default()
-            })
+            .insert_resource(TrafficConfig::default())
             .insert_resource(LaneletGraph::default())
             .insert_resource(LaneletConflictMatrices::default());
         app.add_systems(Update, build_lanelet_graph);

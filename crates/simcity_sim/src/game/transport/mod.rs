@@ -29,7 +29,6 @@ pub use simcity_core::game::transport::GraphVersion;
 use crate::game::map::{MapGrid, TilePos};
 use crate::game::roads::RoadDir;
 use crate::game::sets::GameSet;
-use crate::game::traffic::TrafficConfig;
 use bevy::prelude::*;
 
 /// Find a road tile adjacent to `pos` that points towards `target`.
@@ -146,7 +145,6 @@ impl Plugin for TransportPlugin {
                 FixedUpdate,
                 build_lanelet_graph
                     .in_set(GameSet::GraphUpdate)
-                    .run_if(|c: Res<TrafficConfig>| c.experimental_lanelet_intersections)
                     .after(lane_graph::build_lane_graph),
             );
     }
