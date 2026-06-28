@@ -2141,6 +2141,13 @@ pub struct DebugArbiterLedgerState {
     pub refused_capacity: u32,
     /// Grant-phase refusals at the conflict matrix (collision-safety; must NOT be bypassed).
     pub refused_matrix: u32,
+    /// Whole-box coarse admissions this tick (must trend to ~0 once turns resolve to real lanelets).
+    pub coarse_admits: u32,
+    /// Per-maneuver admit split (success counters; sum ≤ admitted).
+    pub admitted_straight: u32,
+    pub admitted_right: u32,
+    pub admitted_left: u32,
+    pub admitted_uturn: u32,
 }
 
 /// Update the arbiter ledger debug mirror from the per-tick `ArbiterTickStats`.
@@ -2174,6 +2181,11 @@ fn update_debug_arbiter_ledger_state(
         snapshot.refused_capacity = s.refused_capacity;
         snapshot.refused_matrix = s.refused_matrix;
         snapshot.ring_force_admits = s.force_admits;
+        snapshot.coarse_admits = s.coarse_admits;
+        snapshot.admitted_straight = s.admitted_straight;
+        snapshot.admitted_right = s.admitted_right;
+        snapshot.admitted_left = s.admitted_left;
+        snapshot.admitted_uturn = s.admitted_uturn;
     } else {
         *snapshot = DebugArbiterLedgerState::default();
     }
@@ -2302,6 +2314,11 @@ mod tests {
             rtor_grants: 1,
             yield_refusals: 3,
             left_protected_active: 1,
+            coarse_admits: 3,
+            admitted_straight: 4,
+            admitted_right: 2,
+            admitted_left: 1,
+            admitted_uturn: 1,
             // Collection/grant-phase histogram fields (added with the refusal histogram) are not
             // exercised by this mirror test; default them so the initializer stays exhaustive.
             ..Default::default()
@@ -2331,5 +2348,10 @@ mod tests {
         assert_eq!(state.yield_refusals, 3);
         assert_eq!(state.left_protected_active, 1);
         assert_eq!(state.ring_force_admits, 0);
+        assert_eq!(state.coarse_admits, 3);
+        assert_eq!(state.admitted_straight, 4);
+        assert_eq!(state.admitted_right, 2);
+        assert_eq!(state.admitted_left, 1);
+        assert_eq!(state.admitted_uturn, 1);
     }
 }

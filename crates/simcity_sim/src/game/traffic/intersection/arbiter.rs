@@ -382,6 +382,13 @@ pub struct ArbiterTickStats {
     pub refused_matrix: u32,
     /// Liveness-valve force-admits this tick (mirrored to DebugArbiterLedgerState.ring_force_admits).
     pub force_admits: u32,
+    /// Whole-box coarse admissions this tick (must trend to ~0 once turns resolve to real lanelets).
+    pub coarse_admits: u32,
+    /// Per-maneuver admit split (success counters; sum ≤ admitted).
+    pub admitted_straight: u32,
+    pub admitted_right: u32,
+    pub admitted_left: u32,
+    pub admitted_uturn: u32,
 }
 
 /// Seed each ledger's per-tick `ped_mask` from active pedestrian crossings (Task 5). A crossing with
