@@ -413,3 +413,141 @@ fn vehicle_inside_signalized_intersection_is_forced_to_crossing_state() {
         Some(VehicleTrafficState::CrossingIntersection { intersection: key })
     );
 }
+
+/// A northbound vehicle turning left (exit West) during a NorthSouthLeftProtected phase must be
+/// released to Accelerating, not held WaitingForGreen. This tests the protected-left release
+/// branch in `update_vehicle_traffic_state`.
+///
+/// Grid layout (3x3):
+///   (1,2) = north exit (but we only need approach + intersection + west exit)
+///   (1,1) = intersection tile
+///   (0,1) = west exit (the left-turn target for a northbound vehicle)
+///   (1,0) = south approach (northbound, entry_dir = North from (1,0)->(1,1))
+#[test]
+fn protected_left_releases_left_turner() {
+    let mut app = App::new();
+
+    let approach = TilePos { x: 1, y: 0 };
+    let intersection_tile = TilePos { x: 1, y: 1 };
+    let west_exit = TilePos { x: 0, y: 1 };
+
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(MapConfig {
+            width: 3,
+            height: 3,
+            tile_size: 16.0,
+        })
+        .insert_resource(TrafficConfig::default())
+        .insert_resource({
+            let mut grid = MapGrid::new(3, 3);
+            // Approach: northbound road leading into the intersection.
+            // Entry dir = North (dy = +1 from approach to intersection_tile).
+            for (pos, dir) in [
+                (approach, RoadDir::North),
+                (intersection_tile, RoadDir::None),
+                (west_exit, RoadDir::West),
+            ] {
+                let Some(mut cell) = grid.get(pos) else {
+                    continue;
+                };
+                cell.road = RoadCell {
+                    kind: RoadKind::TwoLane,
+                    dir,
+                    lane: 0,
+                    flow: RoadFlow::TwoWay,
+                    lane_type: LaneType::Regular,
+                };
+                grid.set(pos, cell);
+            }
+            grid
+        })
+        .insert_resource({
+            let id = IntersectionId(0);
+            let key = IntersectionKey {
+                aabb_min: intersection_tile,
+                aabb_max: intersection_tile,
+                tile_count: 1,
+                tiles_hash: 42,
+            };
+            let mut idx = IntersectionIndex::default();
+            idx.clusters
+                .push(crate::game::intersections::IntersectionCluster {
+                    id,
+                    key,
+                    tiles: vec![intersection_tile],
+                    aabb_min: intersection_tile,
+                    aabb_max: intersection_tile,
+                    centroid_tile: intersection_tile,
+                });
+            idx.tile_to_intersection.insert(intersection_tile, id);
+            idx.traffic_lights.insert(id);
+            idx
+        })
+        .insert_resource(IntersectionReservations::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .add_systems(Update, update_vehicle_traffic_state);
+
+    let key = app
+        .world()
+        .resource::<IntersectionIndex>()
+        .cluster_key_at(intersection_tile)
+        .unwrap();
+    let id = app
+        .world()
+        .resource::<IntersectionIndex>()
+        .intersection_id_at(intersection_tile)
+        .unwrap();
+
+    // NorthSouthLeftProtected: N/S left turns get an exclusive green arrow.
+    app.world_mut()
+        .spawn(crate::game::intersections::TrafficLight {
+            intersection_id: id,
+            intersection_key: key,
+            pos: intersection_tile,
+            phase: LightPhase::NorthSouthLeftProtected,
+            phase_timer: 5.0,
+            green_duration: 10.0,
+            yellow_duration: 3.0,
+            all_red_duration: 1.0,
+        });
+
+    // Northbound vehicle whose route turns left (West) after the intersection.
+    // Placed at stop-line distance so it is at the approach tile near the stop line.
+    let vehicle = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(
+            &mut path_pool,
+            vec![approach, intersection_tile, west_exit],
+            0,
+            TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET,
+            0.0,
+            60.0,
+            20.0,
+            1.0,
+        )
+    };
+    let ego = app
+        .world_mut()
+        .spawn((
+            vehicle,
+            VehicleTrafficState::WaitingForGreen {
+                intersection: key,
+                stop_tile: approach,
+            },
+        ))
+        .id();
+
+    app.update();
+
+    let state = app.world().get::<VehicleTrafficState>(ego).copied();
+    assert_eq!(
+        state,
+        Some(VehicleTrafficState::Accelerating),
+        "protected-left phase must release a left-turning vehicle to Accelerating, got {state:?}"
+    );
+}

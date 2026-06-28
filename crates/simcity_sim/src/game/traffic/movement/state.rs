@@ -190,14 +190,15 @@ pub fn update_vehicle_traffic_state(
         }
 
         let light = light_by_key.get(&info.intersection_key);
-        let (is_green, is_yellow, is_all_red) = if let Some(l) = light {
+        let (is_green, is_yellow, is_all_red, is_left_protected) = if let Some(l) = light {
             (
                 l.is_green(info.entry_dir),
                 l.is_yellow(info.entry_dir),
                 l.is_all_red(),
+                l.is_left_protected(info.entry_dir),
             )
         } else {
-            (false, false, false)
+            (false, false, false, false)
         };
 
         // Default "stop" behavior for red (or yellow when we can stop).
@@ -260,6 +261,28 @@ pub fn update_vehicle_traffic_state(
             }
             if ror.is_some() {
                 commands.entity(entity).remove::<RightTurnOnRed>();
+            }
+            continue;
+        }
+
+        // Protected-left interval: this axis's left turns get an exclusive green (ПДД 13.5 / стрелка).
+        // Release like the green branch. `exit_dir == far-side` identifies a left turn.
+        let left_target = if traffic_cfg.drive_on_right {
+            info.entry_dir.left()
+        } else {
+            info.entry_dir.right()
+        };
+        let is_left_turn = info.exit_dir != RoadDir::None && info.exit_dir == left_target;
+        if is_left_protected && is_left_turn {
+            if matches!(
+                *state,
+                VehicleTrafficState::WaitingForGreen { intersection, .. }
+                    | VehicleTrafficState::Stopped { intersection, .. }
+                    if intersection == info.intersection_key
+            ) {
+                *state = VehicleTrafficState::Accelerating;
+            } else {
+                *state = VehicleTrafficState::FreeFlow;
             }
             continue;
         }
