@@ -436,16 +436,8 @@ pub(crate) fn seed_ped_masks(
     activated
 }
 
-/// Pure grant core: emit in-box safety-net rows, then sweep intersections in `ordered_ids` order,
-/// granting candidates atomically against the per-intersection ledger + exit slots, writing the
-/// shared `is_reserved_by` truth (`by_intersection`). Collision-safe by construction (all-or-nothing
-/// matrix AND); deterministic given sorted `inbox` and the per-id candidate sort here.
-///
-/// GRANT-ON-ENTRY-ONLY: candidates are one tile before the box; a granted `Approaching` row lets the
-/// entry gate (`drive.rs`) step the vehicle in next tick. NEVER touches `stall_ticks` (tripwire).
-///
 /// Increment per-maneuver or coarse-admit counters. Called at every admit site so the logic lives
-/// in one place (UTurn arm is added in Task 1.1 when the variant exists).
+/// in one place.
 fn count_admit(counts: &mut ArbiterCounts, cand: &ArbiterGrantCandidate) {
     if cand.coarse {
         counts.coarse_admits += 1;
@@ -460,6 +452,14 @@ fn count_admit(counts: &mut ArbiterCounts, cand: &ArbiterGrantCandidate) {
     }
 }
 
+/// Pure grant core: emit in-box safety-net rows, then sweep intersections in `ordered_ids` order,
+/// granting candidates atomically against the per-intersection ledger + exit slots, writing the
+/// shared `is_reserved_by` truth (`by_intersection`). Collision-safe by construction (all-or-nothing
+/// matrix AND); deterministic given sorted `inbox` and the per-id candidate sort here.
+///
+/// GRANT-ON-ENTRY-ONLY: candidates are one tile before the box; a granted `Approaching` row lets the
+/// entry gate (`drive.rs`) step the vehicle in next tick. NEVER touches `stall_ticks` (tripwire).
+///
 /// The caller MUST have reset each ledger to the current matrix version before calling (T7 contract).
 ///
 /// Returns `(admitted, refused)` counts for this tick's observability. Fully order-independent: the

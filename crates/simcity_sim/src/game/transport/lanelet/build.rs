@@ -28,7 +28,6 @@ pub struct LaneletConflictMatrices {
 /// `_dir` is the approach travel direction (reserved for future per-lane positional refinement).
 /// `_drive_on_right` is kept in the signature for caller/future-arm use; symmetry is now encoded
 /// in `maneuver_kind` which already swaps near/far by traffic handedness.
-#[allow(dead_code)]
 pub(crate) fn lane_allows_maneuver(
     lane_type: LaneType,
     maneuver: ManeuverKind,
