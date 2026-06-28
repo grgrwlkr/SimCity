@@ -41,6 +41,7 @@ pub(crate) fn lane_allows_maneuver(
             ManeuverKind::Straight => true,
             ManeuverKind::RightTurn => drive_on_right,
             ManeuverKind::LeftTurn => !drive_on_right,
+            ManeuverKind::UTurn => false, // Task 1.2 will enable this
             ManeuverKind::Other => false,
         },
     }

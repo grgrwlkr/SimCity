@@ -21,6 +21,7 @@ pub enum ManeuverKind {
     Straight,
     RightTurn,
     LeftTurn,
+    UTurn,
     Other,
 }
 
@@ -40,6 +41,9 @@ pub(crate) fn maneuver_kind(
     }
     if exit == entry {
         return ManeuverKind::Straight;
+    }
+    if exit == entry.opposite() {
+        return ManeuverKind::UTurn;
     }
     let right = if traffic_cfg.drive_on_right {
         entry.right()
@@ -99,6 +103,38 @@ pub(crate) fn straight_zone(entry_dir: RoadDir) -> ConflictMask {
         RoadDir::South => ZONE_NW | ZONE_SW, // southbound (from North): use west side
         RoadDir::West => ZONE_NW | ZONE_NE,  // westbound (from East): use north side
         RoadDir::None => ZONE_CENTER,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::roads::RoadDir;
+
+    #[test]
+    fn maneuver_kind_classifies_uturn() {
+        let cfg = TrafficConfig {
+            drive_on_right: true,
+            ..Default::default()
+        };
+        // Entering heading North, exiting heading South == U-turn.
+        assert_eq!(
+            maneuver_kind(&cfg, RoadDir::North, RoadDir::South),
+            ManeuverKind::UTurn
+        );
+        assert_eq!(
+            maneuver_kind(&cfg, RoadDir::East, RoadDir::West),
+            ManeuverKind::UTurn
+        );
+        // Sanity: a left is still a left, straight still straight.
+        assert_eq!(
+            maneuver_kind(&cfg, RoadDir::North, RoadDir::West),
+            ManeuverKind::LeftTurn
+        );
+        assert_eq!(
+            maneuver_kind(&cfg, RoadDir::North, RoadDir::North),
+            ManeuverKind::Straight
+        );
     }
 }
 

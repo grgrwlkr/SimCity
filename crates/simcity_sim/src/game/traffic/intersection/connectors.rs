@@ -563,7 +563,7 @@ fn build_connector_path(
                 traffic_cfg,
             )?
         }
-        ManeuverKind::Other => {
+        ManeuverKind::UTurn | ManeuverKind::Other => {
             // U-turn or unknown - use fallback
             build_simple_path(entry_tile, exit_tile, cluster)?
         }
@@ -847,7 +847,7 @@ fn debug_maneuver_kind(maneuver: ManeuverKind) -> DebugManeuverKind {
         ManeuverKind::Straight => DebugManeuverKind::Straight,
         ManeuverKind::RightTurn => DebugManeuverKind::RightTurn,
         ManeuverKind::LeftTurn => DebugManeuverKind::LeftTurn,
-        ManeuverKind::Other => DebugManeuverKind::Other,
+        ManeuverKind::UTurn | ManeuverKind::Other => DebugManeuverKind::Other,
     }
 }
 

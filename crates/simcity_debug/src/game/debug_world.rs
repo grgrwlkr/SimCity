@@ -1342,7 +1342,7 @@ fn update_debug_intersection_snapshot(
                     ManeuverKind::Straight => snapshot.reservation_straight += 1,
                     ManeuverKind::RightTurn => snapshot.reservation_right += 1,
                     ManeuverKind::LeftTurn => snapshot.reservation_left += 1,
-                    ManeuverKind::Other => snapshot.reservation_other += 1,
+                    ManeuverKind::UTurn | ManeuverKind::Other => snapshot.reservation_other += 1,
                 }
             }
         }

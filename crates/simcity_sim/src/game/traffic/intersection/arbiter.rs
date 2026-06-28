@@ -255,7 +255,7 @@ pub(crate) fn candidate_priority(entry_lanes: u8, maneuver: ManeuverKind, aging:
     let maneuver_rank: u8 = match maneuver {
         ManeuverKind::Straight => 2,
         ManeuverKind::RightTurn => 1,
-        ManeuverKind::LeftTurn | ManeuverKind::Other => 0,
+        ManeuverKind::LeftTurn | ManeuverKind::UTurn | ManeuverKind::Other => 0,
     };
     // width step (64) > maneuver max (32) + aging max (15); maneuver step (16) > aging max (15).
     width_rank * 64 + maneuver_rank * 16 + aging.min(15)
@@ -454,7 +454,7 @@ fn count_admit(counts: &mut ArbiterCounts, cand: &ArbiterGrantCandidate) {
             ManeuverKind::Straight => counts.admitted_straight += 1,
             ManeuverKind::RightTurn => counts.admitted_right += 1,
             ManeuverKind::LeftTurn => counts.admitted_left += 1,
-            // ManeuverKind::UTurn arm is added in Task 1.1
+            ManeuverKind::UTurn => counts.admitted_uturn += 1,
             ManeuverKind::Other => {}
         }
     }

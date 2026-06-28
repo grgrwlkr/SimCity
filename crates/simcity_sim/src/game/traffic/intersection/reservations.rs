@@ -1167,7 +1167,7 @@ fn collect_intersection_reservation_candidates_inner(
         match maneuver {
             ManeuverKind::Straight => priority = priority.max(3),
             ManeuverKind::RightTurn => priority = priority.max(2),
-            ManeuverKind::LeftTurn | ManeuverKind::Other => {}
+            ManeuverKind::LeftTurn | ManeuverKind::UTurn | ManeuverKind::Other => {}
         }
 
         // If there is a traffic light controller, only admit on green/yellow (or right-on-red).
