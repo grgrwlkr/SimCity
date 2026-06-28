@@ -265,51 +265,97 @@ pub(crate) fn candidate_priority(entry_lanes: u8, maneuver: ManeuverKind, aging:
 /// plan was cleared by a mid-trip reroute (P3c precise-fallback). Maps the approach tile `cur` to its
 /// entry lane and the post-cluster `exit_tile` to its exit lane, then finds the unique lanelet of
 /// intersection `id` with that entry→exit lane pair.
+///
+/// EXACT-then-MANEUVER resolution (closes the lanelet RESOLUTION GAP): the exact `(entry_lane,
+/// exit_lane)` match is the fast path. When it misses — a road-A*-shaped route or an
+/// asymmetric/multi-tile cluster yields an `exit_tile` whose lane id is a lateral-offset / diagonal-
+/// seam neighbour of the built lanelet's stored `exit_lane`, even though the correct turn lanelet IS
+/// built — RETRY by `maneuver`: the UNIQUE built lanelet from `entry_lane` of intersection `id` whose
+/// `maneuver == maneuver`. SAFETY GUARD: if zero OR more-than-one lanelet matches the maneuver
+/// (ambiguous), return `None` — never guess, because mis-resolving to the wrong turn would put the
+/// vehicle on a conflict row that does not match its actual path (collision-safety). Ambiguity stays
+/// unresolved (routed to reroute/recovery), which is the safe failure.
 pub(crate) fn resolve_lanelet_fallback(
     llg: &LaneletGraph,
     lanes: &LaneGraph,
     id: IntersectionId,
     cur: TilePos,
     exit_tile: TilePos,
+    maneuver: ManeuverKind,
 ) -> Option<LaneletId> {
     let entry_lane = lanes.pos_to_id.get(&cur).copied()?;
-    let exit_lane = lanes.pos_to_id.get(&exit_tile).copied()?;
-    llg.lanelets_from(entry_lane).iter().copied().find(|lid| {
-        llg.get(*lid)
-            .is_some_and(|l| l.exit_lane == exit_lane && l.intersection == id)
-    })
+    // Fast path: exact (entry_lane, exit_lane) match.
+    if let Some(exit_lane) = lanes.pos_to_id.get(&exit_tile).copied()
+        && let Some(lid) = llg.lanelets_from(entry_lane).iter().copied().find(|lid| {
+            llg.get(*lid)
+                .is_some_and(|l| l.exit_lane == exit_lane && l.intersection == id)
+        })
+    {
+        return Some(lid);
+    }
+    // Maneuver-tolerant retry: the unique lanelet from this entry lane with the expected maneuver.
+    // Ambiguous (>1) or absent (0) → None (never mis-resolve to the wrong turn).
+    let mut found: Option<LaneletId> = None;
+    for lid in llg.lanelets_from(entry_lane).iter().copied() {
+        if llg
+            .get(lid)
+            .is_some_and(|l| l.intersection == id && l.maneuver == maneuver)
+        {
+            if found.is_some() {
+                return None; // ambiguous: >1 lanelet for this (entry_lane, maneuver)
+            }
+            found = Some(lid);
+        }
+    }
+    found
 }
 
 /// Resolve the lanelet an IN-BOX vehicle is traversing (P3c), by scanning its route for the approach
 /// tile just before the cluster and the exit tile just after, then `resolve_lanelet_fallback`. Used
 /// to re-seed `inbox_mask` each tick so in-box vehicles stay represented across a graph rebuild.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_inbox_lanelet(
     path_pool: &PathPool,
     grid: &MapGrid,
     llg: &LaneletGraph,
     lanes: &LaneGraph,
+    traffic_cfg: &TrafficConfig,
     handle: PathHandle,
     cursor: usize,
     id: IntersectionId,
 ) -> Option<LaneletId> {
     let len = path_pool.len(handle);
-    // Exit tile: first non-cluster route tile at/after the cursor.
+    // Exit tile: first non-cluster route tile at/after the cursor. Track the last cluster tile so the
+    // exit direction can fall back to the exit-road dir on a diagonal seam (mirror of
+    // `compute_exit_direction`).
     let mut k = cursor;
+    let mut last_cluster: Option<TilePos> = None;
     while k < len {
         let t = path_pool.get_tile(handle, k)?;
         if !is_intersection_tile(grid, t) {
             break;
         }
+        last_cluster = Some(t);
         k += 1;
     }
     let exit_tile = path_pool.get_tile(handle, k)?;
+    let exit_dir = last_cluster
+        .map(|lc| dir_between_adjacent(lc, exit_tile))
+        .filter(|d| *d != RoadDir::None)
+        .or_else(|| grid.get(exit_tile).map(|c| c.road.dir))
+        .unwrap_or(RoadDir::None);
     // Approach tile: last non-cluster route tile before the cursor.
     let mut j = cursor;
     while j > 0 {
         j -= 1;
         let t = path_pool.get_tile(handle, j)?;
         if !is_intersection_tile(grid, t) {
-            return resolve_lanelet_fallback(llg, lanes, id, t, exit_tile);
+            let entry_dir = path_pool
+                .get_tile(handle, j + 1)
+                .map(|nxt| dir_between_adjacent(t, nxt))
+                .unwrap_or(RoadDir::None);
+            let maneuver = maneuver_kind(traffic_cfg, entry_dir, exit_dir);
+            return resolve_lanelet_fallback(llg, lanes, id, t, exit_tile, maneuver);
         }
     }
     None
@@ -779,7 +825,8 @@ pub(crate) fn arbitrate_lanelet_reservations(
     let llg = p.llg.as_ref();
     let lanes = p.lanes.as_ref();
     let cache = p.cache.as_ref();
-    let drive_on_right = p.traffic_cfg.drive_on_right;
+    let traffic_cfg = p.traffic_cfg.as_ref();
+    let drive_on_right = traffic_cfg.drive_on_right;
 
     let mut candidates_by_id: HashMap<IntersectionId, Vec<ArbiterGrantCandidate>> = HashMap::new();
     let mut inbox: Vec<ArbiterInboxVehicle> = Vec::new();
@@ -810,6 +857,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
                     grid,
                     llg,
                     lanes,
+                    traffic_cfg,
                     v.path_handle,
                     v.path_cursor,
                     id,
@@ -867,9 +915,13 @@ pub(crate) fn arbitrate_lanelet_reservations(
         // unresolved-lanelet drops were ~94% of approaching vehicles on a populated city, which left
         // the arbiter admitting nothing. Still tracked for the mandatory-merge reroute, which may find
         // a resolvable (precise, higher-throughput) route next time.
+        // The route maneuver — computed once and threaded into both the precise-fallback's
+        // maneuver-tolerant retry AND the coarse None-arm below, so a turn that resolves via the
+        // retry is labeled with the SAME maneuver the None-arm would have used (label consistency).
+        let route_maneuver = maneuver_kind(traffic_cfg, entry_dir, exit_dir);
         let resolved = match plan.and_then(|p| p.upcoming_lanelet_at(v.path_cursor)) {
             Some((plan_id, lid)) if plan_id == id => Some(lid),
-            _ => resolve_lanelet_fallback(llg, lanes, id, cur, exit_tile),
+            _ => resolve_lanelet_fallback(llg, lanes, id, cur, exit_tile, route_maneuver),
         };
         let (coarse, local_idx, maneuver, tiles) = match resolved {
             Some(lanelet_id) => {
@@ -896,7 +948,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
                 // remaining path onto the oncoming lane). Leave it for the stall-tracker reroute
                 // (it stays in unresolved_this_tick). Only a genuine straight may use coarse, and it
                 // carries its real maneuver (not a hardcoded Straight) so demand/priority stay correct.
-                let m = maneuver_kind(&p.traffic_cfg, entry_dir, exit_dir);
+                let m = route_maneuver;
                 if m != ManeuverKind::Straight {
                     continue;
                 }
@@ -1782,13 +1834,15 @@ mod tests {
         lanes.pos_to_id.insert(TilePos { x: 9, y: 2 }, LaneId(8)); // right-turn exit
 
         let approach = TilePos { x: 0, y: 1 };
+        // Exact (entry_lane, exit_lane) fast path: the maneuver argument is consistent but unused.
         assert_eq!(
             resolve_lanelet_fallback(
                 &llg,
                 &lanes,
                 IntersectionId(0),
                 approach,
-                TilePos { x: 9, y: 1 }
+                TilePos { x: 9, y: 1 },
+                ManeuverKind::Straight,
             ),
             Some(LaneletId(0)),
             "entry lane 5 + exit lane 9 -> lanelet 0"
@@ -1799,31 +1853,145 @@ mod tests {
                 &lanes,
                 IntersectionId(0),
                 approach,
-                TilePos { x: 9, y: 2 }
+                TilePos { x: 9, y: 2 },
+                ManeuverKind::RightTurn,
             ),
             Some(LaneletId(1)),
             "entry lane 5 + exit lane 8 -> lanelet 1"
         );
-        // Unknown exit tile / wrong intersection -> None.
+        // Unknown exit tile + a known maneuver -> the maneuver-tolerant RETRY resolves to the unique
+        // lanelet of that maneuver from the entry lane (closes the resolution gap; the old exact-only
+        // resolver returned None here, funnelling the turn into reroute/recovery).
         assert_eq!(
             resolve_lanelet_fallback(
                 &llg,
                 &lanes,
                 IntersectionId(0),
                 approach,
-                TilePos { x: 99, y: 99 }
+                TilePos { x: 99, y: 99 },
+                ManeuverKind::RightTurn,
             ),
-            None
+            Some(LaneletId(1)),
+            "unknown exit tile + RightTurn maneuver -> retry resolves the unique right lanelet"
         );
+        // Wrong intersection -> None (no lanelet of that intersection from this entry lane).
         assert_eq!(
             resolve_lanelet_fallback(
                 &llg,
                 &lanes,
                 IntersectionId(7),
                 approach,
-                TilePos { x: 9, y: 1 }
+                TilePos { x: 9, y: 1 },
+                ManeuverKind::Straight,
             ),
             None
+        );
+        // A maneuver with NO built lanelet from this entry lane -> None (retry finds zero).
+        assert_eq!(
+            resolve_lanelet_fallback(
+                &llg,
+                &lanes,
+                IntersectionId(0),
+                approach,
+                TilePos { x: 99, y: 99 },
+                ManeuverKind::LeftTurn,
+            ),
+            None,
+            "no left lanelet built -> retry finds zero -> None"
+        );
+    }
+
+    /// Closes the lanelet RESOLUTION GAP: a TURN lanelet IS built, but the route's `exit_tile` maps to
+    /// a lane id that is NOT the lanelet's stored `exit_lane` (diagonal-seam / lateral-offset — the
+    /// road-A*/asymmetric-cluster mismatch). The exact-only resolver returns None (RED); the
+    /// maneuver-tolerant retry resolves to the correct turn lanelet (GREEN). Also asserts the safety
+    /// guard: an AMBIGUOUS (two lefts from one entry lane) case returns None — never mis-resolve.
+    #[test]
+    fn maneuver_retry_resolves_turn_on_exit_lane_mismatch() {
+        use crate::game::transport::LaneGraph;
+        let mut llg = LaneletGraph::default();
+        // One left lanelet (entry 5 -> exit 8) and one straight (entry 5 -> exit 9).
+        llg.lanelets.push(Lanelet {
+            id: LaneletId(0),
+            intersection: IntersectionId(0),
+            entry_lane: LaneId(5),
+            exit_lane: LaneId(9),
+            maneuver: ManeuverKind::Straight,
+            internal_path: vec![TilePos { x: 1, y: 1 }],
+        });
+        llg.lanelets.push(Lanelet {
+            id: LaneletId(1),
+            intersection: IntersectionId(0),
+            entry_lane: LaneId(5),
+            exit_lane: LaneId(8),
+            maneuver: ManeuverKind::LeftTurn,
+            internal_path: vec![TilePos { x: 2, y: 1 }],
+        });
+        llg.by_entry_lane
+            .insert(LaneId(5), vec![LaneletId(0), LaneletId(1)]);
+        llg.by_intersection
+            .insert(IntersectionId(0), vec![LaneletId(0), LaneletId(1)]);
+
+        let mut lanes = LaneGraph::default();
+        lanes.pos_to_id.insert(TilePos { x: 0, y: 1 }, LaneId(5)); // approach -> entry lane 5
+        // The route's post-cluster exit tile maps to lane 7 — an ADJACENT lane of the exit road, NOT
+        // the left lanelet's stored exit_lane (8). Simulates the diagonal-seam/road-A* offset.
+        lanes.pos_to_id.insert(TilePos { x: 9, y: 3 }, LaneId(7));
+
+        let approach = TilePos { x: 0, y: 1 };
+        let mismatch_exit = TilePos { x: 9, y: 3 };
+
+        // Sanity (RED baseline): no exact (5, 7) lanelet exists.
+        assert!(
+            !llg.lanelets_from(LaneId(5))
+                .iter()
+                .any(|lid| llg.get(*lid).is_some_and(|l| l.exit_lane == LaneId(7))),
+            "no lanelet has exit_lane 7 — exact match must miss (RED baseline)"
+        );
+
+        // GREEN: the maneuver-tolerant retry resolves the unique LEFT lanelet despite the exit-lane
+        // mismatch.
+        assert_eq!(
+            resolve_lanelet_fallback(
+                &llg,
+                &lanes,
+                IntersectionId(0),
+                approach,
+                mismatch_exit,
+                ManeuverKind::LeftTurn,
+            ),
+            Some(LaneletId(1)),
+            "exit-lane mismatch + LeftTurn maneuver -> retry resolves the unique left lanelet"
+        );
+
+        // SAFETY GUARD — ambiguity: add a SECOND left lanelet from the same entry lane. Now the retry
+        // must return None (never guess between two lefts; ambiguity stays unresolved).
+        llg.lanelets.push(Lanelet {
+            id: LaneletId(2),
+            intersection: IntersectionId(0),
+            entry_lane: LaneId(5),
+            exit_lane: LaneId(6),
+            maneuver: ManeuverKind::LeftTurn,
+            internal_path: vec![TilePos { x: 3, y: 1 }],
+        });
+        llg.by_entry_lane
+            .insert(LaneId(5), vec![LaneletId(0), LaneletId(1), LaneletId(2)]);
+        llg.by_intersection.insert(
+            IntersectionId(0),
+            vec![LaneletId(0), LaneletId(1), LaneletId(2)],
+        );
+
+        assert_eq!(
+            resolve_lanelet_fallback(
+                &llg,
+                &lanes,
+                IntersectionId(0),
+                approach,
+                mismatch_exit,
+                ManeuverKind::LeftTurn,
+            ),
+            None,
+            "two left lanelets from one entry lane -> ambiguous -> None (never mis-resolve)"
         );
     }
 
