@@ -69,8 +69,10 @@ pub(crate) fn lane_allows_maneuver(
 ///
 /// Returns tile sequence (entry_tile .. goal), all inside the cluster, consecutive pairs
 /// Manhattan-distance 1, SIMPLE (no revisited tile). `None` if no path exists or `maneuver == Other`.
-/// Degenerate geometry (goal not in the cluster, or the angular walk dead-ends) falls back to the
-/// shortest BFS path to a tile adjacent to the exit.
+/// Degenerate geometry where the exit-FEEDING in-box tile (`exit_tile - exit_dir.delta()`) is not in
+/// the cluster returns `None` (caller drops the lanelet → dir-strict road-A* fallback) rather than a
+/// path that could land on the opposing exit lane. A turn whose angular walk dead-ends degrades to
+/// the shortest in-box path to that same exit-feeding goal — never to an arbitrary exit-adjacent tile.
 ///
 /// `centroid` is retained in the signature for caller compatibility but unused: the pivot is now the
 /// box's true float center, not the integer centroid tile.
@@ -88,24 +90,32 @@ pub(crate) fn build_internal_path(
         return None;
     }
     let xd = exit_dir.delta();
+    // `goal` is the in-box tile that FEEDS the away-pointing exit lane: stepping goal -> exit_tile
+    // travels in `exit_dir`, so the route lands on the same-direction (non-oncoming) exit lane.
     let goal = TilePos {
         x: exit_tile.x - xd.x,
         y: exit_tile.y - xd.y,
     };
     if !cluster_tiles.contains(&goal) {
-        // Degenerate geometry: fall back to the shortest path to a tile adjacent to the exit.
-        return build_internal_path_bfs(cluster_tiles, entry_tile, exit_tile);
+        // Degenerate geometry: the exit-feeding in-box tile isn't in the cluster. The old BFS
+        // fallback walked to *some* tile adjacent to `exit_tile`, which on irregular/multi-tile
+        // clusters could land on the opposing-lane side and make the flattened route step onto the
+        // oncoming exit lane. Return `None` instead: the caller drops this lanelet and the
+        // dir-strict road-A* fallback handles the junction, so we NEVER emit an oncoming path.
+        return None;
     }
     match maneuver {
         ManeuverKind::Straight => bfs_within(cluster_tiles, entry_tile, goal),
         ManeuverKind::RightTurn | ManeuverKind::LeftTurn | ManeuverKind::UTurn => {
             let center = box_center_point(cluster_tiles);
             let want_long = matches!(maneuver, ManeuverKind::LeftTurn | ManeuverKind::UTurn);
+            // Walk to the exit-FEEDING `goal` tile (not just any tile adjacent to the exit). If the
+            // angular walk can't reach it on pathological geometry, fall back to the shortest in-box
+            // path to that same `goal` — still terminating on the away-pointing exit feeder, never
+            // the opposing lane. If even that fails, return `None` (caller drops the lanelet) rather
+            // than risk a degenerate oncoming path.
             arc_around_center(cluster_tiles, center, entry_tile, goal, want_long)
-                // Pathological geometry where the angular walk can't reach the goal: degrade to a
-                // shortest in-box path rather than emit nothing (still collision-safe — any in-box
-                // path is safe), so the lanelet still builds.
-                .or_else(|| build_internal_path_bfs(cluster_tiles, entry_tile, exit_tile))
+                .or_else(|| bfs_within(cluster_tiles, entry_tile, goal))
         }
         ManeuverKind::Other => None,
     }
@@ -268,83 +278,6 @@ fn bfs_within(
         }
     }
     None
-}
-
-/// BFS fallback: shortest strictly-4-adjacent path inside `cluster_tiles` from `entry_tile`
-/// to the cluster tile orthogonally adjacent to `exit_tile`. Among equidistant goals picks
-/// `(x,y)`-minimum deterministically.
-pub(crate) fn build_internal_path_bfs(
-    cluster_tiles: &HashSet<TilePos>,
-    entry_tile: TilePos,
-    exit_tile: TilePos,
-) -> Option<Vec<TilePos>> {
-    if !cluster_tiles.contains(&entry_tile) {
-        return None;
-    }
-
-    let neighbors_of_exit = orthogonal_neighbors(exit_tile);
-    let goals: HashSet<TilePos> = neighbors_of_exit
-        .into_iter()
-        .filter(|t| cluster_tiles.contains(t))
-        .collect();
-
-    if goals.is_empty() {
-        return None;
-    }
-
-    let mut came_from: HashMap<TilePos, Option<TilePos>> = HashMap::new();
-    let mut dist: HashMap<TilePos, u32> = HashMap::new();
-    let mut queue: VecDeque<TilePos> = VecDeque::new();
-
-    came_from.insert(entry_tile, None);
-    dist.insert(entry_tile, 0);
-    queue.push_back(entry_tile);
-
-    const DIRS: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
-
-    while let Some(cur) = queue.pop_front() {
-        for (dx, dy) in DIRS {
-            let nb = TilePos {
-                x: cur.x + dx,
-                y: cur.y + dy,
-            };
-            if cluster_tiles.contains(&nb) && !came_from.contains_key(&nb) {
-                came_from.insert(nb, Some(cur));
-                dist.insert(nb, dist[&cur] + 1);
-                queue.push_back(nb);
-            }
-        }
-    }
-
-    let best_goal = goals
-        .iter()
-        .filter(|g| dist.contains_key(g))
-        .min_by_key(|g| (dist[g], g.x, g.y))?;
-
-    Some(reconstruct(*best_goal, &came_from))
-}
-
-fn orthogonal_neighbors(t: TilePos) -> [TilePos; 4] {
-    [
-        TilePos { x: t.x + 1, y: t.y },
-        TilePos { x: t.x - 1, y: t.y },
-        TilePos { x: t.x, y: t.y + 1 },
-        TilePos { x: t.x, y: t.y - 1 },
-    ]
-}
-
-fn reconstruct(goal: TilePos, came_from: &HashMap<TilePos, Option<TilePos>>) -> Vec<TilePos> {
-    let mut path = Vec::new();
-    let mut cur = goal;
-    loop {
-        path.push(cur);
-        match came_from[&cur] {
-            None => break,
-            Some(prev) => cur = prev,
-        }
-    }
-    path.reverse();
-    path
 }
 
 /// Derive the pedestrian crosswalk cells for a cluster: one crosswalk per cluster side that has an
@@ -1076,6 +1009,39 @@ mod tests {
             assert_eq!(d, 1);
         }
         assert!(path.iter().all(|t| cluster.contains(t)));
+    }
+
+    #[test]
+    fn degenerate_exit_feeder_outside_cluster_returns_none_not_oncoming_path() {
+        // Irregular L-shaped cluster. The exit lane sits to the EAST of (5,4), so the exit-feeding
+        // in-box tile would be (5,4) - East = (4,4). Make that tile NOT part of the cluster, so the
+        // old BFS fallback would have walked to SOME other tile adjacent to the exit (landing on the
+        // opposing-lane side and producing an oncoming flattened route). The fixed producer must
+        // instead return `None` so the caller drops the lanelet (dir-strict road-A* fallback).
+        let cluster: HashSet<TilePos> = [(3, 4), (3, 5), (4, 5), (5, 5)]
+            .iter()
+            .map(|&(x, y)| TilePos { x, y })
+            .collect();
+        let entry = TilePos { x: 3, y: 4 };
+        // exit_tile (6,4) East -> goal = (6,4) - (1,0) = (5,4), which is NOT in the cluster.
+        let exit = TilePos { x: 6, y: 4 };
+        assert!(
+            !cluster.contains(&TilePos { x: 5, y: 4 }),
+            "precondition: the exit-feeding tile must be outside the cluster"
+        );
+        let path = build_internal_path(
+            &cluster,
+            entry,
+            entry,
+            RoadDir::East,
+            exit,
+            RoadDir::East,
+            ManeuverKind::Straight,
+        );
+        assert!(
+            path.is_none(),
+            "degenerate exit feeder must yield None (lanelet dropped), not a degenerate path: {path:?}"
+        );
     }
 
     #[test]

@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 use crate::game::intersections::IntersectionId;
-use crate::game::map::TilePos;
+use crate::game::map::{MapGrid, TilePos};
 use crate::game::roads::RoadDir;
 use crate::game::transport::lane_graph::{LaneGraph, LaneId};
 use crate::game::transport::lane_pathfinding::{
@@ -78,6 +78,9 @@ pub(crate) fn for_each_succ(
             };
 
             // Lane-follow forward: only into a real road lane travelling the same direction.
+            // HARD-SKIP any neighbor that would be entered against its own lane direction
+            // (`nl.dir == lane.dir.opposite()`) — never a soft penalty, so an oncoming tile can
+            // never enter the open set by construction.
             let d = lane.dir.delta();
             let fwd = TilePos {
                 x: lane.pos.x + d.x,
@@ -86,11 +89,14 @@ pub(crate) fn for_each_succ(
             if let Some(&nid) = lg.pos_to_id.get(&fwd)
                 && let Some(nl) = lg.get_lane(nid)
                 && nl.dir == lane.dir
+                && nl.dir != lane.dir.opposite()
             {
                 f(CombinedNode::Road(nid), lane_edge_cost(ctx, lg, nid));
             }
 
             // Lateral lane-changes into adjacent same-direction lanes (+lane_change_penalty).
+            // Same hard-skip: a lateral neighbor is only legal if it carries the SAME direction
+            // (a wrong-direction neighbor is the oncoming lane and is never expanded).
             for side in [lane.dir.left(), lane.dir.right()] {
                 if side == RoadDir::None {
                     continue;
@@ -103,6 +109,7 @@ pub(crate) fn for_each_succ(
                 if let Some(&sid) = lg.pos_to_id.get(&sp)
                     && let Some(sl) = lg.get_lane(sid)
                     && sl.dir == lane.dir
+                    && sl.dir != lane.dir.opposite()
                 {
                     let cost = lane_edge_cost(ctx, lg, sid)
                         .saturating_add(ctx.cfg.lane_change_penalty as u32);
@@ -289,9 +296,51 @@ pub(crate) fn flatten(
     (tiles, sidecar)
 }
 
+/// Cardinal step from `a` to its 4-adjacent neighbor `b`; `RoadDir::None` for non-adjacent.
+fn dir_between_adjacent(a: TilePos, b: TilePos) -> RoadDir {
+    match (b.x - a.x, b.y - a.y) {
+        (1, 0) => RoadDir::East,
+        (-1, 0) => RoadDir::West,
+        (0, 1) => RoadDir::North,
+        (0, -1) => RoadDir::South,
+        _ => RoadDir::None,
+    }
+}
+
+/// First consecutive route pair `(a, b)` that travels against `a`'s lane direction, if any.
+///
+/// `a` is checked only when it is a REAL road tile (`grid.get(a).road.dir != None`); intersection-box
+/// tiles carry `dir == None` and are exempt (their in-box path is collision-checked, not direction-
+/// checked). A pair is oncoming iff the step `a -> b` equals `road.dir.opposite()` of `a`.
+pub(crate) fn first_oncoming_pair(route: &[TilePos], grid: &MapGrid) -> Option<(TilePos, TilePos)> {
+    for w in route.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let Some(cell) = grid.get(a) else { continue };
+        let lane_dir = cell.road.dir;
+        if lane_dir == RoadDir::None {
+            continue; // intersection-box tile: exempt.
+        }
+        if dir_between_adjacent(a, b) == lane_dir.opposite() {
+            return Some((a, b));
+        }
+    }
+    None
+}
+
+/// True iff no consecutive pair in `route` traverses a real road tile against its `road.dir`.
+pub(crate) fn route_is_direction_correct(route: &[TilePos], grid: &MapGrid) -> bool {
+    first_oncoming_pair(route, grid).is_none()
+}
+
 /// Routing seam at vehicle spawn. Runs the combined lane+lanelet A* and flattens it. Returns the
 /// `Vec<TilePos>` route plus the lanelet sidecar; an EMPTY route signals the caller to fall back to
 /// road-level pathfinding.
+///
+/// Post-route direction guard (the net): the assembled route is rejected if any real road tile is
+/// traversed against its lane direction (oncoming). In debug this is a `debug_assert!` so a producer
+/// regression fails tests loudly; in release the route is dropped (returned EMPTY) so the caller
+/// falls back to the dir-strict road-A* path or holds the vehicle, rather than driving it onto the
+/// oncoming lane.
 pub(crate) fn find_route(
     lg: &LaneGraph,
     llg: &LaneletGraph,
@@ -299,10 +348,24 @@ pub(crate) fn find_route(
     start: LaneId,
     goal: LaneId,
 ) -> (Vec<TilePos>, Vec<(usize, IntersectionId, LaneletId)>) {
-    match find_combined_path(lg, llg, ctx, start, goal) {
+    let (tiles, sidecar) = match find_combined_path(lg, llg, ctx, start, goal) {
         Some(nodes) => flatten(&nodes, lg, llg),
-        None => (Vec::new(), Vec::new()),
+        None => return (Vec::new(), Vec::new()),
+    };
+
+    if !route_is_direction_correct(&tiles, ctx.grid) {
+        let pair = first_oncoming_pair(&tiles, ctx.grid);
+        debug_assert!(
+            false,
+            "lanelet route produced an oncoming step {:?} (against road.dir {:?}); \
+             a producer is emitting wrong-direction tiles",
+            pair,
+            pair.and_then(|(a, _)| ctx.grid.get(a)).map(|c| c.road.dir),
+        );
+        return (Vec::new(), Vec::new());
     }
+
+    (tiles, sidecar)
 }
 
 #[cfg(test)]
@@ -571,6 +634,148 @@ mod tests {
         assert_eq!(tiles[off], llg.get(llid).unwrap().internal_path[0]);
         assert_eq!(isx, IntersectionId(5));
         assert_eq!(llid, LaneletId(0));
+    }
+
+    #[test]
+    fn route_direction_guard_accepts_forward_rejects_oncoming() {
+        // A 3-tile eastbound road x=0..2. A correct route steps E,E (with the lane direction).
+        let mut grid = MapGrid::new(3, 1);
+        for x in 0..3 {
+            set_lane(&mut grid, TilePos { x, y: 0 }, 0, RoadDir::East);
+        }
+        let forward = vec![
+            TilePos { x: 0, y: 0 },
+            TilePos { x: 1, y: 0 },
+            TilePos { x: 2, y: 0 },
+        ];
+        assert!(
+            route_is_direction_correct(&forward, &grid),
+            "forward route on eastbound lanes must be direction-correct"
+        );
+        assert_eq!(first_oncoming_pair(&forward, &grid), None);
+
+        // Hand-built oncoming route: stepping WEST across eastbound tiles. (2,0) is a real road tile
+        // with dir East; stepping to (1,0) is East.opposite() == West => oncoming.
+        let oncoming = vec![
+            TilePos { x: 2, y: 0 },
+            TilePos { x: 1, y: 0 },
+            TilePos { x: 0, y: 0 },
+        ];
+        assert!(
+            !route_is_direction_correct(&oncoming, &grid),
+            "westbound traversal of eastbound lanes must be flagged oncoming"
+        );
+        assert_eq!(
+            first_oncoming_pair(&oncoming, &grid),
+            Some((TilePos { x: 2, y: 0 }, TilePos { x: 1, y: 0 })),
+            "first oncoming pair is the first wrong-direction step"
+        );
+    }
+
+    #[test]
+    fn route_direction_guard_exempts_intersection_box_tiles() {
+        // A box tile (dir == None) is exempt as the leading tile of a pair even if the geometric
+        // step looks reversed; only REAL road tiles are direction-checked.
+        let mut grid = MapGrid::new(3, 1);
+        set_lane(&mut grid, TilePos { x: 0, y: 0 }, 0, RoadDir::East);
+        set_lane(&mut grid, TilePos { x: 2, y: 0 }, 0, RoadDir::East);
+        // (1,0) is a cluster/box tile: dir None.
+        if let Some(mut cell) = grid.get(TilePos { x: 1, y: 0 }) {
+            cell.water = false;
+            cell.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                dir: RoadDir::None,
+                lane: 0,
+                flow: RoadFlow::TwoWay,
+                lane_type: LaneType::Regular,
+            };
+            grid.set(TilePos { x: 1, y: 0 }, cell);
+        }
+        // Route passes through the box tile; the box tile -> exit step is fine, exit steps in-dir.
+        let route = vec![
+            TilePos { x: 0, y: 0 },
+            TilePos { x: 1, y: 0 },
+            TilePos { x: 2, y: 0 },
+        ];
+        assert!(route_is_direction_correct(&route, &grid));
+    }
+
+    #[test]
+    fn find_route_rejects_lanelet_route_that_traverses_oncoming_lane() {
+        // RED-before-fix scenario, asserted GREEN. A hand-built lanelet feeds the route onto a
+        // WESTBOUND lane, and the route then continues westward over two more westbound tiles. The
+        // flattened route therefore traverses the eastbound approach correctly but then drives the
+        // wrong way down the westbound corridor — a real-road oncoming step. The post-route guard in
+        // `find_route` must reject it (debug_assert in test builds; EMPTY route in release) rather
+        // than hand the caller a route that runs against `road.dir`.
+        let cfg = PathfindingConfig::default();
+        // Eastbound approach (0,0)E,(1,0)E; box tile (2,0); westbound corridor (3,0)W,(4,0)W,(5,0)W.
+        let mut grid = MapGrid::new(6, 1);
+        set_lane(&mut grid, TilePos { x: 0, y: 0 }, 0, RoadDir::East);
+        set_lane(&mut grid, TilePos { x: 1, y: 0 }, 0, RoadDir::East);
+        set_lane(&mut grid, TilePos { x: 3, y: 0 }, 0, RoadDir::West);
+        set_lane(&mut grid, TilePos { x: 4, y: 0 }, 0, RoadDir::West);
+        set_lane(&mut grid, TilePos { x: 5, y: 0 }, 0, RoadDir::West);
+        let lg = build_lane_graph_inner(&grid, &GraphVersion(1));
+        let entry = lg.get_lane_id(TilePos { x: 1, y: 0 }, 0).unwrap();
+        let bad_exit = lg.get_lane_id(TilePos { x: 3, y: 0 }, 0).unwrap();
+        let ll = Lanelet {
+            id: LaneletId(0),
+            intersection: IntersectionId(7),
+            entry_lane: entry,
+            exit_lane: bad_exit,
+            maneuver: ManeuverKind::Straight,
+            internal_path: vec![TilePos { x: 2, y: 0 }],
+        };
+        let llg = LaneletGraph {
+            lanelets: vec![ll],
+            version: 1,
+            ..Default::default()
+        };
+        let mut traffic = TrafficOccupancy::default();
+        traffic.ensure_len(grid.len());
+        let ctx = LaneCostCtx {
+            grid: &grid,
+            traffic: &traffic,
+            cfg: &cfg,
+            jitter_seed: 0,
+        };
+
+        // The raw flatten of an end-to-end node path traverses (3,0)->(4,0) which is EAST against
+        // the West lane dir of (3,0): oncoming. (This is the bug the guard nets.)
+        let west4 = lg.get_lane_id(TilePos { x: 4, y: 0 }, 0).unwrap();
+        let west5 = lg.get_lane_id(TilePos { x: 5, y: 0 }, 0).unwrap();
+        let nodes = vec![
+            CombinedNode::Road(entry),
+            CombinedNode::Lanelet(LaneletId(0)),
+            CombinedNode::Road(bad_exit),
+            CombinedNode::Road(west4),
+            CombinedNode::Road(west5),
+        ];
+        let (raw_tiles, _) = flatten(&nodes, &lg, &llg);
+        assert_eq!(
+            first_oncoming_pair(&raw_tiles, &grid),
+            Some((TilePos { x: 3, y: 0 }, TilePos { x: 4, y: 0 })),
+            "precondition: the unguarded flattened route drives oncoming down the westbound corridor: {raw_tiles:?}"
+        );
+
+        // The guard rejects it: debug builds trip the debug_assert (tests run in debug, proving the
+        // net is armed and loud); a release build would drop the route to EMPTY. We accept either,
+        // but NEVER a non-empty oncoming route.
+        let start = lg.get_lane_id(TilePos { x: 0, y: 0 }, 0).unwrap();
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {})); // silence the expected debug_assert backtrace
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            find_route(&lg, &llg, &ctx, start, west5)
+        }));
+        std::panic::set_hook(prev_hook);
+        match result {
+            Err(_) => { /* debug_assert tripped: producer regression caught loudly. */ }
+            Ok((tiles, _)) => assert!(
+                first_oncoming_pair(&tiles, &grid).is_none(),
+                "guard must never return an oncoming route, got {tiles:?}"
+            ),
+        }
     }
 
     #[test]
