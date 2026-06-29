@@ -295,6 +295,11 @@ pub fn move_vehicles(
         // any forward progress past the stop line.
         let mut blocked_next = false;
         let mut blocked_next_is_intersection = false;
+        // Set when the vehicle is eligible to enter the box but is still on the approach tile, below
+        // the box boundary (`progress < TILE_CENTER_TO_EDGE_TILES`), and has NOT yet taken its precise
+        // conflict-tile reservation. It is allowed to creep forward but must be HARD-clamped at the
+        // boundary so it cannot physically cross into the box without first holding `active_mask`.
+        let mut clamp_to_box_boundary = false;
         if let Some(next_tile) = path_pool.get_tile(v.path_handle, v.path_cursor + 1) {
             let current_is_intersection = is_intersection_tile(&grid, current_tile);
             let next_is_intersection = is_intersection_tile(&grid, next_tile);
@@ -311,23 +316,49 @@ pub fn move_vehicles(
                     // DEFERRED-RESERVATION ENTRY GATE (collision-safety enforcement point). An
                     // `Approaching` grant only makes the vehicle ELIGIBLE to attempt entry; the
                     // conflict-tile reservation (`active_mask`) is taken HERE, the moment the vehicle
-                    // steps onto its first box tile, via the conflict matrix against the cars
-                    // ACTUALLY INSIDE the box. Because `move_vehicles` processes vehicles one at a
-                    // time, each successful entrant's `active_mask` bit is set before the next
-                    // conflicting candidate is checked — so two conflicting vehicles can NEVER both
-                    // enter the box in the same tick (the second's `try_admit` fails → it waits at the
-                    // line and retries next tick).
+                    // is at the box boundary (`progress >= TILE_CENTER_TO_EDGE_TILES`), via the
+                    // conflict matrix against the cars ACTUALLY INSIDE the box. Because `move_vehicles`
+                    // processes vehicles one at a time, each successful entrant's `active_mask` bit is
+                    // set before the next conflicting candidate is checked — so two conflicting
+                    // vehicles can NEVER both enter the box in the same tick (the second's `try_admit`
+                    // fails → it waits at the boundary and retries next tick).
+                    //
+                    // BOUNDARY-GATED HOLD (fixes the approach-long starvation): the tile boundary is at
+                    // `progress == TILE_CENTER_TO_EDGE_TILES` (0.5); below it the vehicle's body is
+                    // still entirely on the APPROACH tile, NOT in the box. Taking the precise
+                    // conflict-tile reservation back when the car first became eligible (progress ~0,
+                    // far from the box) made it HOLD the box's conflict tile for its ENTIRE slow
+                    // approach — permanently refusing every conflicting maneuver even though the box is
+                    // physically empty (the live "left turn frozen at an empty box" freeze). We now let
+                    // an eligible car roll up to the boundary WITHOUT grabbing `active_mask`, and only
+                    // take the reservation once it is actually at/over the boundary (entering the box).
+                    // Collision-safety is unchanged: the hold is taken exactly when the car's center
+                    // crosses into the box, still serialized one-at-a-time within the tick.
+                    let at_boundary = v.progress >= TILE_CENTER_TO_EDGE_TILES;
                     let ok = if let Some(id) = intersections.intersection_id_at(next_tile) {
                         match reservations.entry_reservation(id, entity) {
                             // Coarse whole-box grant already reserved the entire box exclusively at
                             // grant time — no per-lanelet check possible, admit.
                             Some((_, true)) => true,
-                            // Precise grant: take the deferred conflict-tile reservation now. Idempotent
-                            // (returns true once this vehicle is already a holder, e.g. it cleared the
-                            // gate last tick but hasn't physically crossed yet).
-                            Some((Some(local_idx), false)) => reservations
-                                .ledger_mut(id)
-                                .try_admit(entity, local_idx, matrices.row_for(id, local_idx)),
+                            // Precise grant: take the deferred conflict-tile reservation only once the
+                            // car is at the box boundary (it is otherwise still on the approach tile and
+                            // must not hold the box). Idempotent (returns true once this vehicle is
+                            // already a holder, e.g. it cleared the gate last tick but hasn't physically
+                            // crossed yet). Below the boundary it is "ok" to keep rolling forward toward
+                            // the boundary, but holds nothing — `clamp_to_box_boundary` hard-clamps it
+                            // to the boundary so it physically cannot cross without first holding.
+                            Some((Some(local_idx), false)) => {
+                                if at_boundary {
+                                    reservations.ledger_mut(id).try_admit(
+                                        entity,
+                                        local_idx,
+                                        matrices.row_for(id, local_idx),
+                                    )
+                                } else {
+                                    clamp_to_box_boundary = true;
+                                    true
+                                }
+                            }
                             // Has a reservation but no lanelet row (in-box safety-net): admit.
                             Some((None, false)) => true,
                             // No reservation at all: not eligible.
@@ -581,6 +612,27 @@ pub fn move_vehicles(
             v.progress = next_p;
             // Reset reverse distance when moving forward
             v.reverse_distance = 0.0;
+        }
+
+        // BOUNDARY HARD-CLAMP (deferred-reservation collision-safety floor). An eligible car that has
+        // not yet taken its precise conflict-tile reservation (it was below the box boundary at the
+        // gate) must not cross INTO the box this tick: hold it just below the boundary so it physically
+        // stays on the approach tile until a later tick where it is at the boundary and its `try_admit`
+        // succeeds. Without this, a fast car could jump from `progress < 0.5` straight past `0.5` into
+        // the box in one step, entering WITHOUT holding `active_mask` (a collision hole). The clamp is
+        // a strict floor (only reduces progress, never below `prev_p`).
+        if clamp_to_box_boundary && !v.is_reversing {
+            // Clamp to EXACTLY the boundary (not below): the car must be allowed to REACH
+            // `progress == TILE_CENTER_TO_EDGE_TILES` so that next tick `at_boundary` is true and it
+            // can take its `try_admit` reservation. Stopping it strictly below the boundary would
+            // deadlock it there forever (it could never become "at boundary").
+            let boundary_cap = TILE_CENTER_TO_EDGE_TILES.max(prev_p);
+            if v.progress > boundary_cap {
+                v.progress = boundary_cap;
+                v.speed = v
+                    .speed
+                    .min(0.0_f32.max((v.progress - prev_p) * tile_size / dt.max(1e-6)));
+            }
         }
 
         let mut last_tile_for_arrival = path_pool

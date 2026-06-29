@@ -2023,3 +2023,165 @@ fn multi_car_full_exit_cycle_progresses_not_deadlocks() {
         "the leading car must enter the box despite the full exit (don't-block-the-box removed)"
     );
 }
+
+/// REPRO + REGRESSION (the live "left turn frozen at an EMPTY box" freeze). An UNCONTROLLED 4x4
+/// intersection (no `TrafficLight`). A South-entry LEFT-turner (entry South → exit East, the live
+/// frozen car's directions) approaches one tile before the box; a conflicting West-bound through
+/// approaches the SAME box but enters MUCH later (it starts far back, at the tile center, low speed).
+///
+/// The bug: the through took its precise conflict-tile reservation (`active_mask`) the instant it
+/// became eligible — while still rolling up its APPROACH tile, NOT physically in the box — and HELD
+/// it for its entire slow approach. That phantom hold refused the conflicting left-turn's admission
+/// every tick even though the box was PHYSICALLY EMPTY (`active_mask`-held by an approach-tile car,
+/// not an in-box one). The left-turner never got a reservation and never advanced — a monotonic
+/// freeze at an empty box, exactly the live signature.
+///
+/// The fix takes the conflict-tile reservation only when a car is AT the box boundary (entering the
+/// box), so an approaching car holds nothing while still on its approach tile. The left-turner is
+/// then admitted and advances into the box. Collision-safety is preserved: the two never both sit
+/// inside the box (asserted every tick), and once one is genuinely crossing the box it does hold the
+/// conflict tile and the other yields.
+///
+/// RED before the fix: the left-turner is NEVER reserved and NEVER enters the box (its cursor/progress
+/// never advance) while the through holds `active_mask` from its approach tile.
+#[test]
+fn uncontrolled_left_turn_not_frozen_by_approaching_through_at_empty_box() {
+    let mut app = build_full_chain_arbiter_app_4x4(|_| {});
+
+    // South-entry LEFT-turner on col x=4 (a SOUTH lane), exits East onto row y=4. Box tiles 4..=7.
+    // (4,8) approach → box (4,7)..(4,4),(5,4),(6,4),(7,4) → (8,4) East exit. entry South,
+    // South.left()=East → LeftTurn. Starts near the stop line, ready to enter.
+    let left = spawn_at_stop_line(
+        &mut app,
+        vec![
+            TilePos { x: 4, y: 8 },
+            TilePos { x: 4, y: 7 },
+            TilePos { x: 4, y: 4 },
+            TilePos { x: 5, y: 4 },
+            TilePos { x: 6, y: 4 },
+            TilePos { x: 7, y: 4 },
+            TilePos { x: 8, y: 4 },
+        ],
+    );
+
+    // Conflicting WEST-bound through on row y=6 (a WEST lane), crossing col x=4 in the box — it
+    // shares box tiles with the left-turn sweep. It starts FAR BACK at the tile center (progress 0,
+    // low speed) so for many ticks it is on its APPROACH tile, NOT in the box: the box is physically
+    // EMPTY while it approaches. Pre-fix it still held `active_mask` the whole time and froze the left.
+    let through = {
+        let mut pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(
+            &mut pool,
+            vec![
+                TilePos { x: 8, y: 6 },
+                TilePos { x: 7, y: 6 },
+                TilePos { x: 4, y: 6 },
+                TilePos { x: 3, y: 6 },
+            ],
+            0,
+            0.0,
+            1.0,
+            60.0,
+            20.0,
+            1.0,
+        )
+    };
+    let through = app
+        .world_mut()
+        .spawn((
+            through,
+            Transform::default(),
+            VehicleTrafficState::FreeFlow,
+            VehicleLaneletPlan::default(),
+        ))
+        .id();
+
+    let left_start = {
+        let v = app.world().get::<Vehicle>(left).unwrap();
+        v.path_cursor as f32 + v.progress
+    };
+
+    let mut left_ever_reserved = false;
+    let mut left_entered_box = false;
+    for tick in 0..60 {
+        app.world_mut()
+            .resource_mut::<bevy::time::Time<bevy::time::Fixed>>()
+            .advance_by(std::time::Duration::from_secs_f32(0.1));
+        app.update();
+
+        // The only two vehicles are `left` and `through`. A vehicle is "committed into the box" iff
+        // its cursor is already on a box tile, OR it is one tile before the box AND its center has
+        // crossed the tile boundary (`progress >= TILE_CENTER_TO_EDGE_TILES`) — i.e. its front half is
+        // physically over the box. The box is PHYSICALLY EMPTY iff neither is committed. (Cursor-only
+        // `is_inside_box` is too coarse here: a car at the boundary, progress 0.5..1.0, legitimately
+        // holds the conflict tile while its cursor hasn't advanced yet.)
+        let committed_into_box = |app: &App, e: Entity| -> bool {
+            let Some(v) = app.world().get::<Vehicle>(e) else {
+                return false;
+            };
+            let pool = app.world().resource::<crate::game::transport::PathPool>();
+            let idx = app.world().resource::<IntersectionIndex>();
+            let on_box = pool
+                .get_tile(v.path_handle, v.path_cursor)
+                .and_then(|t| idx.intersection_id_at(t))
+                .is_some();
+            let next_is_box = pool
+                .get_tile(v.path_handle, v.path_cursor + 1)
+                .and_then(|t| idx.intersection_id_at(t))
+                .is_some();
+            on_box || (next_is_box && v.progress >= TILE_CENTER_TO_EDGE_TILES)
+        };
+        let left_in = is_inside_box(&app, left);
+        let through_in = is_inside_box(&app, through);
+        let box_physically_empty =
+            !committed_into_box(&app, left) && !committed_into_box(&app, through);
+
+        let res = app.world().resource::<IntersectionReservations>();
+        left_ever_reserved |= res.is_reserved_by(IntersectionId(0), left);
+
+        // Collision-safety: the two genuinely-conflicting vehicles must NEVER both be inside the box.
+        assert!(
+            !(left_in && through_in),
+            "tick {tick}: the left-turn and the conflicting through must NEVER both be inside the box"
+        );
+        left_entered_box |= left_in;
+
+        // CORE INVARIANT (the bug): the ledger must NOT hold a conflict-tile reservation
+        // (`active_mask` / a holder) while the box is PHYSICALLY EMPTY. Pre-fix the through grabbed
+        // `active_mask` from its APPROACH tile and held it for its whole approach — a phantom hold on
+        // an empty box that refused the left-turn's admission. Post-fix `active_mask` is held only by
+        // a car actually inside the box.
+        if box_physically_empty && let Some(ledger) = res.ledger(IntersectionId(0)) {
+            assert_eq!(
+                ledger.holder_count(),
+                0,
+                "tick {tick}: the box is PHYSICALLY EMPTY (no vehicle inside) yet the ledger holds \
+                 {} conflict-tile reservation(s) — a phantom approach-tile hold that froze the \
+                 left-turn (the live empty-box freeze)",
+                ledger.holder_count(),
+            );
+        }
+        assert!(
+            !res.stall_tripwire(),
+            "tick {tick}: stall tripwire must stay empty"
+        );
+    }
+
+    let left_end = match app.world().get::<Vehicle>(left) {
+        Some(v) => v.path_cursor as f32 + v.progress,
+        None => f32::INFINITY, // crossed the whole box and despawned at route end
+    };
+
+    assert!(
+        left_ever_reserved,
+        "the uncontrolled left-turner must get a reservation — it must NOT be frozen by a through \
+         that is merely APPROACHING an otherwise-empty box (the live empty-box freeze)"
+    );
+    assert!(
+        left_entered_box || left_end > left_start + 0.5,
+        "the left-turner must actually advance into / through the box, not freeze at the line \
+         (start={left_start}, end={left_end})"
+    );
+}
