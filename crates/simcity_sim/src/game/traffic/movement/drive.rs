@@ -411,7 +411,22 @@ pub fn move_vehicles(
                     let cap = exit_cell.road.kind.capacity_per_lane_tile();
                     let occ = traffic.per_tick_vehicles[exit_idx];
                     if occ >= cap {
-                        let entry_clear = occ == cap
+                        // Spillback-wedge guard: on a MULTI-TILE box (FourLane/SixLane cluster,
+                        // tiles.len() > 1) the grant/entry snapshot is stale relative to the deep
+                        // crossing — the exit can refill mid-crossing after we wave the car in on
+                        // the optimistic drain exception, leaving it wedged Inside on the bare
+                        // capacity gate (~line 384) and pinning the box. Require a GENUINELY free
+                        // exit slot (occ < cap) before admitting into a deep box; keep the lenient
+                        // drain exception only for shallow (TwoLane / 1-tile) boxes, where the lead
+                        // truly vacates the very next tile. Stricter admission only ever holds the
+                        // car at the stop line OUTSIDE the box — never the perpendicular axis — so
+                        // it cannot cause a collision; the wedge simply never forms.
+                        let deep_box = intersections
+                            .intersection_id_at(next_tile)
+                            .and_then(|id| intersections.cluster_by_id(id))
+                            .is_some_and(|c| c.tiles.len() > 1);
+                        let entry_clear = !deep_box
+                            && occ == cap
                             && spatial
                                 .tile_first(exit_idx)
                                 .is_some_and(|e| e.progress > exit_clear_progress);

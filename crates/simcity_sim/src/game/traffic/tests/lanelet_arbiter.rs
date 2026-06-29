@@ -1816,3 +1816,194 @@ fn granted_approaching_does_not_pre_lock_conflicting_candidate() {
          (a granted-but-not-entered car no longer pre-locks the box) — east={east_seen}, north={north_seen}"
     );
 }
+
+/// Build a `build_traffic_spatial_index → move_vehicles` app on the 4x4 (deep-box) cross. No arbiter:
+/// the test injects the reservation it needs directly so the don't-block-the-box EXIT gate is the
+/// only thing under test.
+fn build_move_app_4x4() -> App {
+    let (grid, idx) = cross_grid_4x4();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .add_message::<TripFinished>()
+        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(MapConfig {
+            width: 12,
+            height: 12,
+            tile_size: 16.0,
+        })
+        .insert_resource(grid)
+        .insert_resource(idx)
+        .insert_resource(TrafficConfig::default())
+        .insert_resource(LaneletConflictMatrices::default())
+        .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(IntersectionReservations::default())
+        .insert_resource(VehicleAggSnapshot::default())
+        .insert_resource(ParkedVehicleTileIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .add_systems(Update, (build_traffic_spatial_index, move_vehicles).chain());
+    app
+}
+
+/// Push a coarse whole-box Approaching reservation for `e` so the box-entry RESERVATION gate
+/// (`entry_reservation` → `Some((None, true))`) admits it — isolating the don't-block-the-box EXIT
+/// gate as the sole decision.
+fn inject_coarse_reservation(app: &mut App, e: Entity) {
+    app.world_mut()
+        .resource_mut::<IntersectionReservations>()
+        .by_intersection
+        .entry(IntersectionId(0))
+        .or_default()
+        .push(IntersectionReservation {
+            vehicle: e,
+            state: ReservationState::Approaching,
+            created_at_sec: 0.0,
+            zones: ZONE_ALL,
+            tiles: Vec::new(),
+            stream: StreamKey {
+                entry: RoadDir::East,
+                exit: RoadDir::East,
+            },
+            maneuver: ManeuverKind::Straight,
+            local_idx: None,
+            coarse: true,
+        });
+}
+
+/// (2-i) DEEP-BOX SPILLBACK GUARD. An eastbound through is reserved-eligible to enter a FourLane 4x4
+/// box (4 tiles deep across), but its EXIT tile (8,4) is at capacity with a STATIONARY lead parked at
+/// high progress (> exit_clear_progress=0.75). Under the OLD optimistic drain exception
+/// (`occ==cap && lead.progress>0.75`) the car was waved INTO the deep box on the bet that the lead
+/// would vacate — but on a deep box that snapshot is stale, the exit refills mid-crossing, and the
+/// car froze Inside on the bare capacity gate, pinning the box (the spillback wedge). The fix drops
+/// the drain exception for deep boxes: a genuinely free exit slot (occ < cap) is required, so the car
+/// holds at the stop line OUTSIDE the box — stricter admission, never a collision. Then DRAIN the
+/// exit and assert it enters.
+#[test]
+fn deep_box_blocks_entry_until_exit_genuinely_free() {
+    let exit_tile = TilePos { x: 8, y: 4 };
+    let approach = TilePos { x: 3, y: 4 };
+    let route = vec![
+        approach,
+        TilePos { x: 4, y: 4 },
+        TilePos { x: 7, y: 4 },
+        exit_tile,
+    ];
+    // FourLane capacity_per_lane_tile == 2.
+    let cap = RoadKind::FourLane.capacity_per_lane_tile();
+    // Start mid-approach-tile (well past the 0.0 stop-line clamp) so "blocked" snaps it BACK to the
+    // stop line (progress drops) while "admitted" lets it advance forward toward the box.
+    let start_progress = 0.4_f32;
+
+    // ---- RED-discriminating case: exit at cap, STATIONARY lead at high progress (>0.75). ----
+    let mut app = build_move_app_4x4();
+    let exit_idx = app.world().resource::<MapGrid>().idx(exit_tile).unwrap();
+
+    // Candidate eastbound, mid approach tile (speed 0).
+    let cand = {
+        let mut pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(
+            &mut pool,
+            route.clone(),
+            0,
+            start_progress,
+            0.0,
+            60.0,
+            20.0,
+            1.0,
+        )
+    };
+    let cand = app
+        .world_mut()
+        .spawn((
+            cand,
+            Transform::default(),
+            VehicleTrafficState::FreeFlow,
+            VehicleLaneletPlan::default(),
+        ))
+        .id();
+    inject_coarse_reservation(&mut app, cand);
+
+    // A stationary lead occupying the exit tile at progress 0.9 (> exit_clear_progress): it makes the
+    // OLD `entry_clear` drain exception TRUE (progress-only test, ignores its zero speed) — exactly
+    // the stale snapshot that wedged the box. Single-tile route so it stays put this tick.
+    {
+        let mut pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        let lead =
+            create_vehicle_with_route(&mut pool, vec![exit_tile], 0, 0.9, 0.0, 60.0, 20.0, 1.0);
+        app.world_mut().spawn((
+            lead,
+            Transform::default(),
+            VehicleTrafficState::FreeFlow,
+            VehicleLaneletPlan::default(),
+        ));
+    }
+    // Mark the exit tile as fully occupied (cap) in the occupancy read model.
+    {
+        let mut occ = app.world_mut().resource_mut::<TrafficOccupancy>();
+        occ.ensure_len(12 * 12);
+        occ.per_tick_vehicles[exit_idx] = cap;
+    }
+
+    // ONE tick (the lead is parked at progress 0.9 in this tick's spatial snapshot — exactly the
+    // stale "about to drain" snapshot). The OLD optimistic exception would admit the car here and it
+    // would advance FORWARD past its start; the fix blocks it, snapping it back toward the stop line.
+    app.world_mut()
+        .resource_mut::<bevy::time::Time<bevy::time::Fixed>>()
+        .advance_by(std::time::Duration::from_secs_f32(0.1));
+    app.update();
+
+    let v = app.world().get::<Vehicle>(cand).unwrap();
+    assert!(
+        v.path_cursor == 0 && v.progress < start_progress,
+        "deep box with a full exit + stationary high-progress lead must NOT admit the car into the \
+         box — it holds at the stop line (cursor 0, snapped back below its start={start_progress}); \
+         got cursor={} progress={}",
+        v.path_cursor,
+        v.progress
+    );
+
+    // ---- GREEN: drain the exit (occ < cap, no lead) → the car may now enter. ----
+    let mut app = build_move_app_4x4();
+    let cand = {
+        let mut pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(&mut pool, route, 0, start_progress, 0.0, 60.0, 20.0, 1.0)
+    };
+    let cand = app
+        .world_mut()
+        .spawn((
+            cand,
+            Transform::default(),
+            VehicleTrafficState::FreeFlow,
+            VehicleLaneletPlan::default(),
+        ))
+        .id();
+    inject_coarse_reservation(&mut app, cand);
+    // Exit tile empty (occ defaults to 0 < cap). Advance a few ticks so the car accelerates from rest
+    // and clears the stop line into the box.
+    for _ in 0..40 {
+        app.world_mut()
+            .resource_mut::<bevy::time::Time<bevy::time::Fixed>>()
+            .advance_by(std::time::Duration::from_secs_f32(0.1));
+        app.update();
+        if app.world().get_entity(cand).is_err() {
+            break; // crossed and despawned at route end — definitely entered
+        }
+    }
+    let entered = match app.world().get::<Vehicle>(cand) {
+        Some(v) => v.path_cursor >= 1, // advanced onto the first box tile (4,4) or beyond
+        None => true,                  // despawned at route end
+    };
+    assert!(
+        entered,
+        "with a genuinely free exit the car must enter the deep box (advance past the approach tile)"
+    );
+}

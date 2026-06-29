@@ -160,6 +160,27 @@ pub(super) fn resolve_stuck_vehicles(
             continue;
         }
 
+        // Last-resort guardrail, HOISTED above the reroute branch: a genuinely-wedged car must
+        // despawn BEFORE the reroute attempt runs, because that branch resets `stuck.secs = 0` and
+        // `continue`s on ~every tick (a fresh per-tick jitter seed flips the route tie-break into a
+        // phantom "route changed"), which left the old post-reroute despawn check (~line 247) as
+        // dead code for exactly this population. Trigger on the never-reset motion timer so a car
+        // wedged Inside a box past the despawn horizon is cleared. Despawn removes the body AND its
+        // inbox_mask claim atomically (no window where a crossing car is admitted onto an occupied
+        // tile), so this is the collision-SAFE box clear — unlike a bare Inside reservation release.
+        if motion.is_some_and(|m| m.stopped_secs >= STUCK_DESPAWN_SECS) && service_vehicle.is_none()
+        {
+            if let Some(p) = passenger {
+                finished.write(TripFinished {
+                    citizen: p.citizen,
+                    purpose: p.purpose,
+                });
+            }
+            commands.entity(e).despawn();
+            handled += 1;
+            continue;
+        }
+
         let Some(current) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             continue;
         };
@@ -239,13 +260,12 @@ pub(super) fn resolve_stuck_vehicles(
             continue;
         }
 
-        // 2) Last-resort guardrail: despawn non-service trip vehicles after a very long time stuck.
-        // Trigger on EITHER the state-resettable timer OR the never-reset motion timer, so a vehicle
-        // wedged in WaitingForGreen/Stopped (where stuck.secs is pinned/reset) can still be cleared
-        // once it has been physically motionless past the despawn horizon — the guardrail was dead
-        // code for exactly that population before.
-        let motion_despawn = motion.is_some_and(|m| m.stopped_secs >= STUCK_DESPAWN_SECS);
-        if (stuck.secs >= STUCK_DESPAWN_SECS || motion_despawn) && service_vehicle.is_none() {
+        // 2) Last-resort guardrail (path-timer arm): despawn non-service trip vehicles whose
+        // state-resettable `stuck.secs` has climbed past the horizon without a reroute resetting it.
+        // The motion-timer arm was hoisted above the reroute branch (the reroute `continue` reset the
+        // timer before this point ever ran, leaving the motion path dead), so it is no longer
+        // duplicated here.
+        if stuck.secs >= STUCK_DESPAWN_SECS && service_vehicle.is_none() {
             if let Some(p) = passenger {
                 finished.write(TripFinished {
                     citizen: p.citizen,
@@ -401,5 +421,122 @@ mod tests {
                 "stuck recovery flipped vehicle onto the oncoming tile {oncoming:?}"
             );
         }
+    }
+
+    /// (2-ii) DESPAWN MUST FIRE PAST THE HORIZON, EVEN WITH A DIFFERING REROUTE AVAILABLE.
+    ///
+    /// RED (pre-hoist): the motion-despawn check lived AFTER the reroute branch. A genuinely-wedged
+    /// car (`VehicleMotionTimer.stopped_secs >= STUCK_DESPAWN_SECS`) that ALSO had a differing road-A*
+    /// route would hit the reroute branch FIRST — which resets `stuck.secs = 0`, restarts the path,
+    /// and `continue`s — so the despawn at the bottom was unreachable dead code for it. In the live
+    /// jam a fresh per-tick jitter seed flipped the route tie-break into a phantom "route changed" on
+    /// ~every tick, so the car rerouted-in-place forever and never despawned (the 180 s guardrail was
+    /// never reached → the ~423 s frozen cluster).
+    ///
+    /// GREEN (post-hoist): the motion-despawn check is hoisted ABOVE the reroute branch, so a wedged
+    /// car past the despawn horizon is removed BEFORE the reroute can reset its timer. Despawn clears
+    /// the body + its inbox_mask claim atomically — the collision-safe box clear.
+    #[test]
+    fn wedged_car_despawns_even_when_a_differing_reroute_exists() {
+        use crate::game::traffic::components::VehicleMotionTimer;
+        use crate::game::transport::{GraphVersion, rebuild_road_graph_inner};
+
+        // Straight East corridor (0,0)->(3,0): road A* will find the full 4-tile path.
+        let mut grid = MapGrid::new(5, 5);
+        let start = TilePos { x: 0, y: 0 };
+        let goal = TilePos { x: 3, y: 0 };
+        for x in 0..4 {
+            put_road(&mut grid, TilePos { x, y: 0 }, RoadDir::East);
+        }
+
+        let mut graph = RoadGraph::default();
+        let gv = GraphVersion(1);
+        rebuild_road_graph_inner(&grid, &gv, &mut graph);
+
+        let mut app = App::new();
+        let mut path_pool = PathPool::default();
+        // Interned route is the DEGENERATE 2-tile [start, goal]; road A* returns the real
+        // [(0,0),(1,0),(2,0),(3,0)] which DIFFERS -> `road_changed` is true (reroute is available).
+        let handle = path_pool.intern(vec![start, goal]);
+
+        app.insert_resource(Time::<Fixed>::from_seconds(0.1));
+        app.insert_resource(MapConfig::default());
+        app.insert_resource(grid);
+        app.insert_resource(graph);
+        app.insert_resource(RegionGraph::default());
+        app.insert_resource(TrafficOccupancy::default());
+        app.insert_resource(PathfindingConfig::default());
+        app.insert_resource(PathCache::default());
+        app.insert_resource(path_pool);
+        app.insert_resource(IntersectionIndex::default());
+        app.insert_resource(TrafficConfig::default());
+        app.insert_resource(crate::game::transport::LaneGraph::default());
+        app.insert_resource(crate::game::transport::LaneletGraph::default());
+        app.insert_resource(crate::game::sim::SimRng::default());
+        app.init_resource::<bevy::ecs::message::Messages<TripFinished>>();
+
+        let vehicle = Vehicle {
+            path_handle: handle,
+            path_cursor: 0,
+            tile_pos: start,
+            ..Default::default()
+        };
+        let entity = app
+            .world_mut()
+            .spawn((
+                vehicle,
+                VehicleTrafficState::FreeFlow,
+                StuckTimer {
+                    secs: 0.0, // NOT past the path-timer horizon: only the motion timer is.
+                    last_tile: start,
+                    last_progress: 0.0,
+                },
+                // Wedged past the despawn horizon on the never-reset motion timer.
+                VehicleMotionTimer {
+                    moving_secs: 0.0,
+                    stopped_secs: STUCK_DESPAWN_SECS + 1.0,
+                },
+            ))
+            .id();
+
+        app.add_systems(Update, resolve_stuck_vehicles);
+        app.update();
+
+        // Sanity: a differing road-A* route really is available (so pre-hoist the reroute branch
+        // WOULD have fired and reset the timer instead of despawning).
+        let mut ctx_cache = app.world_mut().remove_resource::<PathCache>().unwrap();
+        let route = {
+            let graph = app.world().resource::<RoadGraph>();
+            let regions = app.world().resource::<RegionGraph>();
+            let traffic = app.world().resource::<TrafficOccupancy>();
+            let cfg = app.world().resource::<PathfindingConfig>();
+            let grid = app.world().resource::<MapGrid>();
+            let intersections = app.world().resource::<IntersectionIndex>();
+            let mut ctx = PathfindingCtx {
+                time_now_sec: 0.0,
+                cfg,
+                cache: &mut ctx_cache,
+                graph,
+                regions: Some(regions),
+                traffic,
+                grid,
+                intersections,
+                max_iterations: None,
+            };
+            find_road_path_cached(&mut ctx, start, goal)
+        };
+        app.insert_resource(ctx_cache);
+        assert!(
+            route.len() > 2,
+            "precondition: road A* must return a multi-tile route that DIFFERS from the interned \
+             [start, goal] (so a reroute is genuinely available); got {route:?}"
+        );
+
+        // The wedged car must be DESPAWNED (the hoisted guardrail fired), not rerouted-in-place.
+        assert!(
+            app.world().get_entity(entity).is_err(),
+            "a car wedged past the despawn horizon must despawn even with a differing reroute \
+             available — the motion-despawn check must run BEFORE the reroute branch"
+        );
     }
 }
