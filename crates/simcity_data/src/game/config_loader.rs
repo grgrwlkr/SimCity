@@ -118,10 +118,33 @@ mod tests {
 
     #[test]
     fn savegame_v3_roundtrips_through_ron() {
+        use crate::game::roads::{LaneType, RoadDir, RoadFlow, RoadKind};
+
+        // A non-default FourLane RoadCell (the multi-lane test-city road kind): every field
+        // off-default so the RON roundtrip is exercised on each of kind/dir/lane/flow/lane_type.
+        let four_lane = RoadCell {
+            kind: RoadKind::FourLane,
+            dir: RoadDir::West,
+            lane: 3,
+            flow: RoadFlow::OneWay(RoadDir::West),
+            lane_type: LaneType::LeftTurnOnly,
+        };
+        let mut map = minimal_map();
+        map.width = 2;
+        map.height = 1;
+        map.tiles.push(MapTileV1 {
+            height: 7,
+            water: false,
+            terrain: TileKind::Grass,
+            road: four_lane,
+            zone: ZoneKind::None,
+            building: None,
+        });
+
         let save = SaveGameV3 {
             save_version: 3,
             seed: 1,
-            map: minimal_map(),
+            map,
             city: City::default(),
             buildings: Vec::new(),
             citizens: Vec::new(),
@@ -136,6 +159,13 @@ mod tests {
         let parsed: SaveGameV3 = ron::from_str(&text).expect("deserialize SaveGameV3");
         assert_eq!(parsed.save_version, 3);
         assert_eq!(parsed.traffic_light_tiles, vec![TilePos { x: 3, y: 4 }]);
+        // The FourLane cell survives the roundtrip with every field intact.
+        let roundtripped = parsed.map.tiles[1].road;
+        assert_eq!(roundtripped.kind, RoadKind::FourLane);
+        assert_eq!(roundtripped.dir, RoadDir::West);
+        assert_eq!(roundtripped.lane, 3);
+        assert_eq!(roundtripped.flow, RoadFlow::OneWay(RoadDir::West));
+        assert_eq!(roundtripped.lane_type, LaneType::LeftTurnOnly);
     }
 
     /// Old saves without the `traffic_light_tiles` field must still deserialize

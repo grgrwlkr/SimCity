@@ -1526,6 +1526,44 @@ mod tests {
             .collect()
     }
 
+    /// 4x4 box, x,y in 4..=7 — the box a FourLane×FourLane crossing produces (the multi-lane test
+    /// city's intersection shape). Center POINT C = mean of tile centers = (6.0, 6.0): the vertex
+    /// where the four inner tiles (5,5)/(5,6)/(6,5)/(6,6) meet, NOT a tile center.
+    fn box_4x4() -> HashSet<TilePos> {
+        (4..=7)
+            .flat_map(|x| (4..=7).map(move |y| TilePos { x, y }))
+            .collect()
+    }
+
+    /// Rectangular cluster spanning `x in xs`, `y in ys` (inclusive). Used for the mixed-width
+    /// (non-square) box tests — e.g. FourLane(4 tiles)×SixLane(6 tiles) → 4x6, FourLane×TwoLane → 4x2.
+    fn box_rect(
+        xs: std::ops::RangeInclusive<i32>,
+        ys: std::ops::RangeInclusive<i32>,
+    ) -> HashSet<TilePos> {
+        let ys2 = ys.clone();
+        xs.flat_map(move |x| ys2.clone().map(move |y| TilePos { x, y }))
+            .collect()
+    }
+
+    /// A `build_internal_path` test case: (cluster, entry, entry_dir, exit_tile, exit_dir, maneuver).
+    type PathCase<'a> = (
+        &'a HashSet<TilePos>,
+        TilePos,
+        RoadDir,
+        TilePos,
+        RoadDir,
+        ManeuverKind,
+    );
+
+    /// Float center POINT of a rectangular box (mean of tile centers).
+    fn box_center(cluster: &HashSet<TilePos>) -> (f64, f64) {
+        let n = cluster.len() as f64;
+        let sx: f64 = cluster.iter().map(|t| t.x as f64 + 0.5).sum();
+        let sy: f64 = cluster.iter().map(|t| t.y as f64 + 0.5).sum();
+        (sx / n, sy / n)
+    }
+
     /// True iff `path` is simple (no revisited tile).
     fn is_simple(path: &[TilePos]) -> bool {
         let s: HashSet<TilePos> = path.iter().copied().collect();
@@ -1792,5 +1830,355 @@ mod tests {
             encloses_center(&uturn, c),
             "U-turn must enclose C: {uturn:?}"
         );
+    }
+
+    // ---- 4x4 box (FourLane×FourLane — the multi-lane test-city intersection shape) ----
+    //
+    // The whole point of widening to FourLane: a single wide turn occupies only SOME of the 16 tiles
+    // (the inner 2x2 around C stays free), so it can no longer monopolize the box the way a turn does
+    // in a 2x2. These tests pin that down: tight turns hug a corner, wide turns enclose C but leave the
+    // inner 2x2 free (≤ 12 of 16 tiles), and every path stays in-box / 4-adjacent / simple.
+
+    #[test]
+    fn arc_4x4_straight_is_a_direct_line() {
+        // 4x4 box x,y in 4..=7, C=(6.0,6.0). Eastbound straight on the bottom row: entry (4,4),
+        // exit_tile (8,4) East -> goal (7,4). Direct line, never enclosing C.
+        let cluster = box_4x4();
+        let entry = TilePos { x: 4, y: 4 };
+        let goal = TilePos { x: 7, y: 4 };
+        let path = build_internal_path(
+            &cluster,
+            TilePos { x: 4, y: 4 },
+            entry,
+            RoadDir::East,
+            TilePos { x: 8, y: 4 },
+            RoadDir::East,
+            ManeuverKind::Straight,
+        )
+        .expect("straight");
+        eprintln!("4x4 STRAIGHT (E):{}", ascii_path(&cluster, &path));
+        assert_path_invariants(&cluster, &path, entry, goal);
+        assert_eq!(
+            path,
+            vec![
+                TilePos { x: 4, y: 4 },
+                TilePos { x: 5, y: 4 },
+                TilePos { x: 6, y: 4 },
+                TilePos { x: 7, y: 4 },
+            ],
+            "straight is the direct bottom-row line"
+        );
+        assert!(
+            !encloses_center(&path, (6.0, 6.0)),
+            "straight must NOT enclose C: {path:?}"
+        );
+    }
+
+    #[test]
+    fn arc_4x4_right_turn_is_tight_corner_c_outside() {
+        // 4x4 box, C=(6.0,6.0). Northbound right turn from the bottom-left corner lane: entry (4,4)
+        // heading North, exit East exit_tile (8,4) -> goal (7,4). North->East = RIGHT (tight). The
+        // angular `arc_around_center` may dead-end on this near-corner case -> bfs fallback; either
+        // way the path must be TIGHT (hug the bottom edge), direction-correct, and leave C OUTSIDE.
+        let cluster = box_4x4();
+        let entry = TilePos { x: 4, y: 4 };
+        let goal = TilePos { x: 7, y: 4 };
+        let path = build_internal_path(
+            &cluster,
+            TilePos { x: 4, y: 4 },
+            entry,
+            RoadDir::North,
+            TilePos { x: 8, y: 4 },
+            RoadDir::East,
+            ManeuverKind::RightTurn,
+        )
+        .expect("right");
+        eprintln!("4x4 RIGHT (N->E):{}", ascii_path(&cluster, &path));
+        assert_path_invariants(&cluster, &path, entry, goal);
+        // Tight: hugs the bottom row, never reaches up to C's row -> C stays outside.
+        assert!(
+            !encloses_center(&path, (6.0, 6.0)),
+            "tight right turn must NOT enclose C: {path:?}"
+        );
+        assert!(
+            path.iter().all(|t| t.y <= 5),
+            "tight right turn hugs the corner (low y), never climbs to C's far side: {path:?}"
+        );
+    }
+
+    #[test]
+    fn arc_4x4_left_turn_wide_encloses_c_leaves_box_room() {
+        // 4x4 box, C=(6.0,6.0). Eastbound LEFT turn: entry (4,4) heading East, exit North exit_tile
+        // (4,8) -> goal (4,7). East->North = LEFT (wide). The greedy arc swings the long way AROUND
+        // C: it must enclose C, stay simple/in-box/4-adjacent, occupy only ~10-12 of 16 tiles (NOT
+        // the whole box) and leave a free wedge of inner tiles so a DISJOINT parallel maneuver still
+        // fits — the multi-lane property. (The greedy walker hugs the perimeter but does clip the
+        // near-side inner column (6,5)/(6,6); the FAR inner tiles (5,5)/(5,6) stay free, which is what
+        // a parallel right turn from the opposite corner needs.)
+        let cluster = box_4x4();
+        let c = (6.0_f64, 6.0_f64);
+        let entry = TilePos { x: 4, y: 4 };
+        let goal = TilePos { x: 4, y: 7 };
+        let path = build_internal_path(
+            &cluster,
+            TilePos { x: 4, y: 4 },
+            entry,
+            RoadDir::East,
+            TilePos { x: 4, y: 8 },
+            RoadDir::North,
+            ManeuverKind::LeftTurn,
+        )
+        .expect("left");
+        eprintln!("4x4 LEFT (E->N):{}", ascii_path(&cluster, &path));
+        assert_path_invariants(&cluster, &path, entry, goal);
+        assert!(
+            encloses_center(&path, c),
+            "wide left turn must enclose C: {path:?}"
+        );
+        assert!(
+            path.len() <= 12,
+            "wide turn occupies only ~10-12 of 16 tiles, not the whole box: {} tiles {path:?}",
+            path.len()
+        );
+        let on_path: HashSet<TilePos> = path.iter().copied().collect();
+        // Strictly fewer than all 16 tiles -> the box is not monopolized (vs a 2x2 where ANY turn
+        // touches all 4). And the far inner tiles (5,5)/(5,6) stay free for a parallel maneuver.
+        assert!(on_path.len() < 16, "must not occupy the whole 4x4 box");
+        for inner_far in [TilePos { x: 5, y: 5 }, TilePos { x: 5, y: 6 }] {
+            assert!(
+                !on_path.contains(&inner_far),
+                "far inner tile {inner_far:?} must stay free for parallel flow: {path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn arc_4x4_uturn_wide_encloses_c_leaves_box_room() {
+        // 4x4 box, C=(6.0,6.0). Eastbound U-turn: entry (4,4) heading East, exit West exit_tile
+        // (3,5) -> goal (4,5). East->West = U-turn (~270 arc). Encloses C, ~12 of 16 tiles, leaves
+        // a free wedge (the box is never fully monopolized).
+        let cluster = box_4x4();
+        let c = (6.0_f64, 6.0_f64);
+        let entry = TilePos { x: 4, y: 4 };
+        let goal = TilePos { x: 4, y: 5 };
+        let path = build_internal_path(
+            &cluster,
+            TilePos { x: 4, y: 4 },
+            entry,
+            RoadDir::East,
+            TilePos { x: 3, y: 5 },
+            RoadDir::West,
+            ManeuverKind::UTurn,
+        )
+        .expect("uturn");
+        eprintln!("4x4 UTURN (E->W):{}", ascii_path(&cluster, &path));
+        assert_path_invariants(&cluster, &path, entry, goal);
+        assert!(
+            encloses_center(&path, c),
+            "wide U-turn must enclose C: {path:?}"
+        );
+        assert!(
+            path.len() <= 12,
+            "U-turn occupies only ~10-12 of 16 tiles: {} tiles {path:?}",
+            path.len()
+        );
+        let on_path: HashSet<TilePos> = path.iter().copied().collect();
+        assert!(on_path.len() < 16, "must not occupy the whole 4x4 box");
+        // The two far inner tiles stay free.
+        for inner_far in [TilePos { x: 5, y: 5 }, TilePos { x: 5, y: 6 }] {
+            assert!(
+                !on_path.contains(&inner_far),
+                "far inner tile {inner_far:?} must stay free: {path:?}"
+            );
+        }
+    }
+
+    /// THE MIXED-WIDTH RISK: a square 4x4 has all 8 exit-feeders in-cluster, so the
+    /// `build_internal_path` guard ("return None when exit-feeder goal is outside the cluster") must
+    /// NOT spuriously drop a regular straight/turn on it. Exercise every cardinal straight + a turn.
+    #[test]
+    fn mixed_width_square_4x4_does_not_spuriously_drop() {
+        let cluster = box_4x4();
+        // Four cardinal straights, each entry/exit on a lane row/column inside the span. goal =
+        // exit_tile - exit_dir.delta() must be in-cluster for all of them (square box => yes).
+        let cases: [(TilePos, RoadDir, TilePos, RoadDir, ManeuverKind); 5] = [
+            // E straight on y=4: entry(4,4) -> exit(8,4) -> goal(7,4).
+            (
+                TilePos { x: 4, y: 4 },
+                RoadDir::East,
+                TilePos { x: 8, y: 4 },
+                RoadDir::East,
+                ManeuverKind::Straight,
+            ),
+            // W straight on y=7: entry(7,7) -> exit(3,7) -> goal(4,7).
+            (
+                TilePos { x: 7, y: 7 },
+                RoadDir::West,
+                TilePos { x: 3, y: 7 },
+                RoadDir::West,
+                ManeuverKind::Straight,
+            ),
+            // N straight on x=4: entry(4,4) -> exit(4,8) -> goal(4,7).
+            (
+                TilePos { x: 4, y: 4 },
+                RoadDir::North,
+                TilePos { x: 4, y: 8 },
+                RoadDir::North,
+                ManeuverKind::Straight,
+            ),
+            // S straight on x=7: entry(7,7) -> exit(7,3) -> goal(7,4).
+            (
+                TilePos { x: 7, y: 7 },
+                RoadDir::South,
+                TilePos { x: 7, y: 3 },
+                RoadDir::South,
+                ManeuverKind::Straight,
+            ),
+            // Tight right N->E: entry(4,4) -> exit(8,4) -> goal(7,4).
+            (
+                TilePos { x: 4, y: 4 },
+                RoadDir::North,
+                TilePos { x: 8, y: 4 },
+                RoadDir::East,
+                ManeuverKind::RightTurn,
+            ),
+        ];
+        for (entry, edir, exit, xdir, man) in cases {
+            let path = build_internal_path(
+                &cluster,
+                TilePos { x: 4, y: 4 },
+                entry,
+                edir,
+                exit,
+                xdir,
+                man,
+            );
+            assert!(
+                path.is_some(),
+                "square 4x4 must NOT spuriously drop {man:?} entry={entry:?}->exit={exit:?}; all exit-feeders are in-cluster"
+            );
+            let path = path.unwrap();
+            assert_path_invariants(
+                &cluster,
+                &path,
+                entry,
+                TilePos {
+                    x: exit.x - xdir.delta().x,
+                    y: exit.y - xdir.delta().y,
+                },
+            );
+        }
+    }
+
+    /// Mixed-width NON-square clusters (FourLane×SixLane = 4x6, FourLane×TwoLane = 4x2). For
+    /// representative entry/exit pairs `build_internal_path` must return either a valid
+    /// direction-correct in-box path OR `None` (drop) — and NEVER a path that lands on the
+    /// opposing-direction exit lane. The guard (goal = exit_tile - exit_dir.delta() outside cluster
+    /// => None) is the safety net; here we confirm it drops rather than emitting an oncoming path.
+    #[test]
+    fn mixed_width_nonsquare_boxes_never_emit_oncoming() {
+        // FourLane (x:4..=7, 4 tiles) × SixLane (y:4..=9, 6 tiles) => 4x6 box.
+        let rect_4x6 = box_rect(4..=7, 4..=9);
+        // FourLane (x:4..=7) × TwoLane (y:5..=6, 2 tiles) => 4x2 box.
+        let rect_4x2 = box_rect(4..=7, 5..=6);
+
+        // (cluster, entry, entry_dir, exit_tile, exit_dir, maneuver)
+        let cases: [PathCase; 6] = [
+            // 4x6: E straight on y=4 -> exit (8,4) -> goal (7,4) in-cluster. Valid.
+            (
+                &rect_4x6,
+                TilePos { x: 4, y: 4 },
+                RoadDir::East,
+                TilePos { x: 8, y: 4 },
+                RoadDir::East,
+                ManeuverKind::Straight,
+            ),
+            // 4x6: N straight on x=4 -> exit (4,10) -> goal (4,9) in-cluster. Valid (long box).
+            (
+                &rect_4x6,
+                TilePos { x: 4, y: 4 },
+                RoadDir::North,
+                TilePos { x: 4, y: 10 },
+                RoadDir::North,
+                ManeuverKind::Straight,
+            ),
+            // 4x6: right turn N->E from corner -> exit (8,4) -> goal (7,4). Valid/tight.
+            (
+                &rect_4x6,
+                TilePos { x: 4, y: 4 },
+                RoadDir::North,
+                TilePos { x: 8, y: 4 },
+                RoadDir::East,
+                ManeuverKind::RightTurn,
+            ),
+            // 4x2: E straight on y=5 -> exit (8,5) -> goal (7,5) in-cluster. Valid.
+            (
+                &rect_4x2,
+                TilePos { x: 4, y: 5 },
+                RoadDir::East,
+                TilePos { x: 8, y: 5 },
+                RoadDir::East,
+                ManeuverKind::Straight,
+            ),
+            // 4x2: left turn E->N on a 2-tall box -> exit (4,7) -> goal (4,6) in-cluster. Tight box,
+            // may resolve or drop; must never land oncoming.
+            (
+                &rect_4x2,
+                TilePos { x: 4, y: 5 },
+                RoadDir::East,
+                TilePos { x: 4, y: 7 },
+                RoadDir::North,
+                ManeuverKind::LeftTurn,
+            ),
+            // 4x2: U-turn E->W -> exit (3,6) -> goal (4,6) in-cluster.
+            (
+                &rect_4x2,
+                TilePos { x: 4, y: 5 },
+                RoadDir::East,
+                TilePos { x: 3, y: 6 },
+                RoadDir::West,
+                ManeuverKind::UTurn,
+            ),
+        ];
+
+        for (cluster, entry, edir, exit, xdir, man) in cases {
+            let c = box_center(cluster);
+            let maybe = build_internal_path(
+                cluster,
+                TilePos { x: 4, y: 4 },
+                entry,
+                edir,
+                exit,
+                xdir,
+                man,
+            );
+            let Some(path) = maybe else {
+                // Dropping is acceptable (caller falls back to dir-strict road-A*). Safe.
+                eprintln!("mixed-width {man:?} entry={entry:?} exit={exit:?} -> DROP (None)");
+                continue;
+            };
+            eprintln!(
+                "mixed-width {man:?} entry={entry:?} exit={exit:?} ->{}",
+                ascii_path(cluster, &path)
+            );
+            // The goal the router must terminate on: the in-box tile FEEDING the away-pointing exit.
+            let goal = TilePos {
+                x: exit.x - xdir.delta().x,
+                y: exit.y - xdir.delta().y,
+            };
+            assert_path_invariants(cluster, &path, entry, goal);
+            // Stepping goal -> exit_tile travels in exit_dir (non-oncoming). The last in-box tile is
+            // `goal`; confirm goal+exit_dir.delta() == exit_tile (so the flattened route lands on the
+            // SAME-direction exit lane, never the opposing one).
+            let after = TilePos {
+                x: goal.x + xdir.delta().x,
+                y: goal.y + xdir.delta().y,
+            };
+            assert_eq!(
+                after, exit,
+                "path must terminate on the exit-feeding tile so the route lands on the same-direction exit lane (never oncoming)"
+            );
+            let _ = c;
+        }
     }
 }

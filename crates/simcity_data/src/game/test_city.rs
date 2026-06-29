@@ -230,7 +230,7 @@ pub fn generate_test_city(
         RoadKind::FourLane,
     );
 
-    // Secondary horizontal roads (TwoLane)
+    // Secondary horizontal roads (FourLane)
     let secondary_y1 = highway_y - 20;
     let secondary_y2 = highway_y + 20;
 
@@ -245,7 +245,7 @@ pub fn generate_test_city(
                 x: cfg.width - 15,
                 y: secondary_y1,
             },
-            RoadKind::TwoLane,
+            RoadKind::FourLane,
         );
     }
 
@@ -260,11 +260,11 @@ pub fn generate_test_city(
                 x: cfg.width - 15,
                 y: secondary_y2,
             },
-            RoadKind::TwoLane,
+            RoadKind::FourLane,
         );
     }
 
-    // Local streets connecting the areas (TwoLane)
+    // Local streets connecting the areas (FourLane)
     let local_x1 = arterial1_x - 15;
     let local_x2 = arterial1_x + 15;
     let local_x3 = arterial2_x - 15;
@@ -279,7 +279,7 @@ pub fn generate_test_city(
                     x,
                     y: cfg.height - 10,
                 },
-                RoadKind::TwoLane,
+                RoadKind::FourLane,
             );
         }
     }

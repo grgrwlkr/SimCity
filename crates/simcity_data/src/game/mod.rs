@@ -247,4 +247,79 @@ mod tests {
             "LoadTestCity should still spawn service buildings (FireStation, PoliceStation, Hospital)"
         );
     }
+
+    /// Smoke test for the multi-lane (FourLane) conversion: loading the test city and building the
+    /// intersection clusters + lane graph + lanelet graph on the resulting 4x4/mixed-width boxes must
+    /// NOT panic and must produce lanelets. If the FourLane boxes collapsed (e.g. `build_internal_path`
+    /// dropped every connector), the lanelet graph would be empty — this guards against that.
+    #[test]
+    fn load_test_city_builds_lanelet_graph_without_panic() {
+        use transport::{
+            GraphVersion, LaneGraph, LaneletConflictMatrices, LaneletGraph, build_lane_graph,
+            build_lanelet_graph,
+        };
+
+        // Rebuild intersection clusters for the freshly generated grid (mirrors what
+        // `detect_intersections` does at runtime; that system isn't re-exported from the crate root).
+        fn rebuild_clusters(
+            grid: Res<map::MapGrid>,
+            gv: Res<GraphVersion>,
+            mut index: ResMut<intersections::IntersectionIndex>,
+        ) {
+            let (clusters, tile_to_intersection) =
+                intersections::build_intersection_clusters(&grid);
+            index.clusters = clusters;
+            index.tile_to_intersection = tile_to_intersection;
+            index.version = gv.0;
+        }
+
+        let cfg = map::MapConfig::default();
+        let tile_count = (cfg.width as usize) * (cfg.height as usize);
+
+        let mut app = App::new();
+        app.add_message::<commands::GameCommand>()
+            .add_message::<sim_events::DayAdvanced>()
+            .insert_resource(cfg.clone())
+            .insert_resource(map::MapSeed(1))
+            .insert_resource(map::MapGrid::new(cfg.width, cfg.height))
+            .insert_resource(map::DirtyTiles::new(tile_count))
+            .insert_resource(map::RoadDirtyTiles::new(tile_count))
+            .insert_resource(sim::City::default())
+            .insert_resource(GraphVersion(1))
+            .insert_resource(map::MapEditVersion::default())
+            .insert_resource(intersections::IntersectionIndex::default())
+            .insert_resource(LaneGraph::default())
+            .insert_resource(LaneletGraph::default())
+            .insert_resource(LaneletConflictMatrices::default())
+            .insert_resource(traffic::TrafficConfig::default())
+            .insert_resource(TestCommandOnce::default())
+            .add_systems(
+                Update,
+                (
+                    send_load_test_city_once,
+                    handle_load_test_city,
+                    // Rebuild clusters for the freshly generated grid, then the lane + lanelet graphs.
+                    rebuild_clusters,
+                    build_lane_graph,
+                    build_lanelet_graph,
+                )
+                    .chain(),
+            );
+
+        // If any FourLane box construction panics (oncoming routing, degenerate geometry), this
+        // update unwinds the test.
+        app.update();
+
+        let graph = app.world().resource::<LaneletGraph>();
+        assert!(
+            !graph.lanelets.is_empty(),
+            "the FourLane test city must produce lanelets (4x4/mixed boxes did not collapse)"
+        );
+
+        let matrices = app.world().resource::<LaneletConflictMatrices>();
+        assert!(
+            !matrices.by_intersection.is_empty(),
+            "conflict matrices must be built for the FourLane intersections"
+        );
+    }
 }

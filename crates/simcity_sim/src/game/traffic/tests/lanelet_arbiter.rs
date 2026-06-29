@@ -1269,6 +1269,301 @@ fn two_non_conflicting_right_turns_both_admitted() {
     assert!(!res.stall_tripwire(), "stall tripwire must stay empty");
 }
 
+// =================================================================================================
+// MULTI-LANE (FourLane × FourLane → 4x4 box) parallel-admission tests. The whole point of converting
+// the test city to FourLane: in a 2x2 box every maneuver shares the same 4 tiles, so a single wide
+// turn monopolizes the box → forced serialization → gridlock. In a 4x4 box a maneuver occupies only
+// SOME of the 16 tiles, so two non-conflicting movements admit in the SAME tick. These tests build a
+// real FourLane 4x4 cross + lanelet graph and assert exactly that, plus that genuinely conflicting
+// movements still can't both admit (collision-safety preserved at the bigger box).
+//
+// 4x4 box lane layout (x,y in 4..=7, mirrors what `build_road_segment(FourLane)` emits):
+//   Horizontal E-W road occupies rows y=4,5 (EAST lanes) and y=6,7 (WEST lanes).
+//   Vertical   N-S road occupies cols x=6,7 (NORTH lanes) and x=4,5 (SOUTH lanes).
+//   The 16 crossing tiles (x,y in 4..=7) are the box (dir == None).
+// =================================================================================================
+
+/// 12x12 grid with a 4x4 cluster at x,y in 4..=7. Two crossing FourLane roads (2 lanes per
+/// direction). Approach/exit lanes extend out to the grid edges.
+fn cross_grid_4x4() -> (MapGrid, IntersectionIndex) {
+    let mut grid = MapGrid::new(12, 12);
+
+    // Box tiles (dir == None).
+    let mut box_tiles = Vec::new();
+    for x in 4..=7 {
+        for y in 4..=7 {
+            let p = TilePos { x, y };
+            set_cell(&mut grid, p, RoadKind::FourLane, RoadDir::None);
+            box_tiles.push(p);
+        }
+    }
+
+    // Horizontal FourLane: rows y=4,5 EAST; y=6,7 WEST. Lanes outside the box on both x sides.
+    for x in (0..4).chain(8..12) {
+        set_cell(
+            &mut grid,
+            TilePos { x, y: 4 },
+            RoadKind::FourLane,
+            RoadDir::East,
+        );
+        set_cell(
+            &mut grid,
+            TilePos { x, y: 5 },
+            RoadKind::FourLane,
+            RoadDir::East,
+        );
+        set_cell(
+            &mut grid,
+            TilePos { x, y: 6 },
+            RoadKind::FourLane,
+            RoadDir::West,
+        );
+        set_cell(
+            &mut grid,
+            TilePos { x, y: 7 },
+            RoadKind::FourLane,
+            RoadDir::West,
+        );
+    }
+    // Vertical FourLane: cols x=6,7 NORTH; x=4,5 SOUTH. Lanes outside the box on both y sides.
+    for y in (0..4).chain(8..12) {
+        set_cell(
+            &mut grid,
+            TilePos { x: 6, y },
+            RoadKind::FourLane,
+            RoadDir::North,
+        );
+        set_cell(
+            &mut grid,
+            TilePos { x: 7, y },
+            RoadKind::FourLane,
+            RoadDir::North,
+        );
+        set_cell(
+            &mut grid,
+            TilePos { x: 4, y },
+            RoadKind::FourLane,
+            RoadDir::South,
+        );
+        set_cell(
+            &mut grid,
+            TilePos { x: 5, y },
+            RoadKind::FourLane,
+            RoadDir::South,
+        );
+    }
+
+    let id = IntersectionId(0);
+    let key = IntersectionKey {
+        aabb_min: TilePos { x: 4, y: 4 },
+        aabb_max: TilePos { x: 7, y: 7 },
+        tile_count: 16,
+        tiles_hash: 16,
+    };
+    let mut idx = IntersectionIndex::default();
+    idx.clusters.push(IntersectionCluster {
+        id,
+        key,
+        tiles: box_tiles.clone(),
+        aabb_min: TilePos { x: 4, y: 4 },
+        aabb_max: TilePos { x: 7, y: 7 },
+        centroid_tile: TilePos { x: 4, y: 4 },
+    });
+    for t in box_tiles {
+        idx.tile_to_intersection.insert(t, id);
+    }
+    idx.version = 1;
+    (grid, idx)
+}
+
+/// Build a bare flag-on arbiter app on the 4x4 cross (build → arbitrate → cleanup chained), no
+/// vehicles spawned. `customize` may mutate resources first.
+fn build_bare_arbiter_app_4x4(customize: impl FnOnce(&mut App)) -> App {
+    let (grid, idx) = cross_grid_4x4();
+    let gv = GraphVersion(1);
+    let lanes = build_lane_graph_inner(&grid, &gv);
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(MapConfig {
+            width: 12,
+            height: 12,
+            tile_size: 16.0,
+        })
+        .insert_resource(grid)
+        .insert_resource(idx)
+        .insert_resource(lanes)
+        .insert_resource(gv)
+        .insert_resource(TrafficConfig::default())
+        .insert_resource(LaneletGraph::default())
+        .insert_resource(LaneletConflictMatrices::default())
+        .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(IntersectionReservations::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .init_resource::<LeftTurnDemand>()
+        .init_resource::<ArbiterIndexCache>()
+        .init_resource::<ArbiterTickStats>()
+        .init_resource::<ApproachFairness>()
+        .init_resource::<ClusterStarvation>()
+        .init_resource::<LaneletStallTracker>()
+        .init_resource::<RingTopologyStatus>();
+
+    app.add_systems(
+        Update,
+        (
+            build_lanelet_graph,
+            arbitrate_lanelet_reservations,
+            cleanup_intersection_reservations,
+        )
+            .chain(),
+    );
+
+    customize(&mut app);
+    app
+}
+
+/// Spawn a through/turn vehicle on the 4x4 grid from `route` (cursor 0, progress 0.4, empty sidecar).
+fn spawn_route_4x4(app: &mut App, route: Vec<TilePos>) -> Entity {
+    let v = {
+        let mut pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(&mut pool, route, 0, 0.4, 0.0, 60.0, 20.0, 1.0)
+    };
+    app.world_mut()
+        .spawn((
+            v,
+            VehicleTrafficState::FreeFlow,
+            VehicleLaneletPlan::default(),
+        ))
+        .id()
+}
+
+/// PARALLEL-ADMIT (the whole point): two OPPOSITE through straights on disjoint rows of the 4x4 box
+/// — eastbound on the south lane y=4, westbound on the north lane y=7 — occupy disjoint tile sets, so
+/// the arbiter admits BOTH in the SAME tick. In a 2x2 box the analogue already worked, but on the 4x4
+/// the lanelet graph + conflict matrix for the bigger box must reproduce it (the conversion's risk).
+#[test]
+fn four_lane_4x4_two_disjoint_straights_both_admitted_same_tick() {
+    let mut app = build_bare_arbiter_app_4x4(|_| {});
+    // Eastbound straight on the south-most EAST lane (y=4): (3,4)→box→(8,4).
+    let east = spawn_route_4x4(
+        &mut app,
+        vec![
+            TilePos { x: 3, y: 4 },
+            TilePos { x: 4, y: 4 },
+            TilePos { x: 7, y: 4 },
+            TilePos { x: 8, y: 4 },
+        ],
+    );
+    // Westbound straight on the north-most WEST lane (y=7): (8,7)→box→(3,7).
+    let west = spawn_route_4x4(
+        &mut app,
+        vec![
+            TilePos { x: 8, y: 7 },
+            TilePos { x: 7, y: 7 },
+            TilePos { x: 4, y: 7 },
+            TilePos { x: 3, y: 7 },
+        ],
+    );
+    app.update();
+
+    let res = app.world().resource::<IntersectionReservations>();
+    assert!(
+        res.is_reserved_by(IntersectionId(0), east),
+        "eastbound straight (y=4) must be admitted"
+    );
+    assert!(
+        res.is_reserved_by(IntersectionId(0), west),
+        "westbound straight (y=7) must be admitted in the SAME tick (disjoint rows of the 4x4 box)"
+    );
+    assert!(!res.stall_tripwire(), "stall tripwire must stay empty");
+}
+
+/// PARALLEL-ADMIT, the 4x4-specific win: an eastbound straight on the bottom row (y=4) PLUS a tight
+/// right turn that hugs a DIFFERENT corner, so their box footprints are disjoint and both admit in
+/// one tick. Westbound→North right turn: enters West-lane row y=6 from the east side, exits North on
+/// col x=7 — its tight arc hugs the top-right corner, never touching the y=4 row.
+#[test]
+fn four_lane_4x4_straight_plus_disjoint_right_turn_both_admitted() {
+    let mut app = build_bare_arbiter_app_4x4(|_| {});
+    // Eastbound straight, bottom row y=4.
+    let straight = spawn_route_4x4(
+        &mut app,
+        vec![
+            TilePos { x: 3, y: 4 },
+            TilePos { x: 4, y: 4 },
+            TilePos { x: 7, y: 4 },
+            TilePos { x: 8, y: 4 },
+        ],
+    );
+    // Westbound→North right turn: approach West-lane (8,6) heading West, exit North col x=7.
+    // entry_dir=West, West.right()=North under right-hand traffic → RightTurn, hugs top-right corner.
+    let right = spawn_route_4x4(
+        &mut app,
+        vec![
+            TilePos { x: 8, y: 6 },
+            TilePos { x: 7, y: 6 },
+            TilePos { x: 7, y: 7 },
+            TilePos { x: 7, y: 8 },
+        ],
+    );
+    app.update();
+
+    let res = app.world().resource::<IntersectionReservations>();
+    assert!(
+        res.is_reserved_by(IntersectionId(0), straight),
+        "eastbound straight (y=4) must be admitted"
+    );
+    assert!(
+        res.is_reserved_by(IntersectionId(0), right),
+        "disjoint right turn (top-right corner) must be admitted in the SAME tick"
+    );
+    assert!(!res.stall_tripwire(), "stall tripwire must stay empty");
+}
+
+/// COLLISION-SAFETY preserved at the 4x4: two CONFLICTING movements whose box paths cross still can't
+/// both admit. Eastbound straight on y=4 (sweeps (4,4)..(7,4)) vs a southbound straight on col x=4
+/// (sweeps (4,7)..(4,4)) — they share the bottom-left tile (4,4), so at most one is admitted.
+#[test]
+fn four_lane_4x4_conflicting_movements_not_double_admitted() {
+    let mut app = build_bare_arbiter_app_4x4(|_| {});
+    // Eastbound straight on y=4.
+    let east = spawn_route_4x4(
+        &mut app,
+        vec![
+            TilePos { x: 3, y: 4 },
+            TilePos { x: 4, y: 4 },
+            TilePos { x: 7, y: 4 },
+            TilePos { x: 8, y: 4 },
+        ],
+    );
+    // Southbound straight on the west-most SOUTH lane x=4: (4,8)→box→(4,3). Crosses (4,4).
+    let south = spawn_route_4x4(
+        &mut app,
+        vec![
+            TilePos { x: 4, y: 8 },
+            TilePos { x: 4, y: 7 },
+            TilePos { x: 4, y: 4 },
+            TilePos { x: 4, y: 3 },
+        ],
+    );
+    app.update();
+
+    let res = app.world().resource::<IntersectionReservations>();
+    let admitted = usize::from(res.is_reserved_by(IntersectionId(0), east))
+        + usize::from(res.is_reserved_by(IntersectionId(0), south));
+    assert_eq!(
+        admitted, 1,
+        "two movements sharing box tile (4,4) must NOT both be admitted (collision-safety)"
+    );
+    assert!(!res.stall_tripwire(), "stall tripwire must stay empty");
+}
+
 #[test]
 fn flag_on_arbiter_admits_exactly_one_conflicting_vehicle_deterministically() {
     let (east_a, north_a, tripwire_a) = run_arbiter_once();
