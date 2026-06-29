@@ -21,6 +21,20 @@ pub struct LaneletConflictMatrices {
     pub version: u64,
 }
 
+impl LaneletConflictMatrices {
+    /// Conflict row of local lanelet `local_idx` at intersection `id`, or an empty slice if the
+    /// intersection has no matrix or the index is out of range. The box-entry gate (`drive.rs`) uses
+    /// this to take the deferred conflict-tile reservation. An empty row never overlaps anything
+    /// (`rows_overlap([], _) == false`), so a missing matrix fails OPEN at entry — the same defensive
+    /// stance as the arbiter, where a missing matrix simply skips the cluster.
+    pub fn row_for(&self, id: IntersectionId, local_idx: u32) -> &[u64] {
+        self.by_intersection
+            .get(&id)
+            .map(|m| m.row(local_idx as usize))
+            .unwrap_or(&[])
+    }
+}
+
 /// Whether an approach lane of `lane_type` may feed a lanelet of `maneuver`. Encodes lane
 /// discipline: turn-only lanes feed only their designated turn (LeftTurnOnly also permits U-turn
 /// per ПДД 8.5 крайнее левое); a Regular lane feeds every legal maneuver because on a

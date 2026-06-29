@@ -75,6 +75,7 @@ fn intersection_tile_with_kind_none_does_not_force_speed_to_zero() {
             idx
         })
         .insert_resource(IntersectionReservations::default())
+        .init_resource::<crate::game::transport::LaneletConflictMatrices>()
         .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(VehicleAggSnapshot::default())
         .insert_resource(ParkedVehicleTileIndex::default())

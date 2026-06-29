@@ -27,6 +27,16 @@ pub struct IntersectionReservation {
     pub tiles: Vec<TilePos>,
     pub stream: StreamKey,
     pub maneuver: ManeuverKind,
+    /// Local matrix-row index of the lanelet this vehicle will traverse, so the box-entry gate
+    /// (`drive.rs`) can take the conflict-tile reservation (`try_admit`) at the moment the vehicle
+    /// physically steps onto its first box tile — NOT at grant. `None` for a coarse whole-box
+    /// reservation (no resolved lanelet) and for the in-box safety-net rows (already Inside, so the
+    /// entry gate never fires for them).
+    pub local_idx: Option<u32>,
+    /// True when this reservation is a coarse whole-box grant (`try_admit_coarse` already reserved
+    /// the entire box exclusively at grant): the entry gate then admits the vehicle without a
+    /// per-lanelet matrix check (it has no lanelet row).
+    pub coarse: bool,
 }
 
 #[derive(Resource, Default)]
@@ -160,6 +170,26 @@ impl IntersectionLedger {
         true
     }
 
+    /// Grant-phase eligibility check for the DEFERRED-reservation design: is lanelet `local_idx`
+    /// (conflict row `row`) allowed to be GRANTED an `Approaching` row THIS tick, WITHOUT taking the
+    /// box (`active_mask` is left untouched)? Admissible iff it conflicts with no vehicle physically
+    /// INSIDE the box (`active_mask` ∪ `inbox_mask`), no active pedestrian crosswalk (`ped_mask`), no
+    /// coarse whole-box holder, and no lanelet already granted THIS tick (`grant_mask`, maintained by
+    /// the arbiter's grant sweep). Unlike `try_admit`, this NEVER mutates the ledger — a granted
+    /// `Approaching` car does NOT pre-lock the box; the conflict-tile reservation is taken later, at
+    /// box entry, via `try_admit`. The `grant_mask` term keeps a single grant sweep collision-safe at
+    /// the reservation level (two conflicting candidates never both granted in one tick) while
+    /// allowing them to BOTH become `Approaching` across ticks (the earlier grantee is then skipped as
+    /// already-reserved, freeing the conflict) — and the entry gate is the real serializer. The caller
+    /// sets the granted lanelet's bit in `grant_mask` on success (eligibility is purely row-vs-masks).
+    pub(crate) fn grant_eligible(&self, row: &[u64], grant_mask: &[u64]) -> bool {
+        !(self.coarse_held.is_some()
+            || rows_overlap(row, &self.active_mask)
+            || rows_overlap(row, &self.ped_mask)
+            || rows_overlap(row, &self.inbox_mask)
+            || rows_overlap(row, grant_mask))
+    }
+
     /// True iff the box is completely clear: no held lanelets, no in-box vehicles, no active
     /// pedestrian crosswalk, and no existing coarse holder.
     fn box_is_clear(&self) -> bool {
@@ -170,13 +200,20 @@ impl IntersectionLedger {
     }
 
     /// Coarse fallback admission for an UNRESOLVABLE-lanelet vehicle: admit iff the box is completely
-    /// clear, then reserve the WHOLE box exclusively (no other vehicle — precise or coarse — may enter
-    /// until it releases). Collision-safe by exclusion (stricter than any precise grant). Idempotent.
-    pub(crate) fn try_admit_coarse(&mut self, entity: Entity) -> bool {
+    /// clear AND no precise lanelet was GRANTED this tick (`grant_mask` empty), then reserve the WHOLE
+    /// box exclusively (no other vehicle — precise or coarse — may enter until it releases).
+    /// Collision-safe by exclusion (stricter than any precise grant). Idempotent.
+    ///
+    /// The `grant_mask` term is REQUIRED by the deferred-reservation design: a precise `Approaching`
+    /// grant no longer sets `active_mask` (so `box_is_clear` can't see it), yet a coarse whole-box grant
+    /// must still be mutually exclusive with any precise grant made the same tick — otherwise a coarse
+    /// car and a precise car could both be granted, then both attempt the box. Mirrors `grant_eligible`,
+    /// which blocks a precise grant when `coarse_held` is set (the other direction of the exclusion).
+    pub(crate) fn try_admit_coarse(&mut self, entity: Entity, grant_mask: &[u64]) -> bool {
         if self.coarse_held == Some(entity) {
             return true;
         }
-        if !self.box_is_clear() {
+        if !self.box_is_clear() || grant_mask.iter().any(|&w| w != 0) {
             return false;
         }
         self.coarse_held = Some(entity);
@@ -225,6 +262,13 @@ fn set_bit(mask: &mut Vec<u64>, bit: usize) {
         mask.resize(word + 1, 0);
     }
     mask[word] |= 1u64 << (bit % 64);
+}
+
+/// Set a local-lanelet-index bit in an external per-tick grant mask (the arbiter's deferred-grant
+/// scratch bitset). Public wrapper over the private `set_bit` so the grant sweep can mark a lanelet
+/// granted-this-tick without exposing the ledger's internals.
+pub(crate) fn grant_mask_set(mask: &mut Vec<u64>, local_idx: u32) {
+    set_bit(mask, local_idx as usize);
 }
 
 #[allow(dead_code)]
@@ -366,6 +410,22 @@ impl IntersectionReservations {
             .is_some_and(|rs: &Vec<IntersectionReservation>| {
                 rs.iter().any(|r| r.vehicle == vehicle)
             })
+    }
+
+    /// Box-entry gate lookup (`drive.rs`): the `(local_idx, coarse)` of `vehicle`'s reservation at
+    /// cluster `id`, or `None` if it holds no reservation there. `coarse` reservations and in-box
+    /// safety-net rows carry `local_idx == None`. Used to take the deferred conflict-tile reservation
+    /// (`try_admit`) exactly when the vehicle steps onto its first box tile.
+    pub(crate) fn entry_reservation(
+        &self,
+        id: IntersectionId,
+        vehicle: Entity,
+    ) -> Option<(Option<u32>, bool)> {
+        self.by_intersection
+            .get(&id)?
+            .iter()
+            .find(|r| r.vehicle == vehicle)
+            .map(|r| (r.local_idx, r.coarse))
     }
 }
 

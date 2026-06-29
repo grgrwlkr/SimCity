@@ -19,7 +19,7 @@ use super::super::{
 };
 use super::reservations::{
     IntersectionReservation, IntersectionReservations, ReservationState,
-    downstream_link_has_headroom,
+    downstream_link_has_headroom, grant_mask_set,
 };
 use super::zones::{ManeuverKind, StreamKey, ZONE_ALL, maneuver_kind};
 
@@ -552,6 +552,10 @@ pub(crate) fn arbitrate_grants_inner(
                     exit: RoadDir::None,
                 },
                 maneuver: ManeuverKind::Other,
+                // Safety-net rows are for vehicles ALREADY inside the box — the entry gate never
+                // fires for them, so no lanelet row is needed.
+                local_idx: None,
+                coarse: false,
             });
     }
 
@@ -583,6 +587,13 @@ pub(crate) fn arbitrate_grants_inner(
 
         let mut admitted_any = false;
         let mut capacity_refused = false;
+        // Per-tick DEFERRED-grant scratch mask: bits of precise lanelets GRANTED this tick. A grant
+        // no longer pre-locks the box (`active_mask` is untouched until box entry in `drive.rs`); this
+        // mask only serializes a SINGLE grant sweep — two conflicting candidates never both get an
+        // `Approaching` row in the same tick — while still letting both become `Approaching` across
+        // ticks (the earlier grantee is skipped as already-reserved, freeing its conflict). Collision-
+        // safety against cars actually INSIDE the box is enforced separately at the entry gate.
+        let mut grant_mask: Vec<u64> = Vec::new();
         for &cand in &order {
             if !cand.ready {
                 counts.refused += 1;
@@ -605,8 +616,8 @@ pub(crate) fn arbitrate_grants_inner(
             if reservations.is_reserved_by(id, cand.vehicle) || ledger.holds(cand.vehicle) {
                 continue;
             }
-            // Pre-check the exit slot read-only, so a successful ledger admit is never stranded
-            // without a slot (atomic all-or-nothing across the two writes).
+            // Pre-check the exit slot read-only, so a successful grant is never stranded without a
+            // slot (atomic all-or-nothing across the two writes).
             if !reservations.exit_slot_available(
                 cand.exit_tile_idx,
                 cand.exit_tile_phys_occ,
@@ -618,16 +629,19 @@ pub(crate) fn arbitrate_grants_inner(
                 capacity_refused = true;
                 continue;
             }
-            // Coarse (unresolved-lanelet) candidates take the whole box exclusively; precise ones go
-            // through the conflict matrix.
+            // Coarse (unresolved-lanelet) candidates take the whole box exclusively AT GRANT (no
+            // lanelet to defer); precise ones use the deferred check — eligible iff they conflict with
+            // no Inside vehicle, no pedestrian, and no lanelet granted this tick, WITHOUT pre-locking
+            // the box (the conflict-tile reservation is taken at box entry in `drive.rs`).
             let admitted_ok = if cand.coarse {
-                ledger.try_admit_coarse(cand.vehicle)
+                ledger.try_admit_coarse(cand.vehicle, &grant_mask)
             } else {
-                ledger.try_admit(
-                    cand.vehicle,
-                    cand.local_idx as u32,
-                    matrix.row(cand.local_idx),
-                )
+                let row = matrix.row(cand.local_idx);
+                let ok = ledger.grant_eligible(row, &grant_mask);
+                if ok {
+                    grant_mask_set(&mut grant_mask, cand.local_idx as u32);
+                }
+                ok
             };
             if !admitted_ok {
                 counts.refused += 1;
@@ -653,6 +667,8 @@ pub(crate) fn arbitrate_grants_inner(
                     tiles: cand.tiles.clone(),
                     stream: cand.stream,
                     maneuver: cand.maneuver,
+                    local_idx: (!cand.coarse).then_some(cand.local_idx as u32),
+                    coarse: cand.coarse,
                 });
             counts.admitted += 1;
             count_admit(&mut counts, cand);
@@ -677,14 +693,14 @@ pub(crate) fn arbitrate_grants_inner(
                 if reservations.is_reserved_by(id, cand.vehicle) || ledger.holds(cand.vehicle) {
                     continue;
                 }
+                // The valve bypasses the capacity gates, never the conflict model. Coarse takes the
+                // whole box; precise uses the same deferred eligibility check (against the now-empty
+                // grant_mask — the valve only runs when nothing was admitted this tick) and does NOT
+                // pre-lock the box (entry gate is the serializer).
                 let admitted_ok = if cand.coarse {
-                    ledger.try_admit_coarse(cand.vehicle)
+                    ledger.try_admit_coarse(cand.vehicle, &[])
                 } else {
-                    ledger.try_admit(
-                        cand.vehicle,
-                        cand.local_idx as u32,
-                        matrix.row(cand.local_idx),
-                    )
+                    ledger.grant_eligible(matrix.row(cand.local_idx), &[])
                 };
                 if !admitted_ok {
                     continue;
@@ -702,6 +718,8 @@ pub(crate) fn arbitrate_grants_inner(
                         tiles: cand.tiles.clone(),
                         stream: cand.stream,
                         maneuver: cand.maneuver,
+                        local_idx: (!cand.coarse).then_some(cand.local_idx as u32),
+                        coarse: cand.coarse,
                     });
                 counts.admitted += 1;
                 count_admit(&mut counts, cand);

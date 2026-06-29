@@ -71,6 +71,7 @@ fn yellow_allows_proceeding_if_too_late_to_stop_comfortably() {
             idx
         })
         .insert_resource(IntersectionReservations::default())
+        .init_resource::<crate::game::transport::LaneletConflictMatrices>()
         .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, update_vehicle_traffic_state);
 
@@ -274,6 +275,7 @@ fn owned_car_is_parked_on_arrival_not_despawned() {
         .insert_resource(TrafficConfig::default())
         .insert_resource(IntersectionIndex::default())
         .insert_resource(IntersectionReservations::default())
+        .init_resource::<crate::game::transport::LaneletConflictMatrices>()
         .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(VehicleAggSnapshot::default())
         .insert_resource(ParkedVehicleTileIndex::default())

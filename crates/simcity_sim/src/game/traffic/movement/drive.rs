@@ -34,7 +34,12 @@ pub fn move_vehicles(
     traffic: Res<TrafficOccupancy>,
     traffic_cfg: Res<TrafficConfig>,
     intersections: Res<IntersectionIndex>,
-    reservations: Res<IntersectionReservations>,
+    // Mutable: the box-entry gate takes the DEFERRED conflict-tile reservation (`try_admit`) at the
+    // exact tick a vehicle steps onto its first box tile (an `Approaching` grant no longer pre-locks
+    // the box). Serialized by construction — `move_vehicles` iterates vehicles sequentially, so each
+    // entrant's `active_mask` write is visible to the next conflicting entrant's check.
+    mut reservations: ResMut<IntersectionReservations>,
+    matrices: Res<crate::game::transport::LaneletConflictMatrices>,
     q_pedestrians: Query<&crate::game::pedestrians::PedestrianCrossing>,
     spatial: Res<TrafficSpatialIndex>,
     mut path_pool: ResMut<PathPool>,
@@ -279,16 +284,39 @@ pub fn move_vehicles(
                 if matches!(state, VehicleTrafficState::WaitingForGreen { .. }) {
                     blocked_next = true;
                 } else {
+                    // DEFERRED-RESERVATION ENTRY GATE (collision-safety enforcement point). An
+                    // `Approaching` grant only makes the vehicle ELIGIBLE to attempt entry; the
+                    // conflict-tile reservation (`active_mask`) is taken HERE, the moment the vehicle
+                    // steps onto its first box tile, via the conflict matrix against the cars
+                    // ACTUALLY INSIDE the box. Because `move_vehicles` processes vehicles one at a
+                    // time, each successful entrant's `active_mask` bit is set before the next
+                    // conflicting candidate is checked — so two conflicting vehicles can NEVER both
+                    // enter the box in the same tick (the second's `try_admit` fails → it waits at the
+                    // line and retries next tick).
                     let ok = if let Some(id) = intersections.intersection_id_at(next_tile) {
-                        reservations.is_reserved_by(id, entity)
+                        match reservations.entry_reservation(id, entity) {
+                            // Coarse whole-box grant already reserved the entire box exclusively at
+                            // grant time — no per-lanelet check possible, admit.
+                            Some((_, true)) => true,
+                            // Precise grant: take the deferred conflict-tile reservation now. Idempotent
+                            // (returns true once this vehicle is already a holder, e.g. it cleared the
+                            // gate last tick but hasn't physically crossed yet).
+                            Some((Some(local_idx), false)) => reservations
+                                .ledger_mut(id)
+                                .try_admit(entity, local_idx, matrices.row_for(id, local_idx)),
+                            // Has a reservation but no lanelet row (in-box safety-net): admit.
+                            Some((None, false)) => true,
+                            // No reservation at all: not eligible.
+                            None => false,
+                        }
                     } else {
                         false
                     };
                     if !ok {
-                        // Entry into an intersection requires a held reservation — full stop.
-                        // The stuck-vehicle failsafe is now an atomic emergency reservation issued
-                        // in collect/apply (ZONE_ALL, serialized per cluster), so two opposing
-                        // stuck cars can never both barge in unreserved the same tick.
+                        // Entry into an intersection requires passing the entry gate (an eligible
+                        // reservation AND a matrix-clear box) — full stop at the line otherwise. The
+                        // stuck-vehicle failsafe is the arbiter's force-admit valve, which is still
+                        // collision-safe (it never bypasses the conflict model).
                         blocked_next = true;
                     }
 

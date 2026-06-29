@@ -79,6 +79,7 @@ fn intersection_tiles_ignore_tile_capacity_gate_in_move_vehicles() {
             idx
         })
         .insert_resource(IntersectionReservations::default())
+        .init_resource::<crate::game::transport::LaneletConflictMatrices>()
         .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(VehicleAggSnapshot::default())
         .insert_resource(ParkedVehicleTileIndex::default())
@@ -196,6 +197,7 @@ fn traffic_light_stop_line_is_on_approach_tile_not_in_intersection() {
             idx
         })
         .insert_resource(IntersectionReservations::default())
+        .init_resource::<crate::game::transport::LaneletConflictMatrices>()
         .insert_resource(TrafficOccupancy::default())
         .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(VehicleAggSnapshot::default())
@@ -349,6 +351,7 @@ fn vehicle_inside_signalized_intersection_is_forced_to_crossing_state() {
             idx
         })
         .insert_resource(IntersectionReservations::default())
+        .init_resource::<crate::game::transport::LaneletConflictMatrices>()
         .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, update_vehicle_traffic_state);
 
@@ -486,6 +489,7 @@ fn protected_left_releases_left_turner() {
             idx
         })
         .insert_resource(IntersectionReservations::default())
+        .init_resource::<crate::game::transport::LaneletConflictMatrices>()
         .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, update_vehicle_traffic_state);
 
@@ -571,6 +575,7 @@ fn right_turn_on_red_speed_is_capped_to_turn_speed() {
         .insert_resource(TrafficOccupancy::default())
         .insert_resource(TrafficConfig::default())
         .insert_resource(IntersectionReservations::default())
+        .init_resource::<crate::game::transport::LaneletConflictMatrices>()
         .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(VehicleAggSnapshot::default())
         .insert_resource(ParkedVehicleTileIndex::default())
@@ -703,6 +708,8 @@ fn right_turn_on_red_speed_is_capped_to_turn_speed() {
                     exit: RoadDir::None,
                 },
                 maneuver: ManeuverKind::Other,
+                local_idx: None,
+                coarse: false,
             }],
         );
 

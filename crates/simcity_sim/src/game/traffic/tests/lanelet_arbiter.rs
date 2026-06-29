@@ -1589,3 +1589,230 @@ fn flag_on_arbiter_admits_exactly_one_conflicting_vehicle_deterministically() {
         "the flag-on admission outcome must be deterministic across identical worlds"
     );
 }
+
+// =================================================================================================
+// DEFERRED-RESERVATION ENTRY-GATE tests (task B). An `Approaching` grant no longer pre-locks the
+// box (`active_mask`); the conflict-tile reservation is taken at BOX ENTRY in `move_vehicles`, and
+// THAT gate is the collision serializer. These tests drive vehicles through the FULL chain
+// (build → arbitrate → spatial-index → move_vehicles → cleanup) and assert at the ENTRY level:
+// who physically holds the box (`ledger.holds` == an `active_mask` holder == Inside), not just who
+// holds an `Approaching` reservation row.
+// =================================================================================================
+
+/// Build the full-chain arbiter app on the 4x4 `cross_grid_4x4` (build → arbitrate → spatial → move →
+/// cleanup), so vehicles actually advance into the box through the entry gate. The 4x4 box is used
+/// (not the 2x2) so two CONFLICTING straights enter DIFFERENT first box tiles — the per-tile capacity
+/// gate then cannot mask the conflict, leaving the lanelet ENTRY MATRIX as the sole serializer (the
+/// thing this task adds). `customize` may mutate resources first. No vehicles spawned yet.
+fn build_full_chain_arbiter_app_4x4(customize: impl FnOnce(&mut App)) -> App {
+    let (grid, idx) = cross_grid_4x4();
+    let gv = GraphVersion(1);
+    let lanes = build_lane_graph_inner(&grid, &gv);
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .add_message::<TripFinished>()
+        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(MapConfig {
+            width: 12,
+            height: 12,
+            tile_size: 16.0,
+        })
+        .insert_resource(grid)
+        .insert_resource(idx)
+        .insert_resource(lanes)
+        .insert_resource(gv)
+        .insert_resource(TrafficConfig::default())
+        .insert_resource(LaneletGraph::default())
+        .insert_resource(LaneletConflictMatrices::default())
+        .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(IntersectionReservations::default())
+        .insert_resource(VehicleAggSnapshot::default())
+        .insert_resource(ParkedVehicleTileIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .init_resource::<LeftTurnDemand>()
+        .init_resource::<ArbiterIndexCache>()
+        .init_resource::<ArbiterTickStats>()
+        .init_resource::<ApproachFairness>()
+        .init_resource::<ClusterStarvation>()
+        .init_resource::<LaneletStallTracker>()
+        .init_resource::<RingTopologyStatus>();
+
+    app.add_systems(
+        Update,
+        (
+            build_lanelet_graph,
+            arbitrate_lanelet_reservations,
+            build_traffic_spatial_index,
+            move_vehicles,
+            cleanup_intersection_reservations,
+        )
+            .chain(),
+    );
+
+    customize(&mut app);
+    app
+}
+
+/// Spawn a through vehicle at the STOP LINE of its approach tile (so it crosses into the box during
+/// `move_vehicles` once admitted), with an empty sidecar and a healthy speed. Returns its entity.
+fn spawn_at_stop_line(app: &mut App, route: Vec<TilePos>) -> Entity {
+    let stop_progress = TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET;
+    let v = {
+        let mut pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(&mut pool, route, 0, stop_progress, 8.0, 60.0, 20.0, 1.0)
+    };
+    app.world_mut()
+        .spawn((
+            v,
+            Transform::default(),
+            VehicleTrafficState::FreeFlow,
+            VehicleLaneletPlan::default(),
+        ))
+        .id()
+}
+
+/// True iff `e`'s route cursor currently points at a box (intersection) tile — i.e. it is physically
+/// INSIDE the cluster.
+fn is_inside_box(app: &App, e: Entity) -> bool {
+    // A vehicle that finished its route is despawned by `move_vehicles` → no longer in the box.
+    let Some(v) = app.world().get::<Vehicle>(e) else {
+        return false;
+    };
+    let pool = app.world().resource::<crate::game::transport::PathPool>();
+    let idx = app.world().resource::<IntersectionIndex>();
+    pool.get_tile(v.path_handle, v.path_cursor)
+        .and_then(|t| idx.intersection_id_at(t))
+        .is_some()
+}
+
+/// COLLISION-SAFETY AT ENTRY (the core task-B invariant). Two CONFLICTING straights on the 4x4 box —
+/// eastbound on row y=4 (enters box tile (4,4)) and southbound on col x=4 (enters box tile (4,7), then
+/// sweeps down to (4,4)) — share the (4,4) tile, so they CONFLICT. Their FIRST box tiles differ
+/// ((4,4) vs (4,7)), so the per-tile capacity gate canNOT mask the conflict; the lanelet ENTRY MATRIX
+/// is the SOLE serializer. The arbiter may grant BOTH an `Approaching` row (deferred — no pre-lock),
+/// but the box-entry gate in `move_vehicles` must ensure the two are NEVER both inside the box at the
+/// same time, and at most ONE holds the conflict-tile reservation (`active_mask`).
+///
+/// RED-proof: with the entry-matrix check removed (gate = bare `is_reserved_by`), the southbound car
+/// freely enters its (4,7) corner while the eastbound holds (4,4) — both inside the box at once — and
+/// this test fails. With the matrix check, the southbound's `try_admit` fails while the eastbound
+/// holds (4,4), so it waits at the line (verified: reverting the gate makes this test fail).
+#[test]
+fn conflicting_vehicles_never_both_inside_box_entry_serialized() {
+    let mut app = build_full_chain_arbiter_app_4x4(|_| {});
+    // Eastbound straight on the bottom EAST lane y=4: (3,4) → box (4,4),(7,4) → (8,4).
+    let east = spawn_at_stop_line(
+        &mut app,
+        vec![
+            TilePos { x: 3, y: 4 },
+            TilePos { x: 4, y: 4 },
+            TilePos { x: 7, y: 4 },
+            TilePos { x: 8, y: 4 },
+        ],
+    );
+    // Southbound straight on the west SOUTH lane x=4: (4,8) → box (4,7),(4,4) → (4,3). Shares (4,4).
+    let south = spawn_at_stop_line(
+        &mut app,
+        vec![
+            TilePos { x: 4, y: 8 },
+            TilePos { x: 4, y: 7 },
+            TilePos { x: 4, y: 4 },
+            TilePos { x: 4, y: 3 },
+        ],
+    );
+
+    // Drive the whole crossing. At EVERY tick assert the collision invariant: the two CONFLICTING
+    // vehicles are never both physically inside the box, and the box never has two active-mask holders
+    // for this conflict set. Record that the path is genuinely exercised so the test can't pass
+    // vacuously.
+    let mut east_granted = false;
+    let mut south_granted = false;
+    let mut any_observed_inside = false;
+    for tick in 0..80 {
+        app.world_mut()
+            .resource_mut::<bevy::time::Time<bevy::time::Fixed>>()
+            .advance_by(std::time::Duration::from_secs_f32(0.1));
+        app.update();
+
+        let east_in = is_inside_box(&app, east);
+        let south_in = is_inside_box(&app, south);
+        any_observed_inside |= east_in || south_in;
+        assert!(
+            !(east_in && south_in),
+            "tick {tick}: two CONFLICTING vehicles must NEVER both be inside the box (collision)"
+        );
+
+        let res = app.world().resource::<IntersectionReservations>();
+        east_granted |= res.is_reserved_by(IntersectionId(0), east);
+        south_granted |= res.is_reserved_by(IntersectionId(0), south);
+        if let Some(ledger) = res.ledger(IntersectionId(0)) {
+            let both_hold = ledger.holds(east) && ledger.holds(south);
+            assert!(
+                !both_hold,
+                "tick {tick}: conflicting vehicles must not both hold the box (active_mask)"
+            );
+        }
+        assert!(
+            !res.stall_tripwire(),
+            "tick {tick}: stall tripwire must stay empty"
+        );
+    }
+
+    // Non-vacuity: the entry gate was actually exercised (a car physically entered the box), and the
+    // deferred grant let BOTH conflicting cars become eligible — otherwise this would just re-test the
+    // old grant-level serialization.
+    assert!(
+        any_observed_inside,
+        "at least one vehicle must have been observed inside the box (entry gate exercised)"
+    );
+    assert!(
+        east_granted && south_granted,
+        "both conflicting vehicles must have received an Approaching grant during the drive \
+         (deferred design) — east={east_granted}, south={south_granted}"
+    );
+}
+
+/// NO PRE-LOCK (the throughput change). Two CONFLICTING perpendicular straights approach. Under the
+/// OLD design only one ever got a reservation (the granted-Approaching car pre-locked the box). Under
+/// the deferred design, a granted-but-not-yet-entered car does NOT block the conflicting candidate
+/// from ALSO being granted an `Approaching` reservation — so across a couple of ticks BOTH hold an
+/// `Approaching` row, yet (proven by the entry-gate test above) only one actually enters. This test
+/// asserts the new GRANT behavior: both eventually get reservations.
+#[test]
+fn granted_approaching_does_not_pre_lock_conflicting_candidate() {
+    // Hold both vehicles at the line (don't run move_vehicles) so neither enters the box; only the
+    // grant phase runs across ticks. Build → arbitrate → cleanup (no move): the first tick grants
+    // one, a later tick grants the other (the first is skipped as already-reserved, freeing the
+    // conflict because it never took active_mask).
+    let (mut app, east, north) = build_arbiter_app();
+
+    let mut east_seen = false;
+    let mut north_seen = false;
+    for _ in 0..6 {
+        app.update();
+        let res = app.world().resource::<IntersectionReservations>();
+        east_seen |= res.is_reserved_by(IntersectionId(0), east);
+        north_seen |= res.is_reserved_by(IntersectionId(0), north);
+        // Neither moves (no move_vehicles in this chain), so neither ever takes active_mask: the box
+        // stays unheld, which is exactly what lets both accumulate Approaching rows.
+        if let Some(ledger) = res.ledger(IntersectionId(0)) {
+            assert_eq!(
+                ledger.holder_count(),
+                0,
+                "no vehicle enters the box in this chain, so active_mask must hold nobody"
+            );
+        }
+    }
+
+    assert!(
+        east_seen && north_seen,
+        "deferred design: BOTH conflicting vehicles must get an Approaching reservation across ticks \
+         (a granted-but-not-entered car no longer pre-locks the box) — east={east_seen}, north={north_seen}"
+    );
+}

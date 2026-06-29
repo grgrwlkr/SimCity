@@ -76,6 +76,7 @@ fn vehicle_does_not_enter_uncontrolled_intersection_while_pedestrian_is_crossing
         })
         .insert_resource(TrafficOccupancy::default())
         .insert_resource(IntersectionReservations::default())
+        .init_resource::<crate::game::transport::LaneletConflictMatrices>()
         .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(VehicleAggSnapshot::default())
         .insert_resource(ParkedVehicleTileIndex::default())
@@ -128,6 +129,8 @@ fn vehicle_does_not_enter_uncontrolled_intersection_while_pedestrian_is_crossing
                     exit: RoadDir::None,
                 },
                 maneuver: ManeuverKind::Other,
+                local_idx: None,
+                coarse: false,
             }],
         );
 
