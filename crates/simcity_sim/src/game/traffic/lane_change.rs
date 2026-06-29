@@ -25,15 +25,6 @@ pub(crate) struct OvertakeOncoming {
     remaining_secs: f32,
 }
 
-impl OvertakeOncoming {
-    #[cfg(test)]
-    pub(crate) fn default_for_test() -> Self {
-        Self {
-            remaining_secs: 5.0,
-        }
-    }
-}
-
 pub(super) fn tick_lane_change_cooldowns(
     time: Res<Time<Fixed>>,
     mut commands: Commands,

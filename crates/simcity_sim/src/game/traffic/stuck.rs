@@ -170,28 +170,36 @@ pub(super) fn resolve_stuck_vehicles(
             )
             .unwrap_or(current);
 
-        // 1) Emergency re-route: try to find an alternative path to the same goal. Only count it as a
-        //    real unstick (reset the timer + restart the path) when the route ACTUALLY changes. If the
-        //    only path found is the same blocked one, do NOT reset stuck.secs — let it keep climbing so
-        //    the despawn guardrail can eventually fire instead of resetting the timer forever (the bug
-        //    that left deadlocked cars frozen indefinitely).
+        // 1) Emergency re-route: try lanelet replan first (finer-grained, direction-correct),
+        //    then fall back to coarse road A*. Only count it as a real unstick (reset the timer
+        //    + restart the path) when the route ACTUALLY changes.
+        //
+        //    Gap fixed: previously the lanelet replan was gated behind the road-A* check and was
+        //    never attempted when road A* returned empty or the same route. Now we always try
+        //    lanelet replan; road A* is only used as a fallback tile route when lanelet returns None.
+        //    If the only path found is the same blocked one, do NOT reset stuck.secs — let it keep
+        //    climbing so the despawn guardrail can eventually fire instead of resetting the timer
+        //    forever (the bug that left deadlocked cars frozen indefinitely).
+        let travel_dir = grid.get(current).map_or(RoadDir::None, |c| c.road.dir);
+        let jitter_seed = replan.jitter_seed();
+        let lanelet_route = replan_route_with_lanelets(
+            &replan.lane_graph,
+            &replan.lanelet_graph,
+            &grid,
+            &traffic,
+            &path_cfg,
+            jitter_seed,
+            current,
+            goal,
+            travel_dir,
+        );
         let route = find_road_path_cached(&mut ctx, current, goal);
-        if !route.is_empty()
-            && Some(route.as_slice()) != path_pool.remaining_from(v.path_handle, v.path_cursor)
-        {
-            let travel_dir = grid.get(current).map_or(RoadDir::None, |c| c.road.dir);
-            let jitter_seed = replan.jitter_seed();
-            let lanelet_route = replan_route_with_lanelets(
-                &replan.lane_graph,
-                &replan.lanelet_graph,
-                &grid,
-                &traffic,
-                &path_cfg,
-                jitter_seed,
-                current,
-                goal,
-                travel_dir,
-            );
+        let road_changed = !route.is_empty()
+            && Some(route.as_slice()) != path_pool.remaining_from(v.path_handle, v.path_cursor);
+        let lanelet_changed = lanelet_route.as_ref().is_some_and(|(tiles, _)| {
+            Some(tiles.as_slice()) != path_pool.remaining_from(v.path_handle, v.path_cursor)
+        });
+        if road_changed || lanelet_changed {
             path_pool.release(v.path_handle);
             match lanelet_route {
                 Some((tiles, sidecar)) => {
