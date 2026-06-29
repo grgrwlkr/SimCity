@@ -67,6 +67,8 @@ pub(crate) use reroute_planner::{LaneletReplanRes, replan_route_with_lanelets};
 mod swap_break;
 use swap_break::break_tile_swaps;
 
+mod frozen_diag;
+
 mod lane_change;
 use lane_change::{
     build_traffic_spatial_index, build_traffic_spatial_index_pre_lane_changes, plan_lane_changes,
@@ -465,6 +467,7 @@ impl Plugin for TrafficPlugin {
                         .before(resolve_stuck_vehicles),
                     resolve_stuck_vehicles.after(update_stuck_timers),
                     recover_stuck_returning_service_vehicles.after(update_stuck_timers),
+                    frozen_diag::log_frozen_cluster.after(update_stuck_timers),
                 )
                     .in_set(GameSet::Sim)
                     .run_if(in_state(AppState::InGame)),
