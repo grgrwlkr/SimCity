@@ -1,6 +1,31 @@
 use super::super::*;
 use crate::game::transport::PathPool;
 
+/// Decide whether the tile-capacity gate should block a vehicle's step from its current tile onto
+/// `next_tile`, given the box/road classification of both tiles and the next tile's occupancy/cap.
+///
+/// Rules:
+/// - A step onto an intersection box tile (`next_is_intersection`) is NEVER capacity-blocked here —
+///   box tiles are governed by reservations / conflict zones, not road capacity.
+/// - A step LEAVING an intersection box (`current_is_intersection && !next_is_intersection`) is
+///   NEVER capacity-blocked — CLEAR-THE-BOX priority: a committed in-box car must always be able to
+///   step out onto its exit road even when that road is momentarily full, otherwise it wedges Inside
+///   the box and pins the perpendicular axis. The transient `occ == cap+1` overfill is same-lane,
+///   same-direction, behind a moving lead — not a collision.
+/// - A normal road→road step (`!current_is_intersection && !next_is_intersection`) IS blocked when
+///   `occ >= cap`, preserving road capacity so open-road traffic cannot overfill a tile.
+const fn capacity_blocks_step(
+    current_is_intersection: bool,
+    next_is_intersection: bool,
+    occ: u16,
+    cap: u16,
+) -> bool {
+    if next_is_intersection || current_is_intersection {
+        return false;
+    }
+    occ >= cap
+}
+
 pub fn cleanup_right_on_red_markers(
     intersections: Res<IntersectionIndex>,
     path_pool: Res<PathPool>,
@@ -373,15 +398,25 @@ pub fn move_vehicles(
 
             // Tile-capacity gate: only applies to **non-intersection** road tiles.
             // Intersection cluster tiles are managed via reservations/conflict zones instead.
-            if !next_is_intersection
-                && let Some(next_idx) = grid.idx(next_tile)
+            //
+            // CLEAR-THE-BOX EXEMPTION: never capacity-block a vehicle that is LEAVING an
+            // intersection box (current tile is a `dir==None` box tile, next tile is the exit road
+            // tile). Clearing the box has priority over exit-road capacity: a committed in-box car
+            // whose exit road congests MID-CROSSING would otherwise freeze INSIDE the box, pinning
+            // the perpendicular axis → gridlock (and triggering the despawn band-aid). Letting it
+            // step out momentarily overfills the exit tile to occ=cap+1, then it advances — a
+            // transient overfill in the SAME lane / SAME direction behind a moving lead, never a
+            // collision. The capacity gate is preserved for road→road steps (`!current_is_intersection`)
+            // so open-road traffic still cannot overfill a road, and for box-ENTRY via the separate
+            // "don't block the box" gate below.
+            if let Some(next_idx) = grid.idx(next_tile)
                 && let Some(next_cell) = grid.get(next_tile)
                 && next_cell.road.is_some()
                 && next_idx < traffic.per_tick_vehicles.len()
             {
                 let cap = next_cell.road.kind.capacity_per_lane_tile();
                 let occ = traffic.per_tick_vehicles[next_idx];
-                if occ >= cap {
+                if capacity_blocks_step(current_is_intersection, next_is_intersection, occ, cap) {
                     blocked_next = true;
                 }
             }
@@ -644,5 +679,53 @@ pub fn move_vehicles(
         v.prev_world_pos = v.curr_world_pos;
         v.curr_world_pos = lerped;
         v.last_update_time = time.elapsed_secs_f64() as f32;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::capacity_blocks_step;
+
+    /// FIX 1 (clear-the-box): a vehicle ON an intersection box tile whose next tile is its exit road
+    /// tile at FULL occupancy (`occ == cap`) must NOT be capacity-blocked — it always steps out of
+    /// the box, draining it so the perpendicular axis can flow. Without this it freezes Inside the
+    /// box and gridlocks (the wedge the despawn band-aid was papering over).
+    #[test]
+    fn leaving_box_onto_full_exit_road_is_not_capacity_blocked() {
+        // current = box tile (dir==None → intersection), next = exit ROAD tile, exit road is FULL.
+        assert!(
+            !capacity_blocks_step(
+                /* current_is_intersection */ true, /* next_is_intersection */ false,
+                /* occ */ 2, /* cap */ 2,
+            ),
+            "a car LEAVING the intersection box must always be allowed to exit, even onto a full \
+             exit road (clear-the-box priority)"
+        );
+        // And even when the exit road is over capacity (a transient overfill from a prior box-exit),
+        // the leaving car is still not blocked.
+        assert!(!capacity_blocks_step(true, false, 3, 2));
+    }
+
+    /// COMPLEMENT: a NORMAL road→road step onto a full next road tile IS still capacity-blocked, so
+    /// open-road traffic cannot overfill a road tile. Only the box→exit step is exempt.
+    #[test]
+    fn road_to_road_onto_full_tile_is_still_capacity_blocked() {
+        assert!(
+            capacity_blocks_step(
+                /* current_is_intersection */ false, /* next_is_intersection */ false,
+                /* occ */ 2, /* cap */ 2,
+            ),
+            "road capacity must still gate a normal road→road move onto a full tile"
+        );
+        // Under capacity → not blocked.
+        assert!(!capacity_blocks_step(false, false, 1, 2));
+    }
+
+    /// COMPLEMENT: a step INTO a box tile is never gated by this road-capacity check (box tiles are
+    /// governed by reservations / the don't-block-the-box gate), regardless of the box's occupancy.
+    #[test]
+    fn entering_box_is_not_capacity_blocked_here() {
+        assert!(!capacity_blocks_step(false, true, 5, 2));
+        assert!(!capacity_blocks_step(true, true, 5, 2));
     }
 }
