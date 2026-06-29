@@ -90,7 +90,6 @@ pub fn move_vehicles(
 ) {
     let dt = time.delta_secs();
     let idm = idm_params_world(&cfg, &traffic_cfg);
-    let exit_clear_progress = (VEHICLE_HALF_LENGTH_TILES + STOP_LINE_MARGIN_TILES).clamp(0.0, 1.0);
 
     // Update telemetry counters for active (non-parked) vehicles while we already iterate them.
     vehicle_agg.active = VehicleAgg::default();
@@ -421,56 +420,17 @@ pub fn move_vehicles(
                 }
             }
 
-            // "Don't block the box": entering intersection requires free space to exit.
-            if !blocked_next && next_is_intersection {
-                let rem = path_pool
-                    .remaining_from(v.path_handle, v.path_cursor)
-                    .unwrap_or(&[]);
-                let exit_tile = rem
-                    .iter()
-                    .position(|t| *t == next_tile)
-                    .and_then(|start_i| {
-                        let mut i = start_i;
-                        while i < rem.len() && is_intersection_tile(&grid, rem[i]) {
-                            i += 1;
-                        }
-                        rem.get(i).copied()
-                    });
-
-                if let Some(exit_tile) = exit_tile
-                    && let Some(exit_idx) = grid.idx(exit_tile)
-                    && let Some(exit_cell) = grid.get(exit_tile)
-                    && exit_cell.road.is_some()
-                    && exit_idx < traffic.per_tick_vehicles.len()
-                {
-                    let cap = exit_cell.road.kind.capacity_per_lane_tile();
-                    let occ = traffic.per_tick_vehicles[exit_idx];
-                    if occ >= cap {
-                        // Spillback-wedge guard: on a MULTI-TILE box (FourLane/SixLane cluster,
-                        // tiles.len() > 1) the grant/entry snapshot is stale relative to the deep
-                        // crossing — the exit can refill mid-crossing after we wave the car in on
-                        // the optimistic drain exception, leaving it wedged Inside on the bare
-                        // capacity gate (~line 384) and pinning the box. Require a GENUINELY free
-                        // exit slot (occ < cap) before admitting into a deep box; keep the lenient
-                        // drain exception only for shallow (TwoLane / 1-tile) boxes, where the lead
-                        // truly vacates the very next tile. Stricter admission only ever holds the
-                        // car at the stop line OUTSIDE the box — never the perpendicular axis — so
-                        // it cannot cause a collision; the wedge simply never forms.
-                        let deep_box = intersections
-                            .intersection_id_at(next_tile)
-                            .and_then(|id| intersections.cluster_by_id(id))
-                            .is_some_and(|c| c.tiles.len() > 1);
-                        let entry_clear = !deep_box
-                            && occ == cap
-                            && spatial
-                                .tile_first(exit_idx)
-                                .is_some_and(|e| e.progress > exit_clear_progress);
-                        if !entry_clear {
-                            blocked_next = true;
-                        }
-                    }
-                }
-            }
+            // NOTE: the legacy "don't block the box" gate (refuse box ENTRY while the exit road is at
+            // capacity) was REMOVED — it conflicts with clear-the-box. Clear-the-box guarantees a
+            // committed in-box car always steps out onto its exit road even when that road is full
+            // (the box→exit step is capacity-exempt above), so an admitted car ALWAYS exits. Refusing
+            // entry because the exit is momentarily full therefore only FREEZES a deadlock cycle:
+            // car A waits at box1's approach because box1's exit is held by B, which waits at box2's
+            // approach because box2's exit is held by C, … — a circular wait that never unwinds even
+            // though each car would exit fine if it just entered. Box ENTRY is now gated only by
+            // collision-safety: the conflict-matrix `try_admit` against cars actually Inside the box
+            // (the `next_is_intersection && !current_is_intersection` reservation gate above). Road
+            // capacity is still preserved for open-road road→road steps via `capacity_blocks_step`.
         }
 
         if blocked_next {

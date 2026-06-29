@@ -7,8 +7,8 @@
 use super::*;
 use crate::game::intersections::{IntersectionCluster, LeftTurnDemand};
 use crate::game::traffic::intersection::{
-    ApproachFairness, ArbiterIndexCache, ArbiterTickStats, ClusterStarvation, LaneletStallTracker,
-    RingTopologyStatus, arbitrate_lanelet_reservations, cleanup_intersection_reservations,
+    ApproachFairness, ArbiterIndexCache, ArbiterTickStats, LaneletStallTracker, RingTopologyStatus,
+    arbitrate_lanelet_reservations, cleanup_intersection_reservations,
 };
 use crate::game::transport::lane_graph::build_lane_graph_inner;
 use crate::game::transport::{
@@ -134,7 +134,6 @@ fn build_arbiter_app() -> (App, Entity, Entity) {
         .init_resource::<ArbiterIndexCache>()
         .init_resource::<ArbiterTickStats>()
         .init_resource::<ApproachFairness>()
-        .init_resource::<ClusterStarvation>()
         .init_resource::<LaneletStallTracker>()
         .init_resource::<RingTopologyStatus>();
 
@@ -285,7 +284,6 @@ fn build_single_vehicle_arbiter_app(route: Vec<TilePos>) -> (App, Entity) {
         .init_resource::<ArbiterIndexCache>()
         .init_resource::<ArbiterTickStats>()
         .init_resource::<ApproachFairness>()
-        .init_resource::<ClusterStarvation>()
         .init_resource::<LaneletStallTracker>()
         .init_resource::<RingTopologyStatus>();
 
@@ -435,7 +433,6 @@ fn build_unresolved_left_arbiter_app(route: Vec<TilePos>) -> (App, Entity) {
         .init_resource::<ArbiterIndexCache>()
         .init_resource::<ArbiterTickStats>()
         .init_resource::<ApproachFairness>()
-        .init_resource::<ClusterStarvation>()
         .init_resource::<LaneletStallTracker>()
         .init_resource::<RingTopologyStatus>();
 
@@ -597,7 +594,6 @@ fn build_bare_arbiter_app(customize: impl FnOnce(&mut App)) -> App {
         .init_resource::<ArbiterIndexCache>()
         .init_resource::<ArbiterTickStats>()
         .init_resource::<ApproachFairness>()
-        .init_resource::<ClusterStarvation>()
         .init_resource::<LaneletStallTracker>()
         .init_resource::<RingTopologyStatus>();
 
@@ -830,12 +826,16 @@ fn approaching_vehicle_holds_exactly_one_reservation_across_ticks() {
     );
 }
 
-/// Ported from `intersection_reservations::downstream_jammed_link_blocks_admission_into_upstream_intersection`.
-/// Invariant (spillback / don't-block-the-box): when the box-exit tile is physically jammed to
-/// capacity, the approaching vehicle is REFUSED — admitting it would strand it inside the box once it
-/// crosses (classic cross-intersection spillback). The refusal is a capacity refusal, not a matrix one.
+/// (Task E) Admission no longer gates on box-exit occupancy. Previously a JAMMED exit tile refused
+/// admission (`jammed_exit_tile_refuses_admission_spillback`) and a sustained jam was only broken by a
+/// force-admit valve. Both the don't-block-the-box GRANT mirror (downstream-headroom + exit-slot) and
+/// the valve are REMOVED: clear-the-box guarantees an admitted car exits even onto a full exit road,
+/// so the only collision-safe, live policy is to admit when the conflict matrix and the light allow —
+/// REGARDLESS of exit occupancy. This test pins that: a vehicle whose box-exit tile is jammed to
+/// capacity is STILL admitted on the first tick (no capacity refusal recorded), exactly the behavior
+/// that lets a saturated deadlock cycle unwind.
 #[test]
-fn jammed_exit_tile_refuses_admission_spillback() {
+fn full_exit_tile_no_longer_refuses_admission() {
     let mut app = build_bare_arbiter_app(|app| {
         let mut occ = app.world_mut().resource_mut::<TrafficOccupancy>();
         occ.ensure_len(81);
@@ -848,20 +848,21 @@ fn jammed_exit_tile_refuses_admission_spillback() {
 
     let res = app.world().resource::<IntersectionReservations>();
     assert!(
-        !res.is_reserved_by(IntersectionId(0), e),
-        "vehicle must NOT be admitted: its box-exit tile is jammed (spillback protection)"
+        res.is_reserved_by(IntersectionId(0), e),
+        "vehicle MUST be admitted even with a FULL box-exit tile (don't-block-the-box removed): \
+         clear-the-box guarantees it exits, so exit occupancy no longer gates admission"
     );
     let stats = app.world().resource::<ArbiterTickStats>();
-    assert!(
-        stats.refused_capacity >= 1,
-        "the refusal must be a capacity/spillback refusal; refused_capacity={}",
+    assert_eq!(
+        stats.refused_capacity, 0,
+        "there is no capacity/spillback refusal anymore; refused_capacity must be 0, got {}",
         stats.refused_capacity
     );
 }
 
-/// Ported from `intersection_reservations::downstream_free_link_allows_admission_into_upstream_intersection`.
-/// Contrast case for the spillback gate: with the box-exit tile FREE, the same vehicle IS admitted —
-/// the gate does not over-block when the exit has room.
+/// Contrast case retained from the old spillback suite: with a free box-exit tile the vehicle is of
+/// course admitted (matrix/light permitting). The point now is parity with the full-exit case above —
+/// admission is exit-occupancy-INDEPENDENT.
 #[test]
 fn free_exit_tile_allows_admission() {
     let mut app = build_bare_arbiter_app(|app| {
@@ -877,61 +878,6 @@ fn free_exit_tile_allows_admission() {
         "vehicle MUST be admitted: its box-exit tile has free capacity"
     );
 }
-
-/// Ported from `intersection_reservations::sustained_downstream_jam_force_admits_one_car_via_escape_valve`.
-/// Invariant (liveness valve): a cluster capacity-starved for `ARBITER_FORCE_ADMIT_TICKS` consecutive
-/// ticks force-admits ONE car, breaking the circular wait — but it must NOT fire on the first stalled
-/// tick (that would defeat spillback protection). The valve bypasses capacity, never the matrix.
-#[test]
-fn sustained_exit_jam_force_admits_one_car_via_valve() {
-    let mut app = build_bare_arbiter_app(|app| {
-        let mut occ = app.world_mut().resource_mut::<TrafficOccupancy>();
-        occ.ensure_len(81);
-        occ.per_tick_vehicles[grid_idx(TilePos { x: 6, y: 4 })] =
-            RoadKind::TwoLane.capacity_per_lane_tile();
-    });
-    let e = spawn_east_through(&mut app);
-
-    // Tick 1: the valve must NOT fire prematurely.
-    app.update();
-    assert!(
-        !app.world()
-            .resource::<IntersectionReservations>()
-            .is_reserved_by(IntersectionId(0), e),
-        "escape valve must not fire on the first stalled tick (would defeat spillback protection)"
-    );
-
-    // Re-jam the exit each tick (cleanup may release stale slots) and stall well past the threshold.
-    for _ in 0..(ARBITER_FORCE_ADMIT_TICKS + 2) {
-        {
-            let mut occ = app.world_mut().resource_mut::<TrafficOccupancy>();
-            occ.per_tick_vehicles[grid_idx(TilePos { x: 6, y: 4 })] =
-                RoadKind::TwoLane.capacity_per_lane_tile();
-        }
-        app.update();
-    }
-
-    // The exit tile is jammed to capacity EVERY tick, so the ONLY path to a reservation is the
-    // liveness valve's force-admit (the normal exit-slot gate can never open). A reservation here is
-    // therefore proof the valve fired. (force_admits is a per-tick counter and reads 0 on the final
-    // tick once the car is already reserved, so we assert on the reservation, not the counter.)
-    assert!(
-        app.world()
-            .resource::<IntersectionReservations>()
-            .is_reserved_by(IntersectionId(0), e),
-        "after sustained exit-jam starvation the liveness valve must force-admit the car"
-    );
-    assert!(
-        !app.world()
-            .resource::<IntersectionReservations>()
-            .stall_tripwire(),
-        "stall tripwire must stay empty even when the valve fires"
-    );
-}
-
-/// Force-admit threshold, mirrored from the arbiter (private const there). If the arbiter constant
-/// changes, this test's loop count must follow.
-const ARBITER_FORCE_ADMIT_TICKS: u32 = 30;
 
 // ---------------------------------------------------------------------------------------------
 // Signalized / right-turn-on-red admission invariants (ported from right_turn_on_red.rs and
@@ -1131,7 +1077,6 @@ fn stop_sign_vehicle_is_reserved_and_advances_under_arbiter() {
         .init_resource::<ArbiterIndexCache>()
         .init_resource::<ArbiterTickStats>()
         .init_resource::<ApproachFairness>()
-        .init_resource::<ClusterStarvation>()
         .init_resource::<LaneletStallTracker>()
         .init_resource::<RingTopologyStatus>()
         .add_systems(
@@ -1408,7 +1353,6 @@ fn build_bare_arbiter_app_4x4(customize: impl FnOnce(&mut App)) -> App {
         .init_resource::<ArbiterIndexCache>()
         .init_resource::<ArbiterTickStats>()
         .init_resource::<ApproachFairness>()
-        .init_resource::<ClusterStarvation>()
         .init_resource::<LaneletStallTracker>()
         .init_resource::<RingTopologyStatus>();
 
@@ -1637,7 +1581,6 @@ fn build_full_chain_arbiter_app_4x4(customize: impl FnOnce(&mut App)) -> App {
         .init_resource::<ArbiterIndexCache>()
         .init_resource::<ArbiterTickStats>()
         .init_resource::<ApproachFairness>()
-        .init_resource::<ClusterStarvation>()
         .init_resource::<LaneletStallTracker>()
         .init_resource::<RingTopologyStatus>();
 
@@ -1872,17 +1815,19 @@ fn inject_coarse_reservation(app: &mut App, e: Entity) {
         });
 }
 
-/// (2-i) DEEP-BOX SPILLBACK GUARD. An eastbound through is reserved-eligible to enter a FourLane 4x4
-/// box (4 tiles deep across), but its EXIT tile (8,4) is at capacity with a STATIONARY lead parked at
-/// high progress (> exit_clear_progress=0.75). Under the OLD optimistic drain exception
-/// (`occ==cap && lead.progress>0.75`) the car was waved INTO the deep box on the bet that the lead
-/// would vacate — but on a deep box that snapshot is stale, the exit refills mid-crossing, and the
-/// car froze Inside on the bare capacity gate, pinning the box (the spillback wedge). The fix drops
-/// the drain exception for deep boxes: a genuinely free exit slot (occ < cap) is required, so the car
-/// holds at the stop line OUTSIDE the box — stricter admission, never a collision. Then DRAIN the
-/// exit and assert it enters.
+/// (Task E) DEADLOCK-FLOW. A car at a deep-box approach whose EXIT road tile is FULL (`occ == cap`)
+/// with a STATIONARY lead at high progress must now ENTER the box (conflict-matrix permitting) and
+/// step out via clear-the-box — instead of waiting forever at the approach. The don't-block-the-box
+/// ENTRY gate that USED to refuse this entry (and caused the approach deadlock when every box's exit
+/// is held by the next car in a cycle) is removed. Clear-the-box guarantees the admitted car exits the
+/// box even onto the full exit road, so blocking entry on exit-fullness is counterproductive — it only
+/// freezes the cycle.
+///
+/// RED-PROOF: pre-change, with `occ == cap` and a stationary high-progress lead, the don't-block-the-box
+/// gate set `blocked_next = true` and the car snapped BACK toward the stop line (cursor 0, progress <
+/// start). Post-change it advances onto the first box tile and, within a few ticks, exits at route end.
 #[test]
-fn deep_box_blocks_entry_until_exit_genuinely_free() {
+fn deadlock_flow_full_exit_no_longer_blocks_box_entry() {
     let exit_tile = TilePos { x: 8, y: 4 };
     let approach = TilePos { x: 3, y: 4 };
     let route = vec![
@@ -1891,86 +1836,16 @@ fn deep_box_blocks_entry_until_exit_genuinely_free() {
         TilePos { x: 7, y: 4 },
         exit_tile,
     ];
-    // FourLane capacity_per_lane_tile == 2.
     let cap = RoadKind::FourLane.capacity_per_lane_tile();
-    // Start mid-approach-tile (well past the 0.0 stop-line clamp) so "blocked" snaps it BACK to the
-    // stop line (progress drops) while "admitted" lets it advance forward toward the box.
-    let start_progress = 0.4_f32;
 
-    // ---- RED-discriminating case: exit at cap, STATIONARY lead at high progress (>0.75). ----
     let mut app = build_move_app_4x4();
     let exit_idx = app.world().resource::<MapGrid>().idx(exit_tile).unwrap();
 
-    // Candidate eastbound, mid approach tile (speed 0).
-    let cand = {
-        let mut pool = app
-            .world_mut()
-            .resource_mut::<crate::game::transport::PathPool>();
-        create_vehicle_with_route(
-            &mut pool,
-            route.clone(),
-            0,
-            start_progress,
-            0.0,
-            60.0,
-            20.0,
-            1.0,
-        )
-    };
-    let cand = app
-        .world_mut()
-        .spawn((
-            cand,
-            Transform::default(),
-            VehicleTrafficState::FreeFlow,
-            VehicleLaneletPlan::default(),
-        ))
-        .id();
-    inject_coarse_reservation(&mut app, cand);
-
-    // A stationary lead occupying the exit tile at progress 0.9 (> exit_clear_progress): it makes the
-    // OLD `entry_clear` drain exception TRUE (progress-only test, ignores its zero speed) — exactly
-    // the stale snapshot that wedged the box. Single-tile route so it stays put this tick.
-    {
-        let mut pool = app
-            .world_mut()
-            .resource_mut::<crate::game::transport::PathPool>();
-        let lead =
-            create_vehicle_with_route(&mut pool, vec![exit_tile], 0, 0.9, 0.0, 60.0, 20.0, 1.0);
-        app.world_mut().spawn((
-            lead,
-            Transform::default(),
-            VehicleTrafficState::FreeFlow,
-            VehicleLaneletPlan::default(),
-        ));
-    }
-    // Mark the exit tile as fully occupied (cap) in the occupancy read model.
-    {
-        let mut occ = app.world_mut().resource_mut::<TrafficOccupancy>();
-        occ.ensure_len(12 * 12);
-        occ.per_tick_vehicles[exit_idx] = cap;
-    }
-
-    // ONE tick (the lead is parked at progress 0.9 in this tick's spatial snapshot — exactly the
-    // stale "about to drain" snapshot). The OLD optimistic exception would admit the car here and it
-    // would advance FORWARD past its start; the fix blocks it, snapping it back toward the stop line.
-    app.world_mut()
-        .resource_mut::<bevy::time::Time<bevy::time::Fixed>>()
-        .advance_by(std::time::Duration::from_secs_f32(0.1));
-    app.update();
-
-    let v = app.world().get::<Vehicle>(cand).unwrap();
-    assert!(
-        v.path_cursor == 0 && v.progress < start_progress,
-        "deep box with a full exit + stationary high-progress lead must NOT admit the car into the \
-         box — it holds at the stop line (cursor 0, snapped back below its start={start_progress}); \
-         got cursor={} progress={}",
-        v.path_cursor,
-        v.progress
-    );
-
-    // ---- GREEN: drain the exit (occ < cap, no lead) → the car may now enter. ----
-    let mut app = build_move_app_4x4();
+    // Candidate eastbound mid approach tile (progress 0.4, speed 0) — the SAME start as the deep-box
+    // RED case, so the discriminator is a direct inverse: OLD code (don't-block-the-box) snapped it
+    // BACK toward the stop line (progress drops below start); NEW code lets it advance FORWARD into the
+    // box despite the full exit.
+    let start_progress = 0.4_f32;
     let cand = {
         let mut pool = app
             .world_mut()
@@ -1987,23 +1862,164 @@ fn deep_box_blocks_entry_until_exit_genuinely_free() {
         ))
         .id();
     inject_coarse_reservation(&mut app, cand);
-    // Exit tile empty (occ defaults to 0 < cap). Advance a few ticks so the car accelerates from rest
-    // and clears the stop line into the box.
+
+    // Stationary lead occupying the full exit tile at high progress (0.9): exactly the deadlock-cycle
+    // shape where the exit is held by the next car. Single-tile route so it stays put.
+    {
+        let mut pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        let lead =
+            create_vehicle_with_route(&mut pool, vec![exit_tile], 0, 0.9, 0.0, 60.0, 20.0, 1.0);
+        app.world_mut().spawn((
+            lead,
+            Transform::default(),
+            VehicleTrafficState::FreeFlow,
+            VehicleLaneletPlan::default(),
+        ));
+    }
+    {
+        let mut occ = app.world_mut().resource_mut::<TrafficOccupancy>();
+        occ.ensure_len(12 * 12);
+        occ.per_tick_vehicles[exit_idx] = cap;
+    }
+
+    // One tick: with don't-block-the-box removed the car is NOT held at the approach by the full exit —
+    // it advances FORWARD toward the box (progress increases past its start) instead of snapping back.
+    app.world_mut()
+        .resource_mut::<bevy::time::Time<bevy::time::Fixed>>()
+        .advance_by(std::time::Duration::from_secs_f32(0.1));
+    app.update();
+
+    let v = app.world().get::<Vehicle>(cand).unwrap();
+    assert!(
+        v.path_cursor >= 1 || v.progress > start_progress,
+        "a full exit must NOT block box entry anymore (don't-block-the-box removed): the car must \
+         advance toward / into the box despite occ==cap (pre-change it snapped back below \
+         start={start_progress}); got cursor={} progress={}",
+        v.path_cursor,
+        v.progress,
+    );
+
+    // And it keeps flowing: within a few ticks it reaches the exit (clear-the-box lets it leave the
+    // box even onto the still-full exit road).
     for _ in 0..40 {
         app.world_mut()
             .resource_mut::<bevy::time::Time<bevy::time::Fixed>>()
             .advance_by(std::time::Duration::from_secs_f32(0.1));
+        // Keep the exit jammed every tick (the deadlock cycle never drains it on its own).
+        {
+            let mut occ = app.world_mut().resource_mut::<TrafficOccupancy>();
+            occ.per_tick_vehicles[exit_idx] = cap;
+        }
         app.update();
         if app.world().get_entity(cand).is_err() {
-            break; // crossed and despawned at route end — definitely entered
+            break; // crossed the whole box and despawned at route end
         }
     }
-    let entered = match app.world().get::<Vehicle>(cand) {
-        Some(v) => v.path_cursor >= 1, // advanced onto the first box tile (4,4) or beyond
+    let reached_exit = match app.world().get::<Vehicle>(cand) {
+        Some(v) => v.path_cursor >= 3, // advanced to / past the exit-tile cursor
         None => true,                  // despawned at route end
     };
     assert!(
-        entered,
-        "with a genuinely free exit the car must enter the deep box (advance past the approach tile)"
+        reached_exit,
+        "with clear-the-box the admitted car must keep flowing THROUGH the box and exit even onto a \
+         permanently full exit road — the deadlock cycle unwinds"
+    );
+}
+
+/// (Task E) MULTI-BOX CYCLE. Three eastbound cars each at the approach of a deep box whose exit road
+/// is full. Pre-change, each waits forever (its exit is full → don't-block-the-box refuses entry),
+/// the classic circular wait. Post-change every car enters its box and exits via clear-the-box, so
+/// all three cursors advance over a few ticks (no permanent deadlock). This is a behavioral
+/// stand-in for the live 7-car junction freeze.
+#[test]
+fn multi_car_full_exit_cycle_progresses_not_deadlocks() {
+    let exit_tile = TilePos { x: 8, y: 4 };
+    let approach = TilePos { x: 3, y: 4 };
+    let route = vec![
+        approach,
+        TilePos { x: 4, y: 4 },
+        TilePos { x: 7, y: 4 },
+        exit_tile,
+    ];
+    let cap = RoadKind::FourLane.capacity_per_lane_tile();
+
+    let mut app = build_move_app_4x4();
+    let exit_idx = app.world().resource::<MapGrid>().idx(exit_tile).unwrap();
+
+    // Three same-lanelet eastbound cars queued on the approach tile (cursor 0) at descending progress
+    // so they form a queue, all blocked behind the full exit pre-change.
+    let mut cars = Vec::new();
+    for (i, prog) in [0.4_f32, 0.2, 0.0].into_iter().enumerate() {
+        let v = {
+            let mut pool = app
+                .world_mut()
+                .resource_mut::<crate::game::transport::PathPool>();
+            create_vehicle_with_route(&mut pool, route.clone(), 0, prog, 8.0, 60.0, 20.0, 1.0)
+        };
+        let _ = i;
+        let e = app
+            .world_mut()
+            .spawn((
+                v,
+                Transform::default(),
+                VehicleTrafficState::FreeFlow,
+                VehicleLaneletPlan::default(),
+            ))
+            .id();
+        inject_coarse_reservation(&mut app, e);
+        cars.push(e);
+    }
+
+    // Continuous longitudinal start position (cursor + progress) of each car, to prove forward flow.
+    let start_pos: Vec<f32> = cars
+        .iter()
+        .map(|&e| {
+            let v = app.world().get::<Vehicle>(e).unwrap();
+            v.path_cursor as f32 + v.progress
+        })
+        .collect();
+
+    // Run with the exit PERMANENTLY full (a deadlock cycle never drains on its own). The front car
+    // crosses the whole box (and despawns at route end); the followers ramp up from rest behind it.
+    for _ in 0..120 {
+        app.world_mut()
+            .resource_mut::<bevy::time::Time<bevy::time::Fixed>>()
+            .advance_by(std::time::Duration::from_secs_f32(0.1));
+        {
+            let mut occ = app.world_mut().resource_mut::<TrafficOccupancy>();
+            occ.ensure_len(12 * 12);
+            occ.per_tick_vehicles[exit_idx] = cap;
+        }
+        app.update();
+    }
+
+    // No car may be wedged: each must have ADVANCED (continuous position strictly increased) despite
+    // the permanently full exit. A despawned car flowed all the way through (front car). With the OLD
+    // don't-block-the-box gate every car stayed pinned at the approach (zero forward progress) — the
+    // circular wait. Clear-the-box unwinds it.
+    for (i, &e) in cars.iter().enumerate() {
+        let advanced = match app.world().get::<Vehicle>(e) {
+            Some(v) => (v.path_cursor as f32 + v.progress) > start_pos[i] + 0.05,
+            None => true, // flowed through the whole box and despawned at route end
+        };
+        assert!(
+            advanced,
+            "car {i} must have FLOWED forward despite a permanently full exit (cycle unwinds via \
+             clear-the-box), not deadlocked at the approach (start_pos={})",
+            start_pos[i]
+        );
+    }
+
+    // And the leading car must have actually entered the box (cursor advanced past the approach),
+    // proving entry happens even with the exit full — not merely crept forward on the approach tile.
+    let front_entered = match app.world().get::<Vehicle>(cars[0]) {
+        Some(v) => v.path_cursor >= 1,
+        None => true,
+    };
+    assert!(
+        front_entered,
+        "the leading car must enter the box despite the full exit (don't-block-the-box removed)"
     );
 }

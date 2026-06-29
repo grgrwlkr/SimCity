@@ -13,13 +13,11 @@ use crate::game::transport::{LaneGraph, LaneletConflictMatrices, PathHandle, Pat
 
 use super::super::components::{VehicleLaneletPlan, VehicleTrafficState};
 use super::super::{
-    Parked, STOP_LINE_MARGIN_TILES, TILE_CENTER_TO_EDGE_TILES, TrafficConfig, TrafficOccupancy,
-    TrafficSpatialIndex, VEHICLE_HALF_LENGTH_TILES, Vehicle, compute_exit_direction,
+    Parked, TILE_CENTER_TO_EDGE_TILES, TrafficConfig, Vehicle, compute_exit_direction,
     dir_between_adjacent, is_intersection_tile,
 };
 use super::reservations::{
-    IntersectionReservation, IntersectionReservations, ReservationState,
-    downstream_link_has_headroom, grant_mask_set,
+    IntersectionReservation, IntersectionReservations, ReservationState, grant_mask_set,
 };
 use super::zones::{ManeuverKind, StreamKey, ZONE_ALL, maneuver_kind};
 
@@ -87,10 +85,6 @@ pub(crate) struct ArbiterGrantCandidate {
     pub coarse: bool,
     pub priority: u8,
     pub dist_to_entry: f32,
-    pub exit_tile_idx: usize,
-    pub exit_tile_cap: u16,
-    pub exit_tile_phys_occ: u16,
-    pub has_downstream_headroom: bool,
     /// ПДД readiness (Task 1): signalized green/yellow OR right-turn-on-red OR uncontrolled.
     pub ready: bool,
     /// True when admission is a right-turn-on-red (a yield maneuver: only granted when the cluster
@@ -112,23 +106,6 @@ pub(crate) struct ArbiterGrantCandidate {
 pub struct ApproachFairness {
     pub wait_ticks: HashMap<(IntersectionId, RoadDir), u16>,
 }
-
-/// Per-cluster count of consecutive ticks a cluster had a candidate refused by a CAPACITY/spillback
-/// gate (exit-slot or downstream-headroom) and admitted NOTHING. The arbiter's only liveness valve:
-/// once a cluster has been capacity-starved this many ticks, [`arbitrate_grants_inner`] force-admits
-/// ONE ready, matrix-safe candidate past those two gates (never past the conflict matrix or a red
-/// light), breaking the saturated-grid circular wait that the "by-construction / ring-free" design
-/// can't (a real city grid is cyclic). Mirrors the legacy `INTERSECTION_STALL_FORCE_TICKS`; reset on
-/// any grant, pruned when the cluster has no candidates. Distinct from `stall_ticks` (the tripwire
-/// that must stay 0 flag-on) — this is the arbiter's own counter.
-#[derive(Resource, Default)]
-pub struct ClusterStarvation {
-    pub ticks: HashMap<IntersectionId, u32>,
-}
-
-/// Capacity-starvation ticks before the force-admit valve fires (30 = 3 s @ 10 Hz, mirroring the
-/// legacy valve: long enough to ignore transient congestion, far below the 60 s reroute fallback).
-const ARBITER_FORCE_ADMIT_TICKS: u32 = 30;
 
 /// Per-vehicle count of consecutive ticks a vehicle was approaching a cluster but its lanelet could
 /// NOT be resolved (neither sidecar nor route-geometry fallback) — a genuine routing error, not
@@ -519,11 +496,6 @@ pub(crate) fn arbitrate_grants_inner(
     matrices: &LaneletConflictMatrices,
     inbox: &[ArbiterInboxVehicle],
     reservations: &mut IntersectionReservations,
-    // Liveness valve: per-cluster capacity-starvation ticks (mutated here), and the threshold past
-    // which a starved cluster force-admits one ready, matrix-safe candidate. Pass `u32::MAX` to
-    // disable the valve (tests of the normal grant path).
-    starvation: &mut HashMap<IntersectionId, u32>,
-    force_threshold: u32,
 ) -> ArbiterCounts {
     let mut counts = ArbiterCounts::default();
 
@@ -586,7 +558,6 @@ pub(crate) fn arbitrate_grants_inner(
         });
 
         let mut admitted_any = false;
-        let mut capacity_refused = false;
         // Per-tick DEFERRED-grant scratch mask: bits of precise lanelets GRANTED this tick. A grant
         // no longer pre-locks the box (`active_mask` is untouched until box entry in `drive.rs`); this
         // mask only serializes a SINGLE grant sweep — two conflicting candidates never both get an
@@ -600,12 +571,14 @@ pub(crate) fn arbitrate_grants_inner(
                 counts.yield_refusals += 1;
                 continue;
             }
-            if !cand.has_downstream_headroom {
-                counts.refused += 1;
-                counts.refused_capacity += 1;
-                capacity_refused = true;
-                continue;
-            }
+            // NOTE: the grant-time mirror of "don't block the box" (downstream-headroom + exit-slot
+            // refusals) was REMOVED — it conflicts with clear-the-box. An admitted car is guaranteed
+            // to exit the box (clear-the-box exempts the box→exit step from capacity), so refusing the
+            // GRANT because the exit road / downstream link is full only freezes a deadlock cycle. Box
+            // admission is now gated solely by collision-safety (the conflict matrix below) and red
+            // lights (`ready`). The exit-slot reservation machinery is gone with it (it existed only to
+            // not over-admit to a full exit — exactly the counterproductive gate).
+            //
             // Right-turn-on-red is a yield maneuver: only admit when the cluster is otherwise clear
             // (no holders / in-box / earlier grants this tick).
             if cand.is_right_on_red && reservations.is_reserved(id) {
@@ -614,19 +587,6 @@ pub(crate) fn arbitrate_grants_inner(
             }
             // Already admitted in a prior tick (still crossing): not a fresh attempt, not refused.
             if reservations.is_reserved_by(id, cand.vehicle) || ledger.holds(cand.vehicle) {
-                continue;
-            }
-            // Pre-check the exit slot read-only, so a successful grant is never stranded without a
-            // slot (atomic all-or-nothing across the two writes).
-            if !reservations.exit_slot_available(
-                cand.exit_tile_idx,
-                cand.exit_tile_phys_occ,
-                cand.exit_tile_cap,
-                cand.vehicle,
-            ) {
-                counts.refused += 1;
-                counts.refused_capacity += 1;
-                capacity_refused = true;
                 continue;
             }
             // Coarse (unresolved-lanelet) candidates take the whole box exclusively AT GRANT (no
@@ -648,13 +608,6 @@ pub(crate) fn arbitrate_grants_inner(
                 counts.refused_matrix += 1;
                 continue;
             }
-            // Guaranteed to succeed (pre-checked; single-threaded sweep).
-            reservations.try_acquire_exit_slot(
-                cand.exit_tile_idx,
-                cand.exit_tile_phys_occ,
-                cand.exit_tile_cap,
-                cand.vehicle,
-            );
             reservations
                 .by_intersection
                 .entry(id)
@@ -678,66 +631,12 @@ pub(crate) fn arbitrate_grants_inner(
             }
         }
 
-        // Liveness valve: a cluster that admitted nothing but was capacity-starved past the threshold
-        // force-admits ONE candidate, bypassing the exit-slot + downstream-headroom gates but NEVER
-        // the conflict matrix (try_admit) or a red light (ready). Breaks the saturated-grid circular
-        // wait the by-construction design can't. One per cluster per tick.
-        if !admitted_any && starvation.get(&id).copied().unwrap_or(0) >= force_threshold {
-            for &cand in &order {
-                if !cand.ready {
-                    continue;
-                }
-                if cand.is_right_on_red && reservations.is_reserved(id) {
-                    continue;
-                }
-                if reservations.is_reserved_by(id, cand.vehicle) || ledger.holds(cand.vehicle) {
-                    continue;
-                }
-                // The valve bypasses the capacity gates, never the conflict model. Coarse takes the
-                // whole box; precise uses the same deferred eligibility check (against the now-empty
-                // grant_mask — the valve only runs when nothing was admitted this tick) and does NOT
-                // pre-lock the box (entry gate is the serializer).
-                let admitted_ok = if cand.coarse {
-                    ledger.try_admit_coarse(cand.vehicle, &[])
-                } else {
-                    ledger.grant_eligible(matrix.row(cand.local_idx), &[])
-                };
-                if !admitted_ok {
-                    continue;
-                }
-                reservations.force_acquire_exit_slot(cand.exit_tile_idx, cand.vehicle);
-                reservations
-                    .by_intersection
-                    .entry(id)
-                    .or_default()
-                    .push(IntersectionReservation {
-                        vehicle: cand.vehicle,
-                        state: ReservationState::Approaching,
-                        created_at_sec: now,
-                        zones: ZONE_ALL,
-                        tiles: cand.tiles.clone(),
-                        stream: cand.stream,
-                        maneuver: cand.maneuver,
-                        local_idx: (!cand.coarse).then_some(cand.local_idx as u32),
-                        coarse: cand.coarse,
-                    });
-                counts.admitted += 1;
-                count_admit(&mut counts, cand);
-                counts.force_admits += 1;
-                admitted_any = true;
-                if cand.is_right_on_red {
-                    counts.rtor_grants += 1;
-                }
-                break;
-            }
-        }
-
-        // Update the starvation counter: reset on any grant, climb while capacity-starved.
-        if admitted_any {
-            starvation.remove(&id);
-        } else if capacity_refused {
-            *starvation.entry(id).or_insert(0) += 1;
-        }
+        // The force-admit liveness valve was REMOVED with the capacity gates. It existed only to break
+        // a circular wait caused by the exit-slot / downstream-headroom refusals; with those gates gone
+        // there is no capacity starvation to recover from, and box admission is already collision-safe
+        // and live (gated only by the conflict matrix and red lights). The starvation counter it drove
+        // is gone too.
+        let _ = admitted_any;
 
         *reservations.ledger_mut(id) = ledger;
     }
@@ -749,8 +648,6 @@ pub(crate) fn arbitrate_grants_inner(
 pub(crate) struct ArbitrateLaneletParams<'w, 's> {
     grid: Res<'w, MapGrid>,
     intersections: Res<'w, IntersectionIndex>,
-    traffic: Res<'w, TrafficOccupancy>,
-    spatial: Res<'w, TrafficSpatialIndex>,
     traffic_cfg: Res<'w, TrafficConfig>,
     path_pool: Res<'w, PathPool>,
     llg: Res<'w, LaneletGraph>,
@@ -760,7 +657,6 @@ pub(crate) struct ArbitrateLaneletParams<'w, 's> {
     cache: ResMut<'w, ArbiterIndexCache>,
     stats: ResMut<'w, ArbiterTickStats>,
     fairness: ResMut<'w, ApproachFairness>,
-    starvation: ResMut<'w, ClusterStarvation>,
     stall_tracker: ResMut<'w, LaneletStallTracker>,
     left_turn_demand: ResMut<'w, LeftTurnDemand>,
     q_lights: Query<'w, 's, &'static TrafficLight>,
@@ -793,7 +689,6 @@ pub(crate) fn arbitrate_lanelet_reservations(
     mut p: ArbitrateLaneletParams,
 ) {
     let now = time.elapsed_secs_f64();
-    let exit_clear_progress = (VEHICLE_HALF_LENGTH_TILES + STOP_LINE_MARGIN_TILES).clamp(0.0, 1.0);
 
     // Rebuild left-turn demand from this tick's waiting lefts (read next tick by the light cycle).
     p.left_turn_demand.ns.clear();
@@ -837,8 +732,6 @@ pub(crate) fn arbitrate_lanelet_reservations(
 
     let grid = p.grid.as_ref();
     let intersections = p.intersections.as_ref();
-    let traffic = p.traffic.as_ref();
-    let spatial = p.spatial.as_ref();
     let path_pool = p.path_pool.as_ref();
     let llg = p.llg.as_ref();
     let lanes = p.lanes.as_ref();
@@ -982,33 +875,18 @@ pub(crate) fn arbitrate_lanelet_reservations(
             drop_other += 1;
             continue;
         }
-        let Some(exit_idx) = grid.idx(exit_tile) else {
-            drop_other += 1;
-            continue;
-        };
-        let cap = exit_cell.road.kind.capacity_per_lane_tile();
-        if cap == 0 {
+        // Exit-tile validity guard: a candidate must resolve to a real exit ROAD tile with non-zero
+        // capacity (a routing/geometry sanity check). The exit's OCCUPANCY no longer gates admission —
+        // clear-the-box guarantees an admitted car exits even onto a full exit road, so the old
+        // downstream-headroom / exit-slot refusals were removed (they only froze deadlock cycles).
+        if grid.idx(exit_tile).is_none() {
             drop_other += 1;
             continue;
         }
-        let phys_occ = traffic
-            .per_tick_vehicles
-            .get(exit_idx)
-            .copied()
-            .unwrap_or(0);
-
-        let has_downstream_headroom = rem.is_none_or(|route| {
-            downstream_link_has_headroom(
-                grid,
-                traffic,
-                spatial,
-                intersections,
-                route,
-                exit_tile,
-                DOWNSTREAM_LINK_HORIZON_TILES,
-                exit_clear_progress,
-            )
-        });
+        if exit_cell.road.kind.capacity_per_lane_tile() == 0 {
+            drop_other += 1;
+            continue;
+        }
 
         let signalized = intersections.traffic_lights.contains(&id);
         let readiness = lanelet_readiness(
@@ -1057,10 +935,6 @@ pub(crate) fn arbitrate_lanelet_reservations(
                 coarse,
                 priority,
                 dist_to_entry,
-                exit_tile_idx: exit_idx,
-                exit_tile_cap: cap,
-                exit_tile_phys_occ: phys_occ,
-                has_downstream_headroom,
                 ready: readiness.ready,
                 is_right_on_red: readiness.is_right_on_red,
                 entry_dir,
@@ -1080,13 +954,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
         p.matrices.as_ref(),
         &inbox,
         &mut p.reservations,
-        &mut p.starvation.ticks,
-        ARBITER_FORCE_ADMIT_TICKS,
     );
-    // Prune starvation entries for clusters with no candidates this tick (bounded).
-    p.starvation
-        .ticks
-        .retain(|id, _| candidates_by_id.contains_key(id));
 
     // P3c cross-feeder fairness: age every approach that had a candidate but no grant this tick;
     // reset served approaches; prune approaches no longer present (bounded).
@@ -1127,13 +995,14 @@ pub(crate) fn arbitrate_lanelet_reservations(
     let reservations = p.reservations.as_ref();
     let stall_tripwire_fired = u32::from(reservations.stall_tripwire());
     let held_points_max = reservations.held_points_max();
-    let reserved_exit_slots = reservations.total_exit_slots();
     let max_approaching_age_ms = reservations.max_approaching_age_ms(now);
     let stats = &mut *p.stats;
     stats.admitted = counts.admitted;
     stats.refused = counts.refused;
     stats.held_points_max = held_points_max;
-    stats.reserved_exit_slots = reserved_exit_slots;
+    // Exit-slot reservation machinery was removed with the don't-block-the-box gates; the
+    // observability field is retained for the BRP/debug mirror but is now always 0.
+    stats.reserved_exit_slots = 0;
     stats.max_approaching_age_ms = max_approaching_age_ms;
     stats.stall_tripwire_fired = stall_tripwire_fired;
     stats.ped_blocked = ped_blocked;
@@ -1153,9 +1022,6 @@ pub(crate) fn arbitrate_lanelet_reservations(
     stats.admitted_left = counts.admitted_left;
     stats.admitted_uturn = counts.admitted_uturn;
 }
-
-/// Downstream-link horizon for the spillback gate (mirrors the legacy collect constant).
-const DOWNSTREAM_LINK_HORIZON_TILES: usize = 3;
 
 /// Advisory ring-free topology status (P3c, WARN-only — the user chose to warn, not block). Counts
 /// clusters with no open-road exit; a likely gridlock-ring the arbiter's liveness assumes away.
@@ -1270,10 +1136,6 @@ mod tests {
             coarse: false,
             priority,
             dist_to_entry: 0.5,
-            exit_tile_idx: 1000 + local_idx, // distinct exit tiles -> exit slots never the gate
-            exit_tile_cap: 2,
-            exit_tile_phys_occ: 0,
-            has_downstream_headroom: true,
             ready: true,
             is_right_on_red: false,
             entry_dir: RoadDir::East,
@@ -1314,16 +1176,7 @@ mod tests {
             ],
         );
         let mut res = IntersectionReservations::default();
-        arbitrate_grants_inner(
-            0.0,
-            &ordered,
-            &cands,
-            &m,
-            &[],
-            &mut res,
-            &mut HashMap::new(),
-            u32::MAX,
-        );
+        arbitrate_grants_inner(0.0, &ordered, &cands, &m, &[], &mut res);
         assert!(res.is_reserved_by(IntersectionId(0), e0));
         assert!(res.is_reserved_by(IntersectionId(0), e2));
 
@@ -1338,16 +1191,7 @@ mod tests {
             ],
         );
         let mut res2 = IntersectionReservations::default();
-        arbitrate_grants_inner(
-            0.0,
-            &ordered,
-            &cands2,
-            &m,
-            &[],
-            &mut res2,
-            &mut HashMap::new(),
-            u32::MAX,
-        );
+        arbitrate_grants_inner(0.0, &ordered, &cands2, &m, &[], &mut res2);
         let granted = [a, b]
             .iter()
             .filter(|&&x| res2.is_reserved_by(IntersectionId(0), x))
@@ -1372,8 +1216,6 @@ mod tests {
                 tile: TilePos { x: 0, y: 0 },
             }],
             &mut res3,
-            &mut HashMap::new(),
-            u32::MAX,
         );
         assert!(
             res3.is_reserved_by(IntersectionId(0), inbox_e),
@@ -1435,16 +1277,7 @@ mod tests {
         let mut cands = HashMap::new();
         cands.insert(IntersectionId(0), v);
         let mut res = IntersectionReservations::default();
-        let counts = arbitrate_grants_inner(
-            0.0,
-            &ordered,
-            &cands,
-            &m,
-            &[],
-            &mut res,
-            &mut HashMap::new(),
-            u32::MAX,
-        );
+        let counts = arbitrate_grants_inner(0.0, &ordered, &cands, &m, &[], &mut res);
         assert_eq!(
             counts.admitted, 1,
             "exactly one of four mutually-conflicting candidates is granted"
@@ -1473,16 +1306,7 @@ mod tests {
         let mut cands: HashMap<IntersectionId, Vec<ArbiterGrantCandidate>> = HashMap::new();
         cands.insert(IntersectionId(0), vec![c0]);
         let mut res = IntersectionReservations::default();
-        let c = arbitrate_grants_inner(
-            0.0,
-            &ordered,
-            &cands,
-            &m,
-            &[],
-            &mut res,
-            &mut HashMap::new(),
-            u32::MAX,
-        );
+        let c = arbitrate_grants_inner(0.0, &ordered, &cands, &m, &[], &mut res);
         assert_eq!(c.admitted, 1, "coarse admitted into a clear box");
         assert!(res.is_reserved_by(IntersectionId(0), ent(1)));
 
@@ -1493,16 +1317,7 @@ mod tests {
         let mut cands2: HashMap<IntersectionId, Vec<ArbiterGrantCandidate>> = HashMap::new();
         cands2.insert(IntersectionId(0), vec![c1, c2]);
         let mut res2 = IntersectionReservations::default();
-        let cc = arbitrate_grants_inner(
-            0.0,
-            &ordered,
-            &cands2,
-            &m,
-            &[],
-            &mut res2,
-            &mut HashMap::new(),
-            u32::MAX,
-        );
+        let cc = arbitrate_grants_inner(0.0, &ordered, &cands2, &m, &[], &mut res2);
         // Collision-safe either way (order-dependent which wins): a coarse whole-box hold and a
         // precise car are NEVER both admitted (the coarse car occupies the precise car's space too).
         assert_eq!(
@@ -1523,16 +1338,7 @@ mod tests {
         let mut cands3: HashMap<IntersectionId, Vec<ArbiterGrantCandidate>> = HashMap::new();
         cands3.insert(IntersectionId(0), vec![a, b]);
         let mut res3 = IntersectionReservations::default();
-        let c3 = arbitrate_grants_inner(
-            0.0,
-            &ordered,
-            &cands3,
-            &m,
-            &[],
-            &mut res3,
-            &mut HashMap::new(),
-            u32::MAX,
-        );
+        let c3 = arbitrate_grants_inner(0.0, &ordered, &cands3, &m, &[], &mut res3);
         assert_eq!(
             c3.admitted, 1,
             "two coarse candidates serialize to one (whole-box exclusive)"
@@ -1569,16 +1375,7 @@ mod tests {
         let mut cands = HashMap::new();
         cands.insert(IntersectionId(0), vec![south, north]); // input order south-first
         let mut res = IntersectionReservations::default();
-        arbitrate_grants_inner(
-            0.0,
-            &ordered,
-            &cands,
-            &m,
-            &[],
-            &mut res,
-            &mut HashMap::new(),
-            u32::MAX,
-        );
+        arbitrate_grants_inner(0.0, &ordered, &cands, &m, &[], &mut res);
         assert!(
             res.is_reserved_by(IntersectionId(0), ent(1)),
             "North (higher dir precedence) wins the post-distance tiebreak"
@@ -2073,23 +1870,14 @@ mod tests {
             let mut cands = HashMap::new();
             cands.insert(IntersectionId(0), cand_order);
             let mut res = IntersectionReservations::default();
-            let counts = arbitrate_grants_inner(
-                0.0,
-                &ordered,
-                &cands,
-                &m,
-                &inbox,
-                &mut res,
-                &mut HashMap::new(),
-                u32::MAX,
-            );
+            let counts = arbitrate_grants_inner(0.0, &ordered, &cands, &m, &inbox, &mut res);
             // Project to an order+membership-comparable form.
             let rows: Vec<(u64, ReservationState)> = res
                 .by_intersection
                 .get(&IntersectionId(0))
                 .map(|v| v.iter().map(|r| (r.vehicle.to_bits(), r.state)).collect())
                 .unwrap_or_default();
-            (rows, res.total_exit_slots(), counts)
+            (rows, counts)
         };
 
         let inbox_a = || {
@@ -2140,11 +1928,11 @@ mod tests {
 
         assert_eq!(
             out_a, out_b,
-            "arbiter output (rows, exit slots, counts) must be independent of input order"
+            "arbiter output (rows, counts) must be independent of input order"
         );
         // Sanity: e0 (conflicts e1, lower entity bits) + e2 granted; e1 refused; 2 inbox safety nets.
         assert_eq!(
-            (out_a.2.admitted, out_a.2.refused),
+            (out_a.1.admitted, out_a.1.refused),
             (2, 1),
             "2 admitted, 1 refused"
         );

@@ -1,11 +1,10 @@
 use bevy::prelude::*;
 
 use crate::game::intersections::{IntersectionId, IntersectionIndex};
-use crate::game::map::{MapGrid, TilePos};
-use crate::game::roads::RoadDir;
+use crate::game::map::TilePos;
 use crate::game::transport::lanelet::conflict::rows_overlap;
 
-use super::super::{TrafficOccupancy, TrafficSpatialIndex, Vehicle, is_intersection_tile};
+use super::super::Vehicle;
 use crate::game::pedestrians::PedestrianCrossing;
 
 use super::zones::{ConflictMask, ManeuverKind, StreamKey};
@@ -49,22 +48,7 @@ pub struct IntersectionReservations {
     /// Per-intersection lanelet admission ledger (arbiter substrate).
     #[allow(dead_code)]
     ledger: std::collections::HashMap<IntersectionId, IntersectionLedger>,
-    /// Persistent per-exit-tile reserved slots, keyed by exit-tile grid index. A vehicle granted a
-    /// slot holds it across ticks until its reservation is dropped on cluster exit (then cleanup
-    /// releases it via `release_exit_slots_for_entity`), so the arbiter never over-admits to one
-    /// exit tile across ticks. `ArrayVec<Entity, 4>` was
-    /// proposed (compile cap N=4, no heap alloc); kept as `Vec<Entity>` because `arrayvec` is not a
-    /// workspace dependency and slot counts are tiny/short-lived — same precedent as
-    /// `ConflictMatrix`'s `Vec<u64>` over `SmallVec`. `EXIT_SLOT_CAP` enforces the N=4 bound.
-    #[allow(dead_code)]
-    exit_slots: std::collections::HashMap<usize, Vec<Entity>>,
 }
-
-/// Compile-time headroom cap on per-exit-tile reserved slots. The binding runtime gate is
-/// `phys_occ + slots.len() < capacity_per_lane_tile()` (≤2); N=4 is slack, mirroring an
-/// `ArrayVec<Entity, 4>` bound.
-#[allow(dead_code)]
-const EXIT_SLOT_CAP: usize = 4;
 
 /// Per-intersection lanelet admission ledger: which lanelets are currently held, as a bitset of
 /// local lanelet indices (`active_mask`). A candidate lanelet `L` is admissible iff its conflict
@@ -282,88 +266,6 @@ impl IntersectionReservations {
         self.ledger.get(&id)
     }
 
-    /// Try to reserve a persistent slot on exit tile `exit_tile_idx` for `entity`. Succeeds iff the
-    /// tile's physical occupancy plus already-reserved slots is below `cap` (the runtime
-    /// `capacity_per_lane_tile`) and the `EXIT_SLOT_CAP` (N=4) headroom is not exceeded. Idempotent:
-    /// an entity already holding a slot returns `true`. Slots are PERSISTENT — released only via
-    /// `release_exit_slot` when the holder physically occupies the tile.
-    pub(crate) fn try_acquire_exit_slot(
-        &mut self,
-        exit_tile_idx: usize,
-        phys_occ: u16,
-        cap: u16,
-        entity: Entity,
-    ) -> bool {
-        let slots = self.exit_slots.entry(exit_tile_idx).or_default();
-        if slots.contains(&entity) {
-            return true;
-        }
-        if slots.len() >= EXIT_SLOT_CAP {
-            return false;
-        }
-        if (phys_occ as usize) + slots.len() >= cap as usize {
-            return false;
-        }
-        slots.push(entity);
-        true
-    }
-
-    /// Force-reserve an exit slot for the liveness valve, bypassing the capacity/headroom check (but
-    /// NOT the conflict matrix — the caller still goes through `try_admit`). Idempotent. Over-admits
-    /// the exit tile by one to break a saturated-grid circular wait, exactly like the legacy
-    /// force-admit; the over-admission resolves as the cascade drains downstream.
-    pub(crate) fn force_acquire_exit_slot(&mut self, exit_tile_idx: usize, entity: Entity) {
-        let slots = self.exit_slots.entry(exit_tile_idx).or_default();
-        if !slots.contains(&entity) {
-            slots.push(entity);
-        }
-    }
-
-    /// Release `entity`'s slot on `exit_tile_idx` (it now physically occupies the tile, so it is
-    /// counted in `phys_occ` and no longer needs a reserved slot). No-op if absent.
-    pub(crate) fn release_exit_slot(&mut self, exit_tile_idx: usize, entity: Entity) {
-        if let Some(slots) = self.exit_slots.get_mut(&exit_tile_idx) {
-            slots.retain(|&e| e != entity);
-            if slots.is_empty() {
-                self.exit_slots.remove(&exit_tile_idx);
-            }
-        }
-    }
-
-    /// Release `entity` from any exit-tile slot it holds (used on cluster exit, when the entity's
-    /// reservation is dropped). Scans all exit tiles — there are few — so no per-vehicle exit-tile
-    /// bookkeeping is needed. Drops emptied tile entries.
-    pub(crate) fn release_exit_slots_for_entity(&mut self, entity: Entity) {
-        self.exit_slots.retain(|_, slots| {
-            slots.retain(|&e| e != entity);
-            !slots.is_empty()
-        });
-    }
-
-    pub(crate) fn exit_slot_count(&self, exit_tile_idx: usize) -> usize {
-        self.exit_slots.get(&exit_tile_idx).map_or(0, Vec::len)
-    }
-
-    /// Read-only predicate mirroring `try_acquire_exit_slot`'s gate, so the arbiter can pre-check a
-    /// slot before committing a ledger admission (keeping the two writes atomic: never admit in the
-    /// ledger then fail to reserve the exit slot). True iff `entity` already holds a slot, or a new
-    /// slot fits within both the runtime `cap` (`phys_occ + slots.len() < cap`) and `EXIT_SLOT_CAP`.
-    pub(crate) fn exit_slot_available(
-        &self,
-        exit_tile_idx: usize,
-        phys_occ: u16,
-        cap: u16,
-        entity: Entity,
-    ) -> bool {
-        match self.exit_slots.get(&exit_tile_idx) {
-            Some(slots) if slots.contains(&entity) => true,
-            Some(slots) => {
-                slots.len() < EXIT_SLOT_CAP && (phys_occ as usize) + slots.len() < cap as usize
-            }
-            None => (phys_occ as usize) < cap as usize,
-        }
-    }
-
     /// Max held conflict points across all per-intersection ledgers (observability).
     pub(crate) fn held_points_max(&self) -> u32 {
         self.ledger
@@ -371,11 +273,6 @@ impl IntersectionReservations {
             .map(IntersectionLedger::active_points)
             .max()
             .unwrap_or(0)
-    }
-
-    /// Total reserved exit slots across all exit tiles (observability).
-    pub(crate) fn total_exit_slots(&self) -> u32 {
-        self.exit_slots.values().map(|s| s.len() as u32).sum()
     }
 
     /// True if any cluster's stall counter is non-empty. Flag-on this MUST stay false — the arbiter
@@ -476,81 +373,6 @@ pub(crate) fn reset_intersection_reservations(mut reservations: ResMut<Intersect
     reservations.by_intersection.clear();
     reservations.stall_ticks.clear();
     reservations.ledger.clear();
-    reservations.exit_slots.clear();
-}
-
-/// Cross-intersection spillback gate (P1-1, Root-cause Rank 3).
-///
-/// Walk the vehicle's remaining route FORWARD from this cluster's exit tile until the next
-/// intersection cluster (or up to `max_link_tiles` link tiles, whichever comes first) and
-/// report whether the short downstream link can accept this vehicle.
-///
-/// Returns `false` (refuse admission) if ANY link tile in the horizon is jammed by *effective*
-/// occupancy (`effective_occ >= cap`): a fully-jammed bottleneck right before the next intersection
-/// means the admitted car would fill the exit tile and then be unable to advance, sitting in/just
-/// past this cluster's box and blocking perpendicular flow.
-///
-/// Drain-aware: a tile at capacity whose lead vehicle is already advancing past the entry zone will
-/// free a slot this tick, so it is NOT counted as jammed (mirrors the don't-block-the-box exit
-/// gate). With ~1.4-tile-long vehicles `capacity_per_lane_tile` is intentionally small (2 for every
-/// road kind), so a naive `occ >= cap` would refuse on at-capacity-but-moving links — exactly the
-/// over-eager refusal that turned spillback protection into a freeze. Deterministic: integer
-/// comparisons over the stable route slice, no RNG, no HashMap-order dependence.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn downstream_link_has_headroom(
-    grid: &MapGrid,
-    traffic: &TrafficOccupancy,
-    spatial: &TrafficSpatialIndex,
-    intersections: &IntersectionIndex,
-    route: &[TilePos],
-    exit_tile: TilePos,
-    max_link_tiles: usize,
-    exit_clear_progress: f32,
-) -> bool {
-    let Some(start_i) = route.iter().position(|t| *t == exit_tile) else {
-        // Exit tile not on the route (shouldn't happen): fail open, defer to other gates.
-        return true;
-    };
-
-    let mut walked = 0usize;
-    let mut i = start_i;
-    while i < route.len() && walked < max_link_tiles {
-        let t = route[i];
-
-        // Stop at the next intersection cluster: the link ends here.
-        if is_intersection_tile(grid, t) || intersections.intersection_id_at(t).is_some() {
-            break;
-        }
-
-        if let Some(cell) = grid.get(t)
-            && cell.road.is_some()
-            && cell.road.dir != RoadDir::None
-            && let Some(idx) = grid.idx(t)
-        {
-            let cap = cell.road.kind.capacity_per_lane_tile();
-            if cap > 0 {
-                let occ = traffic.per_tick_vehicles.get(idx).copied().unwrap_or(0);
-                let entry_clear = occ >= cap
-                    && spatial
-                        .tile_first(idx)
-                        .is_some_and(|e| e.progress > exit_clear_progress);
-                let effective_occ = if entry_clear {
-                    occ.saturating_sub(1)
-                } else {
-                    occ
-                };
-                if effective_occ >= cap {
-                    // Jammed bottleneck on the link toward the next intersection: refuse.
-                    return false;
-                }
-            }
-        }
-
-        walked += 1;
-        i += 1;
-    }
-
-    true
 }
 
 /// Speed below which an Approaching holder counts as "not moving into the box" for the flag-on
@@ -625,11 +447,10 @@ fn reservation_survives(
     true
 }
 
-/// Release the lanelet ledger holders + exit slots for vehicles whose reservation was dropped this
-/// tick (cluster exit / reroute / timeout). Flag-off both maps are empty so every call is a no-op —
-/// keeping cleanup byte-identical when the arbiter is disabled. This closes the flag-on lifecycle:
-/// `try_admit`/`try_acquire_exit_slot` (arbiter) add, this removes on exit, so `active_mask` and
-/// `exit_slots` never grow unboundedly.
+/// Release the lanelet ledger holders for vehicles whose reservation was dropped this tick (cluster
+/// exit / reroute / timeout). Flag-off the ledger is empty so every call is a no-op — keeping cleanup
+/// byte-identical when the arbiter is disabled. This closes the flag-on lifecycle: `try_admit`
+/// (arbiter) adds, this removes on exit, so `active_mask` never grows unboundedly.
 pub(crate) fn release_intersection_holds(
     reservations: &mut IntersectionReservations,
     dropped: &[(IntersectionId, Entity)],
@@ -638,7 +459,6 @@ pub(crate) fn release_intersection_holds(
         if let Some(ledger) = reservations.ledger.get_mut(&id) {
             ledger.release(entity);
         }
-        reservations.release_exit_slots_for_entity(entity);
     }
 }
 
@@ -784,33 +604,7 @@ mod tests_ledger {
     }
 
     #[test]
-    fn exit_slots_persist_until_occupy_and_respect_capacity() {
-        let mut res = IntersectionReservations::default();
-        let idx = 42usize;
-        let (e1, e2, e3) = (ent(1), ent(2), ent(3));
-
-        // cap=2, no physical occupancy: two reserved slots fit, the third is refused.
-        assert!(res.try_acquire_exit_slot(idx, 0, 2, e1));
-        assert!(res.try_acquire_exit_slot(idx, 0, 2, e2));
-        assert!(!res.try_acquire_exit_slot(idx, 0, 2, e3));
-        assert_eq!(res.exit_slot_count(idx), 2);
-
-        // Idempotent re-acquire by an existing holder.
-        assert!(res.try_acquire_exit_slot(idx, 0, 2, e1));
-        assert_eq!(res.exit_slot_count(idx), 2);
-
-        // Release e1 on occupy -> frees a slot -> e3 now fits.
-        res.release_exit_slot(idx, e1);
-        assert_eq!(res.exit_slot_count(idx), 1);
-        assert!(res.try_acquire_exit_slot(idx, 0, 2, e3));
-        assert_eq!(res.exit_slot_count(idx), 2);
-
-        // Physical occupancy counts against capacity (phys_occ=2, cap=2 -> no headroom).
-        assert!(!res.try_acquire_exit_slot(idx, 2, 2, ent(9)));
-    }
-
-    #[test]
-    fn release_intersection_holds_frees_ledger_and_exit_slots() {
+    fn release_intersection_holds_frees_ledger() {
         use crate::game::transport::ConflictMatrix;
         let m = ConflictMatrix::from_paths(&[
             vec![TilePos { x: 0, y: 0 }, TilePos { x: 1, y: 0 }],
@@ -820,16 +614,13 @@ mod tests_ledger {
         let (e0, e1) = (ent(1), ent(2));
 
         let mut res = IntersectionReservations::default();
-        // Admit lanelet 0 (e0) into the ledger and give it an exit slot.
+        // Admit lanelet 0 (e0) into the ledger.
         assert!(res.ledger_mut(id).try_admit(e0, 0, m.row(0)));
-        assert!(res.try_acquire_exit_slot(100, 0, 2, e0));
         // While e0 holds lanelet 0, conflicting lanelet 1 (e1) is refused.
         assert!(!res.ledger_mut(id).try_admit(e1, 1, m.row(1)));
-        assert_eq!(res.exit_slot_count(100), 1);
 
-        // e0 exits the cluster -> its reservation drops -> release frees the ledger holder + slot.
+        // e0 exits the cluster -> its reservation drops -> release frees the ledger holder.
         release_intersection_holds(&mut res, &[(id, e0)]);
-        assert_eq!(res.exit_slot_count(100), 0, "exit slot freed on exit");
         assert!(
             res.ledger_mut(id).try_admit(e1, 1, m.row(1)),
             "lanelet 1 admittable once e0 released"

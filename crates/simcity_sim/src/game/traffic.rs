@@ -297,8 +297,8 @@ fn idm_accel_world(
 mod intersection;
 pub(crate) use intersection::maneuver_kind;
 use intersection::{
-    ApproachFairness, ArbiterIndexCache, ClusterStarvation, LaneletStallTracker,
-    RingTopologyStatus, arbitrate_lanelet_reservations, cache_intersection_light_state,
+    ApproachFairness, ArbiterIndexCache, LaneletStallTracker, RingTopologyStatus,
+    arbitrate_lanelet_reservations, cache_intersection_light_state,
     cache_pedestrian_crossing_state, check_ring_free_topology, cleanup_intersection_reservations,
     nudge_lanelet_stall_reroute, reset_intersection_reservations,
 };
@@ -325,7 +325,6 @@ impl Plugin for TrafficPlugin {
             .init_resource::<ArbiterIndexCache>()
             .init_resource::<ArbiterTickStats>()
             .init_resource::<ApproachFairness>()
-            .init_resource::<ClusterStarvation>()
             .init_resource::<LaneletStallTracker>()
             .init_resource::<RingTopologyStatus>()
             .init_resource::<TrafficSpatialIndex>()
