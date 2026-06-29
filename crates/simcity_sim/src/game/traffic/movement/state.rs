@@ -2,22 +2,22 @@ use super::super::*;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Copy, Clone)]
-pub(crate) struct ApproachInfo {
-    pub(crate) intersection_id: crate::game::intersections::IntersectionId,
-    pub(crate) intersection_key: crate::game::intersections::IntersectionKey,
+struct ApproachInfo {
+    intersection_id: crate::game::intersections::IntersectionId,
+    intersection_key: crate::game::intersections::IntersectionKey,
     /// First intersection tile on the route within lookahead.
-    pub(crate) first_intersection_tile: TilePos,
+    first_intersection_tile: TilePos,
     /// Last non-intersection tile before the cluster entry.
-    pub(crate) stop_tile: TilePos,
+    stop_tile: TilePos,
     /// Direction of travel into the intersection (derived from stop_tile -> first_intersection_tile).
-    pub(crate) entry_dir: RoadDir,
+    entry_dir: RoadDir,
     /// Planned exit direction once leaving the intersection cluster.
-    pub(crate) exit_dir: RoadDir,
+    exit_dir: RoadDir,
     /// Distance to stop line along the route (in tiles).
-    pub(crate) dist_to_stop_line_tiles: f32,
+    dist_to_stop_line_tiles: f32,
 }
 
-pub(crate) fn compute_approach_info(
+fn compute_approach_info(
     grid: &MapGrid,
     intersections: &IntersectionIndex,
     path_pool: &crate::game::transport::PathPool,
