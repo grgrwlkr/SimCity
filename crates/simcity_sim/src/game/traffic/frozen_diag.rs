@@ -6,9 +6,12 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::game::map::MapGrid;
+use crate::game::roads::RoadDir;
 use crate::game::transport::PathPool;
 
 use super::components::{Parked, Vehicle, VehicleMotionTimer, VehicleTrafficState};
+use super::intersection::IntersectionReservations;
+use super::movement::compute_approach_info;
 use super::occupancy::TrafficOccupancy;
 use super::stuck::StuckTimer;
 
@@ -17,11 +20,16 @@ const FROZEN_THRESHOLD_SECS: f32 = 30.0;
 
 /// Emit one diagnostic snapshot per ~5 sim-seconds.
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn log_frozen_cluster(
     time: Res<Time<Fixed>>,
     grid: Res<MapGrid>,
     traffic: Res<TrafficOccupancy>,
     path_pool: Res<PathPool>,
+    traffic_cfg: Res<super::config::TrafficConfig>,
+    intersections: Res<crate::game::intersections::IntersectionIndex>,
+    reservations: Res<IntersectionReservations>,
+    q_lights: Query<&crate::game::intersections::TrafficLight>,
     vehicles: Query<
         (
             Entity,
@@ -53,6 +61,15 @@ pub(super) fn log_frozen_cluster(
 
     info!("[FROZEN_DIAG] ==== {} frozen ====", n);
 
+    // Build light index (same as update_vehicle_traffic_state).
+    let mut light_by_key: HashMap<
+        crate::game::intersections::IntersectionKey,
+        crate::game::intersections::TrafficLight,
+    > = HashMap::new();
+    for l in q_lights.iter() {
+        light_by_key.insert(l.intersection_key, l.clone());
+    }
+
     // Map current tile → entity for frozen vehicles.
     let mut frozen_tile_map: HashMap<(i32, i32), Entity> = HashMap::new();
     for (entity, v, _, _, _) in &frozen {
@@ -82,6 +99,67 @@ pub(super) fn log_frozen_cluster(
         };
         let stuck_secs = stuck.map(|s| s.secs).unwrap_or(0.0);
 
+        // Compute approach info for maneuver, light, and reservation fields.
+        let approach = compute_approach_info(&grid, &intersections, &path_pool, v);
+
+        let (entry_dir_str, exit_dir_str, maneuver_str, light_str, left_protected, reserved) =
+            if let Some(ref info) = approach {
+                let entry = info.entry_dir;
+                let exit = info.exit_dir;
+
+                let maneuver = if exit == RoadDir::None {
+                    "None"
+                } else if exit == entry {
+                    "Straight"
+                } else if exit == entry.opposite() {
+                    "UTurn"
+                } else {
+                    // Mirror the left/right convention from state.rs lines 247-252:
+                    // drive_on_right → left turn target is entry.left()
+                    let left_target = if traffic_cfg.drive_on_right {
+                        entry.left()
+                    } else {
+                        entry.right()
+                    };
+                    if exit == left_target { "Left" } else { "Right" }
+                };
+
+                let light = light_by_key.get(&info.intersection_key);
+                let light_str = if let Some(l) = light {
+                    if l.is_all_red() {
+                        "allred"
+                    } else if l.is_green(entry) {
+                        "green"
+                    } else if l.is_yellow(entry) {
+                        "yellow"
+                    } else {
+                        "red"
+                    }
+                } else {
+                    "none"
+                };
+                let left_protected = light.is_some_and(|l| l.is_left_protected(entry));
+                let reserved = reservations.is_reserved_by(info.intersection_id, *entity);
+
+                (
+                    format!("{:?}", entry),
+                    format!("{:?}", exit),
+                    maneuver,
+                    light_str,
+                    left_protected,
+                    reserved,
+                )
+            } else {
+                (
+                    "None".to_string(),
+                    "None".to_string(),
+                    "None",
+                    "none",
+                    false,
+                    false,
+                )
+            };
+
         if let Some(next) = next_opt {
             let next_occ = grid
                 .idx(next)
@@ -98,7 +176,7 @@ pub(super) fn log_frozen_cluster(
             }
 
             info!(
-                "[FROZEN_DIAG] e={:?} cur=({},{}) state={} spd={:.2} cursor={}/{} stopped={:.0}s stuck={:.0}s rev={}/{:.1} next=({},{}) next_occ={} next_intr={} next_peer={:?}",
+                "[FROZEN_DIAG] e={:?} cur=({},{}) state={} spd={:.2} cursor={}/{} stopped={:.0}s stuck={:.0}s rev={}/{:.1} next=({},{}) next_occ={} next_intr={} next_peer={:?} entry_dir={} exit_dir={} maneuver={} light={} left_protected={} reserved={}",
                 entity,
                 cur.x,
                 cur.y,
@@ -115,10 +193,16 @@ pub(super) fn log_frozen_cluster(
                 next_occ,
                 next_intr,
                 next_peer,
+                entry_dir_str,
+                exit_dir_str,
+                maneuver_str,
+                light_str,
+                left_protected,
+                reserved,
             );
         } else {
             info!(
-                "[FROZEN_DIAG] e={:?} cur=({},{}) state={} spd={:.2} cursor={}/{} stopped={:.0}s stuck={:.0}s rev={}/{:.1} next=(END) next_occ=0 next_intr=false next_peer=None",
+                "[FROZEN_DIAG] e={:?} cur=({},{}) state={} spd={:.2} cursor={}/{} stopped={:.0}s stuck={:.0}s rev={}/{:.1} next=(END) next_occ=0 next_intr=false next_peer=None entry_dir={} exit_dir={} maneuver={} light={} left_protected={} reserved={}",
                 entity,
                 cur.x,
                 cur.y,
@@ -130,6 +214,12 @@ pub(super) fn log_frozen_cluster(
                 stuck_secs,
                 v.is_reversing,
                 v.reverse_distance,
+                entry_dir_str,
+                exit_dir_str,
+                maneuver_str,
+                light_str,
+                left_protected,
+                reserved,
             );
         }
     }
