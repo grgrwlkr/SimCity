@@ -83,7 +83,7 @@ pub(crate) struct ArbiterGrantCandidate {
     /// The lanelet could not be resolved (sidecar empty + route-geometry fallback failed): admit via
     /// the coarse whole-box fallback (`try_admit_coarse`) instead of the precise conflict matrix.
     pub coarse: bool,
-    pub priority: u8,
+    pub priority: u32,
     pub dist_to_entry: f32,
     /// ПДД readiness (Task 1): signalized green/yellow OR right-turn-on-red OR uncontrolled.
     pub ready: bool,
@@ -98,10 +98,12 @@ pub(crate) struct ArbiterGrantCandidate {
     pub tiles: Vec<TilePos>,
 }
 
-/// Per-approach starvation aging (P3c cross-feeder fairness): consecutive ticks an approach
-/// `(intersection, entry direction)` had a candidate present but none granted. Feeds the capped
-/// `aging` term of `candidate_priority` so a long-refused approach climbs WITHIN its width+maneuver
-/// class and is eventually served (bounded fairness). Empty / unused flag-off.
+/// Per-approach starvation aging (P3c cross-feeder fairness + anti-starvation): consecutive ticks
+/// an approach `(intersection, entry direction)` had a candidate present but none granted. Feeds the
+/// `aging` term of `candidate_priority` so a long-refused approach climbs WITHIN its width class —
+/// crossing the maneuver boundary (a starved turn out-ranks a fresh conflicting through after ~3 s)
+/// but never the width boundary — and is eventually served (bounded fairness). Empty / unused
+/// flag-off.
 #[derive(Resource, Default)]
 pub struct ApproachFairness {
     pub wait_ticks: HashMap<(IntersectionId, RoadDir), u16>,
@@ -221,21 +223,45 @@ fn dir_precedence(dir: RoadDir) -> u8 {
     }
 }
 
-/// ПДД admission priority (Task 2 + P3c fairness): width (approach lanes) dominates, then maneuver
-/// (Straight > Right > Left/Other), then a fairness `aging` term — CAPPED so it can only reorder
-/// candidates WITHIN the same width+maneuver class, never crossing the width or maneuver boundary (a
-/// side road never out-prioritises the main road by waiting). помеха-справа direction precedence is
-/// NOT folded in here: it is a post-distance tiebreak in the sweep, so it can never dominate distance
-/// (which would starve a low-precedence approach — the P3b-review finding).
-pub(crate) fn candidate_priority(entry_lanes: u8, maneuver: ManeuverKind, aging: u8) -> u8 {
-    let width_rank = (entry_lanes / 2).saturating_sub(1); // Two->0, Four->1, Six->2
-    let maneuver_rank: u8 = match maneuver {
+/// Maneuver-rank step in `candidate_priority`. A fresh through (maneuver_rank 2) sits at
+/// `2 * MANEUVER_STEP = 32` above a turn (maneuver_rank 0) within its width class.
+pub(crate) const MANEUVER_STEP: u32 = 16;
+/// Width-rank step. Dominates the whole `maneuver_rank * MANEUVER_STEP + aging` term, which is
+/// clamped to `WIDTH_STEP - 1` — so a wider approach ALWAYS out-ranks a narrower one regardless of
+/// maneuver or aging (hard width boundary), but aging is free to climb past the maneuver boundary
+/// (32) WITHIN a width class.
+pub(crate) const WIDTH_STEP: u32 = 4096;
+/// Aging ceiling fed into the priority term. Large enough to dominate the maneuver gap many times
+/// over, small enough to stay well under `WIDTH_STEP - 1` after the clamp (so it never leaks across
+/// widths). The crossing point is `aging > 2 * MANEUVER_STEP = 32` ticks ≈ 3.2 s at 10 Hz.
+pub(crate) const AGING_CAP: u32 = 4000;
+
+/// ПДД admission priority (Task 2 + P3c fairness + anti-starvation): width (approach lanes)
+/// dominates HARD, then within a width class the term `maneuver_rank * MANEUVER_STEP + aging`
+/// orders candidates. The aging term is allowed to cross the MANEUVER boundary (a long-refused turn
+/// eventually out-prioritises a fresh conflicting through at the SAME width) but is clamped to
+/// `WIDTH_STEP - 1` so it can NEVER cross the WIDTH boundary (a narrower side road never out-ranks a
+/// wider main road, no matter how long it waits).
+///
+/// Crossing arithmetic: a fresh through is `2 * MANEUVER_STEP = 32`; a starving turn (maneuver_rank
+/// 0) needs `aging > 32` to beat it. At 10 Hz aging climbs +1/tick, so a turn crosses after ~33
+/// ticks ≈ 3.3 s of continuous refusal — bounding the worst-case unprotected-turn wait at a busy
+/// intersection to a few seconds instead of minutes. Past the cross point the turn becomes the
+/// highest-priority candidate of its conflict set and the matrix admits it on the next clear tick.
+///
+/// помеха-справа direction precedence is NOT folded in here: it is a post-distance tiebreak in the
+/// sweep, so it can never dominate distance (which would starve a low-precedence approach — the
+/// P3b-review finding).
+pub(crate) fn candidate_priority(entry_lanes: u8, maneuver: ManeuverKind, aging: u16) -> u32 {
+    let width_rank = (entry_lanes / 2).saturating_sub(1) as u32; // Two->0, Four->1, Six->2
+    let maneuver_rank: u32 = match maneuver {
         ManeuverKind::Straight => 2,
         ManeuverKind::RightTurn => 1,
         ManeuverKind::LeftTurn | ManeuverKind::UTurn | ManeuverKind::Other => 0,
     };
-    // width step (64) > maneuver max (32) + aging max (15); maneuver step (16) > aging max (15).
-    width_rank * 64 + maneuver_rank * 16 + aging.min(15)
+    let within_width =
+        (maneuver_rank * MANEUVER_STEP + (aging as u32).min(AGING_CAP)).min(WIDTH_STEP - 1);
+    width_rank * WIDTH_STEP + within_width
 }
 
 /// Resolve the lanelet a vehicle is about to enter from the route geometry, used when the sidecar
@@ -915,13 +941,15 @@ pub(crate) fn arbitrate_lanelet_reservations(
         }
 
         let entry_lanes = grid.get(cur).map(|c| c.road.kind.lanes()).unwrap_or(0);
+        // Full u16 aging threaded through (no premature u8 truncation): it must be able to exceed
+        // 255 so a starved turn climbs past the maneuver-cross threshold; `candidate_priority`
+        // clamps it to `AGING_CAP` internally.
         let aging = p
             .fairness
             .wait_ticks
             .get(&(id, entry_dir))
             .copied()
-            .unwrap_or(0)
-            .min(u8::MAX as u16) as u8;
+            .unwrap_or(0);
         let priority = candidate_priority(entry_lanes, maneuver, aging);
         let dist_to_entry = (TILE_CENTER_TO_EDGE_TILES - v.progress).clamp(0.0, 1.0);
 
@@ -1127,7 +1155,7 @@ mod tests {
     fn cand(
         vehicle: Entity,
         local_idx: usize,
-        priority: u8,
+        priority: u32,
         tiles: Vec<TilePos>,
     ) -> ArbiterGrantCandidate {
         ArbiterGrantCandidate {
@@ -1224,26 +1252,50 @@ mod tests {
     }
 
     #[test]
-    fn priority_width_dominates_maneuver_then_capped_aging() {
-        // Width dominates regardless of maneuver/aging.
+    fn priority_width_dominates_aging_crosses_maneuver() {
+        // (a) WIDTH BOUNDARY IS HARD — a wider approach out-ranks a narrower one at ANY aging.
+        // Six-lane left beats a fresh four-lane straight.
         assert!(
-            candidate_priority(6, ManeuverKind::LeftTurn, 15)
-                > candidate_priority(4, ManeuverKind::Straight, 15)
+            candidate_priority(6, ManeuverKind::LeftTurn, 0)
+                > candidate_priority(4, ManeuverKind::Straight, 0)
         );
-        // Same width: maneuver ranks straight over left turn (even with the left aged).
+        // Even a maximally-aged narrower turn never crosses the width boundary.
+        assert!(
+            candidate_priority(4, ManeuverKind::LeftTurn, AGING_CAP as u16)
+                < candidate_priority(6, ManeuverKind::Straight, 0)
+        );
+        // Four-lane straight beats a maximally-aged two-lane straight.
+        assert!(
+            candidate_priority(2, ManeuverKind::Straight, AGING_CAP as u16)
+                < candidate_priority(4, ManeuverKind::Straight, 0)
+        );
+
+        // (b) WITHIN A WIDTH CLASS: a fresh through beats a barely-aged turn...
+        let cross = 2 * MANEUVER_STEP as u16; // fresh-through rank = 2 * MANEUVER_STEP
         assert!(
             candidate_priority(4, ManeuverKind::Straight, 0)
-                > candidate_priority(4, ManeuverKind::LeftTurn, 15)
+                > candidate_priority(4, ManeuverKind::LeftTurn, cross - 1),
+            "below the cross threshold the fresh through still wins"
         );
-        // Same width + maneuver: aging breaks the tie (bounded fairness).
+        // ...the boundary is exactly `aging == 2 * MANEUVER_STEP` (tie), and one tick past it the
+        // starved turn WINS — crossing the maneuver boundary (the anti-starvation property).
+        assert_eq!(
+            candidate_priority(4, ManeuverKind::LeftTurn, cross),
+            candidate_priority(4, ManeuverKind::Straight, 0),
+            "at exactly the cross threshold the aged turn ties the fresh through"
+        );
+        assert!(
+            candidate_priority(4, ManeuverKind::LeftTurn, cross + 1)
+                > candidate_priority(4, ManeuverKind::Straight, 0),
+            "past the cross threshold a heavily-aged turn out-prioritises a fresh through"
+        );
+        // Cross point is ~33 ticks ≈ 3.3 s at 10 Hz — bounded, not minutes.
+        assert_eq!(cross, 32);
+
+        // Same width + maneuver: aging still breaks the tie monotonically (bounded fairness).
         assert!(
             candidate_priority(4, ManeuverKind::Straight, 5)
                 > candidate_priority(4, ManeuverKind::Straight, 0)
-        );
-        // Aging is capped so it can never cross the width boundary (a side road never out-ranks main).
-        assert!(
-            candidate_priority(4, ManeuverKind::Straight, 255)
-                < candidate_priority(6, ManeuverKind::Straight, 0)
         );
     }
 
@@ -1935,6 +1987,100 @@ mod tests {
             (out_a.1.admitted, out_a.1.refused),
             (2, 1),
             "2 admitted, 1 refused"
+        );
+    }
+
+    #[test]
+    fn starved_turn_crosses_maneuver_boundary_and_is_served_in_a_few_ticks() {
+        // Conflict cluster: lanelet 0 (the THROUGH, 4-lane straight) and lanelet 1 (the TURN, 4-lane
+        // left) both traverse the same box tile -> they conflict, so each tick exactly ONE is
+        // granted. The through is continuously present (a peak-load conflicting stream); the turn is
+        // refused until its aging crosses the maneuver boundary.
+        let center = TilePos { x: 0, y: 0 };
+        let m = LaneletConflictMatrices {
+            by_intersection: HashMap::from([(
+                IntersectionId(0),
+                crate::game::transport::ConflictMatrix::from_paths(&[vec![center], vec![center]]),
+            )]),
+            version: 1,
+            ..Default::default()
+        };
+        let ordered = vec![IntersectionId(0)];
+        let (through, turn) = (ent(1), ent(2));
+        // Distinct approach directions so fairness keys them separately (mirrors the real system,
+        // which ages per (intersection, entry_dir)).
+        let (through_dir, turn_dir) = (RoadDir::North, RoadDir::West);
+
+        // Per-(intersection, entry_dir) aging, exactly as `ApproachFairness::wait_ticks`.
+        let mut wait_ticks: HashMap<(IntersectionId, RoadDir), u16> = HashMap::new();
+        let mut turn_served_tick: Option<u32> = None;
+
+        for tick in 0..64u32 {
+            let through_aging = *wait_ticks
+                .get(&(IntersectionId(0), through_dir))
+                .unwrap_or(&0);
+            let turn_aging = *wait_ticks.get(&(IntersectionId(0), turn_dir)).unwrap_or(&0);
+
+            let mut through_cand = cand(
+                through,
+                0,
+                candidate_priority(4, ManeuverKind::Straight, through_aging),
+                vec![center],
+            );
+            through_cand.entry_dir = through_dir;
+            through_cand.maneuver = ManeuverKind::Straight;
+            let mut turn_cand = cand(
+                turn,
+                1,
+                candidate_priority(4, ManeuverKind::LeftTurn, turn_aging),
+                vec![center],
+            );
+            turn_cand.entry_dir = turn_dir;
+            turn_cand.maneuver = ManeuverKind::LeftTurn;
+
+            let mut cands = HashMap::new();
+            cands.insert(IntersectionId(0), vec![through_cand, turn_cand]);
+            let mut res = IntersectionReservations::default();
+            arbitrate_grants_inner(0.0, &ordered, &cands, &m, &[], &mut res);
+
+            let turn_won = res.is_reserved_by(IntersectionId(0), turn);
+            let through_won = res.is_reserved_by(IntersectionId(0), through);
+            assert_ne!(
+                turn_won, through_won,
+                "conflicting pair must serialize to exactly one winner each tick (tick {tick})"
+            );
+
+            // Before the cross threshold the fresh-ish through must keep winning.
+            if turn_aging < 2 * MANEUVER_STEP as u16 {
+                assert!(
+                    through_won,
+                    "below the cross threshold the through wins (tick {tick}, turn_aging {turn_aging})"
+                );
+            }
+
+            if turn_won && turn_served_tick.is_none() {
+                turn_served_tick = Some(tick);
+            }
+
+            // Apply the exact P3c age/reset rule (arbiter.rs lines ~974-981): served approach resets
+            // to 0, refused-but-present approach ages +1.
+            for (dir, won) in [(through_dir, through_won), (turn_dir, turn_won)] {
+                let e = wait_ticks.entry((IntersectionId(0), dir)).or_insert(0);
+                if won {
+                    *e = 0;
+                } else {
+                    *e = e.saturating_add(1);
+                }
+            }
+        }
+
+        let served =
+            turn_served_tick.expect("starved turn must eventually be served, never starve");
+        // Cross point is aging > 2*MANEUVER_STEP = 32 ticks; the turn is served on the next tick.
+        // ~33 ticks ≈ 3.3 s at 10 Hz — a few seconds, not minutes.
+        assert!(
+            (33..=40).contains(&served),
+            "turn served at tick {served}; expected ~33 (cross threshold) ≈ 3.3 s at 10 Hz"
         );
     }
 
