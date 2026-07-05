@@ -120,7 +120,6 @@ pub fn spawn_service_vehicle(
             Transform::from_xyz(world_pos.x, world_pos.y, 12.0),
             Vehicle {
                 is_reversing: false,
-                reverse_distance: 0.0,
                 // Keep a "parked" tile so dispatch can build a route from the correct lane tile.
                 // Speed 0 keeps the vehicle stationary.
                 path_handle: path_pool.intern(vec![start_pos]),

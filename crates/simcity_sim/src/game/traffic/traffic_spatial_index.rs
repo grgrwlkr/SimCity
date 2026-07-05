@@ -76,8 +76,13 @@ impl TrafficSpatialIndex {
             self.leader_same_tile_progress.clear();
         }
 
-        // Pass 1: count vehicles per tile, track touched tiles.
+        // Pass 1: count vehicles per tile, track touched tiles. Vehicles with no active route
+        // (idle service fleet at a station tile) are not traffic: indexing them makes every one
+        // a zero-speed same-tile IDM leader that stalls real cars behind the station.
         for (_e, v) in q_vehicles.iter() {
+            if path_pool.len(v.path_handle) <= 1 {
+                continue;
+            }
             let Some(tile) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
                 continue;
             };
@@ -123,6 +128,9 @@ impl TrafficSpatialIndex {
 
         // Pass 2: fill per-tile buckets into the flat array.
         for (e, v) in q_vehicles.iter() {
+            if path_pool.len(v.path_handle) <= 1 {
+                continue;
+            }
             let Some(tile) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
                 continue;
             };

@@ -27,8 +27,9 @@ use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
 use crate::game::traffic::{
-    ArbiterTickStats, IntersectionReservations, ManeuverKind, ReservationState, TrafficConfig,
-    TrafficIndex, TrafficOccupancy, TrafficVehicleCounts, VehicleMotionStats,
+    ArbiterTickStats, IntersectionReservations, ManeuverKind, ReservationState, RouteProducerStats,
+    TrafficConfig, TrafficIndex, TrafficOccupancy, TrafficVehicleCounts, TrafficViolationAudit,
+    VehicleMotionStats,
 };
 use crate::game::transport::{
     GraphVersion, LaneGraph, LaneletConflictMatrices, LaneletGraph, PathCache, PathPool,
@@ -161,6 +162,39 @@ pub struct DebugTrafficSnapshot {
     /// Tile of the most-stopped vehicle (locate the jam); (-1,-1) when none.
     pub worst_stopped_tile_x: i32,
     pub worst_stopped_tile_y: i32,
+    /// Vehicles currently routed AGAINST a lane's direction (встречка), this tick.
+    pub wrong_way_now: u32,
+    /// Cumulative wrong-way offender-ticks since start.
+    pub wrong_way_ticks_total: u64,
+    /// Wrong-way vehicles currently reversing.
+    pub wrong_way_reversing_now: u32,
+    /// Wrong-way vehicles without a lanelet sidecar (fallback / hand-built routes).
+    pub wrong_way_no_sidecar_now: u32,
+    /// Vehicles inside intersection boxes right now.
+    pub in_box_now: u32,
+    /// In-box vehicles without a lanelet plan (corner-cut suspects: road-A*/hand-built path).
+    pub in_box_no_sidecar_now: u32,
+    /// First wrong-way offender tile; (-1,-1) when none.
+    pub wrong_way_first_tile_x: i32,
+    pub wrong_way_first_tile_y: i32,
+    /// Vehicles whose REMAINING ROUTE contains an oncoming step (planned встречка).
+    pub route_oncoming_now: u32,
+    pub route_oncoming_ticks_total: u64,
+    /// First route offender: vehicle tile and the offending step (from -> to); -1 when none.
+    pub route_offender_vehicle_x: i32,
+    pub route_offender_vehicle_y: i32,
+    pub route_offender_from_x: i32,
+    pub route_offender_from_y: i32,
+    pub route_offender_to_x: i32,
+    pub route_offender_to_y: i32,
+    /// Route producers (cumulative interned routes per pipeline).
+    pub routes_spawn_lanelet: u32,
+    pub routes_spawn_road_fallback: u32,
+    pub routes_stuck_lanelet: u32,
+    pub routes_stuck_road_fallback: u32,
+    pub routes_guard_refusals: u32,
+    pub routes_lane_change_handbuilt: u32,
+    pub routes_swap_break_handbuilt: u32,
 }
 
 /// Intersection subsystem snapshot for MCP inspection.
@@ -1188,11 +1222,14 @@ fn update_debug_snapshot(
 }
 
 /// Update traffic metrics debug snapshot.
+#[allow(clippy::too_many_arguments)]
 fn update_debug_traffic_snapshot(
     traffic: Option<Res<TrafficIndex>>,
     occupancy: Option<Res<TrafficOccupancy>>,
     counts: Option<Res<TrafficVehicleCounts>>,
     motion: Option<Res<VehicleMotionStats>>,
+    audit: Option<Res<TrafficViolationAudit>>,
+    producers: Option<Res<RouteProducerStats>>,
     holder: Res<DebugSnapshotEntity>,
     mut q_snapshot: Query<&mut DebugTrafficSnapshot>,
 ) {
@@ -1225,6 +1262,40 @@ fn update_debug_traffic_snapshot(
         snapshot.frozen_vehicles = 0;
         snapshot.worst_stopped_tile_x = -1;
         snapshot.worst_stopped_tile_y = -1;
+    }
+
+    if let Some(a) = audit.as_deref() {
+        snapshot.wrong_way_now = a.wrong_way_now;
+        snapshot.wrong_way_ticks_total = a.wrong_way_ticks_total;
+        snapshot.wrong_way_reversing_now = a.wrong_way_reversing_now;
+        snapshot.wrong_way_no_sidecar_now = a.wrong_way_no_sidecar_now;
+        snapshot.in_box_now = a.in_box_now;
+        snapshot.in_box_no_sidecar_now = a.in_box_no_sidecar_now;
+        if a.offender_count > 0 {
+            snapshot.wrong_way_first_tile_x = a.offender_tiles[0].0;
+            snapshot.wrong_way_first_tile_y = a.offender_tiles[0].1;
+        } else {
+            snapshot.wrong_way_first_tile_x = -1;
+            snapshot.wrong_way_first_tile_y = -1;
+        }
+        snapshot.route_oncoming_now = a.route_oncoming_now;
+        snapshot.route_oncoming_ticks_total = a.route_oncoming_ticks_total;
+        snapshot.route_offender_vehicle_x = a.route_offender_vehicle_tile.0;
+        snapshot.route_offender_vehicle_y = a.route_offender_vehicle_tile.1;
+        snapshot.route_offender_from_x = a.route_offender_step_from.0;
+        snapshot.route_offender_from_y = a.route_offender_step_from.1;
+        snapshot.route_offender_to_x = a.route_offender_step_to.0;
+        snapshot.route_offender_to_y = a.route_offender_step_to.1;
+    }
+
+    if let Some(p) = producers.as_deref() {
+        snapshot.routes_spawn_lanelet = p.spawn_lanelet;
+        snapshot.routes_spawn_road_fallback = p.spawn_road_fallback;
+        snapshot.routes_stuck_lanelet = p.stuck_lanelet;
+        snapshot.routes_stuck_road_fallback = p.stuck_road_fallback;
+        snapshot.routes_guard_refusals = p.guard_refusals;
+        snapshot.routes_lane_change_handbuilt = p.lane_change_handbuilt;
+        snapshot.routes_swap_break_handbuilt = p.swap_break_handbuilt;
     }
 
     if let Some(idx) = traffic.as_deref() {

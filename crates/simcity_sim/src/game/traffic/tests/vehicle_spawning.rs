@@ -72,6 +72,7 @@ fn yellow_allows_proceeding_if_too_late_to_stop_comfortably() {
         })
         .insert_resource(IntersectionReservations::default())
         .init_resource::<crate::game::transport::LaneletConflictMatrices>()
+        .init_resource::<RouteProducerStats>()
         .insert_resource(crate::game::transport::PathPool::default())
         .add_systems(Update, update_vehicle_traffic_state);
 
@@ -198,6 +199,7 @@ fn car_trip_spawns_from_citizen_car_parked_at_not_from() {
         .insert_resource(IntersectionIndex::default())
         .insert_resource(crate::game::transport::PathPool::default())
         .init_resource::<crate::game::sim::SimRng>()
+        .init_resource::<RouteProducerStats>()
         .add_systems(Update, spawn_trip_vehicles);
 
     // Citizen's car is parked at "work" building (0,2), but trip is requested from (0,0).
@@ -276,6 +278,7 @@ fn owned_car_is_parked_on_arrival_not_despawned() {
         .insert_resource(IntersectionIndex::default())
         .insert_resource(IntersectionReservations::default())
         .init_resource::<crate::game::transport::LaneletConflictMatrices>()
+        .init_resource::<RouteProducerStats>()
         .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(VehicleAggSnapshot::default())
         .insert_resource(ParkedVehicleTileIndex::default())

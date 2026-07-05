@@ -62,33 +62,35 @@ pub fn adjacent_road_towards(grid: &MapGrid, pos: TilePos, target: TilePos) -> O
         },
     ];
 
+    let mut best_non_opposite = None; // Not pointing straight against the desired direction.
+
     for cpos in candidates {
         if let Some(cell) = grid.get(cpos)
             && !cell.water
             && cell.road.is_some()
         {
+            // The wrong-way carriageway of a one-way road is not drivable — never an anchor.
+            if let crate::game::roads::RoadFlow::OneWay(one_way_dir) = cell.road.flow
+                && cell.road.dir != RoadDir::None
+                && cell.road.dir != one_way_dir
+            {
+                continue;
+            }
             best_any = best_any.or(Some(cpos));
-
-            // Check if this road points in desired direction
+            if cell.road.dir != want.opposite() {
+                best_non_opposite = best_non_opposite.or(Some(cpos));
+            }
+            // A lane matching the desired direction is always the right anchor.
             if cell.road.dir == want {
-                // For two-way two-lane roads, each direction has its own lane
-                // We MUST use the lane matching our travel direction
-                if cell.road.flow == crate::game::roads::RoadFlow::TwoWay
-                    && cell.road.kind == crate::game::roads::RoadKind::TwoLane
-                {
-                    // This is the correct lane for our direction
-                    best_correct_lane = Some(cpos);
-                } else {
-                    // One-way or multi-lane: any lane with matching dir is fine
-                    return Some(cpos);
-                }
+                best_correct_lane = best_correct_lane.or(Some(cpos));
             }
         }
     }
 
-    // For two-way two-lane roads, prefer the correct lane
-    // This prevents spawning/pathfinding on the oncoming lane
-    best_correct_lane.or(best_any)
+    // Prefer the direction-correct lane, then any lane not pointing straight against us
+    // (perpendicular / intersection tiles), and only as a last resort the oncoming lane —
+    // anchoring trips on the oncoming lane made cars visually spawn against traffic.
+    best_correct_lane.or(best_non_opposite).or(best_any)
 }
 
 fn desired_dir(from: TilePos, to: TilePos) -> RoadDir {
@@ -149,3 +151,7 @@ impl Plugin for TransportPlugin {
             );
     }
 }
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;

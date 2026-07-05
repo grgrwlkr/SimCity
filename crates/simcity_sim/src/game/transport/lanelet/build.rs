@@ -4,9 +4,9 @@ use bevy::prelude::*;
 
 use crate::game::intersections::{IntersectionCluster, IntersectionId, IntersectionIndex};
 use crate::game::map::{MapGrid, TilePos};
-use crate::game::roads::{LaneType, RoadDir, RoadFlow};
+use crate::game::roads::{LaneType, RoadCell, RoadDir, RoadFlow};
 use crate::game::traffic::{ManeuverKind, TrafficConfig, maneuver_kind};
-use crate::game::transport::{GraphVersion, LaneGraph};
+use crate::game::transport::{GraphVersion, LaneGraph, LaneId};
 
 use super::conflict::ConflictMatrix;
 use super::graph::{CrosswalkId, Lanelet, LaneletGraph, LaneletId};
@@ -35,35 +35,40 @@ impl LaneletConflictMatrices {
     }
 }
 
-/// Whether an approach lane of `lane_type` may feed a lanelet of `maneuver`. Encodes lane
-/// discipline: turn-only lanes feed only their designated turn (LeftTurnOnly also permits U-turn
-/// per ПДД 8.5 крайнее левое); a Regular lane feeds every legal maneuver because on a
-/// single-lane-per-direction road it IS the крайнее левое and must permit left + U-turn.
-/// `_dir` is the approach travel direction (reserved for future per-lane positional refinement).
-/// `_drive_on_right` is kept in the signature for caller/future-arm use; symmetry is now encoded
-/// in `maneuver_kind` which already swaps near/far by traffic handedness.
+/// Whether an approach lane may feed a lanelet of `maneuver`. Encodes lane discipline:
+/// turn-only lanes feed only their designated turn (LeftTurnOnly also permits U-turn per
+/// ПДД 8.5 крайнее левое). A Regular lane is gated POSITIONALLY (ПДД 8.5 "крайнее
+/// соответствующее положение"): the turn that crosses the oncoming flow (left under RHT) and
+/// the U-turn require the centerline-adjacent lane; the near-side turn requires the
+/// curb-adjacent lane; straight is always allowed. On a single-lane-per-direction road the one
+/// lane is both edges, so every maneuver stays legal there.
 pub(crate) fn lane_allows_maneuver(
-    lane_type: LaneType,
     maneuver: ManeuverKind,
-    _dir: RoadDir,
-    _drive_on_right: bool,
+    cell: RoadCell,
+    drive_on_right: bool,
 ) -> bool {
-    match lane_type {
+    match cell.lane_type {
         LaneType::LeftTurnOnly => {
             matches!(maneuver, ManeuverKind::LeftTurn | ManeuverKind::UTurn)
         }
         LaneType::RightTurnOnly => matches!(maneuver, ManeuverKind::RightTurn),
         LaneType::StraightOnly => matches!(maneuver, ManeuverKind::Straight),
-        // A Regular lane serves every legal maneuver. On a single-lane-per-direction road this
-        // lane IS the крайнее левое (ПДД 8.5), so it must permit left + U-turn; on a multi-lane
-        // road autogen dedicates turn-only lanes and the leftover Regular lanes stay permissive.
-        LaneType::Regular => match maneuver {
-            ManeuverKind::Straight
-            | ManeuverKind::RightTurn
-            | ManeuverKind::LeftTurn
-            | ManeuverKind::UTurn => true,
-            ManeuverKind::Other => false,
-        },
+        LaneType::Regular => {
+            let near_centerline = cell.is_leftmost_for_dir();
+            let near_curb = cell.is_rightmost_for_dir();
+            // Under RHT the left turn crosses oncoming traffic (centerline lane); mirrored for LHT.
+            let (crossing_turn_ok, near_turn_ok) = if drive_on_right {
+                (near_centerline, near_curb)
+            } else {
+                (near_curb, near_centerline)
+            };
+            match maneuver {
+                ManeuverKind::Straight => true,
+                ManeuverKind::LeftTurn | ManeuverKind::UTurn => crossing_turn_ok,
+                ManeuverKind::RightTurn => near_turn_ok,
+                ManeuverKind::Other => false,
+            }
+        }
     }
 }
 
@@ -121,18 +126,156 @@ pub(crate) fn build_internal_path(
     match maneuver {
         ManeuverKind::Straight => bfs_within(cluster_tiles, entry_tile, goal),
         ManeuverKind::RightTurn | ManeuverKind::LeftTurn | ManeuverKind::UTurn => {
-            let center = box_center_point(cluster_tiles);
-            let want_long = matches!(maneuver, ManeuverKind::LeftTurn | ManeuverKind::UTurn);
-            // Walk to the exit-FEEDING `goal` tile (not just any tile adjacent to the exit). If the
-            // angular walk can't reach it on pathological geometry, fall back to the shortest in-box
-            // path to that same `goal` — still terminating on the away-pointing exit feeder, never
-            // the opposing lane. If even that fails, return `None` (caller drops the lanelet) rather
-            // than risk a degenerate oncoming path.
-            arc_around_center(cluster_tiles, center, entry_tile, goal, want_long)
+            // Rectangular ПДД trajectory (Г for turns, П for U-turns) instead of the old greedy
+            // angular walk: on NON-SQUARE boxes (e.g. a SixLane×FourLane 4x6 crossing) the greedy
+            // minimal-angular-advance hug degenerated into a near-PERIMETER sweep — the turn
+            // visibly drove across the oncoming half of the intersection (наблюдалось как
+            // «встречка на перекрёстке»). The Manhattan construction stays on the entry lane's
+            // column/row to the turn line, then goes straight to the exit feeder: a left turn
+            // crosses BEHIND the center (ПДД 8.6), a right turn hugs its near corner, and the
+            // swept conflict footprint is minimal. Falls back to the shortest in-box path (never
+            // an arbitrary exit-adjacent tile) on irregular cluster shapes, then `None`.
+            manhattan_turn_path(cluster_tiles, entry_tile, entry_dir, goal, maneuver)
                 .or_else(|| bfs_within(cluster_tiles, entry_tile, goal))
         }
         ManeuverKind::Other => None,
     }
+}
+
+/// Rectangular in-box turn trajectory. For LEFT/RIGHT turns: drive the entry axis until aligned
+/// with `goal` on the cross coordinate, then drive the exit axis to `goal` (an "Г" path). Because
+/// legal left exits lie on the FAR half of the crossing road and rights on the NEAR half, the Г
+/// automatically passes behind the box center for lefts and hugs the near corner for rights. For
+/// U-TURNS: drive the entry axis to just PAST the box center, shift laterally to the goal's
+/// column/row, and drive back (a "П" path around the center). Every produced tile must be inside
+/// the cluster; returns `None` on any mismatch (irregular geometry) so the caller can fall back.
+fn manhattan_turn_path(
+    cluster_tiles: &HashSet<TilePos>,
+    entry: TilePos,
+    entry_dir: RoadDir,
+    goal: TilePos,
+    maneuver: ManeuverKind,
+) -> Option<Vec<TilePos>> {
+    if entry == goal {
+        return Some(vec![entry]);
+    }
+    let ed = entry_dir.delta();
+    if ed == IVec2::ZERO {
+        return None;
+    }
+    let vertical_entry = ed.x == 0;
+
+    let mut path = vec![entry];
+    let mut cur = entry;
+    let step_to = |path: &mut Vec<TilePos>, cur: &mut TilePos, dx: i32, dy: i32| -> bool {
+        let next = TilePos {
+            x: cur.x + dx,
+            y: cur.y + dy,
+        };
+        if !cluster_tiles.contains(&next) {
+            return false;
+        }
+        path.push(next);
+        *cur = next;
+        true
+    };
+
+    match maneuver {
+        ManeuverKind::LeftTurn | ManeuverKind::RightTurn => {
+            // Leg 1: along the entry axis to the goal's cross coordinate (must agree with the
+            // travel direction — a goal "behind" the entry means broken pairing).
+            let (leg1, leg2): (i32, i32) = if vertical_entry {
+                (goal.y - entry.y, goal.x - entry.x)
+            } else {
+                (goal.x - entry.x, goal.y - entry.y)
+            };
+            let fwd = if vertical_entry { ed.y } else { ed.x };
+            if leg1 != 0 && leg1.signum() != fwd.signum() {
+                return None;
+            }
+            for _ in 0..leg1.abs() {
+                let (dx, dy) = if vertical_entry {
+                    (0, leg1.signum())
+                } else {
+                    (leg1.signum(), 0)
+                };
+                if !step_to(&mut path, &mut cur, dx, dy) {
+                    return None;
+                }
+            }
+            // Leg 2: the exit axis, straight to the goal.
+            for _ in 0..leg2.abs() {
+                let (dx, dy) = if vertical_entry {
+                    (leg2.signum(), 0)
+                } else {
+                    (0, leg2.signum())
+                };
+                if !step_to(&mut path, &mut cur, dx, dy) {
+                    return None;
+                }
+            }
+        }
+        ManeuverKind::UTurn => {
+            // Leg 1: along the entry axis until the tile center passes the box center (the
+            // «за центром» pivot line, ПДД 8.6/8.5).
+            let (cx, cy) = box_center_point(cluster_tiles);
+            let passed = |t: TilePos| -> bool {
+                if vertical_entry {
+                    let c = t.y as f64 + 0.5;
+                    if ed.y > 0 { c > cy } else { c < cy }
+                } else {
+                    let c = t.x as f64 + 0.5;
+                    if ed.x > 0 { c > cx } else { c < cx }
+                }
+            };
+            while !passed(cur) {
+                if !step_to(&mut path, &mut cur, ed.x, ed.y) {
+                    return None;
+                }
+            }
+            // Leg 2: lateral shift to the goal's column/row.
+            let lat = if vertical_entry {
+                goal.x - cur.x
+            } else {
+                goal.y - cur.y
+            };
+            for _ in 0..lat.abs() {
+                let (dx, dy) = if vertical_entry {
+                    (lat.signum(), 0)
+                } else {
+                    (0, lat.signum())
+                };
+                if !step_to(&mut path, &mut cur, dx, dy) {
+                    return None;
+                }
+            }
+            // Leg 3: back along the entry axis to the goal (against the entry direction).
+            let back = if vertical_entry {
+                goal.y - cur.y
+            } else {
+                goal.x - cur.x
+            };
+            if back != 0 && back.signum() == (if vertical_entry { ed.y } else { ed.x }).signum() {
+                return None; // goal is not behind the pivot: not a U-turn geometry.
+            }
+            for _ in 0..back.abs() {
+                let (dx, dy) = if vertical_entry {
+                    (0, back.signum())
+                } else {
+                    (back.signum(), 0)
+                };
+                if !step_to(&mut path, &mut cur, dx, dy) {
+                    return None;
+                }
+            }
+        }
+        _ => return None,
+    }
+
+    if cur != goal {
+        return None;
+    }
+    Some(path)
 }
 
 /// Geometric center point of the box: the mean of the tile **centers** (`(x+0.5, y+0.5)`), a
@@ -146,102 +289,6 @@ fn box_center_point(cluster_tiles: &HashSet<TilePos>) -> (f64, f64) {
         sy += t.y as f64 + 0.5;
     }
     (sx / n, sy / n)
-}
-
-/// Angle of a tile's center about the center point `c` (radians, `atan2`).
-fn angle_about(t: TilePos, c: (f64, f64)) -> f64 {
-    ((t.y as f64 + 0.5) - c.1).atan2((t.x as f64 + 0.5) - c.0)
-}
-
-/// CCW angular travel from `a` to `b`, normalized to `[0, 2π)`.
-fn ccw_span(a: f64, b: f64) -> f64 {
-    let two_pi = std::f64::consts::TAU;
-    let mut d = b - a;
-    while d < -1e-9 {
-        d += two_pi;
-    }
-    while d >= two_pi - 1e-9 {
-        d -= two_pi;
-    }
-    d
-}
-
-/// Walk 4-adjacent in-box tiles from `entry` to `goal` as an arc around center point `c`.
-///
-/// Direction is chosen so the arc from `entry` to `goal` is the SHORT way (right turn) or the LONG
-/// way (left / U-turn), selected by `want_long`. The walk is greedy-monotonic: at each tile it steps
-/// to the unvisited in-box neighbor that advances the LEAST (but strictly positive) in the chosen
-/// rotational direction — hugging the arc — with a deterministic `(x, y)` tiebreak. Produces a
-/// SIMPLE path (visited set forbids revisits). `None` if it dead-ends before reaching `goal`.
-fn arc_around_center(
-    cluster_tiles: &HashSet<TilePos>,
-    c: (f64, f64),
-    entry: TilePos,
-    goal: TilePos,
-    want_long: bool,
-) -> Option<Vec<TilePos>> {
-    if entry == goal {
-        return Some(vec![entry]);
-    }
-    let ea = angle_about(entry, c);
-    let ga = angle_about(goal, c);
-    let span_ccw = ccw_span(ea, ga);
-    let span_cw = std::f64::consts::TAU - span_ccw;
-    // want_long => take the longer arc; else the shorter. CCW iff its span matches the wanted length.
-    let ccw = if want_long {
-        span_ccw >= span_cw
-    } else {
-        span_ccw <= span_cw
-    };
-
-    let mut path = vec![entry];
-    let mut visited: HashSet<TilePos> = HashSet::new();
-    visited.insert(entry);
-    let mut cur = entry;
-    let mut cur_ang = ea;
-    let cap = cluster_tiles.len() + 2;
-    while cur != goal {
-        if path.len() > cap {
-            return None;
-        }
-        let mut best: Option<(f64, i32, i32, TilePos, f64)> = None;
-        for d in [
-            IVec2::new(-1, 0),
-            IVec2::new(1, 0),
-            IVec2::new(0, -1),
-            IVec2::new(0, 1),
-        ] {
-            let n = TilePos {
-                x: cur.x + d.x,
-                y: cur.y + d.y,
-            };
-            if !cluster_tiles.contains(&n) || visited.contains(&n) {
-                continue;
-            }
-            let na = angle_about(n, c);
-            let mut adv = if ccw {
-                ccw_span(cur_ang, na)
-            } else {
-                ccw_span(na, cur_ang)
-            };
-            // Forbid zero/backward advance: deprioritize by pushing past a full turn so a genuine
-            // forward step (if any) always wins.
-            if adv <= 1e-9 {
-                adv += std::f64::consts::TAU;
-            }
-            let key = (adv, n.x, n.y, n, na);
-            match &best {
-                Some((ba, bx, by, _, _)) if (*ba, *bx, *by) <= (key.0, key.1, key.2) => {}
-                _ => best = Some(key),
-            }
-        }
-        let (_, _, _, next, na) = best?;
-        cur = next;
-        cur_ang = na;
-        visited.insert(cur);
-        path.push(cur);
-    }
-    Some(path)
 }
 
 /// Shortest strictly-4-adjacent path between two in-cluster tiles (inclusive of both endpoints).
@@ -369,14 +416,14 @@ pub fn build_lanelet_graph(
 
         // Collect approach (entry) and exit lane tiles adjacent to this cluster.
         //
-        // entry_tiles: (approach_lane_pos, first_cluster_tile, entry_dir, lane_type)
+        // entry_tiles: (approach_lane_pos, first_cluster_tile, entry_dir, approach RoadCell)
         //   approach_lane_pos: the non-cluster tile with dir pointing into cluster
         //   first_cluster_tile: the cluster tile that approach_lane_pos points to (used as BFS start)
         //
         // exit_tiles: (exit_lane_pos, exit_dir)
         //   exit_lane_pos: the non-cluster tile pointing away from cluster (used as BFS goal target)
-        let mut entry_tiles: Vec<(TilePos, TilePos, RoadDir, LaneType)> = Vec::new();
-        let mut exit_tiles: Vec<(TilePos, RoadDir)> = Vec::new();
+        let mut entry_tiles: Vec<(TilePos, TilePos, RoadDir, RoadCell)> = Vec::new();
+        let mut exit_tiles: Vec<(TilePos, RoadDir, RoadCell)> = Vec::new();
 
         for &t in &cluster.tiles {
             for neighbor_dir in [RoadDir::West, RoadDir::East, RoadDir::South, RoadDir::North] {
@@ -416,10 +463,10 @@ pub fn build_lanelet_graph(
                 if cluster_tiles.contains(&fwd) {
                     // Lane points into the cluster: approach lane.
                     // `fwd` is the first cluster tile; BFS starts there.
-                    entry_tiles.push((npos, fwd, lane_dir, ncell.road.lane_type));
+                    entry_tiles.push((npos, fwd, lane_dir, ncell.road));
                 } else if cluster_tiles.contains(&back) {
                     // Cluster is behind this lane: exit lane.
-                    exit_tiles.push((npos, lane_dir));
+                    exit_tiles.push((npos, lane_dir, ncell.road));
                 }
             }
         }
@@ -434,11 +481,11 @@ pub fn build_lanelet_graph(
         let mut cluster_lanelets: Vec<Lanelet> = Vec::new();
         let mut cluster_paths: Vec<Vec<TilePos>> = Vec::new();
 
-        for &(approach_tile, first_cluster_tile, entry_dir, lane_type) in &entry_tiles {
+        for &(approach_tile, first_cluster_tile, entry_dir, entry_cell) in &entry_tiles {
             let Some(entry_lane_id) = lanes.pos_to_id.get(&approach_tile).copied() else {
                 continue;
             };
-            for &(exit_tile, exit_dir) in &exit_tiles {
+            for &(exit_tile, exit_dir, exit_cell) in &exit_tiles {
                 let Some(exit_lane_id) = lanes.pos_to_id.get(&exit_tile).copied() else {
                     continue;
                 };
@@ -448,8 +495,23 @@ pub fn build_lanelet_graph(
                 }
 
                 let maneuver = maneuver_kind(&traffic_cfg, entry_dir, exit_dir);
-                if !lane_allows_maneuver(lane_type, maneuver, entry_dir, traffic_cfg.drive_on_right)
+                // Keep lane through the box: a STRAIGHT must exit in the SAME lane index whenever
+                // that exit exists (no weaving inside an intersection: an S-shaped in-box path
+                // sweeps extra conflict tiles and serializes the box harder). Shifted exits stay
+                // legal only when the same-index continuation is absent (road narrows / irregular
+                // geometry), so no approach dead-ends.
+                if maneuver == ManeuverKind::Straight
+                    && exit_cell.kind == entry_cell.kind
+                    && exit_cell.lane != entry_cell.lane
                 {
+                    let has_same_lane_exit = exit_tiles.iter().any(|&(_, d, c)| {
+                        d == entry_dir && c.kind == entry_cell.kind && c.lane == entry_cell.lane
+                    });
+                    if has_same_lane_exit {
+                        continue;
+                    }
+                }
+                if !lane_allows_maneuver(maneuver, entry_cell, traffic_cfg.drive_on_right) {
                     continue;
                 }
 
@@ -486,6 +548,10 @@ pub fn build_lanelet_graph(
         // Assign stable global ids and register.
         let mut intersection_ids: Vec<LaneletId> = Vec::new();
         let sorted_paths: Vec<Vec<TilePos>> = indexed.iter().map(|(_, p)| p.clone()).collect();
+        let sorted_meta: Vec<(ManeuverKind, LaneId)> = indexed
+            .iter()
+            .map(|(l, _)| (l.maneuver, l.entry_lane))
+            .collect();
 
         for (mut lanelet, _) in indexed {
             lanelet.id = LaneletId(graph.lanelets.len() as u32);
@@ -506,7 +572,31 @@ pub fn build_lanelet_graph(
         let crosswalk_sides: Vec<RoadDir> = crosswalks.iter().map(|(_, side, _)| *side).collect();
         let crosswalk_paths: Vec<Vec<TilePos>> =
             crosswalks.into_iter().map(|(_, _, cells)| cells).collect();
-        let matrix = ConflictMatrix::from_paths_with_crosswalks(&sorted_paths, &crosswalk_paths);
+        let mut matrix =
+            ConflictMatrix::from_paths_with_crosswalks(&sorted_paths, &crosswalk_paths);
+        // ПДД 13.12 semantic conflicts: a left/U turn must yield to the ONCOMING straight (and
+        // right turn). The compact Manhattan turn trajectories often occupy tiles DISJOINT from
+        // the oncoming through's column, so pure tile-overlap would let both into the box in the
+        // same tick — the left visibly cutting across the oncoming car's nose. Force the pair.
+        for (i, &(m_a, entry_a)) in sorted_meta.iter().enumerate() {
+            if !matches!(m_a, ManeuverKind::LeftTurn | ManeuverKind::UTurn) {
+                continue;
+            }
+            let Some(dir_a) = lanes.get_lane(entry_a).map(|l| l.dir) else {
+                continue;
+            };
+            for (j, &(m_b, entry_b)) in sorted_meta.iter().enumerate() {
+                if !matches!(m_b, ManeuverKind::Straight | ManeuverKind::RightTurn) {
+                    continue;
+                }
+                let Some(dir_b) = lanes.get_lane(entry_b).map(|l| l.dir) else {
+                    continue;
+                };
+                if dir_b == dir_a.opposite() {
+                    matrix.add_conflict_pair(i, j);
+                }
+            }
+        }
         matrices.by_intersection.insert(cluster.id, matrix);
         matrices.crosswalk_sides.insert(cluster.id, crosswalk_sides);
     }
@@ -550,7 +640,7 @@ mod tests {
         s
     }
 
-    fn make_key(tiles: &[TilePos]) -> IntersectionKey {
+    pub(super) fn make_key(tiles: &[TilePos]) -> IntersectionKey {
         let min_x = tiles.iter().map(|t| t.x).min().unwrap_or(0);
         let min_y = tiles.iter().map(|t| t.y).min().unwrap_or(0);
         let max_x = tiles.iter().map(|t| t.x).max().unwrap_or(0);
@@ -764,10 +854,10 @@ mod tests {
         use crate::game::map::TilePos;
         use crate::game::roads::RoadDir;
         use crate::game::traffic::ManeuverKind;
-        // 3x3 box x,y in 4..=6. Center POINT C = mean of tile centers = (5.5, 5.5) — the vertex
-        // between the four upper-right tiles, NOT the center tile (5,5). A left turn now swings the
-        // LONG way AROUND C, so it must NOT pass through the center tile (5,5) (that would be a
-        // corner-cut through the middle); it encloses C by hugging the far perimeter.
+        // 3x3 box x,y in 4..=6. Center POINT C = mean of tile centers = (5.5, 5.5). The ПДД left
+        // turn is the compact Г: entry axis to the exit column, then out — it must NOT pass
+        // through the center tile (5,5) and must not sweep the far perimeter (the old wide arc
+        // crossed the oncoming half of the box).
         let cluster: HashSet<TilePos> = (4..=6)
             .flat_map(|x| (4..=6).map(move |y| TilePos { x, y }))
             .collect();
@@ -800,24 +890,20 @@ mod tests {
         // SIMPLE: no revisited tile.
         let uniq: HashSet<TilePos> = path.iter().copied().collect();
         assert_eq!(uniq.len(), path.len(), "path must be simple: {path:?}");
-        // The wide left arc goes AROUND C, not through the middle tile (5,5).
+        // The left turn avoids the middle tile and stays off the far perimeter.
         assert!(
             !path.contains(&TilePos { x: 5, y: 5 }),
-            "left arc must swing around C, not cut through the center tile: {path:?}"
+            "left turn must not cut through the center tile: {path:?}"
         );
-        // The exact wide arc (CCW long way around C): up the entry column, across the far edge.
+        // The compact Г: already on the exit column -> straight to the feeder.
         assert_eq!(
             path,
             vec![
                 TilePos { x: 4, y: 4 },
-                TilePos { x: 5, y: 4 },
-                TilePos { x: 6, y: 4 },
-                TilePos { x: 6, y: 5 },
-                TilePos { x: 6, y: 6 },
-                TilePos { x: 5, y: 6 },
+                TilePos { x: 4, y: 5 },
                 TilePos { x: 4, y: 6 },
             ],
-            "left arc tiles: {}",
+            "left turn tiles: {}",
             ascii_path(&cluster, &path)
         );
         // Ends on the tile adjacent to (and feeding) the exit lane.
@@ -1380,147 +1466,128 @@ mod tests {
         );
     }
 
-    #[test]
-    fn lane_type_gates_maneuvers() {
-        use crate::game::roads::{LaneType, RoadDir};
-        use crate::game::traffic::ManeuverKind;
-
-        assert!(lane_allows_maneuver(
-            LaneType::LeftTurnOnly,
-            ManeuverKind::LeftTurn,
-            RoadDir::North,
-            true
-        ));
-        assert!(!lane_allows_maneuver(
-            LaneType::LeftTurnOnly,
-            ManeuverKind::Straight,
-            RoadDir::North,
-            true
-        ));
-        assert!(!lane_allows_maneuver(
-            LaneType::LeftTurnOnly,
-            ManeuverKind::RightTurn,
-            RoadDir::North,
-            true
-        ));
-        assert!(!lane_allows_maneuver(
-            LaneType::LeftTurnOnly,
-            ManeuverKind::Other,
-            RoadDir::North,
-            true
-        ));
-
-        assert!(lane_allows_maneuver(
-            LaneType::RightTurnOnly,
-            ManeuverKind::RightTurn,
-            RoadDir::North,
-            true
-        ));
-        assert!(!lane_allows_maneuver(
-            LaneType::RightTurnOnly,
-            ManeuverKind::Straight,
-            RoadDir::North,
-            true
-        ));
-        assert!(!lane_allows_maneuver(
-            LaneType::RightTurnOnly,
-            ManeuverKind::LeftTurn,
-            RoadDir::North,
-            true
-        ));
-
-        assert!(lane_allows_maneuver(
-            LaneType::StraightOnly,
-            ManeuverKind::Straight,
-            RoadDir::North,
-            true
-        ));
-        assert!(!lane_allows_maneuver(
-            LaneType::StraightOnly,
-            ManeuverKind::RightTurn,
-            RoadDir::North,
-            true
-        ));
-        assert!(!lane_allows_maneuver(
-            LaneType::StraightOnly,
-            ManeuverKind::LeftTurn,
-            RoadDir::North,
-            true
-        ));
-
-        assert!(lane_allows_maneuver(
-            LaneType::Regular,
-            ManeuverKind::Straight,
-            RoadDir::North,
-            true
-        ));
-        assert!(lane_allows_maneuver(
-            LaneType::Regular,
-            ManeuverKind::RightTurn,
-            RoadDir::North,
-            true
-        ));
-        // Regular now serves the single-lane крайнее левое left turn (ПДД 8.5).
-        assert!(lane_allows_maneuver(
-            LaneType::Regular,
-            ManeuverKind::LeftTurn,
-            RoadDir::North,
-            true
-        ));
-        assert!(!lane_allows_maneuver(
-            LaneType::Regular,
-            ManeuverKind::Other,
-            RoadDir::North,
-            true
-        ));
-
-        assert!(lane_allows_maneuver(
-            LaneType::Regular,
-            ManeuverKind::Straight,
-            RoadDir::North,
-            false
-        ));
-        assert!(lane_allows_maneuver(
-            LaneType::Regular,
-            ManeuverKind::LeftTurn,
-            RoadDir::North,
-            false
-        ));
-        // Regular now serves all maneuvers regardless of traffic handedness.
-        assert!(lane_allows_maneuver(
-            LaneType::Regular,
-            ManeuverKind::RightTurn,
-            RoadDir::North,
-            false
-        ));
+    /// Build a Regular approach-lane cell of `kind` at forward-carriageway lane index `lane`.
+    fn approach_cell(kind: RoadKind, lane: u8, lane_type: LaneType) -> RoadCell {
+        RoadCell {
+            kind,
+            dir: RoadDir::North,
+            lane,
+            flow: RoadFlow::TwoWay,
+            lane_type,
+        }
     }
 
     #[test]
-    fn regular_lane_allows_all_maneuvers_right_hand() {
-        use crate::game::roads::{LaneType, RoadDir};
+    fn lane_type_gates_maneuvers() {
+        use crate::game::roads::{LaneType, RoadKind};
         use crate::game::traffic::ManeuverKind;
-        for m in [
-            ManeuverKind::Straight,
-            ManeuverKind::RightTurn,
-            ManeuverKind::LeftTurn,
-            ManeuverKind::UTurn,
-        ] {
-            assert!(
-                lane_allows_maneuver(LaneType::Regular, m, RoadDir::North, true),
-                "Regular must allow {m:?}"
-            );
-        }
-        // Turn-only lanes: left lane also serves the U-turn (ПДД 8.5 крайнее левое).
+
+        // Single-lane-per-direction (TwoLane 1+1): the one lane is both edges.
+        let solo = |lt| approach_cell(RoadKind::TwoLane, 0, lt);
+
         assert!(lane_allows_maneuver(
-            LaneType::LeftTurnOnly,
-            ManeuverKind::UTurn,
-            RoadDir::North,
+            ManeuverKind::LeftTurn,
+            solo(LaneType::LeftTurnOnly),
             true
         ));
         assert!(!lane_allows_maneuver(
-            LaneType::RightTurnOnly,
+            ManeuverKind::Straight,
+            solo(LaneType::LeftTurnOnly),
+            true
+        ));
+        assert!(!lane_allows_maneuver(
+            ManeuverKind::RightTurn,
+            solo(LaneType::LeftTurnOnly),
+            true
+        ));
+        assert!(!lane_allows_maneuver(
+            ManeuverKind::Other,
+            solo(LaneType::LeftTurnOnly),
+            true
+        ));
+
+        assert!(lane_allows_maneuver(
+            ManeuverKind::RightTurn,
+            solo(LaneType::RightTurnOnly),
+            true
+        ));
+        assert!(!lane_allows_maneuver(
+            ManeuverKind::Straight,
+            solo(LaneType::RightTurnOnly),
+            true
+        ));
+        assert!(!lane_allows_maneuver(
             ManeuverKind::LeftTurn,
-            RoadDir::North,
+            solo(LaneType::RightTurnOnly),
+            true
+        ));
+
+        assert!(lane_allows_maneuver(
+            ManeuverKind::Straight,
+            solo(LaneType::StraightOnly),
+            true
+        ));
+        assert!(!lane_allows_maneuver(
+            ManeuverKind::RightTurn,
+            solo(LaneType::StraightOnly),
+            true
+        ));
+        assert!(!lane_allows_maneuver(
+            ManeuverKind::LeftTurn,
+            solo(LaneType::StraightOnly),
+            true
+        ));
+
+        // Regular on a 1+1 road: both edges at once -> every maneuver legal (ПДД 8.5).
+        let reg = solo(LaneType::Regular);
+        assert!(lane_allows_maneuver(ManeuverKind::Straight, reg, true));
+        assert!(lane_allows_maneuver(ManeuverKind::RightTurn, reg, true));
+        assert!(lane_allows_maneuver(ManeuverKind::LeftTurn, reg, true));
+        assert!(!lane_allows_maneuver(ManeuverKind::Other, reg, true));
+    }
+
+    /// ПДД 8.5 positional discipline on a multi-lane approach (FourLane, forward lanes 0/1):
+    /// the left turn and U-turn come ONLY from the centerline-adjacent Regular lane; the right
+    /// turn ONLY from the curb-adjacent Regular lane; straight from any lane.
+    #[test]
+    fn regular_lane_discipline_is_positional_on_multilane() {
+        use crate::game::roads::{LaneType, RoadKind};
+        use crate::game::traffic::ManeuverKind;
+
+        let curb = approach_cell(RoadKind::FourLane, 0, LaneType::Regular);
+        let center = approach_cell(RoadKind::FourLane, 1, LaneType::Regular);
+        assert!(curb.is_rightmost_for_dir() && !curb.is_leftmost_for_dir());
+        assert!(center.is_leftmost_for_dir() && !center.is_rightmost_for_dir());
+
+        // Straight: both lanes.
+        assert!(lane_allows_maneuver(ManeuverKind::Straight, curb, true));
+        assert!(lane_allows_maneuver(ManeuverKind::Straight, center, true));
+
+        // Left / U-turn: ONLY from the centerline lane (крайняя левая).
+        for m in [ManeuverKind::LeftTurn, ManeuverKind::UTurn] {
+            assert!(
+                lane_allows_maneuver(m, center, true),
+                "{m:?} must be legal from the centerline lane"
+            );
+            assert!(
+                !lane_allows_maneuver(m, curb, true),
+                "{m:?} from the curb lane violates ПДД 8.5"
+            );
+        }
+
+        // Right turn: ONLY from the curb lane (крайняя правая).
+        assert!(lane_allows_maneuver(ManeuverKind::RightTurn, curb, true));
+        assert!(!lane_allows_maneuver(ManeuverKind::RightTurn, center, true));
+
+        // Turn-only lanes: left lane also serves the U-turn (ПДД 8.5 крайнее левое).
+        assert!(lane_allows_maneuver(
+            ManeuverKind::UTurn,
+            approach_cell(RoadKind::FourLane, 1, LaneType::LeftTurnOnly),
+            true
+        ));
+        assert!(!lane_allows_maneuver(
+            ManeuverKind::LeftTurn,
+            approach_cell(RoadKind::FourLane, 0, LaneType::RightTurnOnly),
             true
         ));
     }
@@ -1670,8 +1737,9 @@ mod tests {
     #[test]
     fn arc_2x2_left_turn_swings_around_center() {
         // 2x2 box, C=(5.0,5.0). Northbound left turn: entry (4,4), exit West exit_tile (3,5) ->
-        // goal (4,5). North->West under right-hand traffic is a LEFT turn; the WIDE arc swings the
-        // long way AROUND C — all 4 box tiles, C enclosed. NOT a 2-tile corner snap.
+        // goal (4,5). ПДД trajectory (Г): stay on the entry column to the row BEHIND the center,
+        // then exit west. Crucially the turn must NOT touch the oncoming southbound column x=5 —
+        // the old "wide arc around C" swung через встречную половину бокса first.
         let cluster = box_2x2();
         let entry = TilePos { x: 4, y: 4 };
         let goal = TilePos { x: 4, y: 5 };
@@ -1687,23 +1755,14 @@ mod tests {
         .expect("left");
         eprintln!("2x2 LEFT (N->W):{}", ascii_path(&cluster, &path));
         assert_path_invariants(&cluster, &path, entry, goal);
-        assert!(
-            path.len() >= 3,
-            "left arc is wide (>=3 tiles in a 2x2), not a 2-tile snap: {path:?}"
-        );
         assert_eq!(
             path,
-            vec![
-                TilePos { x: 4, y: 4 },
-                TilePos { x: 5, y: 4 },
-                TilePos { x: 5, y: 5 },
-                TilePos { x: 4, y: 5 },
-            ],
-            "left arc walks the full CCW loop around C"
+            vec![TilePos { x: 4, y: 4 }, TilePos { x: 4, y: 5 }],
+            "ПДД left: up the own column past the center, then out — no sweep"
         );
         assert!(
-            encloses_center(&path, (5.0, 5.0)),
-            "left arc must enclose C (go around it): {path:?}"
+            path.iter().all(|t| t.x == 4),
+            "left turn must never touch the oncoming southbound column x=5: {path:?}"
         );
     }
 
@@ -1813,14 +1872,14 @@ mod tests {
         .expect("left");
         eprintln!("3x3 LEFT (E->N):{}", ascii_path(&cluster, &left));
         assert_path_invariants(&cluster, &left, l_entry, l_goal);
-        assert!(left.len() >= 4, "wide left arc: {left:?}");
-        assert!(
-            !left.contains(&TilePos { x: 5, y: 5 }),
-            "left arc swings around C, not through the center tile: {left:?}"
+        assert_eq!(
+            left,
+            vec![l_entry, TilePos { x: 4, y: 5 }, l_goal],
+            "ПДД left is the compact Г onto the exit column — no perimeter sweep"
         );
         assert!(
-            encloses_center(&left, c),
-            "left arc must enclose C: {left:?}"
+            !left.contains(&TilePos { x: 5, y: 5 }),
+            "left turn must not cut through the center tile: {left:?}"
         );
 
         // U-TURN: entry (4,4) heading East, exit West exit_tile (3,5) -> goal (4,5).
@@ -1839,10 +1898,24 @@ mod tests {
         .expect("uturn");
         eprintln!("3x3 UTURN (E->W):{}", ascii_path(&cluster, &uturn));
         assert_path_invariants(&cluster, &uturn, u_entry, u_goal);
-        assert!(uturn.len() >= 4, "wide U-turn arc: {uturn:?}");
+        // П-shape: along the entry row past the center column (cx=5.5 -> pivot x=6), one lateral
+        // step to the exit row, back to the exit feeder. The pivot must lie BEYOND the center
+        // (ПДД 8.6: разворот за центром, не срезая его).
+        assert_eq!(
+            uturn,
+            vec![
+                u_entry,
+                TilePos { x: 5, y: 4 },
+                TilePos { x: 6, y: 4 },
+                TilePos { x: 6, y: 5 },
+                TilePos { x: 5, y: 5 },
+                u_goal,
+            ],
+            "U-turn is the П around the center: {uturn:?}"
+        );
         assert!(
-            encloses_center(&uturn, c),
-            "U-turn must enclose C: {uturn:?}"
+            uturn.iter().any(|t| t.x as f64 + 0.5 > c.0),
+            "U-turn pivot must pass beyond the center: {uturn:?}"
         );
     }
 
@@ -1945,18 +2018,21 @@ mod tests {
         .expect("left");
         eprintln!("4x4 LEFT (E->N):{}", ascii_path(&cluster, &path));
         assert_path_invariants(&cluster, &path, entry, goal);
-        assert!(
-            encloses_center(&path, c),
-            "wide left turn must enclose C: {path:?}"
-        );
-        assert!(
-            path.len() <= 12,
-            "wide turn occupies only ~10-12 of 16 tiles, not the whole box: {} tiles {path:?}",
-            path.len()
+        let _ = c;
+        // Compact Г: entry column straight to the exit feeder — 4 of 16 tiles. The old wide arc
+        // swept 10-12 tiles across the oncoming half; the Г leaves the whole box interior free
+        // for parallel maneuvers and never shows the car on the wrong side of the crossing.
+        assert_eq!(
+            path,
+            vec![
+                TilePos { x: 4, y: 4 },
+                TilePos { x: 4, y: 5 },
+                TilePos { x: 4, y: 6 },
+                TilePos { x: 4, y: 7 },
+            ],
+            "left turn is the compact Г along the exit column: {path:?}"
         );
         let on_path: HashSet<TilePos> = path.iter().copied().collect();
-        // Strictly fewer than all 16 tiles -> the box is not monopolized (vs a 2x2 where ANY turn
-        // touches all 4). And the far inner tiles (5,5)/(5,6) stay free for a parallel maneuver.
         assert!(on_path.len() < 16, "must not occupy the whole 4x4 box");
         for inner_far in [TilePos { x: 5, y: 5 }, TilePos { x: 5, y: 6 }] {
             assert!(
@@ -1987,24 +2063,29 @@ mod tests {
         .expect("uturn");
         eprintln!("4x4 UTURN (E->W):{}", ascii_path(&cluster, &path));
         assert_path_invariants(&cluster, &path, entry, goal);
-        assert!(
-            encloses_center(&path, c),
-            "wide U-turn must enclose C: {path:?}"
+        // П-shape: along the entry row past the center column (cx=6.0 -> pivot x=6), one lateral
+        // step, back along the exit row. Compact (6 tiles), pivot beyond the center, and the far
+        // half of the crossing road (y >= 6) is never touched — the U-turn stays on its own side.
+        assert_eq!(
+            path,
+            vec![
+                TilePos { x: 4, y: 4 },
+                TilePos { x: 5, y: 4 },
+                TilePos { x: 6, y: 4 },
+                TilePos { x: 6, y: 5 },
+                TilePos { x: 5, y: 5 },
+                TilePos { x: 4, y: 5 },
+            ],
+            "U-turn is the compact П around the center: {path:?}"
         );
         assert!(
-            path.len() <= 12,
-            "U-turn occupies only ~10-12 of 16 tiles: {} tiles {path:?}",
-            path.len()
+            path.iter().any(|t| t.x as f64 + 0.5 > c.0),
+            "U-turn pivot must pass beyond the center: {path:?}"
         );
-        let on_path: HashSet<TilePos> = path.iter().copied().collect();
-        assert!(on_path.len() < 16, "must not occupy the whole 4x4 box");
-        // The two far inner tiles stay free.
-        for inner_far in [TilePos { x: 5, y: 5 }, TilePos { x: 5, y: 6 }] {
-            assert!(
-                !on_path.contains(&inner_far),
-                "far inner tile {inner_far:?} must stay free: {path:?}"
-            );
-        }
+        assert!(
+            path.iter().all(|t| t.y <= 5),
+            "U-turn must stay on its own half of the crossing road: {path:?}"
+        );
     }
 
     /// THE MIXED-WIDTH RISK: a square 4x4 has all 8 exit-feeders in-cluster, so the
@@ -2194,5 +2275,119 @@ mod tests {
             );
             let _ = c;
         }
+    }
+}
+
+#[cfg(test)]
+mod straight_lane_keeping_tests {
+    use super::*;
+    use crate::game::intersections::{IntersectionCluster, IntersectionIndex};
+    use crate::game::map::MapGrid;
+    use crate::game::roads::RoadKind;
+    use crate::game::traffic::{ManeuverKind, TrafficConfig};
+    use crate::game::transport::{GraphVersion, lane_graph::build_lane_graph_inner};
+    use bevy::app::{App, Update};
+    use std::collections::HashMap;
+
+    fn set(grid: &mut MapGrid, pos: TilePos, dir: RoadDir, lane: u8) {
+        let Some(mut cell) = grid.get(pos) else {
+            return;
+        };
+        cell.water = false;
+        cell.road = RoadCell {
+            kind: RoadKind::FourLane,
+            dir,
+            lane,
+            flow: RoadFlow::TwoWay,
+            lane_type: LaneType::Regular,
+        };
+        grid.set(pos, cell);
+    }
+
+    /// FourLane×FourLane 4x4 box with REAL per-tile lane indices (as painted by `input.rs`):
+    /// a STRAIGHT lanelet must exit in the SAME lane index it entered — no weaving inside the box
+    /// (an S-shaped internal path sweeps extra conflict tiles and reads as chaos on screen).
+    #[test]
+    fn straight_lanelets_keep_their_lane_through_the_box() {
+        let mut grid = MapGrid::new(12, 12);
+        let cluster_tiles: Vec<TilePos> = (4..=7)
+            .flat_map(|x| (4..=7).map(move |y| TilePos { x, y }))
+            .collect();
+        for &pos in &cluster_tiles {
+            set(&mut grid, pos, RoadDir::None, 0);
+        }
+        // Horizontal FourLane, canonical East: lane0=y4 (curb), lane1=y5, lane2=y6, lane3=y7 (West).
+        for x in (0..4).chain(8..12) {
+            set(&mut grid, TilePos { x, y: 4 }, RoadDir::East, 0);
+            set(&mut grid, TilePos { x, y: 5 }, RoadDir::East, 1);
+            set(&mut grid, TilePos { x, y: 6 }, RoadDir::West, 2);
+            set(&mut grid, TilePos { x, y: 7 }, RoadDir::West, 3);
+        }
+        // Vertical FourLane, canonical North: lane0=x7 (curb), lane1=x6, lane2=x5, lane3=x4 (South).
+        for y in (0..4).chain(8..12) {
+            set(&mut grid, TilePos { x: 7, y }, RoadDir::North, 0);
+            set(&mut grid, TilePos { x: 6, y }, RoadDir::North, 1);
+            set(&mut grid, TilePos { x: 5, y }, RoadDir::South, 2);
+            set(&mut grid, TilePos { x: 4, y }, RoadDir::South, 3);
+        }
+
+        let id = IntersectionId(0);
+        let key = super::tests::make_key(&cluster_tiles);
+        let cluster = IntersectionCluster {
+            id,
+            key,
+            tiles: cluster_tiles.clone(),
+            aabb_min: TilePos { x: 4, y: 4 },
+            aabb_max: TilePos { x: 7, y: 7 },
+            centroid_tile: TilePos { x: 4, y: 4 },
+        };
+        let mut tile_to_intersection = HashMap::new();
+        for &t in &cluster_tiles {
+            tile_to_intersection.insert(t, id);
+        }
+        let index = IntersectionIndex {
+            clusters: vec![cluster],
+            tile_to_intersection,
+            version: 1,
+            ..Default::default()
+        };
+
+        let gv = GraphVersion(1);
+        let lane_graph = build_lane_graph_inner(&grid, &gv);
+
+        let mut app = App::new();
+        app.insert_resource(grid)
+            .insert_resource(index)
+            .insert_resource(lane_graph)
+            .insert_resource(gv)
+            .insert_resource(TrafficConfig::default())
+            .insert_resource(LaneletGraph::default())
+            .insert_resource(LaneletConflictMatrices::default());
+        app.add_systems(Update, build_lanelet_graph);
+        app.update();
+
+        let graph = app.world().resource::<LaneletGraph>();
+        let lanes = app.world().resource::<LaneGraph>();
+        let grid = app.world().resource::<MapGrid>();
+        let mut straights = 0;
+        for ll in &graph.lanelets {
+            if ll.maneuver != ManeuverKind::Straight {
+                continue;
+            }
+            straights += 1;
+            let entry = lanes.get_lane(ll.entry_lane).expect("entry lane").pos;
+            let exit = lanes.get_lane(ll.exit_lane).expect("exit lane").pos;
+            let entry_lane = grid.get(entry).unwrap().road.lane;
+            let exit_lane = grid.get(exit).unwrap().road.lane;
+            assert_eq!(
+                entry_lane, exit_lane,
+                "straight lanelet weaves across lanes inside the box: entry {entry:?} (lane \
+                 {entry_lane}) -> exit {exit:?} (lane {exit_lane})"
+            );
+        }
+        assert!(
+            straights >= 8,
+            "expected a straight lanelet per approach lane (2 per direction), got {straights}"
+        );
     }
 }

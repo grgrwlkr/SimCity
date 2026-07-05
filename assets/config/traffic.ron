@@ -4,4 +4,7 @@
     heat_ema_decay: 0.92,
     // true = right-hand traffic (US/Russia), false = left-hand traffic (UK/Japan)
     drive_on_right: true,
+    // US-style right turn on red after a full stop. false = ПДД РФ (проезд на красный запрещён,
+    // секции-стрелки не моделируются).
+    right_turn_on_red: false,
 )

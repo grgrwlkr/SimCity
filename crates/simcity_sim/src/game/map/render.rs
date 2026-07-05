@@ -411,10 +411,12 @@ pub(super) fn mark_dirty_on_overlay_change(
 /// - Draws only the remaining route (no "already travelled" part) by starting at the vehicle's
 ///   current interpolated transform position.
 /// - Updates automatically when routes are replanned.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn vehicle_routes_overlay_render(
     state: Res<State<AppState>>,
     ui: Res<UiState>,
     cfg: Res<MapConfig>,
+    grid: Res<MapGrid>,
     path_pool: Res<crate::game::transport::PathPool>,
     mut gizmos: Gizmos<RouteGizmos>,
     q_vehicles: Query<(&Vehicle, &Transform), Without<Parked>>,
@@ -427,8 +429,12 @@ pub(super) fn vehicle_routes_overlay_render(
         return;
     }
 
-    // Route overlay color: visible but subtle.
-    let color = Color::srgba(1.0, 0.75, 0.20, 0.70);
+    // Route overlay colors: a static line has no direction, so a LEGAL west→south left turn
+    // reads exactly like an illegal south→west path down the oncoming lane. Direction chevrons
+    // (below) disambiguate; a route that GENUINELY contains a step against a lane direction is
+    // drawn red so real violations stand out instead of hiding among legal long-arc turns.
+    let color_ok = Color::srgba(1.0, 0.75, 0.20, 0.70);
+    let color_oncoming = Color::srgba(1.0, 0.15, 0.10, 0.95);
     let origin = map_origin(&cfg);
 
     // Guardrails to keep the overlay cheap when many vehicles are active.
@@ -436,6 +442,8 @@ pub(super) fn vehicle_routes_overlay_render(
     // Rendering 1M routes is not feasible; cap work per frame strictly.
     const MAX_ROUTES_PER_FRAME: usize = 256;
     const MAX_POINTS_PER_ROUTE: usize = 256;
+    /// Draw a direction chevron every N route tiles.
+    const CHEVRON_EVERY_TILES: usize = 3;
 
     let mut drawn = 0usize;
     for (vehicle, tf) in q_vehicles.iter() {
@@ -447,6 +455,14 @@ pub(super) fn vehicle_routes_overlay_render(
             Some(route) if route.len() > 1 => route,
             _ => continue,
         };
+        let color =
+            if crate::game::transport::lanelet::pathfinding::first_oncoming_pair(route, &grid)
+                .is_some()
+            {
+                color_oncoming
+            } else {
+                color_ok
+            };
 
         let remaining_tiles = route.len() - 1; // subtract current position
         let max_tiles = MAX_POINTS_PER_ROUTE.saturating_sub(1).max(1);
@@ -472,6 +488,21 @@ pub(super) fn vehicle_routes_overlay_render(
 
         if scratch.len() >= 2 {
             gizmos.linestrip_2d(scratch.iter().copied(), color);
+            // Direction chevrons: a small V at the midpoint of every Nth segment, pointing along
+            // the travel direction — a static polyline is otherwise unreadable (which way?).
+            let head = cfg.tile_size * 0.28;
+            for w in scratch.windows(2).skip(1).step_by(CHEVRON_EVERY_TILES) {
+                let (a, b) = (w[0], w[1]);
+                let seg = b - a;
+                if seg.length_squared() < 1.0 {
+                    continue;
+                }
+                let dir = seg.normalize();
+                let perp = Vec2::new(-dir.y, dir.x);
+                let mid = a + seg * 0.5;
+                gizmos.line_2d(mid, mid - dir * head + perp * head * 0.6, color);
+                gizmos.line_2d(mid, mid - dir * head - perp * head * 0.6, color);
+            }
             drawn += 1;
         }
     }

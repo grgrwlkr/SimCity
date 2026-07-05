@@ -54,6 +54,7 @@ fn parked_owned_car_is_reused_for_next_car_trip() {
         .insert_resource(IntersectionIndex::default())
         .insert_resource(crate::game::transport::PathPool::default())
         .init_resource::<crate::game::sim::SimRng>()
+        .init_resource::<RouteProducerStats>()
         .add_systems(Update, spawn_trip_vehicles);
 
     let citizen = CitizenId(9);

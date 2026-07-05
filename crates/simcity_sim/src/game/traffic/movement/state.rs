@@ -303,7 +303,13 @@ pub fn update_vehicle_traffic_state(
             VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. }
         );
 
-        if light_is_red && !is_all_red && is_right_turn && reserved && stopped_or_waiting {
+        if traffic_cfg.right_turn_on_red
+            && light_is_red
+            && !is_all_red
+            && is_right_turn
+            && reserved
+            && stopped_or_waiting
+        {
             if ror.is_none() {
                 commands.entity(entity).insert(RightTurnOnRed {
                     intersection_id: info.intersection_id,

@@ -61,7 +61,6 @@ pub fn create_vehicle_with_route(
         progress,
         speed,
         is_reversing: false,
-        reverse_distance: 0.0,
         max_speed,
         speed_factor,
         max_accel,

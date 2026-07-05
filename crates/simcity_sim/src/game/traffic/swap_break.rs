@@ -8,6 +8,7 @@ use crate::game::transport::{PathHandle, PathPool, PathfindingConfig};
 use super::{
     LaneletReplanRes, Parked, TrafficOccupancy, TrafficSpatialIndex, Vehicle, VehicleLaneletPlan,
     clear_lanelet_plan_on_reroute, is_intersection_tile, replan_route_with_lanelets,
+    route_direction_ok,
 };
 
 /// Marks a vehicle wedged in an off-intersection tile-swap deadlock for which no one-tile-deferred
@@ -269,6 +270,11 @@ pub(crate) fn break_tile_swaps(
                     goal,
                     travel_dir,
                 );
+                // Direction guard: never intern a hand-built route that steps against a lane.
+                if lanelet_route.is_none() && !route_direction_ok(&new_route, &grid) {
+                    replan.producer_stats.guard_refusals += 1;
+                    continue;
+                }
                 path_pool.release(v.path_handle);
                 match lanelet_route {
                     Some((tiles, sidecar)) => {
@@ -278,6 +284,7 @@ pub(crate) fn break_tile_swaps(
                         }
                     }
                     None => {
+                        replan.producer_stats.swap_break_handbuilt += 1;
                         v.path_handle = path_pool.intern(new_route);
                         clear_lanelet_plan_on_reroute(v_plan.as_deref_mut());
                     }

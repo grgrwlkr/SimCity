@@ -13,6 +13,11 @@ pub struct TrafficConfig {
     /// If true, traffic drives on the right (US/Russia). If false, drives on the left (UK/Japan).
     #[serde(default = "default_drive_on_right")]
     pub drive_on_right: bool,
+    /// If true, the near-side turn on a red light is permitted after a full stop (US-style
+    /// right-turn-on-red). Default FALSE: ПДД РФ 6.2/13.4 forbid proceeding on red without a
+    /// dedicated arrow section, which this simulation does not model.
+    #[serde(default)]
+    pub right_turn_on_red: bool,
 
     // -----------------------------------------------------------------------
     // Traffic v2 (Stage B): longitudinal dynamics tuning (IDM) + scale
@@ -91,6 +96,7 @@ impl Default for TrafficConfig {
             max_route_plans_per_tick: 64,
             heat_ema_decay: 0.92,
             drive_on_right: true,
+            right_turn_on_red: false,
             tile_meters: default_tile_meters(),
             idm_desired_headway_secs: default_idm_desired_headway_secs(),
             idm_min_gap_m: default_idm_min_gap_m(),

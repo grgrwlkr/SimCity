@@ -7,7 +7,7 @@ use crate::game::commands::GameCommand;
 use crate::game::ids::CitizenId;
 use crate::game::intersections::{IntersectionIndex, IntersectionPriority};
 use crate::game::map::{MapConfig, MapGrid, TilePos};
-use crate::game::roads::{RoadDir, RoadKind};
+use crate::game::roads::RoadDir;
 use crate::game::services::{ServiceVehicle, ServiceVehicleState};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
@@ -62,7 +62,10 @@ use stuck::{
 };
 
 mod reroute_planner;
-pub(crate) use reroute_planner::{LaneletReplanRes, replan_route_with_lanelets};
+pub(crate) use reroute_planner::{
+    LaneletReplanRes, invalidate_routes_on_graph_change, replan_route_with_lanelets,
+    route_direction_ok,
+};
 
 mod swap_break;
 use swap_break::break_tile_swaps;
@@ -70,14 +73,15 @@ use swap_break::break_tile_swaps;
 mod lane_change;
 use lane_change::{
     build_traffic_spatial_index, build_traffic_spatial_index_pre_lane_changes, plan_lane_changes,
-    plan_oncoming_overtakes, tick_lane_change_cooldowns, tick_overtake_oncoming, tick_overtaking,
+    tick_lane_change_cooldowns, tick_overtaking,
 };
 
 mod vehicle_render;
 // use vehicle_render::{interpolate_vehicle_position, update_vehicle_positions_for_interpolation}; // TODO: enable when GPU interpolation is needed
 
 mod debug;
-use debug::update_debug_vehicle_state;
+pub use debug::{AUDIT_OFFENDER_SAMPLE_LEN, RouteProducerStats, TrafficViolationAudit};
+use debug::{audit_traffic_violations, update_debug_vehicle_state};
 
 mod traffic_spatial_index;
 pub use traffic_spatial_index::TrafficSpatialIndex;
@@ -151,6 +155,9 @@ const SERVICE_VEHICLE_SPEED_LIMIT_FACTOR: f32 = 1.50;
 pub(crate) const STUCK_REROUTE_SECS: f32 = 60.0;
 /// After this many seconds without progressing, despawn non-service trip vehicles as an emergency guardrail.
 const STUCK_DESPAWN_SECS: f32 = 180.0;
+/// Minimum spacing between reroute ATTEMPTS for a wedged vehicle (continuously stopped past
+/// `STUCK_REROUTE_SECS`). Un-throttled, a wedged car replans every tick — the churn itself pins it.
+pub(crate) const WEDGED_REROUTE_RETRY_SECS: f32 = 10.0;
 /// A vehicle flagged `SwapDeadlocked` (in an off-intersection tile-swap with no straight escape) is
 /// removed after this short grace — the swap breaker re-checks every tick and clears the flag the
 /// moment the swap resolves, so a still-flagged car is genuinely wedged and must not pin the road.
@@ -180,23 +187,6 @@ const OVERTAKE_LEADER_SPEED_RATIO: f32 = 0.85;
 /// Speed profile threshold for lane preference: vehicles with speed_factor above this prefer left
 /// lanes; those at or below keep right (DRIVER_PROFILE_MEDIUM_FACTOR = 1.0).
 pub(crate) const KEEP_RIGHT_SPEED_THRESHOLD: f32 = 0.98;
-
-// ---------------------------------------------------------------------------
-// Stage F (initial): oncoming-lane overtakes on TwoLane (1+1) with strict guardrails
-// ---------------------------------------------------------------------------
-
-/// How far ahead (in tiles) the oncoming lane must be clear to start an oncoming overtake.
-const ONCOMING_OVERTAKE_CLEAR_TILES: usize = 14;
-/// Don't start an oncoming overtake if an intersection is close ahead on the route.
-const ONCOMING_OVERTAKE_INTERSECTION_LOOKAHEAD: usize = 14;
-/// Minimum number of forward tiles to stay in the oncoming lane once we pull out.
-const ONCOMING_OVERTAKE_MIN_PASS_TILES: usize = 3;
-/// Maximum number of forward tiles to stay in the oncoming lane once we pull out.
-const ONCOMING_OVERTAKE_MAX_PASS_TILES: usize = 6;
-/// Cooldown after starting an oncoming overtake (seconds).
-const ONCOMING_OVERTAKE_COOLDOWN_SECS: f32 = 4.0;
-/// Guardrail: max number of oncoming overtakes planned per tick.
-const MAX_ONCOMING_OVERTAKES_PER_TICK: usize = 8;
 
 // ---------------------------------------------------------------------------
 // IDM (Stage B): longitudinal dynamics (car-following)
@@ -325,6 +315,8 @@ impl Plugin for TrafficPlugin {
             .init_resource::<ArbiterIndexCache>()
             .init_resource::<ArbiterTickStats>()
             .init_resource::<ApproachFairness>()
+            .init_resource::<TrafficViolationAudit>()
+            .init_resource::<RouteProducerStats>()
             .init_resource::<LaneletStallTracker>()
             .init_resource::<RingTopologyStatus>()
             .init_resource::<TrafficSpatialIndex>()
@@ -361,6 +353,18 @@ impl Plugin for TrafficPlugin {
                     .in_set(GameSet::GraphUpdate)
                     .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
             )
+            // R3: re-validate every active route after a structural map edit (GraphVersion bump) —
+            // stale routes must not drive against flipped lanes / across deleted roads. Runs after
+            // the transport graphs rebuilt this tick (on FixedUpdate the GraphUpdate set is chained
+            // before Sim; the explicit .after below orders it within the set, behind the lanelet
+            // rebuild). Replans are budgeted per tick and carry over — see the system's doc.
+            .add_systems(
+                FixedUpdate,
+                invalidate_routes_on_graph_change
+                    .in_set(GameSet::GraphUpdate)
+                    .after(crate::game::transport::build_lanelet_graph)
+                    .run_if(in_state(AppState::InGame)),
+            )
             // Simulation - Part 1: occupancy, state updates, spawning
             .add_systems(
                 FixedUpdate,
@@ -374,7 +378,6 @@ impl Plugin for TrafficPlugin {
                     spawn_trip_vehicles,
                     tick_lane_change_cooldowns,
                     tick_overtaking,
-                    tick_overtake_oncoming,
                 )
                     .chain()
                     .in_set(GameSet::Sim)
@@ -387,7 +390,6 @@ impl Plugin for TrafficPlugin {
                     build_traffic_spatial_index_pre_lane_changes
                         .after(check_intersection_priority)
                         .after(spawn_trip_vehicles)
-                        .after(tick_overtake_oncoming)
                         .before(plan_lane_changes),
                     plan_lane_changes
                         .after(check_intersection_priority)
@@ -395,16 +397,12 @@ impl Plugin for TrafficPlugin {
                         .before(move_vehicles),
                     build_traffic_spatial_index
                         .after(plan_lane_changes)
-                        .before(plan_oncoming_overtakes)
-                        .before(move_vehicles),
-                    plan_oncoming_overtakes
-                        .after(plan_lane_changes)
                         .before(move_vehicles),
                     cache_intersection_light_state
-                        .after(plan_oncoming_overtakes)
+                        .after(build_traffic_spatial_index)
                         .before(arbitrate_lanelet_reservations),
                     cache_pedestrian_crossing_state
-                        .after(plan_oncoming_overtakes)
+                        .after(build_traffic_spatial_index)
                         .before(arbitrate_lanelet_reservations),
                     // Sole reservation producer.
                     arbitrate_lanelet_reservations
@@ -475,6 +473,14 @@ impl Plugin for TrafficPlugin {
                 update_traffic_index
                     .in_set(GameSet::PostSim)
                     .run_if(in_state(AppState::InGame)),
+            )
+            // Wrong-way / route-provenance audit (observable via DebugTrafficSnapshot over BRP).
+            // Read-only — also runs while Paused so a frozen frame can be inspected over MCP.
+            .add_systems(
+                FixedUpdate,
+                audit_traffic_violations
+                    .in_set(GameSet::PostSim)
+                    .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
             )
             // Rendering
             .add_systems(Update, render_traffic_overlay.in_set(GameSet::RenderSync))

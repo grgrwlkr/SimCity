@@ -1,5 +1,6 @@
 use super::super::{
-    LaneletReplanRes, VehicleLaneletPlan, clear_lanelet_plan_on_reroute, replan_route_with_lanelets,
+    LaneletReplanRes, VehicleLaneletPlan, clear_lanelet_plan_on_reroute,
+    replan_route_with_lanelets, route_direction_ok,
 };
 use super::*;
 use crate::game::transport::{PathHandle, PathPool};
@@ -34,50 +35,6 @@ fn lane_change_target(grid: &MapGrid, current: TilePos, move_dir: RoadDir) -> Op
     }
 
     Some(target)
-}
-
-pub(in super::super) fn oncoming_lane_offset(
-    grid: &MapGrid,
-    current: TilePos,
-    travel_dir: RoadDir,
-) -> Option<IVec2> {
-    let cur_cell = grid.get(current)?;
-    if cur_cell.water || !cur_cell.road.is_some() || cur_cell.road.dir == RoadDir::None {
-        return None;
-    }
-    let cur = cur_cell.road;
-    if cur.kind != RoadKind::TwoLane {
-        return None;
-    }
-
-    // Oncoming lane is one tile to the left or right (perpendicular), same road kind/lane count,
-    // adjacent lane index, and opposite `dir`.
-    for side in [travel_dir.left(), travel_dir.right()] {
-        let d = side.delta();
-        let t = TilePos {
-            x: current.x + d.x,
-            y: current.y + d.y,
-        };
-        let Some(cell) = grid.get(t) else {
-            continue;
-        };
-        if cell.water || !cell.road.is_some() || cell.road.dir == RoadDir::None {
-            continue;
-        }
-        let next = cell.road;
-        if next.kind != cur.kind || next.lanes_total() != cur.lanes_total() {
-            continue;
-        }
-        if next.lane.abs_diff(cur.lane) != 1 {
-            continue;
-        }
-        if next.dir != travel_dir.opposite() {
-            continue;
-        }
-        return Some(d);
-    }
-
-    None
 }
 
 fn lane_change_safe_progress(
@@ -139,7 +96,6 @@ pub(in super::super) fn plan_lane_changes(
                 &VehicleTrafficState,
                 Option<&LaneChangeCooldown>,
                 Option<&Overtaking>,
-                Option<&OvertakeOncoming>,
                 Option<&ServiceVehicle>,
             ),
             Without<Parked>,
@@ -167,11 +123,8 @@ pub(in super::super) fn plan_lane_changes(
     }
     let mut desires = Vec::<Desire>::new();
 
-    for (e, v, state, cooldown, overtaking, oncoming, service_vehicle) in vehicles.p0().iter() {
+    for (e, v, state, cooldown, overtaking, service_vehicle) in vehicles.p0().iter() {
         if cooldown.is_some() {
-            continue;
-        }
-        if oncoming.is_some() {
             continue;
         }
         if service_vehicle.is_some() {
@@ -430,6 +383,11 @@ pub(in super::super) fn plan_lane_changes(
                 goal,
                 travel_dir,
             );
+            // Direction guard: never intern a hand-built route that steps against a lane.
+            if lanelet_route.is_none() && !route_direction_ok(&new_route, &grid) {
+                replan.producer_stats.guard_refusals += 1;
+                continue;
+            }
             // Release old path and intern new one
             path_pool.release(v.path_handle);
             match lanelet_route {
@@ -440,6 +398,7 @@ pub(in super::super) fn plan_lane_changes(
                     }
                 }
                 None => {
+                    replan.producer_stats.lane_change_handbuilt += 1;
                     v.path_handle = path_pool.intern(new_route);
                     clear_lanelet_plan_on_reroute(v_plan.as_deref_mut());
                 }

@@ -86,10 +86,9 @@ pub struct Vehicle {
     pub tile_pos: TilePos,
 
     // Reverse movement (GDD: vehicles can reverse slowly when stuck)
-    /// Flag indicating if vehicle is currently reversing (GDD: max 10 km/h, only when stuck)
+    /// Flag indicating if vehicle is currently reversing (max 10 km/h, only when stuck,
+    /// within the current tile only — see the reverse branch in movement/drive.rs).
     pub is_reversing: bool,
-    /// Distance reversed in tiles (limited to 2-3 tiles max)
-    pub reverse_distance: f32,
 }
 
 impl Default for Vehicle {
@@ -110,7 +109,6 @@ impl Default for Vehicle {
             curr_world_pos: Vec2::ZERO,
             last_update_time: 0.0,
             is_reversing: false,
-            reverse_distance: 0.0,
         }
     }
 }

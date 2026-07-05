@@ -143,6 +143,7 @@ pub(crate) fn lanelet_readiness(
     state: &VehicleTrafficState,
     cur: TilePos,
     drive_on_right: bool,
+    right_turn_on_red: bool,
 ) -> Readiness {
     if !signalized {
         return Readiness {
@@ -178,7 +179,14 @@ pub(crate) fn lanelet_readiness(
             is_right_on_red: false,
         };
     }
-    // Red (not all-red): right-turn-on-red only, after coming to a stop for THIS stop tile.
+    // Red (not all-red): right-turn-on-red only (if the rulebook permits it at all), after coming
+    // to a stop for THIS stop tile. ПДД РФ: forbidden (no arrow sections modeled) — config default.
+    if !right_turn_on_red {
+        return Readiness {
+            ready: false,
+            is_right_on_red: false,
+        };
+    }
     let stopped_for_this = matches!(
         state,
         VehicleTrafficState::Stopped { stop_tile, .. }
@@ -208,6 +216,10 @@ pub(crate) fn lanelet_readiness(
         }
     }
 }
+
+/// Distance tolerance (tiles) for the "simultaneous arrival" tie in the помеха-справа correction:
+/// two candidates whose stop-line distances differ within this are treated as arriving together.
+const RIGHT_HAND_DIST_TIE_EPS_TILES: f32 = 0.1;
 
 /// Fixed per-direction precedence — the deterministic помеха-справа ("yield to the right") stand-in
 /// (Task 2). True pairwise помеха-справа at a simultaneous-arrival 4-way is undefined in ПДД and a
@@ -577,11 +589,27 @@ pub(crate) fn arbitrate_grants_inner(
             b.priority
                 .cmp(&a.priority)
                 .then_with(|| a.dist_to_entry.total_cmp(&b.dist_to_entry))
-                // помеха-справа: a post-distance tiebreak (higher precedence wins) so it never
-                // dominates distance — a closer/long-waiting approach is not starved by direction.
+                // Deterministic post-distance tiebreak (base order); the pairwise помеха-справа
+                // correction below fixes the one pair this fixed order gets wrong. Kept inside the
+                // sort so the comparator stays a total order (the right-hand rule itself is cyclic
+                // for 3+ directions and would panic Rust's sort).
                 .then_with(|| dir_precedence(b.entry_dir).cmp(&dir_precedence(a.entry_dir)))
                 .then_with(|| a.vehicle.to_bits().cmp(&b.vehicle.to_bits()))
         });
+        // ПДД 13.11 (помеха-справа), pairwise correction: between two otherwise-EQUAL adjacent
+        // candidates, the one whose rival approaches from its right yields (rival.entry_dir ==
+        // own.entry_dir.left(): heading North, a westbound car comes from the right side). The
+        // fixed N>E>S>W base order already agrees with the rule for every pair except (North,
+        // West); a single bounded pass keeps the sweep deterministic and deadlock-free — ПДД
+        // leaves full 3-4-way simultaneous cycles undefined, so those keep the base order.
+        for i in 0..order.len().saturating_sub(1) {
+            let (a, b) = (order[i], order[i + 1]);
+            let tied = a.priority == b.priority
+                && (a.dist_to_entry - b.dist_to_entry).abs() <= RIGHT_HAND_DIST_TIE_EPS_TILES;
+            if tied && b.entry_dir == a.entry_dir.left() {
+                order.swap(i, i + 1);
+            }
+        }
 
         let mut admitted_any = false;
         // Per-tick DEFERRED-grant scratch mask: bits of precise lanelets GRANTED this tick. A grant
@@ -764,6 +792,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
     let cache = p.cache.as_ref();
     let traffic_cfg = p.traffic_cfg.as_ref();
     let drive_on_right = traffic_cfg.drive_on_right;
+    let right_turn_on_red = traffic_cfg.right_turn_on_red;
 
     let mut candidates_by_id: HashMap<IntersectionId, Vec<ArbiterGrantCandidate>> = HashMap::new();
     let mut inbox: Vec<ArbiterInboxVehicle> = Vec::new();
@@ -924,6 +953,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
             state,
             cur,
             drive_on_right,
+            right_turn_on_red,
         );
 
         // A signalized left turn that is not yet eligible is left-turn demand: it actuates the
@@ -1435,6 +1465,46 @@ mod tests {
         assert!(!res.is_reserved_by(IntersectionId(0), ent(2)));
     }
 
+    /// ПДД 13.11 (помеха-справа): between two otherwise-equal candidates, NORTH yields to WEST —
+    /// the westbound car approaches from the northbound driver's right. This is exactly the pair
+    /// the old fixed N>E>S>W precedence got wrong.
+    #[test]
+    fn right_hand_rule_north_yields_to_west_on_equal_tie() {
+        let center = TilePos { x: 0, y: 0 };
+        let m = LaneletConflictMatrices {
+            by_intersection: HashMap::from([(
+                IntersectionId(0),
+                crate::game::transport::ConflictMatrix::from_paths(&[vec![center], vec![center]]),
+            )]),
+            version: 1,
+            ..Default::default()
+        };
+        let ordered = vec![IntersectionId(0)];
+        let mut north = cand(
+            ent(1),
+            0,
+            candidate_priority(4, ManeuverKind::Straight, 0),
+            vec![center],
+        );
+        north.entry_dir = RoadDir::North;
+        let mut west = cand(
+            ent(2),
+            1,
+            candidate_priority(4, ManeuverKind::Straight, 0),
+            vec![center],
+        );
+        west.entry_dir = RoadDir::West;
+        let mut cands = HashMap::new();
+        cands.insert(IntersectionId(0), vec![north, west]);
+        let mut res = IntersectionReservations::default();
+        arbitrate_grants_inner(0.0, &ordered, &cands, &m, &[], &mut res);
+        assert!(
+            res.is_reserved_by(IntersectionId(0), ent(2)),
+            "West approaches from North's right and must win the equal tie (помеха-справа)"
+        );
+        assert!(!res.is_reserved_by(IntersectionId(0), ent(1)));
+    }
+
     #[test]
     fn readiness_signalized_green_red_rtor_allred() {
         use crate::game::intersections::{IntersectionKey, LightPhase, TrafficLight};
@@ -1466,6 +1536,7 @@ mod tests {
                 ManeuverKind::Straight,
                 &free,
                 stop,
+                true,
                 true
             )
             .ready
@@ -1481,6 +1552,7 @@ mod tests {
             &free,
             stop,
             true,
+            true,
         );
         assert!(r.ready && !r.is_right_on_red);
 
@@ -1494,6 +1566,7 @@ mod tests {
             &free,
             stop,
             true,
+            true,
         );
         assert!(!r.ready);
 
@@ -1506,6 +1579,7 @@ mod tests {
             ManeuverKind::Straight,
             &stopped,
             stop,
+            true,
             true,
         );
         assert!(!r.ready);
@@ -1521,6 +1595,7 @@ mod tests {
             &stopped,
             stop,
             true,
+            true,
         );
         assert!(r.ready && r.is_right_on_red);
 
@@ -1533,6 +1608,7 @@ mod tests {
             ManeuverKind::Straight,
             &stopped,
             stop,
+            true,
             true,
         );
         assert!(!r.ready);
@@ -1548,6 +1624,7 @@ mod tests {
             &free,
             stop,
             true,
+            true,
         );
         assert!(r.ready && !r.is_right_on_red, "protected left is ready");
         let r = lanelet_readiness(
@@ -1559,10 +1636,29 @@ mod tests {
             &free,
             stop,
             true,
+            true,
         );
         assert!(
             !r.ready,
             "through is red during the protected-left interval"
+        );
+
+        // ПДД РФ default (right_turn_on_red == false): the near-side turn on red is NOT ready —
+        // proceeding on red without an arrow section is forbidden (ПДД 6.2/13.4).
+        let r = lanelet_readiness(
+            true,
+            Some(&light(LightPhase::EastWestGreen)),
+            RoadDir::North,
+            near,
+            ManeuverKind::RightTurn,
+            &stopped,
+            stop,
+            true,
+            false,
+        );
+        assert!(
+            !r.ready && !r.is_right_on_red,
+            "right turn on red must be refused when the rulebook forbids it (ПДД РФ default)"
         );
     }
 
@@ -2076,11 +2172,13 @@ mod tests {
 
         let served =
             turn_served_tick.expect("starved turn must eventually be served, never starve");
-        // Cross point is aging > 2*MANEUVER_STEP = 32 ticks; the turn is served on the next tick.
-        // ~33 ticks ≈ 3.3 s at 10 Hz — a few seconds, not minutes.
+        // Cross point is aging > 2*MANEUVER_STEP = 32 ticks. At EXACTLY tick 32 the priorities tie
+        // and the помеха-справа correction already hands the tie to the West turn (it approaches
+        // from the North through's right) — one tick before the pure aging cross. ~3.2-3.3 s at
+        // 10 Hz — a few seconds, not minutes.
         assert!(
-            (33..=40).contains(&served),
-            "turn served at tick {served}; expected ~33 (cross threshold) ≈ 3.3 s at 10 Hz"
+            (32..=40).contains(&served),
+            "turn served at tick {served}; expected ~32-33 (cross threshold) ≈ 3.3 s at 10 Hz"
         );
     }
 

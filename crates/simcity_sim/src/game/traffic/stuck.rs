@@ -89,6 +89,7 @@ pub(super) fn resolve_stuck_vehicles(
     >,
 ) {
     let mut handled = 0usize;
+    let dt = time.delta_secs();
 
     let mut ctx = PathfindingCtx {
         time_now_sec: time.elapsed_secs_f64(),
@@ -124,7 +125,22 @@ pub(super) fn resolve_stuck_vehicles(
         // forever-blocker that cascades into gridlock. The motion timer (Without state-based resets)
         // is the authority for "this is not a normal wait, get it moving (reroute) or, last resort,
         // despawn". Threshold = the reroute timeout, well past the ~34 s max signal cycle.
-        let wedged = motion.is_some_and(|m| m.stopped_secs >= STUCK_REROUTE_SECS);
+        let stopped_secs = motion.map(|m| m.stopped_secs).unwrap_or(0.0);
+        let wedged = stopped_secs >= STUCK_REROUTE_SECS;
+        // Rate-limit wedged reroute ATTEMPTS to one per retry window. Un-limited, a wedged vehicle
+        // replans EVERY tick: per-trip jitter makes each replan "differ", so the route (and the
+        // vehicle's cursor/progress) is reset every tick — the churn itself pins the car in place,
+        // floods the path pool (observed live: 56k stuck-interns in ~20 min) and starves recovery.
+        // Stateless window: fires on the tick where the continuously-stopped clock crosses a
+        // multiple of the retry period. The despawn guardrail below stays on the raw timers.
+        let wedged_retry_due = wedged
+            && (stopped_secs - STUCK_REROUTE_SECS).rem_euclid(WEDGED_REROUTE_RETRY_SECS) < dt;
+        let motion_despawn = stopped_secs >= STUCK_DESPAWN_SECS;
+        // The motion arm exists to reach the despawn guardrail below — but a service vehicle is
+        // exempt from that guardrail (despawning would leak its station's available_vehicles), so
+        // for it the arm would only open a PER-TICK replan lane, bypassing the wedged throttle
+        // above (the exact churn it prevents). Service vehicles stay on the throttled window.
+        let recovery_due = wedged_retry_due || (motion_despawn && service_vehicle.is_none());
         if v.path_cursor >= path_pool.len(v.path_handle) {
             stuck.secs = 0.0;
             continue;
@@ -152,11 +168,11 @@ pub(super) fn resolve_stuck_vehicles(
         if matches!(
             *state,
             VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. }
-        ) && !wedged
+        ) && !recovery_due
         {
             continue;
         }
-        if stuck.secs < STUCK_REROUTE_SECS && !wedged {
+        if stuck.secs < STUCK_REROUTE_SECS && !recovery_due {
             continue;
         }
 
@@ -194,6 +210,14 @@ pub(super) fn resolve_stuck_vehicles(
             travel_dir,
         );
         let route = find_road_path_cached(&mut ctx, current, goal);
+        // Direction guard (insurance): road-A* is structurally dir-correct, but the interned
+        // fallback must satisfy the same invariant as every other producer.
+        let route = if route_direction_ok(&route, &grid) {
+            route
+        } else {
+            replan.producer_stats.guard_refusals += 1;
+            Vec::new()
+        };
         let road_changed = !route.is_empty()
             && Some(route.as_slice()) != path_pool.remaining_from(v.path_handle, v.path_cursor);
         let lanelet_changed = lanelet_route.as_ref().is_some_and(|(tiles, _)| {
@@ -203,12 +227,14 @@ pub(super) fn resolve_stuck_vehicles(
             path_pool.release(v.path_handle);
             match lanelet_route {
                 Some((tiles, sidecar)) => {
+                    replan.producer_stats.stuck_lanelet += 1;
                     v.path_handle = path_pool.intern(tiles);
                     if let Some(plan) = lanelet_plan.as_deref_mut() {
                         plan.entries = sidecar;
                     }
                 }
                 None => {
+                    replan.producer_stats.stuck_road_fallback += 1;
                     v.path_handle = path_pool.intern(route);
                     clear_lanelet_plan_on_reroute(lanelet_plan.as_deref_mut());
                 }
@@ -218,7 +244,6 @@ pub(super) fn resolve_stuck_vehicles(
             v.speed = v.speed.min(v.max_speed * 0.5);
             // Reset reverse state after reroute
             v.is_reversing = false;
-            v.reverse_distance = 0.0;
 
             stuck.secs = 0.0;
             stuck.last_tile = current;
@@ -231,7 +256,7 @@ pub(super) fn resolve_stuck_vehicles(
         // NOT for a wedged vehicle: pinning stuck.secs back to 48 s every tick is exactly what made the
         // 180 s despawn guardrail unreachable (the car reverses 0 tiles because it is boxed in, so this
         // branch fires forever). A wedged car falls through to the despawn last resort instead.
-        if v.path_cursor > 0 && v.reverse_distance < 2.5 && !wedged {
+        if v.path_cursor > 0 && !wedged {
             // Allow reverse movement - the move_vehicles system will handle it
             // Just reset stuck timer slightly to give reverse a chance
             stuck.secs = STUCK_REROUTE_SECS * 0.8; // Give some time for reverse to work
@@ -251,7 +276,6 @@ pub(super) fn resolve_stuck_vehicles(
         // congestion — only a genuine permanent dead-end reaches here. Hoisting the motion arm made
         // this fire routinely on ordinary congestion-stopped cars (they vanished mid-jam); placing
         // it after reroute/reverse restores it to the band-aid-of-last-resort it should be.
-        let motion_despawn = motion.is_some_and(|m| m.stopped_secs >= STUCK_DESPAWN_SECS);
         if (stuck.secs >= STUCK_DESPAWN_SECS || motion_despawn) && service_vehicle.is_none() {
             if let Some(p) = passenger {
                 finished.write(TripFinished {
@@ -292,7 +316,7 @@ pub(super) fn recover_stuck_returning_service_vehicles(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::roads::{LaneType, RoadCell, RoadFlow};
+    use crate::game::roads::{LaneType, RoadCell, RoadFlow, RoadKind};
     use crate::game::transport::{PathCache, PathPool, RegionGraph, RoadGraph};
 
     fn put_road(grid: &mut MapGrid, pos: TilePos, dir: RoadDir) {
@@ -357,6 +381,7 @@ mod tests {
         app.insert_resource(crate::game::transport::LaneGraph::default());
         app.insert_resource(crate::game::transport::LaneletGraph::default());
         app.insert_resource(crate::game::sim::SimRng::default());
+        app.init_resource::<RouteProducerStats>();
         app.init_resource::<bevy::ecs::message::Messages<TripFinished>>();
 
         // Stuck past the reroute threshold (recovery fires) but UNDER the 180 s despawn
@@ -459,6 +484,7 @@ mod tests {
         app.insert_resource(crate::game::transport::LaneGraph::default());
         app.insert_resource(crate::game::transport::LaneletGraph::default());
         app.insert_resource(crate::game::sim::SimRng::default());
+        app.init_resource::<RouteProducerStats>();
         app.init_resource::<bevy::ecs::message::Messages<TripFinished>>();
 
         let vehicle = Vehicle {
@@ -575,6 +601,7 @@ mod tests {
         app.insert_resource(crate::game::transport::LaneGraph::default());
         app.insert_resource(crate::game::transport::LaneletGraph::default());
         app.insert_resource(crate::game::sim::SimRng::default());
+        app.init_resource::<RouteProducerStats>();
         app.init_resource::<bevy::ecs::message::Messages<TripFinished>>();
 
         let vehicle = Vehicle {

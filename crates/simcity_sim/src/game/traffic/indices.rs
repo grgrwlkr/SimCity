@@ -36,6 +36,7 @@ pub(super) fn init_vehicle_motion_timers(
 /// streaks + frozen count into `VehicleMotionStats`.
 pub(super) fn track_vehicle_motion(
     time: Res<Time<Fixed>>,
+    path_pool: Res<crate::game::transport::PathPool>,
     mut stats: ResMut<VehicleMotionStats>,
     mut q: Query<(&Vehicle, &mut VehicleMotionTimer), Without<Parked>>,
 ) {
@@ -45,6 +46,14 @@ pub(super) fn track_vehicle_motion(
     let mut frozen = 0u32;
     let mut worst = (-1i32, -1i32);
     for (v, mut mt) in q.iter_mut() {
+        // A vehicle with no active route (idle service vehicle at its station, arrived car
+        // awaiting cleanup) is not traffic — its motionlessness is by design, not a jam. Counting
+        // the idle fleet made `frozen_vehicles`/`max_stopped_secs` useless as gridlock signals.
+        if path_pool.len(v.path_handle) <= 1 {
+            mt.stopped_secs = 0.0;
+            mt.moving_secs = 0.0;
+            continue;
+        }
         if v.speed.abs() > VEHICLE_MOTION_SPEED_EPS {
             mt.moving_secs += dt;
             mt.stopped_secs = 0.0;

@@ -13,7 +13,7 @@ fn congestion_affects_route_choice_between_parallel_lanes() {
         let mut c0 = grid.get(pos0).unwrap_or_default();
         c0.water = false;
         c0.road = RoadCell {
-            kind: RoadKind::TwoLane,
+            kind: RoadKind::FourLane,
             dir: RoadDir::East,
             lane: 0,
             flow: crate::game::roads::RoadFlow::TwoWay,
@@ -25,7 +25,7 @@ fn congestion_affects_route_choice_between_parallel_lanes() {
         let mut c1 = grid.get(pos1).unwrap_or_default();
         c1.water = false;
         c1.road = RoadCell {
-            kind: RoadKind::TwoLane,
+            kind: RoadKind::FourLane,
             dir: RoadDir::East,
             lane: 1,
             flow: crate::game::roads::RoadFlow::TwoWay,
@@ -59,6 +59,7 @@ fn congestion_affects_route_choice_between_parallel_lanes() {
         traffic: &traffic,
         grid: &grid,
         intersections: &intersections,
+        max_iterations: None,
     };
 
     let start = TilePos { x: 0, y: 0 };
@@ -507,5 +508,65 @@ fn one_way_allows_lane_change_between_same_direction_lanes() {
         graph.edges[idx1] & (1 << 2),
         0,
         "lane-change across one-way lanes should be allowed"
+    );
+}
+
+/// R11 regression (`adjacent_road_towards`): when no adjacent lane matches the desired direction,
+/// the anchor must prefer a NON-OPPOSITE lane (perpendicular is fine) over the oncoming one —
+/// otherwise trips anchor (and cars visually spawn) on the встречка. The wrong-way carriageway of
+/// a one-way road must never be an anchor at all.
+#[test]
+fn adjacent_road_anchor_never_prefers_oncoming_lane() {
+    let mut grid = MapGrid::new(6, 6);
+    let mut put = |pos: TilePos, dir: RoadDir, flow: RoadFlow| {
+        let mut cell = grid.get(pos).unwrap_or_default();
+        cell.water = false;
+        cell.road = RoadCell {
+            kind: RoadKind::TwoLane,
+            dir,
+            lane: 0,
+            flow,
+            lane_type: LaneType::Regular,
+        };
+        grid.set(pos, cell);
+    };
+
+    // Building anchor at (2,2); target far EAST -> desired dir East.
+    // South neighbor (2,1): WESTBOUND lane (the oncoming side of an E-W road).
+    // North neighbor (2,3): NORTHBOUND lane (perpendicular, drivable).
+    put(TilePos { x: 2, y: 1 }, RoadDir::West, RoadFlow::TwoWay);
+    put(TilePos { x: 2, y: 3 }, RoadDir::North, RoadFlow::TwoWay);
+
+    let anchor = adjacent_road_towards(&grid, TilePos { x: 2, y: 2 }, TilePos { x: 5, y: 2 });
+    assert_eq!(
+        anchor,
+        Some(TilePos { x: 2, y: 3 }),
+        "anchor must prefer the perpendicular drivable lane over the oncoming one"
+    );
+
+    // One-way: the wrong-way carriageway is not drivable and must never anchor.
+    let mut grid2 = MapGrid::new(6, 6);
+    let mut put2 = |pos: TilePos, dir: RoadDir, flow: RoadFlow| {
+        let mut cell = grid2.get(pos).unwrap_or_default();
+        cell.water = false;
+        cell.road = RoadCell {
+            kind: RoadKind::TwoLane,
+            dir,
+            lane: 0,
+            flow,
+            lane_type: LaneType::Regular,
+        };
+        grid2.set(pos, cell);
+    };
+    // Only adjacent road: a one-way(East) road's wrong-way half (dir West).
+    put2(
+        TilePos { x: 2, y: 1 },
+        RoadDir::West,
+        RoadFlow::OneWay(RoadDir::East),
+    );
+    let anchor2 = adjacent_road_towards(&grid2, TilePos { x: 2, y: 2 }, TilePos { x: 5, y: 2 });
+    assert_eq!(
+        anchor2, None,
+        "the wrong-way half of a one-way road must never be a trip anchor"
     );
 }

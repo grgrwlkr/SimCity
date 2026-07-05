@@ -15,6 +15,21 @@ use crate::game::transport::{
     GraphVersion, LaneletConflictMatrices, LaneletGraph, build_lanelet_graph,
 };
 
+fn set_cell_lane(grid: &mut MapGrid, pos: TilePos, kind: RoadKind, dir: RoadDir, lane: u8) {
+    let Some(mut cell) = grid.get(pos) else {
+        return;
+    };
+    cell.water = false;
+    cell.road = RoadCell {
+        kind,
+        dir,
+        lane,
+        flow: RoadFlow::TwoWay,
+        lane_type: LaneType::Regular,
+    };
+    grid.set(pos, cell);
+}
+
 fn set_cell(grid: &mut MapGrid, pos: TilePos, kind: RoadKind, dir: RoadDir) {
     let Some(mut cell) = grid.get(pos) else {
         return;
@@ -954,6 +969,10 @@ fn spawn_north_right_stopped(app: &mut App) -> Entity {
 fn rtor_blocked_by_conflicting_pedestrian_then_admitted_when_clear() {
     use crate::game::pedestrians::PedestrianCrossing;
     let mut app = build_bare_arbiter_app(make_signalized_ew_green);
+    // US-rule RTOR mechanics under test; the ПДД РФ default disables RTOR entirely.
+    app.world_mut()
+        .resource_mut::<TrafficConfig>()
+        .right_turn_on_red = true;
     let ego = spawn_north_right_stopped(&mut app);
 
     // Pedestrian crossing the NS axis occupies the West/East crosswalks → blocks the North→East turn.
@@ -1244,57 +1263,69 @@ fn cross_grid_4x4() -> (MapGrid, IntersectionIndex) {
     }
 
     // Horizontal FourLane: rows y=4,5 EAST; y=6,7 WEST. Lanes outside the box on both x sides.
+    // Lane indices follow the real paint (input.rs): canonical East, 0 = curb of the canonical
+    // carriageway (y=4), 1 = its centerline lane (y=5), 2 = opposite centerline (y=6),
+    // 3 = opposite curb (y=7) — so is_leftmost/rightmost_for_dir see real positions.
     for x in (0..4).chain(8..12) {
-        set_cell(
+        set_cell_lane(
             &mut grid,
             TilePos { x, y: 4 },
             RoadKind::FourLane,
             RoadDir::East,
+            0,
         );
-        set_cell(
+        set_cell_lane(
             &mut grid,
             TilePos { x, y: 5 },
             RoadKind::FourLane,
             RoadDir::East,
+            1,
         );
-        set_cell(
+        set_cell_lane(
             &mut grid,
             TilePos { x, y: 6 },
             RoadKind::FourLane,
             RoadDir::West,
+            2,
         );
-        set_cell(
+        set_cell_lane(
             &mut grid,
             TilePos { x, y: 7 },
             RoadKind::FourLane,
             RoadDir::West,
+            3,
         );
     }
-    // Vertical FourLane: cols x=6,7 NORTH; x=4,5 SOUTH. Lanes outside the box on both y sides.
+    // Vertical FourLane: cols x=6,7 NORTH; x=4,5 SOUTH. Canonical North: 0 = curb (x=7),
+    // 1 = centerline (x=6); opposite (South): 2 = centerline (x=5), 3 = curb (x=4).
     for y in (0..4).chain(8..12) {
-        set_cell(
+        set_cell_lane(
             &mut grid,
             TilePos { x: 6, y },
             RoadKind::FourLane,
             RoadDir::North,
+            1,
         );
-        set_cell(
+        set_cell_lane(
             &mut grid,
             TilePos { x: 7, y },
             RoadKind::FourLane,
             RoadDir::North,
+            0,
         );
-        set_cell(
+        set_cell_lane(
             &mut grid,
             TilePos { x: 4, y },
             RoadKind::FourLane,
             RoadDir::South,
+            3,
         );
-        set_cell(
+        set_cell_lane(
             &mut grid,
             TilePos { x: 5, y },
             RoadKind::FourLane,
             RoadDir::South,
+            2,
         );
     }
 
@@ -1445,13 +1476,13 @@ fn four_lane_4x4_straight_plus_disjoint_right_turn_both_admitted() {
             TilePos { x: 8, y: 4 },
         ],
     );
-    // Westbound→North right turn: approach West-lane (8,6) heading West, exit North col x=7.
-    // entry_dir=West, West.right()=North under right-hand traffic → RightTurn, hugs top-right corner.
+    // Westbound→North right turn from the CURB West lane y=7 (ПДД 8.5: right turns from the
+    // крайняя правая), exit North col x=7. entry_dir=West, West.right()=North under right-hand
+    // traffic → RightTurn, hugs the top-right corner tile (7,7) only.
     let right = spawn_route_4x4(
         &mut app,
         vec![
-            TilePos { x: 8, y: 6 },
-            TilePos { x: 7, y: 6 },
+            TilePos { x: 8, y: 7 },
             TilePos { x: 7, y: 7 },
             TilePos { x: 7, y: 8 },
         ],
@@ -2048,15 +2079,15 @@ fn multi_car_full_exit_cycle_progresses_not_deadlocks() {
 fn uncontrolled_left_turn_not_frozen_by_approaching_through_at_empty_box() {
     let mut app = build_full_chain_arbiter_app_4x4(|_| {});
 
-    // South-entry LEFT-turner on col x=4 (a SOUTH lane), exits East onto row y=4. Box tiles 4..=7.
-    // (4,8) approach → box (4,7)..(4,4),(5,4),(6,4),(7,4) → (8,4) East exit. entry South,
-    // South.left()=East → LeftTurn. Starts near the stop line, ready to enter.
+    // South-entry LEFT-turner on the centerline SOUTH lane x=5 (ПДД 8.5: left turns only from
+    // the крайняя левая), exits East onto row y=4. Box tiles 4..=7. (5,8) approach → box
+    // (5,7)..(5,4),(6,4),(7,4) → (8,4) East exit. entry South, South.left()=East → LeftTurn.
+    // Starts near the stop line, ready to enter.
     let left = spawn_at_stop_line(
         &mut app,
         vec![
-            TilePos { x: 4, y: 8 },
-            TilePos { x: 4, y: 7 },
-            TilePos { x: 4, y: 4 },
+            TilePos { x: 5, y: 8 },
+            TilePos { x: 5, y: 7 },
             TilePos { x: 5, y: 4 },
             TilePos { x: 6, y: 4 },
             TilePos { x: 7, y: 4 },
@@ -2183,5 +2214,68 @@ fn uncontrolled_left_turn_not_frozen_by_approaching_through_at_empty_box() {
         left_entered_box || left_end > left_start + 0.5,
         "the left-turner must actually advance into / through the box, not freeze at the line \
          (start={left_start}, end={left_end})"
+    );
+}
+
+/// ПДД 13.12: an unprotected LEFT turn must yield to the ONCOMING straight. The compact
+/// Manhattan Г-path is deliberately tile-DISJOINT from the oncoming through column, so the
+/// tile-overlap matrix alone would see NO conflict here — the forced semantic pair
+/// (`add_conflict_pair` in `transport/lanelet/build.rs`) is what must register it. If that pair
+/// were missing, both would be admitted in one tick and the left would cut across the oncoming
+/// car's nose.
+#[test]
+fn crossing_left_yields_to_oncoming_straight() {
+    let mut app = build_bare_arbiter_app(|_| {});
+    // Southbound ONCOMING through on the x=5 lane: (5,6) → (5,5),(5,4) → (5,3).
+    let oncoming_route = vec![
+        TilePos { x: 5, y: 6 },
+        TilePos { x: 5, y: 5 },
+        TilePos { x: 5, y: 4 },
+        TilePos { x: 5, y: 3 },
+    ];
+    let oncoming = {
+        let mut pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        let v = create_vehicle_with_route(&mut pool, oncoming_route, 0, 0.4, 0.0, 60.0, 20.0, 1.0);
+        app.world_mut()
+            .spawn((
+                v,
+                VehicleTrafficState::FreeFlow,
+                VehicleLaneletPlan::default(),
+            ))
+            .id()
+    };
+    // Northbound left turn: approach y=3, cross box, exit West to (3,5).
+    let left_route = vec![
+        TilePos { x: 4, y: 3 },
+        TilePos { x: 4, y: 4 },
+        TilePos { x: 4, y: 5 },
+        TilePos { x: 3, y: 5 },
+    ];
+    let left = {
+        let mut pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        let v = create_vehicle_with_route(&mut pool, left_route, 0, 0.4, 0.0, 60.0, 20.0, 1.0);
+        app.world_mut()
+            .spawn((
+                v,
+                VehicleTrafficState::FreeFlow,
+                VehicleLaneletPlan::default(),
+            ))
+            .id()
+    };
+    app.update();
+
+    let res = app.world().resource::<IntersectionReservations>();
+    assert!(
+        !(res.is_reserved_by(IntersectionId(0), oncoming)
+            && res.is_reserved_by(IntersectionId(0), left)),
+        "an oncoming straight and an unprotected left must not both be admitted (ПДД 13.12)"
+    );
+    assert!(
+        res.is_reserved_by(IntersectionId(0), oncoming),
+        "the oncoming straight has priority; the left yields"
     );
 }

@@ -70,6 +70,18 @@ impl ConflictMatrix {
         m
     }
 
+    /// Force-mark two lanelets as conflicting regardless of tile overlap. Used for SEMANTIC
+    /// conflicts the geometry alone cannot express: ПДД 13.12 — a left/U turn must yield to the
+    /// ONCOMING straight/right even when the discretized paths occupy disjoint tiles (compact
+    /// Manhattan turn trajectories often do).
+    pub fn add_conflict_pair(&mut self, a: usize, b: usize) {
+        if a == b || a >= self.n || b >= self.n {
+            return;
+        }
+        self.rows[a][b / 64] |= 1u64 << (b % 64);
+        self.rows[b][a / 64] |= 1u64 << (a % 64);
+    }
+
     /// Row index where crosswalk rows begin (== `len()` when there are none).
     pub fn crosswalk_base(&self) -> usize {
         self.crosswalk_base

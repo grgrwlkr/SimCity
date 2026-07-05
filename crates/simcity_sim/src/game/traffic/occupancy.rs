@@ -172,7 +172,13 @@ pub(super) fn update_traffic_occupancy(
     }
 
     // Count occupancy at end-of-tick. Skip parked vehicles - they don't block traffic.
+    // Also skip vehicles with NO active route (path <= 1 tile): idle service vehicles sit at
+    // their station's home_road tile in fleets (8 police cars on a capacity-2 lane tile) —
+    // counting them permanently over-caps the tile and walls off the lane for through traffic.
     for vehicle in q.iter() {
+        if path_pool.len(vehicle.path_handle) <= 1 {
+            continue;
+        }
         if let Some(pos) = path_pool.get_tile(vehicle.path_handle, vehicle.path_cursor)
             && let Some(idx) = grid.idx(pos)
         {

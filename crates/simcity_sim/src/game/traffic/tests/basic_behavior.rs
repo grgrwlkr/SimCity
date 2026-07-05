@@ -21,6 +21,7 @@ fn vehicle_arrival_emits_trip_finished() {
         .insert_resource(IntersectionIndex::default())
         .insert_resource(IntersectionReservations::default())
         .init_resource::<crate::game::transport::LaneletConflictMatrices>()
+        .init_resource::<RouteProducerStats>()
         .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(VehicleAggSnapshot::default())
         .insert_resource(ParkedVehicleTileIndex::default())
@@ -114,6 +115,7 @@ fn lateral_tile_swap_on_same_direction_lanes_does_not_deadlock_forever() {
         .insert_resource(IntersectionIndex::default())
         .insert_resource(IntersectionReservations::default())
         .init_resource::<crate::game::transport::LaneletConflictMatrices>()
+        .init_resource::<RouteProducerStats>()
         .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(VehicleAggSnapshot::default())
         .insert_resource(ParkedVehicleTileIndex::default())
@@ -233,6 +235,7 @@ fn swap_breaker_is_inert_for_normal_queueing() {
         .insert_resource(IntersectionIndex::default())
         .insert_resource(IntersectionReservations::default())
         .init_resource::<crate::game::transport::LaneletConflictMatrices>()
+        .init_resource::<RouteProducerStats>()
         .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(VehicleAggSnapshot::default())
         .insert_resource(ParkedVehicleTileIndex::default())
@@ -463,6 +466,7 @@ fn overlap_clamp_app() -> App {
         .insert_resource(IntersectionIndex::default())
         .insert_resource(IntersectionReservations::default())
         .init_resource::<crate::game::transport::LaneletConflictMatrices>()
+        .init_resource::<RouteProducerStats>()
         .insert_resource(TrafficSpatialIndex::default())
         .insert_resource(VehicleAggSnapshot::default())
         .insert_resource(ParkedVehicleTileIndex::default())
@@ -640,5 +644,122 @@ fn free_flow_follower_not_throttled_by_clamp() {
         ego_v.speed >= 40.0,
         "free-flow speed throttled to {} (< initial 40); clamp must be a no-op without a leader",
         ego_v.speed
+    );
+}
+
+/// ПДД 8.12: reversing at intersections is prohibited. A stuck vehicle backing along its own route
+/// must NOT cross a tile boundary INTO an intersection-box tile (`dir == None`) — that re-enters
+/// the box with no reservation (the admission model has no notion of a car backing in) and reads
+/// on screen as driving against the intersection's traffic.
+///
+/// The invariant is STRUCTURAL, not a tile-type check: reverse only moves within the current tile
+/// (progress floors at 0.0 and the cursor never decrements — see the reverse branch in
+/// movement/drive.rs), so NO tile boundary, box or otherwise, can ever be crossed backwards. This
+/// test pins that structure with the worst-case layout: a box tile directly behind a reversing car.
+///
+/// Layout (all EAST, 6x1): (1,0) = box tile behind ego, ego on (2,0), (3,0) = box tile ahead with
+/// NO reservation (permanently `blocked_next` -> stop line), goal (4,0). Ego is stuck past the
+/// reverse threshold, so the reverse branch engages.
+#[test]
+fn stuck_reverse_never_backs_into_intersection_box() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .add_message::<TripFinished>()
+        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(MapConfig {
+            width: 6,
+            height: 1,
+            tile_size: 16.0,
+        })
+        .insert_resource({
+            let mut grid = MapGrid::new(6, 1);
+            for x in 0..6i32 {
+                let pos = TilePos { x, y: 0 };
+                let Some(mut cell) = grid.get(pos) else {
+                    continue;
+                };
+                cell.road = RoadCell {
+                    kind: RoadKind::TwoLane,
+                    // (1,0) and (3,0) are intersection-box tiles.
+                    dir: if x == 1 || x == 3 {
+                        RoadDir::None
+                    } else {
+                        RoadDir::East
+                    },
+                    lane: 0,
+                    flow: RoadFlow::TwoWay,
+                    lane_type: LaneType::Regular,
+                };
+                grid.set(pos, cell);
+            }
+            grid
+        })
+        .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficConfig::default())
+        .insert_resource(IntersectionIndex::default())
+        .insert_resource(IntersectionReservations::default())
+        .init_resource::<crate::game::transport::LaneletConflictMatrices>()
+        .init_resource::<RouteProducerStats>()
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(VehicleAggSnapshot::default())
+        .insert_resource(ParkedVehicleTileIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .add_systems(Update, (build_traffic_spatial_index, move_vehicles).chain());
+
+    let ego_comp = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(
+            &mut path_pool,
+            vec![
+                TilePos { x: 1, y: 0 },
+                TilePos { x: 2, y: 0 },
+                TilePos { x: 3, y: 0 },
+                TilePos { x: 4, y: 0 },
+            ],
+            1,   // current tile (2,0)
+            0.3, // progress: mid-tile, so it must reverse 0.3+ tiles to cross backwards
+            0.0,
+            60.0,
+            20.0,
+            1.0,
+        )
+    };
+    let ego = app
+        .world_mut()
+        .spawn((
+            ego_comp,
+            VehicleTrafficState::FreeFlow,
+            crate::game::traffic::stuck::StuckTimer {
+                secs: STUCK_REROUTE_SECS + 5.0,
+                last_tile: TilePos { x: 2, y: 0 },
+                last_progress: 0.3,
+            },
+        ))
+        .id();
+
+    let mut reversed = false;
+    for _ in 0..300 {
+        app.world_mut()
+            .resource_mut::<bevy::time::Time<bevy::time::Fixed>>()
+            .advance_by(Duration::from_secs_f32(0.1));
+        app.update();
+
+        let v = app.world().get::<Vehicle>(ego).unwrap();
+        reversed |= v.is_reversing;
+        assert!(
+            v.path_cursor >= 1,
+            "stuck reverse backed the vehicle across the boundary into the intersection box \
+             tile (1,0) (path_cursor {}, progress {})",
+            v.path_cursor,
+            v.progress
+        );
+    }
+    assert!(
+        reversed,
+        "test never engaged the reverse branch; setup is invalid"
     );
 }

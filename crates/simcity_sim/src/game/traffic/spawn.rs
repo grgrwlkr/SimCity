@@ -115,6 +115,7 @@ pub(super) fn spawn_trip_vehicles(
             (Vec::new(), Vec::new())
         };
 
+        let used_road_fallback = lane_tiles.is_empty();
         let route = if lane_tiles.is_empty() {
             // Road-A* fallback when no lane route exists (degenerate maps / missing lane endpoints).
             let mut ctx = PathfindingCtx {
@@ -133,9 +134,25 @@ pub(super) fn spawn_trip_vehicles(
             lane_tiles
         };
 
+        // Direction guard (insurance), same as every other non-lanelet producer: road-A* is
+        // structurally dir-correct by graph construction, but the interned fallback must satisfy
+        // the same invariant as every hand-built route. A refusal drops this trip request —
+        // exactly like the empty-route case below (no route means no vehicle).
+        let route = if used_road_fallback && !route_direction_ok(&route, &p.grid) {
+            p.producer_stats.guard_refusals += 1;
+            Vec::new()
+        } else {
+            route
+        };
+
         // No fallback to astar_path - vehicles must follow lane rules.
         if route.is_empty() {
             continue;
+        }
+        if used_road_fallback {
+            p.producer_stats.spawn_road_fallback += 1;
+        } else {
+            p.producer_stats.spawn_lanelet += 1;
         }
 
         // CarTour Variant B: if the citizen already has a parked car entity, re-use it.
@@ -235,7 +252,6 @@ pub(super) fn spawn_trip_vehicles(
             Transform::from_xyz(world_pos.x, world_pos.y, 10.0),
             Vehicle {
                 is_reversing: false,
-                reverse_distance: 0.0,
                 path_handle: p.path_pool.intern(route),
                 path_cursor: 0,
                 progress: 0.0,
@@ -303,6 +319,7 @@ pub(super) struct SpawnTripVehiclesParams<'w, 's> {
     >,
     traffic_cfg: Res<'w, TrafficConfig>,
     sim_rng: bevy::prelude::ResMut<'w, crate::game::sim::SimRng>,
+    producer_stats: ResMut<'w, RouteProducerStats>,
 }
 
 /// Despawn all vehicles when GameCommand::GenerateMap is received.

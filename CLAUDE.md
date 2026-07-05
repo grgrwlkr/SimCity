@@ -56,6 +56,8 @@ simcity_app ─┬─> simcity_frontend ─┬─> simcity_debug ─┐
 
 **Config-driven tuning.** Числовые параметры подсистем вынесены в `assets/config/*.ron` (`traffic.ron`, `pedestrians.ron`, `economy.ron`, `employment.ron`, `pathfinding.ron`, `map.ron`, `day_night.ron`, `buildings.ron`, `custom_buildings.ron`) и грузятся в рантайме через `config_loader`. Сценарии — `assets/scenarios/scenarios.ron`. При добавлении нового RON **обязателен parse-тест** (см. `config_loader`), он же гоняет `SaveGameV3` roundtrip.
 
+**Перекрёстки — строгие инварианты.** Любые правки трафика/перекрёстков обязаны соблюдать `docs/architecture.md` → «Intersection Traffic Invariants (STRICT)»: прямоугольные Г/П-траектории внутри бокса (никаких дуговых обходов центра), единый направленный гард на всех производителях маршрутов, семантические конфликты (левый уступает встречному) поверх тайловых, верификация через `TrafficViolationAudit`/Path-оверлей. Тесты-пины из того раздела не ослаблять.
+
 **ECS-дисциплина (из `.cursor/rules/my-rules.mdc`).** Данные — только в компонентах, логика — только в системах. Межмодульная связь — через messages/events, а не прямой доступ. Много мелких систем вместо одной большой (внешний параллелизм Bevy). `par_iter` при десятках тысяч сущностей. Избегать `.unwrap()`/`.expect()` в продакшен-пути.
 
 ## Tests

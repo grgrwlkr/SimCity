@@ -484,16 +484,18 @@ pub fn move_vehicles(
             });
         }
 
-        // Reverse movement for stuck vehicles (GDD: max 10 km/h, only when stuck)
+        // Reverse movement for stuck vehicles (max 10 km/h, only when stuck). WITHIN the current
+        // tile only: progress floors at 0.0 below, so a reversing car never crosses a tile
+        // boundary — cross-tile backing is deliberately not modeled (no rear-collision model, and
+        // ПДД 8.12 prohibits reversing at intersections).
         const MAX_REVERSE_SPEED_KMH: f32 = 10.0;
-        const MAX_REVERSE_DISTANCE_TILES: f32 = 2.5; // 2-3 tiles max
         let can_reverse = stuck_timer
             .map(|stuck| stuck.secs >= crate::game::traffic::STUCK_REROUTE_SECS)
             .unwrap_or(false)
             && blocked_next
             && v.path_cursor > 0; // Can only reverse if not at start of path
 
-        if can_reverse && v.reverse_distance < MAX_REVERSE_DISTANCE_TILES {
+        if can_reverse {
             // Allow reverse movement
             v.is_reversing = true;
             let max_reverse_speed =
@@ -526,17 +528,11 @@ pub fn move_vehicles(
         let prev_p = v.progress;
 
         if v.is_reversing {
-            // Reverse movement: decrease progress, but don't go below 0
-            let desired_p = (prev_p + desired_dprog).max(0.0);
-            v.progress = desired_p;
-            // Update reverse distance
-            v.reverse_distance += desired_dprog.abs();
-
-            // If we've reversed to the start of current tile, move to previous tile
-            if v.progress <= 0.0 && v.path_cursor > 0 {
-                v.path_cursor = v.path_cursor.saturating_sub(1);
-                v.progress = 1.0; // Start at end of previous tile
-            }
+            // Reverse: decrease progress, floored at 0.0 (the tile's start boundary). The cursor
+            // NEVER decrements — backing across a tile boundary (in particular back INTO an
+            // intersection box) is structurally impossible; pinned by
+            // stuck_reverse_never_backs_into_intersection_box.
+            v.progress = (prev_p + desired_dprog).max(0.0);
         } else if path_pool
             .get_tile(v.path_handle, v.path_cursor + 1)
             .is_some()
@@ -559,8 +555,6 @@ pub fn move_vehicles(
                 let denom = dt.max(1e-6);
                 v.speed = (actual_dprog * tile_size) / denom;
             }
-            // Reset reverse distance when moving forward
-            v.reverse_distance = 0.0;
         } else {
             let mut next_p = prev_p + desired_dprog;
 
@@ -610,8 +604,6 @@ pub fn move_vehicles(
             }
 
             v.progress = next_p;
-            // Reset reverse distance when moving forward
-            v.reverse_distance = 0.0;
         }
 
         // BOUNDARY HARD-CLAMP (deferred-reservation collision-safety floor). An eligible car that has

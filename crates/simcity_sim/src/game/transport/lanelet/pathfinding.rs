@@ -297,7 +297,7 @@ pub(crate) fn flatten(
 }
 
 /// Cardinal step from `a` to its 4-adjacent neighbor `b`; `RoadDir::None` for non-adjacent.
-fn dir_between_adjacent(a: TilePos, b: TilePos) -> RoadDir {
+pub(crate) fn dir_between_adjacent(a: TilePos, b: TilePos) -> RoadDir {
     match (b.x - a.x, b.y - a.y) {
         (1, 0) => RoadDir::East,
         (-1, 0) => RoadDir::West,
@@ -307,20 +307,33 @@ fn dir_between_adjacent(a: TilePos, b: TilePos) -> RoadDir {
     }
 }
 
-/// First consecutive route pair `(a, b)` that travels against `a`'s lane direction, if any.
+/// First consecutive route pair `(a, b)` that travels against a lane direction, if any.
 ///
-/// `a` is checked only when it is a REAL road tile (`grid.get(a).road.dir != None`); intersection-box
-/// tiles carry `dir == None` and are exempt (their in-box path is collision-checked, not direction-
-/// checked). A pair is oncoming iff the step `a -> b` equals `road.dir.opposite()` of `a`.
+/// Two checks per pair (both only against REAL road tiles; intersection-box tiles carry
+/// `dir == None` and are exempt — their in-box path is collision-checked, not direction-checked):
+/// - LEAVING `a` against `a`'s own lane direction (`step == a.dir.opposite()`), and
+/// - ENTERING `b` against `b`'s lane direction (`step == b.dir.opposite()`). This closes the
+///   box-exit blind spot: a route stepping from an exempt box tile onto the oncoming carriageway
+///   was invisible to the `a`-side check alone (наблюдалось вживую как «выезд на встречку на
+///   перекрёстке»). Perpendicular entries (lane changes, merges) are unaffected.
 pub(crate) fn first_oncoming_pair(route: &[TilePos], grid: &MapGrid) -> Option<(TilePos, TilePos)> {
     for w in route.windows(2) {
         let (a, b) = (w[0], w[1]);
-        let Some(cell) = grid.get(a) else { continue };
-        let lane_dir = cell.road.dir;
-        if lane_dir == RoadDir::None {
-            continue; // intersection-box tile: exempt.
+        let step = dir_between_adjacent(a, b);
+        if step == RoadDir::None {
+            continue; // non-adjacent pair (degenerate route): not direction-checkable.
         }
-        if dir_between_adjacent(a, b) == lane_dir.opposite() {
+        if let Some(cell) = grid.get(a)
+            && cell.road.dir != RoadDir::None
+            && step == cell.road.dir.opposite()
+        {
+            return Some((a, b));
+        }
+        if let Some(cell) = grid.get(b)
+            && cell.road.is_some()
+            && cell.road.dir != RoadDir::None
+            && step == cell.road.dir.opposite()
+        {
             return Some((a, b));
         }
     }
@@ -755,7 +768,9 @@ mod tests {
         let (raw_tiles, _) = flatten(&nodes, &lg, &llg);
         assert_eq!(
             first_oncoming_pair(&raw_tiles, &grid),
-            Some((TilePos { x: 3, y: 0 }, TilePos { x: 4, y: 0 })),
+            // The b-side check flags the violation at the EARLIEST offending step — the box-exit
+            // ONTO the westbound tile (2,0)->(3,0) — one pair before the old a-side-only detection.
+            Some((TilePos { x: 2, y: 0 }, TilePos { x: 3, y: 0 })),
             "precondition: the unguarded flattened route drives oncoming down the westbound corridor: {raw_tiles:?}"
         );
 

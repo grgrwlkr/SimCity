@@ -573,7 +573,10 @@ fn right_turn_on_red_speed_is_capped_to_turn_speed() {
         })
         .insert_resource(MapGrid::new(3, 3))
         .insert_resource(TrafficOccupancy::default())
-        .insert_resource(TrafficConfig::default())
+        .insert_resource(TrafficConfig {
+            right_turn_on_red: true, // US-rule mechanics under test; ПДД РФ default is off
+            ..TrafficConfig::default()
+        })
         .insert_resource(IntersectionReservations::default())
         .init_resource::<crate::game::transport::LaneletConflictMatrices>()
         .insert_resource(TrafficSpatialIndex::default())
