@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "rust-docs": {
+      "type": "stdio",
+      "command": "docsrs-mcp",
+      "args": [],
+      "env": {}
+    },
+    "bevy-brp": {
+      "type": "stdio",
+      "command": "bevy_brp_mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
