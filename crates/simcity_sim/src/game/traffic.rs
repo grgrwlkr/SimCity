@@ -367,7 +367,7 @@ impl Plugin for TrafficPlugin {
                     tick_overtaking,
                 )
                     .chain()
-                    .in_set(GameSet::Sim)
+                    .in_set(crate::game::TrafficStep::Flow)
                     .run_if(in_state(AppState::InGame)),
             )
             // Simulation - Part 2: lane changes, intersections, movement
@@ -395,7 +395,7 @@ impl Plugin for TrafficPlugin {
                     cleanup_right_on_red_markers.after(move_vehicles),
                     cleanup_intersection_reservations.after(move_vehicles),
                 )
-                    .in_set(GameSet::Sim)
+                    .in_set(crate::game::TrafficStep::Movement)
                     .run_if(in_state(AppState::InGame)),
             )
             // Keep derived counts in sync (including while paused) without any full-world queries.
@@ -426,6 +426,8 @@ impl Plugin for TrafficPlugin {
                 vehicle_render::interpolate_vehicle_position.run_if(in_state(AppState::InGame)),
             )
             // Jam recovery (run in sim; uses last tick's occupancy/graph state).
+            // Chained for determinism: every pre-existing pairwise .after/.before below is kept
+            // and the chain totalizes the remaining conflicting pairs (PathPool/Vehicle/StuckTimer).
             .add_systems(
                 FixedUpdate,
                 (
@@ -442,14 +444,15 @@ impl Plugin for TrafficPlugin {
                     resolve_stuck_vehicles.after(update_stuck_timers),
                     recover_stuck_returning_service_vehicles.after(update_stuck_timers),
                 )
-                    .in_set(GameSet::Sim)
+                    .chain()
+                    .in_set(crate::game::TrafficStep::Recovery)
                     .run_if(in_state(AppState::InGame)),
             )
             // Update traffic index at end of Sim for accurate UI metrics
             .add_systems(
                 FixedUpdate,
                 update_traffic_index
-                    .in_set(GameSet::PostSim)
+                    .in_set(crate::game::PostSimStep::TrafficIndex)
                     .run_if(in_state(AppState::InGame)),
             )
             // Wrong-way / route-provenance audit (observable via DebugTrafficSnapshot over BRP).

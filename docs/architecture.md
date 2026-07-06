@@ -83,6 +83,13 @@ Fixed-step симуляция:
 
 `GraphUpdate` идёт ДО `Sim` в обоих schedule: derived-графы (`RoadGraph`, `RegionGraph`, `LaneGraph`, lanelet-граф) пересобираются раньше любых сим-консьюмеров того же тика. Порядок запинен тестом `graph_rebuild_runs_before_sim_consumer_on_fixed_update` (`crates/simcity_sim/src/game/mod.rs`).
 
+Детерминизм внутри сетов (FixedUpdate):
+
+- `GameSet::Sim` чейнится по саб-сетам `SimStep`: `Tick -> Citizens -> Employment -> Buildings -> Services -> Emergencies -> PublicTransport -> Pedestrians -> Traffic` (внутри Traffic — `TrafficStep::Flow -> Movement -> Recovery`).
+- `GameSet::PostSim` — `PostSimStep`: `TrafficIndex -> Pollution -> Coverage -> LandValue -> EmploymentStats -> Demand -> Economy` (producer-before-consumer).
+- `GameSet::GraphUpdate` — единый чейн `autogen_turn_lanes -> rebuild_road_graph -> rebuild_region_graph -> build_lane_graph -> build_lanelet_graph -> invalidate_routes_on_graph_change`; `LaneGraph`/`LaneletGraph` кэшируются по `built_for: Option<GraphVersion>` + размерам грида (пустая-но-валидная сборка тоже считается built).
+- Ноль неупорядоченных конфликтующих пар — обязательный инвариант: пины `fixed_update_has_no_ambiguous_system_pairs` (SimPlugin) и `composed_fixed_update_has_no_ambiguous_system_pairs` (SimPlugin+DataPlugin), сам детерминизм — фингерпринт-тест `simcity_data/src/game/determinism.rs`. Новая FixedUpdate-система обязана встать в свой саб-сет.
+
 ## Main Messages
 
 Система коммуникации завязана на Bevy messages:

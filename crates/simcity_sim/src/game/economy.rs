@@ -6,7 +6,6 @@ use bevy::prelude::*;
 use crate::game::employment::EmploymentStats;
 use crate::game::map::{BuildingKind, MapGrid, TilePos};
 use crate::game::services::ServiceCoverageIndex;
-use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::sim_events::DayAdvanced;
 use crate::game::state::AppState;
@@ -18,7 +17,7 @@ impl Plugin for EconomyPlugin {
         app.init_resource::<EconomyConfig>().add_systems(
             FixedUpdate,
             apply_daily_economy
-                .in_set(GameSet::PostSim)
+                .in_set(crate::game::PostSimStep::Economy)
                 .run_if(in_state(AppState::InGame)),
         );
     }

@@ -52,7 +52,7 @@ simcity_app ─┬─> simcity_frontend ─┬─> simcity_debug ─┐
 `Input → CommandApply → GraphUpdate → Sim → PostSim → RenderSync → Ui`
 На `FixedUpdate` чейнятся `GraphUpdate → Sim → PostSim` (графы пересобираются ДО сим-консьюмеров; запинено тестом `graph_rebuild_runs_before_sim_consumer_on_fixed_update`). Любая новая система должна явно встать в нужный `GameSet`.
 
-**Детерминированный fixed-step.** Симуляция идёт на `FixedUpdate` при 10 Гц (`Time::<Fixed>::from_seconds(1.0/10.0)`), отделённая от рендера/UI на `Update`. Это основа воспроизводимости тестов — сим-логику кладём в `Sim`/`PostSim` на `FixedUpdate`, а не в per-frame `Update`.
+**Детерминированный fixed-step.** Симуляция идёт на `FixedUpdate` при 10 Гц (`Time::<Fixed>::from_seconds(1.0/10.0)`), отделённая от рендера/UI на `Update`. Внутри `Sim`/`PostSim` системы чейнятся по саб-сетам (`SimStep`/`TrafficStep`/`PostSimStep` в `crates/simcity_sim/src/game/mod.rs`) — ноль неупорядоченных конфликтующих пар запинено тестами `fixed_update_has_no_ambiguous_system_pairs` (sim) и `composed_fixed_update_has_no_ambiguous_system_pairs` (sim+data), детерминизм — фингерпринт-тестом в `simcity_data/determinism.rs`. Новая FixedUpdate-система ОБЯЗАНА встать в свой саб-сет, иначе пин упадёт.
 
 **Config-driven tuning.** Числовые параметры подсистем вынесены в `assets/config/*.ron` (`traffic.ron`, `pedestrians.ron`, `economy.ron`, `employment.ron`, `pathfinding.ron`, `map.ron`, `day_night.ron`) и грузятся в рантайме через `config_loader`. Сценарии — `assets/scenarios/scenarios.ron`. При добавлении нового RON **обязателен parse-тест** (см. `config_loader`), он же гоняет `SaveGameV3` roundtrip.
 
@@ -62,7 +62,7 @@ simcity_app ─┬─> simcity_frontend ─┬─> simcity_debug ─┐
 
 ## Tests
 
-Тесты **co-located** рядом с кодом (нет корневого `tests/`). Почти всё в `simcity_sim` (42 файла с тестами по workspace): `map/tests.rs`, `buildings/tests.rs`, `emergencies/tests.rs`, `transport/tests.rs`, `pedestrians/tests_{graph,signalized,uncontrolled}.rs`, и крупный набор `traffic/tests/*.rs` (basic_behavior, intersection_reservations, lanelet_arbiter, pedestrians, traffic_lights, vehicle_parking, vehicle_spawning). Plus persistence/config parse-тесты в `simcity_data` и mirror-тесты в `simcity_debug`. Текущий прогон (`cargo test --workspace`): `simcity_sim` 196 + `simcity_data` 5 + `simcity_debug` 2 = 203 теста.
+Тесты **co-located** рядом с кодом (нет корневого `tests/`). Почти всё в `simcity_sim` (44 файла с тестами по workspace): `map/tests.rs`, `buildings/tests.rs`, `emergencies/tests.rs`, `transport/tests.rs`, `pedestrians/tests_{graph,signalized,uncontrolled}.rs`, и крупный набор `traffic/tests/*.rs` (basic_behavior, intersection_reservations, lanelet_arbiter, pedestrians, traffic_lights, vehicle_parking, vehicle_spawning). Plus persistence/config parse-тесты в `simcity_data` и mirror-тесты в `simcity_debug`. Текущий прогон (`cargo test --workspace`): `simcity_sim` 214 + `simcity_data` 8 + `simcity_debug` 2 = 224 теста.
 
 Упавший тест ≠ всегда баг кода: возможно изменилось ожидаемое поведение. Правь тест только с обоснованием, почему новое поведение корректно.
 

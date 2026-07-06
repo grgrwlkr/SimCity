@@ -40,12 +40,20 @@ pub struct LaneletGraph {
     pub by_intersection: HashMap<IntersectionId, Vec<LaneletId>>,
     pub by_entry_lane: HashMap<LaneId, Vec<LaneletId>>,
     pub version: u64,
+    /// `GraphVersion` this graph was built for; `None` = never built.
+    ///
+    /// Tracked explicitly (not inferred from `lanelets.is_empty()`): an intersection-free map
+    /// legitimately builds zero lanelets and must still count as built, otherwise the graph is
+    /// rebuilt every tick.
+    pub built_for: Option<u64>,
+    /// Grid dimensions at build time (see `LaneGraph::built_dims`).
+    pub built_dims: Option<(i32, i32)>,
 }
 
 impl LaneletGraph {
-    /// Returns true if this graph was built for the given graph version and is non-empty.
-    pub fn is_built_for(&self, version: u64) -> bool {
-        self.version == version && !self.lanelets.is_empty()
+    /// Returns true if this graph was built for the given graph version.
+    pub fn is_built_for(&self, version: u64, grid: &crate::game::map::MapGrid) -> bool {
+        self.built_for == Some(version) && self.built_dims == Some((grid.width, grid.height))
     }
 
     pub fn get(&self, id: LaneletId) -> Option<&Lanelet> {
@@ -76,7 +84,8 @@ mod tests {
     #[test]
     fn empty_lanelet_graph_reports_unbuilt_and_no_lanelets() {
         let g = LaneletGraph::default();
-        assert!(!g.is_built_for(1));
+        let grid = crate::game::map::MapGrid::new(4, 4);
+        assert!(!g.is_built_for(1, &grid));
         assert!(g.get(LaneletId(0)).is_none());
         assert!(g.of_intersection(IntersectionId(0)).is_empty());
     }

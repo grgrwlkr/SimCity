@@ -5,7 +5,6 @@
 use bevy::prelude::*;
 
 use crate::game::map::{MapGrid, TilePos};
-use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::traffic::Vehicle;
 use crate::game::transport::{PathHandle, PathPool};
@@ -16,8 +15,11 @@ impl Plugin for PublicTransportPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BusRouteManager>().add_systems(
             FixedUpdate,
+            // Chained: spawn produces buses/paths that movement consumes (both conflict on
+            // `PathPool`/`Bus`/`BusRouteManager`).
             (spawn_buses, move_buses)
-                .in_set(GameSet::Sim)
+                .chain()
+                .in_set(crate::game::SimStep::PublicTransport)
                 .run_if(in_state(AppState::InGame)),
         );
     }

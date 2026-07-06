@@ -33,6 +33,9 @@ impl Plugin for ScenariosPlugin {
                 FixedUpdate,
                 update_scenario_progress
                     .in_set(GameSet::PostSim)
+                    // Reads `City` that PostSimStep::Economy writes — unordered, this
+                    // was the composed app's last ambiguous FixedUpdate pair.
+                    .after(simcity_sim::game::PostSimStep::Economy)
                     .run_if(in_state(AppState::InGame)),
             );
     }

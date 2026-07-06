@@ -354,11 +354,12 @@ fn lane_entry_blocks_reverse_into_intersection() {
     );
 }
 
-#[test]
-fn autogen_turn_lanes_four_lane_two_lanes_assigns_left_and_straight_only() {
-    // 2x2 intersection cluster in the center with:
-    // - approaches from South (two North-bound lanes)
-    // - exits to North (straight) and West (left)
+/// Shared fixture: 2x2 FourLane intersection cluster in the center of a 5x5 grid with:
+/// - approaches from South (two North-bound lanes): (2,1)=rightmost, (3,1)=leftmost
+/// - exits to North (straight) and West (left)
+///
+/// `autogen_turn_lanes` marks (3,1) `LeftTurnOnly` and (2,1) `StraightOnly` on this layout.
+fn four_lane_turn_intersection_grid() -> MapGrid {
     let mut grid = MapGrid::new(5, 5);
 
     // South approaches (two lanes in the same travel direction).
@@ -414,6 +415,13 @@ fn autogen_turn_lanes_four_lane_two_lanes_assigns_left_and_straight_only() {
         grid.set(pos, c);
     }
 
+    grid
+}
+
+#[test]
+fn autogen_turn_lanes_four_lane_two_lanes_assigns_left_and_straight_only() {
+    let mut grid = four_lane_turn_intersection_grid();
+
     super::turn_lanes::autogen_turn_lanes_inner(&mut grid);
 
     let right = grid.get(TilePos { x: 2, y: 1 }).unwrap().road.lane_type;
@@ -421,6 +429,233 @@ fn autogen_turn_lanes_four_lane_two_lanes_assigns_left_and_straight_only() {
 
     assert_eq!(left, LaneType::LeftTurnOnly);
     assert_eq!(right, LaneType::StraightOnly);
+}
+
+/// Ordering pin (audit 2026-07-06, HIGH): `autogen_turn_lanes` mutates `MapGrid` lane-type marks
+/// and `rebuild_road_graph` bakes those marks into edges cached for a whole `GraphVersion`.
+/// With the production `TransportPlugin` wiring, one FixedUpdate run must produce a road graph
+/// that already reflects this version's autogen marks: the LeftTurnOnly leftmost approach (3,1)
+/// must NOT have a straight (North) entry edge into the intersection.
+#[test]
+fn autogen_turn_lanes_feeds_road_graph_on_fixed_update() {
+    let mut app = App::new();
+    app.add_plugins(super::TransportPlugin)
+        .insert_resource(four_lane_turn_intersection_grid())
+        // Fresh version nothing has been built for (autogen state + all graphs start at 0/None).
+        .insert_resource(GraphVersion(7))
+        .init_resource::<IntersectionIndex>()
+        .init_resource::<crate::game::traffic::TrafficConfig>();
+
+    app.world_mut().run_schedule(FixedUpdate);
+
+    let grid = app.world().resource::<MapGrid>();
+    let leftmost = TilePos { x: 3, y: 1 };
+    let rightmost = TilePos { x: 2, y: 1 };
+    assert_eq!(
+        grid.get(leftmost).unwrap().road.lane_type,
+        LaneType::LeftTurnOnly,
+        "autogen must have marked the leftmost approach this tick"
+    );
+
+    let graph = app.world().resource::<RoadGraph>();
+    assert!(graph.is_built_for(7), "road graph must be built this tick");
+    let left_mask = graph.edges[grid.idx(leftmost).unwrap()];
+    let right_mask = graph.edges[grid.idx(rightmost).unwrap()];
+    // W=bit0, E=bit1, S=bit2, N=bit3. Straight entry (North) into the cluster:
+    assert_eq!(
+        left_mask & (1 << 3),
+        0,
+        "LeftTurnOnly approach must not get a straight entry edge — the road graph was built \
+         from the PRE-autogen grid (autogen_turn_lanes must run before rebuild_road_graph)"
+    );
+    assert_ne!(
+        right_mask & (1 << 3),
+        0,
+        "StraightOnly approach keeps its straight entry edge (sanity: graph is non-trivial)"
+    );
+}
+
+/// Negative-control for the pin above: wiring the REVERSE order (road graph before autogen)
+/// must bake the stale Regular lane-type into the cached edges — proving the positive test's
+/// assertion is sensitive to the system order and not a tautology.
+#[test]
+fn road_graph_before_autogen_bakes_stale_lane_marks() {
+    let mut app = App::new();
+    app.insert_resource(four_lane_turn_intersection_grid())
+        .insert_resource(GraphVersion(7))
+        .init_resource::<RoadGraph>()
+        .init_resource::<super::turn_lanes::TurnLaneAutogenState>()
+        .add_systems(
+            FixedUpdate,
+            (
+                super::road_graph::rebuild_road_graph,
+                super::turn_lanes::autogen_turn_lanes,
+            )
+                .chain(),
+        );
+
+    app.world_mut().run_schedule(FixedUpdate);
+
+    let grid = app.world().resource::<MapGrid>();
+    let leftmost = TilePos { x: 3, y: 1 };
+    assert_eq!(
+        grid.get(leftmost).unwrap().road.lane_type,
+        LaneType::LeftTurnOnly,
+        "autogen still ran (after the graph)"
+    );
+    let graph = app.world().resource::<RoadGraph>();
+    let left_mask = graph.edges[grid.idx(leftmost).unwrap()];
+    assert_ne!(
+        left_mask & (1 << 3),
+        0,
+        "reverse order must bake the stale Regular mark (straight entry present) — \
+         if this starts failing the positive pin above has become tautological"
+    );
+}
+
+/// Version-guard pin: with an unchanged `GraphVersion` the second FixedUpdate run must NOT
+/// rebuild the `LaneGraph` — a sentinel mutation planted after run 1 survives run 2, and is
+/// wiped after a version bump.
+#[test]
+fn lane_graph_skips_rebuild_for_unchanged_graph_version() {
+    let mut grid = MapGrid::new(2, 1);
+    let pos = TilePos { x: 0, y: 0 };
+    let mut c = grid.get(pos).unwrap_or_default();
+    c.water = false;
+    c.road = RoadCell {
+        kind: RoadKind::TwoLane,
+        dir: RoadDir::East,
+        lane: 0,
+        flow: RoadFlow::TwoWay,
+        lane_type: LaneType::Regular,
+    };
+    grid.set(pos, c);
+
+    let mut app = App::new();
+    app.insert_resource(grid)
+        .insert_resource(GraphVersion(3))
+        .init_resource::<LaneGraph>()
+        .add_systems(FixedUpdate, build_lane_graph);
+
+    app.world_mut().run_schedule(FixedUpdate);
+    {
+        let grid = app.world().resource::<MapGrid>().clone();
+        assert!(app.world().resource::<LaneGraph>().is_built_for(3, &grid));
+    }
+
+    let sentinel = TilePos { x: 99, y: 99 };
+    app.world_mut()
+        .resource_mut::<LaneGraph>()
+        .pos_to_id
+        .insert(sentinel, LaneId(777));
+
+    app.world_mut().run_schedule(FixedUpdate);
+    assert!(
+        app.world()
+            .resource::<LaneGraph>()
+            .pos_to_id
+            .contains_key(&sentinel),
+        "unchanged GraphVersion must not trigger a LaneGraph rebuild"
+    );
+
+    app.world_mut().resource_mut::<GraphVersion>().bump();
+    app.world_mut().run_schedule(FixedUpdate);
+    let lanes = app.world().resource::<LaneGraph>();
+    assert!(
+        !lanes.pos_to_id.contains_key(&sentinel),
+        "a GraphVersion bump must rebuild the LaneGraph (sentinel wiped)"
+    );
+    let grid = app.world().resource::<MapGrid>();
+    assert!(lanes.is_built_for(4, grid));
+}
+
+/// Empty-but-valid build pin: a roadless map builds an EMPTY `LaneGraph`, which must still
+/// count as built for its version (explicit `built_for` instead of inferring from content) —
+/// otherwise empty maps rebuild the graph every tick.
+#[test]
+fn lane_graph_empty_build_counts_as_built() {
+    let mut app = App::new();
+    app.insert_resource(MapGrid::new(4, 4)) // no roads at all
+        .insert_resource(GraphVersion(3))
+        .init_resource::<LaneGraph>()
+        .add_systems(FixedUpdate, build_lane_graph);
+
+    app.world_mut().run_schedule(FixedUpdate);
+    {
+        let grid = app.world().resource::<MapGrid>();
+        let lanes = app.world().resource::<LaneGraph>();
+        assert!(lanes.lanes.is_empty(), "roadless map builds an empty graph");
+        assert!(
+            lanes.is_built_for(3, grid),
+            "empty build still counts as built"
+        );
+    }
+
+    let sentinel = TilePos { x: 99, y: 99 };
+    app.world_mut()
+        .resource_mut::<LaneGraph>()
+        .pos_to_id
+        .insert(sentinel, LaneId(777));
+
+    app.world_mut().run_schedule(FixedUpdate);
+    assert!(
+        app.world()
+            .resource::<LaneGraph>()
+            .pos_to_id
+            .contains_key(&sentinel),
+        "an empty-but-valid LaneGraph must not be rebuilt every tick"
+    );
+}
+
+/// Same empty-but-valid pin for `LaneletGraph`: an intersection-free map legitimately builds
+/// zero lanelets; the second run for the same `GraphVersion` must early-return, and a bump
+/// must rebuild.
+#[test]
+fn lanelet_graph_empty_build_counts_as_built() {
+    let mut app = App::new();
+    app.insert_resource(MapGrid::new(4, 4)) // no roads -> no intersections -> no lanelets
+        .insert_resource(GraphVersion(3))
+        .init_resource::<IntersectionIndex>()
+        .init_resource::<LaneGraph>()
+        .init_resource::<LaneletGraph>()
+        .init_resource::<LaneletConflictMatrices>()
+        .init_resource::<crate::game::traffic::TrafficConfig>()
+        .add_systems(FixedUpdate, build_lanelet_graph);
+
+    app.world_mut().run_schedule(FixedUpdate);
+    {
+        let grid = app.world().resource::<MapGrid>();
+        let lanelets = app.world().resource::<LaneletGraph>();
+        assert!(lanelets.lanelets.is_empty());
+        assert!(
+            lanelets.is_built_for(3, grid),
+            "empty lanelet build still counts as built"
+        );
+    }
+
+    app.world_mut()
+        .resource_mut::<LaneletGraph>()
+        .by_entry_lane
+        .insert(LaneId(42), Vec::new());
+
+    app.world_mut().run_schedule(FixedUpdate);
+    assert!(
+        app.world()
+            .resource::<LaneletGraph>()
+            .by_entry_lane
+            .contains_key(&LaneId(42)),
+        "an empty-but-valid LaneletGraph must not be rebuilt every tick"
+    );
+
+    app.world_mut().resource_mut::<GraphVersion>().bump();
+    app.world_mut().run_schedule(FixedUpdate);
+    let grid = app.world().resource::<MapGrid>();
+    let lanelets = app.world().resource::<LaneletGraph>();
+    assert!(
+        !lanelets.by_entry_lane.contains_key(&LaneId(42)),
+        "a GraphVersion bump must rebuild the LaneletGraph (sentinel wiped)"
+    );
+    assert!(lanelets.is_built_for(4, grid));
 }
 
 #[test]

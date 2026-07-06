@@ -8,7 +8,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::game::buildings::Building;
 use crate::game::citizens::{Citizen, CitizenWorkplace};
 use crate::game::map::{BuildingKind, MapGrid, TilePos};
-use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::traffic::TrafficOccupancy;
 use bevy::ecs::system::SystemParam;
@@ -29,20 +28,20 @@ impl Plugin for EmploymentPlugin {
             .add_systems(
                 FixedUpdate,
                 clear_invalid_workplaces
-                    .in_set(GameSet::Sim)
+                    .in_set(crate::game::SimStep::Employment)
                     .before(assign_jobs)
                     .run_if(in_state(AppState::InGame)),
             )
             .add_systems(
                 FixedUpdate,
                 assign_jobs
-                    .in_set(GameSet::Sim)
+                    .in_set(crate::game::SimStep::Employment)
                     .run_if(in_state(AppState::InGame)),
             )
             .add_systems(
                 FixedUpdate,
                 compute_employment_stats
-                    .in_set(GameSet::PostSim)
+                    .in_set(crate::game::PostSimStep::EmploymentStats)
                     .run_if(in_state(AppState::InGame)),
             );
     }

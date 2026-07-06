@@ -49,7 +49,7 @@ impl Plugin for IntersectionsPlugin {
             .add_systems(
                 FixedUpdate,
                 lights::update_traffic_lights
-                    .in_set(GameSet::Sim)
+                    .in_set(crate::game::SimStep::Traffic)
                     .before(crate::game::traffic::update_vehicle_traffic_state)
                     .run_if(in_state(AppState::InGame)),
             )

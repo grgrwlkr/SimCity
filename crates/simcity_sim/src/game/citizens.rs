@@ -40,13 +40,17 @@ impl Plugin for CitizensPlugin {
             .add_systems(OnEnter(AppState::MainMenu), cleanup_citizens)
             .add_systems(
                 FixedUpdate,
+                // Chained for determinism: spawn produces citizens the planner may schedule this
+                // tick; the planner mutates `Citizen` state that trip completion and stuck
+                // recovery read/write (all four conflict on `Citizen` + `SimRng`).
                 (
                     spawn_citizens_from_residential,
                     citizen_trip_planner,
                     handle_trip_finished,
                     recover_stuck_trips,
                 )
-                    .in_set(GameSet::Sim)
+                    .chain()
+                    .in_set(crate::game::SimStep::Citizens)
                     .run_if(in_state(AppState::InGame)),
             )
             .add_systems(

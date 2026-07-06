@@ -71,15 +71,21 @@ impl Plugin for BuildingsPlugin {
             )
             .add_systems(
                 FixedUpdate,
+                // Chained for determinism (all six conflict on `Building`/`MapGrid`/`City`):
+                // growth first (produces/levels buildings), then upgrades, then the decay
+                // pipeline. `despawn_invalid_buildings` keeps its pre-existing pin BEFORE
+                // `building_decay_no_road_access` (grid-mismatched entities are removed before
+                // road-access decay scans them).
                 (
                     grow_buildings,
+                    upgrade_buildings,
+                    building_decay_economic,
+                    building_decay_low_happiness,
                     despawn_invalid_buildings.before(building_decay_no_road_access),
                     building_decay_no_road_access,
-                    building_decay_low_happiness,
-                    building_decay_economic,
-                    upgrade_buildings,
                 )
-                    .in_set(GameSet::Sim)
+                    .chain()
+                    .in_set(crate::game::SimStep::Buildings)
                     .run_if(in_state(AppState::InGame)),
             );
     }

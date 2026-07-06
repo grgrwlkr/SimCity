@@ -2,6 +2,8 @@ use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
 
 pub mod config_loader;
+#[cfg(test)]
+mod determinism;
 pub mod persistence;
 pub mod persistence_contract;
 pub mod scenarios;

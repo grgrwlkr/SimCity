@@ -32,8 +32,10 @@ impl Plugin for ServicesPlugin {
         )
         .add_systems(
             FixedUpdate,
+            // Runs before Emergencies: freshly returned vehicles become available at their
+            // station before this tick's dispatch pass reuses them.
             systems::park_returned_service_vehicles
-                .in_set(GameSet::Sim)
+                .in_set(crate::game::SimStep::Services)
                 .run_if(in_state(AppState::InGame)),
         )
         .init_resource::<ServiceCoverageIndex>()
@@ -41,7 +43,7 @@ impl Plugin for ServicesPlugin {
         .add_systems(
             FixedUpdate,
             coverage::compute_service_coverage_index
-                .in_set(GameSet::PostSim)
+                .in_set(crate::game::PostSimStep::Coverage)
                 .run_if(in_state(AppState::InGame).and_then(resource_changed::<MapEditVersion>)),
         )
         .add_systems(

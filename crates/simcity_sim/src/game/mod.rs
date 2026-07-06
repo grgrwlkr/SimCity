@@ -75,6 +75,75 @@ fn auto_start_test_city(
     }
 }
 
+/// Deterministic sub-steps inside `GameSet::Sim` on `FixedUpdate`.
+///
+/// Chained in `apply_fixed_update_set_order` following the data flow
+/// (producers before consumers). Every simulation system registered on
+/// `FixedUpdate` must live in exactly one of these steps so that no pair of
+/// systems with conflicting data access is left with executor-dependent order
+/// (pinned by `fixed_update_has_no_ambiguous_system_pairs`).
+#[derive(SystemSet, Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub(crate) enum SimStep {
+    /// Game clock: advances `City` day/hour, emits `HourAdvanced`/`DayAdvanced`.
+    Tick,
+    /// Citizen lifecycle: spawn, trip planning, trip completion, stuck recovery.
+    Citizens,
+    /// Job assignment (reads citizens/buildings produced above).
+    Employment,
+    /// Building growth/upgrade/decay/despawn (consumes employment + clock).
+    Buildings,
+    /// Service vehicle upkeep (park returned vehicles before dispatch reuses them).
+    Services,
+    /// Emergency spawn/dispatch/resolve pipeline.
+    Emergencies,
+    /// Bus spawning and movement.
+    PublicTransport,
+    /// Pedestrian agents (walkers move before vehicles react to them).
+    Pedestrians,
+    /// Vehicle traffic pipeline (occupancy, lane changes, arbiter, movement, recovery).
+    Traffic,
+}
+
+/// Deterministic sub-steps inside `SimStep::Traffic`.
+///
+/// The traffic pipeline was already chained *within* each of these groups;
+/// chaining the groups removes the remaining cross-group ambiguities
+/// (e.g. `init_stuck_timers` vs `move_vehicles`).
+#[derive(SystemSet, Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub(crate) enum TrafficStep {
+    /// Occupancy refresh, vehicle state updates, spawning, cooldown ticks.
+    Flow,
+    /// Lane changes, lanelet arbitration, movement, reservation cleanup.
+    Movement,
+    /// Stuck/jam detection and recovery (consumes movement results).
+    Recovery,
+}
+
+/// Deterministic sub-steps inside `GameSet::PostSim` on `FixedUpdate`,
+/// chained producer-before-consumer:
+/// traffic index -> pollution -> service coverage -> land value ->
+/// employment stats -> RCI demand -> daily economy.
+/// `pub` (not `pub(crate)`): downstream crates registering FixedUpdate systems
+/// (e.g. `simcity_data`'s scenario progress) must order against these steps —
+/// an unordered cross-crate system reintroduces executor-dependent state.
+#[derive(SystemSet, Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum PostSimStep {
+    /// `TrafficIndex` aggregation (read by RCI demand).
+    TrafficIndex,
+    /// `PollutionIndex` (read by land value).
+    Pollution,
+    /// `ServiceCoverageIndex` (read by land value and economy).
+    Coverage,
+    /// `LandValueIndex` (read by RCI demand).
+    LandValue,
+    /// `EmploymentStats` (read by RCI demand and economy).
+    EmploymentStats,
+    /// RCI demand (consumes all indices above).
+    Demand,
+    /// Daily economy application (writes `City` money last).
+    Economy,
+}
+
 pub(crate) fn apply_fixed_update_set_order(app: &mut App) {
     app.configure_sets(
         FixedUpdate,
@@ -84,6 +153,46 @@ pub(crate) fn apply_fixed_update_set_order(app: &mut App) {
             crate::game::sets::GameSet::PostSim,
         )
             .chain(),
+    );
+    app.configure_sets(
+        FixedUpdate,
+        (
+            SimStep::Tick,
+            SimStep::Citizens,
+            SimStep::Employment,
+            SimStep::Buildings,
+            SimStep::Services,
+            SimStep::Emergencies,
+            SimStep::PublicTransport,
+            SimStep::Pedestrians,
+            SimStep::Traffic,
+        )
+            .chain()
+            .in_set(crate::game::sets::GameSet::Sim),
+    );
+    app.configure_sets(
+        FixedUpdate,
+        (
+            TrafficStep::Flow,
+            TrafficStep::Movement,
+            TrafficStep::Recovery,
+        )
+            .chain()
+            .in_set(SimStep::Traffic),
+    );
+    app.configure_sets(
+        FixedUpdate,
+        (
+            PostSimStep::TrafficIndex,
+            PostSimStep::Pollution,
+            PostSimStep::Coverage,
+            PostSimStep::LandValue,
+            PostSimStep::EmploymentStats,
+            PostSimStep::Demand,
+            PostSimStep::Economy,
+        )
+            .chain()
+            .in_set(crate::game::sets::GameSet::PostSim),
     );
 }
 
@@ -254,5 +363,36 @@ mod ordering_tests {
              RoadGraph (version 0, not yet rebuilt), confirming the harness is sensitive \
              to set ordering"
         );
+    }
+}
+
+#[cfg(test)]
+mod schedule_ambiguity_pin {
+    use bevy::ecs::schedule::{LogLevel, ScheduleBuildSettings};
+    use bevy::prelude::*;
+
+    /// Permanent pin: the deterministic 10 Hz fixed-step promise requires that NO pair of
+    /// FixedUpdate systems with conflicting data access is left unordered (RNG draw order and
+    /// read-vs-write order must not depend on the executor). LogPlugin stays on so a failure
+    /// prints the offending pairs and the conflicting components/resources.
+    #[test]
+    fn fixed_update_has_no_ambiguous_system_pairs() {
+        let mut app = App::new();
+        app.add_plugins(bevy::log::LogPlugin::default());
+        app.add_plugins(bevy::state::app::StatesPlugin);
+        app.add_plugins(super::SimPlugin);
+        app.world_mut()
+            .schedule_scope(FixedUpdate, |world, schedule| {
+                schedule.set_build_settings(ScheduleBuildSettings {
+                    ambiguity_detection: LogLevel::Warn,
+                    ..Default::default()
+                });
+                schedule.initialize(world).expect("schedule init");
+                let n = schedule.graph().conflicting_systems().len();
+                assert_eq!(
+                    n, 0,
+                    "FixedUpdate has {n} ambiguous system pairs (see warnings above)"
+                );
+            });
     }
 }

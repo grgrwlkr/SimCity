@@ -48,7 +48,7 @@ impl Plugin for PedestriansPlugin {
                     agents::update_pedestrian_blocked_timers,
                 )
                     .chain()
-                    .in_set(GameSet::Sim)
+                    .in_set(crate::game::SimStep::Pedestrians)
                     .run_if(in_state(AppState::InGame)),
             );
     }

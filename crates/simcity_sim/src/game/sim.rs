@@ -64,7 +64,7 @@ impl Plugin for SimPlugin {
             .add_systems(
                 FixedUpdate,
                 sim_tick
-                    .in_set(GameSet::Sim)
+                    .in_set(crate::game::SimStep::Tick)
                     .run_if(in_state(AppState::InGame)),
             );
     }

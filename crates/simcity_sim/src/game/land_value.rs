@@ -5,7 +5,6 @@ use bevy::prelude::*;
 use crate::game::map::{MapGrid, TilePos};
 use crate::game::pollution::PollutionIndex;
 use crate::game::services::ServiceCoverageIndex;
-use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::traffic::TrafficOccupancy;
 
@@ -65,7 +64,7 @@ impl Plugin for LandValuePlugin {
         app.init_resource::<LandValueIndex>().add_systems(
             FixedUpdate,
             compute_land_value
-                .in_set(GameSet::PostSim)
+                .in_set(crate::game::PostSimStep::LandValue)
                 .run_if(in_state(AppState::InGame)),
         );
     }

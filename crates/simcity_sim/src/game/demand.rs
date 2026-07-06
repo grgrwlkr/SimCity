@@ -16,7 +16,6 @@ use crate::game::buildings::Building;
 use crate::game::citizens::ShoppingDemandStats;
 use crate::game::employment::EmploymentStats;
 use crate::game::land_value::LandValueIndex;
-use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
 use crate::game::traffic::TrafficIndex;
@@ -28,7 +27,7 @@ impl Plugin for DemandPlugin {
         app.init_resource::<RciDemand>().add_systems(
             FixedUpdate,
             compute_rci_demand
-                .in_set(GameSet::PostSim)
+                .in_set(crate::game::PostSimStep::Demand)
                 .run_if(in_state(AppState::InGame)),
         );
     }

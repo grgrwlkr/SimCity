@@ -124,29 +124,22 @@ impl Plugin for TransportPlugin {
             .init_resource::<LaneletGraph>()
             .init_resource::<LaneletConflictMatrices>()
             .init_resource::<turn_lanes::TurnLaneAutogenState>()
+            // Deterministic graph rebuild pipeline. `autogen_turn_lanes` mutates `MapGrid`
+            // (derived LaneType marks) and MUST run before `rebuild_road_graph`: the road graph
+            // caches lane-type-dependent edges for a whole `GraphVersion`, so a stale order would
+            // freeze last version's turn-lane marks into the graph (audit 2026-07-06, HIGH).
+            // Pinned by `tests::autogen_turn_lanes_feeds_road_graph_on_fixed_update`.
             .add_systems(
                 FixedUpdate,
-                road_graph::rebuild_road_graph.in_set(GameSet::GraphUpdate),
-            )
-            .add_systems(
-                FixedUpdate,
-                region_graph::rebuild_region_graph.in_set(GameSet::GraphUpdate),
-            )
-            .add_systems(
-                FixedUpdate,
-                turn_lanes::autogen_turn_lanes
-                    .in_set(GameSet::GraphUpdate)
-                    .before(lane_graph::build_lane_graph),
-            )
-            .add_systems(
-                FixedUpdate,
-                lane_graph::build_lane_graph.in_set(GameSet::GraphUpdate),
-            )
-            .add_systems(
-                FixedUpdate,
-                build_lanelet_graph
-                    .in_set(GameSet::GraphUpdate)
-                    .after(lane_graph::build_lane_graph),
+                (
+                    turn_lanes::autogen_turn_lanes,
+                    road_graph::rebuild_road_graph,
+                    region_graph::rebuild_region_graph,
+                    lane_graph::build_lane_graph,
+                    build_lanelet_graph,
+                )
+                    .chain()
+                    .in_set(GameSet::GraphUpdate),
             );
     }
 }

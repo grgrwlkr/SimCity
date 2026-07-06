@@ -400,7 +400,7 @@ pub fn build_lanelet_graph(
     mut graph: ResMut<LaneletGraph>,
     mut matrices: ResMut<LaneletConflictMatrices>,
 ) {
-    if graph.is_built_for(gv.0) {
+    if graph.is_built_for(gv.0, &grid) {
         return;
     }
 
@@ -602,6 +602,8 @@ pub fn build_lanelet_graph(
     }
 
     graph.version = gv.0;
+    graph.built_for = Some(gv.0);
+    graph.built_dims = Some((grid.width, grid.height));
     matrices.version = gv.0;
 }
 

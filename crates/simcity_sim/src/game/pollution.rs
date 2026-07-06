@@ -4,7 +4,6 @@ use bevy::prelude::*;
 
 use crate::game::buildings::Building;
 use crate::game::map::{BuildingKind, MapGrid, TilePos};
-use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 
 /// Pollution index for each tile (0.0 - 1.0)
@@ -63,7 +62,7 @@ impl Plugin for PollutionPlugin {
         app.init_resource::<PollutionIndex>().add_systems(
             FixedUpdate,
             compute_pollution
-                .in_set(GameSet::PostSim)
+                .in_set(crate::game::PostSimStep::Pollution)
                 .run_if(in_state(AppState::InGame)),
         );
     }

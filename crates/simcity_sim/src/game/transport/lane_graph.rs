@@ -40,7 +40,16 @@ pub struct Lane {
 /// Lane-based graph for routing.
 #[derive(Resource, Debug, Default)]
 pub struct LaneGraph {
-    pub version: u64,
+    /// `GraphVersion` this graph was built for; `None` = never built.
+    ///
+    /// Tracked explicitly (not inferred from `lanes.is_empty()`): an empty-but-valid build —
+    /// e.g. a roadless map — still counts as built for its version, so the per-tick rebuild
+    /// guard holds on empty maps too.
+    pub built_for: Option<u64>,
+    /// Grid dimensions at build time — mirrors the sibling graphs' shape
+    /// re-check so a grid resize without a `GraphVersion` bump (invariant
+    /// violation) still self-heals instead of serving a mis-sized graph.
+    pub built_dims: Option<(i32, i32)>,
     pub lanes: Vec<Lane>,
     /// Lookup: (tile_pos, lane_idx) -> lane_id.
     pub tile_lane_to_id: HashMap<(TilePos, u8), LaneId>,
@@ -49,8 +58,8 @@ pub struct LaneGraph {
 }
 
 impl LaneGraph {
-    pub fn is_built_for(&self, version: u64) -> bool {
-        self.version == version && !self.lanes.is_empty()
+    pub fn is_built_for(&self, version: u64, grid: &MapGrid) -> bool {
+        self.built_for == Some(version) && self.built_dims == Some((grid.width, grid.height))
     }
 
     pub fn get_lane(&self, id: LaneId) -> Option<&Lane> {
@@ -87,7 +96,8 @@ impl LaneGraph {
 /// Build lane graph from map grid.
 pub fn build_lane_graph_inner(grid: &MapGrid, version: &GraphVersion) -> LaneGraph {
     let mut graph = LaneGraph {
-        version: version.0,
+        built_for: Some(version.0),
+        built_dims: Some((grid.width, grid.height)),
         ..Default::default()
     };
 
@@ -121,11 +131,17 @@ pub fn build_lane_graph_inner(grid: &MapGrid, version: &GraphVersion) -> LaneGra
 }
 
 /// Bevy system wrapper.
+///
+/// Early-returns when the graph is already built for the current `GraphVersion`
+/// (mirrors `rebuild_road_graph`/`rebuild_region_graph`/`build_lanelet_graph`).
 pub fn build_lane_graph(
     grid: Res<MapGrid>,
     version: Res<GraphVersion>,
     mut lane_graph: ResMut<LaneGraph>,
 ) {
+    if lane_graph.is_built_for(version.0, &grid) {
+        return;
+    }
     *lane_graph = build_lane_graph_inner(&grid, &version);
 }
 

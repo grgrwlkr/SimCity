@@ -35,7 +35,7 @@ impl Plugin for EmergenciesPlugin {
                     systems::cleanup_resolved_emergencies,
                 )
                     .chain()
-                    .in_set(GameSet::Sim)
+                    .in_set(crate::game::SimStep::Emergencies)
                     .run_if(in_state(AppState::InGame)),
             )
             // Maintain cheap tile->emergency lookup for UI (no per-frame scans).
