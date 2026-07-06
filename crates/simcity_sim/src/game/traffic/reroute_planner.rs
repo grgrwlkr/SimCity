@@ -261,7 +261,7 @@ mod tests {
             .unwrap_or(&[]);
         let grid = app.world().resource::<MapGrid>();
         assert!(
-            route_direction_ok(rem, &grid),
+            route_direction_ok(rem, grid),
             "route still steps against the flipped lane direction: {rem:?}"
         );
         assert!(
