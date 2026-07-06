@@ -406,6 +406,82 @@ pub(super) fn mark_dirty_on_overlay_change(
     dirty.mark_all();
 }
 
+/// Last-seen publish versions of the incremental indices feeding overlays.
+#[derive(Resource, Debug, Default)]
+pub(super) struct OverlayIndexVersions {
+    land_value: u64,
+    pollution: u64,
+}
+
+/// Keeps the LandValue/Pollution overlays live: without this, overlay tiles were painted once
+/// (at toggle time via `mark_dirty_on_overlay_change`) and never refreshed as the indices
+/// recomputed underneath.
+pub(super) fn mark_dirty_on_index_publish(
+    ui: Res<UiState>,
+    land_value: Option<Res<LandValueIndex>>,
+    pollution: Option<Res<PollutionIndex>>,
+    mut seen: ResMut<OverlayIndexVersions>,
+    mut dirty: ResMut<DirtyTiles>,
+) {
+    // Always advance the last-seen versions, even with the overlay off: toggling an overlay on
+    // already repaints everything, so replaying the accumulated delta would be redundant work.
+    if let Some(lv) = land_value.as_deref() {
+        let published = lv.version.wrapping_sub(seen.land_value);
+        seen.land_value = lv.version;
+        if ui.overlay == OverlayMode::LandValue {
+            mark_published_chunks_dirty(
+                &mut dirty,
+                lv.values.len(),
+                lv.chunk_size(),
+                lv.current_chunk(),
+                published,
+            );
+        }
+    }
+    if let Some(p) = pollution.as_deref() {
+        let published = p.version.wrapping_sub(seen.pollution);
+        seen.pollution = p.version;
+        if ui.overlay == OverlayMode::Pollution {
+            mark_published_chunks_dirty(
+                &mut dirty,
+                p.pollution.len(),
+                p.chunk_size(),
+                p.current_chunk(),
+                published,
+            );
+        }
+    }
+}
+
+/// Marks the tiles of the `published` most recently completed chunks dirty. `next_chunk` is the
+/// chunk the index will recompute next, so the freshly published chunks are the ones immediately
+/// before it (wrapping). Falls back to a full repaint when a whole cycle (or more) elapsed
+/// between checks.
+fn mark_published_chunks_dirty(
+    dirty: &mut DirtyTiles,
+    len: usize,
+    chunk_size: usize,
+    next_chunk: usize,
+    published: u64,
+) {
+    if published == 0 || len == 0 || chunk_size == 0 {
+        return;
+    }
+    let chunks_total = len.div_ceil(chunk_size);
+    if published >= chunks_total as u64 {
+        dirty.mark_all();
+        return;
+    }
+    for k in 0..published as usize {
+        let chunk = (next_chunk + chunks_total - 1 - k) % chunks_total;
+        let start = chunk * chunk_size;
+        let end = (start + chunk_size).min(len);
+        for idx in start..end {
+            dirty.mark(idx);
+        }
+    }
+}
+
 /// Path overlay: draw the remaining planned routes for all active vehicles.
 ///
 /// - Draws only the remaining route (no "already travelled" part) by starting at the vehicle's
@@ -504,6 +580,98 @@ pub(super) fn vehicle_routes_overlay_render(
                 gizmos.line_2d(mid, mid - dir * head - perp * head * 0.6, color);
             }
             drawn += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn build_app(overlay: OverlayMode) -> App {
+        let mut app = App::new();
+        app.insert_resource(UiState {
+            overlay,
+            ..Default::default()
+        })
+        .insert_resource(DirtyTiles::new(64))
+        .init_resource::<LandValueIndex>()
+        .init_resource::<PollutionIndex>()
+        .init_resource::<OverlayIndexVersions>()
+        .add_systems(Update, mark_dirty_on_index_publish);
+        app
+    }
+
+    #[test]
+    fn pollution_overlay_tiles_refresh_when_index_publishes_a_chunk() {
+        let mut app = build_app(OverlayMode::Pollution);
+
+        // Baseline: nothing published yet -> nothing marked.
+        app.update();
+        assert!(!app.world().resource::<DirtyTiles>().is_marked(0));
+
+        // Index publishes chunk 0 (tiles 0..32): version 1, next chunk to recompute is 1.
+        app.world_mut()
+            .resource_mut::<PollutionIndex>()
+            .set_publish_state_for_test(64, 32, 1, 1);
+        app.update();
+
+        let dirty = app.world().resource::<DirtyTiles>();
+        for idx in 0..32 {
+            assert!(
+                dirty.is_marked(idx),
+                "published chunk tile {idx} must be dirty"
+            );
+        }
+        for idx in 32..64 {
+            assert!(
+                !dirty.is_marked(idx),
+                "unpublished tile {idx} must stay clean"
+            );
+        }
+    }
+
+    #[test]
+    fn land_value_overlay_tiles_refresh_when_index_publishes_a_chunk() {
+        let mut app = build_app(OverlayMode::LandValue);
+
+        app.update();
+        assert!(!app.world().resource::<DirtyTiles>().is_marked(0));
+
+        // Publish the LAST chunk (tiles 32..64): index wrapped, next chunk is 0 again.
+        app.world_mut()
+            .resource_mut::<LandValueIndex>()
+            .set_publish_state_for_test(64, 32, 0, 1);
+        app.update();
+
+        let dirty = app.world().resource::<DirtyTiles>();
+        for idx in 32..64 {
+            assert!(
+                dirty.is_marked(idx),
+                "published chunk tile {idx} must be dirty"
+            );
+        }
+        for idx in 0..32 {
+            assert!(
+                !dirty.is_marked(idx),
+                "unpublished tile {idx} must stay clean"
+            );
+        }
+    }
+
+    #[test]
+    fn index_publish_does_not_mark_tiles_when_overlay_is_off() {
+        let mut app = build_app(OverlayMode::None);
+
+        app.update();
+        app.world_mut()
+            .resource_mut::<PollutionIndex>()
+            .set_publish_state_for_test(64, 32, 1, 1);
+        app.update();
+
+        let dirty = app.world().resource::<DirtyTiles>();
+        for idx in 0..64 {
+            assert!(!dirty.is_marked(idx));
         }
     }
 }

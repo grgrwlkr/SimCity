@@ -197,18 +197,19 @@ pub(super) fn top_status_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams)
                             p.commands.write(GameCommand::DumpSaveContract);
                         }
 
-                        // Undo/Redo buttons
+                        // Undo/Redo buttons (right_to_left layout: Redo first
+                        // so it lands to the right of Undo).
                         let can_undo = p.history.as_deref().map(|h| h.can_undo()).unwrap_or(false);
                         let can_redo = p.history.as_deref().map(|h| h.can_redo()).unwrap_or(false);
 
                         ui.add_enabled_ui(can_redo, |ui| {
-                            if ui.button("↶").on_hover_text("Redo (Ctrl+Y)").clicked() {
-                                // Redo is handled by hotkey, but button provides visual feedback
+                            if ui.button("↷").on_hover_text("Redo (Ctrl+Y)").clicked() {
+                                p.undo_redo.write(UndoRedoRequested { redo: true });
                             }
                         });
                         ui.add_enabled_ui(can_undo, |ui| {
-                            if ui.button("↷").on_hover_text("Undo (Ctrl+Z)").clicked() {
-                                // Undo is handled by hotkey, but button provides visual feedback
+                            if ui.button("↶").on_hover_text("Undo (Ctrl+Z)").clicked() {
+                                p.undo_redo.write(UndoRedoRequested { redo: false });
                             }
                         });
                     }

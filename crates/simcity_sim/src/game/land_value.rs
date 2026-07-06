@@ -13,6 +13,7 @@ use crate::game::traffic::TrafficOccupancy;
 #[derive(Resource, Default)]
 pub struct LandValueIndex {
     pub values: Vec<f32>, // 0.0 - 1.0 for each tile
+    /// Bumps once per published chunk; lets the render side refresh overlay tiles incrementally.
     pub version: u64,
     chunk_size: usize,
     current_chunk: usize,
@@ -21,6 +22,39 @@ pub struct LandValueIndex {
 impl LandValueIndex {
     pub fn get(&self, idx: usize) -> f32 {
         self.values.get(idx).copied().unwrap_or(0.5)
+    }
+
+    pub(crate) fn chunk_size(&self) -> usize {
+        self.chunk_size
+    }
+
+    /// The chunk that will be recomputed next; the most recently published chunk is the one
+    /// immediately before it (wrapping).
+    pub(crate) fn current_chunk(&self) -> usize {
+        self.current_chunk
+    }
+
+    /// Reset for a freshly loaded/generated map: stale values from the previous
+    /// city must not feed growth/demand and the live overlays for a whole
+    /// recompute pass. Version bumps so the overlay repaints the cleared field.
+    pub fn reset_values(&mut self) {
+        self.values.fill(0.0);
+        self.current_chunk = 0;
+        self.version = self.version.wrapping_add(1);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_publish_state_for_test(
+        &mut self,
+        len: usize,
+        chunk_size: usize,
+        current_chunk: usize,
+        version: u64,
+    ) {
+        self.values.resize(len, 0.5);
+        self.chunk_size = chunk_size;
+        self.current_chunk = current_chunk;
+        self.version = version;
     }
 }
 
@@ -123,8 +157,8 @@ fn compute_land_value(
     land_value.current_chunk += 1;
     if land_value.current_chunk * tiles_per_chunk >= len {
         land_value.current_chunk = 0;
-        land_value.version += 1; // Full update completed
     }
+    land_value.version = land_value.version.wrapping_add(1); // one chunk published
 }
 
 fn has_adjacent_road(grid: &MapGrid, pos: TilePos) -> bool {

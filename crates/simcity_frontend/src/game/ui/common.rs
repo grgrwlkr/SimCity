@@ -19,6 +19,7 @@ pub(super) struct TopBarParams<'w> {
     pub(super) scenario_progress: Res<'w, ScenarioProgress>,
     pub(super) history: Option<Res<'w, crate::game::command_history::CommandHistory>>,
     pub(super) commands: MessageWriter<'w, GameCommand>,
+    pub(super) undo_redo: MessageWriter<'w, UndoRedoRequested>,
 }
 
 #[derive(SystemParam)]

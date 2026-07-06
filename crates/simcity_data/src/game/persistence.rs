@@ -13,6 +13,7 @@ use bevy::prelude::*;
 
 use crate::game::buildings::{Building, BuildingPhase, calculate_parking_spots};
 use crate::game::citizens::{Citizen, CitizenWorkplace};
+use crate::game::command_history::CommandHistory;
 use crate::game::commands::GameCommand;
 use crate::game::emergencies::{Emergency, EmergencyManager, EmergencyStats};
 use crate::game::ids::{CitizenIdComp, CitizenIdGen};
@@ -618,6 +619,9 @@ struct LoadParams<'w, 's> {
     graph_version: ResMut<'w, GraphVersion>,
     map_edit_version: ResMut<'w, MapEditVersion>,
     intersections: ResMut<'w, IntersectionIndex>,
+    history: ResMut<'w, CommandHistory>,
+    pollution_idx: Option<ResMut<'w, crate::game::pollution::PollutionIndex>>,
+    land_value_idx: Option<ResMut<'w, crate::game::land_value::LandValueIndex>>,
     q_buildings: Query<'w, 's, Entity, With<Building>>,
     q_vehicles: Query<'w, 's, Entity, With<Vehicle>>,
     q_vehicle_markers: Query<'w, 's, Entity, With<ServiceVehicleMarker>>,
@@ -661,6 +665,18 @@ fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParam
         }
         for e in p.q_emergencies.iter() {
             p.commands.entity(e).despawn();
+        }
+
+        // Undo entries reference tile state from the previous map; replaying
+        // them into the loaded save would corrupt it.
+        p.history.clear();
+        // Derived environment fields are not persisted; stale values from the
+        // pre-load city must not bleed into the loaded one for a full pass.
+        if let Some(pi) = p.pollution_idx.as_mut() {
+            pi.reset_values();
+        }
+        if let Some(lv) = p.land_value_idx.as_mut() {
+            lv.reset_values();
         }
 
         // Apply resources.

@@ -116,6 +116,7 @@ impl Plugin for SimPlugin {
             );
         apply_fixed_update_set_order(app);
         app.add_message::<commands::GameCommand>()
+            .add_message::<commands::UndoRedoRequested>()
             .add_message::<trips::TripRequested>()
             .add_message::<trips::TripFinished>()
             .add_message::<sim_events::DayAdvanced>()

@@ -40,3 +40,14 @@ pub enum GameCommand {
     /// Load the test city with all building types and features.
     LoadTestCity,
 }
+
+/// Request to undo/redo the last map edit (Ctrl+Z / Ctrl+Y, top-bar buttons).
+///
+/// Deliberately NOT a `GameCommand`: history replay must bypass the user-facing
+/// build rules (no-downgrade, non-empty road, placement validation) and must not
+/// re-record history, so it is applied directly by the system that owns
+/// `CommandHistory` instead of going through the normal command pipeline.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct UndoRedoRequested {
+    pub redo: bool,
+}

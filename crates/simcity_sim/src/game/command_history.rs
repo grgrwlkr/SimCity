@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 
+use crate::game::buildings::Building;
 use crate::game::map::{BuildingKind, TilePos, ZoneKind};
 use crate::game::roads::RoadCell;
 
@@ -54,9 +55,23 @@ impl CommandHistory {
     pub fn can_redo(&self) -> bool {
         !self.redo_stack.is_empty()
     }
+
+    /// Drop both stacks. Must be called when a new map replaces the grid
+    /// (LoadGame / LoadTestCity): entries reference tile state from the
+    /// previous map and would corrupt the freshly loaded one.
+    pub fn clear(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+    }
 }
 
 /// A command that can be undone/redone.
+///
+/// Entries capture enough of the previous state to restore it verbatim. They
+/// are applied by `map::commands::apply_history_entry` in exact-restore mode
+/// (bypassing the user-facing build rules), never replayed as `GameCommand`s —
+/// replaying through the normal pipeline both re-records history (corrupting
+/// the stacks) and gets rejected by build rules (empty road, downgrade).
 #[derive(Clone, Debug)]
 pub enum UndoableCommand {
     SetRoad {
@@ -71,133 +86,17 @@ pub enum UndoableCommand {
     },
     PlaceBuilding {
         pos: TilePos,
-        old: Option<BuildingKind>,
-        new: BuildingKind,
+        kind: BuildingKind,
+        /// Zones cleared from the footprint tiles when the building was placed
+        /// (placement validation guarantees no roads/buildings were present).
+        old_zones: Vec<(TilePos, ZoneKind)>,
     },
     EraseTile {
         pos: TilePos,
         old_road: RoadCell,
         old_zone: ZoneKind,
-        old_building: Option<BuildingKind>,
+        /// Whole-building snapshot when the erased tile was part of a building
+        /// footprint (the erase removes the entire building).
+        old_building: Option<Building>,
     },
-}
-
-impl UndoableCommand {
-    /// Create an undo command (reverses the original command).
-    pub fn undo_commands(&self) -> Vec<crate::game::commands::GameCommand> {
-        use crate::game::commands::GameCommand;
-
-        match self {
-            UndoableCommand::SetRoad { pos, old, .. } => {
-                vec![GameCommand::SetRoad {
-                    pos: *pos,
-                    road: *old,
-                }]
-            }
-            UndoableCommand::SetZone { pos, old, .. } => {
-                vec![GameCommand::SetZone {
-                    pos: *pos,
-                    zone: *old,
-                }]
-            }
-            UndoableCommand::PlaceBuilding { pos, old, .. } => {
-                if let Some(kind) = *old {
-                    vec![GameCommand::PlaceBuilding { pos: *pos, kind }]
-                } else {
-                    vec![GameCommand::EraseTile { pos: *pos }]
-                }
-            }
-            UndoableCommand::EraseTile {
-                pos,
-                old_road,
-                old_zone,
-                old_building,
-            } => {
-                // Restore all captured layers. Order matters:
-                // 1) road, 2) zone, 3) building.
-                //
-                // Buildings (R/C/I) rely on `cell.zone == expected_zone`; if we restore the building
-                // without also restoring the zone, `despawn_invalid_buildings` will immediately
-                // despawn it on the next tick.
-                let mut out = Vec::<GameCommand>::new();
-                if old_road.is_some() {
-                    out.push(GameCommand::SetRoad {
-                        pos: *pos,
-                        road: *old_road,
-                    });
-                }
-                if *old_zone != ZoneKind::None {
-                    out.push(GameCommand::SetZone {
-                        pos: *pos,
-                        zone: *old_zone,
-                    });
-                }
-                if let Some(kind) = *old_building {
-                    out.push(GameCommand::PlaceBuilding { pos: *pos, kind });
-                }
-                if out.is_empty() {
-                    out.push(GameCommand::EraseTile { pos: *pos });
-                }
-                out
-            }
-        }
-    }
-
-    /// Create a redo command (reapplies the original command).
-    pub fn redo_command(&self) -> crate::game::commands::GameCommand {
-        match self {
-            UndoableCommand::SetRoad { pos, new, .. } => {
-                crate::game::commands::GameCommand::SetRoad {
-                    pos: *pos,
-                    road: *new,
-                }
-            }
-            UndoableCommand::SetZone { pos, new, .. } => {
-                crate::game::commands::GameCommand::SetZone {
-                    pos: *pos,
-                    zone: *new,
-                }
-            }
-            UndoableCommand::PlaceBuilding { pos, new, .. } => {
-                crate::game::commands::GameCommand::PlaceBuilding {
-                    pos: *pos,
-                    kind: *new,
-                }
-            }
-            UndoableCommand::EraseTile { pos, .. } => {
-                crate::game::commands::GameCommand::EraseTile { pos: *pos }
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn erase_tile_undo_restores_zone_then_building() {
-        let cmd = UndoableCommand::EraseTile {
-            pos: TilePos { x: 1, y: 2 },
-            old_road: RoadCell::default(),
-            old_zone: ZoneKind::Residential,
-            old_building: Some(BuildingKind::Residential),
-        };
-        let cmds = cmd.undo_commands();
-        assert_eq!(cmds.len(), 2);
-        match cmds[0] {
-            crate::game::commands::GameCommand::SetZone { pos, zone } => {
-                assert_eq!(pos, TilePos { x: 1, y: 2 });
-                assert_eq!(zone, ZoneKind::Residential);
-            }
-            _ => panic!("expected SetZone first"),
-        }
-        match cmds[1] {
-            crate::game::commands::GameCommand::PlaceBuilding { pos, kind } => {
-                assert_eq!(pos, TilePos { x: 1, y: 2 });
-                assert_eq!(kind, BuildingKind::Residential);
-            }
-            _ => panic!("expected PlaceBuilding second"),
-        }
-    }
 }

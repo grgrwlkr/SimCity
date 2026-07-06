@@ -9,8 +9,8 @@ mod test_city;
 
 pub use simcity_core::game::{commands, ids, roads, sets, sim_events, state, trips, ui_state};
 pub use simcity_sim::game::{
-    buildings, citizens, day_night, economy, emergencies, employment, intersections, map,
-    pedestrians, services, sim, traffic, transport,
+    buildings, citizens, command_history, day_night, economy, emergencies, employment,
+    intersections, land_value, map, pedestrians, pollution, services, sim, traffic, transport,
 };
 
 pub struct DataPlugin;
@@ -42,6 +42,9 @@ fn handle_load_test_city(
     mut road_dirty: ResMut<map::RoadDirtyTiles>,
     mut graph_version: ResMut<transport::GraphVersion>,
     mut map_edit_version: ResMut<map::MapEditVersion>,
+    mut history: ResMut<command_history::CommandHistory>,
+    mut pollution_idx: Option<ResMut<pollution::PollutionIndex>>,
+    mut land_value_idx: Option<ResMut<land_value::LandValueIndex>>,
     mut day_out: bevy::ecs::message::MessageWriter<sim_events::DayAdvanced>,
 ) {
     for cmd in cmd_reader.read() {
@@ -60,6 +63,18 @@ fn handle_load_test_city(
         road_dirty.mark_all();
         map_edit_version.bump();
         graph_version.bump();
+        // Undo entries reference tile state from the previous map; replaying
+        // them into the freshly generated city would corrupt it.
+        history.clear();
+        // Same rule for derived environment fields: stale pollution/land value
+        // from the previous city would feed growth and overlays for a whole
+        // recompute pass (~51 s) after load.
+        if let Some(p) = pollution_idx.as_mut() {
+            p.reset_values();
+        }
+        if let Some(lv) = land_value_idx.as_mut() {
+            lv.reset_values();
+        }
         day_out.write(sim_events::DayAdvanced { day: city.day });
     }
 }
@@ -100,6 +115,7 @@ mod tests {
             .insert_resource(sim::City::default())
             .insert_resource(transport::GraphVersion(1))
             .insert_resource(map::MapEditVersion::default())
+            .insert_resource(command_history::CommandHistory::new(100))
             .insert_resource(intersections::IntersectionIndex::default())
             .insert_resource(TestCommandOnce::default())
             .add_systems(
@@ -246,6 +262,62 @@ mod tests {
         );
     }
 
+    /// B3 pin: `CommandHistory` must not survive `LoadTestCity` — stale entries
+    /// would let Ctrl+Z write tile state from the PREVIOUS map into the freshly
+    /// loaded one. Pre-fix this fails: the handler never touched the history.
+    #[test]
+    fn load_test_city_clears_command_history() {
+        let cfg = map::MapConfig::default();
+        let tile_count = (cfg.width as usize) * (cfg.height as usize);
+
+        let mut app = App::new();
+        app.add_message::<commands::GameCommand>()
+            .add_message::<sim_events::DayAdvanced>()
+            .insert_resource(cfg.clone())
+            .insert_resource(map::MapSeed(1))
+            .insert_resource(map::MapGrid::new(cfg.width, cfg.height))
+            .insert_resource(map::DirtyTiles::new(tile_count))
+            .insert_resource(map::RoadDirtyTiles::new(tile_count))
+            .insert_resource(sim::City::default())
+            .insert_resource(transport::GraphVersion(1))
+            .insert_resource(map::MapEditVersion::default())
+            .insert_resource(command_history::CommandHistory::new(100))
+            .insert_resource(intersections::IntersectionIndex::default())
+            .insert_resource(TestCommandOnce::default())
+            .add_systems(
+                Update,
+                (send_load_test_city_once, handle_load_test_city).chain(),
+            );
+
+        // Prefill both stacks: two edits, then one undo (moves an entry to redo).
+        {
+            let mut history = app
+                .world_mut()
+                .resource_mut::<command_history::CommandHistory>();
+            for _ in 0..2 {
+                history.push(command_history::UndoableCommand::SetZone {
+                    pos: map::TilePos { x: 1, y: 1 },
+                    old: map::ZoneKind::None,
+                    new: map::ZoneKind::Residential,
+                });
+            }
+            let _ = history.undo();
+            assert!(history.can_undo() && history.can_redo());
+        }
+
+        app.update();
+
+        let history = app.world().resource::<command_history::CommandHistory>();
+        assert!(
+            !history.can_undo(),
+            "LoadTestCity must clear the undo stack (stale entries reference the old map)"
+        );
+        assert!(
+            !history.can_redo(),
+            "LoadTestCity must clear the redo stack (stale entries reference the old map)"
+        );
+    }
+
     /// Smoke test for the multi-lane (FourLane) conversion: loading the test city and building the
     /// intersection clusters + lane graph + lanelet graph on the resulting 4x4/mixed-width boxes must
     /// NOT panic and must produce lanelets. If the FourLane boxes collapsed (e.g. `build_internal_path`
@@ -285,6 +357,7 @@ mod tests {
             .insert_resource(sim::City::default())
             .insert_resource(GraphVersion(1))
             .insert_resource(map::MapEditVersion::default())
+            .insert_resource(command_history::CommandHistory::new(100))
             .insert_resource(intersections::IntersectionIndex::default())
             .insert_resource(LaneGraph::default())
             .insert_resource(LaneletGraph::default())

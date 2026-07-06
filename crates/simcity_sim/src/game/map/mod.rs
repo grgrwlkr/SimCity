@@ -39,9 +39,9 @@ use input::{
 
 mod render;
 use render::{
-    LastOverlayMode, RouteGizmos, configure_route_gizmos, cull_tile_chunks,
-    mark_dirty_on_overlay_change, spawn_map_if_needed, sync_dirty_tiles_to_render,
-    vehicle_routes_overlay_render,
+    LastOverlayMode, OverlayIndexVersions, RouteGizmos, configure_route_gizmos, cull_tile_chunks,
+    mark_dirty_on_index_publish, mark_dirty_on_overlay_change, spawn_map_if_needed,
+    sync_dirty_tiles_to_render, vehicle_routes_overlay_render,
 };
 
 pub struct MapPlugin;
@@ -58,6 +58,7 @@ impl Plugin for MapPlugin {
             .init_resource::<MapEditVersion>()
             .init_resource::<HoveredTile>()
             .init_resource::<LastOverlayMode>()
+            .init_resource::<OverlayIndexVersions>()
             .init_resource::<BuildingEntityIndex>()
             .init_resource::<LaneMarkingIndex>()
             .init_resource::<RoadPreviewPool>()
@@ -101,6 +102,13 @@ impl Plugin for MapPlugin {
             .add_systems(
                 Update,
                 mark_dirty_on_overlay_change
+                    .in_set(GameSet::RenderSync)
+                    .before(sync_dirty_tiles_to_render)
+                    .run_if(in_game_or_paused),
+            )
+            .add_systems(
+                Update,
+                mark_dirty_on_index_publish
                     .in_set(GameSet::RenderSync)
                     .before(sync_dirty_tiles_to_render)
                     .run_if(in_game_or_paused),

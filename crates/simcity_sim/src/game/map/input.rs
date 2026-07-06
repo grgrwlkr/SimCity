@@ -5,8 +5,7 @@ use bevy::window::PrimaryWindow;
 use bevy_egui::EguiContexts;
 
 use crate::game::camera::MainCamera;
-use crate::game::command_history::CommandHistory;
-use crate::game::commands::GameCommand;
+use crate::game::commands::{GameCommand, UndoRedoRequested};
 use crate::game::intersections::IntersectionIndex;
 use crate::game::roads::{RoadCell, RoadDir, RoadKind};
 use crate::game::traffic::TrafficConfig;
@@ -51,28 +50,24 @@ pub(super) fn build_mode_hotkeys(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut
     }
 }
 
-/// Handle undo/redo hotkeys (Ctrl+Z, Ctrl+Y)
+/// Handle undo/redo hotkeys (Ctrl+Z, Ctrl+Y).
+///
+/// Input only REQUESTS undo/redo; the history is popped and applied by the
+/// system that owns `CommandHistory` (`apply_game_commands_to_grid`). Replaying
+/// history as ordinary `GameCommand`s from here would re-record it and wipe the
+/// redo stack.
 pub(super) fn handle_undo_redo(
     keys: Res<ButtonInput<KeyCode>>,
-    mut history: ResMut<CommandHistory>,
-    mut commands: MessageWriter<GameCommand>,
+    mut out: MessageWriter<UndoRedoRequested>,
 ) {
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
 
-    if ctrl
-        && keys.just_pressed(KeyCode::KeyZ)
-        && let Some(cmd) = history.undo()
-    {
-        for c in cmd.undo_commands() {
-            commands.write(c);
-        }
+    if ctrl && keys.just_pressed(KeyCode::KeyZ) {
+        out.write(UndoRedoRequested { redo: false });
     }
 
-    if ctrl
-        && keys.just_pressed(KeyCode::KeyY)
-        && let Some(cmd) = history.redo()
-    {
-        commands.write(cmd.redo_command());
+    if ctrl && keys.just_pressed(KeyCode::KeyY) {
+        out.write(UndoRedoRequested { redo: true });
     }
 }
 
@@ -242,13 +237,11 @@ pub(super) fn cursor_paint_to_command(
             out.write(GameCommand::SetZone { pos: tile, zone });
         }
         ToolMode::FireStation | ToolMode::PoliceStation | ToolMode::Hospital => {
-            // Reuse zoning placement constraints + require no existing zone to keep UX simple.
-            if !can_zone_tile(&p.grid, tile) {
-                return;
-            }
-            if let Some(cell) = p.grid.get(tile)
-                && cell.zone != ZoneKind::None
-            {
+            // Pre-validate the full footprint with the same rule the command
+            // apply uses (free tiles + road access for the footprint as a
+            // whole) so clicks that cannot succeed are dropped early.
+            let (fw, fl) = super::commands::MANUAL_BUILDING_FOOTPRINT;
+            if super::commands::validate_building_placement(&p.grid, tile, fw, fl).is_none() {
                 return;
             }
             let kind = match p.ui_state.tool {

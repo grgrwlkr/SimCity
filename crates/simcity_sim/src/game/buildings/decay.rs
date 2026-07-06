@@ -11,18 +11,25 @@ use super::footprint::{all_footprint_tiles, any_footprint_tile, for_each_footpri
 
 pub fn despawn_invalid_buildings(
     mut commands: Commands,
-    grid: Res<MapGrid>,
+    mut grid: ResMut<MapGrid>,
+    mut dirty: ResMut<DirtyTiles>,
     q: Query<(Entity, &Building)>,
 ) {
+    // A despawn MUST release the building's grid cells: an entity-less cell with
+    // `building` still set is a phantom tile that permanently blocks zoning and
+    // placement (both validators reject occupied cells) and has no owner the
+    // whole-building erase could find.
     for (e, b) in &q {
         // Check if anchor position is valid
         let Some(cell) = grid.get(b.anchor_pos) else {
+            clear_footprint_cells(&mut grid, &mut dirty, b);
             commands.entity(e).despawn();
             continue;
         };
         let expected_zone = b.kind.as_zone();
         // Check if anchor cell matches expected building
         if cell.water || cell.zone != expected_zone || cell.building != Some(b.kind) {
+            clear_footprint_cells(&mut grid, &mut dirty, b);
             commands.entity(e).despawn();
             continue;
         }
@@ -37,9 +44,31 @@ pub fn despawn_invalid_buildings(
             },
         );
         if !all_valid {
+            clear_footprint_cells(&mut grid, &mut dirty, b);
             commands.entity(e).despawn();
         }
     }
+}
+
+/// Clear the building layer of `b`'s footprint cells (only those still owned
+/// by its kind — a cell already overwritten by another building is left alone).
+fn clear_footprint_cells(grid: &mut MapGrid, dirty: &mut DirtyTiles, b: &Building) {
+    for_each_footprint_tile(
+        b.anchor_pos,
+        b.footprint_width,
+        b.footprint_length,
+        |tile| {
+            if let Some(mut cell) = grid.get(tile)
+                && cell.building == Some(b.kind)
+            {
+                cell.building = None;
+                grid.set(tile, cell);
+                if let Some(idx) = grid.idx(tile) {
+                    dirty.mark(idx);
+                }
+            }
+        },
+    );
 }
 
 /// GDD: Buildings without road access are demolished after 1 game day
