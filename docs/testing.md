@@ -7,7 +7,7 @@
 ```bash
 cargo fmt --all
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test
+cargo test --workspace   # bare `cargo test` гоняет только корневой пакет (0 тестов)
 ```
 
 Для проекта это базовый verification floor.
@@ -28,11 +28,9 @@ Traffic-heavy suite (`simcity_sim`):
 
 - `crates/simcity_sim/src/game/traffic/tests/basic_behavior.rs`
 - `crates/simcity_sim/src/game/traffic/tests/intersection_reservations.rs`
+- `crates/simcity_sim/src/game/traffic/tests/lanelet_arbiter.rs`
 - `crates/simcity_sim/src/game/traffic/tests/traffic_lights.rs`
-- `crates/simcity_sim/src/game/traffic/tests/route_rewriting.rs`
-- `crates/simcity_sim/src/game/traffic/tests/right_turn_on_red.rs`
 - `crates/simcity_sim/src/game/traffic/tests/pedestrians.rs`
-- `crates/simcity_sim/src/game/traffic/tests/conflict_zones.rs`
 - `crates/simcity_sim/src/game/traffic/tests/vehicle_spawning.rs`
 - `crates/simcity_sim/src/game/traffic/tests/vehicle_parking.rs`
 

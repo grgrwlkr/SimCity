@@ -240,8 +240,8 @@ ECS даёт выигрыши, когда:
 - Добавлен `TrafficSpatialIndex` (bucketed per-tile индекс без `HashMap<TilePos, Vec<...>>`) в `crates/simcity_sim/src/game/traffic/traffic_spatial_index.rs`.
 - В `traffic.rs` добавлены системы:
   - `build_traffic_spatial_index_pre_lane_changes` (строит индекс перед `plan_lane_changes`)
-  - `build_traffic_spatial_index` (перестраивает индекс после lane changes; далее его читают `plan_oncoming_overtakes` и `move_vehicles`)
-- `plan_lane_changes`, `plan_oncoming_overtakes`, `move_vehicles` переведены на чтение `TrafficSpatialIndex`.
+  - `build_traffic_spatial_index` (перестраивает индекс после lane changes; далее его читает `move_vehicles`)
+- `plan_lane_changes`, `move_vehicles` переведены на чтение `TrafficSpatialIndex` (упоминавшийся здесь `plan_oncoming_overtakes` удалён вместе с механикой обгона по встречке).
 
 Эффект: убрали 3× дублирующийся `HashMap+sort` и заменили на переиспользуемые буферы + per-tile buckets.
 

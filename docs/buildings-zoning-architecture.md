@@ -89,9 +89,6 @@ crates/simcity_sim/src/game/
 │   ├── ServiceVehicle (component)
 │   └── ServiceCoverageIndex (resource)
 │
-├── custom_buildings.rs  # Расширяемость
-│   └── CustomBuildingRegistry (resource)
-│
 └── map/mod.rs           # Данные карты
     ├── ZoneKind (enum)
     ├── BuildingKind (enum)

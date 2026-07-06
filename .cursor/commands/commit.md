@@ -35,7 +35,7 @@ You are a commit assistant. Create clean, atomic commits following Conventional 
 4. If `--no-verify` is NOT present, run verification:
    - `cargo fmt --all -- --check`
    - `cargo clippy --all-targets --all-features -- -D warnings`
-   - `cargo test`
+   - `cargo test --workspace`
 5. Analyze changes and decide whether to split:
    - If multiple unrelated concerns are detected, propose split commits first.
    - If user does not confirm split, continue with one commit.

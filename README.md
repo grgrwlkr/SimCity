@@ -2,7 +2,7 @@
 
 Градостроительный симулятор на Rust + Bevy с упором на ECS, наблюдаемость и детальную транспортную модель.
 
-Сейчас это не "skeleton", а Cargo workspace на `bevy = 0.18.1` (бинарь `simcity_app` + доменные crates `simcity_core`, `simcity_sim`, `simcity_data`, `simcity_debug`, `simcity_frontend`) с картой, дорогами, зонированием, зданиями, гражданами, трафиком, сервисами, persistence, сценариями и развитым debug/tooling слоем. По умолчанию запуск сейчас dev-ориентирован: игра автоматически переходит в `InGame` и грузит test city.
+Сейчас это не "skeleton", а Cargo workspace на `bevy = 0.19` (бинарь `simcity_app` + доменные crates `simcity_core`, `simcity_sim`, `simcity_data`, `simcity_debug`, `simcity_frontend`) с картой, дорогами, зонированием, зданиями, гражданами, трафиком, сервисами, persistence, сценариями и развитым debug/tooling слоем. По умолчанию запуск сейчас dev-ориентирован: игра автоматически переходит в `InGame` и грузит test city.
 
 ## Быстрый старт
 
@@ -19,7 +19,7 @@ cargo run --features dev
 # Format / lint / test
 cargo fmt --all
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test
+cargo test --workspace
 
 # Profiling
 cargo run --release --features profile_tracy
@@ -60,6 +60,7 @@ cargo run --release --features profile_chrome
 - `?` — shortcuts panel
 - `F8` — toggle debug dump window
 - `F9` — copy debug dump
+- `F10` — toggle UI settings panel
 
 Сохранение и загрузка сейчас доступны через UI-кнопки. Хоткеи `Ctrl+S` / `Ctrl+L` в коде не привязаны.
 

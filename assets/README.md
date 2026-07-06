@@ -9,9 +9,7 @@
 - `config/traffic.ron` — traffic tuning
 - `config/pathfinding.ron` — pathfinding tuning
 - `config/employment.ron` — employment tuning
-- `config/buildings.ron` — building tuning
 - `config/day_night.ron` — day/night visuals
-- `config/custom_buildings.ron` — custom building registry
 - `config/pedestrians.ron` — pedestrian tuning
 - `scenarios/scenarios.ron` — сценарии, стартовые условия и objectives
 

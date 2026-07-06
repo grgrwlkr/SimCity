@@ -38,7 +38,7 @@
 
 ## Internal / Operational
 
-- `../AGENTS.md` — shared memory file with durable user preferences and workspace facts.
+- `../CLAUDE.md` — agent guidance: commands, workspace layout, core patterns, conventions.
 - `../.cursor/hooks/README.md` — Russian trigger sync automation.
 - `../.cursor/commands/commit.md` — commit command contract.
 

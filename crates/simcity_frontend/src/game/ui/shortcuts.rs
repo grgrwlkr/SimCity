@@ -44,11 +44,12 @@ pub(super) fn shortcuts_ui(mut contexts: EguiContexts, show: Res<ShowShortcuts>)
             ui.separator();
             ui.heading("Game");
             ui.label("Space — Pause/Resume");
-            ui.label("Ctrl+S — Save game");
-            ui.label("Ctrl+L — Load game");
             ui.label("Ctrl+Z — Undo");
             ui.label("Ctrl+Y — Redo");
             ui.label("Esc — Back to menu");
+            ui.label("F8 — Debug dump window");
+            ui.label("F9 — Copy debug dump");
+            ui.label("F10 — UI settings panel");
 
             ui.separator();
             ui.label("Press ? to toggle this panel");

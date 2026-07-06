@@ -87,7 +87,7 @@ When delivering work, always provide:
 
 1. **What was implemented** (specific, file-level)
 2. **How it matches provided architecture/instructions** (short mapping)
-3. **Validation** (`cargo fmt`, `cargo clippy`, `cargo test`, or justified limits)
+3. **Validation** (`cargo fmt`, `cargo clippy`, `cargo test --workspace`, or justified limits)
 4. **Open questions for requester/planner** (only if blockers remain)
 
 Do not provide vague “high-level” advice when code is requested.

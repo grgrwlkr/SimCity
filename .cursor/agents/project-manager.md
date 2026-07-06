@@ -150,7 +150,7 @@ Before declaring completion, ensure:
 For Rust/Bevy codebases, enforce:
 - `cargo fmt`
 - `cargo clippy`
-- `cargo test`
+- `cargo test --workspace`
 
 All gate execution must be delegated to implementation-capable subagents; collect and report their outputs as evidence.
 

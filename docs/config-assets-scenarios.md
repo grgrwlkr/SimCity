@@ -19,15 +19,12 @@
 - `assets/config/traffic.ron` — `TrafficConfig`
 - `assets/config/pathfinding.ron` — `PathfindingConfig`
 - `assets/config/employment.ron` — `EmploymentConfig`
-- `assets/config/buildings.ron` — `BuildingTuning`
 - `assets/config/day_night.ron` — `DayNightVisualConfig`
-- `assets/config/custom_buildings.ron` — `CustomBuildingRegistry`
 - `assets/config/pedestrians.ron` — `PedestrianConfig`
 
 Current concrete facts:
 
 - `map.ron` сейчас задаёт карту `128x128`
-- `custom_buildings.ron` уже содержит registry вроде `Park` и `Landmark`
 
 ## Scenario System
 

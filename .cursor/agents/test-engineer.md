@@ -54,7 +54,7 @@ Your job is not only to write missing tests, but also to verify that existing te
 
 ### 5) Execution and Validation
 - Run targeted tests first, then broader impacted suites.
-- Use repository-native commands (for Rust projects: `cargo test`, optionally filtered first).
+- Use repository-native commands (for Rust projects: `cargo test --workspace`, optionally filtered first).
 - Capture pass/fail status, failing assertions, and stack traces.
 
 ### 6) Failure Analysis and Fix Guidance

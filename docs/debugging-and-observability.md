@@ -9,7 +9,7 @@
 - `RemotePlugin`
 - `RemoteHttpPlugin` на native builds
 - `FrameTimeDiagnosticsPlugin`
-- custom BRP method `bevy_debugger/screenshot`
+- custom BRP methods `bevy_debugger/screenshot` и `bevy_debugger/debug_dump`
 - финальный debug dump в консоль при закрытии окна
 
 Это значит, что runtime уже экспортирует полезное состояние наружу и готов к MCP/BRP tooling.
@@ -28,6 +28,12 @@
 - method name: `bevy_debugger/screenshot`
 - принимает `path` и `description`
 - использует Bevy screenshot API
+
+Собственный debug dump method:
+
+- method name: `bevy_debugger/debug_dump`
+- возвращает полный RON debug dump живой игры (эквивалент `F9`)
+- кастомные методы зовутся сырым JSON-RPC (`curl http://127.0.0.1:15702`) — `brp_execute` из MCP их не проксирует
 
 ## ECS Snapshots For Inspection
 

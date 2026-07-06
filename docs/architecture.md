@@ -13,74 +13,45 @@
 - подключает `GamePlugin`
 - печатает финальный debug dump при закрытии окна
 
-`GamePlugin` в `src/game/mod.rs` — главный composition root. Он регистрирует state, resources, messages, plugin groups и system ordering.
+`GamePlugin` в `src/game/mod.rs` — **тонкий шим** composition root: делает `pub use simcity_*::game::{...}` (поэтому старые пути вида `game::map`, `game::sim` работают) и добавляет по одному корневому плагину на крейт. State, resources, messages и system ordering регистрируются внутри `simcity_sim` (`SimPlugin::build` в `crates/simcity_sim/src/game/mod.rs`).
 
 ## Plugin Graph
 
 ```mermaid
 flowchart TD
   Main[main.rs]
-  GamePlugin[GamePlugin]
-  Infra[InfraAndDebug]
-  Simulation[SimulationCore]
-  Mobility[MobilityStack]
-  Gameplay[GameplaySystems]
-  UiLayer[UiAndTools]
+  GamePlugin[GamePlugin — thin shim]
+  Sim[simcity_sim :: SimPlugin]
+  Data[simcity_data :: DataPlugin]
+  Debug[simcity_debug :: DebugPlugin]
+  Frontend[simcity_frontend :: FrontendPlugin]
 
   Main --> GamePlugin
-  GamePlugin --> Infra
-  GamePlugin --> Simulation
-  GamePlugin --> Mobility
-  GamePlugin --> Gameplay
-  GamePlugin --> UiLayer
+  GamePlugin --> Sim
+  GamePlugin --> Data
+  GamePlugin --> Debug
+  GamePlugin --> Frontend
 ```
 
-Фактические группы сейчас такие.
+Вложенные плагины по крейтам (фактический состав по коду):
 
-Infrastructure / debug:
+`simcity_sim` (плюс здесь же: `AppState`, messages `GameCommand`/`TripRequested`/`TripFinished`/`DayAdvanced`, `UiState`, `configure_sets`):
 
-- `ConfigLoaderPlugin`
-- `PersistencePlugin`
-- `PersistenceContractPlugin`
-- `McpStatusPlugin`
-- `DebugWorldPlugin`
-- `UiSettingsPlugin`
+- `BuildingsPlugin`, `CitizensPlugin`, `DemandPlugin`, `EconomyPlugin`, `EmergenciesPlugin`, `EmploymentPlugin`, `MapPlugin`
+- `DayNightPlugin` (visual-only overlay), `ServicesPlugin`, `TransportPlugin`, `ZonePlacementPlugin`, `sim::SimPlugin`, `TrafficPlugin`
+- `PedestriansPlugin`, `IntersectionsPlugin`, `LandValuePlugin`, `NotificationsPlugin`, `PollutionPlugin`, `PublicTransportPlugin`
 
-Simulation core:
+`simcity_data`:
 
-- `SimPlugin`
-- `EconomyPlugin`
-- `DemandPlugin`
-- `EmploymentPlugin`
-- `LandValuePlugin`
-- `PollutionPlugin`
-- `NotificationsPlugin`
+- `ConfigLoaderPlugin`, `PersistencePlugin`, `PersistenceContractPlugin`, `ScenariosPlugin`
 
-Mobility stack:
+`simcity_debug`:
 
-- `TransportPlugin`
-- `TrafficPlugin`
-- `PedestriansPlugin`
-- `IntersectionsPlugin`
-- `PublicTransportPlugin`
+- `McpStatusPlugin`, `DebugWorldPlugin`
 
-Gameplay systems:
+`simcity_frontend`:
 
-- `MapPlugin`
-- `BuildingsPlugin`
-- `CitizensPlugin`
-- `ServicesPlugin`
-- `EmergenciesPlugin`
-- `ScenariosPlugin`
-- `CustomBuildingsPlugin`
-- `DayNightPlugin`
-- `AudioSfxPlugin`
-- `ZonePlacementPlugin`
-
-UI:
-
-- `UiPlugin`
-- `CameraPlugin`
+- `AudioSfxPlugin`, `CameraPlugin`, `UiPlugin`, `UiSettingsPlugin`
 
 ## App State
 
@@ -98,9 +69,9 @@ UI:
 
 1. `Input`
 2. `CommandApply`
-3. `Sim`
-4. `PostSim`
-5. `GraphUpdate`
+3. `GraphUpdate`
+4. `Sim`
+5. `PostSim`
 6. `RenderSync`
 7. `Ui`
 
@@ -108,12 +79,9 @@ Fixed-step симуляция:
 
 - `FixedUpdate`
 - базовый шаг: `1.0 / 10.0`
-- в `FixedUpdate` явно цепляются `Sim -> PostSim`
+- в `FixedUpdate` явно цепляются `GraphUpdate -> Sim -> PostSim`
 
-Отдельный нюанс transport слоя:
-
-- rebuild систем `RoadGraph`, `RegionGraph` и `LaneGraph` сейчас вешаются на `FixedUpdate` в `GraphUpdate`
-- то есть часть graph maintenance идёт не в `Update`, а в fixed-step контуре
+`GraphUpdate` идёт ДО `Sim` в обоих schedule: derived-графы (`RoadGraph`, `RegionGraph`, `LaneGraph`, lanelet-граф) пересобираются раньше любых сим-консьюмеров того же тика. Порядок запинен тестом `graph_rebuild_runs_before_sim_consumer_on_fixed_update` (`crates/simcity_sim/src/game/mod.rs`).
 
 ## Main Messages
 
@@ -144,14 +112,13 @@ Fixed-step симуляция:
 - `map`, `roads`, `zone_placement` — world editing and tile rules
 - `buildings`, `demand`, `employment`, `economy`, `services`, `emergencies` — city simulation
 - `citizens`, `trips`, `traffic`, `pedestrians`, `intersections`, `transport`, `public_transport` — mobility stack
-- `persistence`, `persistence_contract`, `scenarios`, `custom_buildings` — runtime data surface
+- `persistence`, `persistence_contract`, `scenarios` — runtime data surface
 - `ui`, `ui_state`, `ui_settings`, `camera`, `telemetry`, `debug_world`, `mcp_status` — observability and UX
 
 ## Architectural Notes
 
-- Это один crate, не workspace.
+- Это Cargo workspace: бинарь `simcity_app` + 5 библиотечных крейтов с однонаправленными зависимостями — состав, границы и условия дальнейшего сплита описаны в `docs/crate-workspace.md`.
 - Проект plugin-first, а не file-first: рабочая единица композиции тут plugin + resource + system sets.
-- Код уже ушёл от "одна большая `traffic.rs` и `ui.rs`" в более дробные подсистемы, но single-crate pressure со временем останется архитектурным ограничением.
 - Current-state documentation живёт в `docs/*.md`, а старые design/roadmap документы вынесены в `docs/archive/`.
 
 ## Intersection Traffic Invariants (STRICT — соблюдать при любых правках трафика)

@@ -35,6 +35,7 @@
 Добавляет:
 
 - `buildings`
+- `traffic_light_tiles`
 
 Именно `V3` сейчас записывается при `SaveGame`.
 
@@ -50,6 +51,7 @@
 - `next_citizen_id`
 - service station snapshots
 - emergency stats
+- traffic light tiles (`traffic_light_tiles`)
 
 Для зданий дополнительно сохраняются:
 
