@@ -1,12 +1,10 @@
 use super::super::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[derive(Debug, Copy, Clone)]
 struct ApproachInfo {
     intersection_id: crate::game::intersections::IntersectionId,
     intersection_key: crate::game::intersections::IntersectionKey,
-    /// First intersection tile on the route within lookahead.
-    first_intersection_tile: TilePos,
     /// Last non-intersection tile before the cluster entry.
     stop_tile: TilePos,
     /// Direction of travel into the intersection (derived from stop_tile -> first_intersection_tile).
@@ -61,7 +59,6 @@ fn compute_approach_info(
     Some(ApproachInfo {
         intersection_id,
         intersection_key,
-        first_intersection_tile,
         stop_tile,
         entry_dir,
         exit_dir,
@@ -81,7 +78,6 @@ pub fn update_vehicle_traffic_state(
     path_pool: Res<super::super::super::transport::PathPool>,
     mut commands: Commands,
     q_lights: Query<&crate::game::intersections::TrafficLight>,
-    q_priorities: Query<&crate::game::intersections::IntersectionPriorityMarker>,
     mut q_vehicles: Query<
         (
             Entity,
@@ -97,21 +93,11 @@ pub fn update_vehicle_traffic_state(
             crate::game::intersections::TrafficLight,
         >,
     >,
-    mut stop_sign_tiles: Local<HashSet<TilePos>>,
 ) {
     // Build light index once per tick (O(lights)) instead of scanning all lights per vehicle.
     light_by_key.clear();
     for l in q_lights.iter() {
         light_by_key.insert(l.intersection_key, l.clone());
-    }
-
-    // We only need to distinguish StopSign-driven stops from light-driven stops.
-    // If a light gets removed while vehicles are stopped at it, we must release them.
-    stop_sign_tiles.clear();
-    for m in q_priorities.iter() {
-        if m.priority == IntersectionPriority::StopSign {
-            stop_sign_tiles.insert(m.pos);
-        }
     }
 
     for (entity, vehicle, mut state, ror) in q_vehicles.iter_mut() {
@@ -143,28 +129,6 @@ pub fn update_vehicle_traffic_state(
             }
             continue;
         };
-
-        // Stop sign on the intersection tile: enforce a stop at the stop line; release handled by
-        // `check_intersection_priority`.
-        if stop_sign_tiles.contains(&info.first_intersection_tile) {
-            if info.dist_to_stop_line_tiles <= STOP_LINE_EPS_TILES && vehicle.speed < 0.1 {
-                *state = VehicleTrafficState::Stopped {
-                    intersection: info.intersection_key,
-                    stop_tile: info.stop_tile,
-                    queue_position: 0,
-                };
-            } else {
-                *state = VehicleTrafficState::Approaching {
-                    intersection: info.intersection_key,
-                    stop_tile: info.stop_tile,
-                    distance_to_stop: info.dist_to_stop_line_tiles,
-                };
-            }
-            if ror.is_some() {
-                commands.entity(entity).remove::<RightTurnOnRed>();
-            }
-            continue;
-        }
 
         let light = light_by_key.get(&info.intersection_key);
         let (is_green, is_yellow, is_all_red, is_left_protected) = if let Some(l) = light {
@@ -352,67 +316,4 @@ pub fn compute_exit_direction(
     grid.get(exit_tile)
         .map(|c| c.road.dir)
         .unwrap_or(RoadDir::None)
-}
-
-pub fn check_intersection_priority(
-    grid: Res<MapGrid>,
-    _cfg: Res<MapConfig>,
-    intersections: Res<IntersectionIndex>,
-    path_pool: Res<super::super::super::transport::PathPool>,
-    mut q_vehicles: Query<(Entity, &Vehicle, &mut VehicleTrafficState), Without<Parked>>,
-    q_intersections: Query<&crate::game::intersections::IntersectionPriorityMarker>,
-    mut priority_by_tile: Local<
-        std::collections::HashMap<TilePos, crate::game::intersections::IntersectionPriority>,
-    >,
-) {
-    // Build marker lookup once per tick.
-    priority_by_tile.clear();
-    for m in q_intersections.iter() {
-        priority_by_tile.insert(m.pos, m.priority);
-    }
-
-    for (_e, v, mut st) in q_vehicles.iter_mut() {
-        let Some(cur) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
-            continue;
-        };
-        if is_intersection_tile(&grid, cur) {
-            if let Some(key) = intersections.cluster_key_at(cur) {
-                *st = VehicleTrafficState::CrossingIntersection { intersection: key };
-            }
-            continue;
-        }
-        let Some(next) = path_pool.get_tile(v.path_handle, v.path_cursor + 1) else {
-            continue;
-        };
-        if !is_intersection_tile(&grid, next) {
-            continue;
-        }
-
-        let Some(priority) = priority_by_tile.get(&next).copied() else {
-            continue;
-        };
-        if priority != IntersectionPriority::StopSign {
-            continue;
-        }
-
-        let Some(key) = intersections.cluster_key_at(next) else {
-            continue;
-        };
-
-        // If we already released for this intersection and we're still on the approach tile,
-        // do not oscillate back to stopped.
-        if matches!(*st, VehicleTrafficState::CrossingIntersection { intersection } if intersection == key)
-        {
-            continue;
-        }
-
-        // Release once we've come to a stop at the stop line (simulated by being in Stopped).
-        let should_release = matches!(
-            *st,
-            VehicleTrafficState::Stopped { stop_tile, .. } if stop_tile == cur
-        );
-        if should_release {
-            *st = VehicleTrafficState::CrossingIntersection { intersection: key };
-        }
-    }
 }

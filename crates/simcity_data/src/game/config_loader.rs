@@ -8,8 +8,6 @@ use std::path::{Path, PathBuf};
 
 use bevy::prelude::*;
 
-use crate::game::buildings::BuildingTuning;
-use crate::game::custom_buildings::CustomBuildingRegistry;
 use crate::game::day_night::DayNightVisualConfig;
 use crate::game::economy::EconomyConfig;
 use crate::game::employment::EmploymentConfig;
@@ -32,9 +30,7 @@ fn load_configs_from_ron(mut commands: Commands) {
     load::<TrafficConfig>("assets/config/traffic.ron", &mut commands);
     load::<PathfindingConfig>("assets/config/pathfinding.ron", &mut commands);
     load::<EmploymentConfig>("assets/config/employment.ron", &mut commands);
-    load::<BuildingTuning>("assets/config/buildings.ron", &mut commands);
     load::<DayNightVisualConfig>("assets/config/day_night.ron", &mut commands);
-    load::<CustomBuildingRegistry>("assets/config/custom_buildings.ron", &mut commands);
     load::<PedestrianConfig>("assets/config/pedestrians.ron", &mut commands);
 }
 
@@ -108,9 +104,7 @@ mod tests {
         parse_required::<TrafficConfig>("assets/config/traffic.ron");
         parse_required::<PathfindingConfig>("assets/config/pathfinding.ron");
         parse_required::<EmploymentConfig>("assets/config/employment.ron");
-        parse_required::<BuildingTuning>("assets/config/buildings.ron");
         parse_required::<DayNightVisualConfig>("assets/config/day_night.ron");
-        parse_required::<CustomBuildingRegistry>("assets/config/custom_buildings.ron");
         parse_required::<PedestrianConfig>("assets/config/pedestrians.ron");
 
         parse_required::<Vec<Scenario>>("assets/scenarios/scenarios.ron");

@@ -59,7 +59,6 @@ fn congestion_affects_route_choice_between_parallel_lanes() {
         traffic: &traffic,
         grid: &grid,
         intersections: &intersections,
-        max_iterations: None,
     };
 
     let start = TilePos { x: 0, y: 0 };

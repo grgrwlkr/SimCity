@@ -5,29 +5,6 @@ use crate::game::map::{MapGrid, TilePos};
 use crate::game::roads::RoadDir;
 use crate::game::transport::GraphVersion;
 
-/// Intersection priority rules
-#[derive(Component, Debug, Copy, Clone, Eq, PartialEq, Default)]
-pub enum IntersectionPriority {
-    /// No priority rules (default: right-of-way)
-    #[default]
-    None,
-    /// Yield sign - must yield to traffic from right
-    #[allow(dead_code)] // Reserved for future use
-    YieldSign,
-    /// Stop sign - must come to complete stop
-    StopSign,
-    /// Main road - has priority over side roads
-    #[allow(dead_code)] // Reserved for future use
-    MainRoad,
-}
-
-/// Marker component to store intersection position for priority lookup
-#[derive(Component)]
-pub struct IntersectionPriorityMarker {
-    pub pos: TilePos,
-    pub priority: IntersectionPriority,
-}
-
 /// Logical intersection id (stable only within one `GraphVersion` build).
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct IntersectionId(pub u32);
@@ -81,8 +58,6 @@ pub struct IntersectionIndex {
 
     /// Internal dirty flag to reconcile ECS entities after changes.
     pub lights_dirty: bool,
-    /// Internal dirty flag to recompute `IntersectionPriorityMarker` entities after changes.
-    pub priorities_dirty: bool,
 }
 
 impl IntersectionIndex {
@@ -147,7 +122,6 @@ pub fn reset_intersections(mut index: ResMut<IntersectionIndex>) {
     index.traffic_light_keys.clear();
     index.traffic_lights.clear();
     index.lights_dirty = true;
-    index.priorities_dirty = true;
 }
 
 /// Detect intersections as clusters of adjacent `dir == None` tiles (flood fill).
@@ -178,7 +152,6 @@ pub fn detect_intersections(
     index.traffic_light_keys = next_keys;
     index.traffic_lights = next_ids;
     index.lights_dirty = true;
-    index.priorities_dirty = true;
 }
 
 pub fn build_intersection_clusters(
@@ -292,35 +265,4 @@ pub fn build_intersection_clusters(
     }
 
     (clusters, tile_to_intersection)
-}
-
-pub fn assign_intersection_priorities(
-    mut index: ResMut<IntersectionIndex>,
-    mut commands: Commands,
-    q_existing: Query<(Entity, &IntersectionPriorityMarker)>,
-) {
-    if !index.priorities_dirty {
-        return;
-    }
-    index.priorities_dirty = false;
-
-    // Despawn existing priority markers.
-    for (entity, _) in q_existing.iter() {
-        commands.entity(entity).despawn();
-    }
-
-    // Spawn new priority markers for all intersection tiles.
-    for cluster in index.clusters.iter() {
-        for &tile in cluster.tiles.iter() {
-            commands.spawn((
-                IntersectionPriorityMarker {
-                    pos: tile,
-                    priority: IntersectionPriority::None,
-                },
-                // Transform will be set by render system
-                Transform::default(),
-                Visibility::Hidden,
-            ));
-        }
-    }
 }

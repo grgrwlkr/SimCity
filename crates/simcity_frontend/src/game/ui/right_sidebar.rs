@@ -180,7 +180,6 @@ pub(super) fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams
             egui::CollapsingHeader::new("🚗 Vehicle Debug")
                 .default_open(true)
                 .show(ui, |ui| {
-                    let braking = 0;
                     let agg = p
                         .vehicle_agg
                         .as_deref()
@@ -198,7 +197,7 @@ pub(super) fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams
                         agg.approaching, agg.crossing
                     ));
                     ui.label(format!("  Stopped: {}, Wait: {}", agg.stopped, agg.waiting));
-                    ui.label(format!("  Brake: {}, Accel: {}", braking, agg.accelerating));
+                    ui.label(format!("  Accel: {}", agg.accelerating));
                     if let Some(m) = p.vehicle_motion.as_deref() {
                         ui.label(format!(
                             "  Max moving: {:.0}s, max stopped: {:.0}s",

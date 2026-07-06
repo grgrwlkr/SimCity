@@ -19,9 +19,7 @@ pub struct Notification {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum NotificationKind {
     Info,
-    #[allow(dead_code)] // Reserved for future use
     Warning,
-    #[allow(dead_code)] // Reserved for future use
     Error,
     #[allow(dead_code)] // Reserved for future use
     Achievement,

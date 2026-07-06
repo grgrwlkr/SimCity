@@ -1,13 +1,10 @@
 use bevy::prelude::*;
 
 use crate::game::intersections::{IntersectionId, IntersectionIndex};
-use crate::game::map::TilePos;
 use crate::game::transport::lanelet::conflict::rows_overlap;
 
 use super::super::Vehicle;
-use crate::game::pedestrians::PedestrianCrossing;
-
-use super::zones::{ConflictMask, ManeuverKind, StreamKey};
+use super::zones::ManeuverKind;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum ReservationState {
@@ -22,9 +19,6 @@ pub struct IntersectionReservation {
     pub vehicle: Entity,
     pub state: ReservationState,
     pub created_at_sec: f64,
-    pub zones: ConflictMask,
-    pub tiles: Vec<TilePos>,
-    pub stream: StreamKey,
     pub maneuver: ManeuverKind,
     /// Local matrix-row index of the lanelet this vehicle will traverse, so the box-entry gate
     /// (`drive.rs`) can take the conflict-tile reservation (`try_admit`) at the moment the vehicle
@@ -41,10 +35,6 @@ pub struct IntersectionReservation {
 #[derive(Resource, Default)]
 pub struct IntersectionReservations {
     pub by_intersection: std::collections::HashMap<IntersectionId, Vec<IntersectionReservation>>,
-    /// Legacy per-cluster stall counter, retained only as the flag-on tripwire (`stall_tripwire`):
-    /// the lanelet arbiter never writes it, so a non-empty value signals a leaked legacy write.
-    /// Cleared on reset/cleanup; must stay empty at runtime.
-    stall_ticks: std::collections::HashMap<IntersectionId, u32>,
     /// Per-intersection lanelet admission ledger (arbiter substrate).
     #[allow(dead_code)]
     ledger: std::collections::HashMap<IntersectionId, IntersectionLedger>,
@@ -86,7 +76,7 @@ pub(crate) struct IntersectionLedger {
     built_for_version: u64,
     /// Coarse whole-box holder: a vehicle approaching with an UNRESOLVABLE lanelet (sidecar empty +
     /// route-geometry fallback failed — common after road-A* reroutes) is admitted via a coarse
-    /// fallback that reserves the ENTIRE box exclusively (like the legacy ZONE_ALL emergency grant),
+    /// fallback that reserves the ENTIRE box exclusively (like the legacy whole-box emergency grant),
     /// admitted only when the box is completely clear. Without this, ~94% of approaching vehicles are
     /// dropped at the unresolved-lanelet gate on a populated city and the arbiter admits nothing.
     coarse_held: Option<Entity>,
@@ -275,12 +265,6 @@ impl IntersectionReservations {
             .unwrap_or(0)
     }
 
-    /// True if any cluster's stall counter is non-empty. Flag-on this MUST stay false — the arbiter
-    /// never increments `stall_ticks`; a non-empty value signals a leaked legacy write (tripwire).
-    pub(crate) fn stall_tripwire(&self) -> bool {
-        !self.stall_ticks.is_empty()
-    }
-
     /// Largest age (ms) of any currently-Approaching reservation, given the current sim time
     /// `now` (seconds). Observability for admission latency / starvation.
     pub(crate) fn max_approaching_age_ms(&self, now: f64) -> u32 {
@@ -326,62 +310,18 @@ impl IntersectionReservations {
     }
 }
 
-/// Per-tick cache of traffic light states keyed by intersection id.
-#[derive(Resource, Default)]
-pub(crate) struct IntersectionLightStateCache {
-    by_id: std::collections::HashMap<IntersectionId, crate::game::intersections::TrafficLight>,
-}
-
-/// Per-tick cache of active pedestrian crossing axes keyed by intersection id.
-///
-/// Bit layout:
-/// - bit 0: axis_ns=true (pedestrians move North/South)
-/// - bit 1: axis_ns=false (pedestrians move East/West)
-#[derive(Resource, Default)]
-pub(crate) struct PedestrianCrossingStateCache {
-    axis_mask: std::collections::HashMap<IntersectionId, u8>,
-}
-
-/// Build a compact lookup of traffic light controllers for this tick.
-pub(crate) fn cache_intersection_light_state(
-    q_lights: Query<&crate::game::intersections::TrafficLight>,
-    mut cache: ResMut<IntersectionLightStateCache>,
-) {
-    cache.by_id.clear();
-    for light in q_lights.iter() {
-        cache.by_id.insert(light.intersection_id, light.clone());
-    }
-}
-
-/// Build a compact lookup of active pedestrian crossings for this tick.
-pub(crate) fn cache_pedestrian_crossing_state(
-    q_pedestrians: Query<&PedestrianCrossing>,
-    mut cache: ResMut<PedestrianCrossingStateCache>,
-) {
-    cache.axis_mask.clear();
-    for crossing in q_pedestrians.iter() {
-        let mask = cache.axis_mask.entry(crossing.intersection_id).or_insert(0);
-        if crossing.axis_ns {
-            *mask |= 1 << 0;
-        } else {
-            *mask |= 1 << 1;
-        }
-    }
-}
-
 pub(crate) fn reset_intersection_reservations(mut reservations: ResMut<IntersectionReservations>) {
     reservations.by_intersection.clear();
-    reservations.stall_ticks.clear();
     reservations.ledger.clear();
 }
 
-/// Speed below which an Approaching holder counts as "not moving into the box" for the flag-on
+/// Speed below which an Approaching holder counts as "not moving into the box" for the
 /// stale-claim early release. A car genuinely entering accelerates past this within a tick or two;
 /// one parked behind a spillback/box gate stays at ~0.
 const STALE_APPROACH_SPEED_EPS: f32 = 0.1;
-/// Flag-on: how long an Approaching holder may sit STATIONARY before its entry claim is released so
+/// How long an Approaching holder may sit STATIONARY before its entry claim is released so
 /// it stops blocking the conflict matrix for perpendicular traffic it cannot use (1.5 s @ 10 Hz =
-/// 15 ticks). Far below the 6 s `timeout_secs`; gated so flag-off cleanup stays byte-identical.
+/// 15 ticks). Far below the 6 s `timeout_secs`.
 const STALE_APPROACH_RELEASE_SECS: f64 = 1.5;
 
 /// Whether a reservation should survive this cleanup tick. Mutates `r.state` (Approaching -> Inside
@@ -396,8 +336,8 @@ fn reservation_survives(
     id: IntersectionId,
     now: f64,
     timeout_secs: f64,
-    // Flag-on stale-claim budget: an Approaching holder that is stationary longer than this drops
-    // its claim early (matrix throughput). `f64::INFINITY` flag-off => no early release.
+    // Stale-claim budget: an Approaching holder that is stationary longer than this drops
+    // its claim early (matrix throughput). `f64::INFINITY` disables the early release.
     stale_approach_secs: f64,
 ) -> bool {
     let Ok(v) = q_vehicles.get(r.vehicle) else {
@@ -448,9 +388,8 @@ fn reservation_survives(
 }
 
 /// Release the lanelet ledger holders for vehicles whose reservation was dropped this tick (cluster
-/// exit / reroute / timeout). Flag-off the ledger is empty so every call is a no-op — keeping cleanup
-/// byte-identical when the arbiter is disabled. This closes the flag-on lifecycle: `try_admit`
-/// (arbiter) adds, this removes on exit, so `active_mask` never grows unboundedly.
+/// exit / reroute / timeout). This closes the admission lifecycle: `try_admit`
+/// (entry gate) adds, this removes on exit, so `active_mask` never grows unboundedly.
 pub(crate) fn release_intersection_holds(
     reservations: &mut IntersectionReservations,
     dropped: &[(IntersectionId, Entity)],

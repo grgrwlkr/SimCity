@@ -318,7 +318,6 @@ pub(in super::super) fn plan_lane_changes(
         traffic: &traffic,
         grid: &grid,
         intersections: &intersections,
-        max_iterations: None,
     };
 
     for d in desires {

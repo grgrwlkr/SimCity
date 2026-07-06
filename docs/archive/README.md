@@ -20,3 +20,5 @@
 - `traffic-vehicles-architecture.md`
 - `traffic-rewrite-v2.md`
 - `system-dependencies.md`
+- `architecture-review.md`
+- `superpowers/` (completed plans/specs/handoffs)

@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use bevy::time::Real;
 use std::collections::VecDeque;
 
-use crate::game::buildings::{Building, BuildingPhase, BuildingTuning};
+use crate::game::buildings::{Building, BuildingPhase};
 use crate::game::camera::MainCamera;
 use crate::game::citizens::{Citizen, CitizenState, CommuteStats, ShoppingDemandStats};
 use crate::game::demand::RciDemand;
@@ -245,8 +245,6 @@ pub struct DebugTransportSnapshot {
     pub lane_graph_version: u64,
     /// Lane count.
     pub lane_count: u32,
-    /// Lane connection count.
-    pub lane_connections: u32,
     /// Region graph version.
     pub region_graph_version: u64,
     /// Region size in tiles.
@@ -449,14 +447,6 @@ pub struct DebugEmergenciesSnapshot {
     pub stats_total_crimes: u32,
     /// Total medical emergencies spawned.
     pub stats_total_medical: u32,
-    /// Unresponded fires.
-    pub stats_unresponded_fires: u32,
-    /// Unresponded crimes.
-    pub stats_unresponded_crime: u32,
-    /// Unresponded medical.
-    pub stats_unresponded_medical: u32,
-    /// Total resolved emergencies.
-    pub stats_total_resolved: u32,
     /// Resolved within deadline.
     pub stats_resolved_in_time: u32,
     /// Failed responses.
@@ -625,8 +615,6 @@ pub struct DebugConfigSnapshot {
     pub pedestrian_uncontrolled_safety_margin_secs: f32,
     /// Pedestrians: uncontrolled min gap (tiles).
     pub pedestrian_uncontrolled_min_gap_tiles: f32,
-    /// Buildings: growth period (sec).
-    pub building_growth_period_secs: f32,
 }
 
 /// Resource tracking the current debug snapshot entity.
@@ -1454,11 +1442,9 @@ fn update_debug_transport_snapshot(
     if let Some(graph) = lane_graph.as_deref() {
         snapshot.lane_graph_version = graph.version;
         snapshot.lane_count = graph.lanes.len() as u32;
-        snapshot.lane_connections = graph.connections.len() as u32;
     } else {
         snapshot.lane_graph_version = 0;
         snapshot.lane_count = 0;
-        snapshot.lane_connections = 0;
     }
 
     if let Some(graph) = regions.as_deref() {
@@ -1797,10 +1783,6 @@ fn update_debug_emergencies_snapshot(
         snapshot.stats_total_fires = m.stats.total_fires;
         snapshot.stats_total_crimes = m.stats.total_crimes;
         snapshot.stats_total_medical = m.stats.total_medical;
-        snapshot.stats_unresponded_fires = m.stats.unresponded_fires;
-        snapshot.stats_unresponded_crime = m.stats.unresponded_crime;
-        snapshot.stats_unresponded_medical = m.stats.unresponded_medical;
-        snapshot.stats_total_resolved = m.stats.total_resolved;
         snapshot.stats_resolved_in_time = m.stats.resolved_in_time;
         snapshot.stats_failed_responses = m.stats.failed_responses;
     } else {
@@ -1809,10 +1791,6 @@ fn update_debug_emergencies_snapshot(
         snapshot.stats_total_fires = 0;
         snapshot.stats_total_crimes = 0;
         snapshot.stats_total_medical = 0;
-        snapshot.stats_unresponded_fires = 0;
-        snapshot.stats_unresponded_crime = 0;
-        snapshot.stats_unresponded_medical = 0;
-        snapshot.stats_total_resolved = 0;
         snapshot.stats_resolved_in_time = 0;
         snapshot.stats_failed_responses = 0;
     }
@@ -2041,7 +2019,6 @@ fn update_debug_config_snapshot(
     economy_cfg: Res<EconomyConfig>,
     employment_cfg: Res<EmploymentConfig>,
     ped_cfg: Res<PedestrianConfig>,
-    building_tuning: Res<BuildingTuning>,
     holder: Res<DebugSnapshotEntity>,
     mut q_snapshot: Query<&mut DebugConfigSnapshot>,
 ) {
@@ -2104,8 +2081,6 @@ fn update_debug_config_snapshot(
     snapshot.pedestrian_wait_reroute_max_attempts = ped_cfg.wait_reroute_max_attempts;
     snapshot.pedestrian_uncontrolled_safety_margin_secs = ped_cfg.uncontrolled_safety_margin_secs;
     snapshot.pedestrian_uncontrolled_min_gap_tiles = ped_cfg.uncontrolled_min_gap_tiles;
-
-    snapshot.building_growth_period_secs = building_tuning.growth_period_secs;
 }
 
 /// Lanelet graph observability mirror for BRP/MCP inspection.
@@ -2168,8 +2143,8 @@ fn update_debug_lanelet_state(
         .unwrap_or(0);
 }
 
-/// Lanelet intersection arbiter observability mirror for BRP/MCP inspection (flat scalars; all zero
-/// when the experimental flag is off — the arbiter never runs).
+/// Lanelet intersection arbiter observability mirror for BRP/MCP inspection (flat scalars, updated
+/// every sim tick from `ArbiterTickStats`).
 #[derive(Component, Reflect, Default, Copy, Clone)]
 #[reflect(Component)]
 pub struct DebugArbiterLedgerState {
@@ -2179,12 +2154,8 @@ pub struct DebugArbiterLedgerState {
     pub refused_this_tick: u32,
     /// Max held conflict points across all per-intersection ledgers.
     pub held_points_max: u32,
-    /// Total reserved exit slots across all exit tiles.
-    pub reserved_exit_slots: u32,
     /// Largest age of any currently-approaching reservation (ms).
     pub max_approaching_age_ms: u32,
-    /// 1 if any cluster's stall tripwire fired (must stay 0 flag-on; the arbiter never increments it).
-    pub stall_tripwire_fired: u32,
     /// Pedestrian crosswalk activations seeded this tick (P3b).
     pub ped_blocked: u32,
     /// Right-turn-on-red grants this tick (P3b).
@@ -2193,8 +2164,6 @@ pub struct DebugArbiterLedgerState {
     pub yield_refusals: u32,
     /// Traffic lights in a protected-left interval (P3b).
     pub left_protected_active: u32,
-    /// Reserved for the P3c ring-free force-admit counter; always 0 in P3a/P3b.
-    pub ring_force_admits: u32,
     /// Vehicles approaching a cluster this tick (collection-phase denominator). The gap between this
     /// and admitted+refused is the silent collection-phase drop count.
     pub cand_approaching: u32,
@@ -2207,9 +2176,6 @@ pub struct DebugArbiterLedgerState {
     /// Collection-phase drops other than unresolved-lanelet (bad dir / no exit tile / missing
     /// local_idx or lanelet / unusable exit cell).
     pub drop_other_collection: u32,
-    /// Grant-phase refusals at a capacity/spillback gate (exit slot / downstream headroom). Anomalous
-    /// on a near-empty network ⇒ an over-strict gate (valve-addressable / possible bug).
-    pub refused_capacity: u32,
     /// Grant-phase refusals at the conflict matrix (collision-safety; must NOT be bypassed).
     pub refused_matrix: u32,
     /// Whole-box coarse admissions this tick (must trend to ~0 once turns resolve to real lanelets).
@@ -2238,9 +2204,7 @@ fn update_debug_arbiter_ledger_state(
         snapshot.admitted_this_tick = s.admitted;
         snapshot.refused_this_tick = s.refused;
         snapshot.held_points_max = s.held_points_max;
-        snapshot.reserved_exit_slots = s.reserved_exit_slots;
         snapshot.max_approaching_age_ms = s.max_approaching_age_ms;
-        snapshot.stall_tripwire_fired = s.stall_tripwire_fired;
         snapshot.ped_blocked = s.ped_blocked;
         snapshot.rtor_grants = s.rtor_grants;
         snapshot.yield_refusals = s.yield_refusals;
@@ -2249,9 +2213,7 @@ fn update_debug_arbiter_ledger_state(
         snapshot.drop_unresolved_lanelet = s.drop_unresolved_lanelet;
         snapshot.candidates_built = s.candidates_built;
         snapshot.drop_other_collection = s.drop_other_collection;
-        snapshot.refused_capacity = s.refused_capacity;
         snapshot.refused_matrix = s.refused_matrix;
-        snapshot.ring_force_admits = s.force_admits;
         snapshot.coarse_admits = s.coarse_admits;
         snapshot.admitted_straight = s.admitted_straight;
         snapshot.admitted_right = s.admitted_right;
@@ -2378,9 +2340,7 @@ mod tests {
             admitted: 4,
             refused: 1,
             held_points_max: 3,
-            reserved_exit_slots: 2,
             max_approaching_age_ms: 250,
-            stall_tripwire_fired: 0,
             ped_blocked: 2,
             rtor_grants: 1,
             yield_refusals: 3,
@@ -2408,17 +2368,11 @@ mod tests {
         assert_eq!(state.admitted_this_tick, 4);
         assert_eq!(state.refused_this_tick, 1);
         assert_eq!(state.held_points_max, 3);
-        assert_eq!(state.reserved_exit_slots, 2);
         assert_eq!(state.max_approaching_age_ms, 250);
-        assert_eq!(
-            state.stall_tripwire_fired, 0,
-            "tripwire must stay 0 (arbiter never increments stall_ticks)"
-        );
         assert_eq!(state.ped_blocked, 2);
         assert_eq!(state.rtor_grants, 1);
         assert_eq!(state.yield_refusals, 3);
         assert_eq!(state.left_protected_active, 1);
-        assert_eq!(state.ring_force_admits, 0);
         assert_eq!(state.coarse_admits, 3);
         assert_eq!(state.admitted_straight, 4);
         assert_eq!(state.admitted_right, 2);

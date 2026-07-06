@@ -1,14 +1,5 @@
 use crate::game::map::TilePos;
 
-/// Returns true if `tile` lies inside the building footprint rectangle.
-#[inline]
-#[allow(dead_code)] // Utility helper; used by future UI/tools
-pub fn footprint_contains(anchor: TilePos, width: u8, length: u8, tile: TilePos) -> bool {
-    let w = width as i32;
-    let l = length as i32;
-    tile.x >= anchor.x && tile.x < anchor.x + w && tile.y >= anchor.y && tile.y < anchor.y + l
-}
-
 /// Iterate all tiles in a rectangular footprint.
 #[inline]
 pub fn for_each_footprint_tile(anchor: TilePos, width: u8, length: u8, mut f: impl FnMut(TilePos)) {

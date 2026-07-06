@@ -122,12 +122,6 @@ fn vehicle_does_not_enter_uncontrolled_intersection_while_pedestrian_is_crossing
                 vehicle: ego,
                 state: ReservationState::Approaching,
                 created_at_sec: 0.0,
-                zones: ZONE_ALL,
-                tiles: Vec::new(),
-                stream: StreamKey {
-                    entry: RoadDir::None,
-                    exit: RoadDir::None,
-                },
                 maneuver: ManeuverKind::Other,
                 local_idx: None,
                 coarse: false,

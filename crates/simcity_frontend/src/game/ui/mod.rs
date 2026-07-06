@@ -18,9 +18,7 @@ use crate::game::economy::EconomyConfig;
 use crate::game::emergencies::Emergency;
 use crate::game::emergencies::EmergencyManager;
 use crate::game::employment::EmploymentStats;
-use crate::game::map::{
-    BuildMode, BuildingKind, HoveredTile, MapConfig, MapGrid, TilePos, ZoneKind,
-};
+use crate::game::map::{BuildingKind, HoveredTile, MapConfig, MapGrid, TilePos, ZoneKind};
 use crate::game::roads::RoadKind;
 use crate::game::scenarios::{ScenarioCatalog, ScenarioProgress, ScenarioSelection};
 use crate::game::services::ServiceVehicle;

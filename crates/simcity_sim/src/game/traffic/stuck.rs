@@ -100,7 +100,6 @@ pub(super) fn resolve_stuck_vehicles(
         traffic: &traffic,
         grid: &grid,
         intersections: &intersections,
-        max_iterations: None,
     };
 
     for (
@@ -532,7 +531,6 @@ mod tests {
                 traffic,
                 grid,
                 intersections,
-                max_iterations: None,
             };
             find_road_path_cached(&mut ctx, start, goal)
         };

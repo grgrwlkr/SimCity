@@ -2,9 +2,8 @@
 //!
 //! Nodes are either a road lane-tile (`Road`) or an intersection lanelet (`Lanelet`, one legal
 //! entry-lane -> exit-lane maneuver). Intersection traversal happens ONLY via lanelet ENTER/EXIT
-//! edges; the legacy turn-blind cluster-tile wiring (`lane_graph::intersection_connections`) is
-//! bypassed on the flagged path, so the optimal route lands on the legal feeder lane upstream by
-//! construction.
+//! edges, so the optimal route lands on the legal feeder lane upstream by construction. This is
+//! the sole lane-level router (the legacy standalone lane A* has been removed).
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -198,10 +197,10 @@ fn reconstruct(
     path
 }
 
-/// A* over the combined RoadLane+Lanelet graph. Structural clone of [`find_lane_path`]: dense
-/// `best_g`/`came_from` indexed by packed node id, lazy stale-pop, saturating cost. Road edges reuse
-/// `lane_edge_cost` verbatim (congestion + per-trip jitter); lanelet ENTER/EXIT edges come from
-/// [`for_each_succ`]. Returns the node path (start road .. goal road) or `None` if unreachable.
+/// A* over the combined RoadLane+Lanelet graph: dense `best_g`/`came_from` indexed by packed node
+/// id, lazy stale-pop, saturating cost. Road edges reuse `lane_edge_cost` verbatim (congestion +
+/// per-trip jitter); lanelet ENTER/EXIT edges come from [`for_each_succ`]. Returns the node path
+/// (start road .. goal road) or `None` if unreachable.
 pub(crate) fn find_combined_path(
     lg: &LaneGraph,
     llg: &LaneletGraph,
@@ -534,8 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn combined_path_deterministic_reduces_to_lane_path_and_spreads() {
-        use crate::game::transport::lane_pathfinding::{find_lane_path, lane_path_to_tiles};
+    fn combined_path_deterministic_takes_straight_corridor_and_spreads() {
         use std::collections::HashSet;
 
         let grid = parallel_corridors();
@@ -558,8 +556,8 @@ mod tests {
         let p2 = find_combined_path(&lg, &llg, &ctx(7), start, goal);
         assert_eq!(p1, p2);
 
-        // (b) Reduction: with no lanelets the combined graph is the road graph, so the flattened
-        // tiles equal find_lane_path's tiles (same edges, same costs, same tie-break).
+        // (b) Straight-corridor oracle: with no lanelets, no congestion and jitter disabled, the
+        // optimal route is the straight y=0 corridor (any lane change costs +lane_change_penalty).
         let combined = find_combined_path(&lg, &llg, &ctx(0), start, goal).expect("combined path");
         let combined_tiles: Vec<TilePos> = combined
             .iter()
@@ -568,8 +566,8 @@ mod tests {
                 CombinedNode::Lanelet(_) => unreachable!("no lanelets in this grid"),
             })
             .collect();
-        let lane_tiles = lane_path_to_tiles(&find_lane_path(&lg, &ctx(0), start, goal), &lg);
-        assert_eq!(combined_tiles, lane_tiles);
+        let expected: Vec<TilePos> = (0..4).map(|x| TilePos { x, y: 0 }).collect();
+        assert_eq!(combined_tiles, expected);
 
         // (c) Spread: opposite-corridor endpoints make the y=0-first and y=1-first routes equal cost,
         // so the per-trip jitter (preserved through the combined search) spreads the switch point.
@@ -589,6 +587,57 @@ mod tests {
             distinct.len()
         );
         assert!(max_freq < 64, "one route monopolized all 64 seeds");
+    }
+
+    #[test]
+    fn congestion_pushes_combined_path_onto_parallel_corridor() {
+        // Ported from the removed legacy lane-A* suite: lane_edge_cost's live-congestion
+        // factor must push the route onto the free parallel corridor.
+        let grid = parallel_corridors();
+        let lg = build_lane_graph_inner(&grid, &GraphVersion(1));
+        let llg = LaneletGraph::default(); // intersection-free: no lanelets
+
+        // Congest the lower corridor (y=0) at x=1 and x=2.
+        let mut traffic = TrafficOccupancy::default();
+        traffic.ensure_len(grid.len());
+        let i10 = grid.idx(TilePos { x: 1, y: 0 }).unwrap();
+        let i20 = grid.idx(TilePos { x: 2, y: 0 }).unwrap();
+        traffic.per_tick_vehicles[i10] = 8;
+        traffic.per_tick_vehicles[i20] = 8;
+
+        let cfg = PathfindingConfig::default();
+        let ctx = LaneCostCtx {
+            grid: &grid,
+            traffic: &traffic,
+            cfg: &cfg,
+            jitter_seed: 0, // tie-break disabled: isolate congestion behavior
+        };
+
+        let start = lg.get_lane_id(TilePos { x: 0, y: 0 }, 0).unwrap();
+        let goal = lg.get_lane_id(TilePos { x: 3, y: 0 }, 0).unwrap();
+        let path = find_combined_path(&lg, &llg, &ctx, start, goal).expect("path");
+        let tiles: Vec<TilePos> = path
+            .iter()
+            .map(|n| match n {
+                CombinedNode::Road(l) => lg.get_lane(*l).unwrap().pos,
+                CombinedNode::Lanelet(_) => unreachable!("no lanelets in this grid"),
+            })
+            .collect();
+
+        assert_eq!(tiles.first(), Some(&TilePos { x: 0, y: 0 }));
+        assert_eq!(tiles.last(), Some(&TilePos { x: 3, y: 0 }));
+
+        // Route must detour onto the y=1 corridor and avoid the congested y=0 tiles.
+        assert!(
+            tiles.iter().any(|t| t.y == 1),
+            "expected detour onto parallel corridor y=1"
+        );
+        assert!(
+            !tiles
+                .iter()
+                .any(|t| *t == TilePos { x: 1, y: 0 } || *t == TilePos { x: 2, y: 0 }),
+            "expected to avoid congested y=0 tiles"
+        );
     }
 
     #[test]

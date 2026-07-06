@@ -396,7 +396,6 @@ fn assign_jobs(mut p: AssignJobsParams) {
         traffic: &p.traffic,
         grid: &p.grid,
         intersections: &p.intersections,
-        max_iterations: None,
     };
 
     'citizens: for (mut wp, citizen) in &mut p.q_citizens {

@@ -265,7 +265,7 @@ fn spawn_building_entity_from_snapshot(
 }
 
 #[derive(SystemParam)]
-struct SaveParams<'w, 's> {
+pub(crate) struct SaveParams<'w, 's> {
     seed: Res<'w, MapSeed>,
     grid: Res<'w, MapGrid>,
     city: Res<'w, City>,
@@ -277,28 +277,35 @@ struct SaveParams<'w, 's> {
     intersections: Res<'w, IntersectionIndex>,
 }
 
+/// Build the full V3 snapshot of the live world. Shared by `SaveGame` (which writes it
+/// to disk) and the `DumpSaveContract` debug command in `persistence_contract` (which
+/// logs a summary), so the two can never drift apart.
+pub(crate) fn snapshot_savegame(p: &SaveParams) -> SaveGameV3 {
+    SaveGameV3 {
+        save_version: 3,
+        seed: p.seed.0,
+        map: snapshot_map(&p.grid),
+        city: p.city.clone(),
+        buildings: snapshot_buildings(&p.q_buildings),
+        citizens: snapshot_citizens(&p.q_citizens),
+        next_citizen_id: p.id_gen.next(),
+        service_stations: snapshot_service_stations(&p.q_stations),
+        emergency_stats: p
+            .emergency_manager
+            .as_deref()
+            .map(|m| m.stats.clone())
+            .unwrap_or_default(),
+        traffic_light_tiles: snapshot_traffic_lights(&p.intersections),
+    }
+}
+
 fn handle_save_commands(mut reader: MessageReader<GameCommand>, p: SaveParams) {
     for cmd in reader.read() {
         let GameCommand::SaveGame { slot } = cmd else {
             continue;
         };
 
-        let save = SaveGameV3 {
-            save_version: 3,
-            seed: p.seed.0,
-            map: snapshot_map(&p.grid),
-            city: p.city.clone(),
-            buildings: snapshot_buildings(&p.q_buildings),
-            citizens: snapshot_citizens(&p.q_citizens),
-            next_citizen_id: p.id_gen.next(),
-            service_stations: snapshot_service_stations(&p.q_stations),
-            emergency_stats: p
-                .emergency_manager
-                .as_deref()
-                .map(|m| m.stats.clone())
-                .unwrap_or_default(),
-            traffic_light_tiles: snapshot_traffic_lights(&p.intersections),
-        };
+        let save = snapshot_savegame(&p);
 
         let path = slot_path(*slot);
         if let Err(e) = ensure_parent_dir(&path) {
@@ -719,7 +726,6 @@ fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParam
                     pos: b.anchor_pos,
                     total_vehicles: total,
                     available_vehicles: available,
-                    occupied: false,
                 });
 
                 for _ in 0..available {

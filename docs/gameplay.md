@@ -49,7 +49,6 @@ Current implementation shape:
 
 - транспортная инфраструктура уже зрелая и составляет самый сложный кусок проекта
 - pathfinding infra поддерживает shared path storage и caching
-- async pathfinding infra подключена, но current runtime в логах помечен как sync-oriented
 
 ## Zones, Buildings, Economy
 

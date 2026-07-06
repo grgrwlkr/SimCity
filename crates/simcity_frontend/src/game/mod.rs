@@ -8,7 +8,7 @@ mod ui_settings;
 pub use simcity_core::game::{
     camera as shared_camera, commands, ids, roads, sets, sim_events, state, trips, ui_state,
 };
-pub use simcity_data::game::{custom_buildings, persistence_contract, scenarios};
+pub use simcity_data::game::{persistence_contract, scenarios};
 pub use simcity_debug::game::{debug_world, mcp_status};
 pub use simcity_sim::game::{
     buildings, citizens, command_history, day_night, demand, economy, emergencies, employment,

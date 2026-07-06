@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use crate::game::intersections::{IntersectionId, IntersectionKey};
 use crate::game::map::TilePos;
 use crate::game::roads::RoadDir;
-use crate::game::transport::{LaneId, LaneletId, PathHandle, VehicleId};
+use crate::game::transport::{LaneletId, PathHandle};
 
 /// Per-vehicle lanelet plan (Phase-2 sidecar to the `Vec<TilePos>` route). Each entry pairs the
 /// route cursor offset where a lanelet's internal path begins with that lanelet's identity, for the
@@ -73,16 +73,7 @@ pub struct Vehicle {
     /// Current index into path (so we never modify the shared path).
     pub path_cursor: usize,
 
-    // Lane-based positioning (for 1M agent simulation)
-    /// Lane-based vehicle ID.
-    pub vehicle_id: VehicleId,
-    /// Lane-based positioning (for 1M agent simulation).
-    pub lane_id: LaneId,
-    /// Position along lane (s-coordinate in meters).
-    pub lane_s: f32,
-
-    // Legacy compatibility data (less frequently accessed)
-    /// Legacy tile-based positioning (for compatibility).
+    /// Tile-based positioning (spawn tile; not updated after spawn — see VehicleMotionStats).
     pub tile_pos: TilePos,
 
     // Reverse movement (GDD: vehicles can reverse slowly when stuck)
@@ -97,9 +88,6 @@ impl Default for Vehicle {
             path_handle: PathHandle::INVALID,
             path_cursor: 0,
             progress: 0.0,
-            lane_id: LaneId::INVALID,
-            lane_s: 0.0,
-            vehicle_id: VehicleId::INVALID,
             tile_pos: TilePos { x: 0, y: 0 },
             speed: 0.0,
             max_speed: 60.0, // Default speed

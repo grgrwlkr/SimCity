@@ -4,8 +4,9 @@ use crate::game::ids::CitizenId;
 
 use super::{CarOwner, Parked, Vehicle, VehicleMotionTimer};
 
-/// A vehicle stopped for this long (sim seconds, continuously) is counted "frozen" — past the 60 s
-/// stuck-reroute, so a non-zero `frozen_count` means jam recovery is failing to unstick it.
+/// A vehicle stopped for this long (sim seconds, continuously) is counted "frozen" in motion
+/// stats — an early jam signal at half the 60 s stuck-reroute threshold, so `frozen_count`
+/// rises BEFORE recovery starts intervening.
 const VEHICLE_FROZEN_SECS: f32 = 30.0;
 /// World-units/sec below which a vehicle is "stopped" for motion tracking.
 const VEHICLE_MOTION_SPEED_EPS: f32 = 0.05;

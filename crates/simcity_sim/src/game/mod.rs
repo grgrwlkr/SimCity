@@ -95,7 +95,6 @@ impl Plugin for SimPlugin {
         info!("✅ Pathfinding: Cached A* with hierarchical search");
         info!("✅ UI: Incremental metrics updates");
         info!("✅ Memory: Optimized pedestrian BFS and building growth");
-        info!("✅ Traffic: Async route planning disabled (sync mode active)");
         info!("🎮 Press F9 for debug dump, F8 to toggle debug window");
 
         app.init_state::<state::AppState>()

@@ -5,7 +5,7 @@ pub(super) fn update_window_title(
     q_window: Query<Entity, With<PrimaryWindow>>,
     mut q_windows: Query<&mut Window>,
     city: Res<City>,
-    mode: Res<BuildMode>,
+    ui: Res<UiState>,
 ) {
     let Ok(window_entity) = q_window.single() else {
         return;
@@ -18,11 +18,11 @@ pub(super) fn update_window_title(
         AppState::MainMenu => "SimCity (Bevy) — Enter to start".to_string(),
         AppState::InGame => format!(
             "SimCity (Bevy) — Day {} | $ {} | Pop {} | Build: {:?}",
-            city.day, city.money, city.population, mode.selected
+            city.day, city.money, city.population, ui.tool
         ),
         AppState::Paused => format!(
             "SimCity (Bevy) — PAUSED — Day {} | $ {} | Pop {} | Build: {:?}",
-            city.day, city.money, city.population, mode.selected
+            city.day, city.money, city.population, ui.tool
         ),
     };
 

@@ -9,9 +9,7 @@ use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 
 mod types;
-pub use types::{
-    BuildMode, BuildTool, BuildingKind, HoveredTile, MapConfig, TileKind, TilePos, ZoneKind,
-};
+pub use types::{BuildingKind, HoveredTile, MapConfig, TileKind, TilePos, ZoneKind};
 
 mod grid;
 pub use grid::{MapCell, MapGrid, MapSeed};
@@ -36,7 +34,7 @@ use commands::apply_game_commands_to_grid;
 mod input;
 use input::{
     CursorPaintState, RoadBuildState, build_mode_hotkeys, cursor_paint_to_command,
-    handle_undo_redo, sync_build_mode_from_ui, update_cursor_highlight, update_hovered_tile,
+    handle_undo_redo, update_cursor_highlight, update_hovered_tile,
 };
 
 mod render;
@@ -55,7 +53,6 @@ impl Plugin for MapPlugin {
             .init_gizmo_group::<RouteGizmos>()
             .add_systems(Startup, (init_map_grid, configure_route_gizmos))
             .init_resource::<MapIndex>()
-            .init_resource::<BuildMode>()
             .init_resource::<CursorPaintState>()
             .init_resource::<RoadBuildState>()
             .init_resource::<MapEditVersion>()
@@ -78,8 +75,7 @@ impl Plugin for MapPlugin {
                 Update,
                 (
                     build_mode_hotkeys,
-                    sync_build_mode_from_ui.after(build_mode_hotkeys),
-                    handle_undo_redo.after(sync_build_mode_from_ui),
+                    handle_undo_redo.after(build_mode_hotkeys),
                 )
                     .in_set(GameSet::Input)
                     .run_if(in_game_or_paused),

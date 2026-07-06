@@ -29,7 +29,7 @@ pub use upgrade::*;
 pub use zone_depth::{MAX_ZONE_DEPTH, is_within_zone_depth};
 
 // Re-export functions that were in the original file
-pub use components::{apply_building_tuning, cleanup_buildings, reset_building_upgrade_clock};
+pub use components::{cleanup_buildings, reset_building_upgrade_clock};
 pub use decay::despawn_invalid_buildings;
 pub use growth::{reset_growth_rng_on_new_map, seed_growth_rng_from_map};
 
@@ -41,9 +41,7 @@ pub struct BuildingsPlugin;
 
 impl Plugin for BuildingsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<BuildingTuning>()
-            .init_resource::<BuildingGrowthClock>()
-            .init_resource::<BuildingUpgradeClock>()
+        app.init_resource::<BuildingUpgradeClock>()
             .init_resource::<BuildingGrowthRng>()
             .add_systems(
                 OnEnter(AppState::MainMenu),
@@ -51,11 +49,7 @@ impl Plugin for BuildingsPlugin {
             )
             .add_systems(
                 OnEnter(AppState::InGame),
-                (
-                    seed_growth_rng_from_map,
-                    apply_building_tuning,
-                    reset_building_upgrade_clock,
-                ),
+                (seed_growth_rng_from_map, reset_building_upgrade_clock),
             )
             .add_systems(
                 Update,

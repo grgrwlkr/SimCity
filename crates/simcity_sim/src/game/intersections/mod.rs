@@ -10,8 +10,8 @@ mod render;
 #[allow(unused_imports)] // Re-exported for convenience (used by other modules/tests)
 pub use index::IntersectionCluster;
 pub use index::{
-    IntersectionId, IntersectionIndex, IntersectionKey, IntersectionPriority,
-    IntersectionPriorityMarker, build_intersection_clusters, cluster_has_open_exit,
+    IntersectionId, IntersectionIndex, IntersectionKey, build_intersection_clusters,
+    cluster_has_open_exit,
 };
 pub use lights::{LeftTurnDemand, LightPhase, TrafficLight};
 pub(crate) use render::{render_traffic_lights, sync_traffic_light_visuals};
@@ -42,13 +42,6 @@ impl Plugin for IntersectionsPlugin {
             .add_systems(
                 Update,
                 lights::sync_traffic_light_entities
-                    .in_set(GameSet::GraphUpdate)
-                    .after(index::detect_intersections)
-                    .run_if(in_game_or_paused),
-            )
-            .add_systems(
-                Update,
-                index::assign_intersection_priorities
                     .in_set(GameSet::GraphUpdate)
                     .after(index::detect_intersections)
                     .run_if(in_game_or_paused),

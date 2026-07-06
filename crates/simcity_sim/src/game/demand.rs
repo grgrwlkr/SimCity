@@ -25,14 +25,12 @@ pub struct DemandPlugin;
 
 impl Plugin for DemandPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<RciDemand>()
-            .init_resource::<DemandModifiers>()
-            .add_systems(
-                FixedUpdate,
-                compute_rci_demand
-                    .in_set(GameSet::PostSim)
-                    .run_if(in_state(AppState::InGame)),
-            );
+        app.init_resource::<RciDemand>().add_systems(
+            FixedUpdate,
+            compute_rci_demand
+                .in_set(GameSet::PostSim)
+                .run_if(in_state(AppState::InGame)),
+        );
     }
 }
 
@@ -42,14 +40,6 @@ pub struct RciDemand {
     pub residential: f32,
     pub commercial: f32,
     pub industrial: f32,
-}
-
-/// Additional modifiers for RCI demand (from policies, disasters, etc.).
-#[derive(Resource, Debug, Default, Copy, Clone)]
-pub struct DemandModifiers {
-    pub residential_mod: f32,
-    pub commercial_mod: f32,
-    pub industrial_mod: f32,
 }
 
 /// Target residents served per commercial building. Drives the commercial demand bootstrap:
@@ -63,9 +53,9 @@ const COMMERCIAL_RESIDENTS_PER_BUILDING: f32 = 40.0;
 ///
 /// Formula overview:
 /// ```text
-/// R_demand = base(jobs_vs_population) * (1 + commute_bonus) + policy_mod
-/// C_demand = base(shopping_unmet) * (1 + population_density_bonus) + policy_mod
-/// I_demand = base(employment_gap) * (1 + commercial_demand_link) + policy_mod
+/// R_demand = base(jobs_vs_population) * (1 + commute_bonus)
+/// C_demand = base(shopping_unmet) * (1 + population_density_bonus)
+/// I_demand = base(employment_gap) * (1 + commercial_demand_link)
 /// ```
 #[allow(clippy::too_many_arguments)] // Bevy system with many dependencies
 fn compute_rci_demand(
@@ -76,7 +66,6 @@ fn compute_rci_demand(
     land_value: Res<LandValueIndex>,
     q_buildings: Query<&Building>,
     mut demand: ResMut<RciDemand>,
-    modifiers: Res<DemandModifiers>,
 ) {
     // Bootstrap: with zero population, allow residential growth so the sim can start.
     if city.population == 0 {
@@ -132,9 +121,7 @@ fn compute_rci_demand(
         0.0
     };
 
-    let residential = (residential_base + commute_bonus - land_value_penalty
-        + modifiers.residential_mod)
-        .clamp(-1.0, 1.0);
+    let residential = (residential_base + commute_bonus - land_value_penalty).clamp(-1.0, 1.0);
 
     // =========================================================================
     // Commercial Demand
@@ -168,8 +155,7 @@ fn compute_rci_demand(
     let congestion_penalty = traffic.avg_congestion * 0.3;
 
     let commercial = (commercial_base * (1.0 + density_bonus + industrial_linkage)
-        - congestion_penalty
-        + modifiers.commercial_mod)
+        - congestion_penalty)
         .clamp(-1.0, 1.0);
 
     // =========================================================================
@@ -189,9 +175,8 @@ fn compute_rci_demand(
     // This is a simple heuristic based on building count.
     let pollution_saturation = (industrial_buildings as f32 / 20.0).min(0.3);
 
-    let industrial = (industrial_base + commercial_demand_link - pollution_saturation
-        + modifiers.industrial_mod)
-        .clamp(-1.0, 1.0);
+    let industrial =
+        (industrial_base + commercial_demand_link - pollution_saturation).clamp(-1.0, 1.0);
 
     *demand = RciDemand {
         residential,
@@ -203,14 +188,6 @@ fn compute_rci_demand(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn demand_modifiers_default_to_zero() {
-        let modifiers = DemandModifiers::default();
-        assert_eq!(modifiers.residential_mod, 0.0);
-        assert_eq!(modifiers.commercial_mod, 0.0);
-        assert_eq!(modifiers.industrial_mod, 0.0);
-    }
 
     #[test]
     fn rci_demand_default_to_zero() {
@@ -287,7 +264,6 @@ mod tests {
             .insert_resource(TrafficIndex::default())
             .insert_resource(LandValueIndex::default())
             .insert_resource(RciDemand::default())
-            .insert_resource(DemandModifiers::default())
             .add_systems(Update, compute_rci_demand);
 
         // No Building entities spawned -> zero commercial buildings.

@@ -73,13 +73,17 @@ pub(super) fn top_status_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams)
                 }
 
                 // Show current tool mode
-                let tool_name = match &p.mode.selected {
-                    crate::game::map::BuildTool::Road(kind) => format!("🛣 {:?}", kind),
-                    crate::game::map::BuildTool::Zone(zone) => format!("🏘 {:?}", zone),
-                    crate::game::map::BuildTool::PlaceBuilding(kind) => format!("🏢 {:?}", kind),
-                    crate::game::map::BuildTool::TrafficLight => "🚦 Traffic Light".to_string(),
-                    crate::game::map::BuildTool::Erase => "🗑 Erase".to_string(),
-                    crate::game::map::BuildTool::Inspect => "🔍 Inspect".to_string(),
+                let tool_name = match p.ui_state.tool {
+                    ToolMode::Road(kind) => format!("🛣 {kind:?}"),
+                    ToolMode::Residential | ToolMode::Commercial | ToolMode::Industrial => {
+                        format!("🏘 {:?}", p.ui_state.tool)
+                    }
+                    ToolMode::FireStation | ToolMode::PoliceStation | ToolMode::Hospital => {
+                        format!("🏢 {:?}", p.ui_state.tool)
+                    }
+                    ToolMode::TrafficLight => "🚦 Traffic Light".to_string(),
+                    ToolMode::Erase => "🗑 Erase".to_string(),
+                    ToolMode::Inspect => "🔍 Inspect".to_string(),
                 };
                 ui.label(tool_name);
                 ui.separator();

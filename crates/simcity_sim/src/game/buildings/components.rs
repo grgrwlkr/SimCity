@@ -1,20 +1,6 @@
 use bevy::prelude::*;
 use rand::prelude::*;
 
-/// Visual scaling (buildings)
-// We want building visuals to grow with level. The Sprite uses a base size of `tile_size` and the
-// Transform scale encodes the level-dependent factor (so we don't double-apply scaling).
-#[allow(dead_code)] // Reserved for future level-based visual scaling
-const BUILDING_LEVEL1_SCALE: f32 = 0.75;
-#[allow(dead_code)] // Reserved for future level-based visual scaling
-const BUILDING_LEVEL_SCALE_STEP: f32 = 0.15; // lvl2=0.90, lvl3=1.05
-
-#[allow(dead_code)] // Reserved for future level-based visual scaling
-pub fn building_visual_scale(level: u8) -> f32 {
-    let lvl = level.clamp(1, 3) as f32;
-    BUILDING_LEVEL1_SCALE + (lvl - 1.0) * BUILDING_LEVEL_SCALE_STEP
-}
-
 /// Building construction and operational phases (GDD 10.3.3)
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum BuildingPhase {
@@ -59,7 +45,7 @@ pub struct Building {
 
 impl Building {
     /// Get all tile positions occupied by this building's footprint
-    #[allow(dead_code)] // Prefer `buildings::for_each_footprint_tile` / `footprint_contains` in hot paths
+    #[allow(dead_code)] // Prefer `buildings::for_each_footprint_tile` in hot paths
     pub fn footprint_tiles(&self) -> Vec<crate::game::map::TilePos> {
         let mut tiles = Vec::new();
         for dx in 0..(self.footprint_width as i32) {
@@ -125,23 +111,6 @@ impl Building {
     }
 }
 
-/// Externalized tuning for building growth/decay (MVP).
-///
-/// Loaded optionally via `ConfigLoaderPlugin` from `assets/config/buildings.ron`.
-#[derive(Resource, serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct BuildingTuning {
-    /// How often the growth system attempts to spawn buildings (seconds, sim time).
-    pub growth_period_secs: f32,
-}
-
-impl Default for BuildingTuning {
-    fn default() -> Self {
-        Self {
-            growth_period_secs: 0.6,
-        }
-    }
-}
-
 /// When a building loses road access, start a demolition countdown.
 /// GDD: Grace period is 1 game day
 #[derive(Component, Debug, Copy, Clone)]
@@ -178,11 +147,6 @@ pub const LOW_HAPPINESS_THRESHOLD: f32 = 0.3;
 pub const ECONOMIC_LOSSES_THRESHOLD: i64 = -100;
 
 #[derive(Resource)]
-pub struct BuildingGrowthClock {
-    pub timer: Timer,
-}
-
-#[derive(Resource)]
 pub struct BuildingUpgradeClock {
     pub timer: Timer,
 }
@@ -200,30 +164,12 @@ impl Default for BuildingGrowthRng {
     }
 }
 
-impl Default for BuildingGrowthClock {
-    fn default() -> Self {
-        Self {
-            timer: Timer::from_seconds(0.6, TimerMode::Repeating),
-        }
-    }
-}
-
 impl Default for BuildingUpgradeClock {
     fn default() -> Self {
         Self {
             timer: Timer::from_seconds(5.0, TimerMode::Repeating),
         }
     }
-}
-
-pub fn apply_building_tuning(tuning: Res<BuildingTuning>, mut clock: ResMut<BuildingGrowthClock>) {
-    let secs = tuning.growth_period_secs.max(0.05);
-    clock.timer = Timer::from_seconds(secs, TimerMode::Repeating);
-}
-
-#[allow(dead_code)]
-pub fn reset_building_upgrade_timer(clock: &mut BuildingUpgradeClock) {
-    clock.timer.reset();
 }
 
 pub fn reset_building_upgrade_clock(mut clock: ResMut<BuildingUpgradeClock>) {

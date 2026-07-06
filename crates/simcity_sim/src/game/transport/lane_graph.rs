@@ -42,8 +42,6 @@ pub struct Lane {
 pub struct LaneGraph {
     pub version: u64,
     pub lanes: Vec<Lane>,
-    /// Directed connections: lane_id -> next lane_ids.
-    pub connections: HashMap<LaneId, Vec<LaneId>>,
     /// Lookup: (tile_pos, lane_idx) -> lane_id.
     pub tile_lane_to_id: HashMap<(TilePos, u8), LaneId>,
     /// Fast lookup: tile_pos -> lane_id (lane-tile model: one lane per tile).
@@ -57,13 +55,6 @@ impl LaneGraph {
 
     pub fn get_lane(&self, id: LaneId) -> Option<&Lane> {
         self.lanes.get(id.as_usize())
-    }
-
-    pub fn get_connections(&self, id: LaneId) -> &[LaneId] {
-        self.connections
-            .get(&id)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
     }
 
     pub fn get_lane_id(&self, pos: TilePos, lane_idx: u8) -> Option<LaneId> {
@@ -100,7 +91,8 @@ pub fn build_lane_graph_inner(grid: &MapGrid, version: &GraphVersion) -> LaneGra
         ..Default::default()
     };
 
-    // Phase 1: 1 node per lane-tile.
+    // 1 node per lane-tile. Adjacency is not materialized: the combined lanelet A*
+    // (`lanelet::pathfinding::for_each_succ`) derives successors on the fly.
     for y in 0..grid.height {
         for x in 0..grid.width {
             let pos = TilePos { x, y };
@@ -125,8 +117,6 @@ pub fn build_lane_graph_inner(grid: &MapGrid, version: &GraphVersion) -> LaneGra
         }
     }
 
-    // Phase 2: directed adjacency.
-    build_lane_connections(&mut graph);
     graph
 }
 
@@ -137,91 +127,6 @@ pub fn build_lane_graph(
     mut lane_graph: ResMut<LaneGraph>,
 ) {
     *lane_graph = build_lane_graph_inner(&grid, &version);
-}
-
-fn build_lane_connections(graph: &mut LaneGraph) {
-    graph.connections.clear();
-    let ids: Vec<LaneId> = graph.lanes.iter().map(|l| l.id).collect();
-
-    for lane_id in ids {
-        let Some(lane) = graph.get_lane(lane_id).cloned() else {
-            continue;
-        };
-        let mut out = if lane.dir == RoadDir::None {
-            intersection_connections(graph, &lane)
-        } else {
-            road_lane_connections(graph, &lane)
-        };
-        out.sort_unstable_by_key(|id| id.0);
-        out.dedup();
-        graph.connections.insert(lane_id, out);
-    }
-}
-
-fn road_lane_connections(graph: &LaneGraph, lane: &Lane) -> Vec<LaneId> {
-    let mut out = Vec::new();
-
-    // Forward along lane direction. Entering intersection is allowed.
-    let forward = tile_in_dir(lane.pos, lane.dir);
-    if let Some(next_id) = graph.lane_id_at_pos(forward)
-        && let Some(next_lane) = graph.get_lane(next_id)
-        && (next_lane.dir == lane.dir || next_lane.dir == RoadDir::None)
-    {
-        push_unique(&mut out, next_id);
-    }
-
-    // Lateral lane changes to adjacent same-direction lanes.
-    for side in [lane.dir.left(), lane.dir.right()] {
-        if side == RoadDir::None {
-            continue;
-        }
-        let side_pos = tile_in_dir(lane.pos, side);
-        if let Some(side_id) = graph.lane_id_at_pos(side_pos)
-            && let Some(side_lane) = graph.get_lane(side_id)
-            && side_lane.dir == lane.dir
-            && side_lane.dir != RoadDir::None
-        {
-            push_unique(&mut out, side_id);
-        }
-    }
-
-    out
-}
-
-fn intersection_connections(graph: &LaneGraph, lane: &Lane) -> Vec<LaneId> {
-    let mut out = Vec::new();
-
-    // Inside intersection: move between intersection tiles freely.
-    // Exit from intersection: only into lanes whose travel dir matches movement dir.
-    for dir in [RoadDir::North, RoadDir::South, RoadDir::East, RoadDir::West] {
-        let next_pos = tile_in_dir(lane.pos, dir);
-        let Some(next_id) = graph.lane_id_at_pos(next_pos) else {
-            continue;
-        };
-        let Some(next_lane) = graph.get_lane(next_id) else {
-            continue;
-        };
-
-        if next_lane.dir == RoadDir::None || next_lane.dir == dir {
-            push_unique(&mut out, next_id);
-        }
-    }
-
-    out
-}
-
-fn tile_in_dir(pos: TilePos, dir: RoadDir) -> TilePos {
-    let d = dir.delta();
-    TilePos {
-        x: pos.x + d.x,
-        y: pos.y + d.y,
-    }
-}
-
-fn push_unique(out: &mut Vec<LaneId>, lane_id: LaneId) {
-    if !out.contains(&lane_id) {
-        out.push(lane_id);
-    }
 }
 
 #[cfg(test)]
@@ -271,28 +176,5 @@ mod tests {
 
         assert!(graph.get_rightmost_lane(west_pos, RoadDir::West).is_some());
         assert!(graph.get_rightmost_lane(west_pos, RoadDir::East).is_none());
-    }
-
-    #[test]
-    fn intersection_exit_blocks_wrong_way_neighbor() {
-        let mut grid = MapGrid::new(3, 3);
-        // Approach lane into intersection.
-        set_lane(&mut grid, TilePos { x: 1, y: 0 }, 0, RoadDir::North);
-        // Intersection tile.
-        set_lane(&mut grid, TilePos { x: 1, y: 1 }, 0, RoadDir::None);
-        // Wrong-way lane north of intersection (points back into cluster).
-        set_lane(&mut grid, TilePos { x: 1, y: 2 }, 1, RoadDir::South);
-        // Valid eastbound exit.
-        set_lane(&mut grid, TilePos { x: 2, y: 1 }, 0, RoadDir::East);
-
-        let graph = build_lane_graph_inner(&grid, &GraphVersion(1));
-        let approach = graph.get_lane_id(TilePos { x: 1, y: 0 }, 0).unwrap();
-        let intersection = graph.get_lane_id(TilePos { x: 1, y: 1 }, 0).unwrap();
-        let wrong_way = graph.get_lane_id(TilePos { x: 1, y: 2 }, 1).unwrap();
-        let east_exit = graph.get_lane_id(TilePos { x: 2, y: 1 }, 0).unwrap();
-
-        assert!(graph.get_connections(approach).contains(&intersection));
-        assert!(!graph.get_connections(intersection).contains(&wrong_way));
-        assert!(graph.get_connections(intersection).contains(&east_exit));
     }
 }

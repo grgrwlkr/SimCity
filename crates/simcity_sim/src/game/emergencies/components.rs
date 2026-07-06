@@ -16,21 +16,12 @@ pub struct Emergency {
     pub kind: EmergencyKind,
     pub pos: TilePos,
     pub severity: f32, // 0.0..1.0
-    #[allow(dead_code)] // Reserved for future use
-    pub spawned_at: f32,
     pub responded: bool,
-    #[allow(dead_code)] // Reserved for future use
-    pub response_time_sec: Option<f32>,
-    #[allow(dead_code)] // Reserved for future use
     pub resolved: bool,
-    #[allow(dead_code)] // Reserved for future use
     pub consequence_applied: bool,
-    #[allow(dead_code)] // Reserved for future use
     pub failed: bool,
     /// Time remaining in game hours until deadline (GDD: tracked in game hours)
     pub time_remaining: f32,
-    #[allow(dead_code)] // Reserved for future use
-    pub dispatched_vehicles: Vec<Entity>,
     pub resolution_progress: f32,
     pub assigned_vehicle: Option<Entity>,
 }
@@ -108,10 +99,6 @@ pub struct EmergencyStats {
     pub total_fires: u32,
     pub total_crimes: u32,
     pub total_medical: u32,
-    pub unresponded_fires: u32,
-    pub unresponded_medical: u32,
-    pub unresponded_crime: u32,
-    pub total_resolved: u32,
     pub resolved_in_time: u32,
     pub failed_responses: u32,
 }

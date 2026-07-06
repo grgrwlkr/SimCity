@@ -14,7 +14,7 @@ pub mod turn_lanes;
 
 pub use lane_graph::{LaneGraph, LaneId, build_lane_graph};
 pub use lane_occupancy::VehicleId;
-pub use lane_pathfinding::{LaneCostCtx, find_lane_path, lane_path_to_tiles};
+pub use lane_pathfinding::LaneCostCtx;
 pub use lanelet::{
     ConflictMatrix, Lanelet, LaneletConflictMatrices, LaneletGraph, LaneletId, build_lanelet_graph,
 };
@@ -124,7 +124,6 @@ impl Plugin for TransportPlugin {
             .init_resource::<LaneletGraph>()
             .init_resource::<LaneletConflictMatrices>()
             .init_resource::<turn_lanes::TurnLaneAutogenState>()
-            .add_plugins(pathfinding::r#async::AsyncPathfindingPlugin)
             .add_systems(
                 FixedUpdate,
                 road_graph::rebuild_road_graph.in_set(GameSet::GraphUpdate),

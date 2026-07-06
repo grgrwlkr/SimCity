@@ -38,18 +38,15 @@ impl ServiceKind {
 }
 
 /// Marker component for a service station building.
-#[allow(dead_code)]
 #[derive(Component, Debug, Copy, Clone)]
 pub struct ServiceStation {
     pub kind: ServiceKind,
     pub pos: TilePos,
     pub total_vehicles: u8,
     pub available_vehicles: u8,
-    pub occupied: bool,
 }
 
 /// Service vehicle state machine (minimal for now; dispatch logic is 5.4+).
-#[allow(dead_code)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum ServiceVehicleState {
     AtStation,
@@ -59,7 +56,6 @@ pub enum ServiceVehicleState {
 }
 
 /// Service vehicle component (attached to a `Vehicle` entity).
-#[allow(dead_code)]
 #[derive(Component, Debug)]
 pub struct ServiceVehicle {
     pub kind: ServiceKind,
@@ -70,8 +66,5 @@ pub struct ServiceVehicle {
 }
 
 /// Visual marker component for the colored inner sprite (child entity).
-#[allow(dead_code)]
 #[derive(Component)]
-pub struct ServiceVehicleMarker {
-    pub color: Color,
-}
+pub struct ServiceVehicleMarker;

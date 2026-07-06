@@ -5,7 +5,6 @@ use crate::game::buildings::any_footprint_tile;
 use crate::game::emergencies::Emergency;
 use crate::game::map::{MapConfig, MapGrid, TilePos};
 use crate::game::traffic::{Parked, Vehicle, VehicleTrafficState};
-use crate::game::transport::{LaneId, VehicleId};
 
 use super::components::{
     ServiceKind, ServiceStation, ServiceVehicle, ServiceVehicleMarker, ServiceVehicleState,
@@ -46,7 +45,6 @@ pub(crate) fn sync_service_stations_from_buildings(
             pos: b.anchor_pos,
             total_vehicles: total,
             available_vehicles: total,
-            occupied: false,
         });
 
         // Spawn parked vehicles (idle at station). They must not be despawned by traffic.
@@ -125,9 +123,6 @@ pub fn spawn_service_vehicle(
                 path_handle: path_pool.intern(vec![start_pos]),
                 path_cursor: 0,
                 progress: 0.0,
-                lane_id: LaneId::INVALID,
-                lane_s: 0.0,
-                vehicle_id: VehicleId::INVALID,
                 tile_pos: start_pos,
                 speed: 0.0,
                 max_speed: kind.vehicle_speed(),
@@ -157,9 +152,7 @@ pub fn spawn_service_vehicle(
                     ..default()
                 },
                 Transform::from_xyz(0.0, 0.0, 1.0),
-                ServiceVehicleMarker {
-                    color: kind.vehicle_color(),
-                },
+                ServiceVehicleMarker,
             ));
         })
         .id()

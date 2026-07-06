@@ -1,24 +1,22 @@
-//! Persistence contract types (pre-M7).
+//! Persistence contract types: the serialized shapes (`SaveGameV1`..`SaveGameV3` and
+//! their snapshot structs) that define "what is saved".
 //!
-//! This module intentionally does NOT implement IO yet. It's a single place to keep the
-//! "what is saved" contract stable before implementing M7 Save/Load.
+//! Save/Load IO lives in `persistence`; this module only owns the contract types plus
+//! the `DumpSaveContract` debug command, which logs a summary of the exact snapshot
+//! `SaveGame` would write (built via `persistence::snapshot_savegame`, traffic lights
+//! included).
 
 use bevy::ecs::message::MessageReader;
-use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
-use crate::game::buildings::components_pub::{EconomicDecay, LowHappinessDecay, NoRoadAccessDecay};
-use crate::game::buildings::{Building, BuildingPhase};
 use crate::game::citizens::CitizenState;
-use crate::game::citizens::{Citizen, CitizenWorkplace};
 use crate::game::commands::GameCommand;
-use crate::game::emergencies::{EmergencyManager, EmergencyStats};
-use crate::game::ids::{CitizenId, CitizenIdComp, CitizenIdGen};
+use crate::game::emergencies::EmergencyStats;
+use crate::game::ids::CitizenId;
 use crate::game::map::{BuildingKind, TileKind, TilePos, ZoneKind};
-use crate::game::map::{MapGrid, MapSeed};
+use crate::game::persistence::{SaveParams, snapshot_savegame};
 use crate::game::roads::RoadCell;
 use crate::game::services::ServiceKind;
-use crate::game::services::ServiceStation;
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
@@ -35,19 +33,6 @@ impl Plugin for PersistenceContractPlugin {
         );
     }
 }
-
-type BuildingContractQueryItem = (
-    &'static Building,
-    Option<&'static NoRoadAccessDecay>,
-    Option<&'static LowHappinessDecay>,
-    Option<&'static EconomicDecay>,
-);
-
-type CitizenContractQueryItem = (
-    &'static CitizenIdComp,
-    &'static Citizen,
-    Option<&'static CitizenWorkplace>,
-);
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct SaveGameV1 {
@@ -188,227 +173,15 @@ pub struct CitizenSnapshotV1 {
     pub workplace: Option<TilePos>,
 }
 
-fn snapshot_savegame_v1(
-    seed: &MapSeed,
-    grid: &MapGrid,
-    city: &City,
-    citizens: &Query<CitizenContractQueryItem>,
-    id_gen: &CitizenIdGen,
-) -> SaveGameV1 {
-    let mut tiles = Vec::with_capacity(grid.len());
-    for y in 0..grid.height {
-        for x in 0..grid.width {
-            let pos = TilePos { x, y };
-            let cell = grid.get(pos).unwrap_or_default();
-            tiles.push(MapTileV1 {
-                height: cell.height,
-                water: cell.water,
-                terrain: cell.terrain,
-                road: cell.road,
-                zone: cell.zone,
-                building: cell.building,
-            });
-        }
-    }
-
-    let mut out_citizens = Vec::new();
-    for (id, c, wp) in citizens.iter() {
-        out_citizens.push(CitizenSnapshotV1 {
-            id: id.0,
-            home: c.home,
-            last_place: c.last_place,
-            state: c.state,
-            workplace: wp.and_then(|w| w.workplace),
-        });
-    }
-
-    SaveGameV1 {
-        save_version: 1,
-        seed: seed.0,
-        map: MapGridV1 {
-            width: grid.width,
-            height: grid.height,
-            tiles,
-        },
-        city: city.clone(),
-        citizens: out_citizens,
-        next_citizen_id: id_gen.next(),
-    }
-}
-
-fn snapshot_savegame_v2(
-    seed: &MapSeed,
-    grid: &MapGrid,
-    city: &City,
-    citizens: &Query<CitizenContractQueryItem>,
-    id_gen: &CitizenIdGen,
-    stations: &Query<&ServiceStation>,
-    emergency_manager: Option<&EmergencyManager>,
-) -> SaveGameV2 {
-    let v1 = snapshot_savegame_v1(seed, grid, city, citizens, id_gen);
-
-    let mut out_stations = Vec::new();
-    for s in stations.iter() {
-        out_stations.push(ServiceStationSnapshot {
-            kind: s.kind,
-            pos: s.pos,
-            total_vehicles: s.total_vehicles,
-            available_vehicles: s.available_vehicles,
-        });
-    }
-
-    SaveGameV2 {
-        save_version: 2,
-        seed: v1.seed,
-        map: v1.map,
-        city: v1.city,
-        citizens: v1.citizens,
-        next_citizen_id: v1.next_citizen_id,
-        service_stations: out_stations,
-        emergency_stats: emergency_manager
-            .map(|m| m.stats.clone())
-            .unwrap_or_default(),
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn snapshot_savegame_v3(
-    seed: &MapSeed,
-    grid: &MapGrid,
-    city: &City,
-    buildings: &Query<BuildingContractQueryItem>,
-    citizens: &Query<CitizenContractQueryItem>,
-    id_gen: &CitizenIdGen,
-    stations: &Query<&ServiceStation>,
-    emergency_manager: Option<&EmergencyManager>,
-) -> SaveGameV3 {
-    let v2 = snapshot_savegame_v2(
-        seed,
-        grid,
-        city,
-        citizens,
-        id_gen,
-        stations,
-        emergency_manager,
-    );
-    let mut out_buildings = Vec::new();
-    for (b, no_road, low_happy, economic) in buildings.iter() {
-        out_buildings.push(BuildingSnapshot {
-            kind: b.kind,
-            anchor_pos: b.anchor_pos,
-            footprint_width: b.footprint_width,
-            footprint_length: b.footprint_length,
-            level: b.level,
-            phase: match b.phase {
-                BuildingPhase::UnderConstruction { days_remaining } => {
-                    BuildingPhaseSnapshot::UnderConstruction { days_remaining }
-                }
-                BuildingPhase::Operational => BuildingPhaseSnapshot::Operational,
-            },
-            construction_start_day: b.construction_start_day,
-            capacity_residents: b.capacity_residents,
-            capacity_jobs: b.capacity_jobs,
-            occupancy_residents: b.occupancy_residents,
-            occupancy_jobs: b.occupancy_jobs,
-            target_occupancy_residents: b.target_occupancy_residents,
-            target_occupancy_jobs: b.target_occupancy_jobs,
-            parking_spots: b.parking_spots.clone(),
-            no_road_access_decay: no_road.copied().map(|d| NoRoadAccessDecaySnapshot {
-                access_lost_day: d.access_lost_day,
-            }),
-            low_happiness_decay: low_happy.copied().map(|d| LowHappinessDecaySnapshot {
-                decay_start_day: d.decay_start_day,
-                avg_happiness: d.avg_happiness,
-            }),
-            economic_decay: economic.copied().map(|d| EconomicDecaySnapshot {
-                decay_start_day: d.decay_start_day,
-                cumulative_losses: d.cumulative_losses,
-            }),
-        });
-    }
-
-    SaveGameV3 {
-        save_version: 3,
-        seed: v2.seed,
-        map: v2.map,
-        city: v2.city,
-        buildings: out_buildings,
-        citizens: v2.citizens,
-        next_citizen_id: v2.next_citizen_id,
-        service_stations: v2.service_stations,
-        emergency_stats: v2.emergency_stats,
-        // Contract dump has no live intersection index access; traffic lights default empty.
-        traffic_light_tiles: Vec::new(),
-    }
-}
-
-fn dump_save_contract(mut reader: MessageReader<GameCommand>, p: DumpParams) {
+fn dump_save_contract(mut reader: MessageReader<GameCommand>, p: SaveParams) {
     for cmd in reader.read() {
         if !matches!(cmd, GameCommand::DumpSaveContract) {
             continue;
         }
-        let save = snapshot_savegame_v3(
-            &p.seed,
-            &p.grid,
-            &p.city,
-            &p.q_buildings,
-            &p.q_citizens,
-            &p.id_gen,
-            &p.q_stations,
-            p.emergency_manager.as_deref(),
-        );
-
-        // Touch snapshot fields so the contract stays "live" in the binary (no dead_code).
-        let (t_height, t_water, t_terrain, t_road, t_zone, t_building) =
-            if let Some(t) = save.map.tiles.first().copied() {
-                (
-                    Some(t.height),
-                    Some(t.water),
-                    Some(t.terrain),
-                    Some(t.road),
-                    Some(t.zone),
-                    t.building,
-                )
-            } else {
-                (None, None, None, None, None, None)
-            };
-
-        let (c_id, c_home, c_last, c_state, c_workplace) = if let Some(c) = save.citizens.first() {
-            (
-                Some(c.id),
-                Some(c.home),
-                Some(c.last_place),
-                Some(c.state),
-                c.workplace,
-            )
-        } else {
-            (None, None, None, None, None)
-        };
-
-        let (s_kind, s_pos, s_total, s_avail) = if let Some(s) = save.service_stations.first() {
-            (
-                Some(s.kind),
-                Some(s.pos),
-                Some(s.total_vehicles),
-                Some(s.available_vehicles),
-            )
-        } else {
-            (None, None, None, None)
-        };
-
-        let (b_kind, b_pos, b_size, b_phase) = if let Some(b) = save.buildings.first() {
-            (
-                Some(b.kind),
-                Some(b.anchor_pos),
-                Some((b.footprint_width, b.footprint_length)),
-                Some(b.phase),
-            )
-        } else {
-            (None, None, None, None)
-        };
+        let save = snapshot_savegame(&p);
 
         info!(
-            "SaveContract v{}: seed={} map={}x{} tiles={} buildings={} citizens={} next_citizen_id={} money={} day={} stations={} emergency_stats={:?} tile0={:?}/{:?}/{:?}/{:?}/{:?}/{:?} building0={:?}/{:?}/{:?}/{:?} citizen0={:?}/{:?}/{:?}/{:?}/{:?} station0={:?}/{:?}/{:?}/{:?}",
+            "SaveContract v{}: seed={} map={}x{} tiles={} buildings={} citizens={} next_citizen_id={} money={} day={} stations={} traffic_lights={} emergency_stats={:?}",
             save.save_version,
             save.seed,
             save.map.width,
@@ -420,38 +193,8 @@ fn dump_save_contract(mut reader: MessageReader<GameCommand>, p: DumpParams) {
             save.city.money,
             save.city.day,
             save.service_stations.len(),
+            save.traffic_light_tiles.len(),
             save.emergency_stats,
-            t_height,
-            t_water,
-            t_terrain,
-            t_road,
-            t_zone,
-            t_building,
-            b_kind,
-            b_pos,
-            b_size,
-            b_phase,
-            c_id,
-            c_home,
-            c_last,
-            c_state,
-            c_workplace,
-            s_kind,
-            s_pos,
-            s_total,
-            s_avail
         );
     }
-}
-
-#[derive(SystemParam)]
-struct DumpParams<'w, 's> {
-    seed: Res<'w, MapSeed>,
-    grid: Res<'w, MapGrid>,
-    city: Res<'w, City>,
-    id_gen: Res<'w, CitizenIdGen>,
-    q_buildings: Query<'w, 's, BuildingContractQueryItem>,
-    q_citizens: Query<'w, 's, CitizenContractQueryItem>,
-    q_stations: Query<'w, 's, &'static ServiceStation>,
-    emergency_manager: Option<Res<'w, EmergencyManager>>,
 }

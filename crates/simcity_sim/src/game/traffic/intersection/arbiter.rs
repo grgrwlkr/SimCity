@@ -19,7 +19,7 @@ use super::super::{
 use super::reservations::{
     IntersectionReservation, IntersectionReservations, ReservationState, grant_mask_set,
 };
-use super::zones::{ManeuverKind, StreamKey, ZONE_ALL, maneuver_kind};
+use super::zones::{ManeuverKind, maneuver_kind};
 
 /// Intersections swept in strict ascending `IntersectionId.0` order — the global ORD for the P3c
 /// progress-DAG (NOT width, which has ties; NOT HashMap iteration order). Deterministic.
@@ -31,43 +31,28 @@ pub(crate) fn ordered_intersection_ids(llg: &LaneletGraph) -> Vec<IntersectionId
 
 /// Per-version cache the arbiter rebuilds only when the lanelet matrices change. For each
 /// intersection it stores `LaneletId -> local matrix-row index` (the position in `by_intersection`,
-/// which is exactly the `ConflictMatrix` row order) and a coarse per-intersection main-road class
-/// (max `RoadKind::lanes()` over the intersection's lanelet entry cluster tiles; refined to a true
-/// per-approach width priority in P3b).
+/// which is exactly the `ConflictMatrix` row order).
 #[derive(Resource, Default)]
 pub(crate) struct ArbiterIndexCache {
     pub version: u64,
     pub local_idx: HashMap<IntersectionId, HashMap<LaneletId, usize>>,
-    /// Coarse per-intersection main-road class (max approach width). Consumed by the P3b width
-    /// priority; unread by the P3a stub readiness (which prioritises by maneuver).
-    #[allow(dead_code)]
-    pub priority_road_class: HashMap<IntersectionId, u8>,
 }
 
 impl ArbiterIndexCache {
     /// Rebuild iff `version` differs from the last build (or the cache is empty). `local_idx`
     /// mirrors `by_intersection` ordering == matrix row order, so the arbiter can map a vehicle's
     /// resolved `LaneletId` to its `ConflictMatrix::row` index.
-    pub(crate) fn ensure_built_for(&mut self, version: u64, llg: &LaneletGraph, grid: &MapGrid) {
+    pub(crate) fn ensure_built_for(&mut self, version: u64, llg: &LaneletGraph) {
         if self.version == version && !self.local_idx.is_empty() {
             return;
         }
         self.local_idx.clear();
-        self.priority_road_class.clear();
         for (&id, lanelet_ids) in &llg.by_intersection {
             let mut idx_map: HashMap<LaneletId, usize> = HashMap::new();
-            let mut max_lanes: u8 = 0;
             for (local, &lid) in lanelet_ids.iter().enumerate() {
                 idx_map.insert(lid, local);
-                if let Some(l) = llg.get(lid)
-                    && let Some(first) = l.internal_path.first()
-                    && let Some(cell) = grid.get(*first)
-                {
-                    max_lanes = max_lanes.max(cell.road.kind.lanes());
-                }
             }
             self.local_idx.insert(id, idx_map);
-            self.priority_road_class.insert(id, max_lanes);
         }
         self.version = version;
     }
@@ -92,18 +77,14 @@ pub(crate) struct ArbiterGrantCandidate {
     pub is_right_on_red: bool,
     /// Approach travel direction — the post-distance помеха-справа sort tiebreak (P3c).
     pub entry_dir: RoadDir,
-    pub stream: StreamKey,
     pub maneuver: ManeuverKind,
-    /// The lanelet's internal-path tiles (precise reservation tiles for cleanup/observability).
-    pub tiles: Vec<TilePos>,
 }
 
 /// Per-approach starvation aging (P3c cross-feeder fairness + anti-starvation): consecutive ticks
 /// an approach `(intersection, entry direction)` had a candidate present but none granted. Feeds the
 /// `aging` term of `candidate_priority` so a long-refused approach climbs WITHIN its width class —
 /// crossing the maneuver boundary (a starved turn out-ranks a fresh conflicting through after ~3 s)
-/// but never the width boundary — and is eventually served (bounded fairness). Empty / unused
-/// flag-off.
+/// but never the width boundary — and is eventually served (bounded fairness).
 #[derive(Resource, Default)]
 pub struct ApproachFairness {
     pub wait_ticks: HashMap<(IntersectionId, RoadDir), u16>,
@@ -132,7 +113,7 @@ pub(crate) struct Readiness {
 /// entry direction → ready; all-red → not ready; red (not all-red) → ready ONLY as a right-turn-on-
 /// red (the vehicle is stopped/waiting for THIS stop tile and its exit is the near-side turn).
 /// Uncontrolled → ready (priority/yield is resolved by the width + помеха-справа sort, Task 2).
-/// Ports the legacy signalized/RTOR admission (the legacy collect path, gated off flag-on).
+/// Signalized/RTOR admission readiness (ported from the legacy collect path the arbiter replaced).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lanelet_readiness(
     signalized: bool,
@@ -380,7 +361,6 @@ pub(crate) fn resolve_inbox_lanelet(
 pub(crate) struct ArbiterInboxVehicle {
     pub vehicle: Entity,
     pub intersection: IntersectionId,
-    pub tile: TilePos,
 }
 
 /// Per-tick grant-sweep counters returned by `arbitrate_grants_inner` (Task 7 observability).
@@ -392,14 +372,8 @@ pub(crate) struct ArbiterCounts {
     pub rtor_grants: u32,
     /// Refusals because the candidate was not ПДД-ready (signalized red / yield).
     pub yield_refusals: u32,
-    /// Refusals at a capacity/spillback gate (no exit slot OR no downstream headroom) — the
-    /// valve-addressable ones. Anomalous on a near-empty network.
-    pub refused_capacity: u32,
     /// Refusals at the conflict matrix (try_admit) — collision-safety, never bypassable.
     pub refused_matrix: u32,
-    /// Liveness-valve force-admits this tick (one max per starved cluster; bypassed capacity, not the
-    /// matrix or a red light).
-    pub force_admits: u32,
     /// Whole-box coarse admissions this tick.
     pub coarse_admits: u32,
     /// Per-maneuver admit split.
@@ -409,18 +383,13 @@ pub(crate) struct ArbiterCounts {
     pub admitted_uturn: u32,
 }
 
-/// Flat per-tick arbiter observability, mirrored to BRP by `simcity_debug`. Default (all zero) when
-/// the flag is off (the arbiter never runs).
+/// Flat per-tick arbiter observability, mirrored to BRP by `simcity_debug`.
 #[derive(Resource, Default, Clone, Copy)]
 pub struct ArbiterTickStats {
     pub admitted: u32,
     pub refused: u32,
     pub held_points_max: u32,
-    pub reserved_exit_slots: u32,
     pub max_approaching_age_ms: u32,
-    /// 1 if any cluster's `stall_ticks` is non-empty (must stay 0 flag-on — the arbiter never
-    /// increments it; non-zero would signal a leaked legacy write).
-    pub stall_tripwire_fired: u32,
     /// Crosswalk activations seeded from pedestrians this tick (P3b).
     pub ped_blocked: u32,
     /// Grants that were right-turn-on-red this tick (P3b).
@@ -444,12 +413,8 @@ pub struct ArbiterTickStats {
     /// Collection-phase drops OTHER than unresolved-lanelet: bad entry dir, no exit tile, missing
     /// local_idx / lanelet object, or an unusable exit cell.
     pub drop_other_collection: u32,
-    /// Grant-phase refusals at a capacity/spillback gate (exit slot / downstream headroom).
-    pub refused_capacity: u32,
     /// Grant-phase refusals at the conflict matrix (try_admit).
     pub refused_matrix: u32,
-    /// Liveness-valve force-admits this tick (mirrored to DebugArbiterLedgerState.ring_force_admits).
-    pub force_admits: u32,
     /// Whole-box coarse admissions this tick (must trend to ~0 once turns resolve to real lanelets).
     pub coarse_admits: u32,
     /// Per-maneuver admit split (success counters; sum ≤ admitted).
@@ -537,7 +502,7 @@ pub(crate) fn arbitrate_grants_inner(
 ) -> ArbiterCounts {
     let mut counts = ArbiterCounts::default();
 
-    // In-box safety net (mirrors the legacy collect net, which is gated off flag-on): a car wedged
+    // In-box safety net (successor of the legacy collect net): a car wedged
     // inside the box gets a precise single-tile Inside row so it stays visible to the entry gate and
     // cleanup, and only blocks maneuvers that actually cross its tile. Sorted by entity so the row
     // order is input-order independent.
@@ -555,12 +520,6 @@ pub(crate) fn arbitrate_grants_inner(
                 vehicle: iv.vehicle,
                 state: ReservationState::Inside,
                 created_at_sec: now,
-                zones: ZONE_ALL,
-                tiles: vec![iv.tile],
-                stream: StreamKey {
-                    entry: RoadDir::None,
-                    exit: RoadDir::None,
-                },
                 maneuver: ManeuverKind::Other,
                 // Safety-net rows are for vehicles ALREADY inside the box — the entry gate never
                 // fires for them, so no lanelet row is needed.
@@ -670,9 +629,6 @@ pub(crate) fn arbitrate_grants_inner(
                     vehicle: cand.vehicle,
                     state: ReservationState::Approaching,
                     created_at_sec: now,
-                    zones: ZONE_ALL,
-                    tiles: cand.tiles.clone(),
-                    stream: cand.stream,
                     maneuver: cand.maneuver,
                     local_idx: (!cand.coarse).then_some(cand.local_idx as u32),
                     coarse: cand.coarse,
@@ -749,7 +705,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
     p.left_turn_demand.ew.clear();
 
     let version = p.matrices.version;
-    p.cache.ensure_built_for(version, &p.llg, &p.grid);
+    p.cache.ensure_built_for(version, &p.llg);
 
     let ordered = ordered_intersection_ids(&p.llg);
     // T7 contract: reset any ledger whose indices predate the current matrix version BEFORE admitting.
@@ -816,7 +772,6 @@ pub(crate) fn arbitrate_lanelet_reservations(
                 inbox.push(ArbiterInboxVehicle {
                     vehicle: e,
                     intersection: id,
-                    tile: cur,
                 });
                 if let Some(lid) = resolve_inbox_lanelet(
                     path_pool,
@@ -889,7 +844,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
             Some((plan_id, lid)) if plan_id == id => Some(lid),
             _ => resolve_lanelet_fallback(llg, lanes, id, cur, exit_tile, route_maneuver),
         };
-        let (coarse, local_idx, maneuver, tiles) = match resolved {
+        let (coarse, local_idx, maneuver) = match resolved {
             Some(lanelet_id) => {
                 let Some(&local_idx) = cache.local_idx.get(&id).and_then(|m| m.get(&lanelet_id))
                 else {
@@ -900,12 +855,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
                     drop_other += 1;
                     continue;
                 };
-                (
-                    false,
-                    local_idx,
-                    lanelet.maneuver,
-                    lanelet.internal_path.clone(),
-                )
+                (false, local_idx, lanelet.maneuver)
             }
             None => {
                 drop_unresolved += 1;
@@ -918,7 +868,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
                 if m != ManeuverKind::Straight {
                     continue;
                 }
-                (true, 0usize, m, Vec::new())
+                (true, 0usize, m)
             }
         };
 
@@ -996,12 +946,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
                 ready: readiness.ready,
                 is_right_on_red: readiness.is_right_on_red,
                 entry_dir,
-                stream: StreamKey {
-                    entry: entry_dir,
-                    exit: exit_dir,
-                },
                 maneuver,
-                tiles,
             });
     }
 
@@ -1051,18 +996,13 @@ pub(crate) fn arbitrate_lanelet_reservations(
 
     // Flat per-tick observability mirror (BRP).
     let reservations = p.reservations.as_ref();
-    let stall_tripwire_fired = u32::from(reservations.stall_tripwire());
     let held_points_max = reservations.held_points_max();
     let max_approaching_age_ms = reservations.max_approaching_age_ms(now);
     let stats = &mut *p.stats;
     stats.admitted = counts.admitted;
     stats.refused = counts.refused;
     stats.held_points_max = held_points_max;
-    // Exit-slot reservation machinery was removed with the don't-block-the-box gates; the
-    // observability field is retained for the BRP/debug mirror but is now always 0.
-    stats.reserved_exit_slots = 0;
     stats.max_approaching_age_ms = max_approaching_age_ms;
-    stats.stall_tripwire_fired = stall_tripwire_fired;
     stats.ped_blocked = ped_blocked;
     stats.rtor_grants = counts.rtor_grants;
     stats.yield_refusals = counts.yield_refusals;
@@ -1071,9 +1011,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
     stats.drop_unresolved_lanelet = drop_unresolved;
     stats.candidates_built = candidates_built;
     stats.drop_other_collection = drop_other;
-    stats.refused_capacity = counts.refused_capacity;
     stats.refused_matrix = counts.refused_matrix;
-    stats.force_admits = counts.force_admits;
     stats.coarse_admits = counts.coarse_admits;
     stats.admitted_straight = counts.admitted_straight;
     stats.admitted_right = counts.admitted_right;
@@ -1117,7 +1055,7 @@ pub(crate) fn check_ring_free_topology(
 /// Mandatory-merge nudge (P3c): a vehicle that has been approaching a cluster with an unresolvable
 /// lanelet for `LANELET_STALL_REROUTE_TICKS` is forced to reroute by maxing its stuck timer, so
 /// `resolve_stuck_vehicles` re-paths it from its actual tile next tick (clearing the stale sidecar).
-/// Reuses the existing reroute machinery rather than a forbidden force-admit. Flag-on only.
+/// Reuses the existing reroute machinery rather than a forbidden force-admit.
 pub(crate) fn nudge_lanelet_stall_reroute(
     tracker: Res<LaneletStallTracker>,
     mut q: Query<&mut super::super::stuck::StuckTimer>,
@@ -1182,12 +1120,7 @@ mod tests {
         Entity::from_raw_u32(i).expect("valid test entity")
     }
 
-    fn cand(
-        vehicle: Entity,
-        local_idx: usize,
-        priority: u32,
-        tiles: Vec<TilePos>,
-    ) -> ArbiterGrantCandidate {
+    fn cand(vehicle: Entity, local_idx: usize, priority: u32) -> ArbiterGrantCandidate {
         ArbiterGrantCandidate {
             vehicle,
             local_idx,
@@ -1197,12 +1130,7 @@ mod tests {
             ready: true,
             is_right_on_red: false,
             entry_dir: RoadDir::East,
-            stream: StreamKey {
-                entry: RoadDir::East,
-                exit: RoadDir::East,
-            },
             maneuver: ManeuverKind::Straight,
-            tiles,
         }
     }
 
@@ -1226,13 +1154,7 @@ mod tests {
         // Two non-conflicting candidates (lanelets 0 and 2) -> both granted.
         let (e0, e2) = (ent(1), ent(3));
         let mut cands: HashMap<IntersectionId, Vec<ArbiterGrantCandidate>> = HashMap::new();
-        cands.insert(
-            IntersectionId(0),
-            vec![
-                cand(e0, 0, 3, vec![TilePos { x: 0, y: 0 }]),
-                cand(e2, 2, 3, vec![TilePos { x: 5, y: 5 }]),
-            ],
-        );
+        cands.insert(IntersectionId(0), vec![cand(e0, 0, 3), cand(e2, 2, 3)]);
         let mut res = IntersectionReservations::default();
         arbitrate_grants_inner(0.0, &ordered, &cands, &m, &[], &mut res);
         assert!(res.is_reserved_by(IntersectionId(0), e0));
@@ -1241,13 +1163,7 @@ mod tests {
         // Two conflicting candidates (lanelets 0 and 1) -> exactly one granted (higher priority wins).
         let (a, b) = (ent(10), ent(11));
         let mut cands2: HashMap<IntersectionId, Vec<ArbiterGrantCandidate>> = HashMap::new();
-        cands2.insert(
-            IntersectionId(0),
-            vec![
-                cand(a, 0, 3, vec![TilePos { x: 0, y: 0 }]),
-                cand(b, 1, 1, vec![TilePos { x: 1, y: 1 }]),
-            ],
-        );
+        cands2.insert(IntersectionId(0), vec![cand(a, 0, 3), cand(b, 1, 1)]);
         let mut res2 = IntersectionReservations::default();
         arbitrate_grants_inner(0.0, &ordered, &cands2, &m, &[], &mut res2);
         let granted = [a, b]
@@ -1271,7 +1187,6 @@ mod tests {
             &[ArbiterInboxVehicle {
                 vehicle: inbox_e,
                 intersection: IntersectionId(0),
-                tile: TilePos { x: 0, y: 0 },
             }],
             &mut res3,
         );
@@ -1352,7 +1267,6 @@ mod tests {
                     ent(i as u32 + 1),
                     i,
                     candidate_priority(4, ManeuverKind::Straight, 0),
-                    vec![center],
                 )
             })
             .collect();
@@ -1383,7 +1297,7 @@ mod tests {
         let ordered = vec![IntersectionId(0)];
 
         // (1) A lone coarse (unresolved-lanelet) candidate is admitted into a clear box.
-        let mut c0 = cand(ent(1), 0, 3, vec![]);
+        let mut c0 = cand(ent(1), 0, 3);
         c0.coarse = true;
         let mut cands: HashMap<IntersectionId, Vec<ArbiterGrantCandidate>> = HashMap::new();
         cands.insert(IntersectionId(0), vec![c0]);
@@ -1393,9 +1307,9 @@ mod tests {
         assert!(res.is_reserved_by(IntersectionId(0), ent(1)));
 
         // (2) A coarse holder takes the WHOLE box, excluding even a DISJOINT precise candidate.
-        let mut c1 = cand(ent(1), 0, 3, vec![]); // coarse, lower entity bits -> sorted first
+        let mut c1 = cand(ent(1), 0, 3); // coarse, lower entity bits -> sorted first
         c1.coarse = true;
-        let c2 = cand(ent(2), 1, 3, vec![TilePos { x: 5, y: 5 }]); // precise, disjoint from lanelet 0
+        let c2 = cand(ent(2), 1, 3); // precise, disjoint from lanelet 0
         let mut cands2: HashMap<IntersectionId, Vec<ArbiterGrantCandidate>> = HashMap::new();
         cands2.insert(IntersectionId(0), vec![c1, c2]);
         let mut res2 = IntersectionReservations::default();
@@ -1413,9 +1327,9 @@ mod tests {
         assert_eq!(granted, 1, "exactly one admitted (whole-box exclusivity)");
 
         // (3) Two coarse candidates serialize to exactly one (whole-box exclusive).
-        let mut a = cand(ent(10), 0, 3, vec![]);
+        let mut a = cand(ent(10), 0, 3);
         a.coarse = true;
-        let mut b = cand(ent(11), 0, 3, vec![]);
+        let mut b = cand(ent(11), 0, 3);
         b.coarse = true;
         let mut cands3: HashMap<IntersectionId, Vec<ArbiterGrantCandidate>> = HashMap::new();
         cands3.insert(IntersectionId(0), vec![a, b]);
@@ -1439,19 +1353,9 @@ mod tests {
             ..Default::default()
         };
         let ordered = vec![IntersectionId(0)];
-        let mut north = cand(
-            ent(1),
-            0,
-            candidate_priority(4, ManeuverKind::Straight, 0),
-            vec![center],
-        );
+        let mut north = cand(ent(1), 0, candidate_priority(4, ManeuverKind::Straight, 0));
         north.entry_dir = RoadDir::North;
-        let mut south = cand(
-            ent(2),
-            1,
-            candidate_priority(4, ManeuverKind::Straight, 0),
-            vec![center],
-        );
+        let mut south = cand(ent(2), 1, candidate_priority(4, ManeuverKind::Straight, 0));
         south.entry_dir = RoadDir::South;
         // Equal priority + equal distance -> помеха-справа dir precedence breaks the tie: North wins.
         let mut cands = HashMap::new();
@@ -1480,19 +1384,9 @@ mod tests {
             ..Default::default()
         };
         let ordered = vec![IntersectionId(0)];
-        let mut north = cand(
-            ent(1),
-            0,
-            candidate_priority(4, ManeuverKind::Straight, 0),
-            vec![center],
-        );
+        let mut north = cand(ent(1), 0, candidate_priority(4, ManeuverKind::Straight, 0));
         north.entry_dir = RoadDir::North;
-        let mut west = cand(
-            ent(2),
-            1,
-            candidate_priority(4, ManeuverKind::Straight, 0),
-            vec![center],
-        );
+        let mut west = cand(ent(2), 1, candidate_priority(4, ManeuverKind::Straight, 0));
         west.entry_dir = RoadDir::West;
         let mut cands = HashMap::new();
         cands.insert(IntersectionId(0), vec![north, west]);
@@ -2033,12 +1927,10 @@ mod tests {
                 ArbiterInboxVehicle {
                     vehicle: ent(50),
                     intersection: IntersectionId(0),
-                    tile: TilePos { x: 9, y: 9 },
                 },
                 ArbiterInboxVehicle {
                     vehicle: ent(40),
                     intersection: IntersectionId(0),
-                    tile: TilePos { x: 8, y: 8 },
                 },
             ]
         };
@@ -2047,30 +1939,20 @@ mod tests {
                 ArbiterInboxVehicle {
                     vehicle: ent(40),
                     intersection: IntersectionId(0),
-                    tile: TilePos { x: 8, y: 8 },
                 },
                 ArbiterInboxVehicle {
                     vehicle: ent(50),
                     intersection: IntersectionId(0),
-                    tile: TilePos { x: 9, y: 9 },
                 },
             ]
         };
 
         let out_a = run(
-            vec![
-                cand(e0, 0, 3, vec![TilePos { x: 0, y: 0 }]),
-                cand(e1, 1, 3, vec![TilePos { x: 1, y: 1 }]),
-                cand(e2, 2, 3, vec![TilePos { x: 5, y: 5 }]),
-            ],
+            vec![cand(e0, 0, 3), cand(e1, 1, 3), cand(e2, 2, 3)],
             inbox_a(),
         );
         let out_b = run(
-            vec![
-                cand(e2, 2, 3, vec![TilePos { x: 5, y: 5 }]),
-                cand(e1, 1, 3, vec![TilePos { x: 1, y: 1 }]),
-                cand(e0, 0, 3, vec![TilePos { x: 0, y: 0 }]),
-            ],
+            vec![cand(e2, 2, 3), cand(e1, 1, 3), cand(e0, 0, 3)],
             inbox_b(),
         );
 
@@ -2121,7 +2003,6 @@ mod tests {
                 through,
                 0,
                 candidate_priority(4, ManeuverKind::Straight, through_aging),
-                vec![center],
             );
             through_cand.entry_dir = through_dir;
             through_cand.maneuver = ManeuverKind::Straight;
@@ -2129,7 +2010,6 @@ mod tests {
                 turn,
                 1,
                 candidate_priority(4, ManeuverKind::LeftTurn, turn_aging),
-                vec![center],
             );
             turn_cand.entry_dir = turn_dir;
             turn_cand.maneuver = ManeuverKind::LeftTurn;
@@ -2184,10 +2064,6 @@ mod tests {
 
     #[test]
     fn cache_local_idx_matches_row_order_and_rebuilds_on_version() {
-        let mut grid = MapGrid::new(4, 4);
-        set_road(&mut grid, TilePos { x: 1, y: 1 }, RoadKind::SixLane);
-        set_road(&mut grid, TilePos { x: 2, y: 2 }, RoadKind::TwoLane);
-
         let mut llg = LaneletGraph::default();
         llg.lanelets
             .push(lanelet(0, 0, vec![TilePos { x: 1, y: 1 }]));
@@ -2198,17 +2074,15 @@ mod tests {
         llg.version = 1;
 
         let mut cache = ArbiterIndexCache::default();
-        cache.ensure_built_for(1, &llg, &grid);
+        cache.ensure_built_for(1, &llg);
         assert_eq!(cache.version, 1);
         assert_eq!(cache.local_idx[&IntersectionId(0)][&LaneletId(0)], 0);
         assert_eq!(cache.local_idx[&IntersectionId(0)][&LaneletId(1)], 1);
-        // Coarse main-road class = max approach width (SixLane=6 wins over TwoLane=2).
-        assert_eq!(cache.priority_road_class[&IntersectionId(0)], 6);
 
         // Same version + non-empty -> no rebuild even if the graph changed underneath.
         llg.by_intersection
             .insert(IntersectionId(0), vec![LaneletId(1), LaneletId(0)]);
-        cache.ensure_built_for(1, &llg, &grid);
+        cache.ensure_built_for(1, &llg);
         assert_eq!(
             cache.local_idx[&IntersectionId(0)][&LaneletId(0)],
             0,
@@ -2217,7 +2091,7 @@ mod tests {
 
         // Bump version -> rebuild with the new ordering.
         llg.version = 2;
-        cache.ensure_built_for(2, &llg, &grid);
+        cache.ensure_built_for(2, &llg);
         assert_eq!(cache.version, 2);
         assert_eq!(cache.local_idx[&IntersectionId(0)][&LaneletId(1)], 0);
         assert_eq!(cache.local_idx[&IntersectionId(0)][&LaneletId(0)], 1);

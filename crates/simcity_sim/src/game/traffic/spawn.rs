@@ -1,6 +1,6 @@
 use super::*;
 use crate::game::transport::lanelet::pathfinding::find_route;
-use crate::game::transport::{LaneCostCtx, LaneGraph, LaneId, LaneletGraph, PathPool, VehicleId};
+use crate::game::transport::{LaneCostCtx, LaneGraph, LaneId, LaneletGraph, PathPool};
 use rand::{Rng, RngExt};
 
 fn sample_non_medium_driver_speed_factor(rng: &mut impl Rng) -> f32 {
@@ -127,7 +127,6 @@ pub(super) fn spawn_trip_vehicles(
                 traffic: &p.traffic,
                 grid: &p.grid,
                 intersections: &p.intersections,
-                max_iterations: None,
             };
             find_road_path_cached(&mut ctx, start, goal)
         } else {
@@ -230,16 +229,6 @@ pub(super) fn spawn_trip_vehicles(
         let speed_factor = sample_driver_speed_factor(&mut p.sim_rng.rng);
         let max_speed = sample_driver_max_speed_world(&p.cfg, &p.traffic_cfg, &mut p.sim_rng.rng);
 
-        // Get the start lane for lane-based navigation
-        let start_lane = if start_lane != LaneId::INVALID {
-            start_lane
-        } else {
-            p.lane_graph
-                .as_ref()
-                .and_then(|lg| lg.get_rightmost_lane(start, travel_dir))
-                .unwrap_or(LaneId::INVALID)
-        };
-
         let mut e = p.commands.spawn((
             Sprite {
                 color: Color::linear_rgb(0.95, 0.95, 0.95),
@@ -255,9 +244,6 @@ pub(super) fn spawn_trip_vehicles(
                 path_handle: p.path_pool.intern(route),
                 path_cursor: 0,
                 progress: 0.0,
-                lane_id: start_lane, // ← LANE-BASED: Set correct lane!
-                lane_s: 0.0,
-                vehicle_id: VehicleId::INVALID,
                 tile_pos: start,
                 speed: 0.0,
                 max_speed,

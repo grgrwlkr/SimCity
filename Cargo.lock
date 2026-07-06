@@ -5057,10 +5057,7 @@ name = "simcity_app"
 version = "0.1.0"
 dependencies = [
  "bevy",
- "bevy_egui",
- "rand",
  "ron",
- "serde",
  "serde_json",
  "simcity_core",
  "simcity_data",
@@ -5121,7 +5118,6 @@ dependencies = [
  "rand",
  "ron",
  "serde",
- "serde_json",
  "simcity_core",
 ]
 

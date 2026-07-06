@@ -11,12 +11,10 @@ use crate::game::intersections::IntersectionIndex;
 use crate::game::roads::{RoadCell, RoadDir, RoadKind};
 use crate::game::traffic::TrafficConfig;
 use crate::game::ui_state::{OverlayMode, ToolMode, UiState};
-use crate::game::zone_placement::{ZonePlacementCache, can_zone_tile};
+use crate::game::zone_placement::can_zone_tile;
 
 use super::coords::{cursor_tile, map_origin};
-use super::{
-    BuildMode, BuildTool, BuildingKind, HoveredTile, MapConfig, MapGrid, TilePos, ZoneKind,
-};
+use super::{BuildingKind, HoveredTile, MapConfig, MapGrid, TilePos, ZoneKind};
 
 #[derive(Component)]
 pub(super) struct CursorHighlight;
@@ -32,25 +30,6 @@ pub(super) struct CursorPaintState {
 pub(super) struct RoadBuildState {
     /// First click position (start of road segment).
     pub(super) start: Option<TilePos>,
-    /// Direction of the road being built (determined by start->current).
-    #[allow(dead_code)]
-    pub(super) direction: Option<RoadDir>,
-}
-
-pub(super) fn sync_build_mode_from_ui(ui: Res<UiState>, mut mode: ResMut<BuildMode>) {
-    let selected = match ui.tool {
-        ToolMode::Road(kind) => BuildTool::Road(kind),
-        ToolMode::Residential => BuildTool::Zone(ZoneKind::Residential),
-        ToolMode::Commercial => BuildTool::Zone(ZoneKind::Commercial),
-        ToolMode::Industrial => BuildTool::Zone(ZoneKind::Industrial),
-        ToolMode::FireStation => BuildTool::PlaceBuilding(BuildingKind::FireStation),
-        ToolMode::PoliceStation => BuildTool::PlaceBuilding(BuildingKind::PoliceStation),
-        ToolMode::Hospital => BuildTool::PlaceBuilding(BuildingKind::Hospital),
-        ToolMode::TrafficLight => BuildTool::TrafficLight,
-        ToolMode::Erase => BuildTool::Erase,
-        ToolMode::Inspect => BuildTool::Inspect,
-    };
-    mode.selected = selected;
 }
 
 pub(super) fn build_mode_hotkeys(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut<UiState>) {
@@ -148,8 +127,6 @@ pub(super) struct CursorPaintParams<'w, 's> {
     pub(super) cfg: Res<'w, MapConfig>,
     pub(super) traffic_cfg: Res<'w, TrafficConfig>,
     pub(super) ui_state: Res<'w, UiState>,
-    pub(super) mode: Res<'w, BuildMode>,
-    pub(super) zone_cache: Res<'w, ZonePlacementCache>,
     pub(super) grid: Res<'w, MapGrid>,
     pub(super) intersections: Res<'w, IntersectionIndex>,
     pub(super) q_window: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
@@ -166,7 +143,7 @@ pub(super) fn cursor_paint_to_command(
     mut out: MessageWriter<GameCommand>,
 ) {
     // Building is allowed while paused (city-builder UX).
-    if p.mode.selected == BuildTool::Inspect || p.ui_state.overlay == OverlayMode::Path {
+    if p.ui_state.tool == ToolMode::Inspect || p.ui_state.overlay == OverlayMode::Path {
         return;
     }
 
@@ -186,11 +163,10 @@ pub(super) fn cursor_paint_to_command(
     let tile = cursor_tile(&p.cfg, window, camera, cam_gt);
 
     // Handle road building with point-to-point system.
-    if let BuildTool::Road(kind) = p.mode.selected {
+    if let ToolMode::Road(kind) = p.ui_state.tool {
         // Cancel on ESC or right-click.
         if keys.just_pressed(KeyCode::Escape) || p.buttons.just_pressed(MouseButton::Right) {
             road_build.start = None;
-            road_build.direction = None;
             return;
         }
 
@@ -203,7 +179,6 @@ pub(super) fn cursor_paint_to_command(
             if road_build.start.is_none() {
                 // First click: set start position.
                 road_build.start = Some(current_tile);
-                road_build.direction = None;
             } else {
                 // Second click: apply the road.
                 let start = road_build.start.unwrap();
@@ -228,7 +203,6 @@ pub(super) fn cursor_paint_to_command(
 
                 // Reset state for next road segment.
                 road_build.start = None;
-                road_build.direction = None;
             }
         }
         return;
@@ -252,23 +226,22 @@ pub(super) fn cursor_paint_to_command(
     paint.was_pressed = true;
     paint.last_tile = Some(tile);
 
-    match p.mode.selected {
-        BuildTool::Road(_) => {
+    match p.ui_state.tool {
+        ToolMode::Road(_) => {
             // Handled above with point-to-point system.
         }
-        BuildTool::Zone(zone) => {
-            // Check cache first (fast path), but also check can_zone_tile directly
-            // in case cache is stale (e.g., road was just built this frame).
-            if !p.zone_cache.valid_positions.contains(&tile) && !can_zone_tile(&p.grid, tile) {
-                return;
-            }
-            // Final check: must be able to zone this tile
+        ToolMode::Residential | ToolMode::Commercial | ToolMode::Industrial => {
             if !can_zone_tile(&p.grid, tile) {
                 return;
             }
+            let zone = match p.ui_state.tool {
+                ToolMode::Residential => ZoneKind::Residential,
+                ToolMode::Commercial => ZoneKind::Commercial,
+                _ => ZoneKind::Industrial,
+            };
             out.write(GameCommand::SetZone { pos: tile, zone });
         }
-        BuildTool::PlaceBuilding(kind) => {
+        ToolMode::FireStation | ToolMode::PoliceStation | ToolMode::Hospital => {
             // Reuse zoning placement constraints + require no existing zone to keep UX simple.
             if !can_zone_tile(&p.grid, tile) {
                 return;
@@ -278,9 +251,14 @@ pub(super) fn cursor_paint_to_command(
             {
                 return;
             }
+            let kind = match p.ui_state.tool {
+                ToolMode::FireStation => BuildingKind::FireStation,
+                ToolMode::PoliceStation => BuildingKind::PoliceStation,
+                _ => BuildingKind::Hospital,
+            };
             out.write(GameCommand::PlaceBuilding { pos: tile, kind });
         }
-        BuildTool::TrafficLight => {
+        ToolMode::TrafficLight => {
             // Check if this is an intersection (dir == None)
             if let Some(cell) = p.grid.get(tile)
                 && cell.road.is_some()
@@ -294,10 +272,10 @@ pub(super) fn cursor_paint_to_command(
                 }
             }
         }
-        BuildTool::Erase => {
+        ToolMode::Erase => {
             out.write(GameCommand::EraseTile { pos: tile });
         }
-        BuildTool::Inspect => {}
+        ToolMode::Inspect => {}
     }
 }
 

@@ -3,10 +3,8 @@
 //! Visual day/night overlay driven by **game time only** (City.day + City.hour).
 //! GDD 5.4: single source of time — no separate clock.
 //!
-//! ## Simulation Effects
-//! - Night (22:00-06:00): reduced traffic, closed shops
-//! - Rush hours (07:00-09:00, 17:00-19:00): increased traffic
-//! - Day (09:00-17:00): normal activity
+//! This module is purely visual: a fullscreen darkness overlay whose alpha follows
+//! the game hour. It has no simulation effects.
 
 use bevy::prelude::*;
 
@@ -20,56 +18,13 @@ pub struct DayNightPlugin;
 impl Plugin for DayNightPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DayNightVisualConfig>()
-            .init_resource::<DayNightCycle>()
             .add_systems(
                 Update,
                 render_day_night_overlay
                     .in_set(GameSet::RenderSync)
                     .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
             )
-            .add_systems(
-                FixedUpdate,
-                update_day_night_cycle
-                    .in_set(GameSet::Sim)
-                    .run_if(in_state(AppState::InGame)),
-            )
             .add_systems(OnEnter(AppState::MainMenu), cleanup_overlay);
-    }
-}
-
-/// Current day/night cycle state
-#[derive(Resource, Debug, Default, Clone)]
-pub struct DayNightCycle {
-    /// Current hour (0-23)
-    pub hour: u8,
-    /// Is it currently night (22:00-06:00)
-    pub is_night: bool,
-    /// Is it rush hour (07:00-09:00 or 17:00-19:00)
-    pub is_rush_hour: bool,
-    /// Activity multiplier (0.5 at night, 1.0 normal, 1.5 rush hour)
-    pub activity_multiplier: f32,
-}
-
-impl DayNightCycle {
-    /// Check if current hour is night (22:00-06:00)
-    pub fn is_night_hour(hour: u8) -> bool {
-        !(6..22).contains(&hour)
-    }
-
-    /// Check if current hour is rush hour
-    pub fn is_rush_hour(hour: u8) -> bool {
-        (7..=9).contains(&hour) || (17..=19).contains(&hour)
-    }
-
-    /// Get activity multiplier for current hour
-    pub fn activity_multiplier(hour: u8) -> f32 {
-        if Self::is_night_hour(hour) {
-            0.5 // Reduced activity at night
-        } else if Self::is_rush_hour(hour) {
-            1.5 // Increased activity during rush hours
-        } else {
-            1.0 // Normal activity
-        }
     }
 }
 
@@ -92,21 +47,6 @@ impl Default for DayNightVisualConfig {
 #[inline]
 pub fn time_of_day_from_hour(hour: u8) -> f32 {
     (hour as f32 / 24.0).rem_euclid(1.0)
-}
-
-/// Update day/night cycle state based on city time
-pub fn update_day_night_cycle(city: Res<City>, mut cycle: ResMut<DayNightCycle>) {
-    let hour = city.hour;
-
-    // Only update if hour changed
-    if cycle.hour == hour {
-        return;
-    }
-
-    cycle.hour = hour;
-    cycle.is_night = DayNightCycle::is_night_hour(hour);
-    cycle.is_rush_hour = DayNightCycle::is_rush_hour(hour);
-    cycle.activity_multiplier = DayNightCycle::activity_multiplier(hour);
 }
 
 #[derive(Component)]

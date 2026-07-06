@@ -1,13 +1,9 @@
-use super::intersection::{
-    IntersectionReservation, ManeuverKind, ReservationState, StreamKey, ZONE_ALL,
-};
+use super::intersection::{IntersectionReservation, ManeuverKind, ReservationState};
 use super::*;
 use crate::game::citizens::Citizen;
 use crate::game::ids::CitizenId;
 use crate::game::ids::CitizenIdComp;
-use crate::game::intersections::{
-    IntersectionId, IntersectionKey, IntersectionPriorityMarker, LightPhase,
-};
+use crate::game::intersections::{IntersectionId, IntersectionKey, LightPhase};
 use crate::game::roads::{LaneType, RoadCell, RoadDir, RoadFlow, RoadKind};
 use crate::game::trips::TripPurpose;
 use bevy::app::App;
@@ -36,7 +32,6 @@ pub fn create_vehicle_with_route(
     max_accel: f32,
     speed_factor: f32,
 ) -> crate::game::traffic::components::Vehicle {
-    use crate::game::transport::{LaneId, VehicleId};
     use bevy::prelude::*;
 
     let path_handle = if route.is_empty() {
@@ -64,9 +59,6 @@ pub fn create_vehicle_with_route(
         max_speed,
         speed_factor,
         max_accel,
-        lane_id: LaneId::INVALID,
-        lane_s: 0.0,
-        vehicle_id: VehicleId::INVALID,
         tile_pos: start_pos,
         prev_world_pos: world_pos,
         curr_world_pos: world_pos,

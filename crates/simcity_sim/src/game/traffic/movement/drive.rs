@@ -370,8 +370,9 @@ pub fn move_vehicles(
                     if !ok {
                         // Entry into an intersection requires passing the entry gate (an eligible
                         // reservation AND a matrix-clear box) — full stop at the line otherwise. The
-                        // stuck-vehicle failsafe is the arbiter's force-admit valve, which is still
-                        // collision-safe (it never bypasses the conflict model).
+                        // stuck-vehicle failsafe is the stall-tracker reroute nudge
+                        // (nudge_lanelet_stall_reroute) — never a forced admission: the conflict
+                        // model is not bypassable.
                         blocked_next = true;
                     }
 

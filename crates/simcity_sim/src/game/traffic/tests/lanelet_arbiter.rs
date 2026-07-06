@@ -1,8 +1,8 @@
 //! Flag-ON end-to-end integration test for the lanelet intersection arbiter (P3c gate): build a real
 //! cross intersection + lanelet graph, spawn two conflicting approaching vehicles (with EMPTY sidecar
 //! plans, so the arbiter's precise-fallback resolves their lanelets from route geometry), run the
-//! flag-on arbiter, and assert collision-safety (exactly one admitted), the tripwire stays empty, and
-//! the outcome is deterministic across two identical seeded worlds.
+//! flag-on arbiter, and assert collision-safety (exactly one admitted) and that the outcome is
+//! deterministic across two identical seeded worlds.
 
 use super::*;
 use crate::game::intersections::{IntersectionCluster, LeftTurnDemand};
@@ -202,14 +202,13 @@ fn build_arbiter_app() -> (App, Entity, Entity) {
     (app, east, north)
 }
 
-fn run_arbiter_once() -> (bool, bool, bool) {
+fn run_arbiter_once() -> (bool, bool) {
     let (mut app, east, north) = build_arbiter_app();
     app.update();
     let res = app.world().resource::<IntersectionReservations>();
     (
         res.is_reserved_by(IntersectionId(0), east),
         res.is_reserved_by(IntersectionId(0), north),
-        res.stall_tripwire(),
     )
 }
 
@@ -230,7 +229,6 @@ fn flag_on_arbiter_drains_conflicting_vehicles_over_ticks() {
         let res = app.world().resource::<IntersectionReservations>();
         assert!(res.is_reserved_by(IntersectionId(0), north));
         assert!(!res.is_reserved_by(IntersectionId(0), east));
-        assert!(!res.stall_tripwire());
     }
 
     // Drain North across the box: into the cluster, then out the far side. Cleanup transitions it to
@@ -246,10 +244,6 @@ fn flag_on_arbiter_drains_conflicting_vehicles_over_ticks() {
     assert!(
         res.is_reserved_by(IntersectionId(0), east),
         "after North drains, the blocked East is admitted (multi-tick liveness)"
-    );
-    assert!(
-        !res.stall_tripwire(),
-        "stall tripwire stays empty across the whole drain"
     );
 }
 
@@ -352,7 +346,6 @@ fn left_turn_resolves_as_lanelet_not_coarse() {
         res.is_reserved_by(IntersectionId(0), left_vehicle),
         "lone left-turning vehicle must be admitted (no conflict)"
     );
-    assert!(!res.stall_tripwire(), "stall tripwire must stay empty");
 
     let stats = app.world().resource::<ArbiterTickStats>();
     assert!(
@@ -391,7 +384,6 @@ fn uturn_resolves_as_lanelet_not_coarse() {
         res.is_reserved_by(IntersectionId(0), uturn_vehicle),
         "lone U-turning vehicle must be admitted (no conflict)"
     );
-    assert!(!res.stall_tripwire(), "stall tripwire must stay empty");
 
     let stats = app.world().resource::<ArbiterTickStats>();
     assert!(
@@ -667,7 +659,6 @@ fn same_through_stream_admits_both_vehicles_concurrently() {
         res.is_reserved_by(IntersectionId(0), e1) && res.is_reserved_by(IntersectionId(0), e2),
         "two same-stream straights must both be admitted (no artificial serialization)"
     );
-    assert!(!res.stall_tripwire(), "stall tripwire must stay empty");
 }
 
 /// Ported from `intersection_reservations::left_turn_conflicts_with_straight_flow` and
@@ -714,7 +705,6 @@ fn crossing_left_yields_to_perpendicular_straight() {
         res.is_reserved_by(IntersectionId(0), straight),
         "the higher-priority straight is admitted; the crossing left yields"
     );
-    assert!(!res.stall_tripwire(), "stall tripwire must stay empty");
 }
 
 /// Ported from `conflict_zones::intersection_conflict_zones_allow_two_opposite_straights`.
@@ -751,7 +741,6 @@ fn two_opposite_straights_both_admitted() {
         res.is_reserved_by(IntersectionId(0), east) && res.is_reserved_by(IntersectionId(0), west),
         "two opposite through straights must both be admitted (disjoint box cells)"
     );
-    assert!(!res.stall_tripwire(), "stall tripwire must stay empty");
 }
 
 /// Ported from `conflict_zones::intersection_single_tile_blocks_two_crossing_left_turns` and
@@ -810,7 +799,6 @@ fn two_crossing_left_turns_not_double_admitted() {
         admitted, 1,
         "crossing left turns through the box center must not double-admit (collision-safety)"
     );
-    assert!(!res.stall_tripwire(), "stall tripwire must stay empty");
 }
 
 /// Ported from `intersection_reservations::approaching_vehicle_accumulates_at_most_one_reservation_across_ticks`.
@@ -866,12 +854,6 @@ fn full_exit_tile_no_longer_refuses_admission() {
         res.is_reserved_by(IntersectionId(0), e),
         "vehicle MUST be admitted even with a FULL box-exit tile (don't-block-the-box removed): \
          clear-the-box guarantees it exits, so exit occupancy no longer gates admission"
-    );
-    let stats = app.world().resource::<ArbiterTickStats>();
-    assert_eq!(
-        stats.refused_capacity, 0,
-        "there is no capacity/spillback refusal anymore; refused_capacity must be 0, got {}",
-        stats.refused_capacity
     );
 }
 
@@ -1054,128 +1036,6 @@ fn left_turn_yields_to_pedestrian_on_either_axis() {
     }
 }
 
-/// Ported from `basic_behavior::stop_sign_vehicle_gets_reserved_and_enters_intersection_tile`.
-/// Invariant (integration): a stop-sign-gated vehicle, once `check_intersection_priority` releases it
-/// from Stopped, is admitted by the LIVE arbiter (an uncontrolled cluster — the arbiter doesn't read
-/// stop-sign markers, so readiness is unconditional) and `move_vehicles` then advances it into the
-/// box. Without an admission the entry gate would deadlock at the stop line. Runs the full release →
-/// arbitrate → move chain on cross_grid.
-#[test]
-fn stop_sign_vehicle_is_reserved_and_advances_under_arbiter() {
-    use crate::game::intersections::{IntersectionPriority, IntersectionPriorityMarker};
-
-    let (grid, idx) = cross_grid();
-    let gv = GraphVersion(1);
-    let lanes = build_lane_graph_inner(&grid, &gv);
-
-    let mut app = App::new();
-    app.add_plugins(MinimalPlugins)
-        .add_message::<TripFinished>()
-        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
-            1.0 / 10.0,
-        ))
-        .insert_resource(MapConfig {
-            width: 9,
-            height: 9,
-            tile_size: 16.0,
-        })
-        .insert_resource(grid)
-        .insert_resource(idx)
-        .insert_resource(lanes)
-        .insert_resource(gv)
-        .insert_resource(TrafficConfig::default())
-        .insert_resource(LaneletGraph::default())
-        .insert_resource(LaneletConflictMatrices::default())
-        .insert_resource(TrafficOccupancy::default())
-        .insert_resource(TrafficSpatialIndex::default())
-        .insert_resource(IntersectionReservations::default())
-        .insert_resource(VehicleAggSnapshot::default())
-        .insert_resource(ParkedVehicleTileIndex::default())
-        .insert_resource(crate::game::transport::PathPool::default())
-        .init_resource::<LeftTurnDemand>()
-        .init_resource::<ArbiterIndexCache>()
-        .init_resource::<ArbiterTickStats>()
-        .init_resource::<ApproachFairness>()
-        .init_resource::<LaneletStallTracker>()
-        .init_resource::<RingTopologyStatus>()
-        .add_systems(
-            Update,
-            (
-                check_intersection_priority,
-                build_lanelet_graph,
-                arbitrate_lanelet_reservations,
-                build_traffic_spatial_index,
-                move_vehicles,
-                cleanup_intersection_reservations,
-            )
-                .chain(),
-        );
-
-    // Stop-sign marker on the box-entry tile (4,4).
-    app.world_mut().spawn(IntersectionPriorityMarker {
-        pos: TilePos { x: 4, y: 4 },
-        priority: IntersectionPriority::StopSign,
-    });
-
-    let key = app
-        .world()
-        .resource::<IntersectionIndex>()
-        .cluster_key_at(TilePos { x: 4, y: 4 })
-        .unwrap();
-
-    // Eastbound vehicle stopped at the stop line on approach tile (3,4).
-    let stop_progress = TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET;
-    let v = {
-        let mut pool = app
-            .world_mut()
-            .resource_mut::<crate::game::transport::PathPool>();
-        create_vehicle_with_route(
-            &mut pool,
-            vec![
-                TilePos { x: 3, y: 4 },
-                TilePos { x: 4, y: 4 },
-                TilePos { x: 5, y: 4 },
-                TilePos { x: 6, y: 4 },
-            ],
-            0,
-            stop_progress,
-            0.0,
-            60.0,
-            20.0,
-            1.0,
-        )
-    };
-    let e = app
-        .world_mut()
-        .spawn((
-            v,
-            Transform::default(),
-            VehicleTrafficState::Stopped {
-                intersection: key,
-                stop_tile: TilePos { x: 3, y: 4 },
-                queue_position: 0,
-            },
-            VehicleLaneletPlan::default(),
-        ))
-        .id();
-
-    app.world_mut()
-        .resource_mut::<bevy::time::Time<bevy::time::Fixed>>()
-        .advance_by(std::time::Duration::from_secs_f32(0.1));
-    app.update();
-
-    let res = app.world().resource::<IntersectionReservations>();
-    assert!(
-        res.is_reserved_by(IntersectionId(0), e),
-        "stop-sign vehicle must be reserved by the arbiter after release (else entry deadlocks)"
-    );
-    let v = app.world().get::<Vehicle>(e).unwrap();
-    assert!(
-        v.progress > stop_progress,
-        "stop-sign vehicle must advance toward the box after being released/reserved"
-    );
-}
-
 /// Ported from `pedestrians.rs::intersection_conflict_zones_allow_two_non_conflicting_right_turns`.
 /// Invariant (throughput): two right turns whose internal paths do NOT cross are both admitted in one
 /// tick — the arbiter does not over-serialize disjoint right turns. Northbound-right (→East) sweeps
@@ -1230,7 +1090,6 @@ fn two_non_conflicting_right_turns_both_admitted() {
         res.is_reserved_by(IntersectionId(0), ea) && res.is_reserved_by(IntersectionId(0), eb),
         "two non-conflicting right turns must both be admitted in one tick (throughput)"
     );
-    assert!(!res.stall_tripwire(), "stall tripwire must stay empty");
 }
 
 // =================================================================================================
@@ -1456,7 +1315,6 @@ fn four_lane_4x4_two_disjoint_straights_both_admitted_same_tick() {
         res.is_reserved_by(IntersectionId(0), west),
         "westbound straight (y=7) must be admitted in the SAME tick (disjoint rows of the 4x4 box)"
     );
-    assert!(!res.stall_tripwire(), "stall tripwire must stay empty");
 }
 
 /// PARALLEL-ADMIT, the 4x4-specific win: an eastbound straight on the bottom row (y=4) PLUS a tight
@@ -1498,7 +1356,6 @@ fn four_lane_4x4_straight_plus_disjoint_right_turn_both_admitted() {
         res.is_reserved_by(IntersectionId(0), right),
         "disjoint right turn (top-right corner) must be admitted in the SAME tick"
     );
-    assert!(!res.stall_tripwire(), "stall tripwire must stay empty");
 }
 
 /// COLLISION-SAFETY preserved at the 4x4: two CONFLICTING movements whose box paths cross still can't
@@ -1536,12 +1393,11 @@ fn four_lane_4x4_conflicting_movements_not_double_admitted() {
         admitted, 1,
         "two movements sharing box tile (4,4) must NOT both be admitted (collision-safety)"
     );
-    assert!(!res.stall_tripwire(), "stall tripwire must stay empty");
 }
 
 #[test]
 fn flag_on_arbiter_admits_exactly_one_conflicting_vehicle_deterministically() {
-    let (east_a, north_a, tripwire_a) = run_arbiter_once();
+    let (east_a, north_a) = run_arbiter_once();
 
     // Collision-safety: the two conflicting through movements never both get a reservation.
     assert!(
@@ -1553,11 +1409,8 @@ fn flag_on_arbiter_admits_exactly_one_conflicting_vehicle_deterministically() {
         east_a || north_a,
         "the flag-on arbiter must admit at least one approaching vehicle"
     );
-    // Tripwire must stay empty (the arbiter never touches stall_ticks).
-    assert!(!tripwire_a, "stall tripwire must stay empty flag-on");
-
     // Determinism: an identical seeded world yields the identical admission outcome.
-    let (east_b, north_b, _) = run_arbiter_once();
+    let (east_b, north_b) = run_arbiter_once();
     assert_eq!(
         (east_a, north_a),
         (east_b, north_b),
@@ -1732,10 +1585,6 @@ fn conflicting_vehicles_never_both_inside_box_entry_serialized() {
                 "tick {tick}: conflicting vehicles must not both hold the box (active_mask)"
             );
         }
-        assert!(
-            !res.stall_tripwire(),
-            "tick {tick}: stall tripwire must stay empty"
-        );
     }
 
     // Non-vacuity: the entry gate was actually exercised (a car physically entered the box), and the
@@ -1834,12 +1683,6 @@ fn inject_coarse_reservation(app: &mut App, e: Entity) {
             vehicle: e,
             state: ReservationState::Approaching,
             created_at_sec: 0.0,
-            zones: ZONE_ALL,
-            tiles: Vec::new(),
-            stream: StreamKey {
-                entry: RoadDir::East,
-                exit: RoadDir::East,
-            },
             maneuver: ManeuverKind::Straight,
             local_idx: None,
             coarse: true,
@@ -2194,10 +2037,6 @@ fn uncontrolled_left_turn_not_frozen_by_approaching_through_at_empty_box() {
                 ledger.holder_count(),
             );
         }
-        assert!(
-            !res.stall_tripwire(),
-            "tick {tick}: stall tripwire must stay empty"
-        );
     }
 
     let left_end = match app.world().get::<Vehicle>(left) {

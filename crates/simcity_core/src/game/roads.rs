@@ -83,24 +83,6 @@ impl RoadKind {
         (self.build_cost() / lanes).max(1)
     }
 
-    /// Daily maintenance cost per tile (used later by economy).
-    #[allow(dead_code)]
-    pub fn maintenance_cost(self) -> i64 {
-        match self {
-            RoadKind::None => 0,
-            RoadKind::TwoLane => 1,
-            RoadKind::FourLane => 2,
-            RoadKind::SixLane => 4,
-        }
-    }
-
-    /// Daily maintenance cost per **lane tile**.
-    #[allow(dead_code)]
-    pub fn maintenance_cost_per_lane_tile(self) -> i64 {
-        let lanes = self.lanes().max(1) as i64;
-        (self.maintenance_cost() / lanes).max(1)
-    }
-
     /// Suggested road color (base tile view).
     pub fn color(self) -> Color {
         match self {
@@ -109,12 +91,6 @@ impl RoadKind {
             RoadKind::FourLane => Color::srgb(0.25, 0.25, 0.27), // ~#404045
             RoadKind::SixLane => Color::srgb(0.33, 0.33, 0.38), // ~#555560
         }
-    }
-
-    /// True if the tile has any road built.
-    #[allow(dead_code)]
-    pub fn is_some(self) -> bool {
-        self != RoadKind::None
     }
 
     /// Returns whether `to` is a strict upgrade over `from`.
@@ -234,11 +210,6 @@ impl RoadCell {
 
     pub fn lanes_total(self) -> u8 {
         self.kind.lanes()
-    }
-
-    #[allow(dead_code)]
-    pub fn half_lanes(self) -> u8 {
-        self.lanes_total() / 2
     }
 
     /// Whether this lane is the rightmost lane for its travel direction.

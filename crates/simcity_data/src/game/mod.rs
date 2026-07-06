@@ -2,7 +2,6 @@ use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
 
 pub mod config_loader;
-pub mod custom_buildings;
 pub mod persistence;
 pub mod persistence_contract;
 pub mod scenarios;
@@ -20,7 +19,6 @@ impl Plugin for DataPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             config_loader::ConfigLoaderPlugin,
-            custom_buildings::CustomBuildingsPlugin,
             persistence::PersistencePlugin,
             persistence_contract::PersistenceContractPlugin,
             scenarios::ScenariosPlugin,

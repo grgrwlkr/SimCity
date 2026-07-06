@@ -5,7 +5,7 @@ use bevy::prelude::*;
 
 use crate::game::commands::GameCommand;
 use crate::game::ids::CitizenId;
-use crate::game::intersections::{IntersectionIndex, IntersectionPriority};
+use crate::game::intersections::IntersectionIndex;
 use crate::game::map::{MapConfig, MapGrid, TilePos};
 use crate::game::roads::RoadDir;
 use crate::game::services::{ServiceVehicle, ServiceVehicleState};
@@ -40,7 +40,7 @@ use overlay::{TrafficOverlayPool, TrafficOverlayTile, render_traffic_overlay};
 
 mod movement;
 pub(crate) use movement::update_vehicle_traffic_state;
-use movement::{check_intersection_priority, cleanup_right_on_red_markers, move_vehicles};
+use movement::{cleanup_right_on_red_markers, move_vehicles};
 
 mod parking;
 use parking::update_parked_vehicle_positions;
@@ -77,7 +77,6 @@ use lane_change::{
 };
 
 mod vehicle_render;
-// use vehicle_render::{interpolate_vehicle_position, update_vehicle_positions_for_interpolation}; // TODO: enable when GPU interpolation is needed
 
 mod debug;
 pub use debug::{AUDIT_OFFENDER_SAMPLE_LEN, RouteProducerStats, TrafficViolationAudit};
@@ -91,8 +90,7 @@ pub use parked_tile_index::ParkedVehicleTileIndex;
 
 // NOTE: v2 Stage B uses IDM params stored in `TrafficConfig` instead of a separate braking resource.
 
-/// Distance to detect traffic lights ahead (in tiles)
-#[allow(dead_code)] // Reserved for future use
+/// Distance to detect traffic lights ahead (in tiles).
 const TRAFFIC_LIGHT_DETECTION_DISTANCE: f32 = 8.0;
 
 /// Vehicle sprite size in tile units (length).
@@ -121,15 +119,8 @@ const TILE_CENTER_TO_EDGE_TILES: f32 = 0.5;
 /// **approach tile** (a normal road tile), i.e. vehicles must stop before they enter the
 /// intersection cluster tiles (`dir=None`).
 const STOP_LINE_OFFSET: f32 = VEHICLE_HALF_LENGTH_TILES + STOP_LINE_MARGIN_TILES;
-/// Speed threshold (in tile fractions per second) for "snap to stopped" state at the stop line.
-/// This avoids abrupt halts when a vehicle reaches the stop line with a non-trivial residual speed
-/// due to coarse fixed-timestep integration.
-#[allow(dead_code)] // Reserved for future use
-const STOP_LOCK_SPEED_TILES_PER_SEC: f32 = 0.05;
 /// Numerical epsilon for "at stop line" checks (in tile fractions).
-#[allow(dead_code)] // Reserved for future use
 const STOP_LINE_EPS_TILES: f32 = 1e-3;
-
 /// Target speed cap while performing a right turn on red (doc: <= 15 km/h).
 const RIGHT_ON_RED_TURN_MAX_KMH: f32 = 15.0;
 /// Share of drivers that keep a standard speed profile (40%).
@@ -288,8 +279,7 @@ mod intersection;
 pub(crate) use intersection::maneuver_kind;
 use intersection::{
     ApproachFairness, ArbiterIndexCache, LaneletStallTracker, RingTopologyStatus,
-    arbitrate_lanelet_reservations, cache_intersection_light_state,
-    cache_pedestrian_crossing_state, check_ring_free_topology, cleanup_intersection_reservations,
+    arbitrate_lanelet_reservations, check_ring_free_topology, cleanup_intersection_reservations,
     nudge_lanelet_stall_reroute, reset_intersection_reservations,
 };
 pub use intersection::{ArbiterTickStats, IntersectionReservations};
@@ -310,8 +300,6 @@ impl Plugin for TrafficPlugin {
             .init_resource::<TrafficConfig>()
             .init_resource::<TrafficOverlayPool>()
             .init_resource::<IntersectionReservations>()
-            .init_resource::<intersection::IntersectionLightStateCache>()
-            .init_resource::<intersection::PedestrianCrossingStateCache>()
             .init_resource::<ArbiterIndexCache>()
             .init_resource::<ArbiterTickStats>()
             .init_resource::<ApproachFairness>()
@@ -374,7 +362,6 @@ impl Plugin for TrafficPlugin {
                     update_parked_vehicle_positions,
                     track_car_owner_index,
                     update_vehicle_traffic_state,
-                    check_intersection_priority.after(update_vehicle_traffic_state),
                     spawn_trip_vehicles,
                     tick_lane_change_cooldowns,
                     tick_overtaking,
@@ -388,26 +375,17 @@ impl Plugin for TrafficPlugin {
                 FixedUpdate,
                 (
                     build_traffic_spatial_index_pre_lane_changes
-                        .after(check_intersection_priority)
                         .after(spawn_trip_vehicles)
                         .before(plan_lane_changes),
                     plan_lane_changes
-                        .after(check_intersection_priority)
                         .after(spawn_trip_vehicles)
                         .before(move_vehicles),
                     build_traffic_spatial_index
                         .after(plan_lane_changes)
                         .before(move_vehicles),
-                    cache_intersection_light_state
-                        .after(build_traffic_spatial_index)
-                        .before(arbitrate_lanelet_reservations),
-                    cache_pedestrian_crossing_state
-                        .after(build_traffic_spatial_index)
-                        .before(arbitrate_lanelet_reservations),
                     // Sole reservation producer.
                     arbitrate_lanelet_reservations
-                        .after(cache_intersection_light_state)
-                        .after(cache_pedestrian_crossing_state)
+                        .after(build_traffic_spatial_index)
                         .before(break_tile_swaps)
                         .before(move_vehicles),
                     break_tile_swaps

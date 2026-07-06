@@ -92,14 +92,11 @@ pub(crate) fn spawn_emergencies(
         kind,
         pos,
         severity,
-        spawned_at: 0.0,
         responded: false,
-        response_time_sec: None,
         resolved: false,
         consequence_applied: false,
         failed: false,
         time_remaining: kind.response_deadline(),
-        dispatched_vehicles: vec![],
         resolution_progress: 0.0,
         assigned_vehicle: None,
     });
@@ -321,7 +318,6 @@ pub(crate) fn dispatch_emergency_vehicles(mut p: DispatchParams) {
         traffic: &p.traffic,
         grid: &p.grid,
         intersections: &p.intersections,
-        max_iterations: None,
     };
 
     for (emergency_entity, mut emergency) in p.q_emergencies.iter_mut() {
@@ -484,7 +480,6 @@ pub(crate) fn resolve_emergencies(mut p: ResolveParams) {
         traffic: &p.traffic,
         grid: &p.grid,
         intersections: &p.intersections,
-        max_iterations: None,
     };
 
     // Map emergency -> road once.
@@ -694,6 +689,14 @@ pub(crate) fn track_emergency_index(
     }
 }
 
+/// Get the world origin for tile coordinates.
+fn map_origin(cfg: &crate::game::map::MapConfig) -> Vec2 {
+    Vec2::new(
+        -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
+        -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
+    )
+}
+
 /// Sync visual markers to active emergencies: spawn for new, despawn for resolved, blink.
 pub(crate) fn sync_emergency_markers(
     time: Res<Time>,
@@ -715,7 +718,7 @@ pub(crate) fn sync_emergency_markers(
     // Spawn markers for emergencies that don't have one.
     let marker_emergencies: std::collections::HashSet<Entity> =
         q_markers.iter().map(|(_, m, _)| m.emergency).collect();
-    let origin = super::utils::map_origin(&cfg);
+    let origin = map_origin(&cfg);
 
     for (emergency_entity, emergency) in q_emergencies.iter() {
         if marker_emergencies.contains(&emergency_entity) {

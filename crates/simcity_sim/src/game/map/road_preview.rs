@@ -20,7 +20,7 @@ pub(super) struct RoadPreviewPool {
 pub(super) fn road_preview_render(
     mut commands: Commands,
     road_build: Res<RoadBuildState>,
-    mode: Res<BuildMode>,
+    ui_state: Res<crate::game::ui_state::UiState>,
     cfg: Res<MapConfig>,
     q_window: Query<&Window, With<PrimaryWindow>>,
     q_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
@@ -42,7 +42,7 @@ pub(super) fn road_preview_render(
     }
 
     // Only show preview when building roads and we have a start point.
-    let BuildTool::Road(kind) = mode.selected else {
+    let crate::game::ui_state::ToolMode::Road(kind) = ui_state.tool else {
         return;
     };
     let Some(start) = road_build.start else {

@@ -11,7 +11,6 @@ pub(super) struct TopBarParams<'w> {
     pub(super) next_state: ResMut<'w, NextState<AppState>>,
     pub(super) time: Res<'w, Time<Real>>,
     pub(super) city: Res<'w, City>,
-    pub(super) mode: Res<'w, BuildMode>,
     pub(super) metrics: Res<'w, UiMetrics>,
     pub(super) mcp_status: Res<'w, crate::game::mcp_status::McpConnectionStatus>,
     pub(super) diagnostics: Option<Res<'w, bevy::diagnostic::DiagnosticsStore>>,
