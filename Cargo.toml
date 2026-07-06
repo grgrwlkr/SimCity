@@ -7,6 +7,17 @@ members = [
     "crates/simcity_data",
     "crates/simcity_debug",
 ]
+# Bare `cargo test`/`cargo build` cover the whole workspace, not just the root
+# package (the root binary has zero tests — without this the documented
+# verification commands silently ran nothing).
+default-members = [
+    ".",
+    "crates/simcity_core",
+    "crates/simcity_sim",
+    "crates/simcity_frontend",
+    "crates/simcity_data",
+    "crates/simcity_debug",
+]
 
 [workspace.dependencies]
 bevy = { version = "0.19.0", features = ["bevy_remote"] }

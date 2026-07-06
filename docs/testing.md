@@ -7,10 +7,10 @@
 ```bash
 cargo fmt --all
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --workspace   # bare `cargo test` гоняет только корневой пакет (0 тестов)
+cargo test --workspace   # bare `cargo test` эквивалентен: default-members в Cargo.toml покрывают весь workspace
 ```
 
-Для проекта это базовый verification floor.
+Для проекта это базовый verification floor. Он же enforced в CI: `.github/workflows/ci.yml` гоняет fmt-check, clippy и `cargo test --workspace` на каждый push в `main` и на PR.
 
 ## Where Tests Live
 

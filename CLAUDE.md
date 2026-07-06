@@ -11,7 +11,7 @@ cargo run                                                  # запуск (auto-
 cargo run --features dev                                   # dev: bevy/dynamic_linking, быстрая итерация
 cargo fmt --all
 cargo clippy --all-targets --all-features -- -D warnings   # verification floor: warnings = ошибки
-cargo test --workspace                                     # весь workspace (bare `cargo test` гоняет ТОЛЬКО корневой пакет = 0 тестов!)
+cargo test --workspace                                     # весь workspace (bare `cargo test` тоже: default-members в Cargo.toml)
 cargo test -p simcity_sim                                  # тесты одного крейта
 cargo test -p simcity_sim traffic::tests::traffic_lights   # один модуль/тест по пути
 ```
