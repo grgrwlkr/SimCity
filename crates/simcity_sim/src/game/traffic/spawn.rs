@@ -251,7 +251,6 @@ pub(super) fn spawn_trip_vehicles(
                 max_accel: idm.a,
                 prev_world_pos: world_pos,
                 curr_world_pos: world_pos,
-                last_update_time: 0.0, // Will be set by first update
             },
             VehicleTrafficState::FreeFlow,
             TripPassenger {

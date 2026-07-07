@@ -62,7 +62,6 @@ pub fn create_vehicle_with_route(
         tile_pos: start_pos,
         prev_world_pos: world_pos,
         curr_world_pos: world_pos,
-        last_update_time: 0.0,
     }
 }
 

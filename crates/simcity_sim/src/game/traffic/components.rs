@@ -64,8 +64,6 @@ pub struct Vehicle {
     pub curr_world_pos: Vec2,
     /// Previous frame world position for interpolation.
     pub prev_world_pos: Vec2,
-    /// Time of last position update (seconds).
-    pub last_update_time: f32,
 
     // Path/navigation data
     /// Handle to shared path in PathPool.
@@ -95,7 +93,6 @@ impl Default for Vehicle {
             max_accel: 20.0, // Default acceleration
             prev_world_pos: Vec2::ZERO,
             curr_world_pos: Vec2::ZERO,
-            last_update_time: 0.0,
             is_reversing: false,
         }
     }

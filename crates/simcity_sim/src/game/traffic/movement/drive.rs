@@ -683,7 +683,6 @@ pub fn move_vehicles(
         // Transform will be updated by interpolation system for smooth movement
         v.prev_world_pos = v.curr_world_pos;
         v.curr_world_pos = lerped;
-        v.last_update_time = time.elapsed_secs_f64() as f32;
     }
 }
 

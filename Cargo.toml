@@ -48,9 +48,11 @@ simcity_frontend = { path = "crates/simcity_frontend" }
 simcity_sim = { path = "crates/simcity_sim" }
 
 [features]
-# Enables Bevy's `dynamic_linking` for faster iteration in dev builds:
+# Dev-only tooling: Bevy `dynamic_linking` for faster iteration PLUS the whole BRP/MCP
+# observability stack (remote HTTP server + custom methods in `main.rs`, and the per-frame
+# world-scan snapshot systems in `simcity_debug`). Off in release so none of that ships.
 # `cargo run --features dev`
-dev = ["bevy/dynamic_linking"]
+dev = ["bevy/dynamic_linking", "simcity_debug/dev"]
 
 # Official Bevy profiling backends (built-in tracing spans):
 # - Tracy (recommended): `cargo run --release --features profile_tracy`

@@ -3,6 +3,13 @@ name = "simcity_debug"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Compiles the BRP/MCP observability stack: the ~16 per-frame world-scan snapshot updaters
+# in `debug_world.rs`. Enabled transitively by the root `dev` feature; off in release so the
+# scans are never scheduled. The snapshot entity + component types stay in ALL builds so the
+# frontend F8 window's `DebugWorldSnapshot` query still compiles and returns a default value.
+dev = []
+
 [dependencies]
 bevy = { workspace = true }
 simcity_core = { path = "../simcity_core" }

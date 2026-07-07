@@ -4,15 +4,21 @@
 
 ## Runtime Debug Stack
 
+> **BRP/MCP — только под фичей `dev`.** `RemotePlugin`, `RemoteHttpPlugin` и кастомные методы
+> (`bevy_debugger/screenshot`, `bevy_debugger/debug_dump`) экспонируют неаутентифицированный мутирующий
+> доступ к миру и запись файла по произвольному пути (`screenshot.path` → `save_to_disk`) по HTTP —
+> в release их НЕТ. Для BRP/MCP запускать `cargo run --features dev` (тогда слушается `127.0.0.1:15702`).
+> В-app дамп (`F8`/`F9`, дамп при закрытии окна) работает во ВСЕХ билдах — это отдельный путь.
+
 `src/main.rs` включает:
 
-- `RemotePlugin`
-- `RemoteHttpPlugin` на native builds
-- `FrameTimeDiagnosticsPlugin`
-- custom BRP methods `bevy_debugger/screenshot` и `bevy_debugger/debug_dump`
-- финальный debug dump в консоль при закрытии окна
+- `RemotePlugin` — **только `--features dev`**
+- `RemoteHttpPlugin` — **только `--features dev`**
+- `FrameTimeDiagnosticsPlugin` — всегда
+- custom BRP methods `bevy_debugger/screenshot` и `bevy_debugger/debug_dump` — **только `--features dev`**
+- финальный debug dump в консоль при закрытии окна — всегда
 
-Это значит, что runtime уже экспортирует полезное состояние наружу и готов к MCP/BRP tooling.
+Runtime экспортирует структурированное состояние наружу под `dev`; в release остаётся только in-app наблюдаемость.
 
 ## BRP / MCP
 
@@ -38,6 +44,9 @@
 ## ECS Snapshots For Inspection
 
 `DebugWorldPlugin` публикует reflection-friendly snapshot entities/resources для внешнего inspection flow.
+Полный набор per-frame snapshot-систем (полносканирующие мирроры для BRP) регистрируется **только под фичей `dev`**;
+в release остаётся лёгкий `update_debug_snapshot` (ресурсы + одна камера, без world-scan), которого хватает in-app
+окну `F8`. То есть ~16 O(world)-сканов на кадр в release не выполняются.
 
 Там уже есть flattened snapshots для:
 
@@ -95,8 +104,8 @@ cargo run --release --features profile_chrome
 
 1. запустить игру
 2. смотреть UI metrics / overlays / MCP status
-3. при необходимости снять `F9` debug dump
-4. для внешнего inspection использовать BRP/MCP snapshots
+3. при необходимости снять `F9` debug dump (работает в любом билде)
+4. для внешнего inspection через BRP/MCP — запуск `cargo run --features dev` (иначе remote-стека нет)
 5. для perf issues идти в profiling features + `performance-audit.md`
 
 ## Known Gaps

@@ -2,24 +2,31 @@ mod game;
 
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
-#[cfg(not(target_family = "wasm"))]
+// The remote debugging stack (BRP world access + the custom screenshot/debug_dump methods)
+// is a DEV-ONLY tool. It exposes unauthenticated world mutation and an arbitrary-path file
+// write (screenshot `path` -> `save_to_disk`) over HTTP to any local process, so it must
+// never ship in a release build. All of it is gated behind the `dev` feature.
+#[cfg(feature = "dev")]
 use bevy::remote::BrpResult;
+#[cfg(feature = "dev")]
 use bevy::remote::RemotePlugin;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "dev")]
 use bevy::remote::http::RemoteHttpPlugin;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "dev")]
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use game::GamePlugin;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "dev")]
 use serde_json::{Value, json};
 
 fn main() {
     let mut app = App::new();
     app.insert_resource(ClearColor(Color::srgb(0.08, 0.09, 0.11)));
-    // Enable remote debugging (with screenshot method on native builds)
-    app.add_plugins(remote_plugin());
-    #[cfg(not(target_family = "wasm"))]
-    app.add_plugins(RemoteHttpPlugin::default());
+    // Remote debugging (BRP + HTTP transport) is dev-only — see the import block above.
+    #[cfg(feature = "dev")]
+    {
+        app.add_plugins(remote_plugin());
+        app.add_plugins(RemoteHttpPlugin::default());
+    }
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "SimCity (Bevy)".to_string(),
@@ -35,16 +42,11 @@ fn main() {
     app.run();
 }
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "dev")]
 fn remote_plugin() -> RemotePlugin {
     RemotePlugin::default()
         .with_method_main("bevy_debugger/screenshot", screenshot_handler)
         .with_method_main("bevy_debugger/debug_dump", debug_dump_handler)
-}
-
-#[cfg(target_family = "wasm")]
-fn remote_plugin() -> RemotePlugin {
-    RemotePlugin::default()
 }
 
 /// System that prints debug dump to console when the application is closing.
@@ -107,7 +109,7 @@ fn dump_on_window_close_system(
 /// Custom BRP handler that builds the same RON debug dump as the F9 hotkey and returns it inline,
 /// so the live game state (city/economy/employment/telemetry) can be pulled over BRP on demand
 /// without a human pressing F9. Mirrors `dump_on_window_close_system`'s params.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "dev")]
 #[allow(clippy::too_many_arguments)] // Bevy systems often need many parameters
 fn debug_dump_handler(
     In(_params): In<Option<Value>>,
@@ -156,7 +158,7 @@ fn debug_dump_handler(
 }
 
 /// Custom BRP handler for screenshot requests from the debugger
-#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "dev")]
 fn screenshot_handler(In(params): In<Option<Value>>, mut commands: Commands) -> BrpResult {
     // Parse parameters from MCP request
     let path = params
