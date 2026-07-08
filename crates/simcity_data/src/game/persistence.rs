@@ -620,6 +620,7 @@ struct LoadParams<'w, 's> {
     map_edit_version: ResMut<'w, MapEditVersion>,
     intersections: ResMut<'w, IntersectionIndex>,
     history: ResMut<'w, CommandHistory>,
+    bus_routes: Option<ResMut<'w, crate::game::public_transport::BusRouteManager>>,
     pollution_idx: Option<ResMut<'w, crate::game::pollution::PollutionIndex>>,
     land_value_idx: Option<ResMut<'w, crate::game::land_value::LandValueIndex>>,
     q_buildings: Query<'w, 's, Entity, With<Building>>,
@@ -670,6 +671,11 @@ fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParam
         // Undo entries reference tile state from the previous map; replaying
         // them into the loaded save would corrupt it.
         p.history.clear();
+        // Bus routes reference the previous map's tiles (Phase A does not persist routes);
+        // clear them on load. Player-created routes survive save/load in Phase B.
+        if let Some(mgr) = p.bus_routes.as_mut() {
+            mgr.reset();
+        }
         // Derived environment fields are not persisted; stale values from the
         // pre-load city must not bleed into the loaded one for a full pass.
         if let Some(pi) = p.pollution_idx.as_mut() {

@@ -102,6 +102,49 @@ impl BusRouteManager {
     }
 }
 
+/// Seed one deterministic demo route for the test city. Stops are picked from the single
+/// road-densest row (in the test city that is the central highway — a continuous horizontal
+/// road), so the stops are road-connected and the bus can plan a real route between them.
+/// Player-placed routes are Phase B; this just makes buses visible in Phase A. No-op if a route
+/// already exists or no row has enough road.
+pub fn seed_demo_bus_route(grid: &MapGrid, mgr: &mut BusRouteManager) {
+    if !mgr.routes.is_empty() {
+        return;
+    }
+    // Find the row with the most road tiles (a long connected corridor).
+    let mut best_row = -1i32;
+    let mut best_count = 0usize;
+    for y in 0..grid.height {
+        let count = (0..grid.width)
+            .filter(|&x| {
+                grid.get(TilePos { x, y })
+                    .is_some_and(|c| !c.water && c.road.is_some())
+            })
+            .count();
+        if count > best_count {
+            best_count = count;
+            best_row = y;
+        }
+    }
+    if best_row < 0 || best_count < 4 {
+        return;
+    }
+    // Road tiles on that row, left to right.
+    let row_tiles: Vec<TilePos> = (0..grid.width)
+        .map(|x| TilePos { x, y: best_row })
+        .filter(|&p| grid.get(p).is_some_and(|c| !c.water && c.road.is_some()))
+        .collect();
+    let n = row_tiles.len();
+    // Four evenly-spaced stops along the corridor => a there-and-loop route over one road.
+    let stops = vec![
+        row_tiles[0],
+        row_tiles[n / 3],
+        row_tiles[(2 * n) / 3],
+        row_tiles[n - 1],
+    ];
+    mgr.create_route(stops);
+}
+
 /// World position of a tile center, matching the traffic renderer's `map_origin` convention.
 fn tile_to_world(cfg: &MapConfig, pos: TilePos) -> Vec2 {
     let origin = Vec2::new(

@@ -89,6 +89,7 @@ pub(super) fn apply_game_commands_to_grid(
     mut graph_version: ResMut<GraphVersion>,
     mut map_edit_version: ResMut<MapEditVersion>,
     mut history: ResMut<CommandHistory>,
+    mut bus_routes: Option<ResMut<crate::game::public_transport::BusRouteManager>>,
     q_buildings: Query<(Entity, &Building)>,
 ) {
     for cmd in cmd_reader.read() {
@@ -324,6 +325,10 @@ pub(super) fn apply_game_commands_to_grid(
                 // would stamp stale cells into the new map validation-free (even
                 // roads onto water). Same rule as LoadGame/LoadTestCity.
                 history.clear();
+                // Bus routes reference the old map's tiles — clear them on regeneration.
+                if let Some(mgr) = bus_routes.as_mut() {
+                    mgr.reset();
+                }
                 dirty.mark_all();
                 road_dirty.mark_all();
                 map_edit_version.bump();

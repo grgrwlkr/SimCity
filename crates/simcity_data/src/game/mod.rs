@@ -16,7 +16,8 @@ mod test_city;
 pub use simcity_core::game::{commands, ids, roads, sets, sim_events, state, trips, ui_state};
 pub use simcity_sim::game::{
     buildings, citizens, command_history, day_night, economy, emergencies, employment,
-    intersections, land_value, map, pedestrians, pollution, services, sim, traffic, transport,
+    intersections, land_value, map, pedestrians, pollution, public_transport, services, sim,
+    traffic, transport,
 };
 
 pub struct DataPlugin;
@@ -51,6 +52,7 @@ fn handle_load_test_city(
     mut history: ResMut<command_history::CommandHistory>,
     mut pollution_idx: Option<ResMut<pollution::PollutionIndex>>,
     mut land_value_idx: Option<ResMut<land_value::LandValueIndex>>,
+    mut bus_routes: Option<ResMut<simcity_sim::game::public_transport::BusRouteManager>>,
     mut day_out: bevy::ecs::message::MessageWriter<sim_events::DayAdvanced>,
 ) {
     for cmd in cmd_reader.read() {
@@ -80,6 +82,12 @@ fn handle_load_test_city(
         }
         if let Some(lv) = land_value_idx.as_mut() {
             lv.reset_values();
+        }
+        // Bus routes reference tile positions from the previous map; reset and re-seed the demo
+        // route for the freshly generated test city (player-placed routes are Phase B).
+        if let Some(mgr) = bus_routes.as_mut() {
+            mgr.reset();
+            simcity_sim::game::public_transport::seed_demo_bus_route(&grid, mgr);
         }
         day_out.write(sim_events::DayAdvanced { day: city.day });
     }
@@ -397,6 +405,36 @@ mod tests {
         assert!(
             !matrices.by_intersection.is_empty(),
             "conflict matrices must be built for the FourLane intersections"
+        );
+    }
+}
+
+#[cfg(test)]
+mod bus_seeding_tests {
+    use crate::game::headless_sim::{build_headless_game, tick};
+    use simcity_sim::game::public_transport::{Bus, BusRouteManager};
+    use simcity_sim::game::traffic::Vehicle;
+
+    #[test]
+    fn load_test_city_seeds_one_bus_route_and_spawns_a_bus() {
+        let mut app = build_headless_game();
+        // First tick loads the test city (auto-start) and seeds the demo route.
+        tick(&mut app, 2);
+        let mgr = app.world().resource::<BusRouteManager>();
+        assert_eq!(
+            mgr.routes.len(),
+            1,
+            "test city seeds exactly one demo bus route"
+        );
+        assert!(mgr.routes[0].stops.len() >= 2, "route has >=2 stops");
+
+        // Give GraphUpdate + spawn_buses a few ticks; a bus must appear on a real multi-tile route.
+        tick(&mut app, 40);
+        let mut q = app.world_mut().query::<(&Bus, &Vehicle)>();
+        let n = q.iter(app.world()).count();
+        assert!(
+            n >= 1,
+            "at least one bus must spawn from the demo route, got {n}"
         );
     }
 }
