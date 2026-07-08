@@ -105,16 +105,11 @@ pub fn spawn_service_vehicle(
     start_pos: TilePos,
 ) -> Entity {
     let world_pos = tile_to_world(cfg, start_pos);
-    let outer_size = cfg.tile_size * 0.5;
-    let inner_size = cfg.tile_size * 0.25;
 
     commands
         .spawn((
-            Sprite {
-                color: Color::srgb(0.95, 0.95, 0.95),
-                custom_size: Some(Vec2::splat(outer_size)),
-                ..default()
-            },
+            // Car-shaped body in the kind's color (was a white 0.5 square + colored dot).
+            crate::game::public_transport::car_body_sprite(cfg, kind.vehicle_color()),
             Transform::from_xyz(world_pos.x, world_pos.y, 12.0),
             Vehicle {
                 is_reversing: false,
@@ -145,12 +140,14 @@ pub fn spawn_service_vehicle(
         ))
         .with_children(|parent| {
             parent.spawn((
-                Sprite {
-                    color: kind.vehicle_color(),
-                    custom_size: Some(Vec2::splat(inner_size)),
-                    ..default()
-                },
+                // White roof marker reads as "official vehicle"; keeps ServiceVehicleMarker
+                // (used as the service-vehicle count in the soak harness).
+                crate::game::public_transport::roof_marker_sprite(
+                    cfg,
+                    Color::srgb(0.95, 0.95, 0.95),
+                ),
                 Transform::from_xyz(0.0, 0.0, 1.0),
+                crate::game::public_transport::VehicleRoofMarker,
                 ServiceVehicleMarker,
             ));
         })
@@ -236,4 +233,63 @@ fn map_origin(cfg: &MapConfig) -> Vec2 {
         -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
         -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
     )
+}
+
+#[cfg(test)]
+mod visual_tests {
+    use super::*;
+    use crate::game::map::{MapConfig, TilePos};
+    use crate::game::traffic::{VEHICLE_VISUAL_LENGTH_TILES, VEHICLE_VISUAL_WIDTH_TILES};
+
+    fn setup(
+        mut commands: Commands,
+        cfg: Res<MapConfig>,
+        mut pool: ResMut<crate::game::transport::PathPool>,
+    ) {
+        let station = commands.spawn_empty().id();
+        spawn_service_vehicle(
+            &mut commands,
+            &cfg,
+            &mut pool,
+            ServiceKind::Fire,
+            station,
+            TilePos { x: 2, y: 2 },
+        );
+    }
+
+    #[test]
+    fn service_vehicle_renders_as_colored_car_not_dot() {
+        let mut app = App::new();
+        app.insert_resource(MapConfig {
+            width: 8,
+            height: 8,
+            tile_size: 16.0,
+        })
+        .insert_resource(crate::game::transport::PathPool::default())
+        .add_systems(Startup, setup);
+        app.update();
+
+        // The parent (the ServiceVehicle entity) carries the car-shaped body sprite.
+        let mut q = app
+            .world_mut()
+            .query_filtered::<&Sprite, With<ServiceVehicle>>();
+        let sprite = q
+            .iter(app.world())
+            .next()
+            .expect("a service vehicle spawned");
+        let expect = Vec2::new(
+            16.0 * VEHICLE_VISUAL_LENGTH_TILES,
+            16.0 * VEHICLE_VISUAL_WIDTH_TILES,
+        );
+        assert_eq!(
+            sprite.custom_size,
+            Some(expect),
+            "service body must be car-shaped, not a 0.5 square"
+        );
+        assert_eq!(
+            sprite.color,
+            ServiceKind::Fire.vehicle_color(),
+            "service body keeps its kind color"
+        );
+    }
 }
