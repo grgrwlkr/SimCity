@@ -1,142 +1,143 @@
-# Public Transport & Vehicle Unification — Phase A (design)
+# Общественный транспорт и унификация машин — Фаза A (дизайн)
 
-**Date:** 2026-07-08
-**Status:** approved (design), pending implementation plan
-**Audit link:** §8 item 9 (public transport rewrite)
+**Дата:** 2026-07-08
+**Статус:** дизайн одобрен, план реализации в ожидании
+**Аудит:** §8 пункт 9 (переписывание общественного транспорта)
 
-## Context & decomposition
+## Контекст и декомпозиция
 
-The current `public_transport.rs` is a harmful stub: it injects phantom `Vehicle`
-entities on fake 2-tile paths (no pathfinding) into the live traffic occupancy /
-spatial-index / motion-stats pipeline, renders buses at 1/16 world scale near the
-origin (`tile_size = 1.0`), auto-creates a "Route 1" on any map wider than 10 tiles,
-and fakes passengers (`passengers + 5`).
+Текущий `public_transport.rs` — вредный стаб: впрыскивает фантомные `Vehicle`-сущности
+на фейковых 2-тайловых путях (без pathfinding) в живой конвейер traffic occupancy /
+spatial-index / motion-stats, рендерит автобусы в масштабе 1/16 у начала координат
+(`tile_size = 1.0`), автосоздаёт «Route 1» на любой карте шире 10 тайлов и фейкует
+пассажиров (`passengers + 5`).
 
-The full desired feature (player-placeable routes + real citizen boarding) is **three
-independent subsystems**, sequenced by dependency:
+Полная целевая фича (player-placeable маршруты + настоящая посадка граждан) — это **три
+независимых подсистемы**, упорядоченные по зависимостям:
 
-- **A — Buses & service vehicles as unified car-like traffic agents** (this spec, the foundation).
-- **B — Player-placeable bus routes** (new tool + `GameCommand` + undo/redo + `SaveGameV3`).
-- **C — Citizens ride buses** (`TripMode::Bus`, walk-to-stop, board/wait/ride/alight, demand integration).
+- **A — Автобусы и сервисные машины как единые машинки в трафике** (этот spec, фундамент).
+- **B — Игрок ставит маршруты** (новый tool + `GameCommand` + undo/redo + `SaveGameV3`).
+- **C — Граждане ездят на автобусах** (`TripMode::Bus`, walk-to-stop, посадка/ожидание/поездка/высадка, интеграция с demand).
 
-Each gets its own spec → plan → implementation → commit. This spec covers **A only**.
+Каждая — свой spec → plan → реализация → коммит. Этот spec покрывает **только A**.
 
-## Goals (A)
+## Цели (A)
 
-1. Remove the phantom-injection harm: buses become real `Vehicle` traffic agents on
-   real lanelet routes, moved by the shared `move_vehicles`.
-2. Visual unification: buses and service vehicles render as car-shaped rectangles (like
-   regular vehicles) with a geometric roof-symbol overlay; regular cars are unchanged.
-   Service vehicles keep their per-kind colors.
-3. Preserve determinism (audit §8 item 6) and the existing test/soak suite.
-4. Keep the system observable via MCP.
+1. Убрать вред фантом-инъекции: автобусы становятся настоящими `Vehicle`-агентами трафика
+   на реальных lanelet-маршрутах, движутся общим `move_vehicles`.
+2. Визуальная унификация: автобусы и сервисные машины рендерятся как прямоугольники-машины
+   (как обычные машины) с геометрическим роуф-символом сверху; обычные машины не меняются.
+   Сервисные сохраняют свои цвета по видам.
+3. Сохранить детерминизм (аудит §8 пункт 6) и текущий набор тестов/soak.
+4. Оставить систему наблюдаемой через MCP.
 
-## Non-goals (A) — deferred
+## Не-цели (A) — отложено
 
-- Player-placeable routes, a bus-route UI tool, `GameCommand` variants, undo/redo, and
-  `SaveGameV3` persistence of routes → **B**.
-- Real citizen boarding, `TripMode::Bus`, walk-to-stop, seat occupancy, demand effects → **C**.
-- Passengers are an abstract placeholder in A (no citizen entities are rerouted onto buses).
+- Player-placeable маршруты, UI-инструмент маршрутов, варианты `GameCommand`, undo/redo и
+  персистенс маршрутов в `SaveGameV3` → **B**.
+- Настоящая посадка граждан, `TripMode::Bus`, walk-to-stop, вместимость мест, влияние на demand → **C**.
+- Пассажиры в A — абстрактная заглушка (граждане-сущности не пересаживаются на автобусы).
 
-## Teardown (removed from `public_transport.rs`)
+## Teardown (удаляется из `public_transport.rs`)
 
-- The fake 2-tile path construction (`vec![start_pos]; path.push(goal_pos)`).
-- The custom `move_buses` movement (buses move via `move_vehicles` instead).
-- The local `tile_to_world` with `tile_size = 1.0` (use `MapConfig.tile_size`).
-- The auto-create "Route 1" on any map > 10 tiles.
-- The fake passenger math (`passengers + 5`) and the hardcoded `speed: 50.0`.
+- Построение фейкового 2-тайлового пути (`vec![start_pos]; path.push(goal_pos)`).
+- Собственное движение `move_buses` (автобусы двигаются через `move_vehicles`).
+- Локальная `tile_to_world` с `tile_size = 1.0` (использовать `MapConfig.tile_size`).
+- Автосоздание «Route 1» на любой карте > 10 тайлов.
+- Фейковая математика пассажиров (`passengers + 5`) и хардкод `speed: 50.0`.
 
-## A2 — Bus as a first-class `Vehicle`
+## A2 — Автобус как первоклассный `Vehicle`
 
-**Data model:**
-- `BusStop` — a stop location (tile). (In A, stops come from the seeded demo route; in B,
-  from player placement.)
-- `BusRoute { id, stops: Vec<TilePos> }` — an ordered stop sequence.
-- `BusRouteManager { routes: Vec<BusRoute>, next_id }` — resource holding active routes.
-- `Bus { route_id, target_stop_idx, state: BusState }` component on the vehicle entity.
+**Модель данных:**
+- `BusStop` — местоположение остановки (тайл). (В A стопы приходят из засеянного демо-маршрута;
+  в B — из размещения игроком.)
+- `BusRoute { id, stops: Vec<TilePos> }` — упорядоченная последовательность остановок.
+- `BusRouteManager { routes: Vec<BusRoute>, next_id }` — resource с активными маршрутами.
+- `Bus { route_id, target_stop_idx, state: BusState }` — компонент на сущности автобуса.
 - `BusState { Driving, Dwelling { timer } }`.
 
-A carries **no passenger accounting** — the `Bus` component has no passenger field (the
-stub's fake `passengers + 5` is removed outright). Real boarding/seat occupancy is C.
+В A **нет учёта пассажиров** — у компонента `Bus` нет поля пассажиров (фейковый
+`passengers + 5` из стаба удаляется начисто). Реальная посадка/вместимость — это C.
 
-**Bus entity** = `Vehicle` + `Bus` + car-rectangle `Sprite` + roof-symbol child (see A3).
-It is NOT a trip vehicle (no `TripPassenger`) and must not despawn on route completion.
+**Сущность автобуса** = `Vehicle` + `Bus` + прямоугольный `Sprite` машины + роуф-символ-ребёнок
+(см. A3). Это НЕ trip-машина (нет `TripPassenger`), и она не должна деспавниться по завершении
+маршрута.
 
-**Routing** reuses the service-dispatch pattern: `replan_route_with_lanelets` (lanelet
-planner) with a road-A* fallback, both under the `route_direction_ok` intern guard, using
-a jitter seed drawn from `SimRng`. A bus's active route is the lanelet path from its current
-tile to its `target_stop_idx` stop.
+**Маршрутизация** переиспользует паттерн сервисного диспетча: `replan_route_with_lanelets`
+(lanelet-планировщик) с road-A* fallback, оба под intern-гардом `route_direction_ok`, с
+jitter-seed из `SimRng`. Активный маршрут автобуса — lanelet-путь от текущего тайла до
+остановки `target_stop_idx`.
 
-**Movement** is the shared `move_vehicles`. Buses require the same arrival-despawn immunity
-service vehicles have: the despawn gate in `move_vehicles`
-(`if service_vehicle.is_none() { … despawn }`) becomes
-`if service_vehicle.is_none() && bus.is_none() { … despawn }`. When a bus's path is exhausted
-(reached its target stop), it does not despawn.
+**Движение** — общий `move_vehicles`. Автобусам нужен тот же иммунитет от деспавна-по-прибытию,
+что и у сервисных: гард деспавна в `move_vehicles`
+(`if service_vehicle.is_none() { … despawn }`) становится
+`if service_vehicle.is_none() && bus.is_none() { … despawn }`. Когда путь автобуса исчерпан
+(достиг целевого стопа), он не деспавнится.
 
-**Bus tick system** (small, FixedUpdate, `SimStep::PublicTransport`): when a bus's path is
-exhausted, enter `Dwelling { timer = DWELL_SECS }`; when the dwell timer elapses, advance
-`target_stop_idx = (idx + 1) % stops.len()`, re-plan the route to the next stop, and return
-to `Driving`. Deterministic: route replan uses the `SimRng` jitter seed; the system joins the
-existing `SimStep::PublicTransport` sub-set (chained), so the zero-ambiguity pins
+**Bus-система тика** (маленькая, `FixedUpdate`, `SimStep::PublicTransport`): когда путь автобуса
+исчерпан, вход в `Dwelling { timer = DWELL_SECS }`; по истечении таймера продвинуть
+`target_stop_idx = (idx + 1) % stops.len()`, переспланировать маршрут к следующему стопу и вернуться
+в `Driving`. Детерминизм: реплан использует jitter-seed из `SimRng`; система входит в существующий
+саб-сет `SimStep::PublicTransport` (чейнится), поэтому пины нулевой неоднозначности
 (`fixed_update_has_no_ambiguous_system_pairs`, `composed_fixed_update_has_no_ambiguous_system_pairs`)
-stay green.
+остаются зелёными.
 
-**Occupancy/spatial/motion:** buses now carry real multi-tile routes (`path_len > 1`), so they
-legitimately participate in occupancy / spatial index / motion stats — unlike the stub's
-`path_len == 2` fake. This is intended.
+**Occupancy/spatial/motion:** автобусы теперь несут реальные многотайловые маршруты (`path_len > 1`),
+поэтому легитимно участвуют в occupancy / spatial index / motion stats — в отличие от стаба с
+`path_len == 2`. Это намеренно.
 
-## A3 — Visual unification
+## A3 — Визуальная унификация
 
-Unifying principle: **special vehicles = a colored car rectangle + a geometric roof-symbol
-child sprite (higher Z); regular cars have no symbol (unchanged).**
+Единый принцип: **спец-машины = цветной прямоугольник-машина + геометрический роуф-символ-ребёнок
+(выше по Z); у обычных машин символа нет (не меняются).**
 
-- **Regular cars:** unchanged — plain rectangle (`VEHICLE_VISUAL_LENGTH_TILES ×
-  VEHICLE_VISUAL_WIDTH_TILES`), no overlay.
-- **Buses:** yellow car rectangle (same dimensions as regular cars) + a contrasting
-  (dark) roof marker child = the "symbol on top" that distinguishes a bus from a plain car.
-- **Service vehicles:** car rectangle colored by `ServiceKind::vehicle_color()`
-  (Fire red / Police blue / Medical green) instead of the current white square +
-  colored dot; a white roof marker child reads as "official vehicle". Colors preserved.
+- **Обычные машины:** без изменений — простой прямоугольник (`VEHICLE_VISUAL_LENGTH_TILES ×
+  VEHICLE_VISUAL_WIDTH_TILES`), без оверлея.
+- **Автобусы:** жёлтый прямоугольник машины (те же размеры, что у обычных машин) + контрастный
+  (тёмный) роуф-маркер-ребёнок = «символ поверх», отличающий автобус от обычной машины.
+- **Сервисные машины:** прямоугольник машины, покрашенный в `ServiceKind::vehicle_color()`
+  (Fire красный / Police синий / Medical зелёный) вместо текущего «белый квадрат + цветная точка»;
+  белый роуф-маркер-ребёнок читается как «спецтранспорт». Цвета сохранены.
 
-The roof symbol is a child `Sprite` (small contrasting rectangle) at local `(0,0)` with a
-higher local Z. Children inherit the parent's rotation, so the marker rides "on the roof"
-aligned with travel direction — for free via the existing `interpolate_vehicle_position`.
+Роуф-символ — это child-`Sprite` (маленький контрастный прямоугольник) в локальных `(0,0)` с
+более высоким локальным Z. Дети наследуют rotation родителя, поэтому маркер едет «на крыше»
+вдоль направления движения — бесплатно через существующую `interpolate_vehicle_position`.
 
-Symbols are geometric (not text) because the project renders no world-space text and loads
-no font asset; a lettered glyph would require adding a font and is out of scope for A.
+Символы геометрические (не текст), потому что проект не рендерит world-space текст и не грузит
+шрифт-ассет; буквенный глиф потребовал бы добавления шрифта и вне скоупа A.
 
-## A4 — Route seeding in A + load/reset
+## A4 — Источник маршрута в A + load/reset
 
-- Player placement is **B**. So buses are visible in A via **one deterministic demo route**
-  seeded at test-city generation (analogous to how service buildings are prebuilt in
-  `test_city.rs`), routed along existing roads. Real, lanelet-routable.
-- `BusRouteManager` is **reset on `GenerateMap` / `LoadGame` / `LoadTestCity`** (item 5 noted
-  it currently survives loads) and re-seeded by generation.
-- **`SaveGameV3` is unchanged** in A — the demo route is regenerated deterministically on load.
-  Persistence of player-created routes arrives with B.
+- Размещение игроком — это **B**. Поэтому автобусы видны в A через **один детерминированный
+  демо-маршрут**, засеянный при генерации test city (аналогично тому, как сервисные здания
+  пре-ставятся в `test_city.rs`), проложенный по существующим дорогам. Реальный, lanelet-маршрутизируемый.
+- `BusRouteManager` **сбрасывается на `GenerateMap` / `LoadGame` / `LoadTestCity`** (пункт 5 отметил,
+  что сейчас переживает загрузки) и пере-сеется генерацией.
+- **`SaveGameV3` не трогаем** в A — демо-маршрут детерминированно регенерируется при загрузке.
+  Персистенс игроцких маршрутов приходит с B.
 
-## A5 — Testing & observability
+## A5 — Тесты и наблюдаемость
 
-- The determinism fingerprint test and the soak harness stay green. `buses` is already a
-  measured quantity in `soak.rs::measure()`.
-- New pins:
-  - A bus drives a real multi-tile lanelet route (route length > 2), not a 2-tile stub.
-  - On reaching its target stop the bus enters `Dwelling`, then advances `target_stop_idx`
-    and re-plans — and does NOT despawn on path exhaustion.
-  - A bus spawns at the correct world scale (position derived from `MapConfig.tile_size`,
-    not clustered near the origin).
-- MCP: a bus is observable via `DebugTrafficSnapshot` (or a dedicated debug snapshot) —
-  count and state — per the CLAUDE.md "must be observable via MCP" convention.
+- Детерминизм-фингерпринт и soak-харнесс остаются зелёными. `buses` уже меряется в
+  `soak.rs::measure()`.
+- Новые пины:
+  - Автобус едет реальным многотайловым lanelet-маршрутом (длина маршрута > 2), не 2-тайловым стабом.
+  - По достижении целевого стопа автобус входит в `Dwelling`, затем продвигает `target_stop_idx` и
+    переспланирует — и НЕ деспавнится при исчерпании пути.
+  - Автобус спавнится в правильном world-масштабе (позиция из `MapConfig.tile_size`, не кучкуется
+    у начала координат).
+- MCP: автобус наблюдаем через `DebugTrafficSnapshot` (или отдельный debug-снапшот) — число и
+  состояние — по конвенции CLAUDE.md «должно быть наблюдаемо через MCP».
 
-## Acceptance criteria (A)
+## Критерии приёмки (A)
 
-1. `public_transport.rs` no longer injects fake-path buses; buses are `Vehicle` entities on
-   real lanelet routes moved by `move_vehicles`.
-2. Buses and service vehicles render as colored car rectangles with a roof-symbol overlay;
-   regular cars unchanged; service colors preserved.
-3. Buses loop their route's stops (drive → dwell → advance → re-plan) and never despawn on
-   arrival.
-4. `cargo clippy -D warnings` clean (both feature configs), `cargo test --workspace` green
-   including the determinism and soak pins and the new bus pins, `cargo fmt` clean.
-5. Live `--features dev` smoke: buses visible driving the demo route at correct scale;
-   `route_oncoming_ticks_total = 0` (no traffic-invariant regression).
+1. `public_transport.rs` больше не впрыскивает автобусы на фейковых путях; автобусы — `Vehicle`-сущности
+   на реальных lanelet-маршрутах, движутся `move_vehicles`.
+2. Автобусы и сервисные машины рендерятся как цветные прямоугольники-машины с роуф-символом-оверлеем;
+   обычные машины не изменены; цвета сервисных сохранены.
+3. Автобусы циклят стопы маршрута (едут → стоят → продвигаются → переспланируют) и никогда не деспавнятся
+   по прибытии.
+4. `cargo clippy -D warnings` чист (оба feature-конфига), `cargo test --workspace` зелёный, включая
+   пины детерминизма и soak и новые bus-пины, `cargo fmt` чист.
+5. Live `--features dev` смоук: автобусы видно едущими по демо-маршруту в правильном масштабе;
+   `route_oncoming_ticks_total = 0` (нет регрессии traffic-инвариантов).
