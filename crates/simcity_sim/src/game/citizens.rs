@@ -5,15 +5,15 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::time::Fixed;
 use rand::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::game::buildings::Building;
-use crate::game::ids::{CitizenIdComp, CitizenIdGen};
+use crate::game::ids::{CitizenId, CitizenIdComp, CitizenIdGen};
 use crate::game::map::{BuildingKind, MapGrid, TilePos};
 use crate::game::pedestrians::{PedestrianConfig, PedestrianGraph, PedestrianRoutingScratch};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
-use crate::game::traffic::TrafficConfig;
+use crate::game::traffic::{CarOwner, Parked, TrafficConfig};
 use crate::game::trips::{TripFinished, TripMode, TripPurpose, TripRequested};
 
 const MAX_TRIP_MODE_CACHE_ENTRIES: usize = 16_384;
@@ -55,7 +55,11 @@ impl Plugin for CitizensPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                (cleanup_homeless_citizens, rebuild_citizen_tile_index)
+                (
+                    cleanup_homeless_citizens,
+                    despawn_orphaned_owned_cars,
+                    rebuild_citizen_tile_index,
+                )
                     .chain()
                     .in_set(GameSet::PostSim)
                     .run_if(in_state(AppState::InGame)),
@@ -199,8 +203,11 @@ fn spawn_citizens_from_residential(
         }
         let home_pos = b.anchor_pos;
         let current = have_home.get(&home_pos).copied().unwrap_or(0);
-        // Use occupancy_residents as target (GDD 10.3.5)
-        let target = (b.occupancy_residents as usize).max(1);
+        // Use occupancy_residents as target (GDD 10.3.5). No `.max(1)`: a building whose demand-driven
+        // occupancy is 0 must seat 0 residents, otherwise every operational residential building leaks
+        // one permanent citizen even at zero occupancy (occupancy ramps up on its own via the
+        // occupancy system, so this does not starve the sim — verified in the soak harness).
+        let target = b.occupancy_residents as usize;
         if current >= target {
             continue;
         }
@@ -591,17 +598,78 @@ fn recover_stuck_trips(time: Res<Time<Fixed>>, mut q_citizens: Query<&mut Citize
     }
 }
 
+/// Despawn citizens with no valid home slot: either the home building is gone/rezoned (the original
+/// "homeless" rule) OR the building's demand-driven occupancy shrank below the live citizen count.
+///
+/// Without the occupancy cap, `spawn_citizens_from_residential` fills a building to its occupancy
+/// high-water mark and nothing ever removes residents when occupancy later drops (8 -> 2), so the
+/// citizen population ratchets up forever relative to `sum(occupancy_residents)`. This is the
+/// symmetric consumer for the spawner and keeps the population bounded by the driver.
 fn cleanup_homeless_citizens(
     mut commands: Commands,
     grid: Res<MapGrid>,
-    q: Query<(Entity, &Citizen)>,
+    q_buildings: Query<&Building>,
+    q_citizens: Query<(Entity, &CitizenIdComp, &Citizen)>,
 ) {
-    for (e, c) in q.iter() {
-        let ok_home = grid
-            .get(c.home)
+    // Live resident capacity per home tile: the operational residential building's occupancy.
+    let mut cap = HashMap::<TilePos, u16>::new();
+    for b in &q_buildings {
+        if b.kind == BuildingKind::Residential && b.is_operational() {
+            // A tile anchors at most one building.
+            cap.insert(b.anchor_pos, b.occupancy_residents);
+        }
+    }
+
+    // Group by home so the surplus of each over-capacity building is trimmed independently.
+    let mut by_home: HashMap<TilePos, Vec<(CitizenId, Entity)>> = HashMap::new();
+    for (e, id, c) in &q_citizens {
+        by_home.entry(c.home).or_default().push((id.0, e));
+    }
+
+    for (home, mut residents) in by_home {
+        // Grid check preserves the original homeless rule (building demolished/rezoned => cap 0);
+        // the occupancy cap trims the surplus when a still-standing building shrinks.
+        let grid_ok = grid
+            .get(home)
             .and_then(|cell| cell.building)
             .is_some_and(|k| k == BuildingKind::Residential);
-        if !ok_home {
+        let limit = if grid_ok {
+            cap.get(&home).copied().unwrap_or(0) as usize
+        } else {
+            0
+        };
+        if residents.len() <= limit {
+            continue;
+        }
+        // Deterministic surplus selection: drop the highest CitizenIds first (last spawned),
+        // independent of Query/HashMap iteration order.
+        residents.sort_unstable_by_key(|r| std::cmp::Reverse(r.0.0));
+        let surplus = residents.len() - limit;
+        for (_, e) in residents.drain(..surplus) {
+            commands.entity(e).despawn();
+        }
+    }
+}
+
+/// Despawn parked, citizen-owned cars whose owner citizen no longer exists.
+///
+/// Owned cars (`CarOwner`) are otherwise despawned only on `GenerateMap`, and a new citizen gets a
+/// fresh `CitizenId` (so it never reclaims a dead citizen's car). Without this, every citizen we
+/// despawn above (homeless or surplus) leaks its parked car forever. Scoped to `Parked` cars only:
+/// a parked car holds no lane occupancy or intersection reservation, so despawning it is safe;
+/// an in-transit car is left to finish its leg and park, then it is pruned on a later tick.
+/// Deterministic: despawns exactly the set of parked cars with a dead owner, order-independent.
+fn despawn_orphaned_owned_cars(
+    mut commands: Commands,
+    q_citizens: Query<&CitizenIdComp>,
+    q_cars: Query<(Entity, &CarOwner), With<Parked>>,
+) {
+    if q_cars.is_empty() {
+        return;
+    }
+    let live: HashSet<CitizenId> = q_citizens.iter().map(|c| c.0).collect();
+    for (e, owner) in &q_cars {
+        if !live.contains(&owner.citizen) {
             commands.entity(e).despawn();
         }
     }
@@ -686,6 +754,104 @@ mod tests {
             w.get::<Citizen>(home).unwrap().state,
             CitizenState::AtWork,
             "a stable-state citizen must never be touched by trip recovery"
+        );
+    }
+
+    fn residential_home(anchor: TilePos, occupancy: u16) -> Building {
+        Building {
+            kind: BuildingKind::Residential,
+            anchor_pos: anchor,
+            footprint_width: 3,
+            footprint_length: 3,
+            level: 1,
+            phase: crate::game::buildings::BuildingPhase::Operational,
+            construction_start_day: 0,
+            capacity_residents: 8,
+            capacity_jobs: 0,
+            occupancy_residents: occupancy,
+            occupancy_jobs: 0,
+            target_occupancy_residents: occupancy,
+            target_occupancy_jobs: 0,
+            parking_spots: Vec::new(),
+        }
+    }
+
+    fn at_home(home: TilePos) -> Citizen {
+        Citizen {
+            home,
+            state: CitizenState::AtHome,
+            last_place: home,
+            tour_mode: None,
+            car_parked_at: home,
+            decision_timer: Timer::from_seconds(2.0, TimerMode::Repeating),
+            shopping_need: Timer::from_seconds(10.0, TimerMode::Repeating),
+            work_stay: Timer::from_seconds(5.0, TimerMode::Once),
+            shop_stay: Timer::from_seconds(3.0, TimerMode::Once),
+            trip_departed_at_sec: None,
+            trip_purpose: None,
+        }
+    }
+
+    fn live_citizen_ids(app: &mut App) -> Vec<u64> {
+        let world = app.world_mut();
+        let mut ids: Vec<u64> = world
+            .query::<&CitizenIdComp>()
+            .iter(world)
+            .map(|c| c.0.0)
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    #[test]
+    fn cleanup_despawns_over_capacity_citizens_highest_id_first() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+
+        let home = TilePos { x: 5, y: 5 };
+        let mut grid = MapGrid::new(16, 16);
+        let mut cell = grid.get(home).expect("in-bounds tile");
+        cell.building = Some(BuildingKind::Residential);
+        grid.set(home, cell);
+        app.insert_resource(grid);
+
+        let building = app.world_mut().spawn(residential_home(home, 5)).id();
+        for id in 1..=5u64 {
+            app.world_mut()
+                .spawn((CitizenIdComp(CitizenId(id)), at_home(home)));
+        }
+
+        app.add_systems(Update, cleanup_homeless_citizens);
+
+        // At capacity (5 residents, occupancy 5): nobody is despawned.
+        app.update();
+        assert_eq!(
+            live_citizen_ids(&mut app),
+            vec![1, 2, 3, 4, 5],
+            "no citizen may be despawned while the building is at/under occupancy"
+        );
+
+        // Occupancy shrinks 5 -> 2: exactly the 3 highest CitizenIds are dropped, deterministically.
+        app.world_mut()
+            .get_mut::<Building>(building)
+            .unwrap()
+            .occupancy_residents = 2;
+        app.update();
+        assert_eq!(
+            live_citizen_ids(&mut app),
+            vec![1, 2],
+            "surplus despawn must trim to occupancy by dropping the HIGHEST CitizenIds first"
+        );
+
+        // Occupancy hits 0: every remaining resident is despawned.
+        app.world_mut()
+            .get_mut::<Building>(building)
+            .unwrap()
+            .occupancy_residents = 0;
+        app.update();
+        assert!(
+            live_citizen_ids(&mut app).is_empty(),
+            "a zero-occupancy building must retain no residents"
         );
     }
 }

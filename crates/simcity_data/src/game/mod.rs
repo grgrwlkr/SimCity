@@ -4,9 +4,13 @@ use bevy::prelude::*;
 pub mod config_loader;
 #[cfg(test)]
 mod determinism;
+#[cfg(test)]
+mod headless_sim;
 pub mod persistence;
 pub mod persistence_contract;
 pub mod scenarios;
+#[cfg(test)]
+mod soak;
 mod test_city;
 
 pub use simcity_core::game::{commands, ids, roads, sets, sim_events, state, trips, ui_state};
