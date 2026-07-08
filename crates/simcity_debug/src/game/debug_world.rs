@@ -219,6 +219,12 @@ pub struct DebugTrafficSnapshot {
     pub routes_guard_refusals: u32,
     pub routes_lane_change_handbuilt: u32,
     pub routes_swap_break_handbuilt: u32,
+    /// Buses currently in the world.
+    pub buses_total: u32,
+    /// Buses driving toward a stop.
+    pub buses_driving: u32,
+    /// Buses dwelling at a stop.
+    pub buses_dwelling: u32,
 }
 
 /// Intersection subsystem snapshot for MCP inspection.
@@ -1252,9 +1258,11 @@ fn update_debug_traffic_snapshot(
     motion: Option<Res<VehicleMotionStats>>,
     audit: Option<Res<TrafficViolationAudit>>,
     producers: Option<Res<RouteProducerStats>>,
+    q_buses: Query<&simcity_sim::game::public_transport::Bus>,
     holder: Res<DebugSnapshotEntity>,
     mut q_snapshot: Query<&mut DebugTrafficSnapshot>,
 ) {
+    use simcity_sim::game::public_transport::BusState;
     let Some(entity) = holder.entity else {
         return;
     };
@@ -1319,6 +1327,18 @@ fn update_debug_traffic_snapshot(
         snapshot.routes_lane_change_handbuilt = p.lane_change_handbuilt;
         snapshot.routes_swap_break_handbuilt = p.swap_break_handbuilt;
     }
+
+    let (mut buses_total, mut buses_driving, mut buses_dwelling) = (0u32, 0u32, 0u32);
+    for bus in q_buses.iter() {
+        buses_total += 1;
+        match bus.state {
+            BusState::Driving => buses_driving += 1,
+            BusState::Dwelling { .. } => buses_dwelling += 1,
+        }
+    }
+    snapshot.buses_total = buses_total;
+    snapshot.buses_driving = buses_driving;
+    snapshot.buses_dwelling = buses_dwelling;
 
     if let Some(idx) = traffic.as_deref() {
         snapshot.road_tiles = idx.road_tiles;
