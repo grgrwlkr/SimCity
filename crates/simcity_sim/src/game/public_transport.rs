@@ -1,13 +1,15 @@
-//! Public Transport System - Bus routes and stops.
-//!
-//! Buses follow fixed routes between stops, picking up passengers.
+//! Public Transport System — buses drive real routes between stops as first-class
+//! `Vehicle` traffic agents (Phase A). Passenger boarding is Phase C; player-placed
+//! routes are Phase B. Buses are moved by the shared `move_vehicles`; this module only
+//! spawns them, seeds a demo route, and ticks their stop/dwell state machine.
 
 use bevy::prelude::*;
 
-use crate::game::map::{MapGrid, TilePos};
+use crate::game::map::{MapConfig, MapGrid, TilePos};
 use crate::game::state::AppState;
-use crate::game::traffic::Vehicle;
-use crate::game::transport::{PathHandle, PathPool};
+
+/// Seconds a bus dwells at each stop before advancing to the next.
+pub const DWELL_SECS: f32 = 3.0;
 
 pub struct PublicTransportPlugin;
 
@@ -15,9 +17,8 @@ impl Plugin for PublicTransportPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BusRouteManager>().add_systems(
             FixedUpdate,
-            // Chained: spawn produces buses/paths that movement consumes (both conflict on
-            // `PathPool`/`Bus`/`BusRouteManager`).
-            (spawn_buses, move_buses)
+            // Chained: spawn produces buses that the tick advances; both touch `Bus`/`PathPool`.
+            (spawn_buses, tick_buses)
                 .chain()
                 .in_set(crate::game::SimStep::PublicTransport)
                 .run_if(in_state(AppState::InGame)),
@@ -25,7 +26,7 @@ impl Plugin for PublicTransportPlugin {
     }
 }
 
-/// Bus stop marker
+/// A bus stop location on a route.
 #[derive(Component, Debug)]
 pub struct BusStop {
     pub pos: TilePos,
@@ -33,36 +34,29 @@ pub struct BusStop {
     pub stop_index: usize,
 }
 
-/// Bus component
+/// Bus vehicle component (rides on top of a `Vehicle`). No passenger accounting in Phase A.
 #[derive(Component, Debug)]
 pub struct Bus {
     pub route_id: u32,
-    pub current_stop: usize,
-    pub next_stop: usize,
-    pub path_handle: PathHandle,
-    pub path_cursor: usize,
-    pub passengers: u16,
-    pub capacity: u16,
+    /// Index into the route's `stops` the bus is currently driving toward.
+    pub target_stop_idx: usize,
     pub state: BusState,
 }
 
-/// Bus state machine
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BusState {
-    MovingToStop,
-    AtStop { timer: f32 },
-    WaitingForPassengers { timer: f32 },
+    Driving,
+    Dwelling { timer: f32 },
 }
 
-/// Bus route definition
+/// An ordered stop sequence. Buses loop it: `stops[i] -> stops[i+1] -> ... -> stops[0]`.
 #[derive(Debug, Clone)]
 pub struct BusRoute {
     pub id: u32,
     pub stops: Vec<TilePos>,
-    pub name: String,
 }
 
-/// Manager for all bus routes
+/// All active bus routes.
 #[derive(Resource, Default)]
 pub struct BusRouteManager {
     pub routes: Vec<BusRoute>,
@@ -70,222 +64,51 @@ pub struct BusRouteManager {
 }
 
 impl BusRouteManager {
-    /// Create a new bus route
-    pub fn create_route(&mut self, stops: Vec<TilePos>, name: String) -> u32 {
+    pub fn create_route(&mut self, stops: Vec<TilePos>) -> u32 {
         let id = self.next_route_id;
         self.next_route_id = self.next_route_id.wrapping_add(1);
-        self.routes.push(BusRoute { id, stops, name });
+        self.routes.push(BusRoute { id, stops });
         id
     }
 
-    /// Get route by ID
     pub fn get_route(&self, id: u32) -> Option<&BusRoute> {
         self.routes.iter().find(|r| r.id == id)
     }
+
+    /// Clear all routes and rewind the id counter — called on map load/regeneration.
+    pub fn reset(&mut self) {
+        self.routes.clear();
+        self.next_route_id = 0;
+    }
 }
 
-/// Spawn buses for each route
+/// Spawn one bus per route (filled in Task 3).
 fn spawn_buses(
-    mut commands: Commands,
-    mut route_mgr: ResMut<BusRouteManager>,
-    grid: Res<MapGrid>,
-    mut path_pool: ResMut<PathPool>,
-    q_existing: Query<&Bus>,
+    _commands: Commands,
+    _route_mgr: Res<BusRouteManager>,
+    _grid: Res<MapGrid>,
+    _cfg: Res<MapConfig>,
+    _q_existing: Query<&Bus>,
 ) {
-    // Create default route if none exists
-    if route_mgr.routes.is_empty() && grid.width > 10 {
-        // Create a simple loop route
-        let mut stops = Vec::new();
-        let margin = 5i32;
-
-        // Top edge
-        for x in (margin..(grid.width - margin)).step_by(10) {
-            stops.push(TilePos { x, y: margin });
-        }
-        // Right edge
-        for y in (margin..(grid.height - margin)).step_by(10) {
-            stops.push(TilePos {
-                x: grid.width - margin,
-                y,
-            });
-        }
-        // Bottom edge
-        for x in ((margin..(grid.width - margin)).rev()).step_by(10) {
-            stops.push(TilePos {
-                x,
-                y: grid.height - margin,
-            });
-        }
-        // Left edge
-        for y in ((margin..(grid.height - margin)).rev()).step_by(10) {
-            stops.push(TilePos { x: margin, y });
-        }
-
-        route_mgr.create_route(stops, "Route 1".to_string());
-    }
-
-    // Spawn one bus per route
-    for route in &route_mgr.routes {
-        let existing_buses = q_existing.iter().filter(|b| b.route_id == route.id).count();
-        if existing_buses >= 1 {
-            continue; // One bus per route for MVP
-        }
-
-        if route.stops.len() < 2 {
-            continue;
-        }
-
-        // Find road tile near first stop
-        let Some(start_pos) = find_road_near(&grid, route.stops[0]) else {
-            continue;
-        };
-        let Some(goal_pos) = find_road_near(&grid, route.stops[1]) else {
-            continue;
-        };
-
-        // Create path (simplified - would use full pathfinding in production)
-        let mut path = vec![start_pos];
-        path.push(goal_pos);
-
-        let path_handle = path_pool.intern(path);
-
-        let world_pos = tile_to_world(&grid, start_pos);
-
-        commands.spawn((
-            Sprite {
-                color: Color::srgb(0.9, 0.7, 0.2), // Yellow bus
-                custom_size: Some(Vec2::new(1.2, 0.7)),
-                ..default()
-            },
-            Transform::from_xyz(world_pos.x, world_pos.y, 11.0),
-            Bus {
-                route_id: route.id,
-                current_stop: 0,
-                next_stop: 1,
-                path_handle,
-                path_cursor: 0,
-                passengers: 0,
-                capacity: 30,
-                state: BusState::MovingToStop,
-            },
-            Vehicle {
-                path_handle,
-                path_cursor: 0,
-                progress: 0.0,
-                speed: 50.0,
-                max_speed: 50.0,
-                speed_factor: 1.0,
-                max_accel: 15.0,
-                ..default()
-            },
-        ));
-    }
 }
 
-/// Move buses along their routes
-fn move_buses(
-    time: Res<Time>,
-    mut commands: Commands,
-    mut q: Query<(Entity, &mut Bus, &mut Vehicle, &Transform)>,
-    route_mgr: Res<BusRouteManager>,
-    grid: Res<MapGrid>,
-    mut path_pool: ResMut<PathPool>,
-) {
-    let delta = time.delta_secs();
+/// Advance each bus's dwell/stop state machine (filled in Task 4).
+fn tick_buses(_q: Query<&mut Bus>) {}
 
-    for (entity, mut bus, mut vehicle, _transform) in q.iter_mut() {
-        match &mut bus.state {
-            BusState::MovingToStop => {
-                // Move towards next stop
-                vehicle.progress += vehicle.speed * delta / 100.0; // Simplified movement
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-                if vehicle.progress >= 1.0 {
-                    vehicle.progress = 0.0;
-                    bus.state = BusState::AtStop { timer: 2.0 }; // Stop for 2 seconds
+    #[test]
+    fn route_manager_reset_clears_routes_and_id() {
+        let mut mgr = BusRouteManager::default();
+        let id0 = mgr.create_route(vec![TilePos { x: 1, y: 1 }, TilePos { x: 5, y: 1 }]);
+        assert_eq!(id0, 0);
+        assert_eq!(mgr.routes.len(), 1);
+        assert_eq!(mgr.next_route_id, 1);
 
-                    // Update stop indices
-                    bus.current_stop = bus.next_stop;
-                    bus.next_stop = (bus.next_stop + 1) % {
-                        route_mgr
-                            .get_route(bus.route_id)
-                            .map(|r| r.stops.len())
-                            .unwrap_or(1)
-                    };
-
-                    // Plan next segment
-                    if let Some(route) = route_mgr.get_route(bus.route_id)
-                        && let Some(current) = find_road_near(&grid, route.stops[bus.current_stop])
-                        && let Some(next) = find_road_near(&grid, route.stops[bus.next_stop])
-                    {
-                        let path = vec![current, next];
-                        bus.path_handle = path_pool.intern(path);
-                        bus.path_cursor = 0;
-                        vehicle.path_handle = bus.path_handle;
-                        vehicle.path_cursor = 0;
-                    }
-                }
-            }
-            BusState::AtStop { timer } => {
-                *timer -= delta;
-                if *timer <= 0.0 {
-                    bus.state = BusState::WaitingForPassengers { timer: 1.0 };
-                }
-            }
-            BusState::WaitingForPassengers { timer } => {
-                *timer -= delta;
-                if *timer <= 0.0 {
-                    // Pick up passengers (simplified)
-                    bus.passengers = (bus.passengers + 5).min(bus.capacity);
-                    bus.state = BusState::MovingToStop;
-                }
-            }
-        }
-
-        // Update vehicle position
-        if let Some(path) = path_pool.get(vehicle.path_handle)
-            && let Some(&current_tile) = path.get(vehicle.path_cursor)
-        {
-            let world_pos = tile_to_world(&grid, current_tile);
-            let mut tf = commands.entity(entity);
-            tf.insert(Transform::from_xyz(world_pos.x, world_pos.y, 11.0));
-        }
+        mgr.reset();
+        assert!(mgr.routes.is_empty(), "reset must clear routes");
+        assert_eq!(mgr.next_route_id, 0, "reset must rewind the id counter");
     }
-}
-
-/// Find a road tile near the given position
-fn find_road_near(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
-    // Check the position itself first
-    if let Some(cell) = grid.get(pos)
-        && cell.road.is_some()
-    {
-        return Some(pos);
-    }
-
-    // Check neighbors
-    for dx in -2..=2 {
-        for dy in -2..=2 {
-            let check = TilePos {
-                x: pos.x + dx,
-                y: pos.y + dy,
-            };
-            if let Some(cell) = grid.get(check)
-                && cell.road.is_some()
-            {
-                return Some(check);
-            }
-        }
-    }
-
-    None
-}
-
-/// Convert tile position to world position
-fn tile_to_world(grid: &MapGrid, pos: TilePos) -> Vec2 {
-    let tile_size = 1.0; // Simplified
-    let origin_x = -((grid.width - 1) as f32) * tile_size * 0.5;
-    let origin_y = -((grid.height - 1) as f32) * tile_size * 0.5;
-    Vec2::new(
-        origin_x + pos.x as f32 * tile_size,
-        origin_y + pos.y as f32 * tile_size,
-    )
 }
