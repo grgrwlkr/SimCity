@@ -19,6 +19,9 @@ pub struct VehicleAgg {
     pub crossing: u32,
     pub accelerating: u32,
 
+    /// Active buses (public transport vehicles).
+    pub buses: u32,
+
     pub service_at_station: u32,
     pub service_en_route: u32,
     pub service_on_scene: u32,
@@ -41,6 +44,8 @@ impl VehicleAgg {
         self.waiting = self.waiting.saturating_add(other.waiting);
         self.crossing = self.crossing.saturating_add(other.crossing);
         self.accelerating = self.accelerating.saturating_add(other.accelerating);
+
+        self.buses = self.buses.saturating_add(other.buses);
 
         self.service_at_station = self
             .service_at_station

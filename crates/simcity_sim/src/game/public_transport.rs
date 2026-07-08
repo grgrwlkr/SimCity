@@ -61,7 +61,16 @@ pub struct Bus {
     /// Index into the route's `stops` the bus is currently driving toward.
     pub target_stop_idx: usize,
     pub state: BusState,
+    /// Seconds the bus has been Driving without advancing its path cursor (wedge detector).
+    pub wedge_secs: f32,
+    /// Path cursor at the previous tick, to detect progress for the wedge timer.
+    pub last_cursor: usize,
 }
+
+/// Seconds a bus may sit wedged (Driving, not advancing) before it re-plans / skips a stop.
+/// Buses are despawn-immune persistent agents, so without self-heal a wedged one blocks a road
+/// forever. Faster than the generic 60 s stuck-reroute so a bus does not linger.
+const BUS_WEDGE_RECOVER_SECS: f32 = 12.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BusState {
@@ -103,10 +112,10 @@ impl BusRouteManager {
 }
 
 /// Seed one deterministic demo route for the test city. Stops are picked from the single
-/// road-densest row (in the test city that is the central highway — a continuous horizontal
-/// road), so the stops are road-connected and the bus can plan a real route between them.
-/// Player-placed routes are Phase B; this just makes buses visible in Phase A. No-op if a route
-/// already exists or no row has enough road.
+/// road-densest row (in the test city that is the central two-way highway — a long connected
+/// corridor), so consecutive stops are road-connected and the bus can plan real routes; the
+/// wrap-around leg drives the opposite carriageway. Unroutable legs are skipped at runtime
+/// (`plan_from_tile`). Player-placed routes are Phase B. No-op if no row has enough road.
 pub fn seed_demo_bus_route(grid: &MapGrid, mgr: &mut BusRouteManager) {
     if !mgr.routes.is_empty() {
         return;
@@ -129,13 +138,11 @@ pub fn seed_demo_bus_route(grid: &MapGrid, mgr: &mut BusRouteManager) {
     if best_row < 0 || best_count < 4 {
         return;
     }
-    // Road tiles on that row, left to right.
     let row_tiles: Vec<TilePos> = (0..grid.width)
         .map(|x| TilePos { x, y: best_row })
         .filter(|&p| grid.get(p).is_some_and(|c| !c.water && c.road.is_some()))
         .collect();
     let n = row_tiles.len();
-    // Four evenly-spaced stops along the corridor => a there-and-loop route over one road.
     let stops = vec![
         row_tiles[0],
         row_tiles[n / 3],
@@ -143,6 +150,34 @@ pub fn seed_demo_bus_route(grid: &MapGrid, mgr: &mut BusRouteManager) {
         row_tiles[n - 1],
     ];
     mgr.create_route(stops);
+}
+
+/// Plan a road-A* route from `from_tile` to the first REACHABLE stop scanning forward from
+/// `after_idx` (wrapping): the smallest `k >= 1` for which `stops[(after_idx+k)%n]` yields a
+/// non-empty, direction-correct route from `from_tile`. Returns `(route_tiles, reached_idx)`.
+/// Skipping unroutable stops keeps a bus from wedging on a leg it cannot complete.
+fn plan_from_tile(
+    ctx: &mut PathfindingCtx,
+    grid: &MapGrid,
+    stops: &[TilePos],
+    from_tile: TilePos,
+    after_idx: usize,
+) -> Option<(Vec<TilePos>, usize)> {
+    let n = stops.len();
+    for k in 1..=n {
+        let idx = (after_idx + k) % n;
+        let Some(goal) = adjacent_road_towards(grid, stops[idx], from_tile) else {
+            continue;
+        };
+        if goal == from_tile {
+            continue; // already at this stop's road — try the next stop
+        }
+        let tiles = find_road_path_cached(ctx, from_tile, goal);
+        if !tiles.is_empty() && route_direction_ok(&tiles, grid) {
+            return Some((tiles, idx));
+        }
+    }
+    None
 }
 
 /// World position of a tile center, matching the traffic renderer's `map_origin` convention.
@@ -200,14 +235,6 @@ fn spawn_buses(
         if q_existing.iter().any(|b| b.route_id == route.id) {
             continue; // one bus per route (Phase A)
         }
-        // Road tiles at stop 0 (toward stop 1) and stop 1 (toward stop 0).
-        let Some(start) = adjacent_road_towards(&grid, route.stops[0], route.stops[1]) else {
-            continue;
-        };
-        let Some(goal) = adjacent_road_towards(&grid, route.stops[1], route.stops[0]) else {
-            continue;
-        };
-
         let mut ctx = PathfindingCtx {
             time_now_sec: time.elapsed_secs_f64(),
             cfg: &path_cfg,
@@ -218,10 +245,14 @@ fn spawn_buses(
             grid: &grid,
             intersections: &intersections,
         };
-        let route_tiles = find_road_path_cached(&mut ctx, start, goal);
-        if route_tiles.is_empty() || !route_direction_ok(&route_tiles, &grid) {
+        // Start at a road near stop 0 and plan to the first reachable stop after it.
+        let Some(start) = adjacent_road_towards(&grid, route.stops[0], route.stops[1]) else {
             continue;
-        }
+        };
+        let Some((route_tiles, next_idx)) = plan_from_tile(&mut ctx, &grid, &route.stops, start, 0)
+        else {
+            continue;
+        };
 
         let world_pos = tile_to_world(&cfg, start);
         commands
@@ -244,8 +275,10 @@ fn spawn_buses(
                 VehicleTrafficState::FreeFlow,
                 Bus {
                     route_id: route.id,
-                    target_stop_idx: 1,
+                    target_stop_idx: next_idx,
                     state: BusState::Driving,
+                    wedge_secs: 0.0,
+                    last_cursor: 0,
                 },
             ))
             .with_children(|parent| {
@@ -277,56 +310,136 @@ fn tick_buses(
     let dt = time.delta_secs();
     let now_sec = time.elapsed_secs_f64();
     for (mut bus, mut vehicle) in q.iter_mut() {
-        let path_done = vehicle.path_cursor >= path_pool.len(vehicle.path_handle);
-        match &mut bus.state {
+        let path_len = path_pool.len(vehicle.path_handle);
+        let path_done = vehicle.path_cursor >= path_len;
+
+        // Track progress for the wedge detector (Driving only).
+        if vehicle.path_cursor != bus.last_cursor {
+            bus.last_cursor = vehicle.path_cursor;
+            bus.wedge_secs = 0.0;
+        }
+
+        match bus.state {
             BusState::Driving => {
                 if path_done {
                     bus.state = BusState::Dwelling { timer: DWELL_SECS };
+                    bus.wedge_secs = 0.0;
                     vehicle.speed = 0.0;
+                    continue;
                 }
-            }
-            BusState::Dwelling { timer } => {
-                *timer -= dt;
-                if *timer > 0.0 {
+                // Wedge self-heal: a despawn-immune bus that stops advancing must re-plan or skip a
+                // stop, else it blocks a road forever. Accumulate only while genuinely stalled.
+                if vehicle.speed < 0.1 {
+                    bus.wedge_secs += dt;
+                } else {
+                    bus.wedge_secs = 0.0;
+                }
+                if bus.wedge_secs < BUS_WEDGE_RECOVER_SECS {
                     continue;
                 }
                 let Some(route) = route_mgr.get_route(bus.route_id) else {
                     continue;
                 };
-                let n = route.stops.len();
-                if n < 2 {
+                if route.stops.len() < 2 {
                     continue;
                 }
-                let from_stop = bus.target_stop_idx;
-                let to_stop = (from_stop + 1) % n;
-                let (Some(start), Some(goal)) = (
-                    adjacent_road_towards(&grid, route.stops[from_stop], route.stops[to_stop]),
-                    adjacent_road_towards(&grid, route.stops[to_stop], route.stops[from_stop]),
+                let Some(cur_tile) = path_pool.get_tile(vehicle.path_handle, vehicle.path_cursor)
+                else {
+                    continue;
+                };
+                let mut ctx = mk_ctx(
+                    now_sec,
+                    &path_cfg,
+                    &mut path_cache,
+                    &graph,
+                    &regions,
+                    &traffic,
+                    &grid,
+                    &intersections,
+                );
+                // Wedged: SKIP the current target and head for the next reachable stop. Re-routing
+                // to the same target just replans the same jammed leg (road-A* is topology-based);
+                // changing the destination changes direction and escapes the jam.
+                if let Some((tiles, next_idx)) =
+                    plan_from_tile(&mut ctx, &grid, &route.stops, cur_tile, bus.target_stop_idx)
+                {
+                    path_pool.release(vehicle.path_handle);
+                    vehicle.path_handle = path_pool.intern(tiles);
+                    vehicle.path_cursor = 0;
+                    vehicle.progress = 0.0;
+                    bus.target_stop_idx = next_idx;
+                    bus.last_cursor = 0;
+                }
+                bus.wedge_secs = 0.0;
+            }
+            BusState::Dwelling { timer } => {
+                let remaining = timer - dt;
+                if remaining > 0.0 {
+                    bus.state = BusState::Dwelling { timer: remaining };
+                    continue;
+                }
+                let Some(route) = route_mgr.get_route(bus.route_id) else {
+                    continue;
+                };
+                if route.stops.len() < 2 {
+                    continue;
+                }
+                let from_tile = path_pool
+                    .get_tile(vehicle.path_handle, path_len.saturating_sub(1))
+                    .unwrap_or(vehicle.tile_pos);
+                let mut ctx = mk_ctx(
+                    now_sec,
+                    &path_cfg,
+                    &mut path_cache,
+                    &graph,
+                    &regions,
+                    &traffic,
+                    &grid,
+                    &intersections,
+                );
+                // Advance from the stop we just arrived at to the next REACHABLE stop.
+                let Some((tiles, next_idx)) = plan_from_tile(
+                    &mut ctx,
+                    &grid,
+                    &route.stops,
+                    from_tile,
+                    bus.target_stop_idx,
                 ) else {
-                    continue;
+                    continue; // no reachable next stop right now; keep dwelling, retry next tick
                 };
-                let mut ctx = PathfindingCtx {
-                    time_now_sec: now_sec,
-                    cfg: &path_cfg,
-                    cache: &mut path_cache,
-                    graph: &graph,
-                    regions: Some(&regions),
-                    traffic: &traffic,
-                    grid: &grid,
-                    intersections: &intersections,
-                };
-                let tiles = find_road_path_cached(&mut ctx, start, goal);
-                if tiles.is_empty() || !route_direction_ok(&tiles, &grid) {
-                    continue; // keep dwelling; retry next tick
-                }
                 path_pool.release(vehicle.path_handle);
                 vehicle.path_handle = path_pool.intern(tiles);
                 vehicle.path_cursor = 0;
                 vehicle.progress = 0.0;
-                bus.target_stop_idx = to_stop;
+                bus.target_stop_idx = next_idx;
+                bus.last_cursor = 0;
                 bus.state = BusState::Driving;
             }
         }
+    }
+}
+
+/// Build a `PathfindingCtx` for bus routing (bundled to keep the call sites short).
+#[allow(clippy::too_many_arguments)]
+fn mk_ctx<'a>(
+    now_sec: f64,
+    path_cfg: &'a PathfindingConfig,
+    path_cache: &'a mut PathCache,
+    graph: &'a RoadGraph,
+    regions: &'a RegionGraph,
+    traffic: &'a TrafficOccupancy,
+    grid: &'a MapGrid,
+    intersections: &'a IntersectionIndex,
+) -> PathfindingCtx<'a> {
+    PathfindingCtx {
+        time_now_sec: now_sec,
+        cfg: path_cfg,
+        cache: path_cache,
+        graph,
+        regions: Some(regions),
+        traffic,
+        grid,
+        intersections,
     }
 }
 

@@ -690,6 +690,8 @@ fn bus_with_exhausted_path_is_not_despawned_by_move_vehicles() {
                 route_id: 0,
                 target_stop_idx: 0,
                 state: BusState::Driving,
+                wedge_secs: 0.0,
+                last_cursor: 0,
             },
         ))
         .id();

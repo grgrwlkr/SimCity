@@ -89,12 +89,16 @@ fn notification_ui(
         return;
     }
 
-    // Show notifications in top-right corner
+    // Show notifications top-right, but LEFT of the 200px right sidebar so they don't cover it.
+    // Layout: [ ...notif box (280) ... | gap | sidebar (200) ] against the right viewport edge.
+    const SIDEBAR_W: f32 = 200.0;
+    const NOTIF_W: f32 = 280.0;
+    const GAP: f32 = 20.0;
     let viewport = ctx.viewport_rect();
     egui::Area::new("notifications".into())
-        .fixed_pos(egui::pos2(viewport.max.x - 300.0, 50.0))
+        .fixed_pos(egui::pos2(viewport.max.x - SIDEBAR_W - GAP - NOTIF_W, 50.0))
         .show(&*ctx, |ui| {
-            ui.set_width(280.0);
+            ui.set_width(NOTIF_W);
 
             for (i, msg) in messages.iter().enumerate() {
                 let color = match msg.kind {

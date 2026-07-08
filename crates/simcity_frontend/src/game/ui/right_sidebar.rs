@@ -198,6 +198,7 @@ pub(super) fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams
                     ));
                     ui.label(format!("  Stopped: {}, Wait: {}", agg.stopped, agg.waiting));
                     ui.label(format!("  Accel: {}", agg.accelerating));
+                    ui.label(format!("  Buses: {}", agg.buses));
                     if let Some(m) = p.vehicle_motion.as_deref() {
                         ui.label(format!(
                             "  Max moving: {:.0}s, max stopped: {:.0}s",

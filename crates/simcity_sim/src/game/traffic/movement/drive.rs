@@ -114,6 +114,9 @@ pub fn move_vehicles(
         {
             let a = &mut vehicle_agg.active;
             a.total = a.total.saturating_add(1);
+            if bus.is_some() {
+                a.buses = a.buses.saturating_add(1);
+            }
             if path_pool.len(v.path_handle) == 0 || v.path_cursor >= path_pool.len(v.path_handle) {
                 a.no_route = a.no_route.saturating_add(1);
             }
