@@ -641,3 +641,63 @@ fn stuck_reverse_never_backs_into_intersection_box() {
         "test never engaged the reverse branch; setup is invalid"
     );
 }
+
+/// Buses are persistent traffic agents (like service vehicles): reaching the end of a route
+/// segment must NOT despawn them — they dwell and re-plan to the next stop instead. Mirror of
+/// `vehicle_arrival_emits_trip_finished` but with a `Bus` marker and no `TripPassenger`.
+#[test]
+fn bus_with_exhausted_path_is_not_despawned_by_move_vehicles() {
+    use crate::game::public_transport::{Bus, BusState};
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .add_message::<TripFinished>()
+        .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
+            1.0 / 10.0,
+        ))
+        .insert_resource(MapConfig {
+            width: 8,
+            height: 8,
+            tile_size: 16.0,
+        })
+        .insert_resource(MapGrid::new(8, 8))
+        .insert_resource(TrafficOccupancy::default())
+        .insert_resource(TrafficConfig::default())
+        .insert_resource(IntersectionIndex::default())
+        .insert_resource(IntersectionReservations::default())
+        .init_resource::<crate::game::transport::LaneletConflictMatrices>()
+        .init_resource::<RouteProducerStats>()
+        .insert_resource(TrafficSpatialIndex::default())
+        .insert_resource(VehicleAggSnapshot::default())
+        .insert_resource(ParkedVehicleTileIndex::default())
+        .insert_resource(crate::game::transport::PathPool::default())
+        .add_systems(Update, (build_traffic_spatial_index, move_vehicles).chain());
+
+    // Empty route => path exhausted (arrived).
+    let vehicle_component = {
+        let mut path_pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(&mut path_pool, vec![], 0, 0.0, 0.0, 60.0, 20.0, 1.0)
+    };
+    let bus = app
+        .world_mut()
+        .spawn((
+            vehicle_component,
+            Transform::default(),
+            VehicleTrafficState::FreeFlow,
+            Bus {
+                route_id: 0,
+                target_stop_idx: 0,
+                state: BusState::Driving,
+            },
+        ))
+        .id();
+
+    app.update();
+
+    assert!(
+        app.world().get_entity(bus).is_ok(),
+        "a bus with an exhausted path must NOT be despawned (it is a persistent agent)"
+    );
+}

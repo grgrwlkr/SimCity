@@ -80,6 +80,7 @@ pub(super) fn resolve_stuck_vehicles(
             &VehicleTrafficState,
             Option<&TripPassenger>,
             Option<&ServiceVehicle>,
+            Option<&crate::game::public_transport::Bus>,
             &mut StuckTimer,
             Option<&SwapDeadlocked>,
             Option<&mut VehicleLaneletPlan>,
@@ -108,6 +109,7 @@ pub(super) fn resolve_stuck_vehicles(
         state,
         passenger,
         service_vehicle,
+        bus,
         mut stuck,
         swap_deadlocked,
         mut lanelet_plan,
@@ -139,7 +141,8 @@ pub(super) fn resolve_stuck_vehicles(
         // exempt from that guardrail (despawning would leak its station's available_vehicles), so
         // for it the arm would only open a PER-TICK replan lane, bypassing the wedged throttle
         // above (the exact churn it prevents). Service vehicles stay on the throttled window.
-        let recovery_due = wedged_retry_due || (motion_despawn && service_vehicle.is_none());
+        let recovery_due =
+            wedged_retry_due || (motion_despawn && service_vehicle.is_none() && bus.is_none());
         if v.path_cursor >= path_pool.len(v.path_handle) {
             stuck.secs = 0.0;
             continue;
@@ -150,6 +153,7 @@ pub(super) fn resolve_stuck_vehicles(
         // tick, so it only persists for a genuinely unbreakable swap.
         if swap_deadlocked.is_some()
             && service_vehicle.is_none()
+            && bus.is_none()
             && stuck.secs >= SWAP_DEADLOCK_DESPAWN_SECS
         {
             if let Some(p) = passenger {
@@ -275,7 +279,10 @@ pub(super) fn resolve_stuck_vehicles(
         // congestion — only a genuine permanent dead-end reaches here. Hoisting the motion arm made
         // this fire routinely on ordinary congestion-stopped cars (they vanished mid-jam); placing
         // it after reroute/reverse restores it to the band-aid-of-last-resort it should be.
-        if (stuck.secs >= STUCK_DESPAWN_SECS || motion_despawn) && service_vehicle.is_none() {
+        if (stuck.secs >= STUCK_DESPAWN_SECS || motion_despawn)
+            && service_vehicle.is_none()
+            && bus.is_none()
+        {
             if let Some(p) = passenger {
                 finished.write(TripFinished {
                     citizen: p.citizen,

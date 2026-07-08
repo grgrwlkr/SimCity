@@ -83,6 +83,7 @@ pub fn move_vehicles(
             Option<&TripPassenger>,
             Option<&CarOwner>,
             Option<&ServiceVehicle>,
+            Option<&crate::game::public_transport::Bus>,
             Option<&crate::game::traffic::stuck::StuckTimer>,
         ),
         Without<Parked>,
@@ -106,7 +107,7 @@ pub fn move_vehicles(
         }
     }
 
-    for (entity, mut v, state, ror, passenger, car_owner, service_vehicle, stuck_timer) in
+    for (entity, mut v, state, ror, passenger, car_owner, service_vehicle, bus, stuck_timer) in
         vehicles.iter_mut()
     {
         // --- Telemetry (cheap counters).
@@ -164,7 +165,7 @@ pub fn move_vehicles(
         }
         if path_pool.len(v.path_handle) == 0 || v.path_cursor >= path_pool.len(v.path_handle) {
             // Arrived – despawn trip vehicles, keep service vehicles (idle).
-            if service_vehicle.is_none() {
+            if service_vehicle.is_none() && bus.is_none() {
                 if let Some(p) = passenger {
                     finished.write(TripFinished {
                         citizen: p.citizen,
@@ -640,7 +641,7 @@ pub fn move_vehicles(
         }
 
         if v.path_cursor >= path_pool.len(v.path_handle) {
-            if service_vehicle.is_none() {
+            if service_vehicle.is_none() && bus.is_none() {
                 if let Some(p) = passenger {
                     finished.write(TripFinished {
                         citizen: p.citizen,
