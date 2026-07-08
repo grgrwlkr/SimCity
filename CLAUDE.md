@@ -62,7 +62,7 @@ simcity_app ─┬─> simcity_frontend ─┬─> simcity_debug ─┐
 
 ## Tests
 
-Тесты **co-located** рядом с кодом (нет корневого `tests/`). Почти всё в `simcity_sim` (44 файла с тестами по workspace): `map/tests.rs`, `buildings/tests.rs`, `emergencies/tests.rs`, `transport/tests.rs`, `pedestrians/tests_{graph,signalized,uncontrolled}.rs`, и крупный набор `traffic/tests/*.rs` (basic_behavior, intersection_reservations, lanelet_arbiter, pedestrians, traffic_lights, vehicle_parking, vehicle_spawning). Plus persistence/config parse-тесты в `simcity_data` и mirror-тесты в `simcity_debug`. Текущий прогон (`cargo test --workspace`): `simcity_sim` 214 + `simcity_data` 8 + `simcity_debug` 2 = 224 теста.
+Тесты **co-located** рядом с кодом (нет корневого `tests/`). Почти всё в `simcity_sim` (44 файла с тестами по workspace): `map/tests.rs`, `buildings/tests.rs`, `emergencies/tests.rs`, `transport/tests.rs`, `pedestrians/tests_{graph,signalized,uncontrolled}.rs`, и крупный набор `traffic/tests/*.rs` (basic_behavior, intersection_reservations, lanelet_arbiter, pedestrians, traffic_lights, vehicle_parking, vehicle_spawning). Plus persistence/config parse-тесты в `simcity_data` и mirror-тесты в `simcity_debug`. Текущий прогон (`cargo test --workspace`): `simcity_sim` 219 + `simcity_data` 10 + `simcity_debug` 2 = 231 тест.
 
 Упавший тест ≠ всегда баг кода: возможно изменилось ожидаемое поведение. Правь тест только с обоснованием, почему новое поведение корректно.
 
