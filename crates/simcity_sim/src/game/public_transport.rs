@@ -215,8 +215,77 @@ fn spawn_buses(
     }
 }
 
-/// Advance each bus's dwell/stop state machine (filled in Task 4).
-fn tick_buses(_q: Query<&mut Bus>) {}
+/// Advance each bus's stop/dwell state machine: on reaching its target stop the bus dwells for
+/// `DWELL_SECS`, then advances to the next stop and re-plans a road-A* route to it (looping).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn tick_buses(
+    time: Res<Time<Fixed>>,
+    route_mgr: Res<BusRouteManager>,
+    grid: Res<MapGrid>,
+    traffic: Res<TrafficOccupancy>,
+    graph: Res<RoadGraph>,
+    regions: Res<RegionGraph>,
+    path_cfg: Res<PathfindingConfig>,
+    intersections: Res<IntersectionIndex>,
+    mut path_cache: ResMut<PathCache>,
+    mut path_pool: ResMut<PathPool>,
+    mut q: Query<(&mut Bus, &mut Vehicle)>,
+) {
+    let dt = time.delta_secs();
+    let now_sec = time.elapsed_secs_f64();
+    for (mut bus, mut vehicle) in q.iter_mut() {
+        let path_done = vehicle.path_cursor >= path_pool.len(vehicle.path_handle);
+        match &mut bus.state {
+            BusState::Driving => {
+                if path_done {
+                    bus.state = BusState::Dwelling { timer: DWELL_SECS };
+                    vehicle.speed = 0.0;
+                }
+            }
+            BusState::Dwelling { timer } => {
+                *timer -= dt;
+                if *timer > 0.0 {
+                    continue;
+                }
+                let Some(route) = route_mgr.get_route(bus.route_id) else {
+                    continue;
+                };
+                let n = route.stops.len();
+                if n < 2 {
+                    continue;
+                }
+                let from_stop = bus.target_stop_idx;
+                let to_stop = (from_stop + 1) % n;
+                let (Some(start), Some(goal)) = (
+                    adjacent_road_towards(&grid, route.stops[from_stop], route.stops[to_stop]),
+                    adjacent_road_towards(&grid, route.stops[to_stop], route.stops[from_stop]),
+                ) else {
+                    continue;
+                };
+                let mut ctx = PathfindingCtx {
+                    time_now_sec: now_sec,
+                    cfg: &path_cfg,
+                    cache: &mut path_cache,
+                    graph: &graph,
+                    regions: Some(&regions),
+                    traffic: &traffic,
+                    grid: &grid,
+                    intersections: &intersections,
+                };
+                let tiles = find_road_path_cached(&mut ctx, start, goal);
+                if tiles.is_empty() || !route_direction_ok(&tiles, &grid) {
+                    continue; // keep dwelling; retry next tick
+                }
+                path_pool.release(vehicle.path_handle);
+                vehicle.path_handle = path_pool.intern(tiles);
+                vehicle.path_cursor = 0;
+                vehicle.progress = 0.0;
+                bus.target_stop_idx = to_stop;
+                bus.state = BusState::Driving;
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
