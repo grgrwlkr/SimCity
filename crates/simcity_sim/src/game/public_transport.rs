@@ -27,22 +27,71 @@ const BUS_ROOF_COLOR: Color = Color::srgb(0.12, 0.12, 0.12);
 /// Cruising speed cap for buses (km/h) — moderate, below fast cars.
 const BUS_MAX_SPEED_KMH: f32 = 55.0;
 
+/// Bus-stop map marker color (cyan, distinct from vehicles/roads).
+const BUS_STOP_COLOR: Color = Color::srgb(0.15, 0.85, 0.9);
+
 /// Marker on the child roof-symbol sprite of a special vehicle (bus / service).
 #[derive(Component)]
 pub struct VehicleRoofMarker;
+
+/// A rendered bus-stop marker entity on the map (one per route stop).
+#[derive(Component)]
+pub struct BusStopMarker;
 
 pub struct PublicTransportPlugin;
 
 impl Plugin for PublicTransportPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<BusRouteManager>().add_systems(
-            FixedUpdate,
-            // Chained: spawn produces buses that the tick advances; both touch `Bus`/`PathPool`.
-            (spawn_buses, tick_buses)
-                .chain()
-                .in_set(crate::game::SimStep::PublicTransport)
-                .run_if(in_state(AppState::InGame)),
-        );
+        app.init_resource::<BusRouteManager>()
+            .add_systems(
+                FixedUpdate,
+                // Chained: spawn produces buses that the tick advances; both touch `Bus`/`PathPool`.
+                (spawn_buses, tick_buses)
+                    .chain()
+                    .in_set(crate::game::SimStep::PublicTransport)
+                    .run_if(in_state(AppState::InGame)),
+            )
+            // Visual-only: (re)draw bus-stop markers when routes change (Update, no sim effect).
+            .add_systems(
+                Update,
+                render_bus_stops
+                    .in_set(crate::game::sets::GameSet::RenderSync)
+                    .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
+            );
+    }
+}
+
+/// (Re)spawn one map marker per route stop whenever the total stop count changes (route seeded,
+/// reset, or replaced). Markers are plain sprites at the stop tile centres, drawn just under the
+/// vehicle layer.
+fn render_bus_stops(
+    mut commands: Commands,
+    cfg: Res<MapConfig>,
+    route_mgr: Res<BusRouteManager>,
+    q_markers: Query<Entity, With<BusStopMarker>>,
+    mut last_stop_count: Local<usize>,
+) {
+    let stop_count: usize = route_mgr.routes.iter().map(|r| r.stops.len()).sum();
+    if stop_count == *last_stop_count {
+        return;
+    }
+    *last_stop_count = stop_count;
+    for e in q_markers.iter() {
+        commands.entity(e).despawn();
+    }
+    for route in &route_mgr.routes {
+        for &stop in &route.stops {
+            let world = tile_to_world(&cfg, stop);
+            commands.spawn((
+                Sprite {
+                    color: BUS_STOP_COLOR,
+                    custom_size: Some(Vec2::splat(cfg.tile_size * 0.7)),
+                    ..default()
+                },
+                Transform::from_xyz(world.x, world.y, 9.0),
+                BusStopMarker,
+            ));
+        }
     }
 }
 
@@ -111,45 +160,99 @@ impl BusRouteManager {
     }
 }
 
-/// Seed one deterministic demo route for the test city. Stops are picked from the single
-/// road-densest row (in the test city that is the central two-way highway — a long connected
-/// corridor), so consecutive stops are road-connected and the bus can plan real routes; the
-/// wrap-around leg drives the opposite carriageway. Unroutable legs are skipped at runtime
-/// (`plan_from_tile`). Player-placed routes are Phase B. No-op if no row has enough road.
+/// Number of 4-neighbour road tiles (a tile's road "degree"). Degree >= 2 means a through-road
+/// (not a dead-end stub), so a bus routed there can leave again toward the next stop.
+fn road_degree(grid: &MapGrid, p: TilePos) -> usize {
+    let neigh = [
+        TilePos { x: p.x - 1, y: p.y },
+        TilePos { x: p.x + 1, y: p.y },
+        TilePos { x: p.x, y: p.y - 1 },
+        TilePos { x: p.x, y: p.y + 1 },
+    ];
+    neigh
+        .iter()
+        .filter(|n| grid.get(**n).is_some_and(|c| !c.water && c.road.is_some()))
+        .count()
+}
+
+/// Nearest through-road tile (degree >= 2) to `around`, by expanding square rings up to `max_r`.
+/// Deterministic. Returns `None` if none found — avoids picking a dead-end stub as a stop.
+fn nearest_through_road(grid: &MapGrid, around: TilePos, max_r: i32) -> Option<TilePos> {
+    for r in 0..=max_r {
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs().max(dy.abs()) != r {
+                    continue; // ring perimeter only
+                }
+                let p = TilePos {
+                    x: around.x + dx,
+                    y: around.y + dy,
+                };
+                if grid.get(p).is_some_and(|c| !c.water && c.road.is_some())
+                    && road_degree(grid, p) >= 2
+                {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Seed one deterministic demo route for the test city: a CIRCULAR tour. Eight anchor points are
+/// sampled evenly around the road centroid (at ~0.35 of the roaded bounds) and each snapped to the
+/// nearest through-road tile, ordered by angle so the bus loops around the city. Through-road
+/// snapping keeps stops off dead-end stubs; unroutable legs are skipped at runtime
+/// (`plan_from_tile`). Player-placed routes are Phase B. No-op if the city has too little road.
 pub fn seed_demo_bus_route(grid: &MapGrid, mgr: &mut BusRouteManager) {
     if !mgr.routes.is_empty() {
         return;
     }
-    // Find the row with the most road tiles (a long connected corridor).
-    let mut best_row = -1i32;
-    let mut best_count = 0usize;
+    // Centroid + bounds of the road network.
+    let (mut sx, mut sy, mut cnt) = (0i64, 0i64, 0i64);
+    let (mut minx, mut miny, mut maxx, mut maxy) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
     for y in 0..grid.height {
-        let count = (0..grid.width)
-            .filter(|&x| {
-                grid.get(TilePos { x, y })
-                    .is_some_and(|c| !c.water && c.road.is_some())
-            })
-            .count();
-        if count > best_count {
-            best_count = count;
-            best_row = y;
+        for x in 0..grid.width {
+            if grid
+                .get(TilePos { x, y })
+                .is_some_and(|c| !c.water && c.road.is_some())
+            {
+                sx += x as i64;
+                sy += y as i64;
+                cnt += 1;
+                minx = minx.min(x);
+                miny = miny.min(y);
+                maxx = maxx.max(x);
+                maxy = maxy.max(y);
+            }
         }
     }
-    if best_row < 0 || best_count < 4 {
+    if cnt < 8 {
         return;
     }
-    let row_tiles: Vec<TilePos> = (0..grid.width)
-        .map(|x| TilePos { x, y: best_row })
-        .filter(|&p| grid.get(p).is_some_and(|c| !c.water && c.road.is_some()))
-        .collect();
-    let n = row_tiles.len();
-    let stops = vec![
-        row_tiles[0],
-        row_tiles[n / 3],
-        row_tiles[(2 * n) / 3],
-        row_tiles[n - 1],
-    ];
-    mgr.create_route(stops);
+    let cx = (sx / cnt) as f32;
+    let cy = (sy / cnt) as f32;
+    let rx = ((maxx - minx) as f32 * 0.35).max(4.0);
+    let ry = ((maxy - miny) as f32 * 0.35).max(4.0);
+
+    const STOPS: usize = 8;
+    let max_r = grid.width.max(grid.height);
+    let mut stops: Vec<TilePos> = Vec::new();
+    for i in 0..STOPS {
+        let ang = std::f32::consts::TAU * (i as f32) / (STOPS as f32);
+        let anchor = TilePos {
+            x: (cx + rx * ang.cos()).round() as i32,
+            y: (cy + ry * ang.sin()).round() as i32,
+        };
+        if let Some(p) = nearest_through_road(grid, anchor, max_r)
+            && !stops.contains(&p)
+        {
+            stops.push(p);
+        }
+    }
+    if stops.len() >= 3 {
+        mgr.create_route(stops);
+    }
 }
 
 /// Plan a road-A* route from `from_tile` to the first REACHABLE stop scanning forward from

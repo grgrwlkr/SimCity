@@ -89,35 +89,36 @@ fn notification_ui(
         return;
     }
 
-    // Show notifications top-right, but LEFT of the 200px right sidebar so they don't cover it.
-    // Layout: [ ...notif box (280) ... | gap | sidebar (200) ] against the right viewport edge.
+    // Notifications sit just LEFT of the 200px right sidebar, with each box RIGHT-aligned so its
+    // right edge lines up flush with the sidebar's left edge (consistent vertical seam).
+    // Layout: [ ...right-aligned notif boxes (column 280) | sidebar (200) ] at the right edge.
     const SIDEBAR_W: f32 = 200.0;
     const NOTIF_W: f32 = 280.0;
-    const GAP: f32 = 20.0;
     let viewport = ctx.viewport_rect();
     egui::Area::new("notifications".into())
-        .fixed_pos(egui::pos2(viewport.max.x - SIDEBAR_W - GAP - NOTIF_W, 50.0))
+        .fixed_pos(egui::pos2(viewport.max.x - SIDEBAR_W - NOTIF_W, 50.0))
         .show(&*ctx, |ui| {
             ui.set_width(NOTIF_W);
+            ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                for (i, msg) in messages.iter().enumerate() {
+                    let color = match msg.kind {
+                        NotificationKind::Info => egui::Color32::LIGHT_BLUE,
+                        NotificationKind::Warning => egui::Color32::YELLOW,
+                        NotificationKind::Error => egui::Color32::LIGHT_RED,
+                        NotificationKind::Achievement => egui::Color32::GOLD,
+                    };
 
-            for (i, msg) in messages.iter().enumerate() {
-                let color = match msg.kind {
-                    NotificationKind::Info => egui::Color32::LIGHT_BLUE,
-                    NotificationKind::Warning => egui::Color32::YELLOW,
-                    NotificationKind::Error => egui::Color32::LIGHT_RED,
-                    NotificationKind::Achievement => egui::Color32::GOLD,
-                };
+                    egui::Frame::popup(ui.style())
+                        .fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200))
+                        .stroke(egui::Stroke::new(1.0, color))
+                        .show(ui, |ui| {
+                            ui.colored_label(color, &msg.text);
+                        });
 
-                egui::Frame::popup(ui.style())
-                    .fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200))
-                    .stroke(egui::Stroke::new(1.0, color))
-                    .show(ui, |ui| {
-                        ui.colored_label(color, &msg.text);
-                    });
-
-                if i < messages.len() - 1 {
-                    ui.add_space(5.0);
+                    if i < messages.len() - 1 {
+                        ui.add_space(5.0);
+                    }
                 }
-            }
+            });
         });
 }
