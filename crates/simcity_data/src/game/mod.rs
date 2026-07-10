@@ -8,6 +8,8 @@ mod determinism;
 mod headless_sim;
 pub mod persistence;
 pub mod persistence_contract;
+#[cfg(test)]
+mod route_oncoming_pins;
 pub mod scenarios;
 #[cfg(test)]
 mod soak;
