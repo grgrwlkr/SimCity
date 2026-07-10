@@ -91,7 +91,11 @@ pub(super) fn apply_game_commands_to_grid(
     mut history: ResMut<CommandHistory>,
     mut bus_routes: Option<ResMut<crate::game::public_transport::BusRouteManager>>,
     q_buildings: Query<(Entity, &Building)>,
-    q_buses: Query<Entity, With<crate::game::public_transport::Bus>>,
+    q_buses: Query<
+        (Entity, &crate::game::traffic::Vehicle),
+        With<crate::game::public_transport::Bus>,
+    >,
+    mut path_pool: Option<ResMut<crate::game::transport::PathPool>>,
 ) {
     for cmd in cmd_reader.read() {
         match *cmd {
@@ -329,10 +333,14 @@ pub(super) fn apply_game_commands_to_grid(
                 // Bus routes reference the old map's tiles — clear them on regeneration, and
                 // despawn the (despawn-immune) buses with them: a surviving bus keeps a stale-map
                 // path and its route_id collides with the rewound id counter, permanently
-                // suppressing spawn_buses for any reseeded route.
+                // suppressing spawn_buses for any reseeded route. Release the interned path too,
+                // or every regeneration leaks a refcounted PathPool entry.
                 if let Some(mgr) = bus_routes.as_mut() {
                     mgr.reset();
-                    for e in q_buses.iter() {
+                    for (e, v) in q_buses.iter() {
+                        if let Some(pool) = path_pool.as_mut() {
+                            pool.release(v.path_handle);
+                        }
                         commands.entity(e).despawn();
                     }
                 }

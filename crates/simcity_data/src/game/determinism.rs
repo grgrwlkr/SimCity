@@ -121,8 +121,8 @@ fn same_seed_produces_identical_fingerprints_and_different_seed_diverges() {
         "a different seed must diverge within {TICKS} ticks — the fingerprint \
          (or the sim's RNG usage) has become insensitive"
     );
-    // Sanity: the sim actually did something in 20 game-hours (the pre-spawned
-    // test city already has buildings at t0, so compare against the t0 snapshot).
+    // Sanity: the sim actually did something over the {TICKS}-tick horizon (~12 game-days;
+    // the pre-spawned test city already has buildings at t0, so compare against the t0 snapshot).
     assert_ne!(
         fp_t0, fp_a,
         "expected the sim state to change after {TICKS} ticks"

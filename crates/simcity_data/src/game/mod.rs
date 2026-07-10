@@ -22,6 +22,21 @@ pub use simcity_sim::game::{
     traffic, transport,
 };
 
+/// Bus-reset bundle for `handle_load_test_city` (SystemParam: the system outgrew Bevy's 16-param
+/// limit). Resetting routes REQUIRES despawning the despawn-immune buses and releasing their
+/// interned paths — bundling keeps the three inseparable.
+#[derive(bevy::ecs::system::SystemParam)]
+struct BusResetParams<'w, 's> {
+    routes: Option<ResMut<'w, simcity_sim::game::public_transport::BusRouteManager>>,
+    buses: Query<
+        'w,
+        's,
+        (Entity, &'static simcity_sim::game::traffic::Vehicle),
+        With<simcity_sim::game::public_transport::Bus>,
+    >,
+    path_pool: Option<ResMut<'w, transport::PathPool>>,
+}
+
 pub struct DataPlugin;
 
 impl Plugin for DataPlugin {
@@ -54,8 +69,7 @@ fn handle_load_test_city(
     mut history: ResMut<command_history::CommandHistory>,
     mut pollution_idx: Option<ResMut<pollution::PollutionIndex>>,
     mut land_value_idx: Option<ResMut<land_value::LandValueIndex>>,
-    mut bus_routes: Option<ResMut<simcity_sim::game::public_transport::BusRouteManager>>,
-    q_buses: Query<Entity, With<simcity_sim::game::public_transport::Bus>>,
+    mut bus_reset: BusResetParams,
     mut day_out: bevy::ecs::message::MessageWriter<sim_events::DayAdvanced>,
 ) {
     for cmd in cmd_reader.read() {
@@ -90,9 +104,13 @@ fn handle_load_test_city(
         // route for the freshly generated test city (player-placed routes are Phase B). Despawn
         // existing (despawn-immune) buses too: a survivor keeps a stale-map path and its route_id
         // collides with the rewound id counter, permanently suppressing spawn for the new route.
-        if let Some(mgr) = bus_routes.as_mut() {
+        // Release each bus's interned path or every reload leaks a refcounted PathPool entry.
+        if let Some(mgr) = bus_reset.routes.as_mut() {
             mgr.reset();
-            for e in q_buses.iter() {
+            for (e, v) in bus_reset.buses.iter() {
+                if let Some(pool) = bus_reset.path_pool.as_mut() {
+                    pool.release(v.path_handle);
+                }
                 commands.entity(e).despawn();
             }
             simcity_sim::game::public_transport::seed_demo_bus_route(&grid, mgr);

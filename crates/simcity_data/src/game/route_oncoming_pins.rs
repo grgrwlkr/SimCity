@@ -220,6 +220,80 @@ mod oracle_unit {
         ];
         assert!(first_oncoming(&route, &g).is_some());
     }
+
+    #[test]
+    fn b_side_entering_real_lane_against_dir_is_flagged() {
+        // Isolate the ENTERING-tile (b-side) check: `a` is not a road at all (building/grass), so
+        // the a-side check skips, and only b's own-lane constraint can flag the West step onto an
+        // eastbound tile.
+        let mut g = MapGrid::new(10, 10);
+        for x in 0..8 {
+            lane(&mut g, x, 4, RoadDir::East);
+        }
+        let route = vec![TilePos { x: 8, y: 4 }, TilePos { x: 7, y: 4 }];
+        assert!(
+            g.get(TilePos { x: 8, y: 4 })
+                .is_some_and(|c| !c.road.is_some()),
+            "precondition: step origin must be a non-road tile"
+        );
+        assert_eq!(
+            first_oncoming(&route, &g),
+            Some((TilePos { x: 8, y: 4 }, TilePos { x: 7, y: 4 })),
+            "entering a real lane against its dir must be flagged by the b-side check alone"
+        );
+    }
+
+    #[test]
+    fn one_sided_t_junction_column_still_constrains() {
+        // T-junction arm: the vertical road exists only NORTH of the box; the south side scan
+        // finds nothing. One agreeing side must still constrain — a South step through the box
+        // column of a northbound-only arm is oncoming.
+        let mut g = MapGrid::new(10, 10);
+        for x in 0..10 {
+            lane(&mut g, x, 4, RoadDir::East);
+        }
+        box_tile(&mut g, 5, 4);
+        for y in 5..9 {
+            lane(&mut g, 5, y, RoadDir::North);
+        }
+        let route = vec![
+            TilePos { x: 5, y: 5 }, // northbound lane, stepping SOUTH into the box
+            TilePos { x: 5, y: 4 }, // box
+        ];
+        assert!(
+            first_oncoming(&route, &g).is_some(),
+            "one-sided reconstruction must still flag the against-dir step"
+        );
+    }
+
+    #[test]
+    fn disagreeing_sides_yield_no_constraint_known_false_negative() {
+        // KNOWN LIMITATION (documented in the module doc): two DIFFERENT vertical roads on the
+        // same column across the box (southbound above, northbound below) disagree, so
+        // axis_lane_dir returns None and the in-box vertical step goes unconstrained. This test
+        // documents the false negative; flip the assertion if the oracle ever gets smarter.
+        let mut g = MapGrid::new(10, 10);
+        for x in 0..10 {
+            lane(&mut g, x, 4, RoadDir::East);
+        }
+        box_tile(&mut g, 5, 4);
+        for y in 0..4 {
+            lane(&mut g, 5, y, RoadDir::North);
+        }
+        for y in 5..10 {
+            lane(&mut g, 5, y, RoadDir::South);
+        }
+        // Vertical step across the box between two disagreeing roads: unconstrained today.
+        let route = vec![
+            TilePos { x: 5, y: 3 },
+            TilePos { x: 5, y: 4 }, // box; sides disagree (North below is... South above)
+        ];
+        assert_eq!(
+            first_oncoming(&route, &g),
+            None,
+            "disagreeing sides are a documented false negative (no constraint)"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -237,9 +311,12 @@ mod integration {
         is_service: bool,
         is_bus: bool,
         /// Current route was produced by the lanelet planner (non-empty sidecar). Empty/absent
-        /// sidecar = road-A* produced (spawn fallback or stuck-recovery replan) — both spawn and
-        /// every replan path repopulate the sidecar alongside the route (spawn.rs, stuck.rs:236,
-        /// reroute_planner.rs:169), so emptiness tracks the CURRENT route's producer.
+        /// sidecar = road-A* produced (spawn fallback or stuck-recovery replan). Every ACTIVE-route
+        /// mutation site repopulates the sidecar alongside the route (spawn.rs, stuck.rs,
+        /// reroute_planner.rs, swap_break.rs, lane_change/planning.rs), so emptiness tracks the
+        /// CURRENT route's producer. Caveat: parking (drive.rs) does NOT clear the sidecar — a
+        /// Parked car keeps a stale non-empty one — harmless here because parked cars have no
+        /// active route (path len <= 1) and are skipped by the `r.len() > 1` filter below.
         lanelet: bool,
     }
 

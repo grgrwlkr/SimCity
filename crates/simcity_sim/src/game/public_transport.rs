@@ -121,9 +121,15 @@ pub struct Bus {
 /// Buses are despawn-immune persistent agents, so without self-heal a wedged one blocks a road
 /// forever. Must exceed the worst-case queue wait at a signalized intersection (max light cycle is
 /// ~34 s): a bus queued at a red is NOT wedged, and skipping its stop for ordinary queueing makes
-/// it silently miss stops. Intersection-wait states are additionally excluded from accumulation in
-/// `tick_buses`; this margin covers queued-behind-cars positions that still read as `FreeFlow`.
+/// it silently miss stops. This margin covers queued-behind-cars positions that read as `FreeFlow`.
 const BUS_WEDGE_RECOVER_SECS: f32 = 45.0;
+
+/// Wedge threshold while the bus is in an intersection-control state (approaching / queued /
+/// waiting for green / crossing). Longer than the FreeFlow threshold — traffic control is
+/// legitimate waiting — but NOT infinite: a total exemption would recreate the
+/// WaitingForGreen-wedged blind spot this codebase already fixed once for cars (a bus stuck at a
+/// never-granted approach would block a road forever, with no destination-changing recovery).
+const BUS_WEDGE_RECOVER_INTERSECTION_SECS: f32 = 120.0;
 
 /// Cooldown between re-plan attempts while a bus has no reachable next stop (Dwelling arm).
 /// Without it the bus retried `plan_from_tile` every 10 Hz tick — n uncached A* searches per tick
@@ -351,7 +357,7 @@ fn spawn_buses(
     mut path_cache: ResMut<PathCache>,
     mut path_pool: ResMut<PathPool>,
     q_existing: Query<&Bus>,
-    mut next_retry_sec: Local<f64>,
+    mut next_retry_by_route: Local<std::collections::HashMap<u32, f64>>,
 ) {
     let now_sec = time.elapsed_secs_f64();
     for route in &route_mgr.routes {
@@ -361,9 +367,11 @@ fn spawn_buses(
         if q_existing.iter().any(|b| b.route_id == route.id) {
             continue; // one bus per route (Phase A)
         }
-        // Backoff after a failed attempt: an unroutable route otherwise retried a full
-        // (uncached-on-failure) plan every 10 Hz tick, forever.
-        if now_sec < *next_retry_sec {
+        // PER-ROUTE backoff after a failed attempt: an unroutable route otherwise retried a full
+        // (uncached-on-failure) plan every 10 Hz tick, forever — and a SHARED backoff would let
+        // one permanently-unroutable route starve every other route's spawn. Keyed lookups only
+        // (never iterated), so the HashMap cannot introduce ordering nondeterminism.
+        if now_sec < next_retry_by_route.get(&route.id).copied().unwrap_or(0.0) {
             continue;
         }
         let mut ctx = PathfindingCtx {
@@ -378,12 +386,12 @@ fn spawn_buses(
         };
         // Start at a road near stop 0 and plan to the first reachable stop after it.
         let Some(start) = adjacent_road_towards(&grid, route.stops[0], route.stops[1]) else {
-            *next_retry_sec = now_sec + BUS_SPAWN_RETRY_SECS;
+            next_retry_by_route.insert(route.id, now_sec + BUS_SPAWN_RETRY_SECS);
             continue;
         };
         let Some((route_tiles, next_idx)) = plan_from_tile(&mut ctx, &grid, &route.stops, start, 0)
         else {
-            *next_retry_sec = now_sec + BUS_SPAWN_RETRY_SECS;
+            next_retry_by_route.insert(route.id, now_sec + BUS_SPAWN_RETRY_SECS);
             continue;
         };
 
@@ -514,22 +522,26 @@ fn tick_buses(
                     continue;
                 }
                 // Wedge self-heal: a despawn-immune bus that stops advancing must re-plan or skip a
-                // stop, else it blocks a road forever. Accumulate only while genuinely stalled:
-                // a bus interacting with an intersection (approaching / queued / waiting for green /
-                // crossing) is obeying traffic control, not wedged — accumulating there made the bus
-                // skip its stop after 12 s of an ordinary red light.
-                let at_intersection = !matches!(
-                    traffic_state,
-                    VehicleTrafficState::FreeFlow | VehicleTrafficState::Accelerating
-                );
-                if at_intersection {
-                    bus.wedge_secs = 0.0;
-                } else if vehicle.speed < 0.1 {
+                // stop, else it blocks a road forever. Accumulate while stalled, but judge against
+                // a state-dependent threshold: intersection control (red light, queue, arbiter
+                // wait) is legitimate waiting and gets a much LONGER threshold — not an exemption,
+                // which would leave a bus wedged at a never-granted approach with no recovery
+                // (the WaitingForGreen blind spot, previously seen with cars).
+                if vehicle.speed < 0.1 {
                     bus.wedge_secs += dt;
                 } else {
                     bus.wedge_secs = 0.0;
                 }
-                if bus.wedge_secs < BUS_WEDGE_RECOVER_SECS {
+                let at_intersection = !matches!(
+                    traffic_state,
+                    VehicleTrafficState::FreeFlow | VehicleTrafficState::Accelerating
+                );
+                let threshold = if at_intersection {
+                    BUS_WEDGE_RECOVER_INTERSECTION_SECS
+                } else {
+                    BUS_WEDGE_RECOVER_SECS
+                };
+                if bus.wedge_secs < threshold {
                     continue;
                 }
                 let Some(route) = route_mgr.get_route(bus.route_id) else {
