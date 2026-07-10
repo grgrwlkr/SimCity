@@ -15,7 +15,7 @@ pub(super) fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams
     }
 
     egui::Panel::right("sidebar")
-        .exact_size(200.0)
+        .exact_size(simcity_core::game::ui_state::SIDEBAR_WIDTH_PX)
         .show(&*ctx, |ui| {
             if p.ui_settings.show_minimap {
                 // Minimap (collapsible)

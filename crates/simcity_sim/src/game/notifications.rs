@@ -89,10 +89,10 @@ fn notification_ui(
         return;
     }
 
-    // Notifications sit just LEFT of the 200px right sidebar, with each box RIGHT-aligned so its
+    // Notifications sit just LEFT of the right sidebar, with each box RIGHT-aligned so its
     // right edge lines up flush with the sidebar's left edge (consistent vertical seam).
-    // Layout: [ ...right-aligned notif boxes (column 280) | sidebar (200) ] at the right edge.
-    const SIDEBAR_W: f32 = 200.0;
+    // Layout: [ ...right-aligned notif boxes (column 280) | sidebar ] at the right edge.
+    const SIDEBAR_W: f32 = crate::game::ui_state::SIDEBAR_WIDTH_PX;
     const NOTIF_W: f32 = 280.0;
     let viewport = ctx.viewport_rect();
     egui::Area::new("notifications".into())

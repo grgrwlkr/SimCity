@@ -2,6 +2,10 @@ use bevy::prelude::*;
 
 use crate::game::roads::RoadKind;
 
+/// Width of the right sidebar panel in egui points. Shared so layout that must align with the
+/// sidebar's left edge (e.g. notifications) cannot silently drift from the panel's actual width.
+pub const SIDEBAR_WIDTH_PX: f32 = 200.0;
+
 #[derive(Resource, Debug, Clone)]
 pub struct UiState {
     /// Seed input as text so we can edit it easily in egui.
