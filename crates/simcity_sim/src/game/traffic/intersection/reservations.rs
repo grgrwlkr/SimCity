@@ -415,8 +415,11 @@ pub fn cleanup_intersection_reservations(
 
     let mut dropped: Vec<(IntersectionId, Entity)> = Vec::new();
 
-    // Snapshot keys to avoid borrowing issues while mutating.
-    let ids: Vec<IntersectionId> = reservations.by_intersection.keys().copied().collect();
+    // Snapshot keys to avoid borrowing issues while mutating. Sorted: HashMap key order is
+    // per-process random, and neither the per-intersection retain order nor the `dropped`
+    // release order below may depend on it (same-seed determinism).
+    let mut ids: Vec<IntersectionId> = reservations.by_intersection.keys().copied().collect();
+    ids.sort_unstable_by_key(|id| id.0);
     for id in ids {
         let Some(list) = reservations.by_intersection.get_mut(&id) else {
             continue;

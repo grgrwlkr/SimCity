@@ -626,7 +626,15 @@ fn cleanup_homeless_citizens(
         by_home.entry(c.home).or_default().push((id.0, e));
     }
 
-    for (home, mut residents) in by_home {
+    // Deterministic CROSS-home order too: despawning swap-removes archetype-table rows, so the
+    // order in which homes are trimmed changes surviving entities' query-iteration order and with
+    // it downstream per-entity RNG draw order. HashMap iteration order is per-process random
+    // (RandomState) — same-seed runs visibly diverged from ~day 6 until this sort (pinned by the
+    // 2880-tick determinism fingerprint).
+    let mut homes: Vec<_> = by_home.into_iter().collect();
+    homes.sort_unstable_by_key(|(home, _)| (home.x, home.y));
+
+    for (home, mut residents) in homes {
         // Grid check preserves the original homeless rule (building demolished/rezoned => cap 0);
         // the occupancy cap trims the surplus when a still-standing building shrinks.
         let grid_ok = grid

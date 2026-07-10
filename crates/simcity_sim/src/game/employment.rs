@@ -278,10 +278,17 @@ impl EmploymentUnreachablePairCache {
         }
 
         if self.map.len() > capacity {
+            // Fallback when the LRU queue drained without restoring capacity (stale duplicates).
+            // MUST pick victims deterministically: HashMap iteration order is per-process random,
+            // and evicting different pairs changes which pathfinds get skipped next tick — that
+            // rippled into job-assignment timing and visibly diverged same-seed runs (money-only
+            // fingerprint drift). Sort keys and evict the smallest.
             let overflow = self.map.len() - capacity;
-            let keys: Vec<EmploymentRoadPairKey> =
-                self.map.keys().copied().take(overflow).collect();
-            for key in keys {
+            let mut keys: Vec<EmploymentRoadPairKey> = self.map.keys().copied().collect();
+            keys.sort_unstable_by_key(|k| {
+                (k.home_road.x, k.home_road.y, k.job_road.x, k.job_road.y)
+            });
+            for key in keys.into_iter().take(overflow) {
                 if self.map.remove(&key).is_some() {
                     removed = removed.saturating_add(1);
                 }
