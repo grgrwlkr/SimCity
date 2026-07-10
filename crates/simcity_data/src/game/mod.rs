@@ -55,6 +55,7 @@ fn handle_load_test_city(
     mut pollution_idx: Option<ResMut<pollution::PollutionIndex>>,
     mut land_value_idx: Option<ResMut<land_value::LandValueIndex>>,
     mut bus_routes: Option<ResMut<simcity_sim::game::public_transport::BusRouteManager>>,
+    q_buses: Query<Entity, With<simcity_sim::game::public_transport::Bus>>,
     mut day_out: bevy::ecs::message::MessageWriter<sim_events::DayAdvanced>,
 ) {
     for cmd in cmd_reader.read() {
@@ -86,9 +87,14 @@ fn handle_load_test_city(
             lv.reset_values();
         }
         // Bus routes reference tile positions from the previous map; reset and re-seed the demo
-        // route for the freshly generated test city (player-placed routes are Phase B).
+        // route for the freshly generated test city (player-placed routes are Phase B). Despawn
+        // existing (despawn-immune) buses too: a survivor keeps a stale-map path and its route_id
+        // collides with the rewound id counter, permanently suppressing spawn for the new route.
         if let Some(mgr) = bus_routes.as_mut() {
             mgr.reset();
+            for e in q_buses.iter() {
+                commands.entity(e).despawn();
+            }
             simcity_sim::game::public_transport::seed_demo_bus_route(&grid, mgr);
         }
         day_out.write(sim_events::DayAdvanced { day: city.day });

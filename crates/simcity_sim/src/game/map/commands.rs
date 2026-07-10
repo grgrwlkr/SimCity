@@ -91,6 +91,7 @@ pub(super) fn apply_game_commands_to_grid(
     mut history: ResMut<CommandHistory>,
     mut bus_routes: Option<ResMut<crate::game::public_transport::BusRouteManager>>,
     q_buildings: Query<(Entity, &Building)>,
+    q_buses: Query<Entity, With<crate::game::public_transport::Bus>>,
 ) {
     for cmd in cmd_reader.read() {
         match *cmd {
@@ -325,9 +326,15 @@ pub(super) fn apply_game_commands_to_grid(
                 // would stamp stale cells into the new map validation-free (even
                 // roads onto water). Same rule as LoadGame/LoadTestCity.
                 history.clear();
-                // Bus routes reference the old map's tiles — clear them on regeneration.
+                // Bus routes reference the old map's tiles — clear them on regeneration, and
+                // despawn the (despawn-immune) buses with them: a surviving bus keeps a stale-map
+                // path and its route_id collides with the rewound id counter, permanently
+                // suppressing spawn_buses for any reseeded route.
                 if let Some(mgr) = bus_routes.as_mut() {
                     mgr.reset();
+                    for e in q_buses.iter() {
+                        commands.entity(e).despawn();
+                    }
                 }
                 dirty.mark_all();
                 road_dirty.mark_all();

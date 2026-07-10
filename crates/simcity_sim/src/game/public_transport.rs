@@ -61,21 +61,20 @@ impl Plugin for PublicTransportPlugin {
     }
 }
 
-/// (Re)spawn one map marker per route stop whenever the total stop count changes (route seeded,
-/// reset, or replaced). Markers are plain sprites at the stop tile centres, drawn just under the
-/// vehicle layer.
+/// (Re)spawn one map marker per route stop whenever the route set changes (route seeded, reset,
+/// or replaced — keyed on `BusRouteManager::version`). Markers are plain sprites at the stop tile
+/// centres, drawn just under the vehicle layer.
 fn render_bus_stops(
     mut commands: Commands,
     cfg: Res<MapConfig>,
     route_mgr: Res<BusRouteManager>,
     q_markers: Query<Entity, With<BusStopMarker>>,
-    mut last_stop_count: Local<usize>,
+    mut last_version: Local<Option<u64>>,
 ) {
-    let stop_count: usize = route_mgr.routes.iter().map(|r| r.stops.len()).sum();
-    if stop_count == *last_stop_count {
+    if *last_version == Some(route_mgr.version) {
         return;
     }
-    *last_stop_count = stop_count;
+    *last_version = Some(route_mgr.version);
     for e in q_markers.iter() {
         commands.entity(e).despawn();
     }
@@ -114,12 +113,25 @@ pub struct Bus {
     pub wedge_secs: f32,
     /// Path cursor at the previous tick, to detect progress for the wedge timer.
     pub last_cursor: usize,
+    /// Seconds until the next allowed re-plan attempt after a failed one (backoff, not persisted).
+    pub replan_cooldown_secs: f32,
 }
 
 /// Seconds a bus may sit wedged (Driving, not advancing) before it re-plans / skips a stop.
 /// Buses are despawn-immune persistent agents, so without self-heal a wedged one blocks a road
-/// forever. Faster than the generic 60 s stuck-reroute so a bus does not linger.
-const BUS_WEDGE_RECOVER_SECS: f32 = 12.0;
+/// forever. Must exceed the worst-case queue wait at a signalized intersection (max light cycle is
+/// ~34 s): a bus queued at a red is NOT wedged, and skipping its stop for ordinary queueing makes
+/// it silently miss stops. Intersection-wait states are additionally excluded from accumulation in
+/// `tick_buses`; this margin covers queued-behind-cars positions that still read as `FreeFlow`.
+const BUS_WEDGE_RECOVER_SECS: f32 = 45.0;
+
+/// Cooldown between re-plan attempts while a bus has no reachable next stop (Dwelling arm).
+/// Without it the bus retried `plan_from_tile` every 10 Hz tick — n uncached A* searches per tick
+/// per bus — the replan-storm class this repo already fixed once for cars (47/s -> 1.6/s).
+const BUS_REPLAN_BACKOFF_SECS: f32 = 5.0;
+
+/// Cooldown between bus spawn attempts after a failed one (route currently unroutable).
+const BUS_SPAWN_RETRY_SECS: f64 = 5.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BusState {
@@ -139,6 +151,10 @@ pub struct BusRoute {
 pub struct BusRouteManager {
     pub routes: Vec<BusRoute>,
     pub next_route_id: u32,
+    /// Bumped on every route set change; change-detection key for the stop-marker renderer.
+    /// (A COUNT of stops is not enough: an equal-count route replacement within one frame would
+    /// silently skip the marker rebuild and leave markers at stale positions.)
+    pub version: u64,
 }
 
 impl BusRouteManager {
@@ -146,6 +162,7 @@ impl BusRouteManager {
         let id = self.next_route_id;
         self.next_route_id = self.next_route_id.wrapping_add(1);
         self.routes.push(BusRoute { id, stops });
+        self.version = self.version.wrapping_add(1);
         id
     }
 
@@ -154,9 +171,13 @@ impl BusRouteManager {
     }
 
     /// Clear all routes and rewind the id counter — called on map load/regeneration.
+    /// Callers MUST also despawn existing `Bus` entities: buses are despawn-immune persistent
+    /// agents, and a stale bus's `route_id` collides with the rewound id counter, permanently
+    /// suppressing `spawn_buses` for the new route (see `handle_load_test_city` / `GenerateMap`).
     pub fn reset(&mut self) {
         self.routes.clear();
         self.next_route_id = 0;
+        self.version = self.version.wrapping_add(1);
     }
 }
 
@@ -330,7 +351,9 @@ fn spawn_buses(
     mut path_cache: ResMut<PathCache>,
     mut path_pool: ResMut<PathPool>,
     q_existing: Query<&Bus>,
+    mut next_retry_sec: Local<f64>,
 ) {
+    let now_sec = time.elapsed_secs_f64();
     for route in &route_mgr.routes {
         if route.stops.len() < 2 {
             continue;
@@ -338,8 +361,13 @@ fn spawn_buses(
         if q_existing.iter().any(|b| b.route_id == route.id) {
             continue; // one bus per route (Phase A)
         }
+        // Backoff after a failed attempt: an unroutable route otherwise retried a full
+        // (uncached-on-failure) plan every 10 Hz tick, forever.
+        if now_sec < *next_retry_sec {
+            continue;
+        }
         let mut ctx = PathfindingCtx {
-            time_now_sec: time.elapsed_secs_f64(),
+            time_now_sec: now_sec,
             cfg: &path_cfg,
             cache: &mut path_cache,
             graph: &graph,
@@ -350,10 +378,12 @@ fn spawn_buses(
         };
         // Start at a road near stop 0 and plan to the first reachable stop after it.
         let Some(start) = adjacent_road_towards(&grid, route.stops[0], route.stops[1]) else {
+            *next_retry_sec = now_sec + BUS_SPAWN_RETRY_SECS;
             continue;
         };
         let Some((route_tiles, next_idx)) = plan_from_tile(&mut ctx, &grid, &route.stops, start, 0)
         else {
+            *next_retry_sec = now_sec + BUS_SPAWN_RETRY_SECS;
             continue;
         };
 
@@ -382,6 +412,7 @@ fn spawn_buses(
                     state: BusState::Driving,
                     wedge_secs: 0.0,
                     last_cursor: 0,
+                    replan_cooldown_secs: 0.0,
                 },
             ))
             .with_children(|parent| {
@@ -408,13 +439,15 @@ fn tick_buses(
     intersections: Res<IntersectionIndex>,
     mut path_cache: ResMut<PathCache>,
     mut path_pool: ResMut<PathPool>,
-    mut q: Query<(&mut Bus, &mut Vehicle)>,
+    mut q: Query<(&mut Bus, &mut Vehicle, &VehicleTrafficState)>,
 ) {
     let dt = time.delta_secs();
     let now_sec = time.elapsed_secs_f64();
-    for (mut bus, mut vehicle) in q.iter_mut() {
+    for (mut bus, mut vehicle, traffic_state) in q.iter_mut() {
         let path_len = path_pool.len(vehicle.path_handle);
         let path_done = vehicle.path_cursor >= path_len;
+
+        bus.replan_cooldown_secs = (bus.replan_cooldown_secs - dt).max(0.0);
 
         // Track progress for the wedge detector (Driving only).
         if vehicle.path_cursor != bus.last_cursor {
@@ -425,14 +458,73 @@ fn tick_buses(
         match bus.state {
             BusState::Driving => {
                 if path_done {
-                    bus.state = BusState::Dwelling { timer: DWELL_SECS };
-                    bus.wedge_secs = 0.0;
-                    vehicle.speed = 0.0;
+                    // External systems (stuck-recovery reverse-escape, swap_break deferred routes)
+                    // may replace or truncate the path, so "path done" does not guarantee we are AT
+                    // the target stop. Dwelling mid-road and then advancing past the target would
+                    // silently skip it — instead re-plan to the SAME target from where we ended up.
+                    let at_stop = route_mgr.get_route(bus.route_id).is_some_and(|route| {
+                        route.stops.get(bus.target_stop_idx).is_some_and(|&s| {
+                            (vehicle.tile_pos.x - s.x).abs() + (vehicle.tile_pos.y - s.y).abs() <= 2
+                        })
+                    });
+                    if at_stop {
+                        bus.state = BusState::Dwelling { timer: DWELL_SECS };
+                        bus.wedge_secs = 0.0;
+                        vehicle.speed = 0.0;
+                        continue;
+                    }
+                    if bus.replan_cooldown_secs > 0.0 {
+                        continue;
+                    }
+                    let Some(route) = route_mgr.get_route(bus.route_id) else {
+                        continue;
+                    };
+                    if route.stops.len() < 2 {
+                        continue;
+                    }
+                    let n = route.stops.len();
+                    let mut ctx = mk_ctx(
+                        now_sec,
+                        &path_cfg,
+                        &mut path_cache,
+                        &graph,
+                        &regions,
+                        &traffic,
+                        &grid,
+                        &intersections,
+                    );
+                    // `after_idx = target - 1` so the CURRENT target is the first candidate.
+                    if let Some((tiles, next_idx)) = plan_from_tile(
+                        &mut ctx,
+                        &grid,
+                        &route.stops,
+                        vehicle.tile_pos,
+                        (bus.target_stop_idx + n - 1) % n,
+                    ) {
+                        path_pool.release(vehicle.path_handle);
+                        vehicle.path_handle = path_pool.intern(tiles);
+                        vehicle.path_cursor = 0;
+                        vehicle.progress = 0.0;
+                        bus.target_stop_idx = next_idx;
+                        bus.last_cursor = 0;
+                        bus.wedge_secs = 0.0;
+                    } else {
+                        bus.replan_cooldown_secs = BUS_REPLAN_BACKOFF_SECS;
+                    }
                     continue;
                 }
                 // Wedge self-heal: a despawn-immune bus that stops advancing must re-plan or skip a
-                // stop, else it blocks a road forever. Accumulate only while genuinely stalled.
-                if vehicle.speed < 0.1 {
+                // stop, else it blocks a road forever. Accumulate only while genuinely stalled:
+                // a bus interacting with an intersection (approaching / queued / waiting for green /
+                // crossing) is obeying traffic control, not wedged — accumulating there made the bus
+                // skip its stop after 12 s of an ordinary red light.
+                let at_intersection = !matches!(
+                    traffic_state,
+                    VehicleTrafficState::FreeFlow | VehicleTrafficState::Accelerating
+                );
+                if at_intersection {
+                    bus.wedge_secs = 0.0;
+                } else if vehicle.speed < 0.1 {
                     bus.wedge_secs += dt;
                 } else {
                     bus.wedge_secs = 0.0;
@@ -481,6 +573,9 @@ fn tick_buses(
                     bus.state = BusState::Dwelling { timer: remaining };
                     continue;
                 }
+                if bus.replan_cooldown_secs > 0.0 {
+                    continue; // backoff after a failed plan; keep dwelling until it expires
+                }
                 let Some(route) = route_mgr.get_route(bus.route_id) else {
                     continue;
                 };
@@ -508,7 +603,10 @@ fn tick_buses(
                     from_tile,
                     bus.target_stop_idx,
                 ) else {
-                    continue; // no reachable next stop right now; keep dwelling, retry next tick
+                    // No reachable next stop right now; keep dwelling and retry after the backoff
+                    // (NOT next tick — that was n uncached A* searches per bus per 10 Hz tick).
+                    bus.replan_cooldown_secs = BUS_REPLAN_BACKOFF_SECS;
+                    continue;
                 };
                 path_pool.release(vehicle.path_handle);
                 vehicle.path_handle = path_pool.intern(tiles);
