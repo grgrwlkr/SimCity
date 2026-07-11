@@ -15,10 +15,11 @@
 //! edge-hug that changes carriageway by skirting the box perimeter drives a column/row against its
 //! direction and is flagged. See the `oncoming-metric-blind-spot` memory note.
 //!
-//! Empirical status on the test city (adversarially validated 2026-07-10): zero false positives on
-//! lanelet-produced routes across thousands of samples; the demo bus's road-A* box-wrap turned out
-//! to be a LEGAL far-column «П» (all in-box steps direction-agreeing) — the real offenders are
-//! service vehicles and cars on the road-A* fallback. Known false-NEGATIVE limitations (rare
+//! Empirical status on the test city: zero false positives on lanelet-produced routes across
+//! thousands of samples (adversarially validated 2026-07-10). Since the lanelet migration
+//! (2026-07-11) buses and service vehicles plan lanelet-first and are asserted clean below;
+//! only road-A*-produced routes (the rare fallback, plus car spawn/stuck fallback) can still
+//! drive the oncoming box half — their offender counts are printed as input for step 1b. Known false-NEGATIVE limitations (rare
 //! geometries, deliberately conservative to keep zero false positives): (a) a box axis with no
 //! real lane tile on either side (stub road fully swallowed by the box), and (b) two different
 //! roads on one column whose sides disagree — both yield `axis_lane_dir == None` (unconstrained).
