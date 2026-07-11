@@ -484,9 +484,18 @@ fn tick_buses(
                     // may replace or truncate the path, so "path done" does not guarantee we are AT
                     // the target stop. Dwelling mid-road and then advancing past the target would
                     // silently skip it — instead re-plan to the SAME target from where we ended up.
+                    //
+                    // "Where we ended up" is the ROUTE's last tile, NOT `Vehicle.tile_pos`: nothing
+                    // in movement ever updates `tile_pos` (it is the spawn tile forever). Comparing
+                    // against it made every arrival read as "not at the stop" and replan FROM the
+                    // spawn tile — teleporting the bus back and looping it between the spawn point
+                    // and its first stop (the snap-back the tour pin guards).
+                    let cur_tile = path_pool
+                        .get_tile(vehicle.path_handle, path_len.saturating_sub(1))
+                        .unwrap_or(vehicle.tile_pos);
                     let at_stop = route_mgr.get_route(bus.route_id).is_some_and(|route| {
                         route.stops.get(bus.target_stop_idx).is_some_and(|&s| {
-                            (vehicle.tile_pos.x - s.x).abs() + (vehicle.tile_pos.y - s.y).abs() <= 2
+                            (cur_tile.x - s.x).abs() + (cur_tile.y - s.y).abs() <= 2
                         })
                     });
                     if at_stop {
@@ -516,12 +525,13 @@ fn tick_buses(
                         &intersections,
                     );
                     // `after_idx = target - 1` so the CURRENT target is the first candidate.
+                    // Plan from `cur_tile` (route end) — see the tile_pos caveat above.
                     if let Some((planned, next_idx)) = plan_from_tile(
                         &mut replan,
                         &mut ctx,
                         &grid,
                         &route.stops,
-                        vehicle.tile_pos,
+                        cur_tile,
                         (bus.target_stop_idx + n - 1) % n,
                     ) {
                         note_bus_producer(&mut replan, &planned);

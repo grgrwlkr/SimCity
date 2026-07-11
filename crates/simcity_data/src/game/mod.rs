@@ -437,6 +437,38 @@ mod tests {
 
 #[cfg(test)]
 mod bus_seeding_tests {
+    /// Tour-progression pin (user-visible product behavior): the demo bus must actually REACH
+    /// stops and advance around the loop — dwell at least once and move through >= 2 distinct
+    /// target stops. Guards the snap-back regression where the at-stop check compared against
+    /// the never-updated `Vehicle.tile_pos` (the spawn tile), so every arrival replanned from
+    /// the spawn tile and teleported the bus back.
+    #[test]
+    fn demo_bus_tours_at_least_two_stops() {
+        use simcity_sim::game::public_transport::BusState;
+        let mut app = build_headless_game();
+        let mut targets = std::collections::BTreeSet::new();
+        let mut dwelled = false;
+        for _ in 0..4000 {
+            tick(&mut app, 1);
+            let world = app.world_mut();
+            let mut q = world.query::<&Bus>();
+            if let Some(bus) = q.iter(world).next() {
+                targets.insert(bus.target_stop_idx);
+                if matches!(bus.state, BusState::Dwelling { .. }) {
+                    dwelled = true;
+                }
+                if targets.len() >= 2 && dwelled {
+                    return; // toured: reached a stop and advanced to the next
+                }
+            }
+        }
+        panic!(
+            "bus never toured: distinct targets {:?}, dwelled: {dwelled} — arrivals are not \
+             advancing the route (snap-back class)",
+            targets
+        );
+    }
+
     use crate::game::headless_sim::{build_headless_game, tick};
     use simcity_sim::game::public_transport::{Bus, BusRouteManager};
     use simcity_sim::game::traffic::Vehicle;
