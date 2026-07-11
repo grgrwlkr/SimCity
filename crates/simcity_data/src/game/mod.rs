@@ -463,4 +463,19 @@ mod bus_seeding_tests {
             "at least one bus must spawn from the demo route, got {n}"
         );
     }
+
+    #[test]
+    fn demo_bus_gets_a_lanelet_planned_route_with_sidecar() {
+        use simcity_sim::game::traffic::VehicleLaneletPlan;
+        let mut app = build_headless_game();
+        tick(&mut app, 60);
+        let world = app.world_mut();
+        let mut q = world.query::<(&Bus, &VehicleLaneletPlan)>();
+        let has_sidecar = q.iter(world).any(|(_, p)| !p.entries.is_empty());
+        assert!(
+            has_sidecar,
+            "the demo bus must carry a lanelet-planned route (non-empty sidecar): \
+             either the bus has no VehicleLaneletPlan component or planning fell back to road-A*"
+        );
+    }
 }

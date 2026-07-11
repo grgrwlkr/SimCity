@@ -9,12 +9,13 @@ use crate::game::intersections::IntersectionIndex;
 use crate::game::map::{MapConfig, MapGrid, TilePos};
 use crate::game::state::AppState;
 use crate::game::traffic::{
-    TrafficConfig, TrafficOccupancy, VEHICLE_VISUAL_LENGTH_TILES, VEHICLE_VISUAL_WIDTH_TILES,
-    Vehicle, VehicleTrafficState, kmh_to_world_speed, route_direction_ok,
+    LaneletReplanRes, PlannedRoute, RouteProducer, TrafficConfig, TrafficOccupancy,
+    VEHICLE_VISUAL_LENGTH_TILES, VEHICLE_VISUAL_WIDTH_TILES, Vehicle, VehicleLaneletPlan,
+    VehicleTrafficState, apply_route, kmh_to_world_speed, plan_tiles_lanelet_first,
 };
 use crate::game::transport::{
     PathCache, PathPool, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph,
-    adjacent_road_towards, find_road_path_cached,
+    adjacent_road_towards,
 };
 
 /// Seconds a bus dwells at each stop before advancing to the next.
@@ -282,17 +283,18 @@ pub fn seed_demo_bus_route(grid: &MapGrid, mgr: &mut BusRouteManager) {
     }
 }
 
-/// Plan a road-A* route from `from_tile` to the first REACHABLE stop scanning forward from
-/// `after_idx` (wrapping): the smallest `k >= 1` for which `stops[(after_idx+k)%n]` yields a
-/// non-empty, direction-correct route from `from_tile`. Returns `(route_tiles, reached_idx)`.
-/// Skipping unroutable stops keeps a bus from wedging on a leg it cannot complete.
+/// Plan lanelet-first from `from_tile` to the first REACHABLE stop scanning forward from
+/// `after_idx` (wrapping). Returns the opaque planned route + reached stop index; the caller
+/// MUST consume it via apply_route / into_spawn_parts. Skipping unroutable stops keeps a bus
+/// from wedging on a leg it cannot complete.
 fn plan_from_tile(
+    replan: &mut LaneletReplanRes,
     ctx: &mut PathfindingCtx,
     grid: &MapGrid,
     stops: &[TilePos],
     from_tile: TilePos,
     after_idx: usize,
-) -> Option<(Vec<TilePos>, usize)> {
+) -> Option<(PlannedRoute, usize)> {
     let n = stops.len();
     for k in 1..=n {
         let idx = (after_idx + k) % n;
@@ -302,9 +304,8 @@ fn plan_from_tile(
         if goal == from_tile {
             continue; // already at this stop's road — try the next stop
         }
-        let tiles = find_road_path_cached(ctx, from_tile, goal);
-        if !tiles.is_empty() && route_direction_ok(&tiles, grid) {
-            return Some((tiles, idx));
+        if let Some(planned) = plan_tiles_lanelet_first(replan, ctx, from_tile, goal) {
+            return Some((planned, idx));
         }
     }
     None
@@ -340,7 +341,8 @@ pub(crate) fn roof_marker_sprite(cfg: &MapConfig, color: Color) -> Sprite {
     }
 }
 
-/// Spawn one bus per route as a real `Vehicle` on a road-A* route to its first stop.
+/// Spawn one bus per route as a real `Vehicle` on a lanelet-first route (road-A* fallback) to its
+/// first stop.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn spawn_buses(
     mut commands: Commands,
@@ -358,6 +360,7 @@ fn spawn_buses(
     mut path_pool: ResMut<PathPool>,
     q_existing: Query<&Bus>,
     mut next_retry_by_route: Local<std::collections::HashMap<u32, f64>>,
+    mut replan: LaneletReplanRes,
 ) {
     let now_sec = time.elapsed_secs_f64();
     for route in &route_mgr.routes {
@@ -389,11 +392,14 @@ fn spawn_buses(
             next_retry_by_route.insert(route.id, now_sec + BUS_SPAWN_RETRY_SECS);
             continue;
         };
-        let Some((route_tiles, next_idx)) = plan_from_tile(&mut ctx, &grid, &route.stops, start, 0)
+        let Some((planned, next_idx)) =
+            plan_from_tile(&mut replan, &mut ctx, &grid, &route.stops, start, 0)
         else {
             next_retry_by_route.insert(route.id, now_sec + BUS_SPAWN_RETRY_SECS);
             continue;
         };
+        note_bus_producer(&mut replan, &planned);
+        let (path_handle, lanelet_plan) = planned.into_spawn_parts(&mut path_pool);
 
         let world_pos = tile_to_world(&cfg, start);
         commands
@@ -401,7 +407,7 @@ fn spawn_buses(
                 car_body_sprite(&cfg, BUS_COLOR),
                 Transform::from_xyz(world_pos.x, world_pos.y, 10.0),
                 Vehicle {
-                    path_handle: path_pool.intern(route_tiles),
+                    path_handle,
                     path_cursor: 0,
                     progress: 0.0,
                     tile_pos: start,
@@ -414,6 +420,7 @@ fn spawn_buses(
                     is_reversing: false,
                 },
                 VehicleTrafficState::FreeFlow,
+                lanelet_plan,
                 Bus {
                     route_id: route.id,
                     target_stop_idx: next_idx,
@@ -434,7 +441,8 @@ fn spawn_buses(
 }
 
 /// Advance each bus's stop/dwell state machine: on reaching its target stop the bus dwells for
-/// `DWELL_SECS`, then advances to the next stop and re-plans a road-A* route to it (looping).
+/// `DWELL_SECS`, then advances to the next stop and re-plans a lanelet-first route to it
+/// (road-A* fallback, looping).
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn tick_buses(
     time: Res<Time<Fixed>>,
@@ -447,11 +455,17 @@ fn tick_buses(
     intersections: Res<IntersectionIndex>,
     mut path_cache: ResMut<PathCache>,
     mut path_pool: ResMut<PathPool>,
-    mut q: Query<(&mut Bus, &mut Vehicle, &VehicleTrafficState)>,
+    mut replan: LaneletReplanRes,
+    mut q: Query<(
+        &mut Bus,
+        &mut Vehicle,
+        &VehicleTrafficState,
+        &mut VehicleLaneletPlan,
+    )>,
 ) {
     let dt = time.delta_secs();
     let now_sec = time.elapsed_secs_f64();
-    for (mut bus, mut vehicle, traffic_state) in q.iter_mut() {
+    for (mut bus, mut vehicle, traffic_state, mut lanelet_plan) in q.iter_mut() {
         let path_len = path_pool.len(vehicle.path_handle);
         let path_done = vehicle.path_cursor >= path_len;
 
@@ -502,17 +516,21 @@ fn tick_buses(
                         &intersections,
                     );
                     // `after_idx = target - 1` so the CURRENT target is the first candidate.
-                    if let Some((tiles, next_idx)) = plan_from_tile(
+                    if let Some((planned, next_idx)) = plan_from_tile(
+                        &mut replan,
                         &mut ctx,
                         &grid,
                         &route.stops,
                         vehicle.tile_pos,
                         (bus.target_stop_idx + n - 1) % n,
                     ) {
-                        path_pool.release(vehicle.path_handle);
-                        vehicle.path_handle = path_pool.intern(tiles);
-                        vehicle.path_cursor = 0;
-                        vehicle.progress = 0.0;
+                        note_bus_producer(&mut replan, &planned);
+                        apply_route(
+                            &mut vehicle,
+                            Some(&mut *lanelet_plan),
+                            &mut path_pool,
+                            planned,
+                        );
                         bus.target_stop_idx = next_idx;
                         bus.last_cursor = 0;
                         bus.wedge_secs = 0.0;
@@ -567,13 +585,21 @@ fn tick_buses(
                 // Wedged: SKIP the current target and head for the next reachable stop. Re-routing
                 // to the same target just replans the same jammed leg (road-A* is topology-based);
                 // changing the destination changes direction and escapes the jam.
-                if let Some((tiles, next_idx)) =
-                    plan_from_tile(&mut ctx, &grid, &route.stops, cur_tile, bus.target_stop_idx)
-                {
-                    path_pool.release(vehicle.path_handle);
-                    vehicle.path_handle = path_pool.intern(tiles);
-                    vehicle.path_cursor = 0;
-                    vehicle.progress = 0.0;
+                if let Some((planned, next_idx)) = plan_from_tile(
+                    &mut replan,
+                    &mut ctx,
+                    &grid,
+                    &route.stops,
+                    cur_tile,
+                    bus.target_stop_idx,
+                ) {
+                    note_bus_producer(&mut replan, &planned);
+                    apply_route(
+                        &mut vehicle,
+                        Some(&mut *lanelet_plan),
+                        &mut path_pool,
+                        planned,
+                    );
                     bus.target_stop_idx = next_idx;
                     bus.last_cursor = 0;
                 }
@@ -608,7 +634,8 @@ fn tick_buses(
                     &intersections,
                 );
                 // Advance from the stop we just arrived at to the next REACHABLE stop.
-                let Some((tiles, next_idx)) = plan_from_tile(
+                let Some((planned, next_idx)) = plan_from_tile(
+                    &mut replan,
                     &mut ctx,
                     &grid,
                     &route.stops,
@@ -620,14 +647,30 @@ fn tick_buses(
                     bus.replan_cooldown_secs = BUS_REPLAN_BACKOFF_SECS;
                     continue;
                 };
-                path_pool.release(vehicle.path_handle);
-                vehicle.path_handle = path_pool.intern(tiles);
-                vehicle.path_cursor = 0;
-                vehicle.progress = 0.0;
+                note_bus_producer(&mut replan, &planned);
+                apply_route(
+                    &mut vehicle,
+                    Some(&mut *lanelet_plan),
+                    &mut path_pool,
+                    planned,
+                );
                 bus.target_stop_idx = next_idx;
                 bus.last_cursor = 0;
                 bus.state = BusState::Driving;
             }
+        }
+    }
+}
+
+/// Attribute a bus plan to producer stats (the adapter itself is vehicle-kind-agnostic).
+fn note_bus_producer(replan: &mut LaneletReplanRes, planned: &PlannedRoute) {
+    match planned.producer() {
+        RouteProducer::Lanelet => {
+            replan.producer_stats.bus_lanelet = replan.producer_stats.bus_lanelet.saturating_add(1)
+        }
+        RouteProducer::RoadFallback => {
+            replan.producer_stats.bus_road_fallback =
+                replan.producer_stats.bus_road_fallback.saturating_add(1)
         }
     }
 }

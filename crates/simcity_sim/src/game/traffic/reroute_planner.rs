@@ -82,7 +82,6 @@ pub(crate) fn replan_route_with_lanelets(
 }
 
 /// Who produced the applied route — callers attribute their own stats by this.
-#[allow(dead_code)] // Consumed by the upcoming bus/service lanelet-routing migration tasks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RouteProducer {
     Lanelet,
@@ -93,7 +92,6 @@ pub(crate) enum RouteProducer {
 /// `apply_route` (existing vehicle) and `into_spawn_parts` (new entity), which keep the
 /// VehicleLaneletPlan sidecar in sync with the interned path — the arbiter validates sidecar
 /// entries only by intersection id, so a stale sidecar silently resolves the WRONG conflict row.
-#[allow(dead_code)] // Consumed by the upcoming bus/service lanelet-routing migration tasks.
 pub(crate) struct PlannedRoute {
     tiles: Vec<TilePos>,
     sidecar: Vec<(usize, IntersectionId, LaneletId)>,
@@ -101,13 +99,11 @@ pub(crate) struct PlannedRoute {
 }
 
 impl PlannedRoute {
-    #[allow(dead_code)] // Consumed by the upcoming bus/service lanelet-routing migration tasks.
     pub(crate) fn producer(&self) -> RouteProducer {
         self.producer
     }
 
     /// Spawn-time consumption: intern the route and hand out the Vehicle/bundle pieces.
-    #[allow(dead_code)] // Consumed by the upcoming bus/service lanelet-routing migration tasks.
     pub(crate) fn into_spawn_parts(self, pool: &mut PathPool) -> (PathHandle, VehicleLaneletPlan) {
         let handle = pool.intern(self.tiles);
         (
@@ -134,7 +130,6 @@ impl PlannedRoute {
 
 /// Tile->tile planning, lanelet-first with a dir-guarded road-A* fallback (the same policy cars
 /// use at spawn). `None` = nothing legal routes (caller keeps its current behavior for that case).
-#[allow(dead_code)] // Consumed by the upcoming bus/service lanelet-routing migration tasks.
 pub(crate) fn plan_tiles_lanelet_first(
     replan: &mut LaneletReplanRes,
     road_ctx: &mut PathfindingCtx<'_>,
@@ -156,7 +151,6 @@ pub(crate) fn plan_tiles_lanelet_first(
 }
 
 /// SystemParam-free core (unit-testable). Kept private to the traffic module.
-#[allow(dead_code)] // Called by `plan_tiles_lanelet_first`, dead in the plain lib build until then.
 pub(crate) fn plan_tiles_lanelet_first_inner(
     lg: &LaneGraph,
     llg: &LaneletGraph,
@@ -205,7 +199,6 @@ pub(crate) fn plan_tiles_lanelet_first_inner(
 /// The ONLY way to put a `PlannedRoute` onto an existing vehicle: release -> intern -> cursor 0
 /// -> progress 0 -> sidecar written (lanelet) or cleared (fallback). No call site can desync the
 /// sidecar from the path.
-#[allow(dead_code)] // Consumed by the upcoming bus/service lanelet-routing migration tasks.
 pub(crate) fn apply_route(
     vehicle: &mut Vehicle,
     plan: Option<&mut VehicleLaneletPlan>,
