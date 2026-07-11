@@ -65,6 +65,14 @@ pub struct RouteProducerStats {
     pub lane_change_handbuilt: u32,
     /// Swap-break interned its hand-built route.
     pub swap_break_handbuilt: u32,
+    /// Bus route planning: lanelet planner succeeded.
+    pub bus_lanelet: u32,
+    /// Bus route planning: fell back to road-A*.
+    pub bus_road_fallback: u32,
+    /// Service-vehicle route planning: lanelet planner succeeded.
+    pub service_lanelet: u32,
+    /// Service-vehicle route planning: fell back to road-A*.
+    pub service_road_fallback: u32,
 }
 
 /// Scan all active vehicles for lane-direction violations and in-box provenance. Cheap:

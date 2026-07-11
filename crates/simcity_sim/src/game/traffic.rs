@@ -62,9 +62,12 @@ use stuck::{
 };
 
 mod reroute_planner;
+// `PlannedRoute`/`RouteProducer`/`apply_route`/`plan_tiles_lanelet_first` are consumed by the
+// upcoming bus/service lanelet-routing migration tasks; unused for now.
+#[allow(unused_imports)]
 pub(crate) use reroute_planner::{
-    LaneletReplanRes, invalidate_routes_on_graph_change, replan_route_with_lanelets,
-    route_direction_ok,
+    LaneletReplanRes, PlannedRoute, RouteProducer, apply_route, invalidate_routes_on_graph_change,
+    plan_tiles_lanelet_first, replan_route_with_lanelets, route_direction_ok,
 };
 
 mod swap_break;
