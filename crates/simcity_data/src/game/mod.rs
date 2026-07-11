@@ -438,10 +438,13 @@ mod tests {
 #[cfg(test)]
 mod bus_seeding_tests {
     /// Tour-progression pin (user-visible product behavior): the demo bus must actually REACH
-    /// stops and advance around the loop — dwell at least once and move through >= 2 distinct
-    /// target stops. Guards the snap-back regression where the at-stop check compared against
-    /// the never-updated `Vehicle.tile_pos` (the spawn tile), so every arrival replanned from
-    /// the spawn tile and teleported the bus back.
+    /// stops and keep advancing around the loop — dwell at least once and move through >= 4
+    /// distinct target stops. Guards two regression classes: (a) snap-back — the at-stop check
+    /// compared against the never-updated `Vehicle.tile_pos` (spawn tile), teleporting the bus
+    /// back on every arrival; (b) dead-end stranding — a stop on the far side of the last
+    /// intersection of a street is APPROACHABLE but not DEPARTABLE without a dead-end U-turn,
+    /// so the bus dwells forever retrying unroutable legs (requires the road-graph dead-end
+    /// U-turn edge for road-A*-fallback departure).
     #[test]
     fn demo_bus_tours_at_least_two_stops() {
         use simcity_sim::game::public_transport::BusState;
@@ -457,14 +460,14 @@ mod bus_seeding_tests {
                 if matches!(bus.state, BusState::Dwelling { .. }) {
                     dwelled = true;
                 }
-                if targets.len() >= 2 && dwelled {
-                    return; // toured: reached a stop and advanced to the next
+                if targets.len() >= 4 && dwelled {
+                    return; // toured: reached stops and kept advancing around the loop
                 }
             }
         }
         panic!(
-            "bus never toured: distinct targets {:?}, dwelled: {dwelled} — arrivals are not \
-             advancing the route (snap-back class)",
+            "bus never toured: distinct targets {:?}, dwelled: {dwelled} — the bus is not \
+             advancing around the loop (snap-back or dead-end-stranding class)",
             targets
         );
     }

@@ -355,6 +355,7 @@ mod integration {
         let (mut car_bad, mut svc_bad, mut bus_bad) = ([0usize; 2], [0usize; 2], [0usize; 2]);
         let (mut car_n, mut svc_n, mut bus_n) = ([0usize; 2], [0usize; 2], [0usize; 2]);
         let mut dumped_clean_car: Option<Vec<TilePos>> = None;
+        let mut real_lane_offenders = 0usize;
         let mut dumped_flagged: Option<(String, Vec<TilePos>, (TilePos, TilePos))> = None;
         let mut flagged_lanelet_car: Option<(Vec<TilePos>, (TilePos, TilePos))> = None;
 
@@ -379,6 +380,18 @@ mod integration {
                 n[src] += 1;
                 if let Some(step) = hit {
                     bad[src] += 1;
+                    // Offender class split: a step against a REAL lane's dir is a hard producer
+                    // bug (asserted 0 below — the dead-end U-turn edge must never create one);
+                    // an IN-BOX offender (either tile dir==None) is the known road-A*
+                    // box-cut class, tolerated on fallback routes until step 1b.
+                    let is_real_lane = [step.0, step.1].iter().all(|&t| {
+                        grid.get(t)
+                            .map(|c| c.road.is_some() && c.road.dir != RoadDir::None)
+                            .unwrap_or(false)
+                    });
+                    if is_real_lane {
+                        real_lane_offenders += 1;
+                    }
                     if kind == "car" && row.lanelet && flagged_lanelet_car.is_none() {
                         flagged_lanelet_car = Some((route.to_vec(), step));
                     }
@@ -471,6 +484,14 @@ mod integration {
              (fallback share: {}/{})",
             svc_n[1],
             svc_n[0] + svc_n[1]
+        );
+
+        // The dead-end U-turn edge (road_graph) must never manufacture REAL-lane oncoming: every
+        // flagged step must be the known in-box road-A* class, not a step against a real lane.
+        assert_eq!(
+            real_lane_offenders, 0,
+            "a route drives against a REAL lane's direction — a route-producer or road-graph \
+             (e.g. dead-end U-turn edge) regression, not the tolerated in-box fallback class"
         );
     }
 }

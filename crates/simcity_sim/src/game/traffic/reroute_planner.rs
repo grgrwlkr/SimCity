@@ -181,7 +181,18 @@ pub(crate) fn plan_tiles_lanelet_first_inner(
             producer: RouteProducer::Lanelet,
         });
     }
-    let tiles = find_road_path_cached(road_ctx, from, to);
+    let mut tiles = find_road_path_cached(road_ctx, from, to);
+    if tiles.is_empty() && road_ctx.regions.is_some() {
+        // The hierarchical region pre-pass prunes A* to a corridor around the region-level
+        // start->goal path — a legal route that DETOURS far outside that corridor (e.g. driving
+        // to a dead-end spur's tip for the U-turn and back) is invisible to it. Retry unpruned;
+        // only on failure, so through-routes never pay full-map A*, and the callers' backoffs
+        // bound the retry rate. A successful result is cached under the same (start, goal,
+        // version) key, so subsequent calls hit the cache directly.
+        let saved = road_ctx.regions.take();
+        tiles = find_road_path_cached(road_ctx, from, to);
+        road_ctx.regions = saved;
+    }
     if tiles.is_empty() {
         return None;
     }

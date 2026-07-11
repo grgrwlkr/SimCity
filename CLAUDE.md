@@ -62,7 +62,7 @@ simcity_app ─┬─> simcity_frontend ─┬─> simcity_debug ─┐
 
 ## Tests
 
-Тесты **co-located** рядом с кодом (нет корневого `tests/`). Почти всё в `simcity_sim` (49 файлов с тестами по workspace): `map/tests.rs`, `buildings/tests.rs`, `emergencies/tests.rs`, `transport/tests.rs`, `pedestrians/tests_{graph,signalized,uncontrolled}.rs`, и крупный набор `traffic/tests/*.rs` (basic_behavior, intersection_reservations, lanelet_arbiter, pedestrians, traffic_lights, vehicle_parking, vehicle_spawning). Plus persistence/config parse-тесты, determinism/soak-пины и router-независимый oncoming-оракул (`route_oncoming_pins.rs`) в `simcity_data`, mirror-тесты в `simcity_debug`. Текущий прогон (`cargo test --workspace`): `simcity_sim` 223 + `simcity_data` 20 (+2 ignored diagnostic-харнесса: soak-таблица и determinism-проба) + `simcity_debug` 2 = 245 тестов.
+Тесты **co-located** рядом с кодом (нет корневого `tests/`). Почти всё в `simcity_sim` (49 файлов с тестами по workspace): `map/tests.rs`, `buildings/tests.rs`, `emergencies/tests.rs`, `transport/tests.rs`, `pedestrians/tests_{graph,signalized,uncontrolled}.rs`, и крупный набор `traffic/tests/*.rs` (basic_behavior, intersection_reservations, lanelet_arbiter, pedestrians, traffic_lights, vehicle_parking, vehicle_spawning). Plus persistence/config parse-тесты, determinism/soak-пины и router-независимый oncoming-оракул (`route_oncoming_pins.rs`) в `simcity_data`, mirror-тесты в `simcity_debug`. Текущий прогон (`cargo test --workspace`): `simcity_sim` 225 + `simcity_data` 20 (+2 ignored diagnostic-харнесса: soak-таблица и determinism-проба) + `simcity_debug` 2 = 247 тестов.
 
 Упавший тест ≠ всегда баг кода: возможно изменилось ожидаемое поведение. Правь тест только с обоснованием, почему новое поведение корректно.
 

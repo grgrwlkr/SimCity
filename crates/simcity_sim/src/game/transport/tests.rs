@@ -804,3 +804,67 @@ fn adjacent_road_anchor_never_prefers_oncoming_lane() {
         "the wrong-way half of a one-way road must never be a trip anchor"
     );
 }
+
+/// Build a two-column two-way vertical road (col `nx` = North lanes, col `sx` = South lanes) from
+/// y=1..=4, with the north end open (nothing at y=5) so `(nx,4)` is a physical dead-end. `flow`
+/// applies to the North column (to exercise the one-way negative case).
+fn build_two_way_vertical_spur(nx: i32, sx: i32, north_flow: RoadFlow) -> MapGrid {
+    let mut grid = MapGrid::new(8, 8);
+    let mut put = |x: i32, y: i32, dir: RoadDir, flow: RoadFlow| {
+        let pos = TilePos { x, y };
+        let mut cell = grid.get(pos).unwrap_or_default();
+        cell.water = false;
+        cell.road = RoadCell {
+            kind: RoadKind::TwoLane,
+            dir,
+            lane: 0,
+            flow,
+            lane_type: LaneType::Regular,
+        };
+        grid.set(pos, cell);
+    };
+    for y in 1..=4 {
+        put(nx, y, RoadDir::North, north_flow);
+        put(sx, y, RoadDir::South, RoadFlow::TwoWay);
+    }
+    grid
+}
+
+#[test]
+fn uturn_edge_added_at_two_way_dead_end() {
+    // North column x=5, South column x=4 (opp is the WEST neighbor of the North tile).
+    let grid = build_two_way_vertical_spur(5, 4, RoadFlow::TwoWay);
+    let gv = GraphVersion(1);
+    let mut graph = RoadGraph::default();
+    rebuild_road_graph_inner(&grid, &gv, &mut graph);
+
+    let west_bit = 1u8 << 0;
+    let dead_end = grid.idx(TilePos { x: 5, y: 4 }).unwrap();
+    assert!(
+        graph.edges[dead_end] & west_bit != 0,
+        "two-way dead-end (5,4)North must gain a U-turn edge WEST to the opposite (4,4)South lane"
+    );
+
+    // A mid-spur North tile has a real road ahead -> NOT a dead-end -> no cross-centerline edge.
+    let mid = grid.idx(TilePos { x: 5, y: 2 }).unwrap();
+    assert!(
+        graph.edges[mid] & west_bit == 0,
+        "mid-road (5,2) must NOT gain a cross-centerline U-turn edge (only physical dead-ends do)"
+    );
+}
+
+#[test]
+fn no_uturn_edge_on_one_way_dead_end() {
+    // North column is one-way(North): the opposite carriageway is not a legal turn-around target.
+    let grid = build_two_way_vertical_spur(5, 4, RoadFlow::OneWay(RoadDir::North));
+    let gv = GraphVersion(1);
+    let mut graph = RoadGraph::default();
+    rebuild_road_graph_inner(&grid, &gv, &mut graph);
+
+    let west_bit = 1u8 << 0;
+    let dead_end = grid.idx(TilePos { x: 5, y: 4 }).unwrap();
+    assert!(
+        graph.edges[dead_end] & west_bit == 0,
+        "one-way dead-end must NOT gain a U-turn edge (no legal opposite carriageway)"
+    );
+}

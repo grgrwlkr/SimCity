@@ -225,6 +225,52 @@ pub fn rebuild_road_graph_inner(grid: &MapGrid, gv: &GraphVersion, graph: &mut R
         if y + 1 < h {
             consider(3, idx + w, RoadDir::North);
         }
+
+        // Dead-end U-turn (two-way roads only). If the tile strictly ahead in `cur.dir` is not a
+        // drivable road (map edge / water / gap), the vehicle has reached a PHYSICAL dead-end and
+        // cannot continue. Allow it to cross to the opposite-direction carriageway — the
+        // perpendicular-adjacent lane tile whose `dir == cur.dir.opposite()` (same road kind) — so
+        // road-A* can build "into the spur -> turn around at the tip -> back out". Only genuine
+        // dead-ends qualify: on a through road the forward tile IS a road, so no U-turn edge is
+        // added and no oncoming appears in the flow. This is what lets a bus/service vehicle leave
+        // a stop on the far side of a street's last intersection (road-A*-fallback departure; the
+        // lanelet planner has no mid-road U-turns by design). Guarded by the `uturn_*` unit tests
+        // here and the router-independent oncoming oracle pin (`simcity_data/route_oncoming_pins`).
+        if cur.dir != RoadDir::None && !matches!(cur.flow, crate::game::roads::RoadFlow::OneWay(_))
+        {
+            let fwd = cur.dir.delta();
+            let fx = x as i32 + fwd.x;
+            let fy = y as i32 + fwd.y;
+            let forward_is_road = fx >= 0
+                && fy >= 0
+                && (fx as usize) < w
+                && (fy as usize) < h
+                && road_at_idx((fy as usize) * w + (fx as usize)).is_some();
+            if !forward_is_road {
+                for perp in [cur.dir.left(), cur.dir.right()] {
+                    let pd = perp.delta();
+                    let nx = x as i32 + pd.x;
+                    let ny = y as i32 + pd.y;
+                    if nx < 0 || ny < 0 || (nx as usize) >= w || (ny as usize) >= h {
+                        continue;
+                    }
+                    let Some(opp) = road_at_idx((ny as usize) * w + (nx as usize)) else {
+                        continue;
+                    };
+                    if opp.kind == cur.kind && opp.dir == cur.dir.opposite() {
+                        let bit = match perp {
+                            RoadDir::West => 0,
+                            RoadDir::East => 1,
+                            RoadDir::South => 2,
+                            RoadDir::North => 3,
+                            RoadDir::None => continue,
+                        };
+                        mask |= 1 << bit;
+                    }
+                }
+            }
+        }
+
         graph.edges[idx] = mask;
     }
 }
