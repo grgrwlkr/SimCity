@@ -341,17 +341,10 @@ mod integration {
 
     /// Apply the oracle to every live route on the real test city.
     ///
-    /// ASSERTED NOW: LANELET-produced routes never drive oncoming (per-route invariant, so it is
-    /// stable even though the run itself is not cross-process deterministic — the citizen-cleanup
-    /// HashMap-order divergence means each run samples a different route population). This both
-    /// validates the oracle (0 false positives on lane-faithful routes) and pins the lanelet
-    /// producer.
-    ///
-    /// PRINTED (not asserted): road-A*-produced routes — buses, service vehicles, AND cars on the
-    /// spawn/stuck-recovery road-A* fallback — DO get flagged today (in-box edge-hugs). One
-    /// observed run had 339/1584 car samples flagged during a fallback-heavy episode; all such
-    /// routes are road-A* products, not lanelet regressions. When buses/service (and ideally the
-    /// car fallback) move to the lanelet planner, tighten the assertion to cover them.
+    /// ASSERTED: lanelet-produced routes (cars, buses, service vehicles — all three route
+    /// lanelet-first since the A+ migration) never drive oncoming, and the bus/service lanelet
+    /// share is non-zero (anti-vacuum). PRINTED: road-A*-fallback offender counts per kind —
+    /// input for the future car-fallback migration / road-A* removal decision (step 1b).
     #[test]
     fn report_oncoming_offenders_on_real_city() {
         let mut app = build_headless_game();
@@ -460,6 +453,23 @@ mod integration {
             "lanelet-produced routes must NEVER drive oncoming; flagged: car {}/{}, service {}/{}, \
              bus {}/{} — either a lanelet-producer regression or an oracle false positive",
             car_bad[0], car_n[0], svc_bad[0], svc_n[0], bus_bad[0], bus_n[0]
+        );
+
+        // Anti-vacuum: the migration must actually PRODUCE lanelet routes for buses and service
+        // vehicles — otherwise "0 flagged" above is vacuous ("0 violations out of 0 routes").
+        assert!(
+            bus_n[0] > 0,
+            "no lanelet-produced bus route was ever sampled — the bus migration is inert \
+             (fallback share: {}/{})",
+            bus_n[1],
+            bus_n[0] + bus_n[1]
+        );
+        assert!(
+            svc_n[0] > 0,
+            "no lanelet-produced service route was ever sampled — the service migration is inert \
+             (fallback share: {}/{})",
+            svc_n[1],
+            svc_n[0] + svc_n[1]
         );
     }
 }
