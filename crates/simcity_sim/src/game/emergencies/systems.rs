@@ -14,7 +14,9 @@ use crate::game::roads::RoadDir;
 use crate::game::services::{ServiceKind, ServiceStation, ServiceVehicle, ServiceVehicleState};
 use crate::game::sim::City;
 use crate::game::sim_events::HourAdvanced;
-use crate::game::traffic::{Parked, Vehicle};
+use crate::game::traffic::{
+    Parked, Vehicle, VehicleLaneletPlan, apply_route, plan_tiles_lanelet_first,
+};
 use crate::game::transport::{
     PathCache, PathPool, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph,
     find_road_path_cached,
@@ -195,14 +197,24 @@ fn pick_reachable_road_endpoint(
     best_any
 }
 
-fn find_path_with_fallback(
-    ctx: &mut PathfindingCtx<'_>,
-    _grid: &MapGrid,
-    start: TilePos,
-    goal: TilePos,
-) -> Vec<TilePos> {
-    // No fallback to astar_path - vehicles must follow lane rules.
-    find_road_path_cached(ctx, start, goal)
+/// Attribute a service-vehicle plan to producer stats (the adapter itself is vehicle-kind-agnostic).
+fn note_service_producer(
+    replan: &mut crate::game::traffic::LaneletReplanRes,
+    planned: &crate::game::traffic::PlannedRoute,
+) {
+    use crate::game::traffic::RouteProducer;
+    match planned.producer() {
+        RouteProducer::Lanelet => {
+            replan.producer_stats.service_lanelet =
+                replan.producer_stats.service_lanelet.saturating_add(1)
+        }
+        RouteProducer::RoadFallback => {
+            replan.producer_stats.service_road_fallback = replan
+                .producer_stats
+                .service_road_fallback
+                .saturating_add(1)
+        }
+    }
 }
 
 fn adjacent_road_any(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
@@ -253,9 +265,19 @@ pub(crate) struct DispatchParams<'w, 's> {
     traffic: Res<'w, crate::game::traffic::TrafficOccupancy>,
     intersections: Res<'w, IntersectionIndex>,
     station_index: Res<'w, DispatchStationIndex>,
+    replan: crate::game::traffic::LaneletReplanRes<'w>,
     q_emergencies: Query<'w, 's, (Entity, &'static mut Emergency)>,
     q_stations: Query<'w, 's, (Entity, &'static mut ServiceStation)>,
-    q_vehicles: Query<'w, 's, (Entity, &'static mut ServiceVehicle, &'static mut Vehicle)>,
+    q_vehicles: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static mut ServiceVehicle,
+            &'static mut Vehicle,
+            Option<&'static mut VehicleLaneletPlan>,
+        ),
+    >,
 }
 
 /// Max number of pathfinding candidates per emergency dispatch.
@@ -364,7 +386,9 @@ pub(crate) fn dispatch_emergency_vehicles(mut p: DispatchParams) {
                 continue;
             };
 
-            let path = find_path_with_fallback(&mut ctx, &p.grid, station_road, emergency_road);
+            // Station-selection scoring stays road-A* (topology-only; only the driven legs below
+            // migrate to the lanelet-first planner).
+            let path = find_road_path_cached(&mut ctx, station_road, emergency_road);
             if path.is_empty() {
                 continue;
             }
@@ -384,7 +408,7 @@ pub(crate) fn dispatch_emergency_vehicles(mut p: DispatchParams) {
         };
 
         // Find a free vehicle from this station and assign.
-        for (vehicle_entity, mut sv, mut vehicle) in p.q_vehicles.iter_mut() {
+        for (vehicle_entity, mut sv, mut vehicle, mut lanelet_plan) in p.q_vehicles.iter_mut() {
             if sv.home_station != station_entity {
                 continue;
             }
@@ -401,14 +425,40 @@ pub(crate) fn dispatch_emergency_vehicles(mut p: DispatchParams) {
                 .path_pool
                 .get_tile(vehicle.path_handle, vehicle.path_cursor)
                 .unwrap_or(sv.home_road);
-            let mut route = find_path_with_fallback(&mut ctx, &p.grid, from, emergency_road);
-            if route.is_empty() && from != station_road {
-                route = find_path_with_fallback(&mut ctx, &p.grid, station_road, emergency_road);
+            let planned = plan_tiles_lanelet_first(&mut p.replan, &mut ctx, from, emergency_road)
+                .or_else(|| {
+                    (from != station_road)
+                        .then(|| {
+                            plan_tiles_lanelet_first(
+                                &mut p.replan,
+                                &mut ctx,
+                                station_road,
+                                emergency_road,
+                            )
+                        })
+                        .flatten()
+                });
+            match planned {
+                Some(planned) => {
+                    note_service_producer(&mut p.replan, &planned);
+                    apply_route(
+                        &mut vehicle,
+                        lanelet_plan.as_deref_mut(),
+                        &mut p.path_pool,
+                        planned,
+                    );
+                }
+                None => {
+                    // Preserve the load-bearing empty-route semantics: INVALID handle -> len 0
+                    // -> "arrived" next tick (same as the old empty find_path_with_fallback).
+                    p.path_pool.release(vehicle.path_handle);
+                    vehicle.path_handle = p.path_pool.intern(Vec::new());
+                    vehicle.path_cursor = 0;
+                    crate::game::traffic::clear_lanelet_plan_on_reroute(
+                        lanelet_plan.as_deref_mut(),
+                    );
+                }
             }
-            // Release old path if any
-            p.path_pool.release(vehicle.path_handle);
-            vehicle.path_handle = p.path_pool.intern(route);
-            vehicle.path_cursor = 0;
             vehicle.speed = sv.kind.vehicle_speed();
 
             // Remove Parked component - vehicle is now active on the road
@@ -461,9 +511,19 @@ pub(crate) struct ResolveParams<'w, 's> {
     traffic: Res<'w, crate::game::traffic::TrafficOccupancy>,
     intersections: Res<'w, IntersectionIndex>,
     notifications: Option<ResMut<'w, Notifications>>,
+    replan: crate::game::traffic::LaneletReplanRes<'w>,
     q_emergencies: Query<'w, 's, (Entity, &'static mut Emergency)>,
     q_stations: Query<'w, 's, &'static mut ServiceStation>,
-    q_vehicles: Query<'w, 's, (Entity, &'static mut ServiceVehicle, &'static mut Vehicle)>,
+    q_vehicles: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static mut ServiceVehicle,
+            &'static mut Vehicle,
+            Option<&'static mut VehicleLaneletPlan>,
+        ),
+    >,
     manager: ResMut<'w, EmergencyManager>,
 }
 
@@ -498,7 +558,8 @@ pub(crate) fn resolve_emergencies(mut p: ResolveParams) {
             continue;
         };
 
-        let Ok((_, mut sv, mut vehicle)) = p.q_vehicles.get_mut(vehicle_entity) else {
+        let Ok((_, mut sv, mut vehicle, mut lanelet_plan)) = p.q_vehicles.get_mut(vehicle_entity)
+        else {
             // Vehicle despawned unexpectedly; clear assignment.
             emergency.assigned_vehicle = None;
             continue;
@@ -564,11 +625,29 @@ pub(crate) fn resolve_emergencies(mut p: ResolveParams) {
                         Some(return_dir),
                     )
                     .unwrap_or(sv.home_road);
-                    let route = find_path_with_fallback(&mut ctx, &p.grid, from, to);
-                    // Release old path and set new one
-                    p.path_pool.release(vehicle.path_handle);
-                    vehicle.path_handle = p.path_pool.intern(route);
-                    vehicle.path_cursor = 0;
+                    let planned = plan_tiles_lanelet_first(&mut p.replan, &mut ctx, from, to);
+                    match planned {
+                        Some(planned) => {
+                            note_service_producer(&mut p.replan, &planned);
+                            apply_route(
+                                &mut vehicle,
+                                lanelet_plan.as_deref_mut(),
+                                &mut p.path_pool,
+                                planned,
+                            );
+                        }
+                        None => {
+                            // Preserve the load-bearing empty-route semantics: INVALID handle ->
+                            // len 0 -> "arrived" next tick (same as the old empty
+                            // find_path_with_fallback).
+                            p.path_pool.release(vehicle.path_handle);
+                            vehicle.path_handle = p.path_pool.intern(Vec::new());
+                            vehicle.path_cursor = 0;
+                            crate::game::traffic::clear_lanelet_plan_on_reroute(
+                                lanelet_plan.as_deref_mut(),
+                            );
+                        }
+                    }
 
                     if emergency.time_remaining > 0.0 {
                         p.manager.stats.resolved_in_time += 1;

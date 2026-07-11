@@ -128,6 +128,9 @@ pub fn spawn_service_vehicle(
                 curr_world_pos: Vec2::ZERO,
             },
             VehicleTrafficState::FreeFlow,
+            crate::game::traffic::VehicleLaneletPlan {
+                entries: Vec::new(),
+            },
             ServiceVehicle {
                 kind,
                 home_station: station,
