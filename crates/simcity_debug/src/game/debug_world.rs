@@ -219,6 +219,12 @@ pub struct DebugTrafficSnapshot {
     pub routes_guard_refusals: u32,
     pub routes_lane_change_handbuilt: u32,
     pub routes_swap_break_handbuilt: u32,
+    /// Bus route planning: lanelet planner succeeded / fell back to road-A*.
+    pub routes_bus_lanelet: u32,
+    pub routes_bus_road_fallback: u32,
+    /// Service-vehicle route planning: lanelet planner succeeded / fell back to road-A*.
+    pub routes_service_lanelet: u32,
+    pub routes_service_road_fallback: u32,
     /// Buses currently in the world.
     pub buses_total: u32,
     /// Buses driving toward a stop.
@@ -1326,6 +1332,10 @@ fn update_debug_traffic_snapshot(
         snapshot.routes_guard_refusals = p.guard_refusals;
         snapshot.routes_lane_change_handbuilt = p.lane_change_handbuilt;
         snapshot.routes_swap_break_handbuilt = p.swap_break_handbuilt;
+        snapshot.routes_bus_lanelet = p.bus_lanelet;
+        snapshot.routes_bus_road_fallback = p.bus_road_fallback;
+        snapshot.routes_service_lanelet = p.service_lanelet;
+        snapshot.routes_service_road_fallback = p.service_road_fallback;
     }
 
     let (mut buses_total, mut buses_driving, mut buses_dwelling) = (0u32, 0u32, 0u32);

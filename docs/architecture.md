@@ -151,7 +151,10 @@ Fixed-step симуляция:
    через гард: пост-гард `find_route`, intern-гард каждого не-lanelet маршрута
    (`route_direction_ok` перед каждым `path_pool.intern` — stuck-реруты, lane change, swap-break
    и road-A* fallback спавна; отказы видны в `RouteProducerStats.guard_refusals`), инвалидация
-   активных маршрутов при `GraphVersion` bump. **Новый производитель маршрутов обязан встать под
+   активных маршрутов при `GraphVersion` bump. Автобусы и сервисные машины (dispatch/return)
+   планируют маршруты через тот же lanelet-first адаптер с road-A*-fallback (единая функция
+   `plan_tiles_lanelet_first`, `traffic/reroute_planner.rs`) — гард встроен в неё же, отдельного
+   producer-специфичного гарда не требуется. **Новый производитель маршрутов обязан встать под
    тот же гард.**
 
 3. **Конфликты перекрёстка = тайловое пересечение + семантика**: компактные Г/П-траектории могут
