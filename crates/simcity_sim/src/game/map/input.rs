@@ -12,7 +12,7 @@ use crate::game::traffic::TrafficConfig;
 use crate::game::ui_state::{OverlayMode, ToolMode, UiState};
 use crate::game::zone_placement::can_zone_tile;
 
-use super::coords::{cursor_tile, map_origin};
+use super::coords::{cursor_tile, tile_to_world};
 use super::{BuildingKind, HoveredTile, MapConfig, MapGrid, TilePos, ZoneKind};
 
 #[derive(Component)]
@@ -88,9 +88,7 @@ pub(super) fn update_cursor_highlight(
         return;
     };
 
-    let origin = map_origin(&cfg);
-    let tile_world =
-        origin + Vec2::new(tile.x as f32 * cfg.tile_size, tile.y as f32 * cfg.tile_size);
+    let tile_world = tile_to_world(&cfg, tile);
 
     let Ok(mut t) = q_hl.single_mut() else {
         return;

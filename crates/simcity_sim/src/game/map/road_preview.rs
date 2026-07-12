@@ -1,4 +1,4 @@
-use super::coords::map_origin;
+use super::coords::tile_to_world;
 use super::input::{compute_road_direction, compute_road_line};
 use super::*;
 use bevy::window::PrimaryWindow;
@@ -65,7 +65,6 @@ pub(super) fn road_preview_render(
     }
 
     let road_dir = compute_road_direction(start, current);
-    let origin = map_origin(&cfg);
     let lanes = kind.lanes().max(1) as i32;
     let half = lanes / 2;
     let dir = road_dir.delta();
@@ -80,11 +79,7 @@ pub(super) fn road_preview_render(
                 x: pos.x + perp.x * o,
                 y: pos.y + perp.y * o,
             };
-            let world = origin
-                + Vec2::new(
-                    lane_pos.x as f32 * cfg.tile_size,
-                    lane_pos.y as f32 * cfg.tile_size,
-                );
+            let world = tile_to_world(&cfg, lane_pos);
             items.push((
                 preview_color,
                 Vec2::splat(cfg.tile_size * 0.95),
@@ -94,11 +89,7 @@ pub(super) fn road_preview_render(
     }
 
     // Highlight start tile.
-    let start_world = origin
-        + Vec2::new(
-            start.x as f32 * cfg.tile_size,
-            start.y as f32 * cfg.tile_size,
-        );
+    let start_world = tile_to_world(&cfg, start);
     items.push((
         Color::srgba(0.2, 0.8, 0.2, 0.6),
         Vec2::splat(cfg.tile_size * 0.5),

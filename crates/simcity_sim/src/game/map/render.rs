@@ -11,7 +11,7 @@ use crate::game::state::AppState;
 use crate::game::traffic::{Parked, Vehicle};
 use crate::game::ui_state::{OverlayMode, UiState};
 
-use super::coords::map_origin;
+use super::coords::{map_origin, tile_to_world};
 use super::generation::generate_map_into_grid;
 use super::input::CursorHighlight;
 use super::{DirtyTiles, InGameEntity, MapConfig, MapGrid, MapIndex, MapSeed, TileKind, TilePos};
@@ -88,11 +88,10 @@ pub(super) fn spawn_map_if_needed(
         }
     }
 
-    let origin = map_origin(&cfg);
     for y in 0..cfg.height {
         for x in 0..cfg.width {
             let kind = TileKind::Grass;
-            let world = origin + Vec2::new(x as f32 * cfg.tile_size, y as f32 * cfg.tile_size);
+            let world = tile_to_world(&cfg, TilePos { x, y });
 
             let cx = x / TILE_CHUNK_SIZE;
             let cy = y / TILE_CHUNK_SIZE;
@@ -158,6 +157,9 @@ pub(super) fn cull_tile_chunks(
         Vec2::new(viewport.x, viewport.y),
     ];
 
+    // Culling wants floor semantics (tile RANGE covering an area), unlike the
+    // round-to-nearest picking contract of coords::world_to_tile — keep it local
+    // but derive it from the same canonical origin.
     let origin = map_origin(&cfg);
     let mut min_world = Vec2::splat(f32::INFINITY);
     let mut max_world = Vec2::splat(f32::NEG_INFINITY);
@@ -511,7 +513,6 @@ pub(super) fn vehicle_routes_overlay_render(
     // drawn red so real violations stand out instead of hiding among legal long-arc turns.
     let color_ok = Color::srgba(1.0, 0.75, 0.20, 0.70);
     let color_oncoming = Color::srgba(1.0, 0.15, 0.10, 0.95);
-    let origin = map_origin(&cfg);
 
     // Guardrails to keep the overlay cheap when many vehicles are active.
     //
@@ -558,7 +559,7 @@ pub(super) fn vehicle_routes_overlay_render(
                 continue;
             }
 
-            let w = origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size);
+            let w = tile_to_world(&cfg, *pos);
             scratch.push(w);
         }
 

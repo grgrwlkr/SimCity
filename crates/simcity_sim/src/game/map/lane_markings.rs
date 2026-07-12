@@ -1,4 +1,4 @@
-use super::coords::map_origin;
+use super::coords::tile_to_world;
 use super::*;
 
 /// Marker component for lane marking overlay entities.
@@ -28,7 +28,6 @@ pub(super) fn sync_lane_markings(
         return;
     }
 
-    let origin = map_origin(&cfg);
     let tile_size = cfg.tile_size;
 
     // Visual style.
@@ -67,7 +66,7 @@ pub(super) fn sync_lane_markings(
         }
 
         spawned.reserve(4);
-        let world = origin + Vec2::new(x as f32 * tile_size, y as f32 * tile_size);
+        let world = tile_to_world(&cfg, pos);
 
         // ---- Lane dividers + center line (exactly one between opposite directions)
         let lanes = road.lanes_total();

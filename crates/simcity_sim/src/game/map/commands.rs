@@ -11,7 +11,7 @@ use crate::game::sim::City;
 use crate::game::transport::GraphVersion;
 use crate::game::zone_placement::can_zone_tile;
 
-use super::coords::map_origin;
+use super::coords::tile_f_to_world;
 use super::dirty::RoadDirtyTiles;
 use super::generation::generate_map_into_grid;
 use super::{
@@ -31,11 +31,10 @@ pub(crate) fn spawn_building_entity(
     city: &City,
 ) -> Entity {
     let (footprint_width, footprint_length) = MANUAL_BUILDING_FOOTPRINT;
-    let origin = map_origin(cfg);
     // Position at center of footprint
     let center_x = pos.x as f32 + (footprint_width as f32 - 1.0) * 0.5;
     let center_y = pos.y as f32 + (footprint_length as f32 - 1.0) * 0.5;
-    let world = origin + Vec2::new(center_x * cfg.tile_size, center_y * cfg.tile_size);
+    let world = tile_f_to_world(cfg, center_x, center_y);
     let sprite_size = Vec2::new(
         footprint_width as f32 * cfg.tile_size,
         footprint_length as f32 * cfg.tile_size,
@@ -522,10 +521,9 @@ fn clear_building_at(
 /// Respawn a building entity from a saved `Building` component (undo of erase).
 /// The component is restored verbatim so level/phase/occupancy survive.
 fn respawn_building_entity(commands: &mut Commands, cfg: &MapConfig, b: &Building) -> Entity {
-    let origin = map_origin(cfg);
     let center_x = b.anchor_pos.x as f32 + (b.footprint_width as f32 - 1.0) * 0.5;
     let center_y = b.anchor_pos.y as f32 + (b.footprint_length as f32 - 1.0) * 0.5;
-    let world = origin + Vec2::new(center_x * cfg.tile_size, center_y * cfg.tile_size);
+    let world = tile_f_to_world(cfg, center_x, center_y);
     let sprite_size = Vec2::new(
         b.footprint_width as f32 * cfg.tile_size,
         b.footprint_length as f32 * cfg.tile_size,

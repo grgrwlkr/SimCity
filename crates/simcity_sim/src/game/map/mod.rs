@@ -25,6 +25,7 @@ use road_preview::{RoadPreviewPool, road_preview_render};
 
 mod coords;
 use coords::cursor_tile;
+pub use coords::{map_origin, tile_f_to_world, tile_to_world, world_to_tile};
 
 mod generation;
 

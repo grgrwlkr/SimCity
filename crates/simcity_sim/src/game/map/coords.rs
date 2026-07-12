@@ -1,27 +1,12 @@
 use bevy::prelude::*;
 
+// Canonical mapping lives in simcity_core; re-exported here so every map-module
+// consumer (and, via mod.rs, the rest of the sim crate) shares one formula.
+pub use simcity_core::game::map::coords::{
+    map_origin, tile_f_to_world, tile_to_world, world_to_tile,
+};
+
 use super::{MapConfig, TilePos};
-
-pub(super) fn map_origin(cfg: &MapConfig) -> Vec2 {
-    Vec2::new(
-        -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
-        -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
-    )
-}
-
-pub(super) fn world_to_tile(cfg: &MapConfig, world: Vec2) -> Option<TilePos> {
-    let origin = map_origin(cfg);
-    let local = world - origin;
-
-    let x = (local.x / cfg.tile_size).round() as i32;
-    let y = (local.y / cfg.tile_size).round() as i32;
-
-    if x < 0 || y < 0 || x >= cfg.width || y >= cfg.height {
-        return None;
-    }
-
-    Some(TilePos { x, y })
-}
 
 pub(super) fn cursor_tile(
     cfg: &MapConfig,
