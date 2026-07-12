@@ -40,7 +40,8 @@ pub(super) struct RightSidebarParams<'w, 's> {
     pub(super) q_citizens: Query<'w, 's, &'static Citizen>,
     pub(super) citizen_tile_index: Option<Res<'w, crate::game::citizens::CitizenTileIndex>>,
     pub(super) q_window: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
-    pub(super) q_camera: Query<'w, 's, (&'static Transform, &'static Projection), With<MainCamera>>,
+    pub(super) q_camera:
+        Query<'w, 's, (&'static Camera, &'static GlobalTransform), With<MainCamera>>,
     pub(super) vehicle_agg: Option<Res<'w, VehicleAggSnapshot>>,
     pub(super) vehicle_motion: Option<Res<'w, crate::game::traffic::VehicleMotionStats>>,
     pub(super) spatial: Option<Res<'w, TrafficSpatialIndex>>,

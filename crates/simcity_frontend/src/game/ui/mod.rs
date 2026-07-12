@@ -311,8 +311,8 @@ fn render_minimap_in_sidebar(
     grid: &MapGrid,
     cfg: &MapConfig,
     window: &Window,
-    cam_tf: &Transform,
-    proj: &Projection,
+    camera: &Camera,
+    cam_gt: &GlobalTransform,
 ) {
     let map_w = grid.width.max(1) as f32;
     let map_h = grid.height.max(1) as f32;
@@ -360,20 +360,27 @@ fn render_minimap_in_sidebar(
         }
     }
 
-    // Camera viewport (2D ortho).
-    let (half_w, half_h) = match proj {
-        Projection::Orthographic(o) => {
-            let w = (o.area.max.x - o.area.min.x).abs().max(1.0);
-            let h = (o.area.max.y - o.area.min.y).abs().max(1.0);
-            (w * 0.5, h * 0.5)
-        }
-        _ => (window.width() * 0.5, window.height() * 0.5),
-    };
-
+    // Camera viewport on the ground plane. The tilted ortho footprint is a
+    // trapezoid; the minimap shows its bounding rect (conservative, good enough).
+    let vw = window.width();
+    let vh = window.height();
+    let view_corners = [
+        Vec2::new(0.0, 0.0),
+        Vec2::new(vw, 0.0),
+        Vec2::new(0.0, vh),
+        Vec2::new(vw, vh),
+    ];
     let origin = map_origin(cfg);
-    let cam = cam_tf.translation.truncate();
-    let min_world = cam - Vec2::new(half_w, half_h);
-    let max_world = cam + Vec2::new(half_w, half_h);
+    let mut min_world = Vec2::splat(f32::INFINITY);
+    let mut max_world = Vec2::splat(f32::NEG_INFINITY);
+    for c in view_corners {
+        let Some(w) = viewport_to_ground(camera, cam_gt, c) else {
+            // Camera not ready this frame — draw the map without the viewport rect.
+            return;
+        };
+        min_world = min_world.min(w);
+        max_world = max_world.max(w);
+    }
 
     let world_to_tile_f = |w: Vec2| -> Vec2 {
         let local = w - origin;
@@ -403,7 +410,10 @@ fn render_minimap_in_sidebar(
         egui::StrokeKind::Inside,
     );
 
-    // Camera marker.
+    // Camera marker: the ground point under the viewport center (the focus).
+    let Some(cam) = viewport_to_ground(camera, cam_gt, Vec2::new(vw * 0.5, vh * 0.5)) else {
+        return;
+    };
     let cam_tile = world_to_tile_f(cam);
     let cpos = to_px(cam_tile.x.clamp(0.0, map_w), cam_tile.y.clamp(0.0, map_h));
     painter.circle_filled(cpos, 2.5, egui::Color32::YELLOW);
@@ -488,4 +498,4 @@ fn to_egui_color(c: Color) -> egui::Color32 {
     )
 }
 
-use simcity_core::game::map::coords::map_origin;
+use simcity_core::game::map::coords::{map_origin, viewport_to_ground};

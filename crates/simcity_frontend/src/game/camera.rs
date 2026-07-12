@@ -1,3 +1,4 @@
+use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::ecs::message::MessageReader;
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
@@ -9,35 +10,54 @@ pub use simcity_core::game::camera::MainCamera;
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 
+/// Pseudo-3D orthographic view: the world lives in the XY plane (Z = height),
+/// the camera hangs on a fixed tilted boom above a focus point on the ground.
+/// Pan moves the focus in XY; zoom scales the orthographic projection.
+const CAMERA_YAW: f32 = -std::f32::consts::FRAC_PI_4; // diagonal look, prototype-approved
+const CAMERA_ELEVATION: f32 = 0.96; // ~55 deg above the ground plane
+const CAMERA_DIST: f32 = 500.0;
+
+/// Ground-plane focus point the camera orbits above.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct CameraFocus(pub Vec2);
+
 pub struct CameraPlugin;
 
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_camera)
-            .add_systems(
-                Update,
-                camera_keyboard_pan
-                    .in_set(GameSet::Input)
-                    .run_if(in_game_or_paused),
+        app.add_systems(Startup, spawn_camera).add_systems(
+            Update,
+            (
+                camera_keyboard_pan,
+                camera_mouse_wheel_zoom,
+                camera_keyboard_zoom,
+                sync_camera_transform,
             )
-            .add_systems(
-                Update,
-                camera_mouse_wheel_zoom
-                    .in_set(GameSet::Input)
-                    .run_if(in_game_or_paused),
-            )
-            .add_systems(
-                Update,
-                camera_keyboard_zoom
-                    .in_set(GameSet::Input)
-                    .run_if(in_game_or_paused),
-            );
+                .chain()
+                .in_set(GameSet::Input)
+                .run_if(in_game_or_paused),
+        );
     }
 }
 
+fn boom_offset() -> Vec3 {
+    Vec3::new(
+        CAMERA_YAW.cos() * CAMERA_ELEVATION.cos(),
+        CAMERA_YAW.sin() * CAMERA_ELEVATION.cos(),
+        CAMERA_ELEVATION.sin(),
+    ) * CAMERA_DIST
+}
+
 fn spawn_camera(mut commands: Commands) {
+    let focus = Vec2::ZERO;
     commands.spawn((
-        Camera2d,
+        Camera3d::default(),
+        Projection::Orthographic(OrthographicProjection::default_3d()),
+        // Flat game palette must reach the screen untouched.
+        Tonemapping::None,
+        Transform::from_translation(focus.extend(0.0) + boom_offset())
+            .looking_at(focus.extend(0.0), Vec3::Z),
+        CameraFocus(focus),
         MainCamera,
         PrimaryEguiContext,
         Name::new("MainCamera"),
@@ -48,10 +68,19 @@ fn in_game_or_paused(state: Res<State<AppState>>) -> bool {
     matches!(state.get(), AppState::InGame | AppState::Paused)
 }
 
+/// Recompute the camera transform from its focus point (after pan/zoom input).
+fn sync_camera_transform(mut q_cam: Query<(&CameraFocus, &mut Transform), With<MainCamera>>) {
+    let Ok((focus, mut tf)) = q_cam.single_mut() else {
+        return;
+    };
+    let target = focus.0.extend(0.0);
+    *tf = Transform::from_translation(target + boom_offset()).looking_at(target, Vec3::Z);
+}
+
 fn camera_keyboard_pan(
     time: Res<Time<Real>>,
     keys: Res<ButtonInput<KeyCode>>,
-    mut q_cam: Query<&mut Transform, With<MainCamera>>,
+    mut q_cam: Query<(&mut CameraFocus, &Transform), With<MainCamera>>,
 ) {
     let mut dir = Vec2::ZERO;
 
@@ -72,14 +101,20 @@ fn camera_keyboard_pan(
         return;
     }
 
-    let speed_world_units_per_sec = 1500.0;
-    let delta = dir.normalize() * speed_world_units_per_sec * time.delta_secs();
-
-    let Ok(mut t) = q_cam.single_mut() else {
+    let Ok((mut focus, tf)) = q_cam.single_mut() else {
         return;
     };
-    t.translation.x += delta.x;
-    t.translation.y += delta.y;
+
+    // Screen-relative pan: project the camera's right/up onto the ground plane
+    // so WASD stays intuitive regardless of the boom yaw.
+    let right = tf.right().truncate().normalize_or_zero();
+    let up = tf.up().truncate().normalize_or_zero();
+
+    let speed_world_units_per_sec = 1500.0;
+    let delta = (right * dir.x + up * dir.y).normalize_or_zero()
+        * speed_world_units_per_sec
+        * time.delta_secs();
+    focus.0 += delta;
 }
 
 fn camera_mouse_wheel_zoom(

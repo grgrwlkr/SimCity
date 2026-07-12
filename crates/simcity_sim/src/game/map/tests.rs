@@ -835,3 +835,36 @@ mod core_coords {
         assert!((c - expect).length() < 1e-4);
     }
 }
+
+mod core_coords_ray {
+    use bevy::math::Vec3;
+    use simcity_core::game::map::coords::ray_ground_t;
+
+    #[test]
+    fn straight_down_hits_at_camera_height() {
+        assert_eq!(
+            ray_ground_t(Vec3::new(3.0, 4.0, 10.0), Vec3::NEG_Z),
+            Some(10.0)
+        );
+    }
+
+    /// A 45-degree tilted ray from (0,-10,10) toward +Y/-Z lands exactly at the origin.
+    #[test]
+    fn tilted_ray_lands_on_expected_ground_point() {
+        let origin = Vec3::new(0.0, -10.0, 10.0);
+        let dir = Vec3::new(0.0, 1.0, -1.0).normalize();
+        let t = ray_ground_t(origin, dir).expect("ray must hit the ground");
+        let hit = origin + dir * t;
+        assert!(hit.z.abs() < 1e-4);
+        assert!(
+            (hit.truncate() - bevy::math::Vec2::ZERO).length() < 1e-4,
+            "{hit}"
+        );
+    }
+
+    #[test]
+    fn parallel_and_backward_rays_miss() {
+        assert_eq!(ray_ground_t(Vec3::new(0.0, 0.0, 10.0), Vec3::X), None);
+        assert_eq!(ray_ground_t(Vec3::new(0.0, 0.0, 10.0), Vec3::Z), None);
+    }
+}

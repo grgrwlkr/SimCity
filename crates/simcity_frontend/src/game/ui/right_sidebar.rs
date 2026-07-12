@@ -25,10 +25,10 @@ pub(super) fn right_sidebar_ui(mut contexts: EguiContexts, p: RightSidebarParams
                         let Ok(window) = p.q_window.single() else {
                             return;
                         };
-                        let Ok((cam_tf, proj)) = p.q_camera.single() else {
+                        let Ok((camera, cam_gt)) = p.q_camera.single() else {
                             return;
                         };
-                        render_minimap_in_sidebar(ui, &p.grid, &p.cfg, window, cam_tf, proj);
+                        render_minimap_in_sidebar(ui, &p.grid, &p.cfg, window, camera, cam_gt);
                     });
 
                 ui.separator();

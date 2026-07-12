@@ -11,7 +11,7 @@ use crate::game::state::AppState;
 use crate::game::traffic::{Parked, Vehicle};
 use crate::game::ui_state::{OverlayMode, UiState};
 
-use super::coords::{map_origin, tile_to_world};
+use super::coords::{map_origin, tile_to_world, viewport_to_ground};
 use super::generation::generate_map_into_grid;
 use super::input::CursorHighlight;
 use super::{DirtyTiles, InGameEntity, MapConfig, MapGrid, MapIndex, MapSeed, TileKind, TilePos};
@@ -164,7 +164,7 @@ pub(super) fn cull_tile_chunks(
     let mut min_world = Vec2::splat(f32::INFINITY);
     let mut max_world = Vec2::splat(f32::NEG_INFINITY);
     for c in corners {
-        let Ok(w) = camera.viewport_to_world_2d(cam_gt, c) else {
+        let Some(w) = viewport_to_ground(camera, cam_gt, c) else {
             // If we can't compute the viewport bounds, do not cull anything.
             for (_, mut vis) in q_chunks.iter_mut() {
                 *vis = Visibility::Visible;
