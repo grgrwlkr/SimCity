@@ -113,7 +113,14 @@ spawn_pedestrians в examples/pseudo3d_proto.rs (вариант B).
 Маркеры ЧП/остановки — билборды или объёмные глифы. Обновить visual-пины
 (vehicle_spawning.rs Transform==tile_to_world, emergencies Sprite.color, харнесс-заглушки).
 
-### Фаза 7 — полиш и зачистка
+### Фаза 7 — полиш и зачистка (ночь ✅ 2026-07-12)
+Сделано: НАСТОЯЩИЙ световой цикл вместо чёрного квада — City.hour управляет солнцем
+(illuminance/цвет) и ambient камеры; окна зданий — отдельный proud-quad меш на общем
+NightGlow-материале (тёплый emissive ночью), разметка слегка светится, лампы светофоров
+всегда emissive + тёплые световые пятна на асфальте. ВАЖНЫЙ УРОК: мутация shared-материала
+каждый кадр = re-prepare всех его сущностей (60→19 FPS); гейт по смене City.hour вернул 60.6.
+Осталось из фазы 7: Tracy-перф большого города, синхронизация docs/architecture.md +
+README (рендер-секции ещё про 2D), судьба examples/pseudo3d_proto.rs, палитра-полиш.
 Свет/тени/палитра-тюнинг, перф (Tracy: батчинг, ≤ дистанций каскадов), удаление мёртвого
 2D-кода (Sprite-пути), выпил `examples/pseudo3d_proto.rs` или переориентация в витрину,
 `day_night.ron`-тюнинг, README/docs синхронизация (`architecture.md`, `debugging-and-observability.md`).
