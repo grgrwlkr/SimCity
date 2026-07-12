@@ -752,3 +752,86 @@ fn undo_set_zone_under_grown_building_clears_whole_footprint() {
         "the grown building's entity must be despawned by the undo"
     );
 }
+
+mod core_coords {
+    use bevy::math::Vec2;
+    use simcity_core::game::map::coords::{
+        map_origin, tile_f_to_world, tile_to_world, world_to_tile,
+    };
+    use simcity_core::game::map::{MapConfig, TilePos};
+
+    fn cfg() -> MapConfig {
+        MapConfig {
+            width: 8,
+            height: 6,
+            tile_size: 16.0,
+        }
+    }
+
+    /// Every tile survives tile -> world -> tile with round-to-nearest picking semantics.
+    #[test]
+    fn roundtrip_all_tiles() {
+        let cfg = cfg();
+        for x in 0..cfg.width {
+            for y in 0..cfg.height {
+                let t = TilePos { x, y };
+                assert_eq!(world_to_tile(&cfg, tile_to_world(&cfg, t)), Some(t));
+            }
+        }
+    }
+
+    /// Sub-tile offsets below half a tile snap back to the same tile (picking contract).
+    #[test]
+    fn roundtrip_survives_subtile_offsets() {
+        let cfg = cfg();
+        let t = TilePos { x: 3, y: 2 };
+        for (dx, dy) in [(7.9, 0.0), (-7.9, 0.0), (0.0, 7.9), (-7.9, -7.9)] {
+            let w = tile_to_world(&cfg, t) + Vec2::new(dx, dy);
+            assert_eq!(world_to_tile(&cfg, w), Some(t), "offset ({dx},{dy})");
+        }
+    }
+
+    #[test]
+    fn outside_map_is_none() {
+        let cfg = cfg();
+        let beyond = tile_to_world(
+            &cfg,
+            TilePos {
+                x: cfg.width - 1,
+                y: cfg.height - 1,
+            },
+        ) + Vec2::splat(cfg.tile_size);
+        assert_eq!(world_to_tile(&cfg, beyond), None);
+        assert_eq!(world_to_tile(&cfg, Vec2::splat(-1e6)), None);
+    }
+
+    /// The map is centered on the world origin: opposite corners mirror each other.
+    #[test]
+    fn map_is_centered_on_origin() {
+        let cfg = cfg();
+        let a = tile_to_world(&cfg, TilePos { x: 0, y: 0 });
+        let b = tile_to_world(
+            &cfg,
+            TilePos {
+                x: cfg.width - 1,
+                y: cfg.height - 1,
+            },
+        );
+        assert!((a + b).length() < 1e-4);
+        assert_eq!(map_origin(&cfg), a);
+    }
+
+    /// tile_f_to_world at integer coordinates equals tile_to_world (footprint-center contract).
+    #[test]
+    fn fractional_matches_integer_at_whole_tiles() {
+        let cfg = cfg();
+        let t = TilePos { x: 5, y: 1 };
+        assert_eq!(tile_f_to_world(&cfg, 5.0, 1.0), tile_to_world(&cfg, t));
+        // 2x2 footprint anchored at (2,2): center is halfway between tiles (2,2) and (3,3).
+        let c = tile_f_to_world(&cfg, 2.5, 2.5);
+        let expect = (tile_to_world(&cfg, TilePos { x: 2, y: 2 })
+            + tile_to_world(&cfg, TilePos { x: 3, y: 3 }))
+            / 2.0;
+        assert!((c - expect).length() < 1e-4);
+    }
+}

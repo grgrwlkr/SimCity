@@ -1,3 +1,4 @@
+pub mod coords;
 mod grid;
 mod types;
 
