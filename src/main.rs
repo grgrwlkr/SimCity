@@ -26,6 +26,10 @@ fn main() {
     {
         app.add_plugins(remote_plugin());
         app.add_plugins(RemoteHttpPlugin::default());
+        // Composable: our RemotePlugin/RemoteHttpPlugin are already in, so this only
+        // registers the brp_extras/* methods (synthetic mouse/keyboard input, screenshot,
+        // diagnostics) into the existing RemoteMethods resource.
+        app.add_plugins(bevy_brp_extras::BrpExtrasPlugin::default());
     }
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
@@ -35,8 +39,11 @@ fn main() {
         }),
         ..default()
     }));
-    // Bevy-native FPS/frame-time diagnostics (must be after DefaultPlugins).
-    app.add_plugins(FrameTimeDiagnosticsPlugin::default());
+    // Bevy-native FPS/frame-time diagnostics (must be after DefaultPlugins). Under `dev`,
+    // BrpExtrasPlugin's `diagnostics` feature already added it — re-adding panics.
+    if !app.is_plugin_added::<FrameTimeDiagnosticsPlugin>() {
+        app.add_plugins(FrameTimeDiagnosticsPlugin::default());
+    }
     app.add_plugins(GamePlugin);
     app.add_systems(bevy::app::Last, dump_on_window_close_system);
     app.run();

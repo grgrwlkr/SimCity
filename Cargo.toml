@@ -46,13 +46,16 @@ simcity_data = { path = "crates/simcity_data" }
 simcity_debug = { path = "crates/simcity_debug" }
 simcity_frontend = { path = "crates/simcity_frontend" }
 simcity_sim = { path = "crates/simcity_sim" }
+# Synthetic input + extra BRP methods (mouse/keyboard/screenshot/diagnostics) for live
+# debugging via bevy_brp_mcp. Dev-only: same unauthenticated-HTTP concerns as RemotePlugin.
+bevy_brp_extras = { version = "0.21.0", optional = true }
 
 [features]
 # Dev-only tooling: Bevy `dynamic_linking` for faster iteration PLUS the whole BRP/MCP
 # observability stack (remote HTTP server + custom methods in `main.rs`, and the per-frame
 # world-scan snapshot systems in `simcity_debug`). Off in release so none of that ships.
 # `cargo run --features dev`
-dev = ["bevy/dynamic_linking", "simcity_debug/dev"]
+dev = ["bevy/dynamic_linking", "simcity_debug/dev", "dep:bevy_brp_extras"]
 
 # Official Bevy profiling backends (built-in tracing spans):
 # - Tracy (recommended): `cargo run --release --features profile_tracy`
