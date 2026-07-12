@@ -26,6 +26,7 @@ impl Plugin for IntersectionsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<IntersectionIndex>()
             .init_resource::<LeftTurnDemand>()
+            .init_resource::<render::LampMaterials>()
             .add_systems(OnEnter(AppState::MainMenu), index::reset_intersections)
             .add_systems(
                 Update,

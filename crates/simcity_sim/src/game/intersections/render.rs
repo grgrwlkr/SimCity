@@ -2,6 +2,39 @@ use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 use crate::game::map::{MapConfig, MapGrid, TilePos, tile_to_world};
+use crate::game::render_primitives::{NightGlow, RenderPrimitives, flat_quad, layer};
+use std::collections::hash_map::Entry;
+
+/// Emissive traffic-light lamp materials (real lights glow day and night).
+#[derive(Resource, Default)]
+pub(crate) struct LampMaterials(HashMap<[u8; 4], Handle<StandardMaterial>>);
+
+fn lamp_material(
+    lamps: &mut LampMaterials,
+    materials: &mut Assets<StandardMaterial>,
+    color: Color,
+) -> Handle<StandardMaterial> {
+    let s = color.to_srgba();
+    let key = [
+        (s.red * 255.0).round() as u8,
+        (s.green * 255.0).round() as u8,
+        (s.blue * 255.0).round() as u8,
+        (s.alpha * 255.0).round() as u8,
+    ];
+    match lamps.0.entry(key) {
+        Entry::Occupied(e) => e.get().clone(),
+        Entry::Vacant(v) => {
+            let lin = color.to_linear();
+            v.insert(materials.add(StandardMaterial {
+                base_color: color,
+                emissive: LinearRgba::rgb(lin.red * 2.5, lin.green * 2.5, lin.blue * 2.5),
+                perceptual_roughness: 1.0,
+                ..default()
+            }))
+            .clone()
+        }
+    }
+}
 use crate::game::roads::RoadDir;
 
 use super::index::{IntersectionId, IntersectionIndex};
@@ -51,8 +84,10 @@ pub(crate) fn sync_traffic_light_visuals(
     q_lights: Query<&TrafficLight>,
     q_visuals: Query<Entity, With<TrafficLightVisual>>,
     mut layout_state: Local<TrafficLightVisualLayoutState>,
-    mut prims: ResMut<crate::game::render_primitives::RenderPrimitives>,
+    prims: ResMut<RenderPrimitives>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut lamps: ResMut<LampMaterials>,
+    glow: Res<NightGlow>,
 ) {
     let (light_count, light_hash) = traffic_light_set_signature(&q_lights);
     let needs_rebuild = q_visuals.is_empty()
@@ -103,11 +138,11 @@ pub(crate) fn sync_traffic_light_visuals(
             let color = get_light_color_for_direction(light, entry_dir);
 
             commands.spawn((
-                crate::game::render_primitives::flat_quad(
+                flat_quad(
                     prims.quad.clone(),
-                    prims.material(&mut materials, color),
+                    lamp_material(&mut lamps, &mut materials, color),
                     light_pos,
-                    crate::game::render_primitives::layer::TRAFFIC_LIGHT,
+                    layer::TRAFFIC_LIGHT,
                     Vec2::splat(cfg.tile_size * 0.25),
                 ),
                 TrafficLightVisual,
@@ -115,6 +150,17 @@ pub(crate) fn sync_traffic_light_visuals(
                     intersection_id: light.intersection_id,
                     entry_dir,
                 },
+            ));
+            // Warm light pool on the asphalt below (NightGlow fades it in at night).
+            commands.spawn((
+                flat_quad(
+                    prims.quad.clone(),
+                    glow.light_pool.clone(),
+                    light_pos,
+                    0.06,
+                    Vec2::splat(cfg.tile_size * 2.2),
+                ),
+                TrafficLightVisual,
             ));
         }
     }
@@ -133,7 +179,7 @@ pub fn render_traffic_lights(
         With<TrafficLightVisual>,
     >,
     mut lights_by_id: Local<HashMap<IntersectionId, TrafficLight>>,
-    mut prims: ResMut<crate::game::render_primitives::RenderPrimitives>,
+    mut lamps: ResMut<LampMaterials>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     lights_by_id.clear();
@@ -148,7 +194,7 @@ pub fn render_traffic_lights(
             // Should be rare (stale visual until next sync), keep it visibly inactive.
             Color::srgba(0.4, 0.4, 0.4, 0.35)
         };
-        mat.0 = prims.material(&mut materials, color);
+        mat.0 = lamp_material(&mut lamps, &mut materials, color);
     }
 }
 

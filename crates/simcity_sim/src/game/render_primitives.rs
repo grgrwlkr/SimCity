@@ -177,7 +177,29 @@ impl RenderPrimitives {
     }
 }
 
-fn init_render_primitives(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
+/// Shared handles whose materials the day/night cycle mutates in place
+/// (ONE asset write flips every window/marking/light-pool in the city).
+#[derive(Resource, Clone)]
+pub struct NightGlow {
+    /// Building window bands: dark glass by day, warm emissive at night.
+    pub windows: Handle<StandardMaterial>,
+    /// Road center line (yellow) — faint emissive at night so roads read.
+    pub marking_center: Handle<StandardMaterial>,
+    /// White road markings (dividers, arrows).
+    pub marking_white: Handle<StandardMaterial>,
+    /// Warm translucent light pool under traffic lights (invisible by day).
+    pub light_pool: Handle<StandardMaterial>,
+}
+
+pub const WINDOW_GLASS_DAY: Color = Color::srgb(0.10, 0.12, 0.17);
+pub const MARKING_CENTER_COLOR: Color = Color::srgba(1.0, 0.85, 0.1, 0.9);
+pub const MARKING_WHITE_COLOR: Color = Color::srgba(0.98, 0.98, 0.98, 0.55);
+
+fn init_render_primitives(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
     commands.insert_resource(RenderPrimitives {
         quad: meshes.add(Rectangle::new(1.0, 1.0)),
         cache: HashMap::new(),
@@ -185,6 +207,32 @@ fn init_render_primitives(mut commands: Commands, mut meshes: ResMut<Assets<Mesh
         cars: HashMap::new(),
         meeples: HashMap::new(),
     });
+    commands.insert_resource(night_glow(&mut materials));
+}
+
+fn night_glow(materials: &mut Assets<StandardMaterial>) -> NightGlow {
+    let matte = |base: Color| StandardMaterial {
+        base_color: base,
+        perceptual_roughness: 1.0,
+        ..default()
+    };
+    NightGlow {
+        windows: materials.add(matte(WINDOW_GLASS_DAY)),
+        marking_center: materials.add(StandardMaterial {
+            alpha_mode: AlphaMode::Blend,
+            ..matte(MARKING_CENTER_COLOR)
+        }),
+        marking_white: materials.add(StandardMaterial {
+            alpha_mode: AlphaMode::Blend,
+            ..matte(MARKING_WHITE_COLOR)
+        }),
+        light_pool: materials.add(StandardMaterial {
+            base_color: Color::srgba(1.0, 0.85, 0.5, 0.0),
+            alpha_mode: AlphaMode::Blend,
+            perceptual_roughness: 1.0,
+            ..default()
+        }),
+    }
 }
 
 /// Minimal vertex-colored composite-mesh builder (axis-aligned boxes, Z-up,
@@ -264,6 +312,8 @@ pub fn init_for_test(app: &mut App) {
         .resource_mut::<Assets<Mesh>>()
         .add(Rectangle::new(1.0, 1.0));
     app.insert_resource(RenderPrimitives::for_test(quad));
+    let glow = night_glow(&mut app.world_mut().resource_mut::<Assets<StandardMaterial>>());
+    app.insert_resource(glow);
 }
 
 /// World-quad bundle: unit quad scaled to `size`, at `xy` on height `z`.

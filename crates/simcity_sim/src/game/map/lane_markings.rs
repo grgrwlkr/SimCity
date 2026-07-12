@@ -1,4 +1,4 @@
-use crate::game::render_primitives::{RenderPrimitives, layer};
+use crate::game::render_primitives::{NightGlow, RenderPrimitives, layer};
 
 use super::coords::tile_to_world;
 use super::*;
@@ -22,8 +22,8 @@ pub(super) fn sync_lane_markings(
     mut road_dirty: ResMut<RoadDirtyTiles>,
     mut idx: ResMut<LaneMarkingIndex>,
     mut changed: Local<Vec<usize>>,
-    mut prims: ResMut<RenderPrimitives>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    prims: ResMut<RenderPrimitives>,
+    glow: Res<NightGlow>,
 ) {
     if road_dirty.is_empty() {
         return;
@@ -35,10 +35,7 @@ pub(super) fn sync_lane_markings(
 
     let tile_size = cfg.tile_size;
 
-    // Visual style.
-    let center_line_color = Color::srgba(1.0, 0.85, 0.1, 0.9);
-    let lane_divider_color = Color::srgba(0.98, 0.98, 0.98, 0.45);
-    let arrow_color = Color::srgba(0.98, 0.98, 0.98, 0.70);
+    // Visual style: shared NightGlow materials so markings faintly glow at night.
     let z_base = layer::LANE_MARKING; // Height above the road surface.
 
     // Make markings thick enough to be visible when zoomed out.
@@ -46,9 +43,9 @@ pub(super) fn sync_lane_markings(
     let lane_div_thickness = tile_size * 0.10;
     let dash_len = tile_size * 0.55;
 
-    let center_mat = prims.material(&mut materials, center_line_color);
-    let divider_mat = prims.material(&mut materials, lane_divider_color);
-    let arrow_mat = prims.material(&mut materials, arrow_color);
+    let center_mat = glow.marking_center.clone();
+    let divider_mat = glow.marking_white.clone();
+    let arrow_mat = glow.marking_white.clone();
 
     let arrow_body = Vec2::new(tile_size * 0.40, tile_size * 0.10);
     let head_len = tile_size * 0.22;

@@ -16,7 +16,7 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
 use crate::game::map::{BuildingKind, MapConfig};
-use crate::game::render_primitives::{RenderPrimitives, layer};
+use crate::game::render_primitives::{NightGlow, RenderPrimitives, layer};
 
 use super::components::Building;
 
@@ -29,33 +29,41 @@ pub struct BuildingTint(pub Color);
 #[derive(Component)]
 pub struct BuildingBody;
 
+/// Marker on the child entity carrying the building's window quads
+/// (shared `NightGlow::windows` material — warm emissive at night).
+#[derive(Component)]
+pub struct BuildingWindows;
+
 /// Shared body meshes keyed by (kind, level, footprint) — buildings of the
 /// same shape are GPU instances of one mesh.
+/// (body, windows) mesh pair for one building shape.
+type BuildingMeshes = (Handle<Mesh>, Handle<Mesh>);
+
 #[derive(Resource, Default)]
 pub struct BuildingMeshCache {
-    by_key: HashMap<(BuildingKind, u8, u32, u32), Handle<Mesh>>,
+    by_key: HashMap<(BuildingKind, u8, u32, u32), BuildingMeshes>,
 }
 
 impl BuildingMeshCache {
+    /// (body, windows) meshes for this building shape.
     pub fn get(
         &mut self,
         meshes: &mut Assets<Mesh>,
         cfg: &MapConfig,
         b: &Building,
-    ) -> Handle<Mesh> {
+    ) -> BuildingMeshes {
         let w = b.footprint_width as f32 * cfg.tile_size - 2.0;
         let d = b.footprint_length as f32 * cfg.tile_size - 2.0;
         let key = (b.kind, b.level, w.to_bits(), d.to_bits());
         self.by_key
             .entry(key)
             .or_insert_with(|| {
-                meshes.add(building_mesh(
-                    w,
-                    d,
-                    building_height(b.kind, b.level),
-                    building_floors(b.kind, b.level),
-                    b.kind.color(),
-                ))
+                let h = building_height(b.kind, b.level);
+                let floors = building_floors(b.kind, b.level);
+                (
+                    meshes.add(building_body_mesh(w, d, h, b.kind.color())),
+                    meshes.add(building_windows_mesh(w, d, h, floors)),
+                )
             })
             .clone()
     }
@@ -92,81 +100,108 @@ fn scaled(base: Color, k: f32) -> [f32; 4] {
     ]
 }
 
-/// Vertex-colored box, Z-up, base at z=0: 4 walls as stacked wall/window bands,
-/// roof on top. One white lit material serves every building (batching).
-fn building_mesh(w: f32, d: f32, h: f32, floors: u32, base: Color) -> Mesh {
+/// Window band layout shared by the body and the window overlay.
+fn window_bands(h: f32, floors: u32) -> Vec<(f32, f32)> {
+    let plinth = (h * 0.08).min(2.0);
+    let fh = (h - plinth) / floors as f32;
+    (0..floors)
+        .map(|i| {
+            let z0 = plinth + i as f32 * fh;
+            (z0, z0 + fh * 0.45)
+        })
+        .collect()
+}
+
+/// Solid vertex-colored box, Z-up, base at z=0: walls + roof (windows are a
+/// separate mesh so their shared material can turn emissive at night).
+fn building_body_mesh(w: f32, d: f32, h: f32, base: Color) -> Mesh {
     let hw = w / 2.0;
     let hd = d / 2.0;
-
     let wall = scaled(base, 0.55);
-    let window = [0.045, 0.055, 0.085, 1.0];
     let roof = scaled(base, 1.0);
 
-    // Band stack (z ranges): plinth, then floors of (window, wall) pairs.
-    let mut bands: Vec<(f32, f32, [f32; 4])> = Vec::new();
-    let plinth = (h * 0.08).min(2.0);
-    bands.push((0.0, plinth, wall));
-    let fh = (h - plinth) / floors as f32;
-    for i in 0..floors {
-        let z0 = plinth + i as f32 * fh;
-        bands.push((z0, z0 + fh * 0.45, window));
-        bands.push((z0 + fh * 0.45, z0 + fh, wall));
+    let mut m = MeshAcc::default();
+    m.walls(hw, hd, 0.0, h, wall);
+    m.quad(
+        [[-hw, -hd, h], [hw, -hd, h], [hw, hd, h], [-hw, hd, h]],
+        [0.0, 0.0, 1.0],
+        roof,
+    );
+    m.build()
+}
+
+/// Window bands as slightly-proud wall quads (white vertex colors — the shared
+/// `NightGlow::windows` material supplies glass color and night emissive).
+fn building_windows_mesh(w: f32, d: f32, h: f32, floors: u32) -> Mesh {
+    let e = 0.08; // proud of the wall, avoids z-fighting
+    let hw = w / 2.0 + e;
+    let hd = d / 2.0 + e;
+    let white = [1.0, 1.0, 1.0, 1.0];
+
+    let mut m = MeshAcc::default();
+    for (z0, z1) in window_bands(h, floors) {
+        m.walls(hw, hd, z0, z1, white);
+    }
+    m.build()
+}
+
+/// Tiny local mesh accumulator (positions/normals/uv/colors/indices).
+#[derive(Default)]
+struct MeshAcc {
+    pos: Vec<[f32; 3]>,
+    nor: Vec<[f32; 3]>,
+    uv: Vec<[f32; 2]>,
+    col: Vec<[f32; 4]>,
+    idx: Vec<u32>,
+}
+
+impl MeshAcc {
+    fn quad(&mut self, verts: [[f32; 3]; 4], n: [f32; 3], c: [f32; 4]) {
+        let b = self.pos.len() as u32;
+        self.pos.extend_from_slice(&verts);
+        self.nor.extend_from_slice(&[n; 4]);
+        self.uv
+            .extend_from_slice(&[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+        self.col.extend_from_slice(&[c; 4]);
+        self.idx
+            .extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
     }
 
-    let mut pos: Vec<[f32; 3]> = Vec::new();
-    let mut nor: Vec<[f32; 3]> = Vec::new();
-    let mut uv: Vec<[f32; 2]> = Vec::new();
-    let mut col: Vec<[f32; 4]> = Vec::new();
-    let mut idx: Vec<u32> = Vec::new();
-
-    let mut quad = |verts: [[f32; 3]; 4], n: [f32; 3], c: [f32; 4]| {
-        let b = pos.len() as u32;
-        pos.extend_from_slice(&verts);
-        nor.extend_from_slice(&[n; 4]);
-        uv.extend_from_slice(&[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
-        col.extend_from_slice(&[c; 4]);
-        idx.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
-    };
-
-    for &(z0, z1, c) in &bands {
-        // +Y wall (CCW from outside), -Y, +X, -X — winding derived for Z-up.
-        quad(
+    /// Four outward-facing wall quads for the z0..z1 band (CCW from outside).
+    fn walls(&mut self, hw: f32, hd: f32, z0: f32, z1: f32, c: [f32; 4]) {
+        self.quad(
             [[-hw, hd, z0], [-hw, hd, z1], [hw, hd, z1], [hw, hd, z0]],
             [0.0, 1.0, 0.0],
             c,
         );
-        quad(
+        self.quad(
             [[-hw, -hd, z0], [hw, -hd, z0], [hw, -hd, z1], [-hw, -hd, z1]],
             [0.0, -1.0, 0.0],
             c,
         );
-        quad(
+        self.quad(
             [[hw, -hd, z0], [hw, hd, z0], [hw, hd, z1], [hw, -hd, z1]],
             [1.0, 0.0, 0.0],
             c,
         );
-        quad(
+        self.quad(
             [[-hw, -hd, z0], [-hw, -hd, z1], [-hw, hd, z1], [-hw, hd, z0]],
             [-1.0, 0.0, 0.0],
             c,
         );
     }
-    // Roof (+Z).
-    quad(
-        [[-hw, -hd, h], [hw, -hd, h], [hw, hd, h], [-hw, hd, h]],
-        [0.0, 0.0, 1.0],
-        roof,
-    );
 
-    Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
-    )
-    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
-    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, nor)
-    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
-    .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, col)
-    .with_inserted_indices(Indices::U32(idx))
+    fn build(self) -> Mesh {
+        Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        )
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.pos)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.nor)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, self.uv)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.col)
+        .with_inserted_indices(Indices::U32(self.idx))
+    }
 }
 
 fn body_material(
@@ -186,6 +221,7 @@ pub(super) fn rebuild_building_visuals(
     mut prims: ResMut<RenderPrimitives>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    glow: Res<NightGlow>,
     q_changed: Query<
         (Entity, &Building, Option<&BuildingTint>, Option<&Children>),
         Or<(Added<Building>, Changed<Building>)>,
@@ -199,7 +235,7 @@ pub(super) fn rebuild_building_visuals(
             }
         }
 
-        let mesh = cache.get(&mut meshes, &cfg, b);
+        let (mesh, windows_mesh) = cache.get(&mut meshes, &cfg, b);
         let mat = body_material(&mut prims, &mut materials, tint);
         let roof_z = building_height(b.kind, b.level) + layer::CHILD_ABOVE;
         let glyph_quad = prims.quad.clone();
@@ -207,6 +243,11 @@ pub(super) fn rebuild_building_visuals(
 
         commands.entity(e).with_children(|parent| {
             parent.spawn((BuildingBody, Mesh3d(mesh), MeshMaterial3d(mat)));
+            parent.spawn((
+                BuildingWindows,
+                Mesh3d(windows_mesh),
+                MeshMaterial3d(glow.windows.clone()),
+            ));
             if let Some(service) = crate::game::services::glyphs::service_building_kind(b.kind) {
                 crate::game::services::glyphs::spawn_service_glyph(
                     parent,
