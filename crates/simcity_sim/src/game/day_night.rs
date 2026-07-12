@@ -73,7 +73,15 @@ fn drive_day_night_lighting(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut q_sun: Query<&mut DirectionalLight>,
     mut q_ambient: Query<&mut AmbientLight, With<MainCamera>>,
+    mut last_hour: Local<Option<u8>>,
 ) {
+    // Mutating shared materials re-prepares every entity that uses them
+    // (thousands of markings/windows) — only touch them when the hour flips.
+    if *last_hour == Some(city.hour) {
+        return;
+    }
+    *last_hour = Some(city.hour);
+
     // 0 at noon, up to ~1 at midnight, scaled by the configured darkness.
     let darkness = (night_factor(city.hour) * (visual.max_night_alpha / 0.55)).clamp(0.0, 1.0);
     let day = 1.0 - darkness;
