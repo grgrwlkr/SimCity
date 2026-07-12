@@ -830,6 +830,145 @@ fn build_two_way_vertical_spur(nx: i32, sx: i32, north_flow: RoadFlow) -> MapGri
     grid
 }
 
+/// RHT crossing mirroring the oracle fixture in `simcity_data/route_oncoming_pins.rs`: 2x2 box at
+/// (4,4)-(5,5); vertical road col 4 South / col 5 North; horizontal road row 4 East / row 5 West.
+fn oracle_crossing_grid() -> MapGrid {
+    let mut grid = MapGrid::new(10, 10);
+    let mut put = |x: i32, y: i32, dir: RoadDir| {
+        let pos = TilePos { x, y };
+        let mut cell = grid.get(pos).unwrap_or_default();
+        cell.water = false;
+        cell.road = RoadCell {
+            kind: RoadKind::FourLane,
+            dir,
+            lane: 0,
+            flow: RoadFlow::TwoWay,
+            lane_type: LaneType::Regular,
+        };
+        grid.set(pos, cell);
+    };
+    for &(x, y) in &[(4, 4), (4, 5), (5, 4), (5, 5)] {
+        put(x, y, RoadDir::None);
+    }
+    for y in [0, 1, 2, 3, 6, 7, 8, 9] {
+        put(4, y, RoadDir::South);
+        put(5, y, RoadDir::North);
+    }
+    for x in [0, 1, 2, 3, 6, 7, 8, 9] {
+        put(x, 4, RoadDir::East);
+        put(x, 5, RoadDir::West);
+    }
+    grid
+}
+
+#[test]
+fn in_box_edges_respect_reconstructed_axis_direction() {
+    let grid = oracle_crossing_grid();
+    let gv = GraphVersion(1);
+    let mut graph = RoadGraph::default();
+    rebuild_road_graph_inner(&grid, &gv, &mut graph);
+
+    let mask_at = |x: i32, y: i32| graph.edges[grid.idx(TilePos { x, y }).unwrap()];
+    let (w_bit, e_bit, s_bit, n_bit) = (1u8 << 0, 1u8 << 1, 1u8 << 2, 1u8 << 3);
+
+    // Oncoming in-box steps must be pruned:
+    assert_eq!(
+        mask_at(4, 4) & n_bit,
+        0,
+        "North on the SOUTHBOUND column 4 inside the box (edge-hug) must be pruned"
+    );
+    assert_eq!(
+        mask_at(5, 5) & s_bit,
+        0,
+        "South on the NORTHBOUND column 5 inside the box must be pruned"
+    );
+    assert_eq!(
+        mask_at(4, 4) & w_bit,
+        0,
+        "West on the EASTBOUND row 4 inside the box must be pruned"
+    );
+    assert_eq!(
+        mask_at(4, 5) & e_bit,
+        0,
+        "East on the WESTBOUND row 5 inside the box must be pruned"
+    );
+
+    // Correct-direction in-box steps stay:
+    assert_ne!(
+        mask_at(5, 4) & n_bit,
+        0,
+        "North on the northbound column 5 inside the box must stay"
+    );
+    assert_ne!(
+        mask_at(4, 5) & s_bit,
+        0,
+        "South on the southbound column 4 inside the box must stay"
+    );
+    assert_ne!(
+        mask_at(4, 4) & e_bit,
+        0,
+        "East on the eastbound row 4 inside the box must stay"
+    );
+    assert_ne!(
+        mask_at(5, 5) & w_bit,
+        0,
+        "West on the westbound row 5 inside the box must stay"
+    );
+
+    // Straight entry/exit unaffected:
+    assert_ne!(
+        mask_at(3, 4) & e_bit,
+        0,
+        "straight eastbound ENTRY into the box must stay"
+    );
+    assert_ne!(
+        mask_at(4, 5) & w_bit,
+        0,
+        "westbound EXIT out of the box must stay"
+    );
+}
+
+#[test]
+fn road_astar_far_column_p_uturn_still_routes_and_avoids_oncoming_box_half() {
+    let grid = oracle_crossing_grid();
+    let gv = GraphVersion(1);
+    let mut graph = RoadGraph::default();
+    rebuild_road_graph_inner(&grid, &gv, &mut graph);
+
+    let cfg = PathfindingConfig::default();
+    let mut cache = PathCache::default();
+    let mut traffic = TrafficOccupancy::default();
+    traffic.ensure_len(grid.len());
+    let intersections = IntersectionIndex::default();
+    let mut ctx = PathfindingCtx {
+        time_now_sec: 0.0,
+        cfg: &cfg,
+        cache: &mut cache,
+        graph: &graph,
+        regions: None,
+        traffic: &traffic,
+        grid: &grid,
+        intersections: &intersections,
+    };
+
+    // East approach on row 4, U-turn through the box, back West on row 5 — the legal П crosses
+    // the centerline on the NORTHBOUND column 5, not the near (southbound) column 4.
+    let start = TilePos { x: 2, y: 4 };
+    let goal = TilePos { x: 2, y: 5 };
+    let path = find_road_path_cached(&mut ctx, start, goal);
+    assert_eq!(path.first().copied(), Some(start), "П U-turn must route");
+    assert_eq!(path.last().copied(), Some(goal));
+    let has_step = |a: TilePos, b: TilePos| path.windows(2).any(|w| w[0] == a && w[1] == b);
+    assert!(
+        !has_step(TilePos { x: 4, y: 4 }, TilePos { x: 4, y: 5 }),
+        "the U-turn must not edge-hug North on the southbound column 4: {path:?}"
+    );
+    assert!(
+        has_step(TilePos { x: 5, y: 4 }, TilePos { x: 5, y: 5 }),
+        "the U-turn must cross the centerline on the northbound column 5: {path:?}"
+    );
+}
+
 #[test]
 fn uturn_edge_added_at_two_way_dead_end() {
     // North column x=5, South column x=4 (opp is the WEST neighbor of the North tile).

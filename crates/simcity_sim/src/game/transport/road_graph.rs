@@ -103,6 +103,42 @@ pub fn rebuild_road_graph_inner(grid: &MapGrid, gv: &GraphVersion, graph: &mut R
                 return;
             }
 
+            // In-box directional constraint: a step that touches an intersection-box tile
+            // (dir == None) must not OPPOSE the reconstructed axis direction of the real road
+            // continuing that box tile's COLUMN (vertical steps) / ROW (horizontal steps).
+            // This kills the road-A* "box-cut" class — perimeter-hugging crossings that drive
+            // the oncoming half of the box — while keeping legal Г/П turns routable (they cross
+            // the centerline on matching-direction columns/rows). Axes with no reconstruction
+            // (`None`: T-junction arm sides, disagreeing roads) stay unconstrained. Straight
+            // entries/exits are provably never blocked: the scan reaches the very lane tile the
+            // step comes from / exits onto, so the constraint either matches or dissolves to
+            // `None`. Mirrors `simcity_data::route_oncoming_pins::axis_lane_dir` (the oracle).
+            let step_vertical = matches!(move_dir, RoadDir::North | RoadDir::South);
+            let endpoints = [
+                (
+                    cur,
+                    TilePos {
+                        x: x as i32,
+                        y: y as i32,
+                    },
+                ),
+                (
+                    next,
+                    TilePos {
+                        x: (nidx % w) as i32,
+                        y: (nidx / w) as i32,
+                    },
+                ),
+            ];
+            for (cell, pos) in endpoints {
+                if cell.dir == RoadDir::None
+                    && box_axis_dir(grid, pos, step_vertical)
+                        .is_some_and(|lane| move_dir == lane.opposite())
+                {
+                    return;
+                }
+            }
+
             // Check lane type restrictions for turn-lane entry.
             // IMPORTANT: apply this only when entering an intersection tile from a lane tile.
             // (Intersection tiles themselves may keep default lane_type values and shouldn't affect circulation.)
@@ -273,6 +309,46 @@ pub fn rebuild_road_graph_inner(grid: &MapGrid, gv: &GraphVersion, graph: &mut R
 
         graph.edges[idx] = mask;
     }
+}
+
+/// Direction of the real road continuing `at`'s COLUMN (if `vertical`) or ROW (else), inferred by
+/// scanning out of the intersection box to the nearest real (`dir != None`) lane tile on that axis
+/// in both directions. `None` when no such road exists on the axis (e.g. a T-junction arm side) or
+/// the two sides disagree (two different roads sharing a column/row) — such axes stay
+/// unconstrained. Must stay in lockstep with the router-independent oracle
+/// (`simcity_data::route_oncoming_pins::axis_lane_dir`).
+fn box_axis_dir(grid: &MapGrid, at: TilePos, vertical: bool) -> Option<RoadDir> {
+    let mut found: Option<RoadDir> = None;
+    for sign in [1i32, -1] {
+        for k in 1..=64i32 {
+            let p = if vertical {
+                TilePos {
+                    x: at.x,
+                    y: at.y + sign * k,
+                }
+            } else {
+                TilePos {
+                    x: at.x + sign * k,
+                    y: at.y,
+                }
+            };
+            let Some(c) = grid.get(p) else { break };
+            if c.water || !c.road.is_some() {
+                break;
+            }
+            if c.road.dir != RoadDir::None {
+                if matches!(c.road.dir, RoadDir::North | RoadDir::South) == vertical {
+                    match found {
+                        None => found = Some(c.road.dir),
+                        Some(f) if f != c.road.dir => return None, // ambiguous geometry
+                        _ => {}
+                    }
+                }
+                break; // reached the first real lane tile on this side
+            }
+        }
+    }
+    found
 }
 
 /// Check if two lanes are on the same side of a multi-lane road.

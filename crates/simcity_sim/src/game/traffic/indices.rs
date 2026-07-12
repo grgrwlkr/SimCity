@@ -33,15 +33,22 @@ pub(super) fn init_vehicle_motion_timers(
     }
 }
 
-/// Update each vehicle's continuous moving/stopped streak from its speed, and aggregate the worst
-/// streaks + frozen count into `VehicleMotionStats`.
+/// Update each vehicle's continuous moving streak (speed-based) and no-progress streak
+/// (displacement-anchor-based), and aggregate the worst streaks + frozen count into
+/// `VehicleMotionStats`. `stopped_secs` deliberately ignores momentary speed: green-phase creep
+/// against a refused box-entry gate spikes speed without progress, and a speed-based reset kept
+/// wedged vehicles invisible to every recovery layer.
 pub(super) fn track_vehicle_motion(
     time: Res<Time<Fixed>>,
+    cfg: Res<crate::game::map::MapConfig>,
     path_pool: Res<crate::game::transport::PathPool>,
     mut stats: ResMut<VehicleMotionStats>,
     mut q: Query<(&Vehicle, &mut VehicleMotionTimer), Without<Parked>>,
 ) {
     let dt = time.delta_secs();
+    // Real progress = displacement beyond ~half a tile from the anchor. Big enough that in-place
+    // creep oscillation never trips it, small enough that advancing one queue slot resets.
+    let progress_dist_sq = (cfg.tile_size * 0.6) * (cfg.tile_size * 0.6);
     let mut max_stopped = 0.0f32;
     let mut max_moving = 0.0f32;
     let mut frozen = 0u32;
@@ -53,13 +60,18 @@ pub(super) fn track_vehicle_motion(
         if path_pool.len(v.path_handle) <= 1 {
             mt.stopped_secs = 0.0;
             mt.moving_secs = 0.0;
+            mt.anchor_pos = v.curr_world_pos;
             continue;
         }
-        if v.speed.abs() > VEHICLE_MOTION_SPEED_EPS {
-            mt.moving_secs += dt;
+        if v.curr_world_pos.distance_squared(mt.anchor_pos) > progress_dist_sq {
+            mt.anchor_pos = v.curr_world_pos;
             mt.stopped_secs = 0.0;
         } else {
             mt.stopped_secs += dt;
+        }
+        if v.speed.abs() > VEHICLE_MOTION_SPEED_EPS {
+            mt.moving_secs += dt;
+        } else {
             mt.moving_secs = 0.0;
         }
         if mt.stopped_secs > max_stopped {

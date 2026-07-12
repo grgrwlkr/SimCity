@@ -550,16 +550,16 @@ fn tick_buses(
                     continue;
                 }
                 // Wedge self-heal: a despawn-immune bus that stops advancing must re-plan or skip a
-                // stop, else it blocks a road forever. Accumulate while stalled, but judge against
-                // a state-dependent threshold: intersection control (red light, queue, arbiter
-                // wait) is legitimate waiting and gets a much LONGER threshold — not an exemption,
-                // which would leave a bus wedged at a never-granted approach with no recovery
-                // (the WaitingForGreen blind spot, previously seen with cars).
-                if vehicle.speed < 0.1 {
-                    bus.wedge_secs += dt;
-                } else {
-                    bus.wedge_secs = 0.0;
-                }
+                // stop, else it blocks a road forever. PROGRESS-based, not speed-based: the timer
+                // accumulates every Driving tick and is reset ONLY by path-cursor advancement (the
+                // `last_cursor` check above). A speed-based reset was a blind spot: a bus refused by
+                // the box-entry gate still CREEPS against the virtual leader on every green phase
+                // (speed spikes >= 0.1), sawtoothing the timer at ~10 s of the 120 s threshold —
+                // observed live as a permanent WaitingForGreen wedge with three dead heal layers.
+                // Judge against a state-dependent threshold: intersection control (red light,
+                // queue, arbiter wait) is legitimate waiting and gets the LONGER threshold — not an
+                // exemption.
+                bus.wedge_secs += dt;
                 let at_intersection = !matches!(
                     traffic_state,
                     VehicleTrafficState::FreeFlow | VehicleTrafficState::Accelerating

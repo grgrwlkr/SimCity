@@ -301,16 +301,21 @@ pub struct DebugIntersectionConnectorState {
     pub intersection_id: u32,
 }
 
-/// Per-vehicle continuous motion timers (debug/observability for gridlock detection): how long the
-/// vehicle has been continuously moving vs stopped. `stopped_secs` resets when it moves, `moving_secs`
-/// resets when it stops — so a frozen vehicle's `stopped_secs` climbs unbounded (even across stuck
-/// reroutes, since those don't make it move), which is exactly the signal for catching a jam.
+/// Per-vehicle continuous motion timers (gridlock detection + recovery arming): how long the
+/// vehicle has been continuously moving vs WITHOUT REAL PROGRESS. `stopped_secs` resets only when
+/// the vehicle has physically displaced more than ~half a tile from its anchor — NOT on momentary
+/// speed: a vehicle refused at a box-entry gate CREEPS against the virtual leader on every green
+/// phase (speed spikes over the eps), and a speed-based reset sawtoothed the timer at ~10 s
+/// forever, blinding every recovery layer (observed live as permanent WaitingForGreen wedges).
+/// `moving_secs` stays speed-based (a "how long in motion" debug streak).
 #[derive(Component, Debug, Default, Clone, Copy)]
 pub struct VehicleMotionTimer {
     /// Seconds the vehicle has been continuously moving (resets to 0 when it stops).
     pub moving_secs: f32,
-    /// Seconds the vehicle has been continuously stopped (resets to 0 when it moves).
+    /// Seconds without real spatial progress (resets only on displacement past the anchor radius).
     pub stopped_secs: f32,
+    /// World position of the last real progress (displacement anchor).
+    pub anchor_pos: Vec2,
 }
 
 /// Marker component for parked vehicles.

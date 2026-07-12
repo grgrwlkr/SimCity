@@ -493,5 +493,18 @@ mod integration {
             "a route drives against a REAL lane's direction — a route-producer or road-graph \
              (e.g. dead-end U-turn edge) regression, not the tolerated in-box fallback class"
         );
+
+        // THE full invariant (since the directional in-box road-graph edges, 2026-07-12): NO route
+        // of ANY producer drives oncoming ANYWHERE — real lanes or box interiors. The in-box
+        // "box-cut" class is impossible by graph construction now, so this is stable, not a
+        // sampling accident. If this fires, an edge-builder or planner regression reopened the
+        // oncoming hole the whole 2026-07 saga was about.
+        let total_flagged: usize = car_bad.iter().sum::<usize>()
+            + svc_bad.iter().sum::<usize>()
+            + bus_bad.iter().sum::<usize>();
+        assert_eq!(
+            total_flagged, 0,
+            "oncoming routes exist again (car {car_bad:?}, service {svc_bad:?}, bus {bus_bad:?})"
+        );
     }
 }

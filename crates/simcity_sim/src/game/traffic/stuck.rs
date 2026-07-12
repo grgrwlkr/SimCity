@@ -212,7 +212,18 @@ pub(super) fn resolve_stuck_vehicles(
             goal,
             travel_dir,
         );
-        let route = find_road_path_cached(&mut ctx, current, goal);
+        let mut route = find_road_path_cached(&mut ctx, current, goal);
+        if route.is_empty() && wedged_retry_due && ctx.regions.is_some() {
+            // The hierarchical region pre-pass prunes A* to a corridor around the region-level
+            // start->goal path; a recovery route that must DETOUR far outside it (e.g. via a
+            // dead-end spur's U-turn) is invisible to the pruned search (observed live: pruned
+            // len=0 vs unpruned len=104 for a wedged bus). Retry unpruned — but ONLY inside the
+            // throttled wedged-retry window: the per-tick nudge path must never pay full-map A*
+            // (that churn class is exactly what the throttle above exists to prevent).
+            let saved = ctx.regions.take();
+            route = find_road_path_cached(&mut ctx, current, goal);
+            ctx.regions = saved;
+        }
         // Direction guard (insurance): road-A* is structurally dir-correct, but the interned
         // fallback must satisfy the same invariant as every other producer.
         let route = if route_direction_ok(&route, &grid) {
@@ -512,6 +523,7 @@ mod tests {
                 // Wedged past the despawn horizon on the never-reset motion timer.
                 VehicleMotionTimer {
                     moving_secs: 0.0,
+                    anchor_pos: bevy::prelude::Vec2::ZERO,
                     stopped_secs: STUCK_DESPAWN_SECS + 1.0,
                 },
             ))
@@ -641,6 +653,7 @@ mod tests {
                 // little — a normal congestion wait, not a permanent freeze).
                 VehicleMotionTimer {
                     moving_secs: 0.0,
+                    anchor_pos: bevy::prelude::Vec2::ZERO,
                     stopped_secs: 5.0,
                 },
             ))
