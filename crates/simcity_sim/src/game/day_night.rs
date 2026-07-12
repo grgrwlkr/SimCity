@@ -9,6 +9,7 @@
 use bevy::prelude::*;
 
 use crate::game::map::MapConfig;
+use crate::game::render_primitives::{RenderPrimitives, layer};
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
@@ -52,12 +53,15 @@ pub fn time_of_day_from_hour(hour: u8) -> f32 {
 #[derive(Component)]
 struct DayNightOverlay;
 
+#[allow(clippy::too_many_arguments)]
 fn render_day_night_overlay(
     cfg: Res<MapConfig>,
     city: Res<City>,
     visual: Res<DayNightVisualConfig>,
     mut commands: Commands,
-    mut q: Query<(&mut Sprite, &mut Transform), With<DayNightOverlay>>,
+    mut q: Query<(&mut MeshMaterial3d<StandardMaterial>, &mut Transform), With<DayNightOverlay>>,
+    mut prims: ResMut<RenderPrimitives>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let t = time_of_day_from_hour(city.hour);
     // night=0 at noon (t=0.5), night=1 at midnight (t=0).
@@ -70,21 +74,22 @@ fn render_day_night_overlay(
         cfg.height as f32 * cfg.tile_size,
     );
 
-    if let Ok((mut sprite, mut tf)) = q.single_mut() {
-        sprite.color = Color::srgba(0.0, 0.0, 0.0, alpha);
-        sprite.custom_size = Some(size);
-        tf.translation = Vec3::new(0.0, 0.0, 50.0);
+    // The alpha animates each frame; the 8-bit cache bounds this to <=256 materials.
+    let mat = prims.material(&mut materials, Color::srgba(0.0, 0.0, 0.0, alpha));
+
+    if let Ok((mut overlay_mat, mut tf)) = q.single_mut() {
+        overlay_mat.0 = mat;
+        tf.translation = Vec3::new(0.0, 0.0, layer::DAY_NIGHT);
+        tf.scale = size.extend(1.0);
         return;
     }
 
     commands.spawn((
         DayNightOverlay,
-        Sprite {
-            color: Color::srgba(0.0, 0.0, 0.0, alpha),
-            custom_size: Some(size),
-            ..default()
-        },
-        Transform::from_translation(Vec3::new(0.0, 0.0, 50.0)),
+        Mesh3d(prims.quad.clone()),
+        MeshMaterial3d(mat),
+        Transform::from_translation(Vec3::new(0.0, 0.0, layer::DAY_NIGHT))
+            .with_scale(size.extend(1.0)),
     ));
 }
 

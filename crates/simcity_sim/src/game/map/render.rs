@@ -6,8 +6,8 @@ use bevy::window::PrimaryWindow;
 
 use crate::game::camera::MainCamera;
 use crate::game::land_value::LandValueIndex;
-use crate::game::render_primitives::{RenderPrimitives, flat_quad, layer};
 use crate::game::pollution::PollutionIndex;
+use crate::game::render_primitives::{RenderPrimitives, flat_quad, layer};
 use crate::game::state::AppState;
 use crate::game::traffic::{Parked, Vehicle};
 use crate::game::ui_state::{OverlayMode, UiState};

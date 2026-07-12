@@ -1,3 +1,5 @@
+use crate::game::render_primitives::{RenderPrimitives, layer};
+
 use super::coords::tile_to_world;
 use super::input::{compute_road_direction, compute_road_line};
 use super::*;
@@ -26,15 +28,21 @@ pub(super) fn road_preview_render(
     q_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
     mut pool: ResMut<RoadPreviewPool>,
     mut q_preview: Query<
-        (&mut Sprite, &mut Transform, Option<&mut Visibility>),
+        (
+            &mut MeshMaterial3d<StandardMaterial>,
+            &mut Transform,
+            Option<&mut Visibility>,
+        ),
         With<RoadPreviewTile>,
     >,
     mut items: Local<Vec<(Color, Vec2, Vec3)>>,
+    mut prims: ResMut<RenderPrimitives>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     items.clear();
     // Hide everything by default; we'll re-enable the active preview entities below.
     for &e in pool.entities.iter() {
-        if let Ok((_sprite, _tf, vis)) = q_preview.get_mut(e)
+        if let Ok((_mat, _tf, vis)) = q_preview.get_mut(e)
             && let Some(mut vis) = vis
         {
             *vis = Visibility::Hidden;
@@ -83,7 +91,7 @@ pub(super) fn road_preview_render(
             items.push((
                 preview_color,
                 Vec2::splat(cfg.tile_size * 0.95),
-                Vec3::new(world.x, world.y, 15.0),
+                Vec3::new(world.x, world.y, layer::ROAD_PREVIEW),
             ));
         }
     }
@@ -93,14 +101,15 @@ pub(super) fn road_preview_render(
     items.push((
         Color::srgba(0.2, 0.8, 0.2, 0.6),
         Vec2::splat(cfg.tile_size * 0.5),
-        Vec3::new(start_world.x, start_world.y, 16.0),
+        Vec3::new(start_world.x, start_world.y, layer::ROAD_PREVIEW_START),
     ));
 
     // Ensure pool capacity.
     while pool.entities.len() < items.len() {
         let e = commands
             .spawn((
-                Sprite::from_color(Color::srgba(0.0, 0.0, 0.0, 0.0), Vec2::ONE),
+                Mesh3d(prims.quad.clone()),
+                MeshMaterial3d(prims.material(&mut materials, Color::srgba(0.0, 0.0, 0.0, 0.0))),
                 Transform::default(),
                 Visibility::Hidden,
                 RoadPreviewTile,
@@ -112,7 +121,7 @@ pub(super) fn road_preview_render(
 
     // Write into pooled entities and hide the rest.
     for (i, &e) in pool.entities.iter().enumerate() {
-        let Ok((mut sprite, mut tf, vis)) = q_preview.get_mut(e) else {
+        let Ok((mut mat, mut tf, vis)) = q_preview.get_mut(e) else {
             continue;
         };
         let Some(mut vis) = vis else {
@@ -120,9 +129,9 @@ pub(super) fn road_preview_render(
         };
 
         if let Some((color, size, translation)) = items.get(i).copied() {
-            sprite.color = color;
-            sprite.custom_size = Some(size);
+            mat.0 = prims.material(&mut materials, color);
             tf.translation = translation;
+            tf.scale = size.extend(1.0);
             *vis = Visibility::Visible;
         } else {
             *vis = Visibility::Hidden;

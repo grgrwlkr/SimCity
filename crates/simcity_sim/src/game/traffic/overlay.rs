@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
 use crate::game::map::{MapConfig, MapGrid, TilePos, tile_to_world};
+use crate::game::render_primitives::{RenderPrimitives, layer};
 use crate::game::ui_state::{OverlayMode, UiState};
 
 use super::TrafficOccupancy;
@@ -24,7 +25,9 @@ pub(super) fn render_traffic_overlay(
     occ: Res<TrafficOccupancy>,
     mut commands: Commands,
     mut pool: ResMut<TrafficOverlayPool>,
-    mut q_sprites: Query<&mut Sprite, With<TrafficOverlayTile>>,
+    mut q_mats: Query<&mut MeshMaterial3d<StandardMaterial>, With<TrafficOverlayTile>>,
+    mut prims: ResMut<RenderPrimitives>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     if ui.overlay != OverlayMode::Traffic {
         // Overlay disabled: despawn cached overlay entities once.
@@ -69,12 +72,12 @@ pub(super) fn render_traffic_overlay(
                 let e = commands
                     .spawn((
                         TrafficOverlayTile,
-                        Sprite {
-                            color: Color::linear_rgb(0.0, 1.0, 0.0),
-                            custom_size: Some(Vec2::splat(cfg.tile_size * 0.85)),
-                            ..default()
-                        },
-                        Transform::from_xyz(world.x, world.y, 5.0),
+                        Mesh3d(prims.quad.clone()),
+                        MeshMaterial3d(
+                            prims.material(&mut materials, Color::linear_rgb(0.0, 1.0, 0.0)),
+                        ),
+                        Transform::from_xyz(world.x, world.y, layer::TRAFFIC_HEAT)
+                            .with_scale(Vec2::splat(cfg.tile_size * 0.85).extend(1.0)),
                     ))
                     .id();
                 pool.entries.push((e, idx));
@@ -84,10 +87,11 @@ pub(super) fn render_traffic_overlay(
 
     // Update overlay colors without respawning entities (prevents flicker and reduces CPU churn).
     for (e, idx) in pool.entries.iter().copied() {
-        let Ok(mut sprite) = q_sprites.get_mut(e) else {
+        let Ok(mut mat) = q_mats.get_mut(e) else {
             continue;
         };
+        // The material cache quantizes to 8-bit RGBA, so the gradient stays bounded.
         let heat = (occ.heat_idx(idx) / max_heat).clamp(0.0, 1.0);
-        sprite.color = Color::linear_rgb(heat, 1.0 - heat, 0.0);
+        mat.0 = prims.material(&mut materials, Color::linear_rgb(heat, 1.0 - heat, 0.0));
     }
 }

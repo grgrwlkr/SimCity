@@ -1,3 +1,5 @@
+use crate::game::render_primitives::{RenderPrimitives, layer};
+
 use super::coords::tile_to_world;
 use super::*;
 
@@ -19,6 +21,8 @@ pub(super) fn sync_lane_markings(
     mut road_dirty: ResMut<RoadDirtyTiles>,
     mut idx: ResMut<LaneMarkingIndex>,
     mut changed: Local<Vec<usize>>,
+    mut prims: ResMut<RenderPrimitives>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     if road_dirty.is_empty() {
         return;
@@ -34,12 +38,16 @@ pub(super) fn sync_lane_markings(
     let center_line_color = Color::srgba(1.0, 0.85, 0.1, 0.9);
     let lane_divider_color = Color::srgba(0.98, 0.98, 0.98, 0.45);
     let arrow_color = Color::srgba(0.98, 0.98, 0.98, 0.70);
-    let z_base = 6.0; // Above road tile; below buildings/vehicles.
+    let z_base = layer::LANE_MARKING; // Height above the road surface.
 
     // Make markings thick enough to be visible when zoomed out.
     let center_thickness = tile_size * 0.14;
     let lane_div_thickness = tile_size * 0.10;
     let dash_len = tile_size * 0.55;
+
+    let center_mat = prims.material(&mut materials, center_line_color);
+    let divider_mat = prims.material(&mut materials, lane_divider_color);
+    let arrow_mat = prims.material(&mut materials, arrow_color);
 
     let arrow_body = Vec2::new(tile_size * 0.40, tile_size * 0.10);
     let head_len = tile_size * 0.22;
@@ -100,12 +108,14 @@ pub(super) fn sync_lane_markings(
                 spawned.push(
                     commands
                         .spawn((
-                            Sprite::from_color(center_line_color, solid_size),
+                            Mesh3d(prims.quad.clone()),
+                            MeshMaterial3d(center_mat.clone()),
                             Transform::from_translation(Vec3::new(
                                 world.x + boundary_offset.x,
                                 world.y + boundary_offset.y,
-                                z_base + 0.05,
-                            )),
+                                z_base + 0.005,
+                            ))
+                            .with_scale(solid_size.extend(1.0)),
                             LaneMarkingEntity,
                             InGameEntity,
                         ))
@@ -116,12 +126,14 @@ pub(super) fn sync_lane_markings(
                 spawned.push(
                     commands
                         .spawn((
-                            Sprite::from_color(lane_divider_color, dash_size),
+                            Mesh3d(prims.quad.clone()),
+                            MeshMaterial3d(divider_mat.clone()),
                             Transform::from_translation(Vec3::new(
                                 world.x + boundary_offset.x,
                                 world.y + boundary_offset.y,
-                                z_base + 0.04,
-                            )),
+                                z_base + 0.004,
+                            ))
+                            .with_scale(dash_size.extend(1.0)),
                             LaneMarkingEntity,
                             InGameEntity,
                         ))
@@ -142,9 +154,11 @@ pub(super) fn sync_lane_markings(
         spawned.push(
             commands
                 .spawn((
-                    Sprite::from_color(arrow_color, arrow_body),
-                    Transform::from_translation(Vec3::new(world.x, world.y, z_base + 0.10))
-                        .with_rotation(Quat::from_rotation_z(rot)),
+                    Mesh3d(prims.quad.clone()),
+                    MeshMaterial3d(arrow_mat.clone()),
+                    Transform::from_translation(Vec3::new(world.x, world.y, z_base + 0.010))
+                        .with_rotation(Quat::from_rotation_z(rot))
+                        .with_scale(arrow_body.extend(1.0)),
                     LaneMarkingEntity,
                     InGameEntity,
                 ))
@@ -161,9 +175,11 @@ pub(super) fn sync_lane_markings(
             spawned.push(
                 commands
                     .spawn((
-                        Sprite::from_color(arrow_color, head_size),
-                        Transform::from_translation(Vec3::new(tip.x, tip.y, z_base + 0.11))
-                            .with_rotation(Quat::from_rotation_z(head_rot)),
+                        Mesh3d(prims.quad.clone()),
+                        MeshMaterial3d(arrow_mat.clone()),
+                        Transform::from_translation(Vec3::new(tip.x, tip.y, z_base + 0.011))
+                            .with_rotation(Quat::from_rotation_z(head_rot))
+                            .with_scale(head_size.extend(1.0)),
                         LaneMarkingEntity,
                         InGameEntity,
                     ))

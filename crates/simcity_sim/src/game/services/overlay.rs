@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
 use crate::game::map::{MapConfig, MapGrid, TilePos};
+use crate::game::render_primitives::{RenderPrimitives, layer};
 use crate::game::ui_state::{OverlayMode, UiState};
 
 use super::coverage::ServiceCoverageIndex;
@@ -30,15 +31,25 @@ pub(super) fn render_service_coverage_overlay(
     coverage: Res<ServiceCoverageIndex>,
     mut pool: ResMut<ServiceCoverageOverlayPool>,
     mut commands: Commands,
+    mut prims: ResMut<RenderPrimitives>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     mut q_tint: Query<
-        (&mut Sprite, &mut Transform, &mut Visibility),
+        (
+            &mut MeshMaterial3d<StandardMaterial>,
+            &mut Transform,
+            &mut Visibility,
+        ),
         (
             With<ServiceCoverageOverlayTintTile>,
             Without<ServiceCoverageOverlayUncoveredTile>,
         ),
     >,
     mut q_uncovered: Query<
-        (&mut Sprite, &mut Transform, &mut Visibility),
+        (
+            &mut MeshMaterial3d<StandardMaterial>,
+            &mut Transform,
+            &mut Visibility,
+        ),
         (
             With<ServiceCoverageOverlayUncoveredTile>,
             Without<ServiceCoverageOverlayTintTile>,
@@ -123,13 +134,16 @@ pub(super) fn render_service_coverage_overlay(
     let tint_count = tint_tiles.len();
     let uncovered_count = uncovered_tiles.len();
 
+    let hidden_mat = prims.material(&mut materials, Color::srgba(0.0, 0.0, 0.0, 0.0));
     ensure_pool(
         &mut commands,
         &mut pool.tint,
         tint_count,
         ServiceCoverageOverlayTintTile,
         cfg.tile_size,
-        4.0,
+        layer::COVERAGE,
+        prims.quad.clone(),
+        hidden_mat.clone(),
     );
     ensure_pool(
         &mut commands,
@@ -137,19 +151,21 @@ pub(super) fn render_service_coverage_overlay(
         uncovered_count,
         ServiceCoverageOverlayUncoveredTile,
         cfg.tile_size,
-        4.2,
+        layer::COVERAGE_UNCOVERED,
+        prims.quad.clone(),
+        hidden_mat,
     );
 
     // Update tint layer.
     for (i, (pos, color)) in tint_tiles.into_iter().enumerate() {
         let e = pool.tint[i];
-        if let Ok((mut sprite, mut tf, mut vis)) = q_tint.get_mut(e) {
-            sprite.color = color;
-            sprite.custom_size = Some(Vec2::splat(cfg.tile_size));
+        if let Ok((mut mat, mut tf, mut vis)) = q_tint.get_mut(e) {
+            mat.0 = prims.material(&mut materials, color);
             let w = tile_to_world(&cfg, pos);
             tf.translation.x = w.x;
             tf.translation.y = w.y;
-            tf.translation.z = 4.0;
+            tf.translation.z = layer::COVERAGE;
+            tf.scale = Vec2::splat(cfg.tile_size).extend(1.0);
             *vis = Visibility::Visible;
         }
     }
@@ -162,13 +178,13 @@ pub(super) fn render_service_coverage_overlay(
     // Update uncovered layer.
     for (i, pos) in uncovered_tiles.into_iter().enumerate() {
         let e = pool.uncovered[i];
-        if let Ok((mut sprite, mut tf, mut vis)) = q_uncovered.get_mut(e) {
-            sprite.color = Color::srgba(0.9, 0.1, 0.1, 0.25);
-            sprite.custom_size = Some(Vec2::splat(cfg.tile_size));
+        if let Ok((mut mat, mut tf, mut vis)) = q_uncovered.get_mut(e) {
+            mat.0 = prims.material(&mut materials, Color::srgba(0.9, 0.1, 0.1, 0.25));
             let w = tile_to_world(&cfg, pos);
             tf.translation.x = w.x;
             tf.translation.y = w.y;
-            tf.translation.z = 4.2;
+            tf.translation.z = layer::COVERAGE_UNCOVERED;
+            tf.scale = Vec2::splat(cfg.tile_size).extend(1.0);
             *vis = Visibility::Visible;
         }
     }
@@ -185,6 +201,7 @@ pub(super) fn render_service_coverage_overlay(
     pool.last_tile_size = cfg.tile_size;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ensure_pool<M: Component + Copy>(
     commands: &mut Commands,
     entries: &mut Vec<Entity>,
@@ -192,6 +209,8 @@ fn ensure_pool<M: Component + Copy>(
     marker: M,
     tile_size: f32,
     z: f32,
+    quad: Handle<Mesh>,
+    hidden_mat: Handle<StandardMaterial>,
 ) {
     if entries.len() < needed {
         let to_add = needed - entries.len();
@@ -200,12 +219,9 @@ fn ensure_pool<M: Component + Copy>(
             let e = commands
                 .spawn((
                     marker,
-                    Sprite {
-                        color: Color::srgba(0.0, 0.0, 0.0, 0.0),
-                        custom_size: Some(Vec2::splat(tile_size)),
-                        ..default()
-                    },
-                    Transform::from_xyz(0.0, 0.0, z),
+                    Mesh3d(quad.clone()),
+                    MeshMaterial3d(hidden_mat.clone()),
+                    Transform::from_xyz(0.0, 0.0, z).with_scale(Vec2::splat(tile_size).extend(1.0)),
                     Visibility::Hidden,
                 ))
                 .id();

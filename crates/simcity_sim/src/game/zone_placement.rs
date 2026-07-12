@@ -4,7 +4,8 @@ use std::collections::HashSet;
 
 use bevy::prelude::*;
 
-use crate::game::map::{MapConfig, MapGrid, TilePos};
+use crate::game::map::{MapConfig, MapGrid, TilePos, tile_to_world};
+use crate::game::render_primitives::{RenderPrimitives, layer};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::transport::GraphVersion;
@@ -128,6 +129,7 @@ struct ZonePlacementOverlayPool {
     last_tile_size: f32,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_zone_placement_overlay(
     ui: Res<UiState>,
     cfg: Res<MapConfig>,
@@ -135,9 +137,15 @@ fn render_zone_placement_overlay(
     mut pool: ResMut<ZonePlacementOverlayPool>,
     mut commands: Commands,
     mut q_tiles: Query<
-        (&mut Sprite, &mut Transform, &mut Visibility),
+        (
+            &mut MeshMaterial3d<StandardMaterial>,
+            &mut Transform,
+            &mut Visibility,
+        ),
         With<ZonePlacementOverlayTile>,
     >,
+    mut prims: ResMut<RenderPrimitives>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     // Show only for zone tools.
     let enabled = matches!(
@@ -168,6 +176,7 @@ fn render_zone_placement_overlay(
         return;
     }
 
+    let zone_mat = prims.material(&mut materials, Color::srgba(0.2, 0.8, 0.2, 0.25));
     let needed = cache.valid_positions.len();
     if pool.entries.len() < needed {
         let to_add = needed - pool.entries.len();
@@ -176,12 +185,10 @@ fn render_zone_placement_overlay(
             let e = commands
                 .spawn((
                     ZonePlacementOverlayTile,
-                    Sprite {
-                        color: Color::srgba(0.2, 0.8, 0.2, 0.25),
-                        custom_size: Some(Vec2::splat(cfg.tile_size)),
-                        ..default()
-                    },
-                    Transform::from_xyz(0.0, 0.0, 3.0),
+                    Mesh3d(prims.quad.clone()),
+                    MeshMaterial3d(zone_mat.clone()),
+                    Transform::from_xyz(0.0, 0.0, layer::ZONE_OVERLAY)
+                        .with_scale(Vec2::splat(cfg.tile_size).extend(1.0)),
                     Visibility::Hidden,
                 ))
                 .id();
@@ -196,13 +203,13 @@ fn render_zone_placement_overlay(
             break;
         }
         let e = pool.entries[i];
-        if let Ok((mut sprite, mut tf, mut vis)) = q_tiles.get_mut(e) {
-            sprite.color = Color::srgba(0.2, 0.8, 0.2, 0.25);
-            sprite.custom_size = Some(Vec2::splat(cfg.tile_size));
+        if let Ok((mut mat, mut tf, mut vis)) = q_tiles.get_mut(e) {
+            mat.0 = zone_mat.clone();
             let world = tile_to_world(&cfg, *pos);
             tf.translation.x = world.x;
             tf.translation.y = world.y;
-            tf.translation.z = 3.0;
+            tf.translation.z = layer::ZONE_OVERLAY;
+            tf.scale = Vec2::splat(cfg.tile_size).extend(1.0);
             *vis = Visibility::Visible;
         }
         i += 1;
@@ -210,7 +217,7 @@ fn render_zone_placement_overlay(
 
     // Hide any unused pooled entities.
     for &e in pool.entries[i..].iter() {
-        if let Ok((_s, _t, mut vis)) = q_tiles.get_mut(e) {
+        if let Ok((_m, _t, mut vis)) = q_tiles.get_mut(e) {
             *vis = Visibility::Hidden;
         }
     }
@@ -221,8 +228,6 @@ fn render_zone_placement_overlay(
     pool.last_cfg_h = cfg.height;
     pool.last_tile_size = cfg.tile_size;
 }
-
-use crate::game::map::tile_to_world;
 
 #[cfg(test)]
 mod tests {
