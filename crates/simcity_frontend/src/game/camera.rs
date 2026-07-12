@@ -20,11 +20,10 @@ const DEFAULT_PITCH: f32 = 0.96; // ~55 deg above the ground plane
 const CAMERA_DIST: f32 = 500.0;
 const PITCH_MIN: f32 = 0.50; // ~29 deg — flat enough to feel 3D, still readable
 const PITCH_MAX: f32 = 1.35; // ~77 deg — almost top-down
-/// Q/E orbit speed, radians per second.
-const KEY_ROTATE_SPEED: f32 = 1.6;
 const MOUSE_ROTATE_SENS: f32 = 0.008;
-/// Zoom easing half-life factor (bigger = snappier).
-const ZOOM_EASE: f32 = 3.5;
+/// Prototype-parity zoom range: 0.05 shows ~5 tiles across (real close-up).
+const ZOOM_MIN: f32 = 0.05;
+const ZOOM_MAX: f32 = 6.0;
 
 /// Orbitable camera rig above a ground focus point.
 #[derive(Component, Debug, Clone, Copy)]
@@ -135,6 +134,7 @@ fn sync_camera_transform(mut q_cam: Query<(&CameraRig, &mut Transform), With<Mai
 fn camera_keyboard_rotate(
     time: Res<Time<Real>>,
     keys: Res<ButtonInput<KeyCode>>,
+    settings: Res<UiSettings>,
     mut q_cam: Query<&mut CameraRig, With<MainCamera>>,
 ) {
     let mut dir = 0.0;
@@ -148,7 +148,7 @@ fn camera_keyboard_rotate(
         return;
     }
     if let Ok(mut rig) = q_cam.single_mut() {
-        rig.yaw += dir * KEY_ROTATE_SPEED * time.delta_secs();
+        rig.yaw += dir * settings.rotate_speed * time.delta_secs();
     }
 }
 
@@ -175,13 +175,14 @@ fn camera_mouse_rotate(
 /// scroll input only moves the target, so zoom feels smooth at any input rate.
 fn camera_smooth_zoom(
     time: Res<Time<Real>>,
+    settings: Res<UiSettings>,
     mut q_cam: Query<(&CameraRig, &mut Projection), With<MainCamera>>,
 ) {
     let Ok((rig, mut proj)) = q_cam.single_mut() else {
         return;
     };
     if let Projection::Orthographic(ortho) = proj.as_mut() {
-        let t = 1.0 - (-time.delta_secs() * ZOOM_EASE).exp();
+        let t = 1.0 - (-time.delta_secs() * settings.zoom_ease.max(0.5)).exp();
         ortho.scale += (rig.zoom_target - ortho.scale) * t;
     }
 }
@@ -247,6 +248,6 @@ fn camera_mouse_wheel_zoom(
     }
 
     if let Ok(mut rig) = q_cam.single_mut() {
-        rig.zoom_target = (rig.zoom_target * (1.0 - zoom_delta)).clamp(0.25, 6.0);
+        rig.zoom_target = (rig.zoom_target * (1.0 - zoom_delta)).clamp(ZOOM_MIN, ZOOM_MAX);
     }
 }

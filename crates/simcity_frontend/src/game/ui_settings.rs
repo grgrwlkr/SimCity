@@ -25,6 +25,20 @@ pub struct UiSettings {
     pub theme: UiTheme,
     pub camera_speed: f32,
     pub zoom_speed: f32,
+    /// Zoom easing snappiness (per-second exponential rate; higher = snappier).
+    #[serde(default = "default_zoom_ease")]
+    pub zoom_ease: f32,
+    /// Q/E orbit speed, radians per second.
+    #[serde(default = "default_rotate_speed")]
+    pub rotate_speed: f32,
+}
+
+fn default_zoom_ease() -> f32 {
+    5.0
+}
+
+fn default_rotate_speed() -> f32 {
+    1.6
 }
 
 impl Default for UiSettings {
@@ -36,6 +50,8 @@ impl Default for UiSettings {
             theme: UiTheme::Auto,
             camera_speed: 200.0,
             zoom_speed: 0.1,
+            zoom_ease: default_zoom_ease(),
+            rotate_speed: default_rotate_speed(),
         }
     }
 }
@@ -107,6 +123,10 @@ fn settings_ui(
 
             ui.label("Zoom Speed:");
             ui.add(egui::Slider::new(&mut settings.zoom_speed, 0.05..=0.5));
+            ui.label("Zoom smoothing (higher = snappier)");
+            ui.add(egui::Slider::new(&mut settings.zoom_ease, 1.0..=15.0));
+            ui.label("Rotate speed (Q/E)");
+            ui.add(egui::Slider::new(&mut settings.rotate_speed, 0.4..=4.0));
 
             ui.separator();
 
