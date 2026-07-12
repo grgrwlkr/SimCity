@@ -187,16 +187,26 @@ impl RenderPrimitives {
             .clone()
     }
 
-    /// Shared low-poly box tree (trunk + two-tier crown), prototype-parity prop.
+    /// Shared low-poly tree: trunk + cone crown, matching the prototype's look.
     pub fn tree_mesh(&mut self, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
         self.tree
             .get_or_insert_with(|| {
-                let trunk = [0.16, 0.10, 0.05, 1.0];
-                let crown = [0.055, 0.20, 0.07, 1.0];
+                let trunk_c = Color::srgb(0.30, 0.20, 0.10).to_linear();
+                let crown_c = Color::srgb(0.10, 0.32, 0.12).to_linear();
                 let mut b = CompositeMesh::default();
-                b.push_box(Vec3::new(-0.7, -0.7, 0.0), Vec3::new(0.7, 0.7, 3.0), trunk);
-                b.push_box(Vec3::new(-2.6, -2.6, 3.0), Vec3::new(2.6, 2.6, 7.5), crown);
-                b.push_box(Vec3::new(-1.5, -1.5, 7.5), Vec3::new(1.5, 1.5, 10.0), crown);
+                b.push_box(
+                    Vec3::new(-0.8, -0.8, 0.0),
+                    Vec3::new(0.8, 0.8, 3.0),
+                    [trunk_c.red, trunk_c.green, trunk_c.blue, 1.0],
+                );
+                b.push_cone(
+                    0.0,
+                    0.0,
+                    2.5,
+                    3.6,
+                    8.5,
+                    [crown_c.red, crown_c.green, crown_c.blue, 1.0],
+                );
                 meshes.add(b.build())
             })
             .clone()
@@ -326,6 +336,30 @@ impl CompositeMesh {
             [-1.0, 0.0, 0.0],
             c,
         );
+    }
+
+    /// Radial cone (apex up, Z-up, base at z0). Flat-shaded: one triangle per
+    /// segment with a per-face normal.
+    fn push_cone(&mut self, cx: f32, cy: f32, z0: f32, radius: f32, height: f32, c: [f32; 4]) {
+        const SEGMENTS: u32 = 10;
+        let apex = [cx, cy, z0 + height];
+        for i in 0..SEGMENTS {
+            let a0 = (i as f32 / SEGMENTS as f32) * std::f32::consts::TAU;
+            let a1 = ((i + 1) as f32 / SEGMENTS as f32) * std::f32::consts::TAU;
+            let p0 = [cx + radius * a0.cos(), cy + radius * a0.sin(), z0];
+            let p1 = [cx + radius * a1.cos(), cy + radius * a1.sin(), z0];
+            // Face normal: outward slope of the cone side at the segment midpoint.
+            let am = (a0 + a1) * 0.5;
+            let slope = (radius / height.max(1e-3)).atan();
+            let n = [am.cos() * slope.cos(), am.sin() * slope.cos(), slope.sin()];
+            let b = self.pos.len() as u32;
+            self.pos.extend_from_slice(&[p0, p1, apex]);
+            self.nor.extend_from_slice(&[n; 3]);
+            self.uv
+                .extend_from_slice(&[[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]]);
+            self.col.extend_from_slice(&[c; 3]);
+            self.idx.extend_from_slice(&[b, b + 1, b + 2]);
+        }
     }
 
     fn build(self) -> Mesh {
