@@ -485,7 +485,7 @@ fn tree_jitter(pos: TilePos, seed: u64) -> (f32, f32, f32) {
     let h = tree_hash(pos, seed.wrapping_add(0x9E37_79B9));
     let jx = ((h % 7) as f32) - 3.0;
     let jy = (((h >> 3) % 7) as f32) - 3.0;
-    let scale = 0.8 + ((h >> 6) % 5) as f32 * 0.1;
+    let scale = 0.9 + ((h >> 6) % 5) as f32 * 0.1;
     (jx, jy, scale)
 }
 

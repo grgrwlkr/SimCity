@@ -55,6 +55,7 @@ impl Plugin for CameraPlugin {
             (
                 camera_keyboard_pan,
                 camera_keyboard_rotate,
+                camera_keyboard_zoom_steps,
                 camera_mouse_rotate,
                 camera_mouse_wheel_zoom,
                 camera_smooth_zoom,
@@ -128,6 +129,26 @@ fn sync_camera_transform(mut q_cam: Query<(&CameraRig, &mut Transform), With<Mai
     let target = rig.focus.extend(0.0);
     *tf = Transform::from_translation(target + boom_offset(rig.yaw, rig.pitch))
         .looking_at(target, Vec3::Z);
+}
+
+/// PageUp / PageDown — discrete zoom steps (wheel-free keyboards, synthetic input).
+fn camera_keyboard_zoom_steps(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut q_cam: Query<&mut CameraRig, With<MainCamera>>,
+) {
+    let mut factor = 1.0;
+    if keys.just_pressed(KeyCode::PageUp) {
+        factor *= 0.8;
+    }
+    if keys.just_pressed(KeyCode::PageDown) {
+        factor *= 1.25;
+    }
+    if factor == 1.0 {
+        return;
+    }
+    if let Ok(mut rig) = q_cam.single_mut() {
+        rig.zoom_target = (rig.zoom_target * factor).clamp(ZOOM_MIN, ZOOM_MAX);
+    }
 }
 
 /// Q / E — orbit the camera around its focus (smooth while held).

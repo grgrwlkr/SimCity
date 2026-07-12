@@ -191,20 +191,22 @@ impl RenderPrimitives {
     pub fn tree_mesh(&mut self, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
         self.tree
             .get_or_insert_with(|| {
+                // Proportions copied from the prototype's spawn_tree: a big
+                // cone (r 4.5) whose base starts near the ground, apex ~11.5.
                 let trunk_c = Color::srgb(0.30, 0.20, 0.10).to_linear();
                 let crown_c = Color::srgb(0.10, 0.32, 0.12).to_linear();
                 let mut b = CompositeMesh::default();
                 b.push_box(
-                    Vec3::new(-0.8, -0.8, 0.0),
-                    Vec3::new(0.8, 0.8, 3.0),
+                    Vec3::new(-0.9, -0.9, 0.0),
+                    Vec3::new(0.9, 0.9, 3.2),
                     [trunk_c.red, trunk_c.green, trunk_c.blue, 1.0],
                 );
                 b.push_cone(
                     0.0,
                     0.0,
-                    2.5,
-                    3.6,
-                    8.5,
+                    1.5,
+                    4.5,
+                    10.0,
                     [crown_c.red, crown_c.green, crown_c.blue, 1.0],
                 );
                 meshes.add(b.build())
