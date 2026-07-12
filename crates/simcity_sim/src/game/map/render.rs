@@ -6,6 +6,7 @@ use bevy::window::PrimaryWindow;
 
 use crate::game::camera::MainCamera;
 use crate::game::land_value::LandValueIndex;
+use crate::game::render_primitives::{RenderPrimitives, flat_quad, layer};
 use crate::game::pollution::PollutionIndex;
 use crate::game::state::AppState;
 use crate::game::traffic::{Parked, Vehicle};
@@ -48,6 +49,7 @@ pub(super) fn configure_route_gizmos(store: Option<ResMut<GizmoConfigStore>>) {
     config.line.width = 1.0;
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_map_if_needed(
     mut commands: Commands,
     cfg: Res<MapConfig>,
@@ -56,6 +58,8 @@ pub(super) fn spawn_map_if_needed(
     mut index: ResMut<MapIndex>,
     q_tiles: Query<Entity, With<TilePos>>,
     mut dirty: ResMut<DirtyTiles>,
+    mut prims: ResMut<RenderPrimitives>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     if !q_tiles.is_empty() {
         return;
@@ -101,8 +105,13 @@ pub(super) fn spawn_map_if_needed(
 
             let e = commands
                 .spawn((
-                    Sprite::from_color(kind.color(), Vec2::splat(cfg.tile_size - 1.0)),
-                    Transform::from_translation(world.extend(0.0)),
+                    flat_quad(
+                        prims.quad.clone(),
+                        prims.material(&mut materials, kind.color()),
+                        world,
+                        layer::GROUND,
+                        Vec2::splat(cfg.tile_size - 1.0),
+                    ),
                     TilePos { x, y },
                     kind,
                     InGameEntity,
@@ -120,11 +129,13 @@ pub(super) fn spawn_map_if_needed(
 
     commands.spawn((
         Name::new("CursorHighlight"),
-        Sprite::from_color(
-            Color::srgba(1.0, 1.0, 1.0, 0.25),
+        flat_quad(
+            prims.quad.clone(),
+            prims.material(&mut materials, Color::srgba(1.0, 1.0, 1.0, 0.25)),
+            Vec2::ZERO,
+            layer::CURSOR_HIGHLIGHT,
             Vec2::splat(cfg.tile_size + 2.0),
         ),
-        Transform::from_translation(Vec3::new(0.0, 0.0, 10.0)),
         CursorHighlight,
         InGameEntity,
     ));
@@ -215,7 +226,17 @@ pub(super) struct SyncDirtyTilesParams<'w, 's> {
     land_value: Option<Res<'w, LandValueIndex>>,
     pollution: Option<Res<'w, PollutionIndex>>,
     dirty: ResMut<'w, DirtyTiles>,
-    q_tiles: Query<'w, 's, (&'static mut Sprite, &'static mut TileKind)>,
+    prims: ResMut<'w, RenderPrimitives>,
+    materials: ResMut<'w, Assets<StandardMaterial>>,
+    q_tiles: Query<
+        'w,
+        's,
+        (
+            &'static mut MeshMaterial3d<StandardMaterial>,
+            &'static mut Transform,
+            &'static mut TileKind,
+        ),
+    >,
 }
 
 pub(super) fn sync_dirty_tiles_to_render(
@@ -235,7 +256,7 @@ pub(super) fn sync_dirty_tiles_to_render(
         let Some(&entity) = p.index.tiles.get(idx) else {
             continue;
         };
-        let Ok((mut sprite, mut kind)) = p.q_tiles.get_mut(entity) else {
+        let Ok((mut mat, mut tf, mut kind)) = p.q_tiles.get_mut(entity) else {
             continue;
         };
 
@@ -388,8 +409,10 @@ pub(super) fn sync_dirty_tiles_to_render(
         };
 
         *kind = effective_kind;
-        sprite.color = color;
-        sprite.custom_size = Some(size);
+        // Recolor = swap to the shared material for this color (keeps batching);
+        // gradient overlays are bounded by the cache's 8-bit RGBA quantization.
+        mat.0 = p.prims.material(&mut p.materials, color);
+        tf.scale = size.extend(1.0);
     }
 }
 
@@ -498,7 +521,7 @@ pub(super) fn vehicle_routes_overlay_render(
     path_pool: Res<crate::game::transport::PathPool>,
     mut gizmos: Gizmos<RouteGizmos>,
     q_vehicles: Query<(&Vehicle, &Transform), Without<Parked>>,
-    mut scratch: Local<Vec<Vec2>>,
+    mut scratch: Local<Vec<Vec3>>,
 ) {
     if !matches!(state.get(), AppState::InGame | AppState::Paused) {
         return;
@@ -547,7 +570,7 @@ pub(super) fn vehicle_routes_overlay_render(
 
         scratch.clear();
         scratch.reserve(remaining_tiles.min(MAX_POINTS_PER_ROUTE) + 1);
-        scratch.push(tf.translation.truncate());
+        scratch.push(tf.translation.truncate().extend(layer::ROUTE_GIZMO));
 
         for (i, pos) in route.iter().enumerate().skip(1) {
             // skip current position
@@ -560,16 +583,16 @@ pub(super) fn vehicle_routes_overlay_render(
             }
 
             let w = tile_to_world(&cfg, *pos);
-            scratch.push(w);
+            scratch.push(w.extend(layer::ROUTE_GIZMO));
         }
 
         if scratch.len() >= 2 {
-            gizmos.linestrip_2d(scratch.iter().copied(), color);
+            gizmos.linestrip(scratch.iter().copied(), color);
             // Direction chevrons: a small V at the midpoint of every Nth segment, pointing along
             // the travel direction — a static polyline is otherwise unreadable (which way?).
             let head = cfg.tile_size * 0.28;
             for w in scratch.windows(2).skip(1).step_by(CHEVRON_EVERY_TILES) {
-                let (a, b) = (w[0], w[1]);
+                let (a, b) = (w[0].truncate(), w[1].truncate());
                 let seg = b - a;
                 if seg.length_squared() < 1.0 {
                     continue;
@@ -577,8 +600,17 @@ pub(super) fn vehicle_routes_overlay_render(
                 let dir = seg.normalize();
                 let perp = Vec2::new(-dir.y, dir.x);
                 let mid = a + seg * 0.5;
-                gizmos.line_2d(mid, mid - dir * head + perp * head * 0.6, color);
-                gizmos.line_2d(mid, mid - dir * head - perp * head * 0.6, color);
+                let z = layer::ROUTE_GIZMO;
+                gizmos.line(
+                    mid.extend(z),
+                    (mid - dir * head + perp * head * 0.6).extend(z),
+                    color,
+                );
+                gizmos.line(
+                    mid.extend(z),
+                    (mid - dir * head - perp * head * 0.6).extend(z),
+                    color,
+                );
             }
             drawn += 1;
         }
