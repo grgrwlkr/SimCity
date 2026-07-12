@@ -52,7 +52,7 @@ pub fn spawn_building_entity(
         }
     };
 
-    commands.spawn((
+    let mut building = commands.spawn((
         Building {
             kind,
             anchor_pos,
@@ -72,6 +72,7 @@ pub fn spawn_building_entity(
         Sprite::from_color(kind.color(), sprite_size),
         tf,
     ));
+    crate::game::services::glyphs::attach_building_glyph(&mut building, kind, cfg.tile_size);
 }
 
 fn map_origin(cfg: &MapConfig) -> Vec2 {

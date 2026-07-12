@@ -11,6 +11,7 @@ use crate::game::state::AppState;
 
 mod components;
 mod coverage;
+pub(crate) mod glyphs;
 mod overlay;
 mod systems;
 

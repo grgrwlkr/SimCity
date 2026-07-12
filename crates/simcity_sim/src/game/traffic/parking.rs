@@ -33,10 +33,16 @@ pub(super) fn update_parked_vehicle_positions(
             continue;
         }
 
-        // Make parked vehicles visually smaller and semi-transparent
-        let parked_size = cfg.tile_size * 0.35;
-        sprite.custom_size = Some(Vec2::splat(parked_size));
-        sprite.color = Color::srgba(0.7, 0.7, 0.7, 0.7);
+        // Make parked CITIZEN vehicles visually smaller and semi-transparent. Service vehicles
+        // keep their full car body + kind color + roof glyph in every state: this override used
+        // to shrink them into anonymous gray dots at their stations, and nothing restored the
+        // sprite on dispatch (`remove::<Parked>()` has no un-shrink path for services — citizen
+        // cars get theirs back in spawn.rs's reuse branch).
+        if service.is_none() {
+            let parked_size = cfg.tile_size * 0.35;
+            sprite.custom_size = Some(Vec2::splat(parked_size));
+            sprite.color = Color::srgba(0.7, 0.7, 0.7, 0.7);
+        }
 
         // Get road direction to compute perpendicular offset
         let road_dir = cell.road.dir;

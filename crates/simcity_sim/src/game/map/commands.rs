@@ -45,34 +45,34 @@ pub(crate) fn spawn_building_entity(
     let area = (footprint_width as u32) * (footprint_length as u32);
     let construction_days = Building::calculate_construction_days(kind, level, area);
 
-    commands
-        .spawn((
-            Building {
-                kind,
-                anchor_pos: pos,
-                footprint_width,
-                footprint_length,
-                level,
-                phase: BuildingPhase::UnderConstruction {
-                    days_remaining: construction_days,
-                },
-                construction_start_day: city.day,
-                capacity_residents: kind.capacity_residents_for_level_area(level, area),
-                capacity_jobs: kind.capacity_jobs_for_level_area(level, area),
-                occupancy_residents: 0,
-                occupancy_jobs: 0,
-                target_occupancy_residents: 0,
-                target_occupancy_jobs: 0,
-                parking_spots: {
-                    // GDD 10.3.4: max(1, area/9) parking spots distributed within footprint.
-                    let num_spots = (area / 9).max(1) as usize;
-                    calculate_parking_spots(pos, footprint_width, footprint_length, num_spots)
-                },
+    let mut building = commands.spawn((
+        Building {
+            kind,
+            anchor_pos: pos,
+            footprint_width,
+            footprint_length,
+            level,
+            phase: BuildingPhase::UnderConstruction {
+                days_remaining: construction_days,
             },
-            Sprite::from_color(kind.color(), sprite_size),
-            Transform::from_translation(Vec3::new(world.x, world.y, 8.0)),
-        ))
-        .id()
+            construction_start_day: city.day,
+            capacity_residents: kind.capacity_residents_for_level_area(level, area),
+            capacity_jobs: kind.capacity_jobs_for_level_area(level, area),
+            occupancy_residents: 0,
+            occupancy_jobs: 0,
+            target_occupancy_residents: 0,
+            target_occupancy_jobs: 0,
+            parking_spots: {
+                // GDD 10.3.4: max(1, area/9) parking spots distributed within footprint.
+                let num_spots = (area / 9).max(1) as usize;
+                calculate_parking_spots(pos, footprint_width, footprint_length, num_spots)
+            },
+        },
+        Sprite::from_color(kind.color(), sprite_size),
+        Transform::from_translation(Vec3::new(world.x, world.y, 8.0)),
+    ));
+    crate::game::services::glyphs::attach_building_glyph(&mut building, kind, cfg.tile_size);
+    building.id()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -530,13 +530,13 @@ fn respawn_building_entity(commands: &mut Commands, cfg: &MapConfig, b: &Buildin
         b.footprint_width as f32 * cfg.tile_size,
         b.footprint_length as f32 * cfg.tile_size,
     );
-    commands
-        .spawn((
-            b.clone(),
-            Sprite::from_color(b.kind.color(), sprite_size),
-            Transform::from_translation(Vec3::new(world.x, world.y, 8.0)),
-        ))
-        .id()
+    let mut building = commands.spawn((
+        b.clone(),
+        Sprite::from_color(b.kind.color(), sprite_size),
+        Transform::from_translation(Vec3::new(world.x, world.y, 8.0)),
+    ));
+    crate::game::services::glyphs::attach_building_glyph(&mut building, b.kind, cfg.tile_size);
+    building.id()
 }
 
 /// Exact-restore a road cell for undo/redo. Bypasses the user-facing build

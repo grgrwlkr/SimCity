@@ -142,17 +142,16 @@ pub fn spawn_service_vehicle(
             Parked { offset: 1.0 },
         ))
         .with_children(|parent| {
-            parent.spawn((
-                // White roof marker reads as "official vehicle"; keeps ServiceVehicleMarker
-                // (used as the service-vehicle count in the soak harness).
-                crate::game::public_transport::roof_marker_sprite(
-                    cfg,
-                    Color::srgb(0.95, 0.95, 0.95),
-                ),
-                Transform::from_xyz(0.0, 0.0, 1.0),
-                crate::game::public_transport::VehicleRoofMarker,
-                ServiceVehicleMarker,
-            ));
+            // Kind-specific roof glyph (cross / badge / ladder) — reads as "official vehicle" AND
+            // tells the service apart at a glance. The first glyph child carries
+            // VehicleRoofMarker + ServiceVehicleMarker (exactly one per vehicle — the soak
+            // harness counts ServiceVehicleMarker as the service-vehicle count).
+            super::glyphs::spawn_service_glyph(parent, kind, cfg.tile_size * 0.35, 1.0, |first| {
+                first.insert((
+                    crate::game::public_transport::VehicleRoofMarker,
+                    ServiceVehicleMarker,
+                ));
+            });
         })
         .id()
 }
