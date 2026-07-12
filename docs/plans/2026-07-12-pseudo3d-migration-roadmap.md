@@ -81,7 +81,13 @@ road_preview, zone_placement, coverage/traffic-heat оверлеи, CursorHighli
 (`linestrip` уже в мировых координатах — проверить работу гизмо-пайплайна с 3D-камерой).
 day/night: world-quad → затемнение через свет/экранный оверлей.
 
-### Фаза 5 — здания
+### Фаза 5 — здания ✅ (2026-07-12)
+Выполнена: `buildings/visual.rs` — vertex-colored коробки (высота f(kind, level), полосы окон,
+плинт), BuildingMeshCache (инстансинг по форме), rebuild_building_visuals (Added/Changed<Building>)
++ apply_building_tint (BuildingTint от decay, без Assets-мутаций в FixedUpdate). 4 спавн-сайта
+консолидированы (баг глифов при загрузке умер архитектурно). Свет: солнце Z-up + cascade shadows
++ ambient на камере; материалы кэша lit (roughness 1.0); flat_quad = NotShadowCaster.
+In-game скриншот: объёмный город, шейдинг фасадов, глифы на крышах, 59.8 FPS. Исходный план:
 Консолидация 4 спавн-сайтов визуала (buildings/spawn.rs, map/commands.rs ×2 undo,
 persistence.rs) в одну RenderSync-систему «Building added/changed → построить меш-детей»
 (заодно чинится баг: `spawn_building_entity_from_snapshot` теряет глифы сервисных зданий).
