@@ -423,7 +423,11 @@ impl Plugin for TrafficPlugin {
             // )
             .add_systems(
                 Update,
-                vehicle_render::interpolate_vehicle_position.run_if(in_state(AppState::InGame)),
+                // Explicitly ordered into RenderSync: unordered against the camera and
+                // other Transform writers, this was a known frame-order race.
+                vehicle_render::interpolate_vehicle_position
+                    .in_set(crate::game::sets::GameSet::RenderSync)
+                    .run_if(in_state(AppState::InGame)),
             )
             // Jam recovery (run in sim; uses last tick's occupancy/graph state).
             // Chained for determinism: every pre-existing pairwise .after/.before below is kept

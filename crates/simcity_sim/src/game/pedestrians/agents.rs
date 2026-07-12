@@ -48,6 +48,10 @@ pub struct Pedestrian {
     pub(crate) progress: f32,
     pub(crate) speed_world: f32,
     pub(crate) goal: TilePos,
+    /// Sim positions at the previous/current fixed tick; the render-side
+    /// interpolator blends them at 60 fps (same pattern as `Vehicle`).
+    pub(crate) prev_world_pos: Vec2,
+    pub(crate) curr_world_pos: Vec2,
     /// Hours blocked at an uncontrolled crossing (GDD: tracked in game hours)
     pub wait_blocked_hours: f32,
     pub(crate) reroute_attempts: u8,
@@ -79,6 +83,7 @@ pub(crate) fn update_pedestrian_blocked_timers(
 pub(super) struct SpawnWalkersParams<'w, 's> {
     prims: ResMut<'w, crate::game::render_primitives::RenderPrimitives>,
     materials: ResMut<'w, Assets<StandardMaterial>>,
+    meshes: ResMut<'w, Assets<Mesh>>,
     commands: Commands<'w, 's>,
     grid: Res<'w, MapGrid>,
     cfg: Res<'w, MapConfig>,
@@ -137,21 +142,26 @@ pub(super) fn spawn_walkers(
         let speed_world = (walk_speed_mps.max(0.1) * p.cfg.tile_size) / tile_meters;
 
         let world = tile_to_world(&p.cfg, start_tile);
+        // Meeple: outfit varied deterministically by citizen id (no randomness).
+        const OUTFITS: [Color; 4] = [
+            Color::srgb(0.95, 0.55, 0.10),
+            Color::srgb(0.25, 0.45, 0.80),
+            Color::srgb(0.80, 0.25, 0.30),
+            Color::srgb(0.20, 0.65, 0.60),
+        ];
+        let outfit = OUTFITS[(msg.citizen.0 % OUTFITS.len() as u64) as usize];
         p.commands.spawn((
-            crate::game::render_primitives::flat_quad(
-                p.prims.quad.clone(),
-                p.prims
-                    .material(&mut p.materials, Color::srgb(0.95, 0.55, 0.10)),
-                world,
-                crate::game::render_primitives::layer::PEDESTRIAN,
-                Vec2::splat(p.cfg.tile_size * 0.20),
-            ),
+            Mesh3d(p.prims.meeple_mesh(&mut p.meshes, outfit)),
+            MeshMaterial3d(p.prims.material(&mut p.materials, Color::WHITE)),
+            Transform::from_translation(world.extend(0.1)),
             Pedestrian {
                 route,
                 route_idx: 0,
                 progress: 0.0,
                 speed_world,
                 goal: goal_tile,
+                prev_world_pos: world,
+                curr_world_pos: world,
                 wait_blocked_hours: 0.0,
                 reroute_attempts: 0,
             },
@@ -190,7 +200,6 @@ pub(crate) struct MoveWalkersParams<'w, 's> {
             Entity,
             &'static mut Pedestrian,
             &'static mut PedestrianTile,
-            &'static mut Transform,
             &'static WalkTripPassenger,
         ),
     >,
@@ -221,7 +230,9 @@ pub(crate) fn move_walkers(
         lights_by_id.insert(l.intersection_id, l.clone());
     }
 
-    for (e, mut ped, mut ped_tile, mut tf, passenger) in p.q.iter_mut() {
+    for (e, mut ped, mut ped_tile, passenger) in p.q.iter_mut() {
+        // One sim step: yesterday's position becomes the interpolation start.
+        ped.prev_world_pos = ped.curr_world_pos;
         if ped.route_idx + 1 >= ped.route.len() {
             p.finished.write(TripFinished {
                 citizen: passenger.citizen,
@@ -340,8 +351,7 @@ pub(crate) fn move_walkers(
             }
 
             let world = tile_to_world(&p.cfg, a);
-            tf.translation.x = world.x;
-            tf.translation.y = world.y;
+            ped.curr_world_pos = world;
             continue;
         } else {
             // Not blocked: remove blocked marker if present
@@ -375,8 +385,7 @@ pub(crate) fn move_walkers(
 
         if ped.route_idx + 1 >= ped.route.len() {
             let world = tile_to_world(&p.cfg, *ped.route.last().unwrap_or(&a));
-            tf.translation.x = world.x;
-            tf.translation.y = world.y;
+            ped.curr_world_pos = world;
             p.finished.write(TripFinished {
                 citizen: passenger.citizen,
                 purpose: passenger.purpose,
@@ -391,8 +400,21 @@ pub(crate) fn move_walkers(
         let aw = tile_to_world(&p.cfg, a);
         let bw = tile_to_world(&p.cfg, b);
         let world = aw.lerp(bw, ped.progress.clamp(0.0, 1.0));
-        tf.translation.x = world.x;
-        tf.translation.y = world.y;
+        ped.curr_world_pos = world;
+    }
+}
+
+/// Blend pedestrian sim positions for smooth 60 fps rendering (RenderSync;
+/// canonical FixedUpdate->Update interpolation, same as vehicles).
+pub(crate) fn interpolate_pedestrian_position(
+    fixed_time: Res<Time<Fixed>>,
+    mut q: Query<(&Pedestrian, &mut Transform)>,
+) {
+    let f = fixed_time.overstep_fraction();
+    for (ped, mut tf) in q.iter_mut() {
+        let pos = ped.prev_world_pos.lerp(ped.curr_world_pos, f);
+        tf.translation.x = pos.x;
+        tf.translation.y = pos.y;
     }
 }
 

@@ -177,7 +177,7 @@ pub fn spawn_service_vehicle(
                 parent,
                 kind,
                 cfg.tile_size * 0.35,
-                crate::game::render_primitives::layer::CHILD_ABOVE,
+                crate::game::render_primitives::layer::CAR_ROOF,
                 glyph_quad,
                 glyph_mat,
                 |first| {
@@ -327,17 +327,17 @@ mod visual_tests {
             16.0 * VEHICLE_VISUAL_LENGTH_TILES,
             16.0 * VEHICLE_VISUAL_WIDTH_TILES,
         );
-        // Contract: the body is the shared SIZED mesh for the car dimensions
-        // (scale stays 1 so glyph children don't inherit a squash).
+        // Contract: the body is the shared volumetric car mesh for the car
+        // dimensions (scale stays 1 so glyph children don't inherit a squash).
         let expected_mesh =
             app.world_mut()
                 .resource_scope(|world, mut prims: Mut<RenderPrimitives>| {
                     let mut meshes = world.resource_mut::<Assets<Mesh>>();
-                    prims.quad_mesh(&mut meshes, expect)
+                    prims.car_mesh(&mut meshes, expect)
                 });
         assert_eq!(
             mesh, expected_mesh,
-            "service body must be the car-sized quad, not a 0.5 square"
+            "service body must be the shared volumetric car mesh"
         );
         assert_eq!(
             scale,

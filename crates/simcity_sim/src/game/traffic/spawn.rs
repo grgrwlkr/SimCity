@@ -194,13 +194,8 @@ pub(super) fn spawn_trip_vehicles(
                 tf.translation.y = world_pos.y;
                 tf.translation.z = crate::game::render_primitives::layer::VEHICLE;
 
-                // Restore "active vehicle" visuals (parked vehicles are smaller + translucent).
-                // Citizen cars are leaf entities (no children), so scale carries the body size.
-                tf.scale = Vec3::new(
-                    p.cfg.tile_size * VEHICLE_VISUAL_LENGTH_TILES,
-                    p.cfg.tile_size * VEHICLE_VISUAL_WIDTH_TILES,
-                    1.0,
-                );
+                // Restore "active vehicle" visuals (parked vehicles are shrunk + translucent).
+                tf.scale = Vec3::ONE;
                 mat.0 = p
                     .prims
                     .material(&mut p.materials, Color::linear_rgb(0.95, 0.95, 0.95));
@@ -232,8 +227,12 @@ pub(super) fn spawn_trip_vehicles(
         let speed_factor = sample_driver_speed_factor(&mut p.sim_rng.rng);
         let max_speed = sample_driver_max_speed_world(&p.cfg, &p.traffic_cfg, &mut p.sim_rng.rng);
 
+        let car_size = Vec2::new(
+            p.cfg.tile_size * VEHICLE_VISUAL_LENGTH_TILES,
+            p.cfg.tile_size * VEHICLE_VISUAL_WIDTH_TILES,
+        );
         let mut e = p.commands.spawn((
-            Mesh3d(p.prims.quad.clone()),
+            Mesh3d(p.prims.car_mesh(&mut p.meshes, car_size)),
             MeshMaterial3d(
                 p.prims
                     .material(&mut p.materials, Color::linear_rgb(0.95, 0.95, 0.95)),
@@ -242,12 +241,7 @@ pub(super) fn spawn_trip_vehicles(
                 world_pos.x,
                 world_pos.y,
                 crate::game::render_primitives::layer::VEHICLE,
-            )
-            .with_scale(Vec3::new(
-                p.cfg.tile_size * VEHICLE_VISUAL_LENGTH_TILES,
-                p.cfg.tile_size * VEHICLE_VISUAL_WIDTH_TILES,
-                1.0,
-            )),
+            ),
             Vehicle {
                 is_reversing: false,
                 path_handle: p.path_pool.intern(route),
@@ -317,6 +311,7 @@ pub(super) struct SpawnTripVehiclesParams<'w, 's> {
     producer_stats: ResMut<'w, RouteProducerStats>,
     prims: ResMut<'w, crate::game::render_primitives::RenderPrimitives>,
     materials: ResMut<'w, Assets<StandardMaterial>>,
+    meshes: ResMut<'w, Assets<Mesh>>,
 }
 
 /// Despawn all vehicles when GameCommand::GenerateMap is received.

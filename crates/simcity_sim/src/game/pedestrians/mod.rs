@@ -41,6 +41,12 @@ impl Plugin for PedestriansPlugin {
                     .run_if(in_game_or_paused),
             )
             .add_systems(
+                Update,
+                agents::interpolate_pedestrian_position
+                    .in_set(GameSet::RenderSync)
+                    .run_if(in_game_or_paused),
+            )
+            .add_systems(
                 FixedUpdate,
                 (
                     agents::spawn_walkers,

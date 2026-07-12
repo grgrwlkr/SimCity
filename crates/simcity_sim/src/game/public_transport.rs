@@ -317,9 +317,9 @@ fn plan_from_tile(
 use crate::game::map::tile_to_world;
 use crate::game::render_primitives::{RenderPrimitives, layer};
 
-/// Car-shaped body quad (same dimensions as regular vehicles). Shared by buses/service
-/// vehicles. Uses a SIZED mesh (scale = 1) because these entities carry glyph/roof children
-/// and `Transform.scale` would squash them.
+/// Volumetric car body (same footprint as regular vehicles), tinted by the
+/// material over the shared vertex-colored car mesh. Shared by buses/service
+/// vehicles; scale stays 1 because these entities carry glyph/roof children.
 pub(crate) fn car_body_quad(
     prims: &mut RenderPrimitives,
     meshes: &mut Assets<Mesh>,
@@ -332,7 +332,7 @@ pub(crate) fn car_body_quad(
         cfg.tile_size * VEHICLE_VISUAL_WIDTH_TILES,
     );
     (
-        Mesh3d(prims.quad_mesh(meshes, size)),
+        Mesh3d(prims.car_mesh(meshes, size)),
         MeshMaterial3d(prims.material(materials, body)),
     )
 }
@@ -347,7 +347,7 @@ pub(crate) fn roof_marker_quad(
     (
         Mesh3d(prims.quad.clone()),
         MeshMaterial3d(prims.material(materials, color)),
-        Transform::from_xyz(0.0, 0.0, layer::CHILD_ABOVE)
+        Transform::from_xyz(0.0, 0.0, layer::CAR_ROOF)
             .with_scale(Vec2::splat(cfg.tile_size * 0.35).extend(1.0)),
     )
 }

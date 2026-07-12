@@ -41,8 +41,8 @@ pub(super) fn update_parked_vehicle_positions(
         // sprite on dispatch (`remove::<Parked>()` has no un-shrink path for services — citizen
         // cars get theirs back in spawn.rs's reuse branch).
         if service.is_none() {
-            let parked_size = cfg.tile_size * 0.35;
-            tf.scale = Vec3::new(parked_size, parked_size, 1.0);
+            // Shrink the 3D car into a low parked marker (~0.35 tile footprint).
+            tf.scale = Vec3::new(0.25, 0.5, 0.4);
             mat.0 = prims.material(&mut materials, Color::srgba(0.7, 0.7, 0.7, 0.7));
         }
 
