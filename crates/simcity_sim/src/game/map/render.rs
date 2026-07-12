@@ -156,6 +156,9 @@ pub(super) fn spawn_map_if_needed(
                     Transform::from_xyz(world.x + jx, world.y + jy, 0.0)
                         .with_scale(Vec3::splat(scale)),
                     Visibility::Hidden,
+                    // 800 shadow casters tanked the frame (22 vs 72 FPS measured);
+                    // tree shadows are visual candy we can live without.
+                    bevy::light::NotShadowCaster,
                     InGameEntity,
                 ))
                 .id();
