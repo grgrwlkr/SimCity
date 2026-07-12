@@ -1,6 +1,6 @@
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::ecs::message::MessageReader;
-use bevy::input::mouse::MouseWheel;
+use bevy::input::mouse::{AccumulatedMouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::time::Real;
 use bevy_egui::PrimaryEguiContext;
@@ -9,17 +9,43 @@ pub use simcity_core::game::camera::MainCamera;
 
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
+use crate::game::ui_settings::UiSettings;
 
 /// Pseudo-3D orthographic view: the world lives in the XY plane (Z = height),
-/// the camera hangs on a fixed tilted boom above a focus point on the ground.
-/// Pan moves the focus in XY; zoom scales the orthographic projection.
-const CAMERA_YAW: f32 = -std::f32::consts::FRAC_PI_4; // diagonal look, prototype-approved
-const CAMERA_ELEVATION: f32 = 0.96; // ~55 deg above the ground plane
+/// the camera hangs on an orbitable boom above a focus point on the ground.
+/// Pan moves the focus in XY; Q/E and Ctrl+LMB-drag orbit; zoom eases the
+/// orthographic scale toward a scroll-driven target.
+const DEFAULT_YAW: f32 = -std::f32::consts::FRAC_PI_4; // diagonal look, prototype-approved
+const DEFAULT_PITCH: f32 = 0.96; // ~55 deg above the ground plane
 const CAMERA_DIST: f32 = 500.0;
+const PITCH_MIN: f32 = 0.50; // ~29 deg — flat enough to feel 3D, still readable
+const PITCH_MAX: f32 = 1.35; // ~77 deg — almost top-down
+/// Q/E orbit speed, radians per second.
+const KEY_ROTATE_SPEED: f32 = 1.6;
+const MOUSE_ROTATE_SENS: f32 = 0.008;
+/// Zoom easing half-life factor (bigger = snappier).
+const ZOOM_EASE: f32 = 8.0;
 
-/// Ground-plane focus point the camera orbits above.
-#[derive(Component, Debug, Clone, Copy, Default)]
-pub struct CameraFocus(pub Vec2);
+/// Orbitable camera rig above a ground focus point.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct CameraRig {
+    pub focus: Vec2,
+    pub yaw: f32,
+    pub pitch: f32,
+    /// Ortho scale the smooth-zoom system eases toward.
+    pub zoom_target: f32,
+}
+
+impl Default for CameraRig {
+    fn default() -> Self {
+        Self {
+            focus: Vec2::ZERO,
+            yaw: DEFAULT_YAW,
+            pitch: DEFAULT_PITCH,
+            zoom_target: 1.0,
+        }
+    }
+}
 
 pub struct CameraPlugin;
 
@@ -29,8 +55,10 @@ impl Plugin for CameraPlugin {
             Update,
             (
                 camera_keyboard_pan,
+                camera_keyboard_rotate,
+                camera_mouse_rotate,
                 camera_mouse_wheel_zoom,
-                camera_keyboard_zoom,
+                camera_smooth_zoom,
                 sync_camera_transform,
             )
                 .chain()
@@ -40,24 +68,24 @@ impl Plugin for CameraPlugin {
     }
 }
 
-fn boom_offset() -> Vec3 {
+fn boom_offset(yaw: f32, pitch: f32) -> Vec3 {
     Vec3::new(
-        CAMERA_YAW.cos() * CAMERA_ELEVATION.cos(),
-        CAMERA_YAW.sin() * CAMERA_ELEVATION.cos(),
-        CAMERA_ELEVATION.sin(),
+        yaw.cos() * pitch.cos(),
+        yaw.sin() * pitch.cos(),
+        pitch.sin(),
     ) * CAMERA_DIST
 }
 
 fn spawn_camera(mut commands: Commands) {
-    let focus = Vec2::ZERO;
+    let rig = CameraRig::default();
     commands.spawn((
         Camera3d::default(),
         Projection::Orthographic(OrthographicProjection::default_3d()),
         // Flat game palette must reach the screen untouched.
         Tonemapping::None,
-        Transform::from_translation(focus.extend(0.0) + boom_offset())
-            .looking_at(focus.extend(0.0), Vec3::Z),
-        CameraFocus(focus),
+        Transform::from_translation(rig.focus.extend(0.0) + boom_offset(rig.yaw, rig.pitch))
+            .looking_at(rig.focus.extend(0.0), Vec3::Z),
+        rig,
         // Lit world (phase 5): soft fill so shadowed faces keep the palette readable.
         AmbientLight {
             color: Color::srgb(0.85, 0.9, 1.0),
@@ -93,19 +121,76 @@ fn in_game_or_paused(state: Res<State<AppState>>) -> bool {
     matches!(state.get(), AppState::InGame | AppState::Paused)
 }
 
-/// Recompute the camera transform from its focus point (after pan/zoom input).
-fn sync_camera_transform(mut q_cam: Query<(&CameraFocus, &mut Transform), With<MainCamera>>) {
-    let Ok((focus, mut tf)) = q_cam.single_mut() else {
+/// Recompute the camera transform from the rig (after pan/orbit/zoom input).
+fn sync_camera_transform(mut q_cam: Query<(&CameraRig, &mut Transform), With<MainCamera>>) {
+    let Ok((rig, mut tf)) = q_cam.single_mut() else {
         return;
     };
-    let target = focus.0.extend(0.0);
-    *tf = Transform::from_translation(target + boom_offset()).looking_at(target, Vec3::Z);
+    let target = rig.focus.extend(0.0);
+    *tf = Transform::from_translation(target + boom_offset(rig.yaw, rig.pitch))
+        .looking_at(target, Vec3::Z);
+}
+
+/// Q / E — orbit the camera around its focus (smooth while held).
+fn camera_keyboard_rotate(
+    time: Res<Time<Real>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut q_cam: Query<&mut CameraRig, With<MainCamera>>,
+) {
+    let mut dir = 0.0;
+    if keys.pressed(KeyCode::KeyQ) {
+        dir += 1.0;
+    }
+    if keys.pressed(KeyCode::KeyE) {
+        dir -= 1.0;
+    }
+    if dir == 0.0 {
+        return;
+    }
+    if let Ok(mut rig) = q_cam.single_mut() {
+        rig.yaw += dir * KEY_ROTATE_SPEED * time.delta_secs();
+    }
+}
+
+/// Ctrl + LMB drag — free orbit (yaw + clamped pitch), prototype-style.
+/// Plain LMB stays reserved for building tools; `cursor_paint_to_command`
+/// ignores clicks while Ctrl is held so orbiting never paints tiles.
+fn camera_mouse_rotate(
+    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    motion: Res<AccumulatedMouseMotion>,
+    mut q_cam: Query<&mut CameraRig, With<MainCamera>>,
+) {
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    if !ctrl || !buttons.pressed(MouseButton::Left) || motion.delta == Vec2::ZERO {
+        return;
+    }
+    if let Ok(mut rig) = q_cam.single_mut() {
+        rig.yaw -= motion.delta.x * MOUSE_ROTATE_SENS;
+        rig.pitch = (rig.pitch + motion.delta.y * MOUSE_ROTATE_SENS).clamp(PITCH_MIN, PITCH_MAX);
+    }
+}
+
+/// Ease the orthographic scale toward the rig's zoom target every frame —
+/// scroll input only moves the target, so zoom feels smooth at any input rate.
+fn camera_smooth_zoom(
+    time: Res<Time<Real>>,
+    mut q_cam: Query<(&CameraRig, &mut Projection), With<MainCamera>>,
+) {
+    let Ok((rig, mut proj)) = q_cam.single_mut() else {
+        return;
+    };
+    if let Projection::Orthographic(ortho) = proj.as_mut() {
+        let t = 1.0 - (-time.delta_secs() * ZOOM_EASE).exp();
+        ortho.scale += (rig.zoom_target - ortho.scale) * t;
+    }
 }
 
 fn camera_keyboard_pan(
     time: Res<Time<Real>>,
     keys: Res<ButtonInput<KeyCode>>,
-    mut q_cam: Query<(&mut CameraFocus, &Transform), With<MainCamera>>,
+    settings: Res<UiSettings>,
+    mut q_cam: Query<(&mut CameraRig, &Transform), With<MainCamera>>,
 ) {
     let mut dir = Vec2::ZERO;
 
@@ -126,7 +211,7 @@ fn camera_keyboard_pan(
         return;
     }
 
-    let Ok((mut focus, tf)) = q_cam.single_mut() else {
+    let Ok((mut rig, tf)) = q_cam.single_mut() else {
         return;
     };
 
@@ -135,75 +220,32 @@ fn camera_keyboard_pan(
     let right = tf.right().truncate().normalize_or_zero();
     let up = tf.up().truncate().normalize_or_zero();
 
-    let speed_world_units_per_sec = 1500.0;
+    // The settings slider (default 200) maps to the tuned 1500 world units/s.
+    let speed_world_units_per_sec = settings.camera_speed * 7.5;
     let delta = (right * dir.x + up * dir.y).normalize_or_zero()
         * speed_world_units_per_sec
         * time.delta_secs();
-    focus.0 += delta;
+    rig.focus += delta;
 }
 
+/// Scroll input moves the zoom TARGET; `camera_smooth_zoom` eases toward it.
 fn camera_mouse_wheel_zoom(
     mut mouse_wheel: MessageReader<MouseWheel>,
-    mut q_cam: Query<&mut Projection, With<MainCamera>>,
+    settings: Res<UiSettings>,
+    mut q_cam: Query<&mut CameraRig, With<MainCamera>>,
 ) {
     let mut zoom_delta = 0.0;
     for ev in mouse_wheel.read() {
-        // Reduce sensitivity for touchpad (smooth scrolling)
-        // Touchpad events typically have smaller delta values, but we apply additional smoothing
-        let sensitivity = if ev.y.abs() < 0.5 {
-            // Likely touchpad - reduce sensitivity
-            0.04
-        } else {
-            // Likely mouse wheel - normal sensitivity
-            0.12
-        };
-        zoom_delta += ev.y * sensitivity;
+        // Touchpad swipes deliver many small events — keep them gentle; the
+        // settings slider (default 0.1) scales overall zoom responsiveness.
+        let base = if ev.y.abs() < 0.5 { 0.015 } else { 0.08 };
+        zoom_delta += ev.y * base * (settings.zoom_speed / 0.1);
     }
     if zoom_delta == 0.0 {
         return;
     }
 
-    // Apply zoom factor (sensitivity already applied above, so just use zoom_delta directly)
-    let factor = 1.0 - zoom_delta;
-
-    let Ok(mut proj) = q_cam.single_mut() else {
-        return;
-    };
-
-    if let Projection::Orthographic(ortho) = proj.as_mut() {
-        ortho.scale = (ortho.scale * factor).clamp(0.25, 6.0);
-    }
-}
-
-/// Keyboard zoom control: Q (zoom out) and E (zoom in).
-/// One key press = one discrete zoom step (equivalent to one mouse wheel "click").
-fn camera_keyboard_zoom(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut q_cam: Query<&mut Projection, With<MainCamera>>,
-) {
-    let mut zoom_delta = 0.0;
-
-    if keys.just_pressed(KeyCode::KeyQ) {
-        // Zoom out (increase scale) - negative delta increases scale
-        zoom_delta = -0.12;
-    }
-    if keys.just_pressed(KeyCode::KeyE) {
-        // Zoom in (decrease scale) - positive delta decreases scale
-        zoom_delta = 0.12;
-    }
-
-    if zoom_delta == 0.0 {
-        return;
-    }
-
-    // Apply zoom factor (equivalent to mouse wheel with normal sensitivity)
-    let factor = 1.0 - zoom_delta;
-
-    let Ok(mut proj) = q_cam.single_mut() else {
-        return;
-    };
-
-    if let Projection::Orthographic(ortho) = proj.as_mut() {
-        ortho.scale = (ortho.scale * factor).clamp(0.25, 6.0);
+    if let Ok(mut rig) = q_cam.single_mut() {
+        rig.zoom_target = (rig.zoom_target * (1.0 - zoom_delta)).clamp(0.25, 6.0);
     }
 }

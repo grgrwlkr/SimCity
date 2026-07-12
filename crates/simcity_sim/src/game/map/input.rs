@@ -147,6 +147,11 @@ pub(super) fn cursor_paint_to_command(
         return;
     }
 
+    // Ctrl+LMB is the camera-orbit gesture — never paint while rotating.
+    if keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight) {
+        return;
+    }
+
     let Ok(window) = p.q_window.single() else {
         return;
     };

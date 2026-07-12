@@ -48,8 +48,9 @@ cargo run --release --features profile_chrome
 - `Space` — pause / resume
 - `Esc` — возврат в меню
 - `WASD` / `Arrow keys` — pan камеры
-- `Mouse wheel` — zoom
-- `Q` / `E` — дискретный zoom out / zoom in
+- `Mouse wheel` — плавный zoom
+- `Q` / `E` — поворот камеры
+- `Ctrl` + `LMB drag` — свободная орбита (поворот + наклон)
 - `1` — road tool, повторное нажатие циклит `2/4/6` полос
 - `2` / `3` / `4` — residential / commercial / industrial
 - `5` — erase

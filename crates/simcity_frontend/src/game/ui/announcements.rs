@@ -11,6 +11,7 @@ pub(super) fn announce_ingame() {
     info!("In game");
     info!("Controls:");
     info!("  WASD / Arrows - pan camera");
+    info!("  Q / E          - rotate camera (Ctrl+LMB drag - orbit)");
     info!("  Mouse wheel   - zoom");
     info!("  1 Road (cycle 2/4/6 lanes), 2 Residential, 3 Commercial, 4 Industrial, 5 Erase");
     info!("  LMB on tile   - build");
