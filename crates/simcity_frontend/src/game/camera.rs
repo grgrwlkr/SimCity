@@ -77,7 +77,7 @@ fn spawn_camera(mut commands: Commands) {
             shadow_maps_enabled: true,
             ..default()
         },
-        Transform::from_xyz(150.0, -90.0, 220.0).looking_at(Vec3::ZERO, Vec3::Z),
+        Transform::from_xyz(200.0, -120.0, 160.0).looking_at(Vec3::ZERO, Vec3::Z),
         // Default cascades end too close for an ortho camera 500 units out.
         bevy::light::CascadeShadowConfigBuilder {
             maximum_distance: 900.0,

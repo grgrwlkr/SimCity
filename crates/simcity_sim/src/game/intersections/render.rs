@@ -84,7 +84,8 @@ pub(crate) fn sync_traffic_light_visuals(
     q_lights: Query<&TrafficLight>,
     q_visuals: Query<Entity, With<TrafficLightVisual>>,
     mut layout_state: Local<TrafficLightVisualLayoutState>,
-    prims: ResMut<RenderPrimitives>,
+    mut prims: ResMut<RenderPrimitives>,
+    mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut lamps: ResMut<LampMaterials>,
     glow: Res<NightGlow>,
@@ -137,13 +138,20 @@ pub(crate) fn sync_traffic_light_visuals(
             // Determine phase color for this direction
             let color = get_light_color_for_direction(light, entry_dir);
 
+            // Volumetric pole + head (static), phase lamp quad on top of the head.
+            commands.spawn((
+                Mesh3d(prims.traffic_light_mesh(&mut meshes)),
+                MeshMaterial3d(prims.material(&mut materials, Color::WHITE)),
+                Transform::from_translation(light_pos.extend(0.0)),
+                TrafficLightVisual,
+            ));
             commands.spawn((
                 flat_quad(
                     prims.quad.clone(),
                     lamp_material(&mut lamps, &mut materials, color),
                     light_pos,
-                    layer::TRAFFIC_LIGHT,
-                    Vec2::splat(cfg.tile_size * 0.25),
+                    19.3,
+                    Vec2::splat(cfg.tile_size * 0.22),
                 ),
                 TrafficLightVisual,
                 TrafficLightVisualMeta {

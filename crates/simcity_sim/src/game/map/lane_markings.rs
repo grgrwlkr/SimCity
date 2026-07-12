@@ -39,9 +39,9 @@ pub(super) fn sync_lane_markings(
     let z_base = layer::LANE_MARKING; // Height above the road surface.
 
     // Make markings thick enough to be visible when zoomed out.
-    let center_thickness = tile_size * 0.14;
-    let lane_div_thickness = tile_size * 0.10;
-    let dash_len = tile_size * 0.55;
+    let center_thickness = tile_size * 0.10;
+    let lane_div_thickness = tile_size * 0.06;
+    let dash_len = tile_size * 0.40;
 
     let center_mat = glow.marking_center.clone();
     let divider_mat = glow.marking_white.clone();
@@ -140,7 +140,18 @@ pub(super) fn sync_lane_markings(
             }
         }
 
-        // ---- Per-lane direction arrow (simple chevron)
+        // ---- Per-lane direction arrow (simple chevron), thinned out to every
+        // 4th tile along the road axis — solid arrows on every tile read as
+        // noise from the pseudo-3D camera (prototype-parity polish).
+        let arrow_here = match road.dir {
+            RoadDir::East | RoadDir::West => pos.x.rem_euclid(4) == 0,
+            RoadDir::North | RoadDir::South => pos.y.rem_euclid(4) == 0,
+            RoadDir::None => false,
+        };
+        if !arrow_here {
+            idx.by_pos.insert(pos, spawned);
+            continue;
+        }
         let (rot, forward) = match road.dir {
             RoadDir::East => (0.0, Vec2::new(1.0, 0.0)),
             RoadDir::North => (std::f32::consts::FRAC_PI_2, Vec2::new(0.0, 1.0)),

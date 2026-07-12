@@ -26,6 +26,12 @@ pub(super) struct TileChunkRoot {
     cy: i32,
 }
 
+/// Decorative trees by grid index (spawned/despawned by the dirty-tile pass).
+#[derive(Resource, Default)]
+pub(super) struct TreeIndex {
+    by_idx: HashMap<usize, Entity>,
+}
+
 #[derive(Resource, Debug, Copy, Clone)]
 pub(super) struct LastOverlayMode(pub(super) OverlayMode);
 
@@ -60,6 +66,8 @@ pub(super) fn spawn_map_if_needed(
     mut dirty: ResMut<DirtyTiles>,
     mut prims: ResMut<RenderPrimitives>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut tree_meshes: ResMut<Assets<Mesh>>,
+    mut trees: ResMut<TreeIndex>,
 ) {
     if !q_tiles.is_empty() {
         return;
@@ -124,6 +132,34 @@ pub(super) fn spawn_map_if_needed(
 
             // Tiles are spawned in row-major order; this matches `MapGrid::idx`.
             index.tiles.push(e);
+        }
+    }
+
+    // Decorative trees: one deterministic block of spawns per map (see the
+    // dirty-pass comment — they are never despawned, only hidden).
+    trees.by_idx.clear();
+    for y in 0..cfg.height {
+        for x in 0..cfg.width {
+            let pos = TilePos { x, y };
+            if !tree_roll(pos, seed.0) {
+                continue;
+            }
+            let Some(cell_idx) = grid.idx(pos) else {
+                continue;
+            };
+            let (jx, jy, scale) = tree_jitter(pos, seed.0);
+            let world = tile_to_world(&cfg, pos);
+            let e = commands
+                .spawn((
+                    Mesh3d(prims.tree_mesh(&mut tree_meshes)),
+                    MeshMaterial3d(prims.material(&mut materials, Color::WHITE)),
+                    Transform::from_xyz(world.x + jx, world.y + jy, 0.0)
+                        .with_scale(Vec3::splat(scale)),
+                    Visibility::Hidden,
+                    InGameEntity,
+                ))
+                .id();
+            trees.by_idx.insert(cell_idx, e);
         }
     }
 
@@ -228,6 +264,8 @@ pub(super) struct SyncDirtyTilesParams<'w, 's> {
     dirty: ResMut<'w, DirtyTiles>,
     prims: ResMut<'w, RenderPrimitives>,
     materials: ResMut<'w, Assets<StandardMaterial>>,
+    trees: Res<'w, TreeIndex>,
+    q_trees: Query<'w, 's, &'static mut Visibility, Without<TileChunkRoot>>,
     q_tiles: Query<
         'w,
         's,
@@ -413,7 +451,49 @@ pub(super) fn sync_dirty_tiles_to_render(
         // gradient overlays are bounded by the cache's 8-bit RGBA quantization.
         mat.0 = p.prims.material(&mut p.materials, color);
         tf.scale = size.extend(1.0);
+
+        // Decorative trees on untouched grass (prototype-parity prop). Trees are
+        // spawned ONCE at map spawn and only their Visibility is toggled here:
+        // despawning them mid-run would free entity ids for reuse by sim spawns,
+        // and sim behavior must never depend on render entity allocation (a
+        // despawn-churn variant of this shifted the soak's orphan-car timing).
+        let wants_tree = !cell.water
+            && !cell.road.is_some()
+            && cell.building.is_none()
+            && cell.zone == crate::game::map::ZoneKind::None;
+        if let Some(&tree) = p.trees.by_idx.get(&idx)
+            && let Ok(mut vis) = p.q_trees.get_mut(tree)
+        {
+            *vis = if wants_tree {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
+        }
     }
+}
+
+/// ~5% of eligible tiles grow a tree; pure hash of (tile, seed) — deterministic.
+fn tree_roll(pos: TilePos, seed: u64) -> bool {
+    tree_hash(pos, seed) % 100 < 5
+}
+
+fn tree_jitter(pos: TilePos, seed: u64) -> (f32, f32, f32) {
+    let h = tree_hash(pos, seed.wrapping_add(0x9E37_79B9));
+    let jx = ((h % 7) as f32) - 3.0;
+    let jy = (((h >> 3) % 7) as f32) - 3.0;
+    let scale = 0.8 + ((h >> 6) % 5) as f32 * 0.1;
+    (jx, jy, scale)
+}
+
+fn tree_hash(pos: TilePos, seed: u64) -> u64 {
+    let mut h = seed
+        ^ (pos.x as u64).wrapping_mul(0x9E37_79B1_85EB_CA87)
+        ^ (pos.y as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+    h ^= h >> 33;
+    h
 }
 
 pub(super) fn mark_dirty_on_overlay_change(

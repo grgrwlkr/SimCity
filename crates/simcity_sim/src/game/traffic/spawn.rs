@@ -198,7 +198,7 @@ pub(super) fn spawn_trip_vehicles(
                 tf.scale = Vec3::ONE;
                 mat.0 = p
                     .prims
-                    .material(&mut p.materials, Color::linear_rgb(0.95, 0.95, 0.95));
+                    .material(&mut p.materials, citizen_car_color(msg.citizen));
 
                 p.commands
                     .entity(e)
@@ -227,16 +227,14 @@ pub(super) fn spawn_trip_vehicles(
         let speed_factor = sample_driver_speed_factor(&mut p.sim_rng.rng);
         let max_speed = sample_driver_max_speed_world(&p.cfg, &p.traffic_cfg, &mut p.sim_rng.rng);
 
+        let body_color = citizen_car_color(msg.citizen);
         let car_size = Vec2::new(
             p.cfg.tile_size * VEHICLE_VISUAL_LENGTH_TILES,
             p.cfg.tile_size * VEHICLE_VISUAL_WIDTH_TILES,
         );
         let mut e = p.commands.spawn((
             Mesh3d(p.prims.car_mesh(&mut p.meshes, car_size)),
-            MeshMaterial3d(
-                p.prims
-                    .material(&mut p.materials, Color::linear_rgb(0.95, 0.95, 0.95)),
-            ),
+            MeshMaterial3d(p.prims.material(&mut p.materials, body_color)),
             Transform::from_xyz(
                 world_pos.x,
                 world_pos.y,
@@ -343,4 +341,16 @@ pub(super) fn clear_vehicles(
             *counts = TrafficVehicleCounts::default();
         }
     }
+}
+
+/// Deterministic body color per citizen (no randomness — determinism pin).
+fn citizen_car_color(citizen: crate::game::ids::CitizenId) -> Color {
+    const CAR_COLORS: [Color; 5] = [
+        Color::srgb(0.93, 0.93, 0.95),
+        Color::srgb(0.72, 0.75, 0.80),
+        Color::srgb(0.72, 0.22, 0.18),
+        Color::srgb(0.28, 0.42, 0.72),
+        Color::srgb(0.24, 0.26, 0.31),
+    ];
+    CAR_COLORS[(citizen.0 % CAR_COLORS.len() as u64) as usize]
 }

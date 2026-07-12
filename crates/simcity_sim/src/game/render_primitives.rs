@@ -54,6 +54,8 @@ pub struct RenderPrimitives {
     sized: HashMap<[u32; 2], Handle<Mesh>>,
     cars: HashMap<[u32; 2], Handle<Mesh>>,
     meeples: HashMap<[u8; 4], Handle<Mesh>>,
+    traffic_light: Option<Handle<Mesh>>,
+    tree: Option<Handle<Mesh>>,
 }
 
 impl RenderPrimitives {
@@ -98,6 +100,8 @@ impl RenderPrimitives {
             sized: HashMap::new(),
             cars: HashMap::new(),
             meeples: HashMap::new(),
+            traffic_light: None,
+            tree: None,
         }
     }
 
@@ -165,6 +169,39 @@ impl RenderPrimitives {
             .clone()
     }
 
+    /// Shared traffic-light pole + head (Z-up, base at z=0, dark vertex colors;
+    /// the phase lamp is a separate recolorable quad on top of the head).
+    pub fn traffic_light_mesh(&mut self, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
+        self.traffic_light
+            .get_or_insert_with(|| {
+                let dark = [0.05, 0.05, 0.06, 1.0];
+                let mut b = CompositeMesh::default();
+                b.push_box(
+                    Vec3::new(-0.45, -0.45, 0.0),
+                    Vec3::new(0.45, 0.45, 12.0),
+                    dark,
+                );
+                b.push_box(Vec3::new(-1.3, -1.3, 12.0), Vec3::new(1.3, 1.3, 19.0), dark);
+                meshes.add(b.build())
+            })
+            .clone()
+    }
+
+    /// Shared low-poly box tree (trunk + two-tier crown), prototype-parity prop.
+    pub fn tree_mesh(&mut self, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
+        self.tree
+            .get_or_insert_with(|| {
+                let trunk = [0.16, 0.10, 0.05, 1.0];
+                let crown = [0.055, 0.20, 0.07, 1.0];
+                let mut b = CompositeMesh::default();
+                b.push_box(Vec3::new(-0.7, -0.7, 0.0), Vec3::new(0.7, 0.7, 3.0), trunk);
+                b.push_box(Vec3::new(-2.6, -2.6, 3.0), Vec3::new(2.6, 2.6, 7.5), crown);
+                b.push_box(Vec3::new(-1.5, -1.5, 7.5), Vec3::new(1.5, 1.5, 10.0), crown);
+                meshes.add(b.build())
+            })
+            .clone()
+    }
+
     /// Shared quad mesh of an exact size (scale = 1). Entities WITH CHILDREN must
     /// use this instead of scaling the unit quad: `Transform.scale` propagates to
     /// children and would squash glyphs/roof markers; a sized mesh does not.
@@ -206,6 +243,8 @@ fn init_render_primitives(
         sized: HashMap::new(),
         cars: HashMap::new(),
         meeples: HashMap::new(),
+        traffic_light: None,
+        tree: None,
     });
     commands.insert_resource(night_glow(&mut materials));
 }
@@ -346,6 +385,8 @@ mod tests {
                 sized: HashMap::new(),
                 cars: HashMap::new(),
                 meeples: HashMap::new(),
+                traffic_light: None,
+                tree: None,
             },
             Assets::default(),
         )
