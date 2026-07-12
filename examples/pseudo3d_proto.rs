@@ -43,10 +43,29 @@ fn main() {
             }),
             ..default()
         }))
-        .init_resource::<OrbitCamera>()
+        .insert_resource(orbit_from_env())
         .add_systems(Startup, setup)
         .add_systems(Update, (orbit_camera, shoot_and_exit))
         .run();
+}
+
+/// Initial camera view, overridable for close-up screenshots:
+/// PROTO_FOCUS="x,z" (ground point), PROTO_ZOOM=<ortho viewport height>.
+fn orbit_from_env() -> OrbitCamera {
+    let mut o = OrbitCamera::default();
+    if let Ok(f) = std::env::var("PROTO_FOCUS")
+        && let Some((x, z)) = f.split_once(',')
+        && let (Ok(x), Ok(z)) = (x.trim().parse::<f32>(), z.trim().parse::<f32>())
+    {
+        o.center.x = x;
+        o.center.z = z;
+    }
+    if let Ok(h) = std::env::var("PROTO_ZOOM")
+        && let Ok(h) = h.trim().parse::<f32>()
+    {
+        o.height = h;
+    }
+    o
 }
 
 /// Screenshot after warmup, exit shortly after (unless PROTO_STAY=1).
@@ -188,6 +207,7 @@ fn setup(
     spawn_buildings(&mut commands, &mut meshes, &mut mats, &white);
     spawn_vehicles(&mut commands, &mut meshes, &mut mats);
     spawn_traffic_light(&mut commands, &mut meshes, &mut mats, t2w(5, 5));
+    spawn_pedestrians(&mut commands, &mut meshes, &mut mats);
     for (tx, tz) in [(1, 1), (4, 2), (11, 5), (12, 12), (2, 12), (4, 11)] {
         spawn_tree(&mut commands, &mut meshes, &mut mats, t2w(tx, tz));
     }
@@ -788,4 +808,100 @@ fn spawn_tree(
                 Transform::from_xyz(0.0, 6.5, 0.0),
             ));
         });
+}
+
+/// Three candidate pedestrian styles, side by side on the sidewalk south of
+/// the horizontal road (game scale: ~4.6 units tall vs 4.5-unit car bodies).
+/// A: cylinder body + sphere head. B: box "meeple". C: cone body + sphere head.
+fn spawn_pedestrians(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    mats: &mut Assets<StandardMaterial>,
+) {
+    let outfits = [
+        Color::srgb(0.95, 0.55, 0.10), // the game's current pedestrian orange
+        Color::srgb(0.25, 0.45, 0.80),
+        Color::srgb(0.80, 0.25, 0.30),
+        Color::srgb(0.20, 0.65, 0.60),
+    ];
+    let skin = mats.add(StandardMaterial {
+        base_color: Color::srgb(0.92, 0.76, 0.60),
+        perceptual_roughness: 1.0,
+        ..default()
+    });
+
+    let mut outfit_mat = |i: usize| {
+        mats.add(StandardMaterial {
+            base_color: outfits[i % outfits.len()],
+            perceptual_roughness: 1.0,
+            ..default()
+        })
+    };
+
+    let head = meshes.add(Sphere::new(0.75));
+    let row_z = t2w(0, 8).z; // clear grass row south of the horizontal road
+
+    // --- Variant A: cylinder + head (around tile x=3)
+    let body_a = meshes.add(Cylinder {
+        radius: 0.9,
+        half_height: 1.7,
+    });
+    for i in 0..3 {
+        let x = t2w(2, 8).x + i as f32 * 4.0 - 4.0;
+        commands
+            .spawn((
+                Mesh3d(body_a.clone()),
+                MeshMaterial3d(outfit_mat(i)),
+                Transform::from_xyz(x, 1.7, row_z + i as f32 * 1.5 - 1.5),
+            ))
+            .with_children(|p| {
+                p.spawn((
+                    Mesh3d(head.clone()),
+                    MeshMaterial3d(skin.clone()),
+                    Transform::from_xyz(0.0, 2.3, 0.0),
+                ));
+            });
+    }
+
+    // --- Variant B: box meeple (around tile x=5)
+    let body_b = meshes.add(Cuboid::new(1.7, 3.2, 1.1));
+    let head_b = meshes.add(Cuboid::new(1.1, 1.1, 1.1));
+    for i in 0..3 {
+        let x = t2w(5, 8).x + i as f32 * 4.0 - 4.0;
+        commands
+            .spawn((
+                Mesh3d(body_b.clone()),
+                MeshMaterial3d(outfit_mat(i + 1)),
+                Transform::from_xyz(x, 1.6, row_z + i as f32 * 1.5 - 1.5),
+            ))
+            .with_children(|p| {
+                p.spawn((
+                    Mesh3d(head_b.clone()),
+                    MeshMaterial3d(skin.clone()),
+                    Transform::from_xyz(0.0, 2.2, 0.0),
+                ));
+            });
+    }
+
+    // --- Variant C: cone + head (around tile x=9)
+    let body_c = meshes.add(Cone {
+        radius: 1.1,
+        height: 3.6,
+    });
+    for i in 0..3 {
+        let x = t2w(8, 8).x + i as f32 * 4.0 - 4.0;
+        commands
+            .spawn((
+                Mesh3d(body_c.clone()),
+                MeshMaterial3d(outfit_mat(i + 2)),
+                Transform::from_xyz(x, 1.8, row_z + i as f32 * 1.5 - 1.5),
+            ))
+            .with_children(|p| {
+                p.spawn((
+                    Mesh3d(head.clone()),
+                    MeshMaterial3d(skin.clone()),
+                    Transform::from_xyz(0.0, 2.1, 0.0),
+                ));
+            });
+    }
 }
