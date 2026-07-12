@@ -442,16 +442,15 @@ mod bus_seeding_tests {
     /// fallback-leg maneuver the arbiter can never resolve, with every self-heal layer blind to
     /// green-phase creep) freezes whole arterials behind it. Threshold is deliberately loose —
     /// transient congestion is fine; dozens of >60s-frozen vehicles is the bug.
-    /// HUNT STATUS (2026-07-12): peak improved 54 -> 14 after the wedge/motion-timer/in-box-edge
-    /// fixes (bus tours, self-heal fires, creep no longer blinds recovery). The RESIDUAL class:
-    /// road-A*-fallback cars (empty sidecar) frozen in FreeFlow near two-way street ends — queue
-    /// heads refuse to advance into EMPTY tiles (observed: car at (20,45) with next=(19,45) free,
-    /// speed 0, 60s+; behind it a car at (20,44) intends the perpendicular hop onto (20,45)).
-    /// Suspects: reverse-escape hand-built routes / U-turn tip contention interacting with the
-    /// drive.rs block logic. Needs a blocked-reason trace in drive.rs. Until fixed, this stays an
-    /// ignored diagnostic — flip to a hard pin (worst <= 6) when the residual class is gone.
+    /// Mass-freeze pin: by day 18 the city must NOT accumulate permanently-stuck traffic.
+    /// Guards the gridlock class where one vehicle wedged at an intersection freezes whole
+    /// arterials behind it. Historical causes, all fixed and separately pinned: an arbiter that
+    /// dropped unresolved-maneuver candidates forever (now coarse-admitted into an empty box),
+    /// speed-gated freeze watchdogs blinded by green-phase creep (now progress/anchor-based), and
+    /// region-pruned recovery replans (now retried unpruned). Threshold is deliberately loose —
+    /// transient congestion is fine; dozens of >60s-frozen vehicles is the bug. Observed clean
+    /// runs: 0 frozen across the whole horizon.
     #[test]
-    #[ignore = "diagnostic harness: residual frozen-queue class under investigation, see doc"]
     fn no_mass_freeze_by_day_18() {
         use simcity_sim::game::traffic::{Parked, Vehicle};
         use simcity_sim::game::transport::PathPool;
@@ -471,14 +470,14 @@ mod bus_seeding_tests {
                 usize,
                 crate::game::map::TilePos,
             )> = {
-                let mut q = world.query_filtered::<(bevy::prelude::Entity, &Vehicle), bevy::prelude::Without<Parked>>();
+                let mut q = world
+                    .query_filtered::<(bevy::prelude::Entity, &Vehicle), bevy::prelude::Without<Parked>>();
                 q.iter(world)
                     .map(|(e, v)| (e.to_bits(), v.path_handle, v.path_cursor, v.tile_pos))
                     .collect()
             };
             let pool = world.resource::<PathPool>();
             let mut frozen = 0usize;
-            let mut examples: Vec<(u64, crate::game::map::TilePos)> = Vec::new();
             for (id, h, cursor, spawn_tile) in rows {
                 let len = pool.len(h);
                 if len <= 1 {
@@ -493,88 +492,9 @@ mod bus_seeding_tests {
                     *entry = (cur, t);
                 } else if t - entry.1 >= 600 {
                     frozen += 1; // same route tile for >= 60 s
-                    if examples.len() < 5 {
-                        examples.push((id, cur));
-                    }
                 }
             }
             worst = worst.max(frozen);
-            if t % 400 == 0 && t >= 2000 {
-                let world = app.world_mut();
-                let mut qb = world.query::<(&simcity_sim::game::public_transport::Bus, &Vehicle)>();
-                if t == 4000 {
-                    // Full dump of the row-45 west-end neighborhood: who occupies 14..24 x 44..46,
-                    // their next route tile (intent) — hunting a dead-end-tip deadlock.
-                    let mut q_all =
-                        world.query::<(&Vehicle, Option<&simcity_sim::game::traffic::Parked>)>();
-                    let pool2 = world.resource::<PathPool>();
-                    let mut spots: Vec<String> = Vec::new();
-                    for (v, parked) in q_all.iter(world) {
-                        let len = pool2.len(v.path_handle);
-                        let cur = pool2
-                            .get_tile(v.path_handle, v.path_cursor.min(len.saturating_sub(1)))
-                            .unwrap_or(v.tile_pos);
-                        if (14..=24).contains(&cur.x) && (43..=47).contains(&cur.y) {
-                            let next = pool2.get_tile(v.path_handle, v.path_cursor + 1);
-                            spots.push(format!(
-                                "({},{}) next={:?} cursor={}/{} parked={} spd={:.1}",
-                                cur.x,
-                                cur.y,
-                                next.map(|t| (t.x, t.y)),
-                                v.path_cursor,
-                                len,
-                                parked.is_some(),
-                                v.speed
-                            ));
-                        }
-                    }
-                    spots.sort();
-                    for sp in spots {
-                        println!("      {sp}");
-                    }
-                }
-                for (id, tile) in &examples {
-                    let e = bevy::prelude::Entity::from_bits(*id);
-                    let kind = if world
-                        .get::<simcity_sim::game::public_transport::Bus>(e)
-                        .is_some()
-                    {
-                        "bus"
-                    } else if world
-                        .get::<simcity_sim::game::services::ServiceVehicle>(e)
-                        .is_some()
-                    {
-                        "svc"
-                    } else {
-                        "car"
-                    };
-                    let ts = world
-                        .get::<simcity_sim::game::traffic::VehicleTrafficState>(e)
-                        .map(|s| format!("{s:?}"))
-                        .unwrap_or_default();
-                    let sidecar = world
-                        .get::<simcity_sim::game::traffic::VehicleLaneletPlan>(e)
-                        .map(|p| p.entries.len() as i64)
-                        .unwrap_or(-1);
-                    println!(
-                        "    frozen {kind} at {:?} sidecar={} ts={}",
-                        tile,
-                        sidecar,
-                        &ts[..ts.len().min(90)]
-                    );
-                }
-                if let Some((bus, v)) = qb.iter(world).next() {
-                    println!(
-                        "t={t} (day {}): frozen(>=60s)={frozen} | bus cursor={} len={} wedge={:.0} target={} state={:?}",
-                        t / 240 + 1,
-                        v.path_cursor,
-                        world.resource::<PathPool>().len(v.path_handle),
-                        bus.wedge_secs,
-                        bus.target_stop_idx,
-                        bus.state
-                    );
-                }
-            }
         }
         assert!(
             worst <= 6,
@@ -582,7 +502,6 @@ mod bus_seeding_tests {
              blocker is jamming the network (gridlock class)"
         );
     }
-
     /// Tour-progression pin (user-visible product behavior): the demo bus must actually REACH
     /// stops and keep advancing around the loop — dwell at least once and move through >= 4
     /// distinct target stops. Guards two regression classes: (a) snap-back — the at-stop check

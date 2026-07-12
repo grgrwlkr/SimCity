@@ -860,15 +860,21 @@ pub(crate) fn arbitrate_lanelet_reservations(
             None => {
                 drop_unresolved += 1;
                 unresolved_this_tick.insert(e);
-                // A turn with no resolved lanelet must NOT barge the whole box via coarse (the only
-                // remaining path onto the oncoming lane). Leave it for the stall-tracker reroute
-                // (it stays in unresolved_this_tick). Only a genuine straight may use coarse, and it
-                // carries its real maneuver (not a hardcoded Straight) so demand/priority stay correct.
-                let m = route_maneuver;
-                if m != ManeuverKind::Straight {
-                    continue;
-                }
-                (true, 0usize, m)
+                // An unresolved maneuver (typically a road-A*-fallback turn from a
+                // lane-discipline-wrong entry lane — no lanelet exists for that (entry, exit)
+                // pair) may use COARSE: the whole-box EXCLUSIVE grant admits it only into a box
+                // empty of every reservation/holder, so it physically cannot conflict with anyone.
+                // The historical "turns must not barge via coarse" ban existed because a coarse
+                // turn could cut the ONCOMING half of the box; since the directional in-box road
+                // graph edges (box_axis_dir constraint), an oncoming in-box path cannot exist by
+                // construction — the oracle pin asserts total_flagged == 0 — so the ban's rationale
+                // is gone, while the ban itself manufactured PERMANENT blockers: a dropped
+                // candidate is refused forever (observed live: fallback cars and the bus frozen
+                // 160 s+ wedging whole arterials). The entity still lands in unresolved_this_tick,
+                // so the stall-tracker nudge keeps trying to upgrade it to a precise
+                // (lanelet-resolved, parallel-admitting) route. It carries its real maneuver so
+                // demand/priority stay correct.
+                (true, 0usize, route_maneuver)
             }
         };
 

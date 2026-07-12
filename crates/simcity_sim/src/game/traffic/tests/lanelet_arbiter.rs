@@ -472,12 +472,17 @@ fn build_unresolved_left_arbiter_app(route: Vec<TilePos>) -> (App, Entity) {
 }
 
 /// A northbound LEFT-turn vehicle whose left lanelet cannot resolve (the approach lane is
-/// `StraightOnly`, so no left lanelet was built, and the sidecar is empty). The unresolved TURN must
-/// NOT barge the whole box via coarse — it stays unadmitted and is handed to the stall tracker for a
-/// reroute. RED before the fix (the unresolved left was coarse-admitted: `coarse_admits == 1`,
-/// reserved); GREEN after.
+/// `StraightOnly`, so no left lanelet was built, and the sidecar is empty).
+///
+/// SEMANTICS CHANGE (2026-07-12): the unresolved turn IS admitted via the coarse whole-box
+/// EXCLUSIVE grant when the box is otherwise empty. The old "turns must not barge via coarse" ban
+/// guarded against a coarse turn cutting the ONCOMING half of the box; the directional in-box road
+/// graph edges make such a path impossible by construction (oracle pin: total_flagged == 0), and
+/// the ban itself manufactured PERMANENT blockers — a dropped candidate was refused forever,
+/// freezing whole arterials behind it (observed live). Exclusivity keeps it collision-safe, and
+/// the entity STILL goes to the stall tracker so the nudge can upgrade it to a precise route.
 #[test]
-fn unresolved_turn_is_not_coarse_admitted() {
+fn unresolved_turn_is_coarse_admitted_into_an_empty_box() {
     // Northbound left-turn route: approach from y=3 (StraightOnly lane), cross box, exit West to (3,5).
     let left_route = vec![
         TilePos { x: 4, y: 3 },
@@ -491,20 +496,22 @@ fn unresolved_turn_is_not_coarse_admitted() {
 
     let res = app.world().resource::<IntersectionReservations>();
     assert!(
-        !res.is_reserved_by(IntersectionId(0), v),
-        "an unresolved TURN must NOT be admitted (no coarse whole-box barge onto the oncoming lane)"
+        res.is_reserved_by(IntersectionId(0), v),
+        "an unresolved TURN must be coarse-admitted into an exclusively-empty box \
+         (permanent refusal manufactures forever-blockers)"
     );
 
     let stats = app.world().resource::<ArbiterTickStats>();
     assert_eq!(
-        stats.coarse_admits, 0,
-        "an unresolved TURN must NOT be coarse-admitted"
+        stats.coarse_admits, 1,
+        "admission must be the coarse (exclusive) kind"
     );
 
     let tracker = app.world().resource::<LaneletStallTracker>();
     assert!(
         tracker.unresolved.contains_key(&v),
-        "the unresolved-turn entity must be handed to the stall tracker for reroute"
+        "the unresolved-turn entity must STILL be handed to the stall tracker so the nudge can \
+         upgrade it to a precise (parallel-admitting) route"
     );
 }
 
