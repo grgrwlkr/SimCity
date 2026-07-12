@@ -208,13 +208,9 @@ fn spawn_building_entity_from_snapshot(
     cfg: &MapConfig,
     snapshot: &BuildingSnapshot,
 ) -> Entity {
-    let origin = Vec2::new(
-        -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
-        -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
-    );
     let center_x = snapshot.anchor_pos.x as f32 + (snapshot.footprint_width as f32 - 1.0) * 0.5;
     let center_y = snapshot.anchor_pos.y as f32 + (snapshot.footprint_length as f32 - 1.0) * 0.5;
-    let world = origin + Vec2::new(center_x * cfg.tile_size, center_y * cfg.tile_size);
+    let world = simcity_core::game::map::coords::tile_f_to_world(cfg, center_x, center_y);
     let sprite_size = Vec2::new(
         snapshot.footprint_width as f32 * cfg.tile_size,
         snapshot.footprint_length as f32 * cfg.tile_size,

@@ -488,9 +488,4 @@ fn to_egui_color(c: Color) -> egui::Color32 {
     )
 }
 
-fn map_origin(cfg: &MapConfig) -> Vec2 {
-    Vec2::new(
-        -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
-        -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
-    )
-}
+use simcity_core::game::map::coords::map_origin;
