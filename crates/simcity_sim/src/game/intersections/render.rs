@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 use crate::game::map::{MapConfig, MapGrid, TilePos, tile_to_world};
-use crate::game::render_primitives::{NightGlow, RenderPrimitives, flat_quad, layer};
+use crate::game::render_primitives::{NightGlow, RenderPrimitives, flat_quad};
 use std::collections::hash_map::Entry;
 
 /// Emissive traffic-light lamp materials (real lights glow day and night).
