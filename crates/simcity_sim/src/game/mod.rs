@@ -17,6 +17,7 @@ pub mod notifications;
 pub mod pedestrians;
 pub mod pollution;
 pub mod public_transport;
+pub mod render_primitives;
 pub mod services;
 pub mod sim;
 pub mod telemetry;
@@ -232,6 +233,7 @@ impl Plugin for SimPlugin {
             .init_resource::<ui_state::UiState>()
             .init_resource::<AutoStartTestCity>()
             .add_plugins((
+                render_primitives::RenderPrimitivesPlugin,
                 buildings::BuildingsPlugin,
                 citizens::CitizensPlugin,
                 demand::DemandPlugin,
