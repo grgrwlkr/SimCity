@@ -207,23 +207,15 @@ fn spawn_building_entity_from_snapshot(
     commands: &mut Commands,
     cfg: &MapConfig,
     snapshot: &BuildingSnapshot,
-    prims: &mut simcity_sim::game::render_primitives::RenderPrimitives,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
 ) -> Entity {
     let center_x = snapshot.anchor_pos.x as f32 + (snapshot.footprint_width as f32 - 1.0) * 0.5;
     let center_y = snapshot.anchor_pos.y as f32 + (snapshot.footprint_length as f32 - 1.0) * 0.5;
     let world = simcity_core::game::map::coords::tile_f_to_world(cfg, center_x, center_y);
-    let sprite_size = Vec2::new(
-        snapshot.footprint_width as f32 * cfg.tile_size,
-        snapshot.footprint_length as f32 * cfg.tile_size,
-    );
-    let mut tf = Transform::from_translation(Vec3::new(
+    let tf = Transform::from_translation(Vec3::new(
         world.x,
         world.y,
         simcity_sim::game::render_primitives::layer::BUILDING,
     ));
-    tf.scale = Vec3::splat(1.0);
 
     let mut entity_commands = commands.spawn((
         Building {
@@ -242,8 +234,6 @@ fn spawn_building_entity_from_snapshot(
             target_occupancy_jobs: snapshot.target_occupancy_jobs,
             parking_spots: snapshot.parking_spots.clone(),
         },
-        Mesh3d(prims.quad_mesh(meshes, sprite_size)),
-        MeshMaterial3d(prims.material(materials, snapshot.kind.color())),
         tf,
     ));
 
@@ -739,14 +729,7 @@ fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParam
             .collect();
 
         for b in save.buildings.iter() {
-            let building_entity = spawn_building_entity_from_snapshot(
-                &mut p.commands,
-                &p.cfg,
-                b,
-                &mut p.prims,
-                &mut p.meshes,
-                &mut p.materials,
-            );
+            let building_entity = spawn_building_entity_from_snapshot(&mut p.commands, &p.cfg, b);
 
             if let Some(s_kind) = ServiceKind::from_building(b.kind) {
                 let (total, available) = station_by_pos

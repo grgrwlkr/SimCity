@@ -96,31 +96,6 @@ pub(crate) fn service_building_kind(kind: BuildingKind) -> Option<ServiceKind> {
     }
 }
 
-/// Attach a service glyph child to a just-spawned building entity (no-op for non-service
-/// buildings). Centered on the footprint, ~1.5 tiles, right above the building sprite.
-pub(crate) fn attach_building_glyph(
-    building: &mut EntityCommands,
-    kind: BuildingKind,
-    tile_size: f32,
-    quad: Handle<Mesh>,
-    glyph_mat: Handle<StandardMaterial>,
-) {
-    let Some(service) = service_building_kind(kind) else {
-        return;
-    };
-    building.with_children(|parent| {
-        spawn_service_glyph(
-            parent,
-            service,
-            tile_size * 1.5,
-            crate::game::render_primitives::layer::CHILD_ABOVE,
-            quad,
-            glyph_mat,
-            |_| {},
-        );
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

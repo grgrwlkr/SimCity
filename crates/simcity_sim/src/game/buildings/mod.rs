@@ -12,6 +12,7 @@ mod occupancy;
 mod population;
 mod spawn;
 mod upgrade;
+mod visual;
 mod zone_depth;
 
 #[cfg(test)]
@@ -26,6 +27,7 @@ pub use occupancy::update_occupancy;
 pub use spawn::calculate_parking_spots;
 pub use spawn::spawn_building_entity;
 pub use upgrade::*;
+pub use visual::{BuildingBody, BuildingMeshCache, BuildingTint, building_height};
 pub use zone_depth::{MAX_ZONE_DEPTH, is_within_zone_depth};
 
 // Re-export functions that were in the original file
@@ -43,6 +45,16 @@ impl Plugin for BuildingsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BuildingUpgradeClock>()
             .init_resource::<BuildingGrowthRng>()
+            .init_resource::<BuildingMeshCache>()
+            .add_systems(
+                Update,
+                (
+                    visual::rebuild_building_visuals,
+                    visual::apply_building_tint,
+                )
+                    .chain()
+                    .in_set(GameSet::RenderSync),
+            )
             .add_systems(
                 OnEnter(AppState::MainMenu),
                 (cleanup_buildings, reset_building_upgrade_clock),

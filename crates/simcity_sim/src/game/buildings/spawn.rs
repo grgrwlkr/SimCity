@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 use crate::game::map::{BuildingKind, MapConfig, TilePos, tile_f_to_world};
-use crate::game::render_primitives::{RenderPrimitives, layer};
+use crate::game::render_primitives::layer;
 use crate::game::sim::City;
 
 use super::components::*;
@@ -18,24 +18,14 @@ pub fn spawn_building_entity(
     kind: BuildingKind,
     city: &City,
     spawn_operational: bool,
-    prims: &mut RenderPrimitives,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
 ) {
     // Position at center of footprint
     let center_x = anchor_pos.x as f32 + (footprint_width as f32 - 1.0) * 0.5;
     let center_y = anchor_pos.y as f32 + (footprint_length as f32 - 1.0) * 0.5;
     let world = tile_f_to_world(cfg, center_x, center_y);
-    let mut tf = Transform::from_translation(Vec3::new(world.x, world.y, layer::BUILDING));
-
-    // Scale sprite to match footprint size
-    let sprite_size = Vec2::new(
-        footprint_width as f32 * cfg.tile_size,
-        footprint_length as f32 * cfg.tile_size,
-    );
-    // Don't apply scale - sprite_size already matches the footprint exactly
-    // Scale is only used for level-based visual growth in upgrade.rs
-    tf.scale = Vec3::splat(1.0);
+    // Visuals are built by `rebuild_building_visuals` (RenderSync) from the
+    // Building component — spawn sites only place the sim entity.
+    let tf = Transform::from_translation(Vec3::new(world.x, world.y, layer::BUILDING));
 
     let level = 1; // Start at level 1
     let area = (footprint_width as u32) * (footprint_length as u32);
@@ -55,7 +45,7 @@ pub fn spawn_building_entity(
         }
     };
 
-    let mut building = commands.spawn((
+    commands.spawn((
         Building {
             kind,
             anchor_pos,
@@ -72,20 +62,8 @@ pub fn spawn_building_entity(
             target_occupancy_jobs: 0,
             parking_spots,
         },
-        // Sized mesh (scale = 1): buildings carry glyph children that must not inherit scale.
-        Mesh3d(prims.quad_mesh(meshes, sprite_size)),
-        MeshMaterial3d(prims.material(materials, kind.color())),
         tf,
     ));
-    let glyph_quad = prims.quad.clone();
-    let glyph_mat = prims.material(materials, crate::game::services::glyphs::GLYPH_COLOR);
-    crate::game::services::glyphs::attach_building_glyph(
-        &mut building,
-        kind,
-        cfg.tile_size,
-        glyph_quad,
-        glyph_mat,
-    );
 }
 
 /// Calculate parking spot positions inside building footprint (GDD 10.3.4)

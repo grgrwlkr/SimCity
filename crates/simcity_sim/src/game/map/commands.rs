@@ -23,32 +23,24 @@ use super::{
 /// those sites silently reintroduces the UI/apply validation divergence.
 pub(crate) const MANUAL_BUILDING_FOOTPRINT: (u8, u8) = (3, 3);
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_building_entity(
     commands: &mut Commands,
     cfg: &MapConfig,
     pos: TilePos,
     kind: BuildingKind,
     city: &City,
-    prims: &mut crate::game::render_primitives::RenderPrimitives,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
 ) -> Entity {
     let (footprint_width, footprint_length) = MANUAL_BUILDING_FOOTPRINT;
     // Position at center of footprint
     let center_x = pos.x as f32 + (footprint_width as f32 - 1.0) * 0.5;
     let center_y = pos.y as f32 + (footprint_length as f32 - 1.0) * 0.5;
     let world = tile_f_to_world(cfg, center_x, center_y);
-    let sprite_size = Vec2::new(
-        footprint_width as f32 * cfg.tile_size,
-        footprint_length as f32 * cfg.tile_size,
-    );
 
     let level = 1;
     let area = (footprint_width as u32) * (footprint_length as u32);
     let construction_days = Building::calculate_construction_days(kind, level, area);
 
-    let mut building = commands.spawn((
+    let building = commands.spawn((
         Building {
             kind,
             anchor_pos: pos,
@@ -71,23 +63,12 @@ pub(crate) fn spawn_building_entity(
                 calculate_parking_spots(pos, footprint_width, footprint_length, num_spots)
             },
         },
-        Mesh3d(prims.quad_mesh(meshes, sprite_size)),
-        MeshMaterial3d(prims.material(materials, kind.color())),
         Transform::from_translation(Vec3::new(
             world.x,
             world.y,
             crate::game::render_primitives::layer::BUILDING,
         )),
     ));
-    let glyph_quad = prims.quad.clone();
-    let glyph_mat = prims.material(materials, crate::game::services::glyphs::GLYPH_COLOR);
-    crate::game::services::glyphs::attach_building_glyph(
-        &mut building,
-        kind,
-        cfg.tile_size,
-        glyph_quad,
-        glyph_mat,
-    );
     building.id()
 }
 
@@ -114,14 +95,8 @@ pub(super) fn apply_game_commands_to_grid(
         (Entity, &crate::game::traffic::Vehicle),
         With<crate::game::public_transport::Bus>,
     >,
-    render: (
-        ResMut<crate::game::render_primitives::RenderPrimitives>,
-        ResMut<Assets<Mesh>>,
-        ResMut<Assets<StandardMaterial>>,
-    ),
 ) {
     let (mut bus_routes, mut path_pool) = transit;
-    let (mut prims, mut meshes, mut materials) = render;
     for cmd in cmd_reader.read() {
         match *cmd {
             GameCommand::SetRoad { pos, road } => {
@@ -293,16 +268,7 @@ pub(super) fn apply_game_commands_to_grid(
                 }
                 map_edit_version.bump();
 
-                let _ = spawn_building_entity(
-                    &mut commands,
-                    &cfg,
-                    anchor,
-                    kind,
-                    &city,
-                    &mut prims,
-                    &mut meshes,
-                    &mut materials,
-                );
+                let _ = spawn_building_entity(&mut commands, &cfg, anchor, kind, &city);
             }
             GameCommand::EraseTile { pos } => {
                 let Some(idx) = grid.idx(pos) else {
@@ -419,9 +385,6 @@ pub(super) fn apply_game_commands_to_grid(
             &mut graph_version,
             &mut map_edit_version,
             &q_buildings,
-            &mut prims,
-            &mut meshes,
-            &mut materials,
         );
     }
 }
@@ -558,36 +521,18 @@ fn clear_building_at(
 
 /// Respawn a building entity from a saved `Building` component (undo of erase).
 /// The component is restored verbatim so level/phase/occupancy survive.
-fn respawn_building_entity(
-    commands: &mut Commands,
-    cfg: &MapConfig,
-    b: &Building,
-    prims: &mut crate::game::render_primitives::RenderPrimitives,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
-) -> Entity {
+fn respawn_building_entity(commands: &mut Commands, cfg: &MapConfig, b: &Building) -> Entity {
     let center_x = b.anchor_pos.x as f32 + (b.footprint_width as f32 - 1.0) * 0.5;
     let center_y = b.anchor_pos.y as f32 + (b.footprint_length as f32 - 1.0) * 0.5;
     let world = tile_f_to_world(cfg, center_x, center_y);
-    let sprite_size = Vec2::new(
-        b.footprint_width as f32 * cfg.tile_size,
-        b.footprint_length as f32 * cfg.tile_size,
-    );
-    let mut building = commands.spawn((
+    let building = commands.spawn((
         b.clone(),
-        Mesh3d(prims.quad_mesh(meshes, sprite_size)),
-        MeshMaterial3d(prims.material(materials, b.kind.color())),
-        Transform::from_translation(Vec3::new(world.x, world.y, 8.0)),
+        Transform::from_translation(Vec3::new(
+            world.x,
+            world.y,
+            crate::game::render_primitives::layer::BUILDING,
+        )),
     ));
-    let glyph_quad = prims.quad.clone();
-    let glyph_mat = prims.material(materials, crate::game::services::glyphs::GLYPH_COLOR);
-    crate::game::services::glyphs::attach_building_glyph(
-        &mut building,
-        b.kind,
-        cfg.tile_size,
-        glyph_quad,
-        glyph_mat,
-    );
     building.id()
 }
 
@@ -656,9 +601,6 @@ fn apply_history_entry(
     graph_version: &mut GraphVersion,
     map_edit_version: &mut MapEditVersion,
     q_buildings: &Query<(Entity, &Building)>,
-    prims: &mut crate::game::render_primitives::RenderPrimitives,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
 ) {
     match entry {
         UndoableCommand::SetRoad { pos, old, new } => {
@@ -698,9 +640,7 @@ fn apply_history_entry(
                     }
                 }
                 map_edit_version.bump();
-                let _ = spawn_building_entity(
-                    commands, cfg, *pos, *kind, city, prims, meshes, materials,
-                );
+                let _ = spawn_building_entity(commands, cfg, *pos, *kind, city);
             } else {
                 // Whole-erases the placed building itself AND any building that
                 // grew over these tiles since (partial overwrite would orphan
@@ -788,7 +728,7 @@ fn apply_history_entry(
                         },
                     );
                     map_edit_version.bump();
-                    let _ = respawn_building_entity(commands, cfg, b, prims, meshes, materials);
+                    let _ = respawn_building_entity(commands, cfg, b);
                 }
             }
         }

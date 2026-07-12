@@ -3,7 +3,7 @@ use rand::RngExt;
 
 use super::components::*;
 use crate::game::demand::RciDemand;
-use crate::game::map::{BuildingKind, MapConfig};
+use crate::game::map::BuildingKind;
 use crate::game::notifications::{NotificationKind, Notifications};
 use crate::game::sim::City;
 
@@ -15,10 +15,7 @@ pub fn upgrade_buildings(
     _city: ResMut<City>,
     mut notifications: Option<ResMut<Notifications>>,
     mut upgrade_clock: ResMut<BuildingUpgradeClock>,
-    cfg: Res<MapConfig>,
-    mut q_buildings: Query<(&mut Building, &mut Transform, &mut Mesh3d)>,
-    mut prims: ResMut<crate::game::render_primitives::RenderPrimitives>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    mut q_buildings: Query<&mut Building>,
 ) {
     let dt = time.delta_secs();
 
@@ -32,7 +29,7 @@ pub fn upgrade_buildings(
     // Check if notifications are available once
     let has_notifications = notifications.is_some();
 
-    for (mut building, mut transform, mut sprite) in q_buildings.iter_mut() {
+    for mut building in q_buildings.iter_mut() {
         // Only upgrade residential, commercial, and industrial buildings
         if !matches!(
             building.kind,
@@ -78,14 +75,8 @@ pub fn upgrade_buildings(
         // Population is now calculated from occupancy, not updated here
         // The occupancy system will adjust occupancy_residents based on new capacity and demand
 
-        // Visual change: size matches footprint exactly (footprint_width × footprint_length tiles)
-        // Sprite size must match the footprint - no scaling applied
-        let sprite_size = Vec2::new(
-            building.footprint_width as f32 * cfg.tile_size,
-            building.footprint_length as f32 * cfg.tile_size,
-        );
-        sprite.0 = prims.quad_mesh(&mut meshes, sprite_size);
-        transform.scale = Vec3::splat(1.0);
+        // Visuals rebuild themselves: `rebuild_building_visuals` reacts to
+        // Changed<Building> and swaps in the taller level mesh.
 
         // Emit notification
         if has_notifications {

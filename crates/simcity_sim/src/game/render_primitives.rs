@@ -72,7 +72,9 @@ impl RenderPrimitives {
             .or_insert_with(|| {
                 mats.add(StandardMaterial {
                     base_color: Color::srgba_u8(key[0], key[1], key[2], key[3]),
-                    unlit: true,
+                    // Lit since phase 5 (sun + shadows); matte so the flat
+                    // palette reads without specular glare.
+                    perceptual_roughness: 1.0,
                     alpha_mode: if key[3] < 255 {
                         AlphaMode::Blend
                     } else {
@@ -142,6 +144,9 @@ pub fn flat_quad(
         Mesh3d(quad),
         MeshMaterial3d(material),
         Transform::from_translation(xy.extend(z)).with_scale(size.extend(1.0)),
+        // Flat ground-plane quads have degenerate shadows — don't burn shadow-map
+        // fill on ~30k of them; buildings are the casters.
+        bevy::light::NotShadowCaster,
     )
 }
 
@@ -188,6 +193,5 @@ mod tests {
         assert_ne!(opaque, translucent);
         let m = mats.get(&translucent).unwrap();
         assert!(matches!(m.alpha_mode, AlphaMode::Blend));
-        assert!(m.unlit);
     }
 }

@@ -71,13 +71,7 @@ fn handle_load_test_city(
     mut land_value_idx: Option<ResMut<land_value::LandValueIndex>>,
     mut bus_reset: BusResetParams,
     mut day_out: bevy::ecs::message::MessageWriter<sim_events::DayAdvanced>,
-    render: (
-        ResMut<simcity_sim::game::render_primitives::RenderPrimitives>,
-        ResMut<Assets<Mesh>>,
-        ResMut<Assets<StandardMaterial>>,
-    ),
 ) {
-    let (mut prims, mut meshes, mut materials) = render;
     for cmd in cmd_reader.read() {
         if !matches!(cmd, commands::GameCommand::LoadTestCity) {
             continue;
@@ -89,9 +83,6 @@ fn handle_load_test_city(
             &cfg,
             &mut city,
             &mut intersections,
-            &mut prims,
-            &mut meshes,
-            &mut materials,
         );
         dirty.mark_all();
         road_dirty.mark_all();

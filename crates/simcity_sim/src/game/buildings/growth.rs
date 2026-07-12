@@ -29,9 +29,6 @@ pub struct GrowBuildingsParams<'w, 's> {
     commands: Commands<'w, 's>,
     q_buildings: Query<'w, 's, &'static Building>,
     notifications: Option<ResMut<'w, Notifications>>,
-    prims: ResMut<'w, crate::game::render_primitives::RenderPrimitives>,
-    meshes: ResMut<'w, Assets<Mesh>>,
-    materials: ResMut<'w, Assets<StandardMaterial>>,
 }
 
 /// GDD: Building growth happens every 1 game hour (via HourAdvanced event)
@@ -143,9 +140,6 @@ pub fn grow_buildings(mut p: GrowBuildingsParams) {
             kind,
             &p.city,
             false,
-            &mut p.prims,
-            &mut p.meshes,
-            &mut p.materials,
         );
 
         // Mark all footprint tiles as occupied

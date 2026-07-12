@@ -58,9 +58,34 @@ fn spawn_camera(mut commands: Commands) {
         Transform::from_translation(focus.extend(0.0) + boom_offset())
             .looking_at(focus.extend(0.0), Vec3::Z),
         CameraFocus(focus),
+        // Lit world (phase 5): soft fill so shadowed faces keep the palette readable.
+        AmbientLight {
+            color: Color::srgb(0.85, 0.9, 1.0),
+            brightness: 700.0,
+            ..default()
+        },
         MainCamera,
         PrimaryEguiContext,
         Name::new("MainCamera"),
+    ));
+
+    // Sun: world is Z-up — light comes from +Z with a sideways slant so facades
+    // catch light and buildings cast visible shadows.
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 12_000.0,
+            shadow_maps_enabled: true,
+            ..default()
+        },
+        Transform::from_xyz(150.0, -90.0, 220.0).looking_at(Vec3::ZERO, Vec3::Z),
+        // Default cascades end too close for an ortho camera 500 units out.
+        bevy::light::CascadeShadowConfigBuilder {
+            maximum_distance: 900.0,
+            first_cascade_far_bound: 500.0,
+            ..default()
+        }
+        .build(),
+        Name::new("Sun"),
     ));
 }
 

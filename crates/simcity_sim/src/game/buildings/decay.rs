@@ -8,6 +8,7 @@ use crate::game::sim_events::DayAdvanced;
 
 use super::components::*;
 use super::footprint::{all_footprint_tiles, any_footprint_tile, for_each_footprint_tile};
+use super::visual::BuildingTint;
 
 pub fn despawn_invalid_buildings(
     mut commands: Commands,
@@ -71,6 +72,27 @@ fn clear_footprint_cells(grid: &mut MapGrid, dirty: &mut DirtyTiles, b: &Buildin
     );
 }
 
+/// Insert/remove the decay warning tint only when it actually changes —
+/// re-inserting an identical tint every day would retrigger
+/// `Changed<BuildingTint>` and make the render side rebuild for nothing.
+fn set_tint(
+    commands: &mut Commands,
+    e: Entity,
+    current: Option<&BuildingTint>,
+    want: Option<Color>,
+) {
+    match (current, want) {
+        (Some(c), Some(w)) if c.0 == w => {}
+        (None, None) => {}
+        (_, Some(w)) => {
+            commands.entity(e).insert(BuildingTint(w));
+        }
+        (Some(_), None) => {
+            commands.entity(e).remove::<BuildingTint>();
+        }
+    }
+}
+
 /// GDD: Buildings without road access are demolished after 1 game day
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn building_decay_no_road_access(
@@ -83,10 +105,8 @@ pub fn building_decay_no_road_access(
         Entity,
         &Building,
         Option<&NoRoadAccessDecay>,
-        Option<&mut MeshMaterial3d<StandardMaterial>>,
+        Option<&BuildingTint>,
     )>,
-    mut prims: ResMut<crate::game::render_primitives::RenderPrimitives>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     // Check if any days advanced (only process decay on day changes)
     let _days_advanced = day_events.read().count();
@@ -106,15 +126,13 @@ pub fn building_decay_no_road_access(
                 commands.entity(e).remove::<NoRoadAccessDecay>();
             }
             // Restore normal color for service buildings
-            if let Some(mut sprite) = sprite
-                && matches!(
-                    b.kind,
-                    crate::game::map::BuildingKind::FireStation
-                        | crate::game::map::BuildingKind::PoliceStation
-                        | crate::game::map::BuildingKind::Hospital
-                )
-            {
-                sprite.0 = prims.material(&mut materials, b.kind.color());
+            if matches!(
+                b.kind,
+                crate::game::map::BuildingKind::FireStation
+                    | crate::game::map::BuildingKind::PoliceStation
+                    | crate::game::map::BuildingKind::Hospital
+            ) {
+                set_tint(&mut commands, e, sprite, None);
             }
             continue;
         }
@@ -150,11 +168,9 @@ pub fn building_decay_no_road_access(
                 crate::game::map::BuildingKind::FireStation
                     | crate::game::map::BuildingKind::PoliceStation
                     | crate::game::map::BuildingKind::Hospital
-            ) && let Some(mut sprite) = sprite
-            {
+            ) {
                 // Change color to red to indicate problem (GDD: visual marking for player)
-                sprite.0 =
-                    prims.material(&mut materials, bevy::prelude::Color::srgb(1.0, 0.3, 0.3)); // Red tint
+                set_tint(&mut commands, e, sprite, Some(Color::srgb(1.0, 0.3, 0.3)));
             }
 
             // Add decay component if not present
@@ -173,10 +189,9 @@ pub fn building_decay_no_road_access(
             crate::game::map::BuildingKind::FireStation
                 | crate::game::map::BuildingKind::PoliceStation
                 | crate::game::map::BuildingKind::Hospital
-        ) && let Some(mut sprite) = sprite
-        {
+        ) {
             // Keep red color as warning (building will be demolished)
-            sprite.0 = prims.material(&mut materials, bevy::prelude::Color::srgb(1.0, 0.3, 0.3));
+            set_tint(&mut commands, e, sprite, Some(Color::srgb(1.0, 0.3, 0.3)));
         }
 
         // Demolish: remove from sim state and despawn entity.
@@ -251,10 +266,8 @@ pub fn building_decay_low_happiness(
         Entity,
         &Building,
         Option<&LowHappinessDecay>,
-        Option<&mut MeshMaterial3d<StandardMaterial>>,
+        Option<&BuildingTint>,
     )>,
-    mut prims: ResMut<crate::game::render_primitives::RenderPrimitives>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let _days_advanced = day_events.read().count();
     let current_day = city.day;
@@ -293,8 +306,8 @@ pub fn building_decay_low_happiness(
             if decay.is_some() {
                 commands.entity(e).remove::<LowHappinessDecay>();
                 // Restore normal sprite color
-                if let Some(mut sprite) = sprite {
-                    sprite.0 = prims.material(&mut materials, b.kind.color());
+                {
+                    set_tint(&mut commands, e, sprite, None);
                 }
             }
             continue;
@@ -310,10 +323,9 @@ pub fn building_decay_low_happiness(
 
         // Visual indicator: yellow/orange tint for struggling buildings
         if days_with_low_happiness < LOW_HAPPINESS_GRACE_DAYS {
-            if let Some(mut sprite) = sprite {
+            {
                 // Yellow tint to indicate problems
-                sprite.0 =
-                    prims.material(&mut materials, bevy::prelude::Color::srgb(1.0, 0.8, 0.3));
+                set_tint(&mut commands, e, sprite, Some(Color::srgb(1.0, 0.8, 0.3)));
             }
 
             // Add decay component if not present
@@ -345,10 +357,8 @@ pub fn building_decay_economic(
         Entity,
         &Building,
         Option<&EconomicDecay>,
-        Option<&mut MeshMaterial3d<StandardMaterial>>,
+        Option<&BuildingTint>,
     )>,
-    mut prims: ResMut<crate::game::render_primitives::RenderPrimitives>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let _days_advanced = day_events.read().count();
     let current_day = city.day;
@@ -383,8 +393,8 @@ pub fn building_decay_economic(
             // Economic recovery
             if decay.is_some() {
                 commands.entity(e).remove::<EconomicDecay>();
-                if let Some(mut sprite) = sprite {
-                    sprite.0 = prims.material(&mut materials, b.kind.color());
+                {
+                    set_tint(&mut commands, e, sprite, None);
                 }
             }
             continue;
@@ -408,9 +418,8 @@ pub fn building_decay_economic(
             }
 
             // Visual indicator: purple tint for economic trouble
-            if let Some(mut sprite) = sprite {
-                sprite.0 =
-                    prims.material(&mut materials, bevy::prelude::Color::srgb(0.8, 0.5, 1.0));
+            {
+                set_tint(&mut commands, e, sprite, Some(Color::srgb(0.8, 0.5, 1.0)));
             }
             continue;
         }
