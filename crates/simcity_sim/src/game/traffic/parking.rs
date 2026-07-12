@@ -1,6 +1,6 @@
 use super::*;
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(super) fn update_parked_vehicle_positions(
     cfg: Res<MapConfig>,
     grid: Res<MapGrid>,
@@ -13,13 +13,15 @@ pub(super) fn update_parked_vehicle_positions(
         &Parked,
         Option<&ServiceVehicle>,
         &mut Transform,
-        &mut Sprite,
+        &mut MeshMaterial3d<StandardMaterial>,
     )>,
+    mut prims: ResMut<crate::game::render_primitives::RenderPrimitives>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     vehicle_agg.parked = VehicleAgg::default();
     parked_index.begin_frame(grid.len());
 
-    for (vehicle, traffic_state, parked, service, mut tf, mut sprite) in q_parked.iter_mut() {
+    for (vehicle, traffic_state, parked, service, mut tf, mut mat) in q_parked.iter_mut() {
         let Some(tile) = path_pool.get_tile(vehicle.path_handle, vehicle.path_cursor) else {
             continue;
         };
@@ -40,8 +42,8 @@ pub(super) fn update_parked_vehicle_positions(
         // cars get theirs back in spawn.rs's reuse branch).
         if service.is_none() {
             let parked_size = cfg.tile_size * 0.35;
-            sprite.custom_size = Some(Vec2::splat(parked_size));
-            sprite.color = Color::srgba(0.7, 0.7, 0.7, 0.7);
+            tf.scale = Vec3::new(parked_size, parked_size, 1.0);
+            mat.0 = prims.material(&mut materials, Color::srgba(0.7, 0.7, 0.7, 0.7));
         }
 
         // Get road direction to compute perpendicular offset

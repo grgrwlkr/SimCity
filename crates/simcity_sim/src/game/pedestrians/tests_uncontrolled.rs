@@ -10,6 +10,7 @@ use std::time::Duration;
 #[test]
 fn pedestrian_waits_for_safe_gap_on_uncontrolled_intersection() {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .add_message::<crate::game::trips::TripFinished>()
         .insert_resource(Time::<Fixed>::from_seconds(1.0 / 10.0))
@@ -139,6 +140,7 @@ fn pedestrian_waits_for_safe_gap_on_uncontrolled_intersection() {
 #[test]
 fn pedestrian_reroutes_after_long_wait_at_uncontrolled_intersection() {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .add_message::<crate::game::trips::TripFinished>()
         .insert_resource(Time::<Fixed>::from_seconds(1.0 / 10.0))

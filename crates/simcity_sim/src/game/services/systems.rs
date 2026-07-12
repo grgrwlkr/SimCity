@@ -10,12 +10,16 @@ use super::components::{
     ServiceKind, ServiceStation, ServiceVehicle, ServiceVehicleMarker, ServiceVehicleState,
 };
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn sync_service_stations_from_buildings(
     mut commands: Commands,
     cfg: Res<MapConfig>,
     grid: Res<MapGrid>,
     mut path_pool: ResMut<crate::game::transport::PathPool>,
     q_buildings: Query<(Entity, &Building, Option<&ServiceStation>)>,
+    mut prims: ResMut<crate::game::render_primitives::RenderPrimitives>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     for (entity, b, station) in q_buildings.iter() {
         let Some(kind) = ServiceKind::from_building(b.kind) else {
@@ -50,7 +54,17 @@ pub(crate) fn sync_service_stations_from_buildings(
         // Spawn parked vehicles (idle at station). They must not be despawned by traffic.
         for _ in 0..total {
             if let Some(start_pos) = adjacent_road_any(&grid, b.anchor_pos) {
-                spawn_service_vehicle(&mut commands, &cfg, &mut path_pool, kind, entity, start_pos);
+                spawn_service_vehicle(
+                    &mut commands,
+                    &cfg,
+                    &mut path_pool,
+                    kind,
+                    entity,
+                    start_pos,
+                    &mut prims,
+                    &mut meshes,
+                    &mut materials,
+                );
             }
         }
     }
@@ -93,6 +107,7 @@ pub fn adjacent_road_any(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
 
 use crate::game::map::tile_to_world;
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_service_vehicle(
     commands: &mut Commands,
     cfg: &MapConfig,
@@ -100,14 +115,29 @@ pub fn spawn_service_vehicle(
     kind: ServiceKind,
     station: Entity,
     start_pos: TilePos,
+    prims: &mut crate::game::render_primitives::RenderPrimitives,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
 ) -> Entity {
     let world_pos = tile_to_world(cfg, start_pos);
+    let glyph_quad = prims.quad.clone();
+    let glyph_mat = prims.material(materials, super::glyphs::GLYPH_COLOR);
 
     commands
         .spawn((
             // Car-shaped body in the kind's color (was a white 0.5 square + colored dot).
-            crate::game::public_transport::car_body_sprite(cfg, kind.vehicle_color()),
-            Transform::from_xyz(world_pos.x, world_pos.y, 12.0),
+            crate::game::public_transport::car_body_quad(
+                prims,
+                meshes,
+                materials,
+                cfg,
+                kind.vehicle_color(),
+            ),
+            Transform::from_xyz(
+                world_pos.x,
+                world_pos.y,
+                crate::game::render_primitives::layer::SERVICE_VEHICLE,
+            ),
             Vehicle {
                 is_reversing: false,
                 // Keep a "parked" tile so dispatch can build a route from the correct lane tile.
@@ -143,12 +173,20 @@ pub fn spawn_service_vehicle(
             // tells the service apart at a glance. The first glyph child carries
             // VehicleRoofMarker + ServiceVehicleMarker (exactly one per vehicle — the soak
             // harness counts ServiceVehicleMarker as the service-vehicle count).
-            super::glyphs::spawn_service_glyph(parent, kind, cfg.tile_size * 0.35, 1.0, |first| {
-                first.insert((
-                    crate::game::public_transport::VehicleRoofMarker,
-                    ServiceVehicleMarker,
-                ));
-            });
+            super::glyphs::spawn_service_glyph(
+                parent,
+                kind,
+                cfg.tile_size * 0.35,
+                crate::game::render_primitives::layer::CHILD_ABOVE,
+                glyph_quad,
+                glyph_mat,
+                |first| {
+                    first.insert((
+                        crate::game::public_transport::VehicleRoofMarker,
+                        ServiceVehicleMarker,
+                    ));
+                },
+            );
         })
         .id()
 }
@@ -231,12 +269,16 @@ pub(crate) fn park_returned_service_vehicles(
 mod visual_tests {
     use super::*;
     use crate::game::map::{MapConfig, TilePos};
+    use crate::game::render_primitives::RenderPrimitives;
     use crate::game::traffic::{VEHICLE_VISUAL_LENGTH_TILES, VEHICLE_VISUAL_WIDTH_TILES};
 
     fn setup(
         mut commands: Commands,
         cfg: Res<MapConfig>,
         mut pool: ResMut<crate::game::transport::PathPool>,
+        mut prims: ResMut<RenderPrimitives>,
+        mut meshes: ResMut<Assets<Mesh>>,
+        mut materials: ResMut<Assets<StandardMaterial>>,
     ) {
         let station = commands.spawn_empty().id();
         spawn_service_vehicle(
@@ -246,6 +288,9 @@ mod visual_tests {
             ServiceKind::Fire,
             station,
             TilePos { x: 2, y: 2 },
+            &mut prims,
+            &mut meshes,
+            &mut materials,
         );
     }
 
@@ -258,30 +303,62 @@ mod visual_tests {
             tile_size: 16.0,
         })
         .insert_resource(crate::game::transport::PathPool::default())
-        .add_systems(Startup, setup);
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<StandardMaterial>>();
+        let quad = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Rectangle::new(1.0, 1.0));
+        app.insert_resource(RenderPrimitives::for_test(quad));
+        app.add_systems(Startup, setup);
         app.update();
 
-        // The parent (the ServiceVehicle entity) carries the car-shaped body sprite.
+        // The parent (the ServiceVehicle entity) carries the car-shaped body quad:
+        // a SIZED mesh (scale = 1) so child glyphs don't inherit a squash.
         let mut q = app
             .world_mut()
-            .query_filtered::<&Sprite, With<ServiceVehicle>>();
-        let sprite = q
+            .query_filtered::<(&Mesh3d, &MeshMaterial3d<StandardMaterial>, &Transform), With<ServiceVehicle>>();
+        let (mesh, mat, tf) = q
             .iter(app.world())
             .next()
             .expect("a service vehicle spawned");
+        let (mesh, mat, scale) = (mesh.0.clone(), mat.0.clone(), tf.scale);
         let expect = Vec2::new(
             16.0 * VEHICLE_VISUAL_LENGTH_TILES,
             16.0 * VEHICLE_VISUAL_WIDTH_TILES,
         );
+        // Contract: the body is the shared SIZED mesh for the car dimensions
+        // (scale stays 1 so glyph children don't inherit a squash).
+        let expected_mesh =
+            app.world_mut()
+                .resource_scope(|world, mut prims: Mut<RenderPrimitives>| {
+                    let mut meshes = world.resource_mut::<Assets<Mesh>>();
+                    prims.quad_mesh(&mut meshes, expect)
+                });
         assert_eq!(
-            sprite.custom_size,
-            Some(expect),
-            "service body must be car-shaped, not a 0.5 square"
+            mesh, expected_mesh,
+            "service body must be the car-sized quad, not a 0.5 square"
         );
         assert_eq!(
-            sprite.color,
-            ServiceKind::Fire.vehicle_color(),
-            "service body keeps its kind color"
+            scale,
+            Vec3::ONE,
+            "car body uses a sized mesh, scale must stay 1 for the glyph children"
+        );
+        let material = app
+            .world()
+            .resource::<Assets<StandardMaterial>>()
+            .get(&mat)
+            .expect("body material exists");
+        // Cache quantizes to 8-bit RGBA — compare within one quantum.
+        let (a, b) = (
+            material.base_color.to_srgba(),
+            ServiceKind::Fire.vehicle_color().to_srgba(),
+        );
+        assert!(
+            (a.red - b.red).abs() < 1.5 / 255.0
+                && (a.green - b.green).abs() < 1.5 / 255.0
+                && (a.blue - b.blue).abs() < 1.5 / 255.0,
+            "service body keeps its kind color (got {a:?}, want {b:?})"
         );
     }
 }

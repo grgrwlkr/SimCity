@@ -49,6 +49,7 @@ pub mod layer {
 pub struct RenderPrimitives {
     pub quad: Handle<Mesh>,
     cache: HashMap<[u8; 4], Handle<StandardMaterial>>,
+    sized: HashMap<[u32; 2], Handle<Mesh>>,
 }
 
 impl RenderPrimitives {
@@ -83,9 +84,29 @@ impl RenderPrimitives {
             .clone()
     }
 
+    /// Test-only constructor for headless harnesses (no PreStartup init).
+    pub fn for_test(quad: Handle<Mesh>) -> Self {
+        Self {
+            quad,
+            cache: HashMap::new(),
+            sized: HashMap::new(),
+        }
+    }
+
     /// Number of distinct cached materials (bounded-cache pins).
     pub fn cache_len(&self) -> usize {
         self.cache.len()
+    }
+
+    /// Shared quad mesh of an exact size (scale = 1). Entities WITH CHILDREN must
+    /// use this instead of scaling the unit quad: `Transform.scale` propagates to
+    /// children and would squash glyphs/roof markers; a sized mesh does not.
+    pub fn quad_mesh(&mut self, meshes: &mut Assets<Mesh>, size: Vec2) -> Handle<Mesh> {
+        let key = [size.x.to_bits(), size.y.to_bits()];
+        self.sized
+            .entry(key)
+            .or_insert_with(|| meshes.add(Rectangle::new(size.x, size.y)))
+            .clone()
     }
 }
 
@@ -93,7 +114,20 @@ fn init_render_primitives(mut commands: Commands, mut meshes: ResMut<Assets<Mesh
     commands.insert_resource(RenderPrimitives {
         quad: meshes.add(Rectangle::new(1.0, 1.0)),
         cache: HashMap::new(),
+        sized: HashMap::new(),
     });
+}
+
+/// Insert the render-primitive resources into a headless (test) `App` that
+/// doesn't run `RenderPrimitivesPlugin`'s PreStartup init.
+pub fn init_for_test(app: &mut App) {
+    app.init_resource::<Assets<Mesh>>();
+    app.init_resource::<Assets<StandardMaterial>>();
+    let quad = app
+        .world_mut()
+        .resource_mut::<Assets<Mesh>>()
+        .add(Rectangle::new(1.0, 1.0));
+    app.insert_resource(RenderPrimitives::for_test(quad));
 }
 
 /// World-quad bundle: unit quad scaled to `size`, at `xy` on height `z`.
@@ -120,6 +154,7 @@ mod tests {
             RenderPrimitives {
                 quad: Handle::default(),
                 cache: HashMap::new(),
+                sized: HashMap::new(),
             },
             Assets::default(),
         )

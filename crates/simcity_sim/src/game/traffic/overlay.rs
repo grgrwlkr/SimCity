@@ -18,6 +18,7 @@ pub(super) struct TrafficOverlayPool {
 }
 
 /// Render traffic overlay on road tiles.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn render_traffic_overlay(
     ui: Res<UiState>,
     cfg: Res<MapConfig>,

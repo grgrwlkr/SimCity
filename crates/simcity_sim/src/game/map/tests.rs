@@ -115,6 +115,7 @@ fn send_road_on_water_once(mut out: MessageWriter<GameCommand>, mut sent: ResMut
 #[test]
 fn command_apply_marks_dirty_and_bumps_graph_version_on_road_change() {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_message::<GameCommand>()
         .add_message::<UndoRedoRequested>()
         .add_message::<crate::game::sim_events::DayAdvanced>()
@@ -161,6 +162,7 @@ fn command_apply_marks_dirty_and_bumps_graph_version_on_road_change() {
 #[test]
 fn water_tiles_are_not_buildable_by_commands() {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_message::<GameCommand>()
         .add_message::<UndoRedoRequested>()
         .add_message::<crate::game::sim_events::DayAdvanced>()
@@ -221,6 +223,7 @@ fn water_tiles_are_not_buildable_by_commands() {
 fn build_command_apply_app(width: i32, height: i32) -> App {
     let tile_count = (width as usize) * (height as usize);
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_message::<GameCommand>()
         .add_message::<UndoRedoRequested>()
         .add_message::<crate::game::sim_events::DayAdvanced>()

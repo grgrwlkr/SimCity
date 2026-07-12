@@ -10,7 +10,7 @@ use super::components::ServiceKind;
 use crate::game::map::BuildingKind;
 
 /// Glyph paint color: near-white, contrasts with every service body/building color.
-const GLYPH_COLOR: Color = Color::srgb(0.95, 0.95, 0.95);
+pub(crate) const GLYPH_COLOR: Color = Color::srgb(0.95, 0.95, 0.95);
 
 /// Sprite pieces (size, local translation, z-rotation in radians) composing `kind`'s glyph,
 /// scaled to an overall glyph box of side `size`. The FIRST piece is the glyph's "primary" child —
@@ -59,25 +59,25 @@ pub(crate) fn glyph_pieces(kind: ServiceKind, size: f32) -> Vec<(Vec2, Vec2, f32
 /// the parent sprite. `mark_first` receives the FIRST child's `EntityCommands` so callers can
 /// attach marker components (vehicle roofs attach `VehicleRoofMarker` + `ServiceVehicleMarker`
 /// there — exactly once per glyph).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_service_glyph(
     parent: &mut ChildSpawnerCommands,
     kind: ServiceKind,
     size: f32,
     z: f32,
+    quad: Handle<Mesh>,
+    glyph_mat: Handle<StandardMaterial>,
     mut mark_first: impl FnMut(&mut EntityCommands),
 ) {
     for (i, (piece_size, offset, rot)) in glyph_pieces(kind, size).into_iter().enumerate() {
         let mut child = parent.spawn((
-            Sprite {
-                color: GLYPH_COLOR,
-                custom_size: Some(piece_size),
-                ..default()
-            },
+            Mesh3d(quad.clone()),
+            MeshMaterial3d(glyph_mat.clone()),
             Transform {
                 // Tiny per-piece z stagger avoids same-layer z-fighting between the pieces.
                 translation: offset.extend(z + i as f32 * 0.01),
                 rotation: Quat::from_rotation_z(rot),
-                ..default()
+                scale: piece_size.extend(1.0),
             },
         ));
         if i == 0 {
@@ -102,12 +102,22 @@ pub(crate) fn attach_building_glyph(
     building: &mut EntityCommands,
     kind: BuildingKind,
     tile_size: f32,
+    quad: Handle<Mesh>,
+    glyph_mat: Handle<StandardMaterial>,
 ) {
     let Some(service) = service_building_kind(kind) else {
         return;
     };
     building.with_children(|parent| {
-        spawn_service_glyph(parent, service, tile_size * 1.5, 1.0, |_| {});
+        spawn_service_glyph(
+            parent,
+            service,
+            tile_size * 1.5,
+            crate::game::render_primitives::layer::CHILD_ABOVE,
+            quad,
+            glyph_mat,
+            |_| {},
+        );
     });
 }
 

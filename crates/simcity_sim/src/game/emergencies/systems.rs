@@ -771,12 +771,19 @@ pub(crate) fn track_emergency_index(
 use crate::game::map::tile_to_world;
 
 /// Sync visual markers to active emergencies: spawn for new, despawn for resolved, blink.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn sync_emergency_markers(
     time: Res<Time>,
     cfg: Res<crate::game::map::MapConfig>,
     mut commands: Commands,
     q_emergencies: Query<(Entity, &Emergency)>,
-    mut q_markers: Query<(Entity, &mut EmergencyMarker, &mut Sprite)>,
+    mut q_markers: Query<(
+        Entity,
+        &mut EmergencyMarker,
+        &mut MeshMaterial3d<StandardMaterial>,
+    )>,
+    mut prims: ResMut<crate::game::render_primitives::RenderPrimitives>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let emergency_entities: std::collections::HashSet<Entity> =
         q_emergencies.iter().map(|(e, _)| e).collect();
@@ -804,22 +811,24 @@ pub(crate) fn sync_emergency_markers(
                 kind: emergency.kind,
                 blink_timer: Timer::from_seconds(0.5, TimerMode::Repeating),
             },
-            Sprite {
-                color,
-                custom_size: Some(Vec2::splat(cfg.tile_size * 0.4)),
-                ..default()
-            },
-            Transform::from_xyz(world.x, world.y, 15.0),
+            crate::game::render_primitives::flat_quad(
+                prims.quad.clone(),
+                prims.material(&mut materials, color),
+                world,
+                crate::game::render_primitives::layer::EMERGENCY_MARKER,
+                Vec2::splat(cfg.tile_size * 0.4),
+            ),
         ));
     }
 
     // Blink existing markers (run after spawn/despawn so we don't mutate during iteration).
-    for (_, mut marker, mut sprite) in q_markers.iter_mut() {
+    for (_, mut marker, mut mat) in q_markers.iter_mut() {
         marker.blink_timer.tick(time.delta());
         if marker.blink_timer.just_finished() {
             let base = marker.kind.marker_color();
-            let alpha = if sprite.color.alpha() > 0.5 { 0.3 } else { 1.0 };
-            sprite.color = base.with_alpha(alpha);
+            let bright = prims.material(&mut materials, base.with_alpha(1.0));
+            let dim = prims.material(&mut materials, base.with_alpha(0.3));
+            mat.0 = if mat.0 == bright { dim } else { bright };
         }
     }
 }

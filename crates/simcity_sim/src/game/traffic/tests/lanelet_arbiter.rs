@@ -125,6 +125,7 @@ fn build_arbiter_app() -> (App, Entity, Entity) {
     let lanes = build_lane_graph_inner(&grid, &gv);
 
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
             1.0 / 10.0,
@@ -269,6 +270,7 @@ fn build_single_vehicle_arbiter_app(route: Vec<TilePos>) -> (App, Entity) {
     let lanes = build_lane_graph_inner(&grid, &gv);
 
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
             1.0 / 10.0,
@@ -416,6 +418,7 @@ fn build_unresolved_left_arbiter_app(route: Vec<TilePos>) -> (App, Entity) {
     let lanes = build_lane_graph_inner(&grid, &gv);
 
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
             1.0 / 10.0,
@@ -584,6 +587,7 @@ fn build_bare_arbiter_app(customize: impl FnOnce(&mut App)) -> App {
     let lanes = build_lane_graph_inner(&grid, &gv);
 
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
             1.0 / 10.0,
@@ -1226,6 +1230,7 @@ fn build_bare_arbiter_app_4x4(customize: impl FnOnce(&mut App)) -> App {
     let lanes = build_lane_graph_inner(&grid, &gv);
 
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
             1.0 / 10.0,
@@ -1445,6 +1450,7 @@ fn build_full_chain_arbiter_app_4x4(customize: impl FnOnce(&mut App)) -> App {
     let lanes = build_lane_graph_inner(&grid, &gv);
 
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .add_message::<TripFinished>()
         .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
@@ -1653,6 +1659,7 @@ fn granted_approaching_does_not_pre_lock_conflicting_candidate() {
 fn build_move_app_4x4() -> App {
     let (grid, idx) = cross_grid_4x4();
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .add_message::<TripFinished>()
         .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(

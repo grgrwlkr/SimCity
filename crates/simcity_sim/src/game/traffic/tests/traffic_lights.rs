@@ -5,6 +5,7 @@ use super::*;
 #[test]
 fn intersection_tiles_ignore_tile_capacity_gate_in_move_vehicles() {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
             1.0 / 10.0,
@@ -137,6 +138,7 @@ fn intersection_tiles_ignore_tile_capacity_gate_in_move_vehicles() {
 #[test]
 fn traffic_light_stop_line_is_on_approach_tile_not_in_intersection() {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .add_message::<TripFinished>()
         .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
@@ -300,6 +302,7 @@ fn traffic_light_stop_line_is_on_approach_tile_not_in_intersection() {
 #[test]
 fn vehicle_inside_signalized_intersection_is_forced_to_crossing_state() {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .insert_resource(MapConfig {
             width: 3,
@@ -428,6 +431,7 @@ fn vehicle_inside_signalized_intersection_is_forced_to_crossing_state() {
 #[test]
 fn protected_left_releases_left_turner() {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
 
     let approach = TilePos { x: 1, y: 0 };
     let intersection_tile = TilePos { x: 1, y: 1 };
@@ -561,6 +565,7 @@ fn protected_left_releases_left_turner() {
 #[test]
 fn right_turn_on_red_speed_is_capped_to_turn_speed() {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .add_message::<TripFinished>()
         .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(

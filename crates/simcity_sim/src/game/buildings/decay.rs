@@ -72,6 +72,7 @@ fn clear_footprint_cells(grid: &mut MapGrid, dirty: &mut DirtyTiles, b: &Buildin
 }
 
 /// GDD: Buildings without road access are demolished after 1 game day
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn building_decay_no_road_access(
     mut day_events: MessageReader<'_, '_, DayAdvanced>,
     mut commands: Commands,
@@ -82,8 +83,10 @@ pub fn building_decay_no_road_access(
         Entity,
         &Building,
         Option<&NoRoadAccessDecay>,
-        Option<&mut Sprite>,
+        Option<&mut MeshMaterial3d<StandardMaterial>>,
     )>,
+    mut prims: ResMut<crate::game::render_primitives::RenderPrimitives>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     // Check if any days advanced (only process decay on day changes)
     let _days_advanced = day_events.read().count();
@@ -111,7 +114,7 @@ pub fn building_decay_no_road_access(
                         | crate::game::map::BuildingKind::Hospital
                 )
             {
-                sprite.color = b.kind.color();
+                sprite.0 = prims.material(&mut materials, b.kind.color());
             }
             continue;
         }
@@ -150,7 +153,8 @@ pub fn building_decay_no_road_access(
             ) && let Some(mut sprite) = sprite
             {
                 // Change color to red to indicate problem (GDD: visual marking for player)
-                sprite.color = bevy::prelude::Color::srgb(1.0, 0.3, 0.3); // Red tint
+                sprite.0 =
+                    prims.material(&mut materials, bevy::prelude::Color::srgb(1.0, 0.3, 0.3)); // Red tint
             }
 
             // Add decay component if not present
@@ -172,7 +176,7 @@ pub fn building_decay_no_road_access(
         ) && let Some(mut sprite) = sprite
         {
             // Keep red color as warning (building will be demolished)
-            sprite.color = bevy::prelude::Color::srgb(1.0, 0.3, 0.3);
+            sprite.0 = prims.material(&mut materials, bevy::prelude::Color::srgb(1.0, 0.3, 0.3));
         }
 
         // Demolish: remove from sim state and despawn entity.
@@ -235,6 +239,7 @@ fn has_adjacent_road(grid: &MapGrid, pos: TilePos) -> bool {
 ///
 /// Buildings with average happiness below LOW_HAPPINESS_THRESHOLD for LOW_HAPPINESS_GRACE_DAYS
 /// become abandoned and are demolished.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn building_decay_low_happiness(
     mut day_events: MessageReader<'_, '_, DayAdvanced>,
     mut commands: Commands,
@@ -246,8 +251,10 @@ pub fn building_decay_low_happiness(
         Entity,
         &Building,
         Option<&LowHappinessDecay>,
-        Option<&mut Sprite>,
+        Option<&mut MeshMaterial3d<StandardMaterial>>,
     )>,
+    mut prims: ResMut<crate::game::render_primitives::RenderPrimitives>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let _days_advanced = day_events.read().count();
     let current_day = city.day;
@@ -287,7 +294,7 @@ pub fn building_decay_low_happiness(
                 commands.entity(e).remove::<LowHappinessDecay>();
                 // Restore normal sprite color
                 if let Some(mut sprite) = sprite {
-                    sprite.color = b.kind.color();
+                    sprite.0 = prims.material(&mut materials, b.kind.color());
                 }
             }
             continue;
@@ -305,7 +312,8 @@ pub fn building_decay_low_happiness(
         if days_with_low_happiness < LOW_HAPPINESS_GRACE_DAYS {
             if let Some(mut sprite) = sprite {
                 // Yellow tint to indicate problems
-                sprite.color = bevy::prelude::Color::srgb(1.0, 0.8, 0.3);
+                sprite.0 =
+                    prims.material(&mut materials, bevy::prelude::Color::srgb(1.0, 0.8, 0.3));
             }
 
             // Add decay component if not present
@@ -319,20 +327,14 @@ pub fn building_decay_low_happiness(
         }
 
         // Grace period expired - abandon building
-        demolish_building(
-            e,
-            b,
-            &mut commands,
-            &mut grid,
-            &mut dirty,
-            sprite.as_deref(),
-        );
+        demolish_building(e, b, &mut commands, &mut grid, &mut dirty);
     }
 }
 
 /// Track and process building decay due to economic losses.
 ///
 /// Buildings with cumulative losses below ECONOMIC_LOSSES_THRESHOLD are abandoned.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn building_decay_economic(
     mut day_events: MessageReader<'_, '_, DayAdvanced>,
     mut commands: Commands,
@@ -343,8 +345,10 @@ pub fn building_decay_economic(
         Entity,
         &Building,
         Option<&EconomicDecay>,
-        Option<&mut Sprite>,
+        Option<&mut MeshMaterial3d<StandardMaterial>>,
     )>,
+    mut prims: ResMut<crate::game::render_primitives::RenderPrimitives>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let _days_advanced = day_events.read().count();
     let current_day = city.day;
@@ -380,7 +384,7 @@ pub fn building_decay_economic(
             if decay.is_some() {
                 commands.entity(e).remove::<EconomicDecay>();
                 if let Some(mut sprite) = sprite {
-                    sprite.color = b.kind.color();
+                    sprite.0 = prims.material(&mut materials, b.kind.color());
                 }
             }
             continue;
@@ -405,20 +409,14 @@ pub fn building_decay_economic(
 
             // Visual indicator: purple tint for economic trouble
             if let Some(mut sprite) = sprite {
-                sprite.color = bevy::prelude::Color::srgb(0.8, 0.5, 1.0);
+                sprite.0 =
+                    prims.material(&mut materials, bevy::prelude::Color::srgb(0.8, 0.5, 1.0));
             }
             continue;
         }
 
         // Economic losses exceeded threshold - abandon building
-        demolish_building(
-            e,
-            b,
-            &mut commands,
-            &mut grid,
-            &mut dirty,
-            sprite.as_deref(),
-        );
+        demolish_building(e, b, &mut commands, &mut grid, &mut dirty);
     }
 }
 
@@ -429,13 +427,7 @@ fn demolish_building(
     commands: &mut Commands,
     grid: &mut ResMut<MapGrid>,
     dirty: &mut ResMut<DirtyTiles>,
-    sprite: Option<&Sprite>,
 ) {
-    // Visual indicator before demolition: red tint
-    if let Some(_sprite) = sprite {
-        // Sprite color already set by caller
-    }
-
     // Clear all footprint tiles
     for_each_footprint_tile(
         b.anchor_pos,

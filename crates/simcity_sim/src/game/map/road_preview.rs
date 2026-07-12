@@ -18,7 +18,7 @@ pub(super) struct RoadPreviewPool {
 }
 
 /// Render transparent preview of road being built.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn road_preview_render(
     mut commands: Commands,
     road_build: Res<RoadBuildState>,

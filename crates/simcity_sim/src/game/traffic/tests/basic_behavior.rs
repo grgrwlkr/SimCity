@@ -5,6 +5,7 @@ use super::*;
 #[test]
 fn vehicle_arrival_emits_trip_finished() {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .add_message::<TripFinished>()
         .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
@@ -80,6 +81,7 @@ fn vehicle_arrival_emits_trip_finished() {
 #[test]
 fn lateral_tile_swap_on_same_direction_lanes_does_not_deadlock_forever() {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .add_message::<TripFinished>()
         .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
@@ -202,6 +204,7 @@ fn lateral_tile_swap_on_same_direction_lanes_does_not_deadlock_forever() {
 #[test]
 fn swap_breaker_is_inert_for_normal_queueing() {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .add_message::<TripFinished>()
         .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
@@ -304,6 +307,7 @@ fn swap_breaker_is_inert_for_normal_queueing() {
 /// so soft braking is insufficient — only the hard clamp prevents the overlap.
 fn overlap_clamp_app() -> App {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .add_message::<TripFinished>()
         .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
@@ -541,6 +545,7 @@ fn free_flow_follower_not_throttled_by_clamp() {
 #[test]
 fn stuck_reverse_never_backs_into_intersection_box() {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .add_message::<TripFinished>()
         .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
@@ -650,6 +655,7 @@ fn bus_with_exhausted_path_is_not_despawned_by_move_vehicles() {
     use crate::game::public_transport::{Bus, BusState};
 
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .add_message::<TripFinished>()
         .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(

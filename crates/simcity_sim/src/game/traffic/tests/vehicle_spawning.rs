@@ -5,6 +5,7 @@ use super::*;
 #[test]
 fn yellow_allows_proceeding_if_too_late_to_stop_comfortably() {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
             1.0 / 10.0,
@@ -146,6 +147,7 @@ fn yellow_allows_proceeding_if_too_late_to_stop_comfortably() {
 #[test]
 fn car_trip_spawns_from_citizen_car_parked_at_not_from() {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .add_message::<TripRequested>();
 
@@ -248,6 +250,7 @@ fn car_trip_spawns_from_citizen_car_parked_at_not_from() {
 #[test]
 fn owned_car_is_parked_on_arrival_not_despawned() {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .add_message::<TripFinished>()
         .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
@@ -314,7 +317,8 @@ fn owned_car_is_parked_on_arrival_not_despawned() {
     let car = app
         .world_mut()
         .spawn((
-            Sprite::default(),
+            Mesh3d(Handle::default()),
+            MeshMaterial3d::<StandardMaterial>(Handle::default()),
             vehicle,
             Transform::default(),
             VehicleTrafficState::FreeFlow,

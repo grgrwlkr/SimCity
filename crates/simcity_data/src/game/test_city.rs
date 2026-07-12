@@ -19,12 +19,16 @@ use crate::game::sim::City;
 
 /// Generate a test city with roads, zoning markup, and service infrastructure.
 /// R/C/I stays zoning-only at load time; service buildings are prebuilt.
+#[allow(clippy::too_many_arguments)]
 pub fn generate_test_city(
     commands: &mut Commands,
     grid: &mut MapGrid,
     cfg: &MapConfig,
     city: &mut City,
     intersections: &mut IntersectionIndex,
+    prims: &mut simcity_sim::game::render_primitives::RenderPrimitives,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
 ) {
     // Reset city state
     city.money = 50000;
@@ -457,10 +461,10 @@ pub fn generate_test_city(
     // =========================================================================
 
     // Helper to place a service building near a road with footprint 3x3
-    let place_service_building = |commands: &mut Commands,
-                                  grid: &mut MapGrid,
-                                  center: TilePos,
-                                  kind: BuildingKind|
+    let mut place_service_building = |commands: &mut Commands,
+                                      grid: &mut MapGrid,
+                                      center: TilePos,
+                                      kind: BuildingKind|
      -> bool {
         // Search for a valid spot near the center that can fit a 3x3 footprint
         for radius in 0i32..15 {
@@ -562,6 +566,9 @@ pub fn generate_test_city(
                         kind,
                         city,
                         true,
+                        prims,
+                        meshes,
+                        materials,
                     );
                     return true;
                 }

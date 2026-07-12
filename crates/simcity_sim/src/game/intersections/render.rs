@@ -51,6 +51,8 @@ pub(crate) fn sync_traffic_light_visuals(
     q_lights: Query<&TrafficLight>,
     q_visuals: Query<Entity, With<TrafficLightVisual>>,
     mut layout_state: Local<TrafficLightVisualLayoutState>,
+    mut prims: ResMut<crate::game::render_primitives::RenderPrimitives>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let (light_count, light_hash) = traffic_light_set_signature(&q_lights);
     let needs_rebuild = q_visuals.is_empty()
@@ -101,8 +103,13 @@ pub(crate) fn sync_traffic_light_visuals(
             let color = get_light_color_for_direction(light, entry_dir);
 
             commands.spawn((
-                Sprite::from_color(color, Vec2::splat(cfg.tile_size * 0.25)),
-                Transform::from_translation(Vec3::new(light_pos.x, light_pos.y, 12.0)),
+                crate::game::render_primitives::flat_quad(
+                    prims.quad.clone(),
+                    prims.material(&mut materials, color),
+                    light_pos,
+                    crate::game::render_primitives::layer::TRAFFIC_LIGHT,
+                    Vec2::splat(cfg.tile_size * 0.25),
+                ),
                 TrafficLightVisual,
                 TrafficLightVisualMeta {
                     intersection_id: light.intersection_id,
@@ -118,21 +125,30 @@ pub(crate) fn sync_traffic_light_visuals(
 /// Runs every frame but only updates sprite colors (no entity churn).
 pub fn render_traffic_lights(
     q_lights: Query<&TrafficLight>,
-    mut q_visuals: Query<(&TrafficLightVisualMeta, &mut Sprite), With<TrafficLightVisual>>,
+    mut q_visuals: Query<
+        (
+            &TrafficLightVisualMeta,
+            &mut MeshMaterial3d<StandardMaterial>,
+        ),
+        With<TrafficLightVisual>,
+    >,
     mut lights_by_id: Local<HashMap<IntersectionId, TrafficLight>>,
+    mut prims: ResMut<crate::game::render_primitives::RenderPrimitives>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     lights_by_id.clear();
     for light in q_lights.iter() {
         lights_by_id.insert(light.intersection_id, light.clone());
     }
 
-    for (meta, mut sprite) in q_visuals.iter_mut() {
-        if let Some(light) = lights_by_id.get(&meta.intersection_id) {
-            sprite.color = get_light_color_for_direction(light, meta.entry_dir);
+    for (meta, mut mat) in q_visuals.iter_mut() {
+        let color = if let Some(light) = lights_by_id.get(&meta.intersection_id) {
+            get_light_color_for_direction(light, meta.entry_dir)
         } else {
             // Should be rare (stale visual until next sync), keep it visibly inactive.
-            sprite.color = Color::srgba(0.4, 0.4, 0.4, 0.35);
-        }
+            Color::srgba(0.4, 0.4, 0.4, 0.35)
+        };
+        mat.0 = prims.material(&mut materials, color);
     }
 }
 

@@ -14,6 +14,7 @@ pub(super) struct LaneMarkingIndex {
 }
 
 /// Incrementally updates lane marking overlay for road tiles that changed this frame.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn sync_lane_markings(
     mut commands: Commands,
     cfg: Res<MapConfig>,

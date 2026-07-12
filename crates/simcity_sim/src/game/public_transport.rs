@@ -71,6 +71,8 @@ fn render_bus_stops(
     route_mgr: Res<BusRouteManager>,
     q_markers: Query<Entity, With<BusStopMarker>>,
     mut last_version: Local<Option<u64>>,
+    mut prims: ResMut<RenderPrimitives>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     if *last_version == Some(route_mgr.version) {
         return;
@@ -83,12 +85,13 @@ fn render_bus_stops(
         for &stop in &route.stops {
             let world = tile_to_world(&cfg, stop);
             commands.spawn((
-                Sprite {
-                    color: BUS_STOP_COLOR,
-                    custom_size: Some(Vec2::splat(cfg.tile_size * 0.7)),
-                    ..default()
-                },
-                Transform::from_xyz(world.x, world.y, 9.0),
+                crate::game::render_primitives::flat_quad(
+                    prims.quad.clone(),
+                    prims.material(&mut materials, BUS_STOP_COLOR),
+                    world,
+                    layer::BUS_STOP,
+                    Vec2::splat(cfg.tile_size * 0.7),
+                ),
                 BusStopMarker,
             ));
         }
@@ -312,26 +315,41 @@ fn plan_from_tile(
 }
 
 use crate::game::map::tile_to_world;
+use crate::game::render_primitives::{RenderPrimitives, layer};
 
-/// Car-shaped body sprite (same dimensions as regular vehicles). Shared by buses/service vehicles.
-pub(crate) fn car_body_sprite(cfg: &MapConfig, body: Color) -> Sprite {
-    Sprite {
-        color: body,
-        custom_size: Some(Vec2::new(
-            cfg.tile_size * VEHICLE_VISUAL_LENGTH_TILES,
-            cfg.tile_size * VEHICLE_VISUAL_WIDTH_TILES,
-        )),
-        ..default()
-    }
+/// Car-shaped body quad (same dimensions as regular vehicles). Shared by buses/service
+/// vehicles. Uses a SIZED mesh (scale = 1) because these entities carry glyph/roof children
+/// and `Transform.scale` would squash them.
+pub(crate) fn car_body_quad(
+    prims: &mut RenderPrimitives,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    cfg: &MapConfig,
+    body: Color,
+) -> (Mesh3d, MeshMaterial3d<StandardMaterial>) {
+    let size = Vec2::new(
+        cfg.tile_size * VEHICLE_VISUAL_LENGTH_TILES,
+        cfg.tile_size * VEHICLE_VISUAL_WIDTH_TILES,
+    );
+    (
+        Mesh3d(prims.quad_mesh(meshes, size)),
+        MeshMaterial3d(prims.material(materials, body)),
+    )
 }
 
-/// Roof-symbol child sprite (small contrasting square that reads as "special vehicle").
-pub(crate) fn roof_marker_sprite(cfg: &MapConfig, color: Color) -> Sprite {
-    Sprite {
-        color,
-        custom_size: Some(Vec2::splat(cfg.tile_size * 0.35)),
-        ..default()
-    }
+/// Roof-symbol child quad (small contrasting square that reads as "special vehicle").
+pub(crate) fn roof_marker_quad(
+    prims: &mut RenderPrimitives,
+    materials: &mut Assets<StandardMaterial>,
+    cfg: &MapConfig,
+    color: Color,
+) -> impl Bundle {
+    (
+        Mesh3d(prims.quad.clone()),
+        MeshMaterial3d(prims.material(materials, color)),
+        Transform::from_xyz(0.0, 0.0, layer::CHILD_ABOVE)
+            .with_scale(Vec2::splat(cfg.tile_size * 0.35).extend(1.0)),
+    )
 }
 
 /// Spawn one bus per route as a real `Vehicle` on a lanelet-first route (road-A* fallback) to its
@@ -343,18 +361,24 @@ fn spawn_buses(
     grid: Res<MapGrid>,
     cfg: Res<MapConfig>,
     traffic_cfg: Res<TrafficConfig>,
+    render: (
+        ResMut<RenderPrimitives>,
+        ResMut<Assets<Mesh>>,
+        ResMut<Assets<StandardMaterial>>,
+    ),
     traffic: Res<TrafficOccupancy>,
     graph: Res<RoadGraph>,
     regions: Res<RegionGraph>,
     path_cfg: Res<PathfindingConfig>,
     intersections: Res<IntersectionIndex>,
     time: Res<Time>,
-    mut path_cache: ResMut<PathCache>,
-    mut path_pool: ResMut<PathPool>,
+    paths: (ResMut<PathCache>, ResMut<PathPool>),
     q_existing: Query<&Bus>,
     mut next_retry_by_route: Local<std::collections::HashMap<u32, f64>>,
     mut replan: LaneletReplanRes,
 ) {
+    let (mut prims, mut meshes, mut materials) = render;
+    let (mut path_cache, mut path_pool) = paths;
     let now_sec = time.elapsed_secs_f64();
     for route in &route_mgr.routes {
         if route.stops.len() < 2 {
@@ -397,8 +421,8 @@ fn spawn_buses(
         let world_pos = tile_to_world(&cfg, start);
         commands
             .spawn((
-                car_body_sprite(&cfg, BUS_COLOR),
-                Transform::from_xyz(world_pos.x, world_pos.y, 10.0),
+                car_body_quad(&mut prims, &mut meshes, &mut materials, &cfg, BUS_COLOR),
+                Transform::from_xyz(world_pos.x, world_pos.y, layer::VEHICLE),
                 Vehicle {
                     path_handle,
                     path_cursor: 0,
@@ -425,8 +449,7 @@ fn spawn_buses(
             ))
             .with_children(|parent| {
                 parent.spawn((
-                    roof_marker_sprite(&cfg, BUS_ROOF_COLOR),
-                    Transform::from_xyz(0.0, 0.0, 1.0),
+                    roof_marker_quad(&mut prims, &mut materials, &cfg, BUS_ROOF_COLOR),
                     VehicleRoofMarker,
                 ));
             });

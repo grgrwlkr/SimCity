@@ -10,6 +10,7 @@ use std::time::Duration;
 #[test]
 fn pedestrian_waits_for_allowed_phase_before_entering_intersection() {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .add_message::<crate::game::trips::TripFinished>()
         .insert_resource(Time::<Fixed>::from_seconds(1.0 / 10.0))
@@ -153,6 +154,7 @@ fn pedestrian_waits_for_allowed_phase_before_entering_intersection() {
 #[test]
 fn pedestrian_can_finish_crossing_inside_signalized_intersection_after_phase_changes() {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .add_message::<crate::game::trips::TripFinished>()
         .insert_resource(Time::<Fixed>::from_seconds(1.0 / 10.0))

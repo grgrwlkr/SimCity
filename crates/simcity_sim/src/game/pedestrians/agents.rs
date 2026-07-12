@@ -77,6 +77,8 @@ pub(crate) fn update_pedestrian_blocked_timers(
 
 #[derive(SystemParam)]
 pub(super) struct SpawnWalkersParams<'w, 's> {
+    prims: ResMut<'w, crate::game::render_primitives::RenderPrimitives>,
+    materials: ResMut<'w, Assets<StandardMaterial>>,
     commands: Commands<'w, 's>,
     grid: Res<'w, MapGrid>,
     cfg: Res<'w, MapConfig>,
@@ -136,11 +138,14 @@ pub(super) fn spawn_walkers(
 
         let world = tile_to_world(&p.cfg, start_tile);
         p.commands.spawn((
-            Sprite::from_color(
-                Color::srgb(0.95, 0.55, 0.10),
+            crate::game::render_primitives::flat_quad(
+                p.prims.quad.clone(),
+                p.prims
+                    .material(&mut p.materials, Color::srgb(0.95, 0.55, 0.10)),
+                world,
+                crate::game::render_primitives::layer::PEDESTRIAN,
                 Vec2::splat(p.cfg.tile_size * 0.20),
             ),
-            Transform::from_xyz(world.x, world.y, 12.0),
             Pedestrian {
                 route,
                 route_idx: 0,

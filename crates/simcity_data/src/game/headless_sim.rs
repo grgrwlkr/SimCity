@@ -38,6 +38,9 @@ pub fn build_headless_game() -> App {
         .insert_resource(bevy::asset::Assets::<bevy::gizmos::GizmoAsset>::default())
         // Normally provided by EguiPlugin (absent headless); `EguiContexts` params need it.
         .init_resource::<bevy_egui::EguiUserTextures>();
+    // Mesh/material assets normally provided by AssetPlugin+RenderPlugin (absent headless);
+    // the flat-quad world renderer's spawn/recolor systems need them.
+    simcity_sim::game::render_primitives::init_for_test(&mut app);
     app.world_mut()
         .resource_mut::<ui_state::UiState>()
         .sim_speed = ui_state::SimSpeed::Paused;

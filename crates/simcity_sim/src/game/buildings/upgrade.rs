@@ -16,7 +16,9 @@ pub fn upgrade_buildings(
     mut notifications: Option<ResMut<Notifications>>,
     mut upgrade_clock: ResMut<BuildingUpgradeClock>,
     cfg: Res<MapConfig>,
-    mut q_buildings: Query<(&mut Building, &mut Transform, &mut Sprite)>,
+    mut q_buildings: Query<(&mut Building, &mut Transform, &mut Mesh3d)>,
+    mut prims: ResMut<crate::game::render_primitives::RenderPrimitives>,
+    mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let dt = time.delta_secs();
 
@@ -82,7 +84,7 @@ pub fn upgrade_buildings(
             building.footprint_width as f32 * cfg.tile_size,
             building.footprint_length as f32 * cfg.tile_size,
         );
-        sprite.custom_size = Some(sprite_size);
+        sprite.0 = prims.quad_mesh(&mut meshes, sprite_size);
         transform.scale = Vec3::splat(1.0);
 
         // Emit notification

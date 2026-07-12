@@ -337,6 +337,7 @@ fn occupancy_increases_even_when_fill_days_gt_two() {
     use crate::game::sim_events::DayAdvanced;
 
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .add_message::<DayAdvanced>()
         .insert_resource(RciDemand {
@@ -458,6 +459,7 @@ fn economic_decay_abandons_unprofitable_building() {
     use crate::game::sim_events::DayAdvanced;
 
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .add_message::<DayAdvanced>()
         .insert_resource(City::default()) // day = 1

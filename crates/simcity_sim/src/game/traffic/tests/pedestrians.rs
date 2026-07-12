@@ -12,6 +12,7 @@ fn vehicle_does_not_enter_uncontrolled_intersection_while_pedestrian_is_crossing
     use crate::game::pedestrians::PedestrianCrossing;
 
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .add_message::<TripFinished>()
         .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(

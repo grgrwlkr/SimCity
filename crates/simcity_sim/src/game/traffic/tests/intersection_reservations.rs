@@ -9,6 +9,7 @@ use super::*;
 #[test]
 fn intersection_tile_with_kind_none_does_not_force_speed_to_zero() {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .insert_resource(bevy::time::Time::<bevy::time::Fixed>::from_seconds(
             1.0 / 10.0,

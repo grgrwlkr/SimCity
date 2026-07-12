@@ -175,7 +175,7 @@ pub(super) fn spawn_trip_vehicles(
             }
 
             if let Some(e) = reuse_e
-                && let Ok((_e, _owner, mut v, mut tf, mut sprite)) = p.q_parked_cars.get_mut(e)
+                && let Ok((_e, _owner, mut v, mut tf, mut mat)) = p.q_parked_cars.get_mut(e)
             {
                 let world_pos = tile_to_world(&p.cfg, start);
                 // Release old path if any
@@ -192,15 +192,18 @@ pub(super) fn spawn_trip_vehicles(
 
                 tf.translation.x = world_pos.x;
                 tf.translation.y = world_pos.y;
-                tf.translation.z = 10.0;
+                tf.translation.z = crate::game::render_primitives::layer::VEHICLE;
 
                 // Restore "active vehicle" visuals (parked vehicles are smaller + translucent).
-                // Use rectangular sprite: length (along travel direction) x width (perpendicular)
-                sprite.custom_size = Some(Vec2::new(
+                // Citizen cars are leaf entities (no children), so scale carries the body size.
+                tf.scale = Vec3::new(
                     p.cfg.tile_size * VEHICLE_VISUAL_LENGTH_TILES,
                     p.cfg.tile_size * VEHICLE_VISUAL_WIDTH_TILES,
-                ));
-                sprite.color = Color::linear_rgb(0.95, 0.95, 0.95);
+                    1.0,
+                );
+                mat.0 = p
+                    .prims
+                    .material(&mut p.materials, Color::linear_rgb(0.95, 0.95, 0.95));
 
                 p.commands
                     .entity(e)
@@ -230,15 +233,21 @@ pub(super) fn spawn_trip_vehicles(
         let max_speed = sample_driver_max_speed_world(&p.cfg, &p.traffic_cfg, &mut p.sim_rng.rng);
 
         let mut e = p.commands.spawn((
-            Sprite {
-                color: Color::linear_rgb(0.95, 0.95, 0.95),
-                custom_size: Some(Vec2::new(
-                    p.cfg.tile_size * VEHICLE_VISUAL_LENGTH_TILES,
-                    p.cfg.tile_size * VEHICLE_VISUAL_WIDTH_TILES,
-                )),
-                ..default()
-            },
-            Transform::from_xyz(world_pos.x, world_pos.y, 10.0),
+            Mesh3d(p.prims.quad.clone()),
+            MeshMaterial3d(
+                p.prims
+                    .material(&mut p.materials, Color::linear_rgb(0.95, 0.95, 0.95)),
+            ),
+            Transform::from_xyz(
+                world_pos.x,
+                world_pos.y,
+                crate::game::render_primitives::layer::VEHICLE,
+            )
+            .with_scale(Vec3::new(
+                p.cfg.tile_size * VEHICLE_VISUAL_LENGTH_TILES,
+                p.cfg.tile_size * VEHICLE_VISUAL_WIDTH_TILES,
+                1.0,
+            )),
             Vehicle {
                 is_reversing: false,
                 path_handle: p.path_pool.intern(route),
@@ -272,6 +281,7 @@ pub(super) fn spawn_trip_vehicles(
 }
 
 #[derive(SystemParam)]
+#[allow(clippy::type_complexity)]
 pub(super) struct SpawnTripVehiclesParams<'w, 's> {
     commands: Commands<'w, 's>,
     grid: Res<'w, MapGrid>,
@@ -298,13 +308,15 @@ pub(super) struct SpawnTripVehiclesParams<'w, 's> {
             &'static CarOwner,
             &'static mut Vehicle,
             &'static mut Transform,
-            &'static mut Sprite,
+            &'static mut MeshMaterial3d<StandardMaterial>,
         ),
         With<Parked>,
     >,
     traffic_cfg: Res<'w, TrafficConfig>,
     sim_rng: bevy::prelude::ResMut<'w, crate::game::sim::SimRng>,
     producer_stats: ResMut<'w, RouteProducerStats>,
+    prims: ResMut<'w, crate::game::render_primitives::RenderPrimitives>,
+    materials: ResMut<'w, Assets<StandardMaterial>>,
 }
 
 /// Despawn all vehicles when GameCommand::GenerateMap is received.

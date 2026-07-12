@@ -5,6 +5,7 @@ use super::*;
 #[test]
 fn parked_owned_car_is_reused_for_next_car_trip() {
     let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
     app.add_plugins(MinimalPlugins)
         .add_message::<TripRequested>();
 
@@ -86,7 +87,8 @@ fn parked_owned_car_is_reused_for_next_car_trip() {
     let car = app
         .world_mut()
         .spawn((
-            Sprite::default(),
+            Mesh3d(Handle::default()),
+            MeshMaterial3d::<StandardMaterial>(Handle::default()),
             vehicle,
             Transform::default(),
             VehicleTrafficState::FreeFlow,
