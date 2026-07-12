@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::game::map::{MapConfig, MapGrid, TilePos};
+use crate::game::map::{MapConfig, MapGrid, TilePos, tile_to_world};
 use crate::game::ui_state::{OverlayMode, UiState};
 
 use super::TrafficOccupancy;
@@ -43,8 +43,6 @@ pub(super) fn render_traffic_overlay(
 
     let max_heat = occ.max_heat().max(0.001);
 
-    let origin = super::map_origin(&cfg);
-
     // (Re)build cached overlay entities if needed.
     if pool.entries.is_empty() || pool.grid_len != grid.len() {
         // Clear any stale entities.
@@ -66,7 +64,7 @@ pub(super) fn render_traffic_overlay(
                     continue;
                 }
 
-                let world = origin + Vec2::new(x as f32 * cfg.tile_size, y as f32 * cfg.tile_size);
+                let world = tile_to_world(&cfg, pos);
 
                 let e = commands
                     .spawn((

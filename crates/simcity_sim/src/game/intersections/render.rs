@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 
-use crate::game::map::{MapConfig, MapGrid, TilePos};
+use crate::game::map::{MapConfig, MapGrid, TilePos, tile_to_world};
 use crate::game::roads::RoadDir;
 
 use super::index::{IntersectionId, IntersectionIndex};
@@ -201,12 +201,7 @@ fn calculate_light_position(
     entry_dir: RoadDir,
     traffic_cfg: &crate::game::traffic::TrafficConfig,
 ) -> Vec2 {
-    let origin = map_origin(cfg);
-    let tile_center = origin
-        + Vec2::new(
-            approach_tile.x as f32 * cfg.tile_size,
-            approach_tile.y as f32 * cfg.tile_size,
-        );
+    let tile_center = tile_to_world(cfg, approach_tile);
 
     // Offset to the right side of the road (relative to direction of travel)
     // For right-hand traffic: right side is to the right when facing the direction of travel
@@ -245,11 +240,4 @@ fn get_light_color_for_direction(light: &TrafficLight, entry_dir: RoadDir) -> Co
     } else {
         Color::srgba(0.9, 0.2, 0.2, 0.8) // Red
     }
-}
-
-fn map_origin(cfg: &MapConfig) -> Vec2 {
-    Vec2::new(
-        -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
-        -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
-    )
 }

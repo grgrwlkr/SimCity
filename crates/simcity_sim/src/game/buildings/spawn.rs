@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::game::map::{BuildingKind, MapConfig, TilePos};
+use crate::game::map::{BuildingKind, MapConfig, TilePos, tile_f_to_world};
 use crate::game::sim::City;
 
 use super::components::*;
@@ -18,11 +18,10 @@ pub fn spawn_building_entity(
     city: &City,
     spawn_operational: bool,
 ) {
-    let origin = map_origin(cfg);
     // Position at center of footprint
     let center_x = anchor_pos.x as f32 + (footprint_width as f32 - 1.0) * 0.5;
     let center_y = anchor_pos.y as f32 + (footprint_length as f32 - 1.0) * 0.5;
-    let world = origin + Vec2::new(center_x * cfg.tile_size, center_y * cfg.tile_size);
+    let world = tile_f_to_world(cfg, center_x, center_y);
     let mut tf = Transform::from_translation(Vec3::new(world.x, world.y, 8.0));
 
     // Scale sprite to match footprint size
@@ -73,13 +72,6 @@ pub fn spawn_building_entity(
         tf,
     ));
     crate::game::services::glyphs::attach_building_glyph(&mut building, kind, cfg.tile_size);
-}
-
-fn map_origin(cfg: &MapConfig) -> Vec2 {
-    Vec2::new(
-        -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
-        -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
-    )
 }
 
 /// Calculate parking spot positions inside building footprint (GDD 10.3.4)

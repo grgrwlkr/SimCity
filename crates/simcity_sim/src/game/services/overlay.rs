@@ -140,15 +140,13 @@ pub(super) fn render_service_coverage_overlay(
         4.2,
     );
 
-    let origin = map_origin(&cfg);
-
     // Update tint layer.
     for (i, (pos, color)) in tint_tiles.into_iter().enumerate() {
         let e = pool.tint[i];
         if let Ok((mut sprite, mut tf, mut vis)) = q_tint.get_mut(e) {
             sprite.color = color;
             sprite.custom_size = Some(Vec2::splat(cfg.tile_size));
-            let w = origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size);
+            let w = tile_to_world(&cfg, pos);
             tf.translation.x = w.x;
             tf.translation.y = w.y;
             tf.translation.z = 4.0;
@@ -167,7 +165,7 @@ pub(super) fn render_service_coverage_overlay(
         if let Ok((mut sprite, mut tf, mut vis)) = q_uncovered.get_mut(e) {
             sprite.color = Color::srgba(0.9, 0.1, 0.1, 0.25);
             sprite.custom_size = Some(Vec2::splat(cfg.tile_size));
-            let w = origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size);
+            let w = tile_to_world(&cfg, pos);
             tf.translation.x = w.x;
             tf.translation.y = w.y;
             tf.translation.z = 4.2;
@@ -216,9 +214,4 @@ fn ensure_pool<M: Component + Copy>(
     }
 }
 
-fn map_origin(cfg: &MapConfig) -> Vec2 {
-    Vec2::new(
-        -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
-        -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
-    )
-}
+use crate::game::map::tile_to_world;

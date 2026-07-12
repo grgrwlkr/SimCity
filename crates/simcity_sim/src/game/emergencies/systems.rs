@@ -768,13 +768,7 @@ pub(crate) fn track_emergency_index(
     }
 }
 
-/// Get the world origin for tile coordinates.
-fn map_origin(cfg: &crate::game::map::MapConfig) -> Vec2 {
-    Vec2::new(
-        -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
-        -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
-    )
-}
+use crate::game::map::tile_to_world;
 
 /// Sync visual markers to active emergencies: spawn for new, despawn for resolved, blink.
 pub(crate) fn sync_emergency_markers(
@@ -797,17 +791,12 @@ pub(crate) fn sync_emergency_markers(
     // Spawn markers for emergencies that don't have one.
     let marker_emergencies: std::collections::HashSet<Entity> =
         q_markers.iter().map(|(_, m, _)| m.emergency).collect();
-    let origin = map_origin(&cfg);
 
     for (emergency_entity, emergency) in q_emergencies.iter() {
         if marker_emergencies.contains(&emergency_entity) {
             continue;
         }
-        let world = origin
-            + Vec2::new(
-                emergency.pos.x as f32 * cfg.tile_size,
-                emergency.pos.y as f32 * cfg.tile_size,
-            );
+        let world = tile_to_world(&cfg, emergency.pos);
         let color = emergency.kind.marker_color();
         commands.spawn((
             EmergencyMarker {

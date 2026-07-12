@@ -168,7 +168,6 @@ fn render_zone_placement_overlay(
         return;
     }
 
-    let origin = map_origin(&cfg);
     let needed = cache.valid_positions.len();
     if pool.entries.len() < needed {
         let to_add = needed - pool.entries.len();
@@ -200,8 +199,7 @@ fn render_zone_placement_overlay(
         if let Ok((mut sprite, mut tf, mut vis)) = q_tiles.get_mut(e) {
             sprite.color = Color::srgba(0.2, 0.8, 0.2, 0.25);
             sprite.custom_size = Some(Vec2::splat(cfg.tile_size));
-            let world =
-                origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size);
+            let world = tile_to_world(&cfg, *pos);
             tf.translation.x = world.x;
             tf.translation.y = world.y;
             tf.translation.z = 3.0;
@@ -224,12 +222,7 @@ fn render_zone_placement_overlay(
     pool.last_tile_size = cfg.tile_size;
 }
 
-fn map_origin(cfg: &MapConfig) -> Vec2 {
-    Vec2::new(
-        -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
-        -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
-    )
-}
+use crate::game::map::tile_to_world;
 
 #[cfg(test)]
 mod tests {

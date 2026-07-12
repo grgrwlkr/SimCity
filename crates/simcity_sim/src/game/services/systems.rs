@@ -91,10 +91,7 @@ pub fn adjacent_road_any(grid: &MapGrid, pos: TilePos) -> Option<TilePos> {
     None
 }
 
-fn tile_to_world(cfg: &MapConfig, pos: TilePos) -> Vec2 {
-    let origin = map_origin(cfg);
-    origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size)
-}
+use crate::game::map::tile_to_world;
 
 pub fn spawn_service_vehicle(
     commands: &mut Commands,
@@ -228,13 +225,6 @@ pub(crate) fn park_returned_service_vehicles(
                 .min(station.total_vehicles);
         }
     }
-}
-
-fn map_origin(cfg: &MapConfig) -> Vec2 {
-    Vec2::new(
-        -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
-        -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
-    )
 }
 
 #[cfg(test)]

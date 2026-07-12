@@ -57,9 +57,7 @@ pub(super) fn update_parked_vehicle_positions(
         };
 
         // Calculate base tile position
-        let origin = map_origin(&cfg);
-        let base_world =
-            origin + Vec2::new(tile.x as f32 * cfg.tile_size, tile.y as f32 * cfg.tile_size);
+        let base_world = tile_to_world(&cfg, tile);
 
         // Offset by half tile to the edge (parked on the shoulder)
         let offset_amount = cfg.tile_size * 0.35 * parked.offset;

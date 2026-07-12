@@ -311,14 +311,7 @@ fn plan_from_tile(
     None
 }
 
-/// World position of a tile center, matching the traffic renderer's `map_origin` convention.
-fn tile_to_world(cfg: &MapConfig, pos: TilePos) -> Vec2 {
-    let origin = Vec2::new(
-        -((cfg.width - 1) as f32) * cfg.tile_size * 0.5,
-        -((cfg.height - 1) as f32) * cfg.tile_size * 0.5,
-    );
-    origin + Vec2::new(pos.x as f32 * cfg.tile_size, pos.y as f32 * cfg.tile_size)
-}
+use crate::game::map::tile_to_world;
 
 /// Car-shaped body sprite (same dimensions as regular vehicles). Shared by buses/service vehicles.
 pub(crate) fn car_body_sprite(cfg: &MapConfig, body: Color) -> Sprite {
