@@ -24,7 +24,7 @@ const PITCH_MAX: f32 = 1.35; // ~77 deg — almost top-down
 const KEY_ROTATE_SPEED: f32 = 1.6;
 const MOUSE_ROTATE_SENS: f32 = 0.008;
 /// Zoom easing half-life factor (bigger = snappier).
-const ZOOM_EASE: f32 = 8.0;
+const ZOOM_EASE: f32 = 3.5;
 
 /// Orbitable camera rig above a ground focus point.
 #[derive(Component, Debug, Clone, Copy)]
@@ -220,8 +220,9 @@ fn camera_keyboard_pan(
     let right = tf.right().truncate().normalize_or_zero();
     let up = tf.up().truncate().normalize_or_zero();
 
-    // The settings slider (default 200) maps to the tuned 1500 world units/s.
-    let speed_world_units_per_sec = settings.camera_speed * 7.5;
+    // Slider default 200 -> 700 world units/s at zoom 1, scaled by the zoom
+    // level so a close-up camera crawls and a far view flies (citybuilder feel).
+    let speed_world_units_per_sec = settings.camera_speed * 3.5 * rig.zoom_target.max(0.25);
     let delta = (right * dir.x + up * dir.y).normalize_or_zero()
         * speed_world_units_per_sec
         * time.delta_secs();
@@ -238,7 +239,7 @@ fn camera_mouse_wheel_zoom(
     for ev in mouse_wheel.read() {
         // Touchpad swipes deliver many small events — keep them gentle; the
         // settings slider (default 0.1) scales overall zoom responsiveness.
-        let base = if ev.y.abs() < 0.5 { 0.015 } else { 0.08 };
+        let base = if ev.y.abs() < 0.5 { 0.010 } else { 0.06 };
         zoom_delta += ev.y * base * (settings.zoom_speed / 0.1);
     }
     if zoom_delta == 0.0 {
