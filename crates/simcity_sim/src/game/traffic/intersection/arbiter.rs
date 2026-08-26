@@ -671,6 +671,7 @@ pub(crate) fn arbitrate_grants_inner(
 }
 
 #[derive(SystemParam)]
+#[allow(clippy::type_complexity)]
 pub(crate) struct ArbitrateLaneletParams<'w, 's> {
     grid: Res<'w, MapGrid>,
     intersections: Res<'w, IntersectionIndex>,
