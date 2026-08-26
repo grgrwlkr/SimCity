@@ -133,9 +133,16 @@ pub(crate) fn lanelet_readiness(
         };
     }
     let Some(light) = light else {
-        // Signalized cluster with no cached light this tick: do not admit.
+        // Signalized per the SET but no live TrafficLight entity this tick. The state machine
+        // already treats this intersection as uncontrolled FreeFlow
+        // (update_vehicle_traffic_state), so a permanent refusal here would freeze every
+        // approach at the line while cars keep rolling up to it — the set/entity desync window
+        // (deferred entity spawn between the command-apply set mutation and the sync system)
+        // must not become a forever-red. Fall back to UNSIGNALIZED yield rules: the conflict
+        // matrix still serializes everything collision-relevant. Counted in
+        // `missing_light_treated_unsignalized` for observability.
         return Readiness {
-            ready: false,
+            ready: true,
             is_right_on_red: false,
         };
     };
@@ -422,6 +429,10 @@ pub struct ArbiterTickStats {
     pub refused_matrix: u32,
     /// Whole-box coarse admissions this tick (must trend to ~0 once turns resolve to real lanelets).
     pub coarse_admits: u32,
+    /// Signalized-set members with no live TrafficLight entity this tick: treated as unsignalized
+    /// (yield rules) to match the state machine. Persistently high ⇒ set/entity desync that the
+    /// index retain hardening should have eliminated.
+    pub missing_light_treated_unsignalized: u32,
     /// Per-maneuver admit split (success counters; sum ≤ admitted).
     pub admitted_straight: u32,
     pub admitted_right: u32,
@@ -767,6 +778,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
     let mut drop_stale_lanelet = 0u32;
     let mut drop_other = 0u32;
     let mut candidates_built = 0u32;
+    let mut missing_light_treated_unsignalized = 0u32;
 
     for (e, v, state, plan, parked) in p.q_vehicles.iter() {
         // Position tile: the route tile at the cursor, falling back to the route's LAST tile for
@@ -938,6 +950,9 @@ pub(crate) fn arbitrate_lanelet_reservations(
         }
 
         let signalized = intersections.traffic_lights.contains(&id);
+        if signalized && !lights_by_id.contains_key(&id) {
+            missing_light_treated_unsignalized += 1;
+        }
         let readiness = lanelet_readiness(
             signalized,
             lights_by_id.get(&id),
@@ -1058,6 +1073,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
     stats.drop_other_collection = drop_other;
     stats.refused_matrix = counts.refused_matrix;
     stats.coarse_admits = counts.coarse_admits;
+    stats.missing_light_treated_unsignalized = missing_light_treated_unsignalized;
     stats.admitted_straight = counts.admitted_straight;
     stats.admitted_right = counts.admitted_right;
     stats.admitted_left = counts.admitted_left;

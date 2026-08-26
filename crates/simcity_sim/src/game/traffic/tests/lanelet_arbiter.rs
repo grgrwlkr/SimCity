@@ -524,6 +524,47 @@ fn stale_sidecar_plan_is_ignored_in_favor_of_geometry_fallback() {
     );
 }
 
+/// FIX: a cluster marked signalized in `traffic_lights` but with no live `TrafficLight` entity
+/// (the deferred-entity-spawn desync window between command-apply and the sync system) must
+/// admit under UNSIGNALIZED yield rules — matching the state machine's FreeFlow treatment —
+/// instead of refusing forever while cars roll up to a forever-red.
+#[test]
+fn signalized_set_without_light_entity_admits_unsignalized() {
+    // Northbound straight through the 2x2 box.
+    let straight_route = vec![
+        TilePos { x: 4, y: 3 },
+        TilePos { x: 4, y: 4 },
+        TilePos { x: 4, y: 5 },
+        TilePos { x: 4, y: 6 },
+    ];
+
+    let (mut app, vehicle) = build_single_vehicle_arbiter_app(straight_route);
+    // Mark signalized, but never spawn a TrafficLight entity.
+    app.world_mut()
+        .resource_mut::<crate::game::intersections::IntersectionIndex>()
+        .traffic_lights
+        .insert(IntersectionId(0));
+    app.update();
+
+    let res = app.world().resource::<IntersectionReservations>();
+    assert!(
+        res.is_reserved_by(IntersectionId(0), vehicle),
+        "a signalized-set cluster with no light entity must admit (unsignalized rules), not \
+         freeze the approach at a forever-red"
+    );
+    let stats = app.world().resource::<ArbiterTickStats>();
+    assert!(
+        stats.admitted_straight >= 1,
+        "admitted via the unsignalized path; got straight={:?}",
+        stats.admitted_straight
+    );
+    assert!(
+        stats.missing_light_treated_unsignalized >= 1,
+        "the desync must be observable in the counter; got {:?}",
+        stats.missing_light_treated_unsignalized
+    );
+}
+
 /// Forcing fixture for the unresolved-TURN case: same cross grid, but the northbound approach lane
 /// adjacent to the box (4,3) is made `StraightOnly` BEFORE the lane/lanelet graph is built. With the
 /// lane policy now permitting left turns from a Regular lane, a left lanelet would normally build; a
