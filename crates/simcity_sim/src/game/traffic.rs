@@ -180,8 +180,11 @@ const LANE_CHANGE_COOLDOWN_SECS: f32 = 1.5;
 const OVERTAKE_HOLD_SECS: f32 = 3.0;
 /// Guardrail: max number of lane-change reroutes per tick.
 const MAX_LANE_CHANGES_PER_TICK: usize = 24;
-/// Disable lane changes when an intersection is close ahead on the route.
-const LANE_CHANGE_INTERSECTION_LOOKAHEAD: usize = 6;
+/// Disable lane changes when an intersection is this close ahead on the route (tiles). Small
+/// enough to let a queued platoon fill the second lane up to the stop line, large enough to
+/// avoid last-instant merges: the lane-change planner re-validates through the lanelet planner,
+/// so an illegal (wrong-lane) approach change is refused by geometry anyway.
+const LANE_CHANGE_INTERSECTION_LOOKAHEAD: usize = 3;
 /// Trigger overtake if a slow leader is within this distance (in tiles, along-route approximation).
 const OVERTAKE_LOOKAHEAD_TILES: f32 = 2.0;
 /// Leader is considered "slow" if below this fraction of our desired speed.
