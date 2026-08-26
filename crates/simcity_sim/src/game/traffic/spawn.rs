@@ -336,7 +336,11 @@ pub(super) fn clear_vehicles(
             occ.ema_global = 1.0;
             occ.max_scaled = 0.0;
             *idx = TrafficIndex::default();
-            reservations.by_intersection.clear();
+            // Full reset, not just by_intersection: the ledger's holders are only ever released
+            // through dropped by_intersection rows, so leaving them behind would keep despawned
+            // vehicles' active_mask bits refusing conflicting maneuvers until the next
+            // GraphVersion bump.
+            reservations.reset();
             car_owner_index.clear();
             *counts = TrafficVehicleCounts::default();
         }
