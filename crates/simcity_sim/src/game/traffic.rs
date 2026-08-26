@@ -93,7 +93,7 @@ pub use parked_tile_index::ParkedVehicleTileIndex;
 /// Distance to detect traffic lights ahead (in tiles).
 const TRAFFIC_LIGHT_DETECTION_DISTANCE: f32 = 8.0;
 
-/// Vehicle sprite size in tile units (length).
+/// Vehicle mesh size in tile units (length).
 ///
 /// GDD requirement: vehicles are visually 2 tiles long, but must fit within a lane.
 /// IMPORTANT: Our movement uses the vehicle center point, and rendering uses `Transform` at that

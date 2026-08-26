@@ -31,7 +31,7 @@ const BUS_MAX_SPEED_KMH: f32 = 55.0;
 /// Bus-stop map marker color (cyan, distinct from vehicles/roads).
 const BUS_STOP_COLOR: Color = Color::srgb(0.15, 0.85, 0.9);
 
-/// Marker on the child roof-symbol sprite of a special vehicle (bus / service).
+/// Marker on the child roof-symbol quad of a special vehicle (bus / service).
 #[derive(Component)]
 pub struct VehicleRoofMarker;
 
@@ -63,7 +63,7 @@ impl Plugin for PublicTransportPlugin {
 }
 
 /// (Re)spawn one map marker per route stop whenever the route set changes (route seeded, reset,
-/// or replaced — keyed on `BusRouteManager::version`). Markers are plain sprites at the stop tile
+/// or replaced — keyed on `BusRouteManager::version`). Markers are flat quads at the stop tile
 /// centres, drawn just under the vehicle layer.
 fn render_bus_stops(
     mut commands: Commands,

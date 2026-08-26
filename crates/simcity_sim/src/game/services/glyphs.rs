@@ -1,7 +1,7 @@
-//! Geometric service glyphs — sprite compositions shared by vehicle roofs and building overlays.
+//! Geometric service glyphs — quad compositions shared by vehicle roofs and building overlays.
 //!
 //! One builder, two scales: Medical = cross (2 rects), Police = badge diamond (1 rotated square),
-//! Fire = ladder (2 rails + 2 rungs). Pure sprites — consistent with the rest of the map renderer,
+//! Fire = ladder (2 rails + 2 rungs). Pure meshes — consistent with the rest of the map renderer,
 //! no fonts/text machinery.
 
 use bevy::prelude::*;
@@ -12,7 +12,7 @@ use crate::game::map::BuildingKind;
 /// Glyph paint color: near-white, contrasts with every service body/building color.
 pub(crate) const GLYPH_COLOR: Color = Color::srgb(0.95, 0.95, 0.95);
 
-/// Sprite pieces (size, local translation, z-rotation in radians) composing `kind`'s glyph,
+/// Quad pieces (size, local translation, z-rotation in radians) composing `kind`'s glyph,
 /// scaled to an overall glyph box of side `size`. The FIRST piece is the glyph's "primary" child —
 /// vehicle spawns hang their marker components on it (exactly one marker per vehicle, the soak
 /// harness counts them).
@@ -55,8 +55,8 @@ pub(crate) fn glyph_pieces(kind: ServiceKind, size: f32) -> Vec<(Vec2, Vec2, f32
     }
 }
 
-/// Spawn `kind`'s glyph as child sprites of the current entity. `z` is the local z offset above
-/// the parent sprite. `mark_first` receives the FIRST child's `EntityCommands` so callers can
+/// Spawn `kind`'s glyph as child quads of the current entity. `z` is the local z offset above
+/// the parent's visual. `mark_first` receives the FIRST child's `EntityCommands` so callers can
 /// attach marker components (vehicle roofs attach `VehicleRoofMarker` + `ServiceVehicleMarker`
 /// there — exactly once per glyph).
 #[allow(clippy::too_many_arguments)]

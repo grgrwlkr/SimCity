@@ -176,7 +176,7 @@ pub(crate) fn sync_traffic_light_visuals(
 
 /// Update traffic light visual colors from current light phases.
 ///
-/// Runs every frame but only updates sprite colors (no entity churn).
+/// Runs every frame but only updates tint colors (no entity churn).
 pub fn render_traffic_lights(
     q_lights: Query<&TrafficLight>,
     mut q_visuals: Query<

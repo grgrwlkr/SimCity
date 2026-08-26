@@ -38,7 +38,7 @@ pub(super) fn update_parked_vehicle_positions(
         // Make parked CITIZEN vehicles visually smaller and semi-transparent. Service vehicles
         // keep their full car body + kind color + roof glyph in every state: this override used
         // to shrink them into anonymous gray dots at their stations, and nothing restored the
-        // sprite on dispatch (`remove::<Parked>()` has no un-shrink path for services — citizen
+        // visuals on dispatch (`remove::<Parked>()` has no un-shrink path for services — citizen
         // cars get theirs back in spawn.rs's reuse branch).
         if service.is_none() {
             // Shrink the 3D car into a low parked marker (~0.35 tile footprint).

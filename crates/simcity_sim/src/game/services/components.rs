@@ -65,6 +65,6 @@ pub struct ServiceVehicle {
     pub state: ServiceVehicleState,
 }
 
-/// Visual marker component for the colored inner sprite (child entity).
+/// Visual marker component for the colored inner quad (child entity).
 #[derive(Component)]
 pub struct ServiceVehicleMarker;
