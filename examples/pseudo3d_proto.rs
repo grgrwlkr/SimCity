@@ -241,10 +241,12 @@ fn spawn_camera_and_sun(commands: &mut Commands) {
             ..default()
         },
         Transform::from_xyz(150.0, 220.0, -90.0).looking_at(Vec3::ZERO, Vec3::Y),
-        // The ortho camera sits 500 units out — default cascades end too close, no shadows land.
+        // The ortho camera sits 500 units out — two cascades cover the whole visible depth band
+        // (mirrors the main app's sun config in simcity_frontend/src/game/camera.rs).
         CascadeShadowConfigBuilder {
-            maximum_distance: 900.0,
-            first_cascade_far_bound: 500.0,
+            num_cascades: 2,
+            maximum_distance: 850.0,
+            first_cascade_far_bound: 650.0,
             ..default()
         }
         .build(),
