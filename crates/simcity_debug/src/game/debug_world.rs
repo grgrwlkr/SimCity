@@ -2252,6 +2252,9 @@ pub struct DebugArbiterLedgerState {
     /// Collection-phase drops because the lanelet could not be resolved (sidecar empty + fallback
     /// None) — if this ≈ cand_approaching, rerouted cars losing their sidecar is the under-admission.
     pub drop_unresolved_lanelet: u32,
+    /// Resolved lanelets missing from the current index (stale-sidecar residue): downgraded to
+    /// coarse + stall-tracking, NOT dropped; persistently high ⇒ same-version renumbering bug.
+    pub drop_stale_lanelet: u32,
     /// Approaching vehicles that became real grant candidates. 0 here + cand_approaching>0 ⇒ the loss
     /// is 100% in the collection phase; >0 + admitted=0 ⇒ the loss is in the grant-phase gates.
     pub candidates_built: u32,
@@ -2294,6 +2297,7 @@ fn update_debug_arbiter_ledger_state(
         snapshot.left_protected_active = s.left_protected_active;
         snapshot.cand_approaching = s.cand_approaching;
         snapshot.drop_unresolved_lanelet = s.drop_unresolved_lanelet;
+        snapshot.drop_stale_lanelet = s.drop_stale_lanelet;
         snapshot.candidates_built = s.candidates_built;
         snapshot.drop_other_collection = s.drop_other_collection;
         snapshot.refused_matrix = s.refused_matrix;

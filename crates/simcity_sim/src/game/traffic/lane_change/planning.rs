@@ -394,6 +394,7 @@ pub(in super::super) fn plan_lane_changes(
                     v.path_handle = path_pool.intern(tiles);
                     if let Some(plan) = v_plan.as_deref_mut() {
                         plan.entries = sidecar;
+                        plan.built_for = replan.lanelet_graph.version;
                     }
                 }
                 None => {

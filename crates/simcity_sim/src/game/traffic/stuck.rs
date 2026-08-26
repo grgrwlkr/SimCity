@@ -252,6 +252,7 @@ pub(super) fn resolve_stuck_vehicles(
                     v.path_handle = path_pool.intern(tiles);
                     if let Some(plan) = lanelet_plan.as_deref_mut() {
                         plan.entries = sidecar;
+                        plan.built_for = replan.lanelet_graph.version;
                     }
                 }
                 None => {

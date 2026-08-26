@@ -406,6 +406,11 @@ pub struct ArbiterTickStats {
     /// precise-fallback returned None) — the prime suspect for admitted=0/refused=0: these vehicles
     /// never become grant candidates and so are counted in NEITHER admitted nor refused.
     pub drop_unresolved_lanelet: u32,
+    /// Resolved lanelets that vanished from the current index/graph (stale-sidecar residue after
+    /// the version guard). Downgraded to coarse + stall-tracking rather than dropped, so unlike
+    /// `drop_other_collection` these vehicles stay admitted-eligible; a persistently high value
+    /// points at a same-version renumbering bug.
+    pub drop_stale_lanelet: u32,
     /// Approaching vehicles that survived ALL collection gates and became real grant candidates. If
     /// this is 0 while cand_approaching > 0, the problem is 100% collection-phase; if > 0 while
     /// admitted=0, the problem is in the grant-phase gates (ready/headroom/exit-slot/matrix).
@@ -757,6 +762,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
     // each silent gate, and how many survive to become real grant candidates.
     let mut cand_approaching = 0u32;
     let mut drop_unresolved = 0u32;
+    let mut drop_stale_lanelet = 0u32;
     let mut drop_other = 0u32;
     let mut candidates_built = 0u32;
 
@@ -840,25 +846,40 @@ pub(crate) fn arbitrate_lanelet_reservations(
         // maneuver-tolerant retry AND the coarse None-arm below, so a turn that resolves via the
         // retry is labeled with the SAME maneuver the None-arm would have used (label consistency).
         let route_maneuver = maneuver_kind(traffic_cfg, entry_dir, exit_dir);
-        let resolved = match plan.and_then(|p| p.upcoming_lanelet_at(v.path_cursor)) {
+        // Trust the sidecar only when its lanelet ids belong to the CURRENT graph version: ids are
+        // renumbered on every rebuild, so a stale id either misses the index cache below (silently
+        // dropping the vehicle from admission every tick) or aliases a DIFFERENT lanelet (wrong
+        // conflict row). Stale plans fall through to the same geometry fallback as empty plans.
+        let resolved = match plan
+            .filter(|p| p.is_current(version))
+            .and_then(|p| p.upcoming_lanelet_at(v.path_cursor))
+        {
             Some((plan_id, lid)) if plan_id == id => Some(lid),
             _ => resolve_lanelet_fallback(llg, lanes, id, cur, exit_tile, route_maneuver),
         };
-        let (coarse, local_idx, maneuver) = match resolved {
-            Some(lanelet_id) => {
-                let Some(&local_idx) = cache.local_idx.get(&id).and_then(|m| m.get(&lanelet_id))
-                else {
-                    drop_other += 1;
-                    continue;
-                };
-                let Some(lanelet) = llg.get(lanelet_id) else {
-                    drop_other += 1;
-                    continue;
-                };
-                (false, local_idx, lanelet.maneuver)
-            }
+        let (coarse, local_idx, maneuver) = match resolved
+            .and_then(|lanelet_id| {
+                let local_idx = cache
+                    .local_idx
+                    .get(&id)
+                    .and_then(|m| m.get(&lanelet_id).copied())?;
+                let lanelet = llg.get(lanelet_id)?;
+                Some((local_idx, lanelet.maneuver))
+            }) {
+            Some((local_idx, maneuver)) => (false, local_idx, maneuver),
             None => {
-                drop_unresolved += 1;
+                // Unresolved OR a resolved lanelet that vanished from the index/graph (the
+                // post-version-guard residue: same-version rebuild edge, degenerate lanelet).
+                // Either way the vehicle is NOT dropped: it becomes a coarse candidate (whole-box
+                // exclusive grant) and lands in unresolved_this_tick, so the stall-tracker nudge
+                // keeps trying to upgrade it to a precise route. The historical silent
+                // `drop_other; continue` here refused the vehicle forever — observed live as
+                // fallback cars and the bus frozen 160 s+ wedging whole arterials.
+                if resolved.is_some() {
+                    drop_stale_lanelet += 1;
+                } else {
+                    drop_unresolved += 1;
+                }
                 unresolved_this_tick.insert(e);
                 // An unresolved maneuver (typically a road-A*-fallback turn from a
                 // lane-discipline-wrong entry lane — no lanelet exists for that (entry, exit)
@@ -1015,6 +1036,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
     stats.left_protected_active = left_protected_active;
     stats.cand_approaching = cand_approaching;
     stats.drop_unresolved_lanelet = drop_unresolved;
+    stats.drop_stale_lanelet = drop_stale_lanelet;
     stats.candidates_built = candidates_built;
     stats.drop_other_collection = drop_other;
     stats.refused_matrix = counts.refused_matrix;
