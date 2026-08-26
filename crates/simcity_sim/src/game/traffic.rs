@@ -57,7 +57,7 @@ use spawn::{clear_vehicles, spawn_trip_vehicles};
 
 mod stuck;
 use stuck::{
-    init_stuck_timers, recover_stuck_returning_service_vehicles, resolve_stuck_vehicles,
+    init_stuck_timers, recover_immortal_service_vehicles, resolve_stuck_vehicles,
     update_stuck_timers,
 };
 
@@ -152,6 +152,11 @@ pub(crate) const STUCK_REROUTE_SECS: f32 = 60.0;
 pub(crate) const WAITING_EXEMPT_CAP_SECS: f32 = 45.0;
 /// After this many seconds without progressing, despawn non-service trip vehicles as an emergency guardrail.
 const STUCK_DESPAWN_SECS: f32 = 180.0;
+/// Last-resort horizon for despawn-EXEMPT vehicles (buses, service). They never despawn (that would
+/// leak station counts / strand passengers), so a wedged one is otherwise an immortal intersection
+/// blocker. Keyed on the never-reset motion timer. At this horizon an EnRoute service vehicle
+/// force-abandons its mission and returns home; a wedged bus force-skips its target stop.
+pub(crate) const IMMORTAL_RECOVER_SECS: f32 = 180.0;
 /// Minimum spacing between reroute ATTEMPTS for a wedged vehicle (continuously stopped past
 /// `STUCK_REROUTE_SECS`). Un-throttled, a wedged car replans every tick — the churn itself pins it.
 pub(crate) const WEDGED_REROUTE_RETRY_SECS: f32 = 10.0;
@@ -452,7 +457,7 @@ impl Plugin for TrafficPlugin {
                         .after(update_stuck_timers)
                         .before(resolve_stuck_vehicles),
                     resolve_stuck_vehicles.after(update_stuck_timers),
-                    recover_stuck_returning_service_vehicles.after(update_stuck_timers),
+                    recover_immortal_service_vehicles.after(update_stuck_timers),
                 )
                     .chain()
                     .in_set(crate::game::TrafficStep::Recovery)

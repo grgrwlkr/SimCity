@@ -9,9 +9,10 @@ use crate::game::intersections::IntersectionIndex;
 use crate::game::map::{MapConfig, MapGrid, TilePos};
 use crate::game::state::AppState;
 use crate::game::traffic::{
-    LaneletReplanRes, PlannedRoute, RouteProducer, TrafficConfig, TrafficOccupancy,
-    VEHICLE_VISUAL_LENGTH_TILES, VEHICLE_VISUAL_WIDTH_TILES, Vehicle, VehicleLaneletPlan,
-    VehicleTrafficState, apply_route, kmh_to_world_speed, plan_tiles_lanelet_first,
+    IMMORTAL_RECOVER_SECS, LaneletReplanRes, PlannedRoute, RouteProducer, TrafficConfig,
+    TrafficOccupancy, VEHICLE_VISUAL_LENGTH_TILES, VEHICLE_VISUAL_WIDTH_TILES, Vehicle,
+    VehicleLaneletPlan, VehicleMotionTimer, VehicleTrafficState, apply_route,
+    kmh_to_world_speed, plan_tiles_lanelet_first,
 };
 use crate::game::transport::{
     PathCache, PathPool, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph,
@@ -477,11 +478,12 @@ fn tick_buses(
         &mut Vehicle,
         &VehicleTrafficState,
         &mut VehicleLaneletPlan,
+        Option<&VehicleMotionTimer>,
     )>,
 ) {
     let dt = time.delta_secs();
     let now_sec = time.elapsed_secs_f64();
-    for (mut bus, mut vehicle, traffic_state, mut lanelet_plan) in q.iter_mut() {
+    for (mut bus, mut vehicle, traffic_state, mut lanelet_plan, motion) in q.iter_mut() {
         let path_len = path_pool.len(vehicle.path_handle);
         let path_done = vehicle.path_cursor >= path_len;
 
@@ -585,8 +587,20 @@ fn tick_buses(
                 } else {
                     BUS_WEDGE_RECOVER_SECS
                 };
-                if bus.wedge_secs < threshold {
+                // Immortal horizon (never-reset motion timer): past this even "legitimate"
+                // intersection waiting is a wedge — force the skip-stop replan. The wedge timer
+                // alone sawtooths when a stuck-recovery reroute bumps the cursor without real
+                // displacement. Throttled by the replan backoff so the forced arm cannot replan
+                // every tick.
+                let wedged_immortal = motion
+                    .map(|m| m.stopped_secs >= IMMORTAL_RECOVER_SECS)
+                    .unwrap_or(false)
+                    && bus.replan_cooldown_secs <= 0.0;
+                if bus.wedge_secs < threshold && !wedged_immortal {
                     continue;
+                }
+                if wedged_immortal {
+                    bus.replan_cooldown_secs = BUS_REPLAN_BACKOFF_SECS;
                 }
                 let Some(route) = route_mgr.get_route(bus.route_id) else {
                     continue;

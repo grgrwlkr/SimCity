@@ -691,8 +691,10 @@ pub(crate) struct ArbitrateLaneletParams<'w, 's> {
             // fallback used when a sidecar was cleared mid-trip, so EVERY vehicle — service or not
             // — goes through ONE unified admission path.
             Option<&'static VehicleLaneletPlan>,
+            // Parked vehicles are NOT candidates (they don't move), but they still physically
+            // block their tile — the in-box seeding below must see them.
+            Option<&'static Parked>,
         ),
-        Without<Parked>,
     >,
 }
 
@@ -766,8 +768,19 @@ pub(crate) fn arbitrate_lanelet_reservations(
     let mut drop_other = 0u32;
     let mut candidates_built = 0u32;
 
-    for (e, v, state, plan) in p.q_vehicles.iter() {
-        let Some(cur) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
+    for (e, v, state, plan, parked) in p.q_vehicles.iter() {
+        // Position tile: the route tile at the cursor, falling back to the route's LAST tile for
+        // exhausted/truncated routes. This matters for the in-box seeding below: an idle vehicle
+        // parked on a box tile (route consumed, OnScene, truncated by the R3 sweep) physically
+        // blocks the cluster — without the seed it is invisible to the conflict model and
+        // conflicting entrants are granted straight into it.
+        let cur = path_pool
+            .get_tile(v.path_handle, v.path_cursor)
+            .or_else(|| {
+                let len = path_pool.len(v.path_handle);
+                path_pool.get_tile(v.path_handle, len.saturating_sub(1))
+            });
+        let Some(cur) = cur else {
             continue;
         };
         // In-box vehicles get a safety-net row; they are not entry candidates. Also re-seed the
@@ -795,6 +808,10 @@ pub(crate) fn arbitrate_lanelet_reservations(
                         .set_inbox_lanelet(local_idx as u32);
                 }
             }
+            continue;
+        }
+        // Parked vehicles block but never request admission.
+        if parked.is_some() {
             continue;
         }
         if v.path_cursor + 1 >= path_pool.len(v.path_handle) {

@@ -314,7 +314,8 @@ pub(super) fn resolve_stuck_vehicles(
     }
 }
 
-/// Recover a *Returning* service vehicle that is hopelessly stuck.
+/// Recover a *Returning* service vehicle that is hopelessly stuck, and force-abandon the mission
+/// of an *EnRoute* one that has been wedged past the immortal horizon.
 ///
 /// A service vehicle is never despawned by the guardrail above (that would leak its station's
 /// `available_vehicles` count), and rerouting only loops it back into the same jam — so a wedged one
@@ -322,19 +323,117 @@ pub(super) fn resolve_stuck_vehicles(
 /// intersection approach (where a lane-change tile-swap can't be deferred because the forward tile is
 /// the cluster), permanently choking the corridor while passenger cars churn behind them.
 ///
-/// Fix: consume the remaining route so `park_returned_service_vehicles` snaps it to its home station
-/// next tick — the exact same safe path as a normally-completed return (restores the station count).
-/// Only triggers for the `Returning` state, so a vehicle mid-mission (EnRoute/OnScene) is never
-/// teleported away.
-pub(super) fn recover_stuck_returning_service_vehicles(
-    path_pool: Res<super::super::transport::PathPool>,
-    mut q: Query<(&ServiceVehicle, &mut Vehicle, &StuckTimer), Without<Parked>>,
+/// - `Returning` + stuck past the reroute threshold: consume the remaining route so
+///   `park_returned_service_vehicles` snaps it to its home station next tick — the exact same safe
+///   path as a normally-completed return (restores the station count).
+/// - `EnRoute` + wedged past `IMMORTAL_RECOVER_SECS` on the never-reset motion timer: the mission
+///   is honestly abandoned (the emergency keeps its deadline and can fail or be re-dispatched) and
+///   the vehicle is re-routed home, unblocking the lane. `OnScene` is deliberately untouched: its
+///   dwell is bounded by the emergency's resolution time, and the arbiter's inbox seeding now sees
+///   parked in-box vehicles.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub(super) fn recover_immortal_service_vehicles(
+    time: Res<Time<Fixed>>,
+    grid: Res<MapGrid>,
+    graph: Res<RoadGraph>,
+    regions: Res<RegionGraph>,
+    traffic: Res<TrafficOccupancy>,
+    path_cfg: Res<PathfindingConfig>,
+    intersections: Res<IntersectionIndex>,
+    mut path_cache: ResMut<PathCache>,
+    mut replan: super::reroute_planner::LaneletReplanRes,
+    mut path_pool: ResMut<super::super::transport::PathPool>,
+    mut q_emergencies: Query<&mut crate::game::emergencies::Emergency>,
+    mut q: Query<
+        (
+            &mut ServiceVehicle,
+            &mut Vehicle,
+            Option<&mut VehicleLaneletPlan>,
+            &StuckTimer,
+            Option<&VehicleMotionTimer>,
+        ),
+    >,
 ) {
-    for (sv, mut v, stuck) in &mut q {
-        if sv.state == ServiceVehicleState::Returning && stuck.secs >= STUCK_REROUTE_SECS {
-            v.path_cursor = path_pool.len(v.path_handle);
-            v.speed = 0.0;
+    /// Force-abandonments per tick: teleports are a last resort, not a fleet recall.
+    const IMMORTAL_RECOVER_BUDGET: usize = 2;
+    let mut handled = 0usize;
+    for (mut sv, mut v, mut lanelet_plan, stuck, motion) in q.iter_mut() {
+        if handled >= IMMORTAL_RECOVER_BUDGET {
+            break;
         }
+        let wedged_immortal =
+            motion.map(|m| m.stopped_secs >= IMMORTAL_RECOVER_SECS).unwrap_or(false);
+        match sv.state {
+            ServiceVehicleState::AtStation | ServiceVehicleState::OnScene => continue,
+            ServiceVehicleState::Returning => {
+                // Historical behavior (route consumption -> station snap), now ALSO armed by the
+                // never-reset motion timer in case the StuckTimer path was reset.
+                if wedged_immortal || stuck.secs >= STUCK_REROUTE_SECS {
+                    v.path_cursor = path_pool.len(v.path_handle);
+                    v.speed = 0.0;
+                } else {
+                    continue;
+                }
+            }
+            ServiceVehicleState::EnRoute => {
+                if !wedged_immortal {
+                    continue;
+                }
+                // Honest abandonment: detach from the emergency (it keeps its deadline — it can
+                // fail or take a re-dispatched unit), then route home.
+                if let Some(mission) = sv.mission
+                    && let Ok(mut em) = q_emergencies.get_mut(mission)
+                {
+                    em.assigned_vehicle = None;
+                }
+                sv.mission = None;
+                sv.state = ServiceVehicleState::Returning;
+                let from = path_pool
+                    .get_tile(v.path_handle, v.path_cursor)
+                    .or_else(|| {
+                        let len = path_pool.len(v.path_handle);
+                        path_pool.get_tile(v.path_handle, len.saturating_sub(1))
+                    })
+                    .unwrap_or(sv.home_road);
+                let mut ctx = PathfindingCtx {
+                    time_now_sec: time.elapsed_secs_f64(),
+                    cfg: &path_cfg,
+                    cache: &mut path_cache,
+                    graph: &graph,
+                    regions: Some(&regions),
+                    traffic: &traffic,
+                    grid: &grid,
+                    intersections: &intersections,
+                };
+                let planned = super::reroute_planner::plan_tiles_lanelet_first(
+                    &mut replan,
+                    &mut ctx,
+                    from,
+                    sv.home_road,
+                );
+                match planned {
+                    Some(planned) => {
+                        super::reroute_planner::apply_route(
+                            &mut v,
+                            lanelet_plan.as_deref_mut(),
+                            &mut path_pool,
+                            planned,
+                        );
+                    }
+                    // Preserve the load-bearing empty-route semantics: INVALID -> len 0 ->
+                    // "arrived" next tick -> park_returned snaps home (same as the mission-gone
+                    // fallback in emergencies).
+                    None => {
+                        path_pool.release(v.path_handle);
+                        v.path_handle = path_pool.intern(Vec::new());
+                        v.path_cursor = 0;
+                    }
+                }
+                v.speed = 0.0;
+                v.is_reversing = false;
+            }
+        }
+        handled += 1;
     }
 }
 
@@ -752,6 +851,127 @@ mod tests {
             app.world().get_entity(entity).is_ok(),
             "a car merely stopped in congestion (valid route, downstream busy, not wedged past the \
              horizon) must NOT be despawned"
+        );
+    }
+
+    /// IMMORTAL recovery: an EnRoute service vehicle wedged past the never-reset motion-timer
+    /// horizon force-abandons its mission — the emergency is detached (it keeps its deadline and
+    /// can fail or take a re-dispatched unit) and the vehicle flips to Returning with a route
+    /// home — instead of blocking the lane forever (service vehicles are despawn-exempt, so
+    /// without this they are permanent intersection blockers).
+    #[test]
+    fn wedged_enroute_service_vehicle_abandons_mission_and_returns_home() {
+        use crate::game::emergencies::{Emergency, EmergencyKind};
+        use crate::game::services::{ServiceKind, ServiceVehicle, ServiceVehicleState};
+        use crate::game::traffic::components::VehicleMotionTimer;
+        use crate::game::transport::{GraphVersion, rebuild_road_graph_inner};
+
+        // East corridor (0,0)..(3,0): the wedged unit stands at (1,0), its home road is (0,0).
+        let mut grid = MapGrid::new(5, 5);
+        for x in 0..4 {
+            put_road(&mut grid, TilePos { x, y: 0 }, RoadDir::East);
+        }
+        let mut graph = RoadGraph::default();
+        rebuild_road_graph_inner(&grid, &GraphVersion(1), &mut graph);
+
+        let mut app = App::new();
+        let mut path_pool = PathPool::default();
+        let handle = path_pool.intern(vec![
+            TilePos { x: 1, y: 0 },
+            TilePos { x: 2, y: 0 },
+            TilePos { x: 3, y: 0 },
+        ]);
+
+        app.insert_resource(Time::<Fixed>::from_seconds(0.1));
+        app.insert_resource(MapConfig::default());
+        app.insert_resource(grid);
+        app.insert_resource(graph);
+        app.insert_resource(RegionGraph::default());
+        app.insert_resource(TrafficOccupancy::default());
+        app.insert_resource(PathfindingConfig::default());
+        app.insert_resource(PathCache::default());
+        app.insert_resource(path_pool);
+        app.insert_resource(IntersectionIndex::default());
+        app.insert_resource(TrafficConfig::default());
+        app.insert_resource(crate::game::transport::LaneGraph::default());
+        app.insert_resource(crate::game::transport::LaneletGraph::default());
+        app.insert_resource(crate::game::sim::SimRng::default());
+        app.init_resource::<RouteProducerStats>();
+
+        let emergency = app
+            .world_mut()
+            .spawn(Emergency {
+                kind: EmergencyKind::Fire,
+                pos: TilePos { x: 3, y: 0 },
+                severity: 0.5,
+                responded: false,
+                resolved: false,
+                consequence_applied: false,
+                failed: false,
+                time_remaining: 12.0,
+                resolution_progress: 0.0,
+                assigned_vehicle: None,
+            })
+            .id();
+
+        let vehicle = app
+            .world_mut()
+            .spawn((
+                Vehicle {
+                    path_handle: handle,
+                    path_cursor: 0,
+                    tile_pos: TilePos { x: 1, y: 0 },
+                    ..Default::default()
+                },
+                VehicleTrafficState::FreeFlow,
+                StuckTimer {
+                    secs: 0.0,
+                    last_tile: TilePos { x: 1, y: 0 },
+                    last_progress: 0.0,
+                },
+                // Wedged past the immortal horizon on the never-reset motion timer.
+                VehicleMotionTimer {
+                    stopped_secs: IMMORTAL_RECOVER_SECS + 1.0,
+                    ..Default::default()
+                },
+                ServiceVehicle {
+                    kind: ServiceKind::Fire,
+                    home_station: Entity::PLACEHOLDER,
+                    home_road: TilePos { x: 0, y: 0 },
+                    mission: Some(emergency),
+                    state: ServiceVehicleState::EnRoute,
+                },
+                VehicleLaneletPlan::default(),
+            ))
+            .id();
+        app.world_mut()
+            .get_mut::<Emergency>(emergency)
+            .unwrap()
+            .assigned_vehicle = Some(vehicle);
+
+        app.add_systems(Update, recover_immortal_service_vehicles);
+        app.update();
+
+        let sv = app.world().get::<ServiceVehicle>(vehicle).unwrap();
+        assert_eq!(
+            sv.state,
+            ServiceVehicleState::Returning,
+            "a wedged-past-horizon EnRoute unit must abandon the mission and head home"
+        );
+        assert!(sv.mission.is_none(), "the mission link must be dropped");
+        let em = app.world().get::<Emergency>(emergency).unwrap();
+        assert!(
+            em.assigned_vehicle.is_none(),
+            "the emergency must be detached (it keeps its deadline / can be re-dispatched)"
+        );
+        // Route home: either a fresh plan from the current tile, or the empty-route arrival
+        // semantics (planner found nothing legal — park_returned snaps the unit home next tick).
+        let v = app.world().get::<Vehicle>(vehicle).unwrap();
+        let pool = app.world().resource::<PathPool>();
+        let len = pool.len(v.path_handle);
+        assert!(
+            len == 0 || pool.get_tile(v.path_handle, 0) == Some(TilePos { x: 1, y: 0 }),
+            "the return route must start at the vehicle's current tile (or be empty)"
         );
     }
 }
