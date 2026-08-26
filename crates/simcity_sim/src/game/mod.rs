@@ -225,6 +225,15 @@ impl Plugin for SimPlugin {
                     .chain(),
             );
         apply_fixed_update_set_order(app);
+        // Tick-cost + health telemetry: first and last in the fixed schedule so their difference
+        // is the true tick cost (see telemetry::SimTickTiming).
+        app.init_resource::<telemetry::SimTickTiming>().add_systems(
+            FixedUpdate,
+            (
+                telemetry::sim_tick_timing_start.before(sets::GameSet::GraphUpdate),
+                telemetry::sim_tick_health_log.after(PostSimStep::Economy),
+            ),
+        );
         app.add_message::<commands::GameCommand>()
             .add_message::<commands::UndoRedoRequested>()
             .add_message::<trips::TripRequested>()
