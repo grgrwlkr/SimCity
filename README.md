@@ -30,6 +30,7 @@ cargo run --release --features profile_chrome
 ## Что уже реализовано
 
 - `128x128` карта с конфигом из `assets/config/map.ron`.
+- Псевдо-3D рендер: `Camera3d` + ортографическая проекция на орбитальном риге (Q/E/Ctrl+drag, eased zoom), volumetric-меши с vertex colors и батчингом по материалам, солнце с cascade shadows, полный световой цикл день/ночь (emissive окна, светящаяся разметка, световые пятна светофоров), деревья и миплы-пешеходы.
 - Дороги `2/4/6` полос, `one-way` режим, lane graph, region graph и path cache.
 - Point-to-point road building, drag-paint для зон и erase/inspect инструменты.
 - R/C/I zoning, рост зданий, occupancy, decay, land value, pollution.
@@ -49,6 +50,7 @@ cargo run --release --features profile_chrome
 - `Esc` — возврат в меню
 - `WASD` / `Arrow keys` — pan камеры
 - `Mouse wheel` — плавный zoom
+- `PageUp` / `PageDown` — шаг зума (для клавиатур без колеса и synthetic input)
 - `Q` / `E` — поворот камеры
 - `Ctrl` + `LMB drag` — свободная орбита (поворот + наклон)
 - `1` — road tool, повторное нажатие циклит `2/4/6` полос
@@ -61,7 +63,7 @@ cargo run --release --features profile_chrome
 - `?` — shortcuts panel
 - `F8` — toggle debug dump window
 - `F9` — copy debug dump
-- `F10` — toggle UI settings panel
+- `F10` — toggle UI settings panel (живые ручки камеры: `camera_speed`, `zoom_speed`, `zoom_ease`, `rotate_speed`)
 
 Сохранение и загрузка сейчас доступны через UI-кнопки. Хоткеи `Ctrl+S` / `Ctrl+L` в коде не привязаны.
 

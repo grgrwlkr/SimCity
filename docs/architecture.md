@@ -128,6 +128,31 @@ Fixed-step симуляция:
 - Проект plugin-first, а не file-first: рабочая единица композиции тут plugin + resource + system sets.
 - Current-state documentation живёт в `docs/*.md`, а старые design/roadmap документы вынесены в `docs/archive/`.
 
+## Render
+
+Мир живёт в логических координатах XY (Z = высота); рендер — настоящий 3D с ортографической
+камерой (`Camera3d` + `Projection::Orthographic`, `Tonemapping::None` — плоская палитра должна
+доходить до экрана без тонмаппинга).
+
+- **Камера-риг** (`simcity_frontend::game::camera`): `CameraRig { focus, yaw, pitch, zoom_target }`
+  на фиксированном буме 500 юнитов. WASD — экранный пан с проекцией на землю (скорость
+  `camera_speed * 3.5 * zoom_target`), Q/E — орбита, Ctrl+LMB — свободная орбита с клампом pitch,
+  колесо двигает `zoom_target`, `camera_smooth_zoom` доводит `ortho.scale` (easing из `ui_settings`).
+  Пикинг — луч `viewport_to_world` в пересечении с плоскостью земли, только в `cursor_tile()`.
+- **Геометрия**: volumetric-меши (здания, машины, миплы, деревья, светофоры) + плоские квады
+  (тайлы, разметка, оверлеи, глифы). Батчинг — vertex colors + минимум shared-материалов;
+  recolor = смена хендла материала, НЕ мутация (урок фазы 7: мутация shared-материала каждый
+  кадр = re-prepare всех сущностей и 60→19 FPS). Кэши: `BuildingMeshCache` (инстансинг по форме),
+  sized-меши для сущностей с детьми.
+- **Свет**: солнце `DirectionalLight` + cascade shadows (2 каскада, `maximum_distance: 850` —
+  видимая полоса орто-камеры на буме 500 покрывается с запасом), ambient на камере. Деревья и
+  плоские квады — `NotShadowCaster` (800 кастеров роняли кадр).
+- **День/ночь** (`simcity_sim::game::day_night`): REAL световой цикл от `City.hour` — солнце
+  (illuminance/цвет), ambient и shared `NightGlow`-материалы (emissive окна/разметка/светофорные
+  пятна) пишутся ТОЛЬКО при смене часа (`Local<Option<u8>>` гейт). Тюнинг — `assets/config/day_night.ron`.
+- Рендер-системы живут в `GameSet::RenderSync`; sim-координаты не перепроецируются — наклон
+  делает камера. Детали миграции и уроки: `docs/plans/2026-07-12-pseudo3d-migration-roadmap.md`.
+
 ## Intersection Traffic Invariants (STRICT — соблюдать при любых правках трафика)
 
 Выстрадано месяцами борьбы со «встречкой на перекрёстках» (2026-07). Тайлы бокса перекрёстка
