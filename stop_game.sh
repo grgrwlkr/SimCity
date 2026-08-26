@@ -4,7 +4,7 @@ set -euo pipefail
 # Stop any running SimCity instance (binary and its cargo parent).
 
 find_pids() {
-  pgrep -f "target/debug/simcity" || true
+  pgrep -f "target/(debug|release)/simcity" || true
 }
 
 kill_pids() {
@@ -20,7 +20,7 @@ wait_for_exit() {
   local attempts=20
   local delay=0.2
   for _ in $(seq 1 "$attempts"); do
-    if ! pgrep -f "target/debug/simcity" >/dev/null 2>&1; then
+    if ! pgrep -f "target/(debug|release)/simcity" >/dev/null 2>&1; then
       return 0
     fi
     sleep "$delay"
