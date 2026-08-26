@@ -30,10 +30,18 @@ pub(super) fn init_stuck_timers(
 pub(super) fn update_stuck_timers(
     time: Res<Time<Fixed>>,
     path_pool: Res<super::super::transport::PathPool>,
-    mut q: Query<(&Vehicle, &VehicleTrafficState, &mut StuckTimer), Without<Parked>>,
+    mut q: Query<
+        (
+            &Vehicle,
+            &VehicleTrafficState,
+            &mut StuckTimer,
+            Option<&VehicleMotionTimer>,
+        ),
+        Without<Parked>,
+    >,
 ) {
     let dt = time.delta_secs();
-    for (v, state, mut stuck) in q.iter_mut() {
+    for (v, state, mut stuck, motion) in q.iter_mut() {
         let Some(tile) = path_pool.get_tile(v.path_handle, v.path_cursor) else {
             stuck.secs = 0.0;
             continue;
@@ -41,13 +49,19 @@ pub(super) fn update_stuck_timers(
 
         let progressed = tile != stuck.last_tile || (v.progress - stuck.last_progress).abs() > 0.02;
 
-        // Legitimate waiting at lights/stop signs shouldn't trigger jam resolution.
-        if progressed
-            || matches!(
-                *state,
-                VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. }
-            )
-        {
+        // Legitimate waiting at lights/stop signs shouldn't trigger jam resolution — but only up
+        // to the longest plausibly-served wait. The cap is keyed on the never-reset motion timer
+        // (`stopped_secs`), not on StuckTimer itself (which this reset keeps at 0): past
+        // WAITING_EXEMPT_CAP_SECS the vehicle has outlasted every light cycle and must start
+        // accumulating toward STUCK_REROUTE_SECS, or a permanently refused waiter (arbiter drop,
+        // missing light entity, ...) becomes an invisible forever-blocker.
+        let waiting = matches!(
+            *state,
+            VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. }
+        );
+        let stopped_secs = motion.map(|m| m.stopped_secs).unwrap_or(0.0);
+        let legitimate_wait = waiting && stopped_secs < WAITING_EXEMPT_CAP_SECS;
+        if progressed || legitimate_wait {
             stuck.secs = 0.0;
         } else {
             stuck.secs += dt;
@@ -77,7 +91,6 @@ pub(super) fn resolve_stuck_vehicles(
         (
             Entity,
             &mut Vehicle,
-            &VehicleTrafficState,
             Option<&TripPassenger>,
             Option<&ServiceVehicle>,
             Option<&crate::game::public_transport::Bus>,
@@ -106,7 +119,6 @@ pub(super) fn resolve_stuck_vehicles(
     for (
         e,
         mut v,
-        state,
         passenger,
         service_vehicle,
         bus,
@@ -166,15 +178,10 @@ pub(super) fn resolve_stuck_vehicles(
             handled += 1;
             continue;
         }
-        // A legitimately-waiting vehicle is skipped — UNLESS it has been wedged far past any light
-        // cycle, in which case it is not really waiting, it is stuck and must be rerouted/cleared.
-        if matches!(
-            *state,
-            VehicleTrafficState::Stopped { .. } | VehicleTrafficState::WaitingForGreen { .. }
-        ) && !recovery_due
-        {
-            continue;
-        }
+        // A legitimately-waiting vehicle is covered by the threshold below: `update_stuck_timers`
+        // keeps its timer near 0 for any wait that a light cycle could still serve (< cap), so a
+        // Stopped/WaitingForGreen car only reaches STUCK_REROUTE_SECS by outlasting every cycle —
+        // which means it is not really waiting, it is stuck and must be rerouted/cleared.
         if stuck.secs < STUCK_REROUTE_SECS && !recovery_due {
             continue;
         }
@@ -574,6 +581,84 @@ mod tests {
             pool.len(v.path_handle) > 2,
             "reroute must have replaced the degenerate [start, goal] route with the full A* route"
         );
+    }
+
+    /// The `Stopped`/`WaitingForGreen` StuckTimer reset is CAPPED by the never-reset motion
+    /// timer. Unconditional, a permanently refused waiter (arbiter drop, missing light entity)
+    /// kept `secs == 0` forever — invisible to every recovery keyed on StuckTimer (60 s reroute,
+    /// reverse, returning-service rescue). Past `WAITING_EXEMPT_CAP_SECS` (longer than any light
+    /// cycle can serve) the timer must accumulate; under it, the legitimate-wait reset applies.
+    #[test]
+    fn waiting_past_cap_accumulates_stuck_timer() {
+        use crate::game::intersections::IntersectionKey;
+        use crate::game::traffic::components::VehicleMotionTimer;
+        use std::time::Duration;
+
+        let tile = TilePos { x: 2, y: 2 };
+        let mut path_pool = PathPool::default();
+        let handle = path_pool.intern(vec![tile, TilePos { x: 3, y: 2 }]);
+
+        let mut app = App::new();
+        app.insert_resource(Time::<Fixed>::from_seconds(0.1));
+        app.insert_resource(path_pool);
+
+        let state = VehicleTrafficState::WaitingForGreen {
+            intersection: IntersectionKey {
+                aabb_min: tile,
+                aabb_max: tile,
+                tile_count: 1,
+                tiles_hash: 0,
+            },
+            stop_tile: tile,
+        };
+        for stopped_secs in [WAITING_EXEMPT_CAP_SECS - 5.0, WAITING_EXEMPT_CAP_SECS + 5.0] {
+            app.world_mut().spawn((
+                Vehicle {
+                    path_handle: handle,
+                    path_cursor: 0,
+                    tile_pos: tile,
+                    ..Default::default()
+                },
+                state,
+                StuckTimer {
+                    secs: 0.0,
+                    last_tile: tile,
+                    last_progress: 0.0,
+                },
+                VehicleMotionTimer {
+                    stopped_secs,
+                    ..Default::default()
+                },
+            ));
+        }
+
+        app.add_systems(Update, update_stuck_timers);
+        // Plain App has no time plugin: advance the fixed clock by one step so `dt` is non-zero
+        // (accumulation is what we assert, unlike the resolve tests which only read thresholds).
+        app.world_mut()
+            .resource_mut::<Time<Fixed>>()
+            .advance_by(Duration::from_secs_f32(0.1));
+        app.update();
+
+        let mut q = app
+            .world_mut()
+            .query_filtered::<(&StuckTimer, &VehicleMotionTimer), Without<Parked>>();
+        let mut checked = 0;
+        for (stuck, motion) in q.iter(app.world()) {
+            checked += 1;
+            if motion.stopped_secs < WAITING_EXEMPT_CAP_SECS {
+                assert_eq!(
+                    stuck.secs, 0.0,
+                    "a wait a light cycle can still serve must stay exempt (timer reset)"
+                );
+            } else {
+                assert!(
+                    stuck.secs > 0.0,
+                    "a wait past the cap must accumulate toward STUCK_REROUTE_SECS, not reset"
+                );
+            }
+        }
+        assert_eq!(checked, 2, "both fixture vehicles must be present");
     }
 
     /// (FIX 2) A car merely STOPPED in congestion — with a valid route, just a busy downstream — must

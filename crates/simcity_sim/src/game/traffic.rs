@@ -144,6 +144,12 @@ const SERVICE_VEHICLE_SPEED_LIMIT_FACTOR: f32 = 1.50;
 /// After this many seconds without progressing, try to resolve a traffic jam (reroute).
 /// (v2 policy: avoid "cheat" behavior by default; only intervene after a long timeout.)
 pub(crate) const STUCK_REROUTE_SECS: f32 = 60.0;
+/// How long a `Stopped`/`WaitingForGreen` vehicle's StuckTimer keeps being reset as "legitimate
+/// waiting". The max signal cycle is ~34 s (2 axes x 17 s), up to ~42 s with actuated
+/// protected-left; past this cap a waiting vehicle is no longer plausibly served by any light
+/// cycle, so its timer must accumulate toward `STUCK_REROUTE_SECS` — an unconditional reset would
+/// keep a permanently wedged waiter invisible to every recovery keyed on StuckTimer.
+pub(crate) const WAITING_EXEMPT_CAP_SECS: f32 = 45.0;
 /// After this many seconds without progressing, despawn non-service trip vehicles as an emergency guardrail.
 const STUCK_DESPAWN_SECS: f32 = 180.0;
 /// Minimum spacing between reroute ATTEMPTS for a wedged vehicle (continuously stopped past
