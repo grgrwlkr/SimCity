@@ -2,7 +2,10 @@ use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::ecs::system::{EntityCommands, SystemParam};
 use bevy::prelude::*;
 use bevy::time::Real;
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
+// Only the render-cost updater needs a set, and that updater is dev/test-only.
+#[cfg(any(feature = "dev", test))]
+use std::collections::HashSet;
 
 use crate::game::camera::MainCamera;
 use crate::game::map::{HoveredTile, MapConfig};
@@ -1057,6 +1060,7 @@ fn compute_window_stats(
 ///
 /// Scans every mesh entity, so it is gated behind `dev` together with the other
 /// world-scan updaters.
+#[cfg(any(feature = "dev", test))]
 fn update_debug_render_snapshot(
     q_meshes: Query<(
         &Mesh3d,
