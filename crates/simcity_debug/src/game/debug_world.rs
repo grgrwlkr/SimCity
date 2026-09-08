@@ -2,7 +2,7 @@ use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::ecs::system::{EntityCommands, SystemParam};
 use bevy::prelude::*;
 use bevy::time::Real;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use crate::game::camera::MainCamera;
 use crate::game::map::{HoveredTile, MapConfig};
@@ -141,6 +141,32 @@ pub struct DebugWorldSnapshot {
     pub mcp_last_request_age_s: Option<f32>,
     pub mcp_is_active: bool,
     pub mcp_is_idle: bool,
+}
+
+/// Render-cost snapshot for MCP inspection.
+///
+/// Bevy exposes no draw-call counter, so `batch_estimate` counts the distinct
+/// (mesh, material) pairs among the visible mesh entities — the number of groups
+/// batching can collapse them into, and the number that grows the moment a
+/// per-color material is introduced instead of vertex colors.
+#[derive(Component, Reflect, Default, Copy, Clone)]
+#[reflect(Component)]
+pub struct DebugRenderSnapshot {
+    /// Entities carrying a `Mesh3d`, visible or not.
+    pub mesh_entities: u32,
+    /// Subset of `mesh_entities` that passed visibility this frame.
+    pub visible_mesh_entities: u32,
+    /// Distinct mesh assets among the visible mesh entities.
+    pub distinct_meshes: u32,
+    /// Distinct material assets among the visible mesh entities.
+    pub distinct_materials: u32,
+    /// Distinct (mesh, material) pairs — the draw-call estimate.
+    pub batch_estimate: u32,
+    /// Visible mesh entities that still cast shadows (no `NotShadowCaster`).
+    pub visible_shadow_casters: u32,
+    pub point_lights: u32,
+    pub spot_lights: u32,
+    pub directional_lights: u32,
 }
 
 /// Traffic subsystem snapshot for MCP inspection.
@@ -666,6 +692,8 @@ struct DebugSnapshotBundle {
     name: Name,
     /// World snapshot.
     world: DebugWorldSnapshot,
+    /// Render-cost snapshot.
+    render: DebugRenderSnapshot,
     /// Traffic snapshot.
     traffic: DebugTrafficSnapshot,
     /// Intersection snapshot.
@@ -706,6 +734,7 @@ impl DebugSnapshotBundle {
         Self {
             name: Name::new("DebugWorldSnapshot"),
             world: DebugWorldSnapshot::default(),
+            render: DebugRenderSnapshot::default(),
             traffic: DebugTrafficSnapshot::default(),
             intersections: DebugIntersectionSnapshot::default(),
             transport: DebugTransportSnapshot::default(),
@@ -729,6 +758,7 @@ impl DebugSnapshotBundle {
 #[derive(SystemParam)]
 struct DebugSnapshotEnsureQueries<'w, 's> {
     q_snapshot: Query<'w, 's, Entity, With<DebugWorldSnapshot>>,
+    q_render: Query<'w, 's, (), With<DebugRenderSnapshot>>,
     q_traffic: Query<'w, 's, (), With<DebugTrafficSnapshot>>,
     q_intersections: Query<'w, 's, (), With<DebugIntersectionSnapshot>>,
     q_transport: Query<'w, 's, (), With<DebugTransportSnapshot>>,
@@ -753,6 +783,7 @@ pub struct DebugWorldPlugin;
 impl Plugin for DebugWorldPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<DebugWorldSnapshot>()
+            .register_type::<DebugRenderSnapshot>()
             .register_type::<DebugTrafficSnapshot>()
             .register_type::<DebugIntersectionSnapshot>()
             .register_type::<DebugTransportSnapshot>()
@@ -782,7 +813,8 @@ impl Plugin for DebugWorldPlugin {
         // the whole batch behind `dev`. The snapshot entity and all component types still exist in
         // release (default/all-zero), so the frontend's UI queries keep compiling.
         #[cfg(feature = "dev")]
-        app.add_systems(Update, update_debug_traffic_snapshot.in_set(GameSet::Ui))
+        app.add_systems(Update, update_debug_render_snapshot.in_set(GameSet::Ui))
+            .add_systems(Update, update_debug_traffic_snapshot.in_set(GameSet::Ui))
             .add_systems(
                 Update,
                 update_debug_intersection_snapshot.in_set(GameSet::Ui),
@@ -840,6 +872,7 @@ fn ensure_debug_snapshot_entity(
         .next()
         .unwrap_or_else(|| commands.spawn(DebugSnapshotBundle::new()).id());
     let mut entity_cmd = commands.entity(entity);
+    ensure_component::<DebugRenderSnapshot>(&mut entity_cmd, entity, &queries.q_render);
     ensure_component::<DebugTrafficSnapshot>(&mut entity_cmd, entity, &queries.q_traffic);
     ensure_component::<DebugIntersectionSnapshot>(
         &mut entity_cmd,
@@ -1018,6 +1051,62 @@ fn compute_window_stats(
         frame_ms_max: frame_max,
         frame_ms_avg: frame_sum / n,
     }
+}
+
+/// Publish the render-cost snapshot (batch estimate, shadow casters, lights).
+///
+/// Scans every mesh entity, so it is gated behind `dev` together with the other
+/// world-scan updaters.
+fn update_debug_render_snapshot(
+    q_meshes: Query<(
+        &Mesh3d,
+        &MeshMaterial3d<StandardMaterial>,
+        &ViewVisibility,
+        Has<bevy::light::NotShadowCaster>,
+    )>,
+    q_point: Query<(), With<PointLight>>,
+    q_spot: Query<(), With<SpotLight>>,
+    q_dir: Query<(), With<DirectionalLight>>,
+    holder: Res<DebugSnapshotEntity>,
+    mut q_snapshot: Query<&mut DebugRenderSnapshot>,
+) {
+    let Some(entity) = holder.entity else {
+        return;
+    };
+    let Ok(mut snapshot) = q_snapshot.get_mut(entity) else {
+        return;
+    };
+
+    let mut meshes = HashSet::new();
+    let mut materials = HashSet::new();
+    let mut pairs = HashSet::new();
+    let mut mesh_entities = 0u32;
+    let mut visible = 0u32;
+    let mut casters = 0u32;
+
+    for (mesh, material, view_visibility, not_shadow_caster) in &q_meshes {
+        mesh_entities += 1;
+        if !view_visibility.get() {
+            continue;
+        }
+        visible += 1;
+        if !not_shadow_caster {
+            casters += 1;
+        }
+        meshes.insert(mesh.0.id());
+        materials.insert(material.0.id());
+        pairs.insert((mesh.0.id(), material.0.id()));
+    }
+
+    snapshot.mesh_entities = mesh_entities;
+    snapshot.visible_mesh_entities = visible;
+    snapshot.distinct_meshes = meshes.len() as u32;
+    snapshot.distinct_materials = materials.len() as u32;
+    snapshot.batch_estimate = pairs.len() as u32;
+    snapshot.visible_shadow_casters = casters;
+    snapshot.point_lights = q_point.iter().count() as u32;
+    snapshot.spot_lights = q_spot.iter().count() as u32;
+    snapshot.directional_lights = q_dir.iter().count() as u32;
 }
 
 /// Update the debug snapshot from live resources for MCP inspection.
@@ -2461,5 +2550,66 @@ mod tests {
         assert_eq!(state.admitted_right, 2);
         assert_eq!(state.admitted_left, 1);
         assert_eq!(state.admitted_uturn, 1);
+    }
+
+    /// Weak handle with a stable id — enough to tell mesh/material assets apart
+    /// without standing up the asset server.
+    fn asset<A: Asset>(id: u128) -> Handle<A> {
+        Handle::Uuid(
+            bevy::asset::uuid::Uuid::from_u128(id),
+            std::marker::PhantomData,
+        )
+    }
+
+    #[test]
+    fn render_snapshot_counts_visible_batches_and_shadow_casters() {
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+        let entity = app.world_mut().spawn(DebugRenderSnapshot::default()).id();
+        app.insert_resource(DebugSnapshotEntity {
+            entity: Some(entity),
+        });
+
+        // Two meshes and two materials arranged into three distinct pairs, one of
+        // which is used twice — so batching can collapse 4 entities into 3 groups.
+        let spawn = |app: &mut App, mesh: u128, mat: u128, visible: bool, caster: bool| {
+            let mut e = app.world_mut().spawn((
+                Mesh3d(asset::<Mesh>(mesh)),
+                MeshMaterial3d(asset::<StandardMaterial>(mat)),
+                if visible {
+                    ViewVisibility::VISIBLE
+                } else {
+                    ViewVisibility::HIDDEN
+                },
+            ));
+            if !caster {
+                e.insert(bevy::light::NotShadowCaster);
+            }
+        };
+
+        spawn(&mut app, 1, 1, true, true);
+        spawn(&mut app, 1, 1, true, true); // same pair -> same batch
+        spawn(&mut app, 1, 2, true, false); // shares the mesh, new material
+        spawn(&mut app, 2, 1, true, false); // shares the material, new mesh
+        spawn(&mut app, 3, 3, false, true); // invisible -> counted only in the total
+
+        app.world_mut().spawn(PointLight::default());
+        app.world_mut().spawn(DirectionalLight::default());
+        app.world_mut().spawn(DirectionalLight::default());
+
+        app.add_systems(Update, update_debug_render_snapshot);
+        app.update();
+
+        let snap = app.world().get::<DebugRenderSnapshot>(entity).unwrap();
+        assert_eq!(snap.mesh_entities, 5);
+        assert_eq!(snap.visible_mesh_entities, 4);
+        assert_eq!(snap.distinct_meshes, 2);
+        assert_eq!(snap.distinct_materials, 2);
+        assert_eq!(snap.batch_estimate, 3);
+        assert_eq!(snap.visible_shadow_casters, 2);
+        assert_eq!(snap.point_lights, 1);
+        assert_eq!(snap.spot_lights, 0);
+        assert_eq!(snap.directional_lights, 2);
     }
 }

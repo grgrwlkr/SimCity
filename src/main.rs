@@ -18,6 +18,19 @@ use game::GamePlugin;
 #[cfg(feature = "dev")]
 use serde_json::{Value, json};
 
+/// Present mode for the primary window, from `SIMCITY_PRESENT_MODE`.
+///
+/// Vsync caps the frame rate at the display refresh, which hides how much of the
+/// frame budget the renderer actually uses — a perf baseline taken under it cannot
+/// tell "fits comfortably" from "barely fits". `SIMCITY_PRESENT_MODE=immediate`
+/// lifts the cap for measurement runs; anything else keeps the shipping default.
+fn present_mode_from_env(value: Option<&str>) -> bevy::window::PresentMode {
+    match value.map(str::trim) {
+        Some("immediate") | Some("uncapped") => bevy::window::PresentMode::AutoNoVsync,
+        _ => bevy::window::PresentMode::AutoVsync,
+    }
+}
+
 fn main() {
     let mut app = App::new();
     app.insert_resource(ClearColor(Color::srgb(0.08, 0.09, 0.11)));
@@ -35,6 +48,9 @@ fn main() {
         primary_window: Some(Window {
             title: "SimCity (Bevy)".to_string(),
             resolution: (2000, 1000).into(),
+            present_mode: present_mode_from_env(
+                std::env::var("SIMCITY_PRESENT_MODE").ok().as_deref(),
+            ),
             ..default()
         }),
         ..default()
@@ -201,4 +217,25 @@ fn screenshot_handler(In(params): In<Option<Value>>, mut commands: Commands) -> 
             .unwrap_or_default()
             .as_secs()
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::present_mode_from_env;
+    use bevy::window::PresentMode;
+
+    #[test]
+    fn present_mode_lifts_the_vsync_cap_only_when_asked() {
+        assert_eq!(present_mode_from_env(None), PresentMode::AutoVsync);
+        assert_eq!(present_mode_from_env(Some("")), PresentMode::AutoVsync);
+        assert_eq!(present_mode_from_env(Some("vsync")), PresentMode::AutoVsync);
+        assert_eq!(
+            present_mode_from_env(Some("immediate")),
+            PresentMode::AutoNoVsync
+        );
+        assert_eq!(
+            present_mode_from_env(Some(" uncapped ")),
+            PresentMode::AutoNoVsync
+        );
+    }
 }
