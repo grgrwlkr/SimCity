@@ -7,9 +7,11 @@ use bevy_egui::PrimaryEguiContext;
 
 pub use simcity_core::game::camera::MainCamera;
 
+use crate::game::camera_projection::{ProjectionPlan, projection_plan};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::ui_settings::UiSettings;
+use simcity_core::game::render_config::RenderConfig;
 
 /// Pseudo-3D orthographic view: the world lives in the XY plane (Z = height),
 /// the camera hangs on an orbitable boom above a focus point on the ground.
@@ -33,6 +35,13 @@ pub struct CameraRig {
     pub pitch: f32,
     /// Ortho scale the smooth-zoom system eases toward.
     pub zoom_target: f32,
+    /// The eased zoom itself. It used to live in `Projection::Orthographic.scale`,
+    /// but a perspective projection has no such field and the two must agree, so
+    /// the rig owns it and `sync_camera_projection` writes the projection from it.
+    pub zoom: f32,
+    /// Boom length chosen for the current zoom — perspective needs the camera to
+    /// come closer to frame the same ground.
+    pub boom: f32,
 }
 
 impl Default for CameraRig {
@@ -42,6 +51,8 @@ impl Default for CameraRig {
             yaw: DEFAULT_YAW,
             pitch: DEFAULT_PITCH,
             zoom_target: 1.0,
+            zoom: 1.0,
+            boom: CAMERA_DIST,
         }
     }
 }
@@ -59,6 +70,7 @@ impl Plugin for CameraPlugin {
                 camera_mouse_rotate,
                 camera_mouse_wheel_zoom,
                 camera_smooth_zoom,
+                sync_camera_projection,
                 sync_camera_transform,
             )
                 .chain()
@@ -68,12 +80,12 @@ impl Plugin for CameraPlugin {
     }
 }
 
-fn boom_offset(yaw: f32, pitch: f32) -> Vec3 {
+fn boom_offset(yaw: f32, pitch: f32, distance: f32) -> Vec3 {
     Vec3::new(
         yaw.cos() * pitch.cos(),
         yaw.sin() * pitch.cos(),
         pitch.sin(),
-    ) * CAMERA_DIST
+    ) * distance
 }
 
 fn spawn_camera(mut commands: Commands) {
@@ -84,8 +96,10 @@ fn spawn_camera(mut commands: Commands) {
         // Starting value only: `render_settings` overwrites it from render.ron
         // on the first frame the config is present.
         Tonemapping::None,
-        Transform::from_translation(rig.focus.extend(0.0) + boom_offset(rig.yaw, rig.pitch))
-            .looking_at(rig.focus.extend(0.0), Vec3::Z),
+        Transform::from_translation(
+            rig.focus.extend(0.0) + boom_offset(rig.yaw, rig.pitch, rig.boom),
+        )
+        .looking_at(rig.focus.extend(0.0), Vec3::Z),
         rig,
         // Lit world (phase 5): soft fill so shadowed faces keep the palette readable.
         AmbientLight {
@@ -128,7 +142,7 @@ fn sync_camera_transform(mut q_cam: Query<(&CameraRig, &mut Transform), With<Mai
         return;
     };
     let target = rig.focus.extend(0.0);
-    *tf = Transform::from_translation(target + boom_offset(rig.yaw, rig.pitch))
+    *tf = Transform::from_translation(target + boom_offset(rig.yaw, rig.pitch, rig.boom))
         .looking_at(target, Vec3::Z);
 }
 
@@ -193,19 +207,64 @@ fn camera_mouse_rotate(
     }
 }
 
-/// Ease the orthographic scale toward the rig's zoom target every frame —
-/// scroll input only moves the target, so zoom feels smooth at any input rate.
+/// Ease the zoom toward the rig's target every frame — scroll input only moves
+/// the target, so zoom feels smooth at any input rate.
 fn camera_smooth_zoom(
     time: Res<Time<Real>>,
     settings: Res<UiSettings>,
-    mut q_cam: Query<(&CameraRig, &mut Projection), With<MainCamera>>,
+    mut q_cam: Query<&mut CameraRig, With<MainCamera>>,
 ) {
-    let Ok((rig, mut proj)) = q_cam.single_mut() else {
+    let Ok(mut rig) = q_cam.single_mut() else {
         return;
     };
-    if let Projection::Orthographic(ortho) = proj.as_mut() {
-        let t = 1.0 - (-time.delta_secs() * settings.zoom_ease.max(0.5)).exp();
-        ortho.scale += (rig.zoom_target - ortho.scale) * t;
+    let t = 1.0 - (-time.delta_secs() * settings.zoom_ease.max(0.5)).exp();
+    let step = (rig.zoom_target - rig.zoom) * t;
+    rig.zoom += step;
+}
+
+/// Turn the eased zoom into a projection and a boom length.
+///
+/// Close up the city is photographed, far out it is a map; the switch is placed
+/// where the perspective distortion has already faded, and the framing is
+/// identical on both sides of it (`camera_projection`).
+fn sync_camera_projection(
+    cfg: Option<Res<RenderConfig>>,
+    windows: Query<&Window>,
+    mut q_cam: Query<(&mut CameraRig, &mut Projection), With<MainCamera>>,
+) {
+    let Ok((mut rig, mut proj)) = q_cam.single_mut() else {
+        return;
+    };
+    let viewport_height = windows
+        .iter()
+        .next()
+        .map(|w| w.resolution.physical_height() as f32)
+        .unwrap_or(1000.0);
+    let perspective = cfg.map(|c| c.perspective).unwrap_or_default();
+
+    match projection_plan(rig.zoom, viewport_height, &perspective) {
+        ProjectionPlan::Perspective {
+            fov_y_rad,
+            distance,
+        } => {
+            rig.boom = distance;
+            *proj = Projection::Perspective(PerspectiveProjection {
+                fov: fov_y_rad,
+                near: 0.1,
+                far: distance * 4.0,
+                ..default()
+            });
+        }
+        ProjectionPlan::Orthographic { scale, distance } => {
+            rig.boom = distance;
+            let mut ortho = OrthographicProjection::default_3d();
+            ortho.scale = scale;
+            // default_3d clips at far = 1000; the boom alone can exceed that and
+            // then the far half of the ground vanishes off the top of the frame.
+            ortho.near = 0.0;
+            ortho.far = distance * 4.0;
+            *proj = Projection::Orthographic(ortho);
+        }
     }
 }
 

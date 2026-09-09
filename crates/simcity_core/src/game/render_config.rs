@@ -148,6 +148,47 @@ impl Default for SunConfig {
     }
 }
 
+/// When the camera is perspective and how strong the perspective is.
+///
+/// Framing is kept identical across the switch (see `camera_projection`), so
+/// these knobs only decide where the switch happens and how much distortion is
+/// left by the time it does.
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub struct PerspectiveConfig {
+    /// Ortho scale at and above which the camera goes orthographic.
+    pub ortho_above_zoom: f32,
+    /// Vertical field of view at the closest zoom, degrees.
+    pub near_fov_deg: f32,
+    /// Field of view aimed for at the threshold, degrees. Small values make the
+    /// switch invisible but push the camera far from the focus.
+    pub far_fov_deg: f32,
+    /// Exponent on the 0..1 ramp between the two. Above 1 keeps the wide field
+    /// of view longer and then narrows it quickly.
+    pub ramp: f32,
+    pub min_distance: f32,
+    /// The boom never grows past this: beyond it the shadow cascades stop
+    /// covering the city (`shadows.maximum_distance`).
+    pub max_distance: f32,
+    /// Boom length once the camera is orthographic. Distance does not change an
+    /// orthographic image, but it does decide what the clip planes and the
+    /// shadow cascades see — and both are tuned for this value.
+    pub ortho_distance: f32,
+}
+
+impl Default for PerspectiveConfig {
+    fn default() -> Self {
+        Self {
+            ortho_above_zoom: 0.25,
+            near_fov_deg: 42.0,
+            far_fov_deg: 12.0,
+            ramp: 1.6,
+            min_distance: 40.0,
+            max_distance: 900.0,
+            ortho_distance: 500.0,
+        }
+    }
+}
+
 /// How dark the deepest night is allowed to get.
 ///
 /// These floors were tuned for `Tonemapping::None`, where linear values reach
@@ -213,5 +254,6 @@ pub struct RenderConfig {
     pub vignette: VignetteConfig,
     pub sun: SunConfig,
     pub night: NightConfig,
+    pub perspective: PerspectiveConfig,
     pub shadows: ShadowConfig,
 }

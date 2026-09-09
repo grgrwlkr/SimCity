@@ -70,6 +70,25 @@
         ambient_floor: 1.0,
     ),
 
+    // Close up the city is photographed, far out it reads as a map. Bevy cannot
+    // blend one projection type into the other, so what is kept continuous is
+    // the framing: the visible ground height is identical on both sides of
+    // `ortho_above_zoom`, and the field of view is narrowed on the way there so
+    // the distortion has already faded before the switch happens.
+    perspective: (
+        ortho_above_zoom: 0.25,
+        near_fov_deg: 42.0,
+        far_fov_deg: 12.0,
+        ramp: 1.6,
+        min_distance: 40.0,
+        // Past this the shadow cascades stop covering the city.
+        max_distance: 900.0,
+        // Orthographic boom. Bevy's default 3d ortho clips at far = 1000, so a
+        // camera parked at 900 cut the far half of the ground off the top of the
+        // frame; the cascades are tuned for 500 too.
+        ortho_distance: 500.0,
+    ),
+
     shadows: (
         maximum_distance: 900.0,
         cascades: 4,

@@ -871,3 +871,150 @@ mod core_coords_ray {
         assert_eq!(ray_ground_t(Vec3::new(0.0, 0.0, 10.0), Vec3::Z), None);
     }
 }
+
+/// Picking must survive the projection switch of phase 2. These call sites are
+/// where `viewport_to_world_2d` used to return garbage without saying so, and a
+/// perspective camera is exactly the case that would expose it.
+mod core_coords_projection {
+    use bevy::camera::RenderTargetInfo;
+    use bevy::camera::{Camera, OrthographicProjection, PerspectiveProjection, Projection};
+    use bevy::math::{UVec2, Vec2, Vec3};
+    use bevy::transform::components::GlobalTransform;
+    use simcity_core::game::map::coords::{tile_to_world, viewport_to_ground, world_to_tile};
+    use simcity_core::game::map::{MapConfig, TilePos};
+
+    const VIEWPORT: Vec2 = Vec2::new(1600.0, 1000.0);
+
+    fn cfg() -> MapConfig {
+        MapConfig {
+            width: 128,
+            height: 128,
+            tile_size: 16.0,
+        }
+    }
+
+    /// World origin sits on a tile corner, where rounding can go either way, so
+    /// the camera aims at a tile centre instead.
+    fn focus() -> Vec3 {
+        tile_to_world(&cfg(), TilePos { x: 64, y: 64 }).extend(0.0)
+    }
+
+    /// The game's rig: a boom over the focus, looking back down at it.
+    fn camera_at(distance: f32) -> GlobalTransform {
+        let (yaw, pitch) = (-std::f32::consts::FRAC_PI_4, 0.96_f32);
+        let offset = Vec3::new(
+            yaw.cos() * pitch.cos(),
+            yaw.sin() * pitch.cos(),
+            pitch.sin(),
+        ) * distance;
+        GlobalTransform::from(
+            bevy::transform::components::Transform::from_translation(focus() + offset)
+                .looking_at(focus(), Vec3::Z),
+        )
+    }
+
+    fn camera_with(projection: Projection) -> Camera {
+        let mut camera = Camera::default();
+        camera.computed.clip_from_view = projection.get_clip_from_view();
+        camera.computed.target_info = Some(RenderTargetInfo {
+            physical_size: UVec2::new(VIEWPORT.x as u32, VIEWPORT.y as u32),
+            scale_factor: 1.0,
+        });
+        camera
+    }
+
+    fn orthographic(scale: f32) -> Projection {
+        let mut ortho = OrthographicProjection::default_3d();
+        ortho.scale = scale;
+        let mut projection = Projection::Orthographic(ortho);
+        projection.update(VIEWPORT.x, VIEWPORT.y);
+        projection
+    }
+
+    /// Framed to show the same ground height as `orthographic(scale)` would.
+    fn perspective(visible_height: f32, distance: f32) -> Projection {
+        let mut projection = Projection::Perspective(PerspectiveProjection {
+            fov: 2.0 * (visible_height / (2.0 * distance)).atan(),
+            aspect_ratio: VIEWPORT.x / VIEWPORT.y,
+            near: 0.1,
+            far: distance * 4.0,
+            ..Default::default()
+        });
+        projection.update(VIEWPORT.x, VIEWPORT.y);
+        projection
+    }
+
+    /// Tile -> screen -> tile must be the identity, or picking lies.
+    fn assert_round_trip(label: &str, camera: &Camera, transform: &GlobalTransform) {
+        let cfg = cfg();
+        for tile in [
+            TilePos { x: 64, y: 64 },
+            TilePos { x: 62, y: 66 },
+            TilePos { x: 66, y: 62 },
+            TilePos { x: 60, y: 60 },
+        ] {
+            let world = tile_to_world(&cfg, tile);
+            let screen = camera
+                .world_to_viewport(transform, world.extend(0.0))
+                .unwrap_or_else(|e| panic!("{label}: tile {tile:?} is off screen: {e:?}"));
+            let back = viewport_to_ground(camera, transform, screen)
+                .unwrap_or_else(|| panic!("{label}: no ground under {screen:?}"));
+            assert_eq!(
+                world_to_tile(&cfg, back),
+                Some(tile),
+                "{label}: {tile:?} came back as {:?} (world {world:?} -> {back:?})",
+                world_to_tile(&cfg, back)
+            );
+        }
+    }
+
+    #[test]
+    fn picking_round_trips_in_both_projections() {
+        let scale = 0.2;
+        let visible_height = VIEWPORT.y * scale;
+        let ortho_distance = 900.0;
+        let perspective_distance = 300.0;
+
+        assert_round_trip(
+            "orthographic",
+            &camera_with(orthographic(scale)),
+            &camera_at(ortho_distance),
+        );
+        assert_round_trip(
+            "perspective",
+            &camera_with(perspective(visible_height, perspective_distance)),
+            &camera_at(perspective_distance),
+        );
+    }
+
+    #[test]
+    fn the_frame_centre_picks_the_same_tile_in_both_projections() {
+        let scale = 0.2;
+        let visible_height = VIEWPORT.y * scale;
+        let centre = VIEWPORT * 0.5;
+
+        let ortho_transform = camera_at(900.0);
+        let ortho_tile =
+            viewport_to_ground(&camera_with(orthographic(scale)), &ortho_transform, centre)
+                .and_then(|w| world_to_tile(&cfg(), w));
+
+        let perspective_transform = camera_at(300.0);
+        let perspective_tile = viewport_to_ground(
+            &camera_with(perspective(visible_height, 300.0)),
+            &perspective_transform,
+            centre,
+        )
+        .and_then(|w| world_to_tile(&cfg(), w));
+
+        assert!(ortho_tile.is_some(), "orthographic centre found no ground");
+        assert_eq!(
+            ortho_tile, perspective_tile,
+            "the two projections look at the same focus, so the centre pixel is the same tile"
+        );
+        assert_eq!(
+            ortho_tile,
+            Some(TilePos { x: 64, y: 64 }),
+            "and that tile is the one the camera is aimed at"
+        );
+    }
+}

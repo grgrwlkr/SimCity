@@ -83,7 +83,16 @@ pub struct DebugWorldSnapshot {
     pub map_height: i32,
     pub tile_size: f32,
     pub camera_pos: Vec2,
+    /// Orthographic scale, or 0 when the camera is perspective — read
+    /// `camera_projection` before trusting it.
     pub camera_zoom: f32,
+    /// Which projection is live. Phase 2 made this change with the zoom, and a
+    /// snapshot that only knew how to read an orthographic camera reported a
+    /// perspective one as "zoom 1.0" — observability lying exactly where the
+    /// behaviour changed.
+    pub camera_projection: String,
+    /// Vertical field of view in degrees, or 0 when the camera is orthographic.
+    pub camera_fov_deg: f32,
     pub hovered_tile_valid: bool,
     pub hovered_tile_x: i32,
     pub hovered_tile_y: i32,
@@ -1056,6 +1065,18 @@ fn compute_window_stats(
     }
 }
 
+/// Kind, orthographic scale and vertical field of view of a projection.
+///
+/// One of the last two is always zero: an orthographic camera has no field of
+/// view and a perspective one has no scale.
+pub fn camera_projection_readout(projection: &Projection) -> (&'static str, f32, f32) {
+    match projection {
+        Projection::Orthographic(o) => ("Orthographic", o.scale, 0.0),
+        Projection::Perspective(p) => ("Perspective", 0.0, p.fov.to_degrees()),
+        _ => ("Custom", 0.0, 0.0),
+    }
+}
+
 /// Publish the render-cost snapshot (batch estimate, shadow casters, lights).
 ///
 /// Scans every mesh entity, so it is gated behind `dev` together with the other
@@ -1156,13 +1177,15 @@ fn update_debug_snapshot(
 
     if let Ok((tf, proj)) = q_cam.single() {
         snapshot.camera_pos = tf.translation.truncate();
-        snapshot.camera_zoom = match proj {
-            Projection::Orthographic(o) => o.scale,
-            _ => 1.0,
-        };
+        let (kind, zoom, fov_deg) = camera_projection_readout(proj);
+        set_string(&mut snapshot.camera_projection, kind);
+        snapshot.camera_zoom = zoom;
+        snapshot.camera_fov_deg = fov_deg;
     } else {
         snapshot.camera_pos = Vec2::ZERO;
-        snapshot.camera_zoom = 1.0;
+        set_string(&mut snapshot.camera_projection, "None");
+        snapshot.camera_zoom = 0.0;
+        snapshot.camera_fov_deg = 0.0;
     }
 
     if let Some(tile) = hovered.tile {
@@ -2563,6 +2586,33 @@ mod tests {
             bevy::asset::uuid::Uuid::from_u128(id),
             std::marker::PhantomData,
         )
+    }
+
+    #[test]
+    fn the_projection_readout_tells_the_two_cameras_apart() {
+        use bevy::camera::{OrthographicProjection, PerspectiveProjection};
+
+        let mut ortho = OrthographicProjection::default_3d();
+        ortho.scale = 0.42;
+        let (kind, zoom, fov) = camera_projection_readout(&Projection::Orthographic(ortho));
+        assert_eq!(kind, "Orthographic");
+        assert!((zoom - 0.42).abs() < 1e-6);
+        assert_eq!(fov, 0.0, "an orthographic camera has no field of view");
+
+        let perspective = Projection::Perspective(PerspectiveProjection {
+            fov: 35.0_f32.to_radians(),
+            ..Default::default()
+        });
+        let (kind, zoom, fov) = camera_projection_readout(&perspective);
+        assert_eq!(kind, "Perspective");
+        assert_eq!(
+            zoom, 0.0,
+            "a perspective camera has no scale to report as zoom"
+        );
+        assert!(
+            (fov - 35.0).abs() < 1e-3,
+            "the field of view is what a perspective camera has instead, got {fov}"
+        );
     }
 
     #[test]
