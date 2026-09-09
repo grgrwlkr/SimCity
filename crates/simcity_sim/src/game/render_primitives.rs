@@ -392,11 +392,16 @@ impl RenderPrimitives {
         self.props
             .entry([2, 0, 0, 0])
             .or_insert_with(|| {
-                let body = [0.18, 0.24, 0.20, 1.0];
-                let lid = [0.09, 0.11, 0.10, 1.0];
+                // Dark body, PALE lid. The silhouette is what identifies a prop
+                // from above, and a dark box next to a dark awning and a parked
+                // car was indistinguishable from both: an automated colour
+                // search over a whole frame found no bin at all. A tall narrow
+                // body with a bright cap reads as a bin and as nothing else.
+                let body = [0.13, 0.19, 0.15, 1.0];
+                let lid = [0.72, 0.75, 0.70, 1.0];
                 let mut b = CompositeMesh::default();
-                b.push_box(Vec3::new(-1.7, -1.3, 0.0), Vec3::new(1.7, 1.3, 3.8), body);
-                b.push_box(Vec3::new(-1.9, -1.5, 3.8), Vec3::new(1.9, 1.5, 4.3), lid);
+                b.push_box(Vec3::new(-1.4, -1.1, 0.0), Vec3::new(1.4, 1.1, 5.2), body);
+                b.push_box(Vec3::new(-1.7, -1.4, 5.2), Vec3::new(1.7, 1.4, 5.9), lid);
                 meshes.add(b.build())
             })
             .clone()

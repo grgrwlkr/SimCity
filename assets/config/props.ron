@@ -36,7 +36,7 @@
 
     bin: (
         enabled: true,
-        chance_percent: 22,
+        chance_percent: 30,
     ),
 
     awning: (
