@@ -61,6 +61,9 @@ pub struct RenderPrimitives {
     meeples: HashMap<[u8; 4], Handle<Mesh>>,
     traffic_light: Option<Handle<Mesh>>,
     tree: Option<Handle<Mesh>>,
+    /// Street furniture, keyed by the dimensions that come from `props.ron` so a
+    /// knob change rebuilds the mesh instead of being ignored.
+    props: HashMap<[u32; 4], Handle<Mesh>>,
 }
 
 /// What makes two surfaces the same material: colour, atlas cell, and how many
@@ -174,6 +177,7 @@ impl RenderPrimitives {
             meeples: HashMap::new(),
             traffic_light: None,
             tree: None,
+            props: HashMap::new(),
         }
     }
 
@@ -286,6 +290,169 @@ impl RenderPrimitives {
             .clone()
     }
 
+    /// Lamp post: mast plus an arm reaching over the carriageway, with the lamp
+    /// head at its end. `+X` is towards the road, so the spawner only has to
+    /// rotate the entity to face the kerb it stands on.
+    pub fn streetlight_mesh(
+        &mut self,
+        meshes: &mut Assets<Mesh>,
+        pole_height: f32,
+        arm_length: f32,
+    ) -> Handle<Mesh> {
+        let key = [0, pole_height.to_bits(), arm_length.to_bits(), 0];
+        self.props
+            .entry(key)
+            .or_insert_with(|| {
+                let metal = [0.16, 0.17, 0.19, 1.0];
+                let lamp = [0.85, 0.80, 0.62, 1.0];
+                let mut b = CompositeMesh::default();
+                b.push_box(
+                    Vec3::new(-0.35, -0.35, 0.0),
+                    Vec3::new(0.35, 0.35, pole_height),
+                    metal,
+                );
+                b.push_box(
+                    Vec3::new(0.0, -0.18, pole_height - 0.5),
+                    Vec3::new(arm_length, 0.18, pole_height - 0.1),
+                    metal,
+                );
+                b.push_box(
+                    Vec3::new(arm_length - 0.7, -0.5, pole_height - 1.1),
+                    Vec3::new(arm_length + 0.4, 0.5, pole_height - 0.5),
+                    lamp,
+                );
+                meshes.add(b.build())
+            })
+            .clone()
+    }
+
+    /// A wire span, drawn as three straight segments that dip in the middle —
+    /// a catenary is not worth the vertices at this zoom.
+    pub fn wire_mesh(&mut self, meshes: &mut Assets<Mesh>, span: f32, sag: f32) -> Handle<Mesh> {
+        let key = [1, span.to_bits(), sag.to_bits(), 0];
+        self.props
+            .entry(key)
+            .or_insert_with(|| {
+                let dark = [0.07, 0.07, 0.08, 1.0];
+                let t = 0.09;
+                let mut b = CompositeMesh::default();
+                let points = [(0.0, 0.0), (span * 0.5, -sag), (span, 0.0)];
+                for pair in points.windows(2) {
+                    let (x0, z0) = pair[0];
+                    let (x1, z1) = pair[1];
+                    b.push_box(
+                        Vec3::new(x0, -t, z0.min(z1) - t),
+                        Vec3::new(x1, t, z0.max(z1) + t),
+                        dark,
+                    );
+                }
+                meshes.add(b.build())
+            })
+            .clone()
+    }
+
+    /// A shop sign: a flat panel projecting from the facade over the pavement,
+    /// reaching out along `+X` with its face UP. White vertex colours: the
+    /// shared `NightGlow::signs` material supplies the paint by day and the
+    /// light after dark.
+    pub fn sign_mesh(
+        &mut self,
+        meshes: &mut Assets<Mesh>,
+        width: f32,
+        height: f32,
+    ) -> Handle<Mesh> {
+        let key = [5, width.to_bits(), height.to_bits(), 0];
+        self.props
+            .entry(key)
+            .or_insert_with(|| {
+                let white = [1.0, 1.0, 1.0, 1.0];
+                // A panel projecting over the pavement, face UP — not a board
+                // standing on edge. That was the first version, and from this
+                // game's near-top-down camera a vertical board shows only its
+                // top edge: 319 of them were on screen and none could be seen.
+                // `height` now sets how far the panel reaches out.
+                let reach = height.max(1.0) * 1.6;
+                let mut b = CompositeMesh::default();
+                b.push_box(
+                    Vec3::new(0.0, -width * 0.5, -0.14),
+                    Vec3::new(reach, width * 0.5, 0.14),
+                    white,
+                );
+                meshes.add(b.build())
+            })
+            .clone()
+    }
+
+    /// Kerbside bin.
+    pub fn bin_mesh(&mut self, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
+        self.props
+            .entry([2, 0, 0, 0])
+            .or_insert_with(|| {
+                let body = [0.18, 0.22, 0.19, 1.0];
+                let lid = [0.10, 0.12, 0.11, 1.0];
+                let mut b = CompositeMesh::default();
+                b.push_box(Vec3::new(-1.0, -0.8, 0.0), Vec3::new(1.0, 0.8, 2.4), body);
+                b.push_box(Vec3::new(-1.1, -0.9, 2.4), Vec3::new(1.1, 0.9, 2.7), lid);
+                meshes.add(b.build())
+            })
+            .clone()
+    }
+
+    /// Shop awning: a sloped shelf over the pavement, `+X` towards the street.
+    pub fn awning_mesh(&mut self, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
+        self.props
+            .entry([3, 0, 0, 0])
+            .or_insert_with(|| {
+                let cloth = [0.42, 0.13, 0.13, 1.0];
+                let mut b = CompositeMesh::default();
+                // One slab, tilted by placing the outer edge lower.
+                b.quad(
+                    [
+                        [0.0, -3.0, 5.2],
+                        [3.2, -3.0, 4.2],
+                        [3.2, 3.0, 4.2],
+                        [0.0, 3.0, 5.2],
+                    ],
+                    [0.0, 0.0, 1.0],
+                    cloth,
+                );
+                b.quad(
+                    [
+                        [0.0, 3.0, 5.2],
+                        [3.2, 3.0, 4.2],
+                        [3.2, -3.0, 4.2],
+                        [0.0, -3.0, 5.2],
+                    ],
+                    [0.0, 0.0, -1.0],
+                    cloth,
+                );
+                meshes.add(b.build())
+            })
+            .clone()
+    }
+
+    /// A parked car body. Visual only — this carries no traffic components and
+    /// the sim never sees it.
+    pub fn parked_car_mesh(&mut self, meshes: &mut Assets<Mesh>, tint: [f32; 3]) -> Handle<Mesh> {
+        let key = [
+            4,
+            (tint[0] * 255.0) as u32,
+            (tint[1] * 255.0) as u32,
+            (tint[2] * 255.0) as u32,
+        ];
+        self.props
+            .entry(key)
+            .or_insert_with(|| {
+                let body = [tint[0], tint[1], tint[2], 1.0];
+                let glass = [0.12, 0.14, 0.18, 1.0];
+                let mut b = CompositeMesh::default();
+                b.push_box(Vec3::new(-3.4, -1.5, 0.2), Vec3::new(3.4, 1.5, 1.9), body);
+                b.push_box(Vec3::new(-1.6, -1.3, 1.9), Vec3::new(1.4, 1.3, 2.9), glass);
+                meshes.add(b.build())
+            })
+            .clone()
+    }
+
     /// Shared quad mesh of an exact size (scale = 1). Entities WITH CHILDREN must
     /// use this instead of scaling the unit quad: `Transform.scale` propagates to
     /// children and would squash glyphs/roof markers; a sized mesh does not.
@@ -310,7 +477,12 @@ pub struct NightGlow {
     pub marking_white: Handle<StandardMaterial>,
     /// Warm translucent light pool under traffic lights (invisible by day).
     pub light_pool: Handle<StandardMaterial>,
+    /// Shop signs: a painted board by day, lit after dark.
+    pub signs: Handle<StandardMaterial>,
 }
+
+/// Daytime colour of a shop sign — a painted board, not a lamp.
+pub const SIGN_DAY_COLOR: Color = Color::srgb(0.62, 0.20, 0.22);
 
 pub const WINDOW_GLASS_DAY: Color = Color::srgb(0.10, 0.12, 0.17);
 pub const MARKING_CENTER_COLOR: Color = Color::srgba(1.0, 0.85, 0.1, 0.9);
@@ -347,6 +519,7 @@ fn init_render_primitives(
         meeples: HashMap::new(),
         traffic_light: None,
         tree: None,
+        props: HashMap::new(),
     });
     commands.insert_resource(night_glow(&mut materials));
 }
@@ -373,6 +546,7 @@ fn night_glow(materials: &mut Assets<StandardMaterial>) -> NightGlow {
             perceptual_roughness: 1.0,
             ..default()
         }),
+        signs: materials.add(matte(SIGN_DAY_COLOR)),
     }
 }
 
@@ -514,6 +688,7 @@ mod tests {
                 meeples: HashMap::new(),
                 traffic_light: None,
                 tree: None,
+                props: HashMap::new(),
             },
             Assets::default(),
         )

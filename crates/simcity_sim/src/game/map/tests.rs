@@ -1084,3 +1084,163 @@ mod core_sim_speed_names {
         assert_eq!(SimSpeed::from_name(""), None);
     }
 }
+
+/// Where street furniture lands. Placement is a pure function of the grid and
+/// the map seed, like the trees before it: props are spawned once per map, so a
+/// roll that drifted between runs would be a save-load difference nobody sees
+/// until the city reloads wrong.
+mod props_placement {
+    use bevy::prelude::IVec2;
+
+    use crate::game::map::props::{
+        kerb_side, kerbside_side, prop_roll, road_side, wants_streetlight,
+    };
+    use crate::game::map::{MapGrid, TileKind, TilePos};
+    use crate::game::roads::{RoadCell, RoadKind};
+    use simcity_core::game::props_config::StreetlightConfig;
+
+    fn road_row(len: i32) -> MapGrid {
+        let mut grid = MapGrid::new(len + 4, 5);
+        for x in 0..len {
+            let pos = TilePos { x, y: 2 };
+            let mut cell = grid.get(pos).unwrap_or_default();
+            cell.terrain = TileKind::Road;
+            cell.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                ..RoadCell::none()
+            };
+            grid.set(pos, cell);
+        }
+        grid
+    }
+
+    #[test]
+    fn a_lamp_stands_on_the_kerb_and_never_mid_carriageway() {
+        let grid = road_row(12);
+        // The road runs along y = 2, so every road tile has a non-road
+        // neighbour above and below: that is a kerb.
+        assert!(kerb_side(TilePos { x: 4, y: 2 }, &grid).is_some());
+        // A tile off the road is not a lamp site at all.
+        assert!(kerb_side(TilePos { x: 4, y: 0 }, &grid).is_none());
+    }
+
+    #[test]
+    fn lamps_keep_the_configured_spacing() {
+        let grid = road_row(16);
+        let cfg = StreetlightConfig {
+            spacing_tiles: 4,
+            ..StreetlightConfig::default()
+        };
+        let lit: Vec<i32> = (0..16)
+            .filter(|&x| wants_streetlight(TilePos { x, y: 2 }, &grid, &cfg))
+            .collect();
+        assert!(
+            lit.len() >= 3,
+            "a 16-tile street should carry lamps: {lit:?}"
+        );
+        for pair in lit.windows(2) {
+            assert_eq!(
+                pair[1] - pair[0],
+                4,
+                "lamps must sit exactly spacing_tiles apart: {lit:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn switching_lamps_off_in_the_config_leaves_the_street_bare() {
+        let grid = road_row(16);
+        let cfg = StreetlightConfig {
+            enabled: false,
+            ..StreetlightConfig::default()
+        };
+        assert!(
+            (0..16).all(|x| !wants_streetlight(TilePos { x, y: 2 }, &grid, &cfg)),
+            "a disabled knob must actually disable"
+        );
+    }
+
+    /// Shop furniture needs a shop, and "is there a building here" cannot be
+    /// read off the grid: `MapCell::building` is written for service buildings
+    /// and hand-placed ones only, while R/C/I grown by the simulation leaves it
+    /// `None`. Trusting it found 15 tiles in a whole city and put signs nowhere.
+    #[test]
+    fn shop_furniture_needs_a_shop_and_takes_that_from_the_caller() {
+        let grid = road_row(8);
+        let lot = TilePos { x: 3, y: 3 };
+        // The tile faces the road either way — that part is geometry.
+        assert_eq!(road_side(lot, &grid), Some(IVec2::new(0, -1)));
+        // Whether a shop stands on it is the caller's to say.
+        assert!(
+            kerbside_side(lot, &grid, false).is_none(),
+            "no shop, no sign"
+        );
+        assert_eq!(
+            kerbside_side(lot, &grid, true),
+            Some(IVec2::new(0, -1)),
+            "with a shop, the furniture faces the road"
+        );
+    }
+
+    /// Parked cars come from a fixed palette, not from a free hash.
+    ///
+    /// The first version keyed the car mesh on a continuous tint and blew the
+    /// distinct-mesh count from 44 to 139 — the phase-7 "material per colour"
+    /// lesson, wearing a mesh instead of a material.
+    #[test]
+    fn parked_cars_draw_from_a_small_fixed_palette() {
+        use crate::game::map::props::{PARKED_CAR_TINTS, parked_car_tint};
+
+        assert!(
+            PARKED_CAR_TINTS.len() <= 4,
+            "a bigger palette is a bigger batch count"
+        );
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..400 {
+            let pos = TilePos {
+                x: i % 20,
+                y: i / 20,
+            };
+            let tint = parked_car_tint(pos, 42);
+            assert!(
+                PARKED_CAR_TINTS.contains(&tint),
+                "{tint:?} is not in the palette"
+            );
+            seen.insert(tint.map(f32::to_bits));
+        }
+        assert!(seen.len() > 1, "one colour for every car is not a palette");
+    }
+
+    #[test]
+    fn a_roll_is_stable_for_a_tile_and_spread_across_the_map() {
+        let pos = TilePos { x: 7, y: 9 };
+        let first = prop_roll(pos, 42, 1, 50);
+        assert_eq!(first, prop_roll(pos, 42, 1, 50), "same tile, same answer");
+        // Different salts are different props on the same tile; they must not
+        // all land together.
+        let bins = (0..400).filter(|i| {
+            let p = TilePos {
+                x: i % 20,
+                y: i / 20,
+            };
+            prop_roll(p, 42, 1, 25)
+        });
+        let hits = bins.count();
+        assert!(
+            (60..=140).contains(&hits),
+            "25% of 400 tiles should be roughly 100, got {hits}"
+        );
+        assert!(
+            (0..400).all(|i| !prop_roll(
+                TilePos {
+                    x: i % 20,
+                    y: i / 20
+                },
+                42,
+                1,
+                0
+            )),
+            "a zero chance must place nothing"
+        );
+    }
+}

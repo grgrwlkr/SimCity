@@ -687,15 +687,27 @@ mod tests {
         let lake = lake_center(&cfg);
         let mut lo = u8::MAX;
         let mut hi = 0u8;
+        let mut total = 0u32;
+        let mut count = 0u32;
         for y in 0..cfg.height {
             for x in 0..cfg.width {
                 let h = terrain_height(TilePos { x, y }, lake);
                 lo = lo.min(h);
                 hi = hi.max(h);
+                total += h as u32;
+                count += 1;
             }
         }
         assert!(hi > lo, "the terrain must vary, not be a constant plate");
         assert!(hi <= 50, "the generator caps at 50, got {hi}");
+        // The docs quote this range and mean; pin them so they cannot drift
+        // away from the code in silence.
+        let mean = total as f32 / count as f32;
+        assert_eq!((lo, hi), (0, 29), "range quoted in assets/README.md");
+        assert!(
+            (mean - 10.86).abs() < 0.01,
+            "mean quoted in assets/README.md is 10.86, got {mean}"
+        );
         // The overlay paints height/255, so this is why its ground reads dark:
         // even the highest ground is under a fifth of the ramp.
         assert!(

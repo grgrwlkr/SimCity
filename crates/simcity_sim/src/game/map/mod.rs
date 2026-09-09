@@ -29,6 +29,12 @@ pub use coords::{map_origin, tile_f_to_world, tile_to_world, world_to_tile};
 
 mod generation;
 
+pub mod props;
+
+mod props_render;
+pub use props_render::PropEntity;
+use props_render::{PropIndex, sync_prop_visibility, sync_props};
+
 mod commands;
 use commands::apply_game_commands_to_grid;
 
@@ -63,6 +69,7 @@ impl Plugin for MapPlugin {
             .init_resource::<OverlayIndexVersions>()
             .init_resource::<BuildingEntityIndex>()
             .init_resource::<LaneMarkingIndex>()
+            .init_resource::<PropIndex>()
             .init_resource::<RoadPreviewPool>()
             .add_systems(OnEnter(AppState::InGame), spawn_map_if_needed)
             .add_systems(
@@ -152,6 +159,14 @@ impl Plugin for MapPlugin {
                     .in_set(GameSet::RenderSync)
                     .after(sync_dirty_tiles_to_render)
                     .run_if(in_game_or_paused),
+            )
+            .add_systems(
+                Update,
+                (sync_props, sync_prop_visibility)
+                    .chain()
+                    .in_set(GameSet::RenderSync)
+                    .after(sync_dirty_tiles_to_render)
+                    .run_if(in_game_or_paused),
             );
     }
 }
@@ -180,6 +195,16 @@ impl BuildingEntityIndex {
         self.height = grid.height;
         self.by_pos = vec![None; grid.len()];
         self.by_entity.clear();
+    }
+
+    /// How many buildings the index holds — the cheap signal the prop pass
+    /// watches, because buildings GROW without touching the map edit version.
+    pub fn len(&self) -> usize {
+        self.by_entity.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_entity.is_empty()
     }
 
     pub fn get(&self, pos: TilePos) -> Option<Entity> {
@@ -252,11 +277,15 @@ fn cleanup_ingame_entities(mut commands: Commands, q: Query<Entity, With<InGameE
 fn clear_map_render_caches(
     mut map_index: ResMut<MapIndex>,
     mut lane_markings: ResMut<LaneMarkingIndex>,
+    mut props: ResMut<PropIndex>,
     mut preview_pool: ResMut<RoadPreviewPool>,
     road_dirty: Option<ResMut<RoadDirtyTiles>>,
 ) {
     map_index.tiles.clear();
     lane_markings.by_pos.clear();
+    // The prop entities go with the map; a stale index would keep the
+    // visibility pass retrying entities that no longer exist.
+    props.clear();
     preview_pool.entities.clear();
     // Ensure no leftover "dirty roads" survive between sessions.
     if let Some(mut road_dirty) = road_dirty {

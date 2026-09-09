@@ -14,11 +14,12 @@ use bevy::prelude::*;
 
 use crate::game::camera::MainCamera;
 use crate::game::render_primitives::{
-    MARKING_CENTER_COLOR, MARKING_WHITE_COLOR, NightGlow, WINDOW_GLASS_DAY,
+    MARKING_CENTER_COLOR, MARKING_WHITE_COLOR, NightGlow, SIGN_DAY_COLOR, WINDOW_GLASS_DAY,
 };
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
+use simcity_core::game::props_config::PropsConfig;
 use simcity_core::game::render_config::{NightConfig, RenderConfig, SunConfig};
 
 pub struct DayNightPlugin;
@@ -85,6 +86,7 @@ fn drive_day_night_lighting(
     city: Res<City>,
     visual: Res<DayNightVisualConfig>,
     render_cfg: Option<Res<RenderConfig>>,
+    props_cfg: Option<Res<PropsConfig>>,
     glow: Res<NightGlow>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut q_sun: Query<&mut DirectionalLight>,
@@ -134,6 +136,15 @@ fn drive_day_night_lighting(
     if let Some(mut m) = materials.get_mut(&glow.marking_white) {
         m.emissive = LinearRgba::rgb(0.35 * night, 0.35 * night, 0.38 * night);
         m.base_color = MARKING_WHITE_COLOR;
+    }
+    // Shop signs: a painted board by day, lit after dark. Strength is a knob
+    // because a sign is the brightest thing in a night frame and overshooting
+    // it blooms the whole street.
+    let sign_cfg = props_cfg.map(|c| c.sign).unwrap_or_default();
+    if let Some(mut m) = materials.get_mut(&glow.signs) {
+        let k = sign_cfg.night_emissive * night;
+        m.base_color = SIGN_DAY_COLOR;
+        m.emissive = LinearRgba::rgb(k, 0.62 * k, 0.30 * k);
     }
     // Warm pools under traffic lights fade in after dusk.
     if let Some(mut m) = materials.get_mut(&glow.light_pool) {
@@ -212,6 +223,39 @@ mod tests {
             sun_lux(&app) > SunConfig::default().day_illuminance * 0.9,
             "full sun at noon"
         );
+    }
+
+    /// Shop signs are the one prop meant to be seen after dark, and they ride
+    /// the same shared material as the windows: one asset write lights the
+    /// whole city rather than a per-entity pass.
+    #[test]
+    fn shop_signs_light_up_after_dark_and_go_out_at_noon() {
+        let mut app = App::new();
+        render_primitives::init_for_test(&mut app);
+        app.init_resource::<DayNightVisualConfig>();
+        app.insert_resource(City {
+            hour: 0,
+            ..Default::default()
+        });
+        app.world_mut().spawn(DirectionalLight::default());
+        app.world_mut().spawn((MainCamera, AmbientLight::default()));
+        app.add_systems(Update, drive_day_night_lighting);
+
+        app.update();
+        let glow = app.world().resource::<NightGlow>().clone();
+        let sign_emissive = |app: &App| {
+            app.world()
+                .resource::<Assets<StandardMaterial>>()
+                .get(&glow.signs)
+                .unwrap()
+                .emissive
+                .red
+        };
+        assert!(sign_emissive(&app) > 1.0, "signs glow at midnight");
+
+        app.world_mut().resource_mut::<City>().hour = 12;
+        app.update();
+        assert!(sign_emissive(&app) < 0.01, "signs are unlit at noon");
     }
 
     #[test]
