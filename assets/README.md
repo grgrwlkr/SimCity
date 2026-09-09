@@ -56,5 +56,5 @@ water — which is most of the map. `Height` paints `height / 255`, and the test
 city's terrain is gentle on purpose: `terrain_height` in
 `crates/simcity_data/src/game/test_city.rs` lays rolling hills of `(sin + cos)`
 plus a rise near the lake, capped at 50. Over the whole 128×128 map that comes
-out 0..29, mean 10.7 — so `t` never passes 0.115 and the ground reads nearly
+out 0..29, mean 10.86 — so `t` never passes 0.114 and the ground reads nearly
 black. The relief is there; the range simply does not reach the top of the ramp.

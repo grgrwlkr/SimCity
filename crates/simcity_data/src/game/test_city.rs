@@ -148,10 +148,7 @@ pub fn generate_test_city(
     // =========================================================================
     // WATER: Create a lake in the upper-right area
     // =========================================================================
-    let lake_center = TilePos {
-        x: cfg.width - 25,
-        y: cfg.height - 25,
-    };
+    let lake_center = lake_center(cfg);
     let lake_radius = 10;
     for dy in -lake_radius..=lake_radius {
         for dx in -lake_radius..=lake_radius {
@@ -642,6 +639,18 @@ pub fn generate_test_city(
     }
 }
 
+/// Where the test city's lake sits.
+///
+/// Named so the terrain pin cannot drift from the generator: the first version
+/// of that test guessed a centre, and a guessed centre exercises terrain the
+/// game never produces.
+pub fn lake_center(cfg: &MapConfig) -> TilePos {
+    TilePos {
+        x: cfg.width - 25,
+        y: cfg.height - 25,
+    }
+}
+
 /// Terrain height of one tile of the test city, 0..=50.
 ///
 /// Named rather than inline because the Height overlay paints `height / 255`,
@@ -670,11 +679,16 @@ mod tests {
     /// was misread once as "the test city assigns no height at all".
     #[test]
     fn the_test_city_has_relief_and_it_is_gentle() {
-        let lake = TilePos { x: 90, y: 40 };
+        let cfg = MapConfig {
+            width: 128,
+            height: 128,
+            tile_size: 16.0,
+        };
+        let lake = lake_center(&cfg);
         let mut lo = u8::MAX;
         let mut hi = 0u8;
-        for y in 0..128 {
-            for x in 0..128 {
+        for y in 0..cfg.height {
+            for x in 0..cfg.width {
                 let h = terrain_height(TilePos { x, y }, lake);
                 lo = lo.min(h);
                 hi = hi.max(h);
