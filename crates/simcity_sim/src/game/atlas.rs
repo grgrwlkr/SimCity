@@ -87,6 +87,24 @@ impl AtlasCell {
     }
 }
 
+/// Map a face-local 0..1 coordinate into this cell, for meshes that carry
+/// atlas-space UVs directly.
+///
+/// A mesh whose faces need *different* cells cannot use the material's
+/// `uv_transform` — that applies to the whole mesh — so it bakes the cell into
+/// the vertices instead. That is the "UV in the vertices" the plan asks for, and
+/// it is what lets one building material cover walls and roof with two patterns.
+pub fn uv_in(cell: AtlasCell, u: f32, v: f32) -> [f32; 2] {
+    let (col, row) = cell.index();
+    let step = 1.0 / ATLAS_GRID as f32;
+    let inset = 0.5 / ATLAS_SIZE as f32;
+    let scale = step - 2.0 * inset;
+    [
+        col as f32 * step + inset + u.clamp(0.0, 1.0) * scale,
+        row as f32 * step + inset + v.clamp(0.0, 1.0) * scale,
+    ]
+}
+
 /// Which cell a ground tile of this kind samples.
 ///
 /// Zoned land keeps the pavement pattern rather than grass: a zoned block is
@@ -217,6 +235,37 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn vertex_mapped_uvs_land_inside_their_cell_and_span_it() {
+        let step = 1.0 / ATLAS_GRID as f32;
+        for cell in AtlasCell::ALL {
+            let (col, row) = cell.index();
+            for (u, v) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (0.5, 0.5)] {
+                let uv = uv_in(cell, u, v);
+                assert!(
+                    uv[0] >= col as f32 * step && uv[0] <= (col + 1) as f32 * step,
+                    "{cell:?}: u {} left its column",
+                    uv[0]
+                );
+                assert!(
+                    uv[1] >= row as f32 * step && uv[1] <= (row + 1) as f32 * step,
+                    "{cell:?}: v {} left its row",
+                    uv[1]
+                );
+            }
+            // The face must use the whole cell, not a corner of it.
+            let span = uv_in(cell, 1.0, 1.0)[0] - uv_in(cell, 0.0, 0.0)[0];
+            assert!(span > step * 0.98, "{cell:?} only spans {span} of {step}");
+        }
+    }
+
+    #[test]
+    fn two_cells_never_overlap_in_vertex_space() {
+        let walls = uv_in(AtlasCell::Facade, 0.5, 0.5);
+        let roof = uv_in(AtlasCell::RoofGravel, 0.5, 0.5);
+        assert_ne!(walls, roof, "a roof must not sample the facade pattern");
     }
 
     #[test]

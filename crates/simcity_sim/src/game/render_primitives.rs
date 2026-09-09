@@ -71,9 +71,26 @@ struct MaterialKey {
     cell: AtlasCell,
     /// Quantized so near-identical repeats share a material.
     repeat: u16,
+    /// The mesh already carries atlas-space UVs, so the material must not
+    /// transform them. One such material serves a mesh whose faces use
+    /// different cells — walls and roof, say.
+    vertex_mapped: bool,
 }
 
 impl RenderPrimitives {
+    /// Shared material for a mesh that already carries atlas-space UVs.
+    ///
+    /// The atlas is bound but not transformed: the vertices decide which cell
+    /// each face samples, which is the only way one material can cover a mesh
+    /// whose faces need different patterns.
+    pub fn material_vertex_mapped(
+        &mut self,
+        mats: &mut Assets<StandardMaterial>,
+        color: Color,
+    ) -> Handle<StandardMaterial> {
+        self.material_keyed(mats, color, AtlasCell::Plain, 1.0, true)
+    }
+
     /// Shared material for `color` with no texture detail.
     pub fn material(
         &mut self,
@@ -95,6 +112,17 @@ impl RenderPrimitives {
         cell: AtlasCell,
         repeat: f32,
     ) -> Handle<StandardMaterial> {
+        self.material_keyed(mats, color, cell, repeat, false)
+    }
+
+    fn material_keyed(
+        &mut self,
+        mats: &mut Assets<StandardMaterial>,
+        color: Color,
+        cell: AtlasCell,
+        repeat: f32,
+        vertex_mapped: bool,
+    ) -> Handle<StandardMaterial> {
         let s = color.to_srgba();
         let key = MaterialKey {
             rgba: [
@@ -105,6 +133,7 @@ impl RenderPrimitives {
             ],
             cell,
             repeat: (repeat.clamp(0.01, 64.0) * 16.0).round() as u16,
+            vertex_mapped,
         };
         let atlas = self.atlas.clone();
         self.cache
@@ -113,8 +142,13 @@ impl RenderPrimitives {
                 let rgba = key.rgba;
                 mats.add(StandardMaterial {
                     base_color: Color::srgba_u8(rgba[0], rgba[1], rgba[2], rgba[3]),
-                    base_color_texture: (cell != AtlasCell::Plain).then_some(atlas),
-                    uv_transform: cell.uv_transform(key.repeat as f32 / 16.0),
+                    base_color_texture: (vertex_mapped || cell != AtlasCell::Plain)
+                        .then_some(atlas),
+                    uv_transform: if vertex_mapped {
+                        default()
+                    } else {
+                        cell.uv_transform(key.repeat as f32 / 16.0)
+                    },
                     // Lit since phase 5 (sun + shadows); matte so the flat
                     // palette reads without specular glare.
                     perceptual_roughness: 1.0,
@@ -503,6 +537,29 @@ mod tests {
             "the same surface must still share one material"
         );
         assert_eq!(p.cache_len(), 3);
+    }
+
+    /// A mesh carrying its own atlas UVs gets the atlas bound and untransformed,
+    /// and that is a different material from both the flat and the cell ones.
+    #[test]
+    fn vertex_mapped_materials_are_their_own_thing() {
+        let (mut p, mut mats) = prims();
+        let white = Color::WHITE;
+        let flat = p.material(&mut mats, white);
+        let mapped = p.material_vertex_mapped(&mut mats, white);
+        let celled = p.material_in(&mut mats, white, AtlasCell::Facade, 1.0);
+
+        assert_ne!(mapped, flat);
+        assert_ne!(mapped, celled);
+        assert_eq!(mapped, p.material_vertex_mapped(&mut mats, white));
+
+        let m = mats.get(&mapped).unwrap();
+        assert!(m.base_color_texture.is_some(), "the atlas must be bound");
+        assert_eq!(
+            m.uv_transform,
+            bevy::math::Affine2::IDENTITY,
+            "the vertices already chose the cell; the material must not move them"
+        );
     }
 
     /// `material` is `material_in` with the flat cell — the untextured callers

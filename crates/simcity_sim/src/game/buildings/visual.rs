@@ -15,7 +15,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
-use crate::game::atlas::AtlasCell;
+use crate::game::atlas::{AtlasCell, uv_in};
 use crate::game::map::{BuildingKind, MapConfig};
 use crate::game::render_primitives::{NightGlow, RenderPrimitives, layer};
 
@@ -122,11 +122,14 @@ fn building_body_mesh(w: f32, d: f32, h: f32, base: Color) -> Mesh {
     let roof = scaled(base, 1.0);
 
     let mut m = MeshAcc::default();
-    m.walls(hw, hd, 0.0, h, wall);
+    m.walls(hw, hd, 0.0, h, wall, AtlasCell::Facade);
+    // The roof is gravel, not more facade — the one thing the material's own
+    // uv_transform could never express for a single mesh.
     m.quad(
         [[-hw, -hd, h], [hw, -hd, h], [hw, hd, h], [-hw, hd, h]],
         [0.0, 0.0, 1.0],
         roof,
+        AtlasCell::RoofGravel,
     );
     m.build()
 }
@@ -141,7 +144,9 @@ fn building_windows_mesh(w: f32, d: f32, h: f32, floors: u32) -> Mesh {
 
     let mut m = MeshAcc::default();
     for (z0, z1) in window_bands(h, floors) {
-        m.walls(hw, hd, z0, z1, white);
+        // Windows ride the shared NightGlow material, which has no atlas bound;
+        // the flat cell keeps their UVs harmless.
+        m.walls(hw, hd, z0, z1, white, AtlasCell::Plain);
     }
     m.build()
 }
@@ -157,38 +162,48 @@ struct MeshAcc {
 }
 
 impl MeshAcc {
-    fn quad(&mut self, verts: [[f32; 3]; 4], n: [f32; 3], c: [f32; 4]) {
+    /// `cell` is baked into the UVs rather than into the material, so walls and
+    /// roof can wear different patterns under one material.
+    fn quad(&mut self, verts: [[f32; 3]; 4], n: [f32; 3], c: [f32; 4], cell: AtlasCell) {
         let b = self.pos.len() as u32;
         self.pos.extend_from_slice(&verts);
         self.nor.extend_from_slice(&[n; 4]);
-        self.uv
-            .extend_from_slice(&[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+        self.uv.extend_from_slice(&[
+            uv_in(cell, 0.0, 0.0),
+            uv_in(cell, 1.0, 0.0),
+            uv_in(cell, 1.0, 1.0),
+            uv_in(cell, 0.0, 1.0),
+        ]);
         self.col.extend_from_slice(&[c; 4]);
         self.idx
             .extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
     }
 
     /// Four outward-facing wall quads for the z0..z1 band (CCW from outside).
-    fn walls(&mut self, hw: f32, hd: f32, z0: f32, z1: f32, c: [f32; 4]) {
+    fn walls(&mut self, hw: f32, hd: f32, z0: f32, z1: f32, c: [f32; 4], cell: AtlasCell) {
         self.quad(
             [[-hw, hd, z0], [-hw, hd, z1], [hw, hd, z1], [hw, hd, z0]],
             [0.0, 1.0, 0.0],
             c,
+            cell,
         );
         self.quad(
             [[-hw, -hd, z0], [hw, -hd, z0], [hw, -hd, z1], [-hw, -hd, z1]],
             [0.0, -1.0, 0.0],
             c,
+            cell,
         );
         self.quad(
             [[hw, -hd, z0], [hw, hd, z0], [hw, hd, z1], [hw, -hd, z1]],
             [1.0, 0.0, 0.0],
             c,
+            cell,
         );
         self.quad(
             [[-hw, -hd, z0], [-hw, -hd, z1], [-hw, hd, z1], [-hw, hd, z0]],
             [-1.0, 0.0, 0.0],
             c,
+            cell,
         );
     }
 
@@ -212,12 +227,8 @@ fn body_material(
 ) -> Handle<StandardMaterial> {
     // Every wall quad carries a full 0..1 UV, so one repeat puts a whole run of
     // storey ledges on each face. The decay tint still arrives as the colour.
-    prims.material_in(
-        materials,
-        tint.map(|t| t.0).unwrap_or(Color::WHITE),
-        AtlasCell::Facade,
-        1.0,
-    )
+    // The mesh carries atlas UVs per face, so one material covers walls and roof.
+    prims.material_vertex_mapped(materials, tint.map(|t| t.0).unwrap_or(Color::WHITE))
 }
 
 /// (Re)build the visual children of added/changed buildings.
