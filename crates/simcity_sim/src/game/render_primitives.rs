@@ -384,15 +384,19 @@ impl RenderPrimitives {
     }
 
     /// Kerbside bin.
+    ///
+    /// Deliberately over-scale: at true size (2 units against a 16-unit tile) a
+    /// bin is about one pixel at playing zoom and simply cannot be seen. This is
+    /// stylised realism, so it reads as a bin instead of measuring like one.
     pub fn bin_mesh(&mut self, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
         self.props
             .entry([2, 0, 0, 0])
             .or_insert_with(|| {
-                let body = [0.18, 0.22, 0.19, 1.0];
-                let lid = [0.10, 0.12, 0.11, 1.0];
+                let body = [0.18, 0.24, 0.20, 1.0];
+                let lid = [0.09, 0.11, 0.10, 1.0];
                 let mut b = CompositeMesh::default();
-                b.push_box(Vec3::new(-1.0, -0.8, 0.0), Vec3::new(1.0, 0.8, 2.4), body);
-                b.push_box(Vec3::new(-1.1, -0.9, 2.4), Vec3::new(1.1, 0.9, 2.7), lid);
+                b.push_box(Vec3::new(-1.7, -1.3, 0.0), Vec3::new(1.7, 1.3, 3.8), body);
+                b.push_box(Vec3::new(-1.9, -1.5, 3.8), Vec3::new(1.9, 1.5, 4.3), lid);
                 meshes.add(b.build())
             })
             .clone()
