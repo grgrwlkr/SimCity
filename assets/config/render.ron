@@ -89,6 +89,15 @@
         ortho_distance: 500.0,
     ),
 
+    // Texel density of the atlas on building surfaces. One cell stretched over a
+    // whole facade reads as flat colour, so faces are split into sub-quads that
+    // each carry the cell whole; `max_repeats` is what keeps that from turning a
+    // tower into a few hundred quads.
+    atlas: (
+        world_units_per_cell: 12.0,
+        max_repeats: 4,
+    ),
+
     shadows: (
         maximum_distance: 900.0,
         cascades: 4,

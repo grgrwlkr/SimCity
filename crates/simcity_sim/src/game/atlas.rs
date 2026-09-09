@@ -170,9 +170,13 @@ fn cell_value(cell: AtlasCell, x: u32, y: u32) -> f32 {
         // Centred below 1.0 on purpose: values above it would clip against
         // the byte ceiling and flatten the waves.
         AtlasCell::Water => 0.86 + 0.20 * wrapped_noise(x, y, n, 5),
+        // Clumps first, grit second: at the zoom a roof is actually seen from,
+        // texel-frequency speckle averages into a flat fill, so the part that
+        // reads as gravel has to be the low-frequency one.
         AtlasCell::RoofGravel => {
-            let speckle = if hash01(x, y, 6) > 0.7 { 0.82 } else { 1.04 };
-            speckle * (0.98 + 0.04 * hash01(x, y, 9))
+            let clump = 0.80 + 0.34 * wrapped_noise(x, y, n, 6);
+            let grit = if hash01(x, y, 9) > 0.62 { 0.86 } else { 1.06 };
+            clump * grit
         }
         AtlasCell::Facade => {
             let storey = 24;
@@ -349,6 +353,44 @@ mod tests {
             assert!(
                 max - min > 20,
                 "{cell:?} has no visible detail: {min}..{max}"
+            );
+        }
+    }
+
+    /// Detail has to survive minification, not just exist at texel level.
+    ///
+    /// A roof seen from the game camera is a few hundred pixels wide while its
+    /// cell tiles several times across it, so every texel-frequency pattern is
+    /// averaged away by the mip chain and the surface reads as a flat fill.
+    /// This is exactly what happened to the first roof-gravel cell: it passed
+    /// `the_plain_cell_is_flat_and_the_others_are_not` and still rendered flat.
+    #[test]
+    fn cell_detail_survives_being_minified() {
+        let image = build_atlas_image();
+        let block = 8u32; // one mip level short of what the camera does to a roof
+
+        for cell in AtlasCell::ALL {
+            if cell == AtlasCell::Plain {
+                continue;
+            }
+            let pixels = cell_pixels(&image, cell);
+            let mut means = Vec::new();
+            for by in (0..CELL_SIZE).step_by(block as usize) {
+                for bx in (0..CELL_SIZE).step_by(block as usize) {
+                    let mut sum = 0u32;
+                    for y in by..by + block {
+                        for x in bx..bx + block {
+                            sum += pixels[(y * CELL_SIZE + x) as usize] as u32;
+                        }
+                    }
+                    means.push(sum as f32 / (block * block) as f32);
+                }
+            }
+            let lo = means.iter().cloned().fold(f32::MAX, f32::min);
+            let hi = means.iter().cloned().fold(f32::MIN, f32::max);
+            assert!(
+                hi - lo > 8.0,
+                "{cell:?} averages flat once minified: {lo:.1}..{hi:.1}"
             );
         }
     }

@@ -239,6 +239,30 @@ impl Default for ShadowConfig {
     }
 }
 
+/// How densely the texture atlas is laid over building surfaces.
+///
+/// A cell stretched across a whole facade reads as a flat colour: the grain is
+/// upscaled past the point where it is grain. Building meshes therefore split a
+/// face into sub-quads, each carrying the cell whole, so texel density stays
+/// roughly constant whatever the building's size. The price is vertices, which
+/// is what `max_repeats` bounds.
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub struct AtlasConfig {
+    /// World units one repeat of a cell covers.
+    pub world_units_per_cell: f32,
+    /// Upper bound on repeats along one edge of a face.
+    pub max_repeats: u32,
+}
+
+impl Default for AtlasConfig {
+    fn default() -> Self {
+        Self {
+            world_units_per_cell: 12.0,
+            max_repeats: 4,
+        }
+    }
+}
+
 /// Root of `assets/config/render.ron`.
 ///
 /// Every field carries `#[serde(default)]` so a partial file still loads and the
@@ -256,4 +280,5 @@ pub struct RenderConfig {
     pub night: NightConfig,
     pub perspective: PerspectiveConfig,
     pub shadows: ShadowConfig,
+    pub atlas: AtlasConfig,
 }
