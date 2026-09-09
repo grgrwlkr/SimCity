@@ -235,11 +235,10 @@ fn sync_camera_projection(
     let Ok((mut rig, mut proj)) = q_cam.single_mut() else {
         return;
     };
-    let viewport_height = windows
-        .iter()
-        .next()
-        .map(|w| w.resolution.physical_height() as f32)
-        .unwrap_or(1000.0);
+    // LOGICAL height, not physical: Bevy sizes the orthographic camera from
+    // `logical_viewport_size()`, so physical pixels here make the frame jump by
+    // the display's scale factor at the moment the projection switches.
+    let viewport_height = windows.iter().next().map(|w| w.height()).unwrap_or(1000.0);
     let perspective = cfg.map(|c| c.perspective).unwrap_or_default();
 
     match projection_plan(rig.zoom, viewport_height, &perspective) {

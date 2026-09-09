@@ -36,23 +36,32 @@ impl ProjectionPlan {
     /// Height of the ground plane visible at the focus, in world units.
     ///
     /// This is the quantity that must not jump when the projection switches.
-    pub fn visible_height(self, viewport_height: f32) -> f32 {
+    /// `logical_viewport_height` must be the LOGICAL window height: Bevy sizes an
+    /// orthographic camera from `logical_viewport_size()`, so feeding physical
+    /// pixels here makes the two sides of the threshold disagree by the display's
+    /// scale factor — on a 2x screen the frame halves at the switch.
+    pub fn visible_height(self, logical_viewport_height: f32) -> f32 {
         match self {
             ProjectionPlan::Perspective {
                 fov_y_rad,
                 distance,
             } => 2.0 * distance * (fov_y_rad * 0.5).tan(),
-            ProjectionPlan::Orthographic { scale, .. } => viewport_height * scale,
+            ProjectionPlan::Orthographic { scale, .. } => logical_viewport_height * scale,
         }
     }
 }
 
 /// Pick the projection for a zoom level.
 ///
-/// `zoom` is the orthographic scale the rig eases toward; `viewport_height` is
-/// the window height in pixels, because Bevy's `ScalingMode::WindowSize` makes
-/// one world unit one pixel at scale 1.
-pub fn projection_plan(zoom: f32, viewport_height: f32, cfg: &PerspectiveConfig) -> ProjectionPlan {
+/// `zoom` is the orthographic scale the rig eases toward;
+/// `logical_viewport_height` is the window height in LOGICAL pixels, because
+/// Bevy's `ScalingMode::WindowSize` makes one world unit one logical pixel at
+/// scale 1 — see `visible_height` for what passing physical pixels costs.
+pub fn projection_plan(
+    zoom: f32,
+    logical_viewport_height: f32,
+    cfg: &PerspectiveConfig,
+) -> ProjectionPlan {
     if zoom >= cfg.ortho_above_zoom {
         return ProjectionPlan::Orthographic {
             scale: zoom,
@@ -63,7 +72,7 @@ pub fn projection_plan(zoom: f32, viewport_height: f32, cfg: &PerspectiveConfig)
     // Ground height the frame must show. Bevy's WindowSize scaling makes one
     // world unit one pixel at scale 1, so this is what the orthographic side
     // shows too — which is what keeps the framing continuous across the switch.
-    let visible_height = (viewport_height * zoom).max(1e-3);
+    let visible_height = (logical_viewport_height * zoom).max(1e-3);
 
     let t = (zoom / cfg.ortho_above_zoom)
         .clamp(0.0, 1.0)
@@ -106,6 +115,36 @@ mod tests {
             projection_plan(cfg.ortho_above_zoom * 2.0, VIEWPORT, &cfg),
             ProjectionPlan::Orthographic { .. }
         ));
+    }
+
+    /// The continuity pin compares this module's formula with itself. This one
+    /// asks Bevy what it actually frames for the same scale, which is the only
+    /// way to catch a unit mismatch between the two sides of the threshold.
+    #[test]
+    fn the_orthographic_side_frames_what_bevy_frames() {
+        use bevy::camera::{OrthographicProjection, Projection};
+
+        let cfg = cfg();
+        let zoom = cfg.ortho_above_zoom * 2.0;
+        let ProjectionPlan::Orthographic { scale, .. } = projection_plan(zoom, VIEWPORT, &cfg)
+        else {
+            panic!("expected orthographic above the threshold");
+        };
+
+        let mut ortho = OrthographicProjection::default_3d();
+        ortho.scale = scale;
+        let mut projection = Projection::Orthographic(ortho);
+        projection.update(VIEWPORT * 1.6, VIEWPORT);
+        let Projection::Orthographic(framed) = &projection else {
+            unreachable!()
+        };
+
+        let mine = projection_plan(zoom, VIEWPORT, &cfg).visible_height(VIEWPORT);
+        assert!(
+            (mine - framed.area.height()).abs() < 1e-3,
+            "planned {mine} against Bevy's {}",
+            framed.area.height()
+        );
     }
 
     #[test]
