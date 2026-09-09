@@ -71,6 +71,7 @@ fn remote_plugin() -> RemotePlugin {
         .with_method_main("bevy_debugger/screenshot", screenshot_handler)
         .with_method_main("bevy_debugger/debug_dump", debug_dump_handler)
         .with_method_main("bevy_debugger/set_overlay", set_overlay_handler)
+        .with_method_main("bevy_debugger/set_sim_speed", set_sim_speed_handler)
 }
 
 /// System that prints debug dump to console when the application is closing.
@@ -204,6 +205,36 @@ fn set_overlay_handler(
         None => Err(bevy::remote::BrpError {
             code: bevy::remote::error_codes::INVALID_PARAMS,
             message: format!("unknown overlay {name:?}"),
+            data: None,
+        }),
+    }
+}
+
+/// Stop or resume the clock from a script, without touching `AppState`.
+///
+/// Entering `AppState::Paused` runs the game's end-of-game path, which resets
+/// the day and hour — so a frame frozen that way is always night, and a
+/// daylight screenshot could not be frozen at all. Setting the UI's sim speed
+/// stops virtual time instead and the hour stays where it was. Dev-only like
+/// the rest of the remote stack.
+#[cfg(feature = "dev")]
+fn set_sim_speed_handler(
+    In(params): In<Option<Value>>,
+    mut ui_state: ResMut<game::ui_state::UiState>,
+) -> BrpResult {
+    let name = params
+        .as_ref()
+        .and_then(|p| p.get("speed"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("x3");
+    match game::ui_state::SimSpeed::from_name(name) {
+        Some(speed) => {
+            ui_state.sim_speed = speed;
+            Ok(json!({ "speed": format!("{speed:?}") }))
+        }
+        None => Err(bevy::remote::BrpError {
+            code: bevy::remote::error_codes::INVALID_PARAMS,
+            message: format!("unknown sim speed {name:?}"),
             data: None,
         }),
     }

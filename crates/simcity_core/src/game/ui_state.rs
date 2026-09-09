@@ -94,6 +94,24 @@ pub enum SimSpeed {
 }
 
 impl SimSpeed {
+    /// Parse a speed the way `OverlayMode::from_name` parses an overlay, so a
+    /// script can stop the clock without entering `AppState::Paused` — that
+    /// path resets the day and hour, which makes every frozen frame night.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name
+            .trim()
+            .to_ascii_lowercase()
+            .replace([' ', '_', '-'], "")
+            .as_str()
+        {
+            "paused" | "pause" | "0" => Some(Self::Paused),
+            "x1" | "1" => Some(Self::X1),
+            "x2" | "2" => Some(Self::X2),
+            "x3" | "3" => Some(Self::X3),
+            _ => None,
+        }
+    }
+
     /// Multiplier relative to x1 speed (drives virtual time scaling).
     pub fn multiplier(self) -> f32 {
         match self {

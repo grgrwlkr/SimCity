@@ -41,5 +41,18 @@ Each cell holds **grey detail around white**, not colour: it multiplies whatever
 colour the material already carried, which is why zone colours, the five overlays
 and the building decay tints keep working through the code paths they always used.
 
-A cell is selected by the material's `uv_transform` rather than by the mesh, so
-the shared unit quad stays shared and the mesh count does not grow per surface.
+A cell is selected two ways, and that is not duplication. Ground tiles get theirs
+from the material's `uv_transform`, so the shared unit quad stays shared and the
+mesh count does not grow per surface. Buildings bake theirs into the vertices,
+because walls and roof wear different patterns under ONE material and a single
+`uv_transform` per mesh cannot express that; building faces are also split into
+sub-quads so a cell repeats instead of stretching (density: `atlas` in
+`config/render.ron`).
+
+How far the pattern shows through an overlay is the overlay's business, not the
+atlas's: a mode that paints the ground near-black hides it, exactly as it did
+before the atlas existed. Two of the five do. `Water` dims everything that is not
+water — which is most of the map. `Height` paints `height / 255`, and the test
+city never assigns a height: it builds a fresh `MapGrid` and leaves `MapCell`'s
+default of 0, so its ground is black by construction. Only "New Map" runs the
+terrain generator, and only there does that overlay say anything.

@@ -1056,3 +1056,31 @@ mod core_overlay_names {
         assert_eq!(OverlayMode::from_name(""), None);
     }
 }
+
+/// `SimSpeed` is named from scripts for the same reason overlays are: a
+/// daylight screenshot needs the clock stopped, and entering `AppState::Paused`
+/// runs the end-of-game path, which resets the day and hour — so every frame
+/// frozen that way is night. Stopping virtual time instead keeps the hour.
+mod core_sim_speed_names {
+    use simcity_core::game::ui_state::SimSpeed;
+
+    #[test]
+    fn every_speed_the_toolbar_offers_can_be_named() {
+        for (name, speed) in [
+            ("Paused", SimSpeed::Paused),
+            ("x1", SimSpeed::X1),
+            ("x2", SimSpeed::X2),
+            ("x3", SimSpeed::X3),
+        ] {
+            assert_eq!(SimSpeed::from_name(name), Some(speed), "{name}");
+        }
+    }
+
+    #[test]
+    fn names_are_forgiving_about_case_and_spacing_but_not_about_nonsense() {
+        assert_eq!(SimSpeed::from_name("  PAUSE "), Some(SimSpeed::Paused));
+        assert_eq!(SimSpeed::from_name("1"), Some(SimSpeed::X1));
+        assert_eq!(SimSpeed::from_name("fast"), None);
+        assert_eq!(SimSpeed::from_name(""), None);
+    }
+}
