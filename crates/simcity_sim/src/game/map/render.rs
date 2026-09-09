@@ -4,6 +4,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
+use crate::game::atlas::cell_for_tile;
 use crate::game::camera::MainCamera;
 use crate::game::land_value::LandValueIndex;
 use crate::game::pollution::PollutionIndex;
@@ -115,7 +116,7 @@ pub(super) fn spawn_map_if_needed(
                 .spawn((
                     flat_quad(
                         prims.quad.clone(),
-                        prims.material(&mut materials, kind.color()),
+                        prims.material_in(&mut materials, kind.color(), cell_for_tile(kind), 1.0),
                         world,
                         layer::GROUND,
                         Vec2::splat(cfg.tile_size - 1.0),
@@ -452,7 +453,11 @@ pub(super) fn sync_dirty_tiles_to_render(
         *kind = effective_kind;
         // Recolor = swap to the shared material for this color (keeps batching);
         // gradient overlays are bounded by the cache's 8-bit RGBA quantization.
-        mat.0 = p.prims.material(&mut p.materials, color);
+        // The overlay tints through the same call, so the surface pattern
+        // survives every overlay instead of flattening back to a fill.
+        mat.0 = p
+            .prims
+            .material_in(&mut p.materials, color, cell_for_tile(effective_kind), 1.0);
         tf.scale = size.extend(1.0);
 
         // Decorative trees on untouched grass (prototype-parity prop). Trees are

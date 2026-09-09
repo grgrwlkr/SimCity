@@ -15,6 +15,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
+use crate::game::atlas::AtlasCell;
 use crate::game::map::{BuildingKind, MapConfig};
 use crate::game::render_primitives::{NightGlow, RenderPrimitives, layer};
 
@@ -209,7 +210,14 @@ fn body_material(
     materials: &mut Assets<StandardMaterial>,
     tint: Option<&BuildingTint>,
 ) -> Handle<StandardMaterial> {
-    prims.material(materials, tint.map(|t| t.0).unwrap_or(Color::WHITE))
+    // Every wall quad carries a full 0..1 UV, so one repeat puts a whole run of
+    // storey ledges on each face. The decay tint still arrives as the colour.
+    prims.material_in(
+        materials,
+        tint.map(|t| t.0).unwrap_or(Color::WHITE),
+        AtlasCell::Facade,
+        1.0,
+    )
 }
 
 /// (Re)build the visual children of added/changed buildings.

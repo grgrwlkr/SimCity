@@ -10,6 +10,8 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
+use crate::game::atlas::AtlasCell;
+
 pub struct RenderPrimitivesPlugin;
 
 impl Plugin for RenderPrimitivesPlugin {
@@ -50,7 +52,10 @@ pub mod layer {
 #[derive(Resource)]
 pub struct RenderPrimitives {
     pub quad: Handle<Mesh>,
-    cache: HashMap<[u8; 4], Handle<StandardMaterial>>,
+    /// The one texture atlas every surface samples. Cells are picked by the
+    /// material's `uv_transform`, so meshes stay shared.
+    pub atlas: Handle<Image>,
+    cache: HashMap<MaterialKey, Handle<StandardMaterial>>,
     sized: HashMap<[u32; 2], Handle<Mesh>>,
     cars: HashMap<[u32; 2], Handle<Mesh>>,
     meeples: HashMap<[u8; 4], Handle<Mesh>>,
@@ -58,30 +63,62 @@ pub struct RenderPrimitives {
     tree: Option<Handle<Mesh>>,
 }
 
+/// What makes two surfaces the same material: colour, atlas cell, and how many
+/// times the cell repeats across the quad.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct MaterialKey {
+    rgba: [u8; 4],
+    cell: AtlasCell,
+    /// Quantized so near-identical repeats share a material.
+    repeat: u16,
+}
+
 impl RenderPrimitives {
-    /// Shared unlit material for `color` (quantized to 8-bit RGBA).
-    /// Translucent colors get `AlphaMode::Blend`.
+    /// Shared material for `color` with no texture detail.
     pub fn material(
         &mut self,
         mats: &mut Assets<StandardMaterial>,
         color: Color,
     ) -> Handle<StandardMaterial> {
+        self.material_in(mats, color, AtlasCell::Plain, 1.0)
+    }
+
+    /// Shared material for `color` sampling `cell` of the atlas.
+    ///
+    /// The atlas holds grey detail around 1.0, so the colour still comes from
+    /// here — which is why zone colours, overlays and decay tints go on working
+    /// through the same call they always used.
+    pub fn material_in(
+        &mut self,
+        mats: &mut Assets<StandardMaterial>,
+        color: Color,
+        cell: AtlasCell,
+        repeat: f32,
+    ) -> Handle<StandardMaterial> {
         let s = color.to_srgba();
-        let key = [
-            (s.red.clamp(0.0, 1.0) * 255.0).round() as u8,
-            (s.green.clamp(0.0, 1.0) * 255.0).round() as u8,
-            (s.blue.clamp(0.0, 1.0) * 255.0).round() as u8,
-            (s.alpha.clamp(0.0, 1.0) * 255.0).round() as u8,
-        ];
+        let key = MaterialKey {
+            rgba: [
+                (s.red.clamp(0.0, 1.0) * 255.0).round() as u8,
+                (s.green.clamp(0.0, 1.0) * 255.0).round() as u8,
+                (s.blue.clamp(0.0, 1.0) * 255.0).round() as u8,
+                (s.alpha.clamp(0.0, 1.0) * 255.0).round() as u8,
+            ],
+            cell,
+            repeat: (repeat.clamp(0.01, 64.0) * 16.0).round() as u16,
+        };
+        let atlas = self.atlas.clone();
         self.cache
             .entry(key)
             .or_insert_with(|| {
+                let rgba = key.rgba;
                 mats.add(StandardMaterial {
-                    base_color: Color::srgba_u8(key[0], key[1], key[2], key[3]),
+                    base_color: Color::srgba_u8(rgba[0], rgba[1], rgba[2], rgba[3]),
+                    base_color_texture: (cell != AtlasCell::Plain).then_some(atlas),
+                    uv_transform: cell.uv_transform(key.repeat as f32 / 16.0),
                     // Lit since phase 5 (sun + shadows); matte so the flat
                     // palette reads without specular glare.
                     perceptual_roughness: 1.0,
-                    alpha_mode: if key[3] < 255 {
+                    alpha_mode: if rgba[3] < 255 {
                         AlphaMode::Blend
                     } else {
                         AlphaMode::Opaque
@@ -96,6 +133,7 @@ impl RenderPrimitives {
     pub fn for_test(quad: Handle<Mesh>) -> Self {
         Self {
             quad,
+            atlas: Handle::default(),
             cache: HashMap::new(),
             sized: HashMap::new(),
             cars: HashMap::new(),
@@ -248,9 +286,27 @@ fn init_render_primitives(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    // Optional: the headless test harnesses register no image assets, and the
+    // atlas is a visual, not something the simulation depends on.
+    images: Option<ResMut<Assets<Image>>>,
 ) {
+    let atlas = images
+        .map(|mut images| {
+            // Repeating: a quad wider than one tile tiles the grain instead of
+            // stretching it, and every cell is generated to wrap.
+            let mut atlas = crate::game::atlas::build_atlas_image();
+            atlas.sampler =
+                bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+                    address_mode_u: bevy::image::ImageAddressMode::Repeat,
+                    address_mode_v: bevy::image::ImageAddressMode::Repeat,
+                    ..bevy::image::ImageSamplerDescriptor::linear()
+                });
+            images.add(atlas)
+        })
+        .unwrap_or_default();
     commands.insert_resource(RenderPrimitives {
         quad: meshes.add(Rectangle::new(1.0, 1.0)),
+        atlas,
         cache: HashMap::new(),
         sized: HashMap::new(),
         cars: HashMap::new(),
@@ -417,6 +473,7 @@ mod tests {
         (
             RenderPrimitives {
                 quad: Handle::default(),
+                atlas: Handle::default(),
                 cache: HashMap::new(),
                 sized: HashMap::new(),
                 cars: HashMap::new(),
@@ -426,6 +483,49 @@ mod tests {
             },
             Assets::default(),
         )
+    }
+
+    /// The atlas cell is part of the key: asphalt and grass of the same colour
+    /// are different surfaces, and one material cannot carry two UV transforms.
+    #[test]
+    fn material_cache_keys_on_the_atlas_cell_too() {
+        let (mut p, mut mats) = prims();
+        let grey = Color::srgb(0.4, 0.4, 0.4);
+        let plain = p.material(&mut mats, grey);
+        let asphalt = p.material_in(&mut mats, grey, AtlasCell::Asphalt, 1.0);
+        let sidewalk = p.material_in(&mut mats, grey, AtlasCell::Sidewalk, 1.0);
+
+        assert_ne!(plain, asphalt, "a textured surface is not the flat one");
+        assert_ne!(asphalt, sidewalk, "two cells must not share a material");
+        assert_eq!(
+            asphalt,
+            p.material_in(&mut mats, grey, AtlasCell::Asphalt, 1.0),
+            "the same surface must still share one material"
+        );
+        assert_eq!(p.cache_len(), 3);
+    }
+
+    /// `material` is `material_in` with the flat cell — the untextured callers
+    /// keep the look they had.
+    #[test]
+    fn the_plain_cell_is_what_the_old_call_gives() {
+        let (mut p, mut mats) = prims();
+        let color = Color::srgb(0.3, 0.6, 0.2);
+        assert_eq!(
+            p.material(&mut mats, color),
+            p.material_in(&mut mats, color, AtlasCell::Plain, 1.0)
+        );
+    }
+
+    /// A road quad spanning several tiles repeats the grain instead of
+    /// stretching it, and that is a different material from a single tile's.
+    #[test]
+    fn the_repeat_count_is_part_of_the_key() {
+        let (mut p, mut mats) = prims();
+        let grey = Color::srgb(0.4, 0.4, 0.4);
+        let once = p.material_in(&mut mats, grey, AtlasCell::Asphalt, 1.0);
+        let thrice = p.material_in(&mut mats, grey, AtlasCell::Asphalt, 3.0);
+        assert_ne!(once, thrice);
     }
 
     /// Same color -> same shared handle (batching contract).
