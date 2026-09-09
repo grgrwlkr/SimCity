@@ -53,6 +53,8 @@ How far the pattern shows through an overlay is the overlay's business, not the
 atlas's: a mode that paints the ground near-black hides it, exactly as it did
 before the atlas existed. Two of the five do. `Water` dims everything that is not
 water — which is most of the map. `Height` paints `height / 255`, and the test
-city never assigns a height: it builds a fresh `MapGrid` and leaves `MapCell`'s
-default of 0, so its ground is black by construction. Only "New Map" runs the
-terrain generator, and only there does that overlay say anything.
+city's terrain is gentle on purpose: `terrain_height` in
+`crates/simcity_data/src/game/test_city.rs` lays rolling hills of `(sin + cos)`
+plus a rise near the lake, capped at 50. Over the whole 128×128 map that comes
+out 0..29, mean 10.7 — so `t` never passes 0.115 and the ground reads nearly
+black. The relief is there; the range simply does not reach the top of the ramp.
