@@ -70,6 +70,7 @@ fn remote_plugin() -> RemotePlugin {
     RemotePlugin::default()
         .with_method_main("bevy_debugger/screenshot", screenshot_handler)
         .with_method_main("bevy_debugger/debug_dump", debug_dump_handler)
+        .with_method_main("bevy_debugger/set_overlay", set_overlay_handler)
 }
 
 /// System that prints debug dump to console when the application is closing.
@@ -178,6 +179,34 @@ fn debug_dump_handler(
     });
 
     Ok(json!({ "dump_ron": dump_ron }))
+}
+
+/// Switch the map overlay from a script.
+///
+/// The overlays live behind an egui menu, and a screenshot proving one still
+/// works cannot depend on a human opening that menu. Dev-only like the rest of
+/// the remote stack.
+#[cfg(feature = "dev")]
+fn set_overlay_handler(
+    In(params): In<Option<Value>>,
+    mut ui_state: ResMut<game::ui_state::UiState>,
+) -> BrpResult {
+    let name = params
+        .as_ref()
+        .and_then(|p| p.get("overlay"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("None");
+    match game::ui_state::OverlayMode::from_name(name) {
+        Some(mode) => {
+            ui_state.overlay = mode;
+            Ok(json!({ "overlay": format!("{mode:?}") }))
+        }
+        None => Err(bevy::remote::BrpError {
+            code: bevy::remote::error_codes::INVALID_PARAMS,
+            message: format!("unknown overlay {name:?}"),
+            data: None,
+        }),
+    }
 }
 
 /// Custom BRP handler for screenshot requests from the debugger

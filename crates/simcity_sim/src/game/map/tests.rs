@@ -1018,3 +1018,41 @@ mod core_coords_projection {
         );
     }
 }
+
+/// `simcity_core` holds no tests of its own (see CLAUDE.md), so its types are
+/// pinned from here like the coords ones above.
+mod core_overlay_names {
+    use simcity_core::game::ui_state::OverlayMode;
+
+    #[test]
+    fn every_overlay_the_toolbar_offers_can_be_named() {
+        for (name, mode) in [
+            ("None", OverlayMode::None),
+            ("Water", OverlayMode::Water),
+            ("Height", OverlayMode::Height),
+            ("Zones", OverlayMode::Zones),
+            ("Roads", OverlayMode::Roads),
+            ("Traffic", OverlayMode::Traffic),
+            ("Path", OverlayMode::Path),
+            ("Service", OverlayMode::ServiceCoverage),
+            ("Land Value", OverlayMode::LandValue),
+            ("Pollution", OverlayMode::Pollution),
+        ] {
+            assert_eq!(OverlayMode::from_name(name), Some(mode), "{name}");
+        }
+    }
+
+    #[test]
+    fn names_are_forgiving_about_case_and_spacing_but_not_about_nonsense() {
+        assert_eq!(
+            OverlayMode::from_name("  land_value "),
+            Some(OverlayMode::LandValue)
+        );
+        assert_eq!(
+            OverlayMode::from_name("SERVICECOVERAGE"),
+            Some(OverlayMode::ServiceCoverage)
+        );
+        assert_eq!(OverlayMode::from_name("smog"), None);
+        assert_eq!(OverlayMode::from_name(""), None);
+    }
+}

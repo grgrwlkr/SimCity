@@ -57,6 +57,34 @@ pub enum OverlayMode {
     Pollution,
 }
 
+impl OverlayMode {
+    /// Parse an overlay by the name the toolbar shows, case-insensitively.
+    ///
+    /// Exists so the overlays can be driven from a script (BRP) instead of only
+    /// from a menu: a screenshot proving an overlay still works has to be able
+    /// to switch to it without a human clicking.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name
+            .trim()
+            .to_ascii_lowercase()
+            .replace([' ', '_', '-'], "")
+            .as_str()
+        {
+            "none" => Some(Self::None),
+            "water" => Some(Self::Water),
+            "height" => Some(Self::Height),
+            "zones" => Some(Self::Zones),
+            "roads" => Some(Self::Roads),
+            "traffic" => Some(Self::Traffic),
+            "path" => Some(Self::Path),
+            "service" | "servicecoverage" => Some(Self::ServiceCoverage),
+            "landvalue" => Some(Self::LandValue),
+            "pollution" => Some(Self::Pollution),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum SimSpeed {
     Paused,
