@@ -15,6 +15,7 @@ use crate::game::map::MapConfig;
 use crate::game::pedestrians::PedestrianConfig;
 use crate::game::traffic::TrafficConfig;
 use crate::game::transport::PathfindingConfig;
+use simcity_core::game::render_config::RenderConfig;
 
 pub struct ConfigLoaderPlugin;
 
@@ -32,6 +33,7 @@ fn load_configs_from_ron(mut commands: Commands) {
     load::<EmploymentConfig>("assets/config/employment.ron", &mut commands);
     load::<DayNightVisualConfig>("assets/config/day_night.ron", &mut commands);
     load::<PedestrianConfig>("assets/config/pedestrians.ron", &mut commands);
+    load::<RenderConfig>("assets/config/render.ron", &mut commands);
 }
 
 fn workspace_path(path: &str) -> PathBuf {
@@ -106,6 +108,7 @@ mod tests {
         parse_required::<EmploymentConfig>("assets/config/employment.ron");
         parse_required::<DayNightVisualConfig>("assets/config/day_night.ron");
         parse_required::<PedestrianConfig>("assets/config/pedestrians.ron");
+        parse_required::<RenderConfig>("assets/config/render.ron");
 
         parse_required::<Vec<Scenario>>("assets/scenarios/scenarios.ron");
     }

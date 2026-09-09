@@ -19,6 +19,7 @@ use crate::game::render_primitives::{
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
+use simcity_core::game::render_config::{NightConfig, RenderConfig};
 
 pub struct DayNightPlugin;
 
@@ -66,9 +67,23 @@ pub fn night_factor(hour: u8) -> f32 {
 const SUN_DAY: f32 = 12_000.0;
 const AMBIENT_DAY: f32 = 700.0;
 
+/// Sun illuminance and ambient brightness for a given daylight fraction.
+///
+/// `day` runs 0 (deepest night) to 1 (noon). The night floors come from
+/// `render.ron` because they have to be re-tuned whenever the tone mapping
+/// curve changes — a filmic curve crushes exactly the range they live in.
+pub fn lighting_levels(day: f32, night: NightConfig) -> (f32, f32) {
+    let day = day.clamp(0.0, 1.0);
+    let sun = SUN_DAY * (night.sun_floor + (1.0 - night.sun_floor) * day);
+    let ambient = AMBIENT_DAY * (night.ambient_floor + (1.0 - night.ambient_floor) * day);
+    (sun, ambient)
+}
+
+#[allow(clippy::too_many_arguments)] // one more Res than clippy's default limit
 fn drive_day_night_lighting(
     city: Res<City>,
     visual: Res<DayNightVisualConfig>,
+    render_cfg: Option<Res<RenderConfig>>,
     glow: Res<NightGlow>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut q_sun: Query<&mut DirectionalLight>,
@@ -86,13 +101,16 @@ fn drive_day_night_lighting(
     let darkness = (night_factor(city.hour) * (visual.max_night_alpha / 0.55)).clamp(0.0, 1.0);
     let day = 1.0 - darkness;
 
+    let night_cfg = render_cfg.map(|c| c.night).unwrap_or_default();
+    let (sun_lux, ambient_brightness) = lighting_levels(day, night_cfg);
+
     // Sun: bright warm white by day -> dim cool "moon" at night.
     for mut sun in q_sun.iter_mut() {
-        sun.illuminance = SUN_DAY * (0.04 + 0.96 * day);
+        sun.illuminance = sun_lux;
         sun.color = Color::srgb(0.60 + 0.40 * day, 0.68 + 0.30 * day, 1.0 - 0.08 * day);
     }
     for mut ambient in q_ambient.iter_mut() {
-        ambient.brightness = AMBIENT_DAY * (0.22 + 0.78 * day);
+        ambient.brightness = ambient_brightness;
         ambient.color = Color::srgb(0.55 + 0.30 * day, 0.62 + 0.28 * day, 1.0);
     }
 
@@ -179,11 +197,45 @@ mod tests {
                 .illuminance
         };
         assert!(windows_emissive(&app) > 1.0, "windows glow at midnight");
-        assert!(sun_lux(&app) < SUN_DAY * 0.1, "sun nearly off at midnight");
+        // Floor is config-driven now (default 0.10) and was raised for ACES;
+        // the pin still checks "much dimmer than noon", at the new level.
+        assert!(sun_lux(&app) < SUN_DAY * 0.15, "sun nearly off at midnight");
 
         app.world_mut().resource_mut::<City>().hour = 12;
         app.update();
         assert!(windows_emissive(&app) < 0.01, "windows dark glass at noon");
         assert!(sun_lux(&app) > SUN_DAY * 0.9, "full sun at noon");
+    }
+
+    #[test]
+    fn lighting_levels_interpolate_between_the_configured_night_floor_and_full_day() {
+        let night = NightConfig {
+            sun_floor: 0.10,
+            ambient_floor: 0.45,
+        };
+
+        let (sun_midnight, ambient_midnight) = lighting_levels(0.0, night);
+        assert!((sun_midnight - SUN_DAY * 0.10).abs() < 1e-3);
+        assert!((ambient_midnight - AMBIENT_DAY * 0.45).abs() < 1e-3);
+
+        let (sun_noon, ambient_noon) = lighting_levels(1.0, night);
+        assert!((sun_noon - SUN_DAY).abs() < 1e-3);
+        assert!((ambient_noon - AMBIENT_DAY).abs() < 1e-3);
+
+        // Halfway is halfway between floor and full, not half of full.
+        let (sun_half, _) = lighting_levels(0.5, night);
+        assert!((sun_half - SUN_DAY * 0.55).abs() < 1e-3, "got {sun_half}");
+
+        // A darker configuration really is darker — the floors are live knobs.
+        let darker = NightConfig {
+            sun_floor: 0.02,
+            ambient_floor: 0.10,
+        };
+        assert!(lighting_levels(0.0, darker).0 < sun_midnight);
+        assert!(lighting_levels(0.0, darker).1 < ambient_midnight);
+
+        // Out-of-range input is clamped rather than extrapolated.
+        assert!((lighting_levels(2.0, night).0 - SUN_DAY).abs() < 1e-3);
+        assert!((lighting_levels(-1.0, night).0 - SUN_DAY * 0.10).abs() < 1e-3);
     }
 }

@@ -81,7 +81,8 @@ fn spawn_camera(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
         Projection::Orthographic(OrthographicProjection::default_3d()),
-        // Flat game palette must reach the screen untouched.
+        // Starting value only: `render_settings` overwrites it from render.ron
+        // on the first frame the config is present.
         Tonemapping::None,
         Transform::from_translation(rig.focus.extend(0.0) + boom_offset(rig.yaw, rig.pitch))
             .looking_at(rig.focus.extend(0.0), Vec3::Z),
