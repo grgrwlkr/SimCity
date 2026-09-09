@@ -13,3 +13,6 @@
 
 .superpowers/
 .claude/
+
+# Scratch screenshots written by the game into the worktree root.
+/p*.png
