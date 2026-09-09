@@ -49,14 +49,25 @@
         noon_elevation_deg: 14.0,
         azimuth_deg: 135.0,
         illuminance_scale: 1.0,
+        // Noon anchors. The night floors below are fractions of these, so these
+        // two decide the whole cycle's absolute level.
+        day_illuminance: 12000.0,
+        day_ambient: 700.0,
     ),
 
     // How dark midnight gets, as a fraction of the daytime values. The old
     // pre-ACES floors were 0.04 / 0.22 and render as a black plate under a
     // filmic curve.
     night: (
-        sun_floor: 0.10,
-        ambient_floor: 0.45,
+        // Measured on an A/B of the same binary, same hour, same city: the
+        // pre-ACES night reads at gray median 0.139, and a filmic curve crushes
+        // exactly this range. At the old 0.04/0.22 the night measured 0.024 — a
+        // black plate. These are the ceiling: ambient at night now equals its
+        // noon value, and night stays night because the sun does the dimming.
+        // Result 0.091 — three and a half times darker than noon, everything
+        // still legible.
+        sun_floor: 0.30,
+        ambient_floor: 1.0,
     ),
 
     shadows: (

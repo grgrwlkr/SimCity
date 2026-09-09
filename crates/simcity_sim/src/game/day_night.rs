@@ -19,7 +19,7 @@ use crate::game::render_primitives::{
 use crate::game::sets::GameSet;
 use crate::game::sim::City;
 use crate::game::state::AppState;
-use simcity_core::game::render_config::{NightConfig, RenderConfig};
+use simcity_core::game::render_config::{NightConfig, RenderConfig, SunConfig};
 
 pub struct DayNightPlugin;
 
@@ -64,19 +64,20 @@ pub fn night_factor(hour: u8) -> f32 {
     0.5 + 0.5 * (t * std::f32::consts::TAU).cos()
 }
 
-const SUN_DAY: f32 = 12_000.0;
-const AMBIENT_DAY: f32 = 700.0;
-
 /// Sun illuminance and ambient brightness for a given daylight fraction.
 ///
 /// `day` runs 0 (deepest night) to 1 (noon). The night floors come from
 /// `render.ron` because they have to be re-tuned whenever the tone mapping
 /// curve changes — a filmic curve crushes exactly the range they live in.
-pub fn lighting_levels(day: f32, night: NightConfig) -> (f32, f32) {
+/// `sun.illuminance_scale` multiplies the sun alone: the ambient is the sky, not
+/// the sun, and dimming both would only repeat what the floors already do.
+pub fn lighting_levels(day: f32, night: NightConfig, sun: &SunConfig) -> (f32, f32) {
     let day = day.clamp(0.0, 1.0);
-    let sun = SUN_DAY * (night.sun_floor + (1.0 - night.sun_floor) * day);
-    let ambient = AMBIENT_DAY * (night.ambient_floor + (1.0 - night.ambient_floor) * day);
-    (sun, ambient)
+    let illuminance = sun.day_illuminance
+        * (night.sun_floor + (1.0 - night.sun_floor) * day)
+        * sun.illuminance_scale.max(0.0);
+    let ambient = sun.day_ambient * (night.ambient_floor + (1.0 - night.ambient_floor) * day);
+    (illuminance, ambient)
 }
 
 #[allow(clippy::too_many_arguments)] // one more Res than clippy's default limit
@@ -101,8 +102,8 @@ fn drive_day_night_lighting(
     let darkness = (night_factor(city.hour) * (visual.max_night_alpha / 0.55)).clamp(0.0, 1.0);
     let day = 1.0 - darkness;
 
-    let night_cfg = render_cfg.map(|c| c.night).unwrap_or_default();
-    let (sun_lux, ambient_brightness) = lighting_levels(day, night_cfg);
+    let render_cfg = render_cfg.map(|c| *c).unwrap_or_default();
+    let (sun_lux, ambient_brightness) = lighting_levels(day, render_cfg.night, &render_cfg.sun);
 
     // Sun: bright warm white by day -> dim cool "moon" at night.
     for mut sun in q_sun.iter_mut() {
@@ -167,14 +168,14 @@ mod tests {
         let sun = app
             .world_mut()
             .spawn(DirectionalLight {
-                illuminance: SUN_DAY,
+                illuminance: SunConfig::default().day_illuminance,
                 ..Default::default()
             })
             .id();
         app.world_mut().spawn((
             MainCamera,
             AmbientLight {
-                brightness: AMBIENT_DAY,
+                brightness: SunConfig::default().day_ambient,
                 ..Default::default()
             },
         ));
@@ -199,12 +200,75 @@ mod tests {
         assert!(windows_emissive(&app) > 1.0, "windows glow at midnight");
         // Floor is config-driven now (default 0.10) and was raised for ACES;
         // the pin still checks "much dimmer than noon", at the new level.
-        assert!(sun_lux(&app) < SUN_DAY * 0.15, "sun nearly off at midnight");
+        assert!(
+            sun_lux(&app) < SunConfig::default().day_illuminance * 0.15,
+            "sun nearly off at midnight"
+        );
 
         app.world_mut().resource_mut::<City>().hour = 12;
         app.update();
         assert!(windows_emissive(&app) < 0.01, "windows dark glass at noon");
-        assert!(sun_lux(&app) > SUN_DAY * 0.9, "full sun at noon");
+        assert!(
+            sun_lux(&app) > SunConfig::default().day_illuminance * 0.9,
+            "full sun at noon"
+        );
+    }
+
+    #[test]
+    fn daytime_anchors_come_from_the_config() {
+        let night = NightConfig::default();
+        let dim = SunConfig {
+            day_illuminance: 6_000.0,
+            day_ambient: 350.0,
+            ..SunConfig::default()
+        };
+        let (sun, ambient) = lighting_levels(1.0, night, &dim);
+        assert!(
+            (sun - 6_000.0).abs() < 1e-3,
+            "noon sun follows the config, got {sun}"
+        );
+        assert!(
+            (ambient - 350.0).abs() < 1e-3,
+            "noon ambient follows the config, got {ambient}"
+        );
+
+        // The floors stay fractions of whatever the config says day is.
+        let (night_sun, night_ambient) = lighting_levels(0.0, night, &dim);
+        assert!((night_sun - 6_000.0 * night.sun_floor).abs() < 1e-3);
+        assert!((night_ambient - 350.0 * night.ambient_floor).abs() < 1e-3);
+    }
+
+    #[test]
+    fn illuminance_scale_multiplies_the_sun_at_every_hour() {
+        let night = NightConfig::default();
+        let (plain_noon, ambient_noon) = lighting_levels(1.0, night, &SunConfig::default());
+        let (dim_noon, dim_ambient) = lighting_levels(
+            1.0,
+            night,
+            &SunConfig {
+                illuminance_scale: 0.5,
+                ..SunConfig::default()
+            },
+        );
+        assert!(
+            (dim_noon - plain_noon * 0.5).abs() < 1e-3,
+            "scale must reach the sun: {dim_noon} against {plain_noon}"
+        );
+        assert!(
+            (dim_ambient - ambient_noon).abs() < 1e-3,
+            "the scale is the sun's, not the ambient's"
+        );
+
+        let (plain_night, _) = lighting_levels(0.0, night, &SunConfig::default());
+        let (bright_night, _) = lighting_levels(
+            0.0,
+            night,
+            &SunConfig {
+                illuminance_scale: 2.0,
+                ..SunConfig::default()
+            },
+        );
+        assert!((bright_night - plain_night * 2.0).abs() < 1e-3);
     }
 
     #[test]
@@ -213,29 +277,41 @@ mod tests {
             sun_floor: 0.10,
             ambient_floor: 0.45,
         };
+        let sun_cfg = SunConfig::default();
 
-        let (sun_midnight, ambient_midnight) = lighting_levels(0.0, night);
-        assert!((sun_midnight - SUN_DAY * 0.10).abs() < 1e-3);
-        assert!((ambient_midnight - AMBIENT_DAY * 0.45).abs() < 1e-3);
+        let (sun_midnight, ambient_midnight) = lighting_levels(0.0, night, &sun_cfg);
+        assert!((sun_midnight - SunConfig::default().day_illuminance * 0.10).abs() < 1e-3);
+        assert!((ambient_midnight - SunConfig::default().day_ambient * 0.45).abs() < 1e-3);
 
-        let (sun_noon, ambient_noon) = lighting_levels(1.0, night);
-        assert!((sun_noon - SUN_DAY).abs() < 1e-3);
-        assert!((ambient_noon - AMBIENT_DAY).abs() < 1e-3);
+        let (sun_noon, ambient_noon) = lighting_levels(1.0, night, &sun_cfg);
+        assert!((sun_noon - SunConfig::default().day_illuminance).abs() < 1e-3);
+        assert!((ambient_noon - SunConfig::default().day_ambient).abs() < 1e-3);
 
         // Halfway is halfway between floor and full, not half of full.
-        let (sun_half, _) = lighting_levels(0.5, night);
-        assert!((sun_half - SUN_DAY * 0.55).abs() < 1e-3, "got {sun_half}");
+        let (sun_half, _) = lighting_levels(0.5, night, &sun_cfg);
+        assert!(
+            (sun_half - SunConfig::default().day_illuminance * 0.55).abs() < 1e-3,
+            "got {sun_half}"
+        );
 
         // A darker configuration really is darker — the floors are live knobs.
         let darker = NightConfig {
             sun_floor: 0.02,
             ambient_floor: 0.10,
         };
-        assert!(lighting_levels(0.0, darker).0 < sun_midnight);
-        assert!(lighting_levels(0.0, darker).1 < ambient_midnight);
+        assert!(lighting_levels(0.0, darker, &sun_cfg).0 < sun_midnight);
+        assert!(lighting_levels(0.0, darker, &sun_cfg).1 < ambient_midnight);
 
         // Out-of-range input is clamped rather than extrapolated.
-        assert!((lighting_levels(2.0, night).0 - SUN_DAY).abs() < 1e-3);
-        assert!((lighting_levels(-1.0, night).0 - SUN_DAY * 0.10).abs() < 1e-3);
+        assert!(
+            (lighting_levels(2.0, night, &sun_cfg).0 - SunConfig::default().day_illuminance).abs()
+                < 1e-3
+        );
+        assert!(
+            (lighting_levels(-1.0, night, &sun_cfg).0
+                - SunConfig::default().day_illuminance * 0.10)
+                .abs()
+                < 1e-3
+        );
     }
 }

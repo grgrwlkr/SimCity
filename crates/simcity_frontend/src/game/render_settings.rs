@@ -68,7 +68,10 @@ fn apply_render_config(
     mut applied: Local<bool>,
     mut commands: Commands,
     mut q_camera: Query<(Entity, &mut Tonemapping, &mut ColorGrading), With<MainCamera>>,
-    mut q_sun: Query<(Entity, &mut Transform), (With<DirectionalLight>, Without<MainCamera>)>,
+    mut q_sun: Query<
+        (Entity, &mut Transform, &mut DirectionalLight),
+        (With<DirectionalLight>, Without<MainCamera>),
+    >,
 ) {
     let Some(cfg) = cfg else {
         return;
@@ -137,7 +140,11 @@ fn apply_render_config(
         }
     }
 
-    for (sun, mut transform) in q_sun.iter_mut() {
+    for (sun, mut transform, mut light) in q_sun.iter_mut() {
+        // Zero means hard edges; Bevy reads `None` that way and a `Some(0.0)`
+        // would still pay for the percentage-closer soft-shadow path.
+        light.soft_shadow_size = (cfg.shadows.soft_size > 0.0).then_some(cfg.shadows.soft_size);
+
         let direction = sun_direction(cfg.sun.noon_elevation_deg, cfg.sun.azimuth_deg);
         // Keep the light well outside the map so its cascades cover the city.
         *transform = Transform::from_translation(-direction * 400.0).looking_to(direction, Vec3::Z);
@@ -241,6 +248,24 @@ mod tests {
         assert!(
             world.get::<bevy::light::CascadeShadowConfig>(sun).is_some(),
             "cascades must be rebuilt from the config"
+        );
+    }
+
+    #[test]
+    fn soft_shadow_size_reaches_the_sun_and_zero_means_hard_edges() {
+        let mut cfg = RenderConfig::default();
+        cfg.shadows.soft_size = 2.5;
+        let (app, _, sun) = app_with(cfg);
+        let light = app.world().get::<DirectionalLight>(sun).unwrap();
+        assert_eq!(light.soft_shadow_size, Some(2.5));
+
+        let mut off = RenderConfig::default();
+        off.shadows.soft_size = 0.0;
+        let (app, _, sun) = app_with(off);
+        let light = app.world().get::<DirectionalLight>(sun).unwrap();
+        assert_eq!(
+            light.soft_shadow_size, None,
+            "zero must mean hard shadows, not a zero-width penumbra"
         );
     }
 

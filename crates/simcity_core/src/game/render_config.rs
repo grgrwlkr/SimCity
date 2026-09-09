@@ -130,6 +130,10 @@ pub struct SunConfig {
     pub azimuth_deg: f32,
     /// Multiplier on the day/night illuminance curve.
     pub illuminance_scale: f32,
+    /// Sun illuminance at noon, lux. The night floor is a fraction of this.
+    pub day_illuminance: f32,
+    /// Ambient (sky) brightness at noon. The night floor is a fraction of this.
+    pub day_ambient: f32,
 }
 
 impl Default for SunConfig {
@@ -138,6 +142,8 @@ impl Default for SunConfig {
             noon_elevation_deg: 14.0,
             azimuth_deg: 135.0,
             illuminance_scale: 1.0,
+            day_illuminance: 12_000.0,
+            day_ambient: 700.0,
         }
     }
 }
