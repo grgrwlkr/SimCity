@@ -4,7 +4,7 @@ use rand::{SeedableRng, rngs::StdRng};
 
 use crate::game::sets::GameSet;
 use crate::game::sim_events::{DayAdvanced, HourAdvanced};
-use crate::game::state::AppState;
+use crate::game::state::{AppState, START_OF_GAME};
 use crate::game::ui_state::{SimSpeed, UiState};
 
 /// Single seeded RNG for the whole simulation path. Reproducibility of
@@ -22,7 +22,7 @@ impl Default for SimRng {
     }
 }
 
-/// Re-seed at InGame entry from the current map seed (mirrors BuildingGrowthRng).
+/// Re-seed at the start of a game from the current map seed (mirrors BuildingGrowthRng).
 pub fn seed_sim_rng_from_map(seed: Res<crate::game::map::MapSeed>, mut rng: ResMut<SimRng>) {
     rng.rng = StdRng::seed_from_u64(seed.0);
 }
@@ -45,7 +45,7 @@ pub struct SimPlugin;
 impl Plugin for SimPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SimRng>()
-            .add_systems(OnEnter(AppState::InGame), seed_sim_rng_from_map)
+            .add_systems(START_OF_GAME, seed_sim_rng_from_map)
             .add_systems(
                 Update,
                 reset_sim_rng_on_new_map
@@ -56,10 +56,8 @@ impl Plugin for SimPlugin {
             .init_resource::<SimClock>()
             .add_message::<HourAdvanced>()
             .add_systems(First, sync_sim_speed.before(TimeSystems))
-            .add_systems(
-                OnEnter(AppState::InGame),
-                (reset_city_for_new_game, emit_initial_day_advanced).chain(),
-            )
+            .add_systems(OnEnter(AppState::MainMenu), reset_city_for_new_game)
+            .add_systems(START_OF_GAME, emit_initial_day_advanced)
             .add_systems(Update, handle_state_hotkeys.in_set(GameSet::Input))
             .add_systems(
                 FixedUpdate,
@@ -225,7 +223,7 @@ fn reset_city_for_new_game(mut city: ResMut<City>, mut clock: ResMut<SimClock>) 
     clock.timer.reset();
 }
 
-/// Emit one DayAdvanced for the current day when entering InGame.
+/// Emit one DayAdvanced for the current day when a game starts.
 /// DayAdvanced is otherwise only sent when hour wraps 23→0, so day 1 would never
 /// trigger occupancy/construction until the first full day passed. This ensures
 /// day-1 systems (occupancy, construction progress, etc.) run immediately.
@@ -303,5 +301,140 @@ mod sim_rng_tests {
         let after: u64 = app.world_mut().resource_mut::<SimRng>().rng.random::<u64>();
         let mut reference = StdRng::seed_from_u64(7);
         assert_eq!(after, reference.random::<u64>());
+    }
+}
+
+/// Pause must not be a new game. `AppState::Paused` exits `InGame`, so every system
+/// hung on `OnEnter(InGame)` re-runs on resume — which used to hand the player a fresh
+/// treasury, a rewound calendar and a restarted random stream.
+#[cfg(test)]
+mod pause_preserves_game_tests {
+    use super::*;
+    use crate::game::buildings::{BuildingGrowthRng, BuildingUpgradeClock, BuildingsPlugin};
+    use crate::game::map::MapSeed;
+    use rand::RngExt;
+    use std::time::Duration;
+
+    const SEED: u64 = 7;
+
+    fn go(app: &mut App, next: AppState) {
+        app.world_mut()
+            .resource_mut::<NextState<AppState>>()
+            .set(next);
+        app.world_mut().run_schedule(StateTransition);
+    }
+
+    fn started_game() -> App {
+        let mut app = App::new();
+        app.add_plugins(bevy::state::app::StatesPlugin)
+            .init_state::<AppState>()
+            .insert_resource(MapSeed(SEED))
+            .add_message::<DayAdvanced>()
+            .add_plugins(SimPlugin)
+            .add_plugins(BuildingsPlugin);
+        // Flush the initial entry into the default state before driving transitions.
+        app.world_mut().run_schedule(StateTransition);
+        go(&mut app, AppState::InGame);
+        app
+    }
+
+    fn draw_sim(app: &mut App, n: usize) -> Vec<u64> {
+        let mut rng = app.world_mut().resource_mut::<SimRng>();
+        (0..n).map(|_| rng.rng.random::<u64>()).collect()
+    }
+
+    fn draw_growth(app: &mut App, n: usize) -> Vec<u64> {
+        let mut rng = app.world_mut().resource_mut::<BuildingGrowthRng>();
+        (0..n).map(|_| rng.rng.random::<u64>()).collect()
+    }
+
+    #[test]
+    fn pause_round_trip_keeps_city() {
+        let mut app = started_game();
+        {
+            let mut city = app.world_mut().resource_mut::<City>();
+            city.money = 1_234;
+            city.day = 9;
+            city.hour = 15;
+            city.population = 42;
+            city.happiness = 0.75;
+        }
+
+        go(&mut app, AppState::Paused);
+        go(&mut app, AppState::InGame);
+
+        let city = app.world().resource::<City>();
+        assert_eq!(city.money, 1_234, "pause must not refund the treasury");
+        assert_eq!(city.day, 9, "pause must not rewind the calendar");
+        assert_eq!(city.hour, 15, "pause must not rewind the clock");
+        assert_eq!(city.population, 42, "pause must not erase the population");
+        assert_eq!(city.happiness, 0.75, "pause must not reset happiness");
+    }
+
+    #[test]
+    fn pause_round_trip_does_not_restart_random_streams() {
+        let mut app = started_game();
+        let sim_before = draw_sim(&mut app, 4);
+        let growth_before = draw_growth(&mut app, 4);
+
+        go(&mut app, AppState::Paused);
+        go(&mut app, AppState::InGame);
+
+        let sim_after = draw_sim(&mut app, 4);
+        let growth_after = draw_growth(&mut app, 4);
+
+        let mut reference = StdRng::seed_from_u64(SEED);
+        let expected: Vec<u64> = (0..8).map(|_| reference.random::<u64>()).collect();
+
+        assert_eq!(
+            sim_before,
+            expected[..4],
+            "entering a game must seed the sim stream from the map seed"
+        );
+        assert_eq!(
+            sim_after,
+            expected[4..],
+            "pause must not restart the sim random stream"
+        );
+        assert_eq!(
+            growth_before,
+            expected[..4],
+            "entering a game must seed the growth stream from the map seed"
+        );
+        assert_eq!(
+            growth_after,
+            expected[4..],
+            "pause must not restart the building growth stream"
+        );
+    }
+
+    #[test]
+    fn pause_round_trip_keeps_building_upgrade_clock() {
+        let mut app = started_game();
+        app.world_mut()
+            .resource_mut::<BuildingUpgradeClock>()
+            .timer
+            .tick(Duration::from_millis(500));
+        let elapsed = app
+            .world()
+            .resource::<BuildingUpgradeClock>()
+            .timer
+            .elapsed();
+        assert!(
+            elapsed > Duration::ZERO,
+            "test setup must advance the clock"
+        );
+
+        go(&mut app, AppState::Paused);
+        go(&mut app, AppState::InGame);
+
+        assert_eq!(
+            app.world()
+                .resource::<BuildingUpgradeClock>()
+                .timer
+                .elapsed(),
+            elapsed,
+            "pause must not rewind the building upgrade clock"
+        );
     }
 }
