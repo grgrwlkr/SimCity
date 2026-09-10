@@ -85,7 +85,10 @@ pub const TOOLS: &[ToolDoc] = &[
         description: "Read or drive the simulation: set speed, set the hour and day \
                       directly, or step an exact number of fixed ticks. Stepping is exact \
                       only while paused — running speeds add the main loop's own ticks. \
-                      Call with no parameters to read.",
+                      Pausing also freezes brp_extras/send_keys: its key release waits on \
+                      the same virtual clock, so a key stays held and never registers \
+                      again — test keyboard input at x1, not paused. Call with no \
+                      parameters to read.",
         dispatch: Dispatch::Instant,
         params_schema: schema_of::<SimParams>,
     },
