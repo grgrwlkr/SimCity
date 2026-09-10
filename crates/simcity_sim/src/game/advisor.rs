@@ -4,7 +4,7 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
-use crate::game::buildings::Building;
+use crate::game::buildings::{Building, any_footprint_tile};
 use crate::game::city_fields::{
     CRIME_EMPTIES_HOMES_FROM, CityField, CityFields, FIRE_HAZARD_LIMIT, HEALTH_FOR_LEVEL_THREE,
 };
@@ -507,10 +507,31 @@ impl AdvisorSources<'_, '_> {
             inputs.fire_share = share(fire, built);
             inputs.poor_health_share = share(sick, homes);
         }
-        if let Some(coverage) = self.coverage.as_deref() {
-            inputs.police_cover = coverage.police;
-            inputs.fire_cover = coverage.fire;
-            inputs.medical_cover = coverage.medical;
+        // The index's own totals are counted at the last map edit; buildings grow without one, so
+        // the cover is counted here over the buildings standing now.
+        if let (Some(grid), Some(coverage)) = (grid, self.coverage.as_deref())
+            && coverage.coverage_map.len() == grid.len()
+        {
+            let share = |mask: u8| {
+                let covered = zoned
+                    .iter()
+                    .filter(|building| {
+                        any_footprint_tile(
+                            building.anchor_pos,
+                            building.footprint_width,
+                            building.footprint_length,
+                            |tile| {
+                                grid.idx(tile)
+                                    .is_some_and(|idx| coverage.is_covered(idx, mask))
+                            },
+                        )
+                    })
+                    .count();
+                covered as f32 / zoned.len().max(1) as f32
+            };
+            inputs.police_cover = share(ServiceCoverageIndex::MASK_POLICE);
+            inputs.fire_cover = share(ServiceCoverageIndex::MASK_FIRE);
+            inputs.medical_cover = share(ServiceCoverageIndex::MASK_MEDICAL);
         }
         if let Some(ledger) = self.ledger.as_deref() {
             let lines = &ledger.current;
@@ -768,6 +789,73 @@ mod tests {
         let problems = assess(&inputs);
         assert_eq!(problems[0].kind, ProblemKind::EmptyTreasury);
         assert_eq!(problems[0].text, "The treasury is empty: $3 000 in debt");
+    }
+
+    /// The cover the advisor quotes is the cover of the buildings standing now: the coverage
+    /// index's own totals are counted at the last map edit and go stale as the city grows.
+    #[test]
+    fn advisor_counts_service_cover_over_the_buildings_standing_now() {
+        use crate::game::buildings::{Building, BuildingPhase};
+        use crate::game::city_fields::{CityField, CityFields};
+        use crate::game::map::{BuildingKind, MapGrid, ZoneKind};
+        use crate::game::services::ServiceCoverageIndex;
+
+        let mut grid = MapGrid::new(8, 1);
+        let mut app = App::new();
+        for x in [0, 4] {
+            for dx in 0..3 {
+                let pos = TilePos { x: x + dx, y: 0 };
+                let mut cell = grid.get(pos).expect("inside");
+                cell.zone = ZoneKind::Residential;
+                cell.building = Some(BuildingKind::Residential);
+                grid.set(pos, cell);
+            }
+            app.world_mut().spawn(Building {
+                kind: BuildingKind::Residential,
+                anchor_pos: TilePos { x, y: 0 },
+                footprint_width: 3,
+                footprint_length: 1,
+                level: 1,
+                phase: BuildingPhase::Operational,
+                construction_start_day: 0,
+                capacity_residents: 4,
+                capacity_jobs: 0,
+                occupancy_residents: 4,
+                occupancy_jobs: 0,
+                target_occupancy_residents: 4,
+                target_occupancy_jobs: 0,
+                parking_spots: Vec::new(),
+            });
+        }
+        let mut coverage = ServiceCoverageIndex {
+            coverage_map: vec![0; grid.len()],
+            // Counted before these homes grew.
+            police: 0.0,
+            ..Default::default()
+        };
+        for mask in coverage.coverage_map.iter_mut().take(3) {
+            *mask = ServiceCoverageIndex::MASK_POLICE;
+        }
+        let mut fields = CityFields::default();
+        fields.set_for_test(CityField::Crime, vec![0.9; grid.len()]);
+        app.add_message::<HourAdvanced>()
+            .insert_resource(grid)
+            .insert_resource(coverage)
+            .insert_resource(fields)
+            .init_resource::<Advisor>()
+            .add_systems(Update, update_advisor);
+        app.update();
+
+        let advisor = app.world().resource::<Advisor>();
+        let crime = advisor
+            .problems
+            .iter()
+            .find(|problem| problem.kind == ProblemKind::Crime)
+            .expect("crime everywhere is a problem");
+        assert_eq!(
+            crime.text,
+            "High crime in 100% of the city: police cover 50% of buildings"
+        );
     }
 
     /// The advice follows the city hour by hour and stands in between.
