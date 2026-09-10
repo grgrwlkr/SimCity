@@ -155,7 +155,7 @@ fn footprint_problem(grid: &MapGrid, anchor: TilePos, width: u8, length: u8) -> 
     let mut blocked = false;
     for tile in tiles {
         match grid.get(tile) {
-            None => return "The 3×3 footprint runs off the map",
+            None => return "The 3x3 footprint runs off the map",
             Some(cell) if cell.water || cell.road.is_some() || cell.building.is_some() => {
                 blocked = true;
             }
@@ -163,7 +163,7 @@ fn footprint_problem(grid: &MapGrid, anchor: TilePos, width: u8, length: u8) -> 
         }
     }
     if blocked {
-        "The 3×3 footprint needs clear land"
+        "The 3x3 footprint needs clear land"
     } else {
         "Needs a road next to it"
     }

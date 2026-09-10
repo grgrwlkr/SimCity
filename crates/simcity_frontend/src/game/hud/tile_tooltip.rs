@@ -28,8 +28,8 @@ pub struct TooltipDetail;
 /// The two lines for a preview, and whether the click would go through.
 pub fn tooltip_lines(preview: &ToolPreview) -> (String, Option<String>, bool) {
     let headline = match preview.cost {
-        Some(0) => format!("{} · free", preview.effect),
-        Some(cost) => format!("{} · {}", preview.effect, format_money(cost)),
+        Some(0) => format!("{}, free", preview.effect),
+        Some(cost) => format!("{}, {}", preview.effect, format_money(cost)),
         None => preview.effect.clone(),
     };
     match preview.verdict {
@@ -220,7 +220,7 @@ mod tests {
             Err("Needs a road next to it"),
             Some(20),
         ));
-        assert_eq!(headline, "Builds a fire station · $500");
+        assert_eq!(headline, "Builds a fire station, $500");
         assert_eq!(detail.as_deref(), Some("Needs a road next to it"));
         assert!(!ok);
 
@@ -229,7 +229,7 @@ mod tests {
         assert!(ok);
 
         let (headline, detail, ok) = tooltip_lines(&preview(Some(0), Ok(()), None));
-        assert_eq!(headline, "Builds a fire station · free");
+        assert_eq!(headline, "Builds a fire station, free");
         assert_eq!(detail, None);
         assert!(ok);
 

@@ -29,7 +29,7 @@ pub struct Toast {
 /// A line as the player reads it: the message, and how many times it happened when more than once.
 pub fn toast_label(text: &str, count: u32) -> String {
     if count > 1 {
-        format!("{text} ×{count}")
+        format!("{text} x{count}")
     } else {
         text.to_string()
     }
@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn ui_shell_a_toast_label_carries_the_count_only_when_there_is_one() {
         assert_eq!(toast_label("Fire emergency", 1), "Fire emergency");
-        assert_eq!(toast_label("Fire emergency", 8), "Fire emergency ×8");
+        assert_eq!(toast_label("Fire emergency", 8), "Fire emergency x8");
     }
 
     #[test]
@@ -211,9 +211,9 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|(_, text)| text.contains("upgraded to level II ×8"))
+                .any(|(_, text)| text.contains("upgraded to level II x8"))
         );
-        assert!(!lines.iter().any(|(_, text)| text.contains("×1")));
+        assert!(!lines.iter().any(|(_, text)| text.contains("x1")));
     }
 
     #[test]
