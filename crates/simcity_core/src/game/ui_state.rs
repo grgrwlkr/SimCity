@@ -115,6 +115,12 @@ pub enum OverlayMode {
 }
 
 impl OverlayMode {
+    /// A data map a player reads: every overlay but the plain map and the developer path view.
+    /// While one is on, the effects that get in the way of reading it stand aside.
+    pub fn is_data_map(self) -> bool {
+        !matches!(self, OverlayMode::None | OverlayMode::Path)
+    }
+
     /// Parse an overlay by the name the toolbar shows, case-insensitively.
     ///
     /// Exists so the overlays can be driven from a script (BRP) instead of only

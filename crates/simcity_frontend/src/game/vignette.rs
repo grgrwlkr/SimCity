@@ -11,6 +11,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use simcity_core::game::render_config::RenderConfig;
+use simcity_core::game::ui_state::UiState;
 
 /// Side of the generated ramp texture. It is stretched over the whole window,
 /// so it only needs enough samples to keep the gradient smooth.
@@ -20,12 +21,28 @@ pub struct VignettePlugin;
 
 impl Plugin for VignettePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, sync_vignette);
+        app.add_systems(Update, (sync_vignette, hide_vignette_for_data_maps).chain());
     }
 }
 
 #[derive(Component)]
 struct Vignette;
+
+/// Hide the vignette while a data map is on: darkened corners are exactly where a reading of
+/// the map is lost.
+fn hide_vignette_for_data_maps(
+    ui: Option<Res<UiState>>,
+    mut vignettes: Query<&mut Visibility, With<Vignette>>,
+) {
+    let wanted = if ui.is_some_and(|ui| ui.overlay.is_data_map()) {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    for mut visibility in &mut vignettes {
+        visibility.set_if_neq(wanted);
+    }
+}
 
 /// Darkening at a point of the frame, in 0..1 alpha.
 ///
@@ -152,5 +169,36 @@ mod tests {
 
         assert_eq!(alpha_at(size / 2, size / 2), 0);
         assert!(alpha_at(0, 0) > 200, "corner alpha was {}", alpha_at(0, 0));
+    }
+
+    #[test]
+    fn vignette_steps_aside_while_a_data_map_is_on() {
+        use simcity_core::game::ui_state::{OverlayMode, UiState};
+
+        let mut app = App::new();
+        app.insert_resource(UiState {
+            overlay: OverlayMode::Pollution,
+            ..Default::default()
+        });
+        let vignette = app
+            .world_mut()
+            .spawn((Vignette, Visibility::Inherited))
+            .id();
+        app.add_systems(Update, hide_vignette_for_data_maps);
+
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(vignette),
+            Some(&Visibility::Hidden),
+            "the corners of a data map must read like its centre"
+        );
+
+        app.world_mut().resource_mut::<UiState>().overlay = OverlayMode::None;
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(vignette),
+            Some(&Visibility::Inherited),
+            "the look comes back with the plain map"
+        );
     }
 }

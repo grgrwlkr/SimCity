@@ -391,4 +391,22 @@ mod tests {
             Some("Land value not computed yet")
         );
     }
+
+    #[test]
+    fn data_map_every_overlay_with_a_legend_is_a_data_map_and_no_other() {
+        for mode in [
+            OverlayMode::None,
+            OverlayMode::Water,
+            OverlayMode::Height,
+            OverlayMode::Zones,
+            OverlayMode::Roads,
+            OverlayMode::Traffic,
+            OverlayMode::Path,
+            OverlayMode::ServiceCoverage,
+            OverlayMode::LandValue,
+            OverlayMode::Pollution,
+        ] {
+            assert_eq!(mode.is_data_map(), legend_for(mode).is_some(), "{mode:?}");
+        }
+    }
 }
