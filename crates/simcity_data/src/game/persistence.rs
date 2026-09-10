@@ -87,6 +87,7 @@ fn snapshot_map(grid: &MapGrid) -> MapGridV1 {
                 terrain: cell.terrain,
                 road: cell.road,
                 zone: cell.zone,
+                density: cell.density,
                 building: cell.building,
             });
         }
@@ -337,6 +338,7 @@ fn apply_map_from_v1(grid: &mut MapGrid, v1: &MapGridV1) {
             terrain: t.terrain,
             road: t.road,
             zone: t.zone,
+            density: t.density,
             building: t.building,
         };
         grid.set(pos, cell);

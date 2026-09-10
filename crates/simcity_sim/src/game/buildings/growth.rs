@@ -4,8 +4,9 @@ use rand::{RngExt, SeedableRng, rngs::StdRng};
 use std::collections::HashSet;
 
 use crate::game::demand::RciDemand;
+use crate::game::economy::WealthClass;
 use crate::game::land_value::LandValueIndex;
-use crate::game::map::{BuildingKind, DirtyTiles, MapConfig, MapGrid, TilePos};
+use crate::game::map::{BuildingKind, DirtyTiles, MapConfig, MapGrid, TilePos, ZoneDensity};
 use crate::game::notifications::{NotificationKind, Notifications};
 use crate::game::sim::City;
 use crate::game::sim_events::HourAdvanced;
@@ -103,6 +104,7 @@ pub fn grow_buildings(mut p: GrowBuildingsParams) {
         let Some(kind) = BuildingKind::from_zone(cell.zone) else {
             continue;
         };
+        let density = cell.density;
         if !demand_allows_growth(&p.demand, kind) {
             continue;
         }
@@ -111,6 +113,7 @@ pub fn grow_buildings(mut p: GrowBuildingsParams) {
         let Some(footprint) = find_best_footprint(
             seed_pos,
             kind,
+            density,
             &p.grid,
             &occupied,
             p.land_value.as_deref(),
@@ -143,6 +146,16 @@ pub fn grow_buildings(mut p: GrowBuildingsParams) {
             kind,
             &p.city,
             false,
+            BuildingProfile {
+                density,
+                class: p
+                    .land_value
+                    .as_deref()
+                    .zip(p.grid.idx(footprint.anchor))
+                    .filter(|(index, _)| index.values.len() == p.grid.len())
+                    .map(|(index, idx)| WealthClass::from_land_value(index.get(idx)))
+                    .unwrap_or_default(),
+            },
         );
 
         // Mark all footprint tiles as occupied
@@ -186,9 +199,11 @@ struct Footprint {
 /// Find the best valid footprint starting from a seed position.
 /// Algorithm from GDD 10.1.3: priority is area → length → width.
 /// Tries footprints from 6x6 down to 3x3, checking all orientations.
+#[allow(clippy::too_many_arguments)]
 fn find_best_footprint(
     seed_pos: TilePos,
     kind: BuildingKind,
+    density: ZoneDensity,
     grid: &MapGrid,
     occupied: &HashSet<TilePos>,
     land_value: Option<&LandValueIndex>,
@@ -200,9 +215,10 @@ fn find_best_footprint(
     // This means: 6x6, then 6x5, 5x6, then 6x4, 4x6, 5x5, then 6x3, 3x6, 5x4, 4x5, etc.
     let mut candidates = Vec::new();
     // Generate all valid (width, length) pairs where both are 3-6
-    for w in 3..=6 {
-        for l in 3..=6 {
-            candidates.push((w as u8, l as u8));
+    let (shortest, longest) = density.footprint_sides();
+    for w in shortest..=longest {
+        for l in shortest..=longest {
+            candidates.push((w, l));
         }
     }
 
@@ -224,6 +240,7 @@ fn find_best_footprint(
             width,
             length,
             kind,
+            density,
             grid,
             occupied,
             land_value,
@@ -250,6 +267,7 @@ fn find_best_footprint(
                 width,
                 length,
                 kind,
+                density,
                 grid,
                 occupied,
                 land_value,
@@ -273,6 +291,7 @@ fn try_footprint_at(
     width: u8,
     length: u8,
     kind: BuildingKind,
+    density: ZoneDensity,
     grid: &MapGrid,
     occupied: &HashSet<TilePos>,
     land_value: Option<&LandValueIndex>,
@@ -298,8 +317,8 @@ fn try_footprint_at(
                 return None;
             }
 
-            // Check zone matches
-            if cell.zone != required_zone {
+            // Check zone matches, at the density the building grows in
+            if cell.zone != required_zone || cell.density != density {
                 return None;
             }
 

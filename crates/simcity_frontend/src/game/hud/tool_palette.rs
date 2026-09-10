@@ -16,6 +16,10 @@ use super::theme::Theme;
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ToolButton(pub ToolMode);
 
+/// A button that picks the density the zone tools paint.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct DensityButton(pub simcity_core::game::map::ZoneDensity);
+
 /// The button that toggles one-way road building.
 #[derive(Component, Debug)]
 pub struct OneWayToggle;
@@ -28,6 +32,11 @@ pub struct HotkeyLabel;
 #[derive(Debug, Clone, Copy)]
 enum Entry {
     Tool(ToolMode, &'static str, &'static str),
+    Density(
+        simcity_core::game::map::ZoneDensity,
+        &'static str,
+        &'static str,
+    ),
     OneWay,
 }
 
@@ -60,6 +69,21 @@ const GROUPS: &[(&str, &[Entry])] = &[
             Entry::Tool(ToolMode::Residential, "hud.tool.residential", "Residential"),
             Entry::Tool(ToolMode::Commercial, "hud.tool.commercial", "Commercial"),
             Entry::Tool(ToolMode::Industrial, "hud.tool.industrial", "Industrial"),
+            Entry::Density(
+                simcity_core::game::map::ZoneDensity::Low,
+                "hud.tool.density.low",
+                "Low",
+            ),
+            Entry::Density(
+                simcity_core::game::map::ZoneDensity::Medium,
+                "hud.tool.density.medium",
+                "Mid",
+            ),
+            Entry::Density(
+                simcity_core::game::map::ZoneDensity::High,
+                "hud.tool.density.high",
+                "High",
+            ),
         ],
     ),
     (
@@ -195,6 +219,13 @@ pub fn spawn_tool_palette(commands: &mut Commands, theme: &Theme, glass: Handle<
                     label,
                     hotkey_for(tool),
                 ),
+                Entry::Density(density, name, label) => spawn_button(
+                    commands,
+                    theme,
+                    (Name::new(name), DensityButton(density)),
+                    label,
+                    None,
+                ),
                 Entry::OneWay => spawn_button(
                     commands,
                     theme,
@@ -256,11 +287,14 @@ fn spawn_button(
 pub fn on_tool_button(
     activate: On<Activate>,
     tools: Query<&ToolButton>,
+    densities: Query<&DensityButton>,
     toggles: Query<(), With<OneWayToggle>>,
     mut ui: ResMut<UiState>,
 ) {
     if let Ok(button) = tools.get(activate.entity) {
         ui.tool = button.0;
+    } else if let Ok(button) = densities.get(activate.entity) {
+        ui.zone_density = button.0;
     } else if toggles.contains(activate.entity) {
         ui.one_way_mode = !ui.one_way_mode;
     }
@@ -271,10 +305,11 @@ type PaletteButtons<'w, 's> = Query<
     's,
     (
         Option<&'static ToolButton>,
+        Option<&'static DensityButton>,
         Has<OneWayToggle>,
         &'static mut BackgroundColor,
     ),
-    Or<(With<ToolButton>, With<OneWayToggle>)>,
+    Or<(With<ToolButton>, With<DensityButton>, With<OneWayToggle>)>,
 >;
 
 /// Highlight the active tool and the one-way toggle. Runs its work only when either changed.
@@ -283,8 +318,10 @@ pub fn update_tool_palette(ui: Res<UiState>, theme: Res<Theme>, mut buttons: Pal
         return;
     }
     let on = theme.palette.accent.with_alpha(0.35);
-    for (tool, toggle, mut background) in &mut buttons {
-        let active = tool.is_some_and(|button| button.0 == ui.tool) || (toggle && ui.one_way_mode);
+    for (tool, density, toggle, mut background) in &mut buttons {
+        let active = tool.is_some_and(|button| button.0 == ui.tool)
+            || density.is_some_and(|button| button.0 == ui.zone_density)
+            || (toggle && ui.one_way_mode);
         background.set_if_neq(BackgroundColor(if active { on } else { Color::NONE }));
     }
 }
@@ -362,6 +399,28 @@ mod tests {
         app.world()
             .get::<BackgroundColor>(entity)
             .is_some_and(|background| background.0 != Color::NONE)
+    }
+
+    #[test]
+    fn zone_density_buttons_pick_the_density_the_zone_tools_paint() {
+        use simcity_core::game::map::ZoneDensity;
+        for density in ZoneDensity::ALL {
+            let mut app = palette_app();
+            let button = app
+                .world_mut()
+                .query::<(Entity, &DensityButton)>()
+                .iter(app.world())
+                .find(|(_, button)| button.0 == density)
+                .map(|(entity, _)| entity)
+                .unwrap_or_else(|| panic!("no button for {density:?}"));
+            app.world_mut().trigger(Activate { entity: button });
+            app.update();
+            assert_eq!(app.world().resource::<UiState>().zone_density, density);
+            assert!(
+                highlighted(&app, button),
+                "{density:?} lights up once chosen"
+            );
+        }
     }
 
     #[test]

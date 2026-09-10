@@ -167,9 +167,22 @@ impl Default for EconomyConfig {
 }
 
 /// How well off the people of a building are.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum WealthClass {
     Low,
+    #[default]
     Middle,
     High,
 }

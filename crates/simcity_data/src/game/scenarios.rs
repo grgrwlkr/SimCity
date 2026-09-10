@@ -59,9 +59,20 @@ pub struct Scenario {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub enum ScenarioCommand {
-    SetRoad { pos: TilePos, road: RoadCell },
-    SetZone { pos: TilePos, zone: ZoneKind },
-    PlaceBuilding { pos: TilePos, kind: BuildingKind },
+    SetRoad {
+        pos: TilePos,
+        road: RoadCell,
+    },
+    SetZone {
+        pos: TilePos,
+        zone: ZoneKind,
+        #[serde(default)]
+        density: crate::game::map::ZoneDensity,
+    },
+    PlaceBuilding {
+        pos: TilePos,
+        kind: BuildingKind,
+    },
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -183,8 +194,8 @@ fn apply_selected_scenario_on_enter(
             ScenarioCommand::SetRoad { pos, road } => {
                 out.write(GameCommand::SetRoad { pos, road });
             }
-            ScenarioCommand::SetZone { pos, zone } => {
-                out.write(GameCommand::SetZone { pos, zone });
+            ScenarioCommand::SetZone { pos, zone, density } => {
+                out.write(GameCommand::SetZone { pos, zone, density });
             }
             ScenarioCommand::PlaceBuilding { pos, kind } => {
                 out.write(GameCommand::PlaceBuilding { pos, kind });

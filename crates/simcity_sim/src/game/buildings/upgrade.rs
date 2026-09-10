@@ -16,7 +16,7 @@ pub fn upgrade_buildings(
     _city: ResMut<City>,
     mut notifications: Option<ResMut<Notifications>>,
     mut upgrade_clock: ResMut<BuildingUpgradeClock>,
-    mut q_buildings: Query<&mut Building>,
+    mut q_buildings: Query<(&mut Building, &BuildingProfile)>,
     grid: Res<MapGrid>,
     network: Res<UtilityNetwork>,
 ) {
@@ -29,9 +29,10 @@ pub fn upgrade_buildings(
         return;
     }
 
-    for mut building in q_buildings.iter_mut() {
+    for (mut building, profile) in q_buildings.iter_mut() {
         // Zoned buildings only, below the top level, with power, water and enough demand.
-        if super::blockers::upgrade_blocker(&building, &grid, &network, &demand).is_some() {
+        if super::blockers::upgrade_blocker(&building, profile, &grid, &network, &demand).is_some()
+        {
             continue;
         }
 
@@ -45,12 +46,9 @@ pub fn upgrade_buildings(
 
         // Update capacity
         let area = building.area();
-        building.capacity_residents = building
-            .kind
-            .capacity_residents_for_level_area(building.level, area);
-        building.capacity_jobs = building
-            .kind
-            .capacity_jobs_for_level_area(building.level, area);
+        let (residents, jobs) = profile_capacity(building.kind, building.level, area, *profile);
+        building.capacity_residents = residents;
+        building.capacity_jobs = jobs;
 
         // Population is now calculated from occupancy, not updated here
         // The occupancy system will adjust occupancy_residents based on new capacity and demand

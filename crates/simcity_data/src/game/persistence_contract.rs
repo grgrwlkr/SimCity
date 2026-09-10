@@ -13,7 +13,7 @@ use crate::game::citizens::CitizenState;
 use crate::game::commands::GameCommand;
 use crate::game::emergencies::EmergencyStats;
 use crate::game::ids::CitizenId;
-use crate::game::map::{BuildingKind, TileKind, TilePos, ZoneKind};
+use crate::game::map::{BuildingKind, TileKind, TilePos, ZoneDensity, ZoneKind};
 use crate::game::persistence::{SaveParams, snapshot_savegame};
 use crate::game::roads::RoadCell;
 use crate::game::services::ServiceKind;
@@ -170,6 +170,9 @@ pub struct MapTileV1 {
     pub terrain: TileKind,
     pub road: RoadCell,
     pub zone: ZoneKind,
+    /// Absent from saves made before densities: those zones build at `Medium`.
+    #[serde(default)]
+    pub density: ZoneDensity,
     pub building: Option<BuildingKind>,
 }
 

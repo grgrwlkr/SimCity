@@ -18,6 +18,7 @@ pub fn spawn_building_entity(
     kind: BuildingKind,
     city: &City,
     spawn_operational: bool,
+    profile: BuildingProfile,
 ) {
     // Position at center of footprint
     let center_x = anchor_pos.x as f32 + (footprint_width as f32 - 1.0) * 0.5;
@@ -27,7 +28,7 @@ pub fn spawn_building_entity(
     // Building component — spawn sites only place the sim entity.
     let tf = Transform::from_translation(Vec3::new(world.x, world.y, layer::BUILDING));
 
-    let level = 1; // Start at level 1
+    let level = profile.density.levels().0;
     let area = (footprint_width as u32) * (footprint_length as u32);
     let construction_days = Building::calculate_construction_days(kind, level, area);
 
@@ -36,6 +37,8 @@ pub fn spawn_building_entity(
     let num_spots = (area / 9).max(1) as usize;
     let parking_spots =
         calculate_parking_spots(anchor_pos, footprint_width, footprint_length, num_spots);
+
+    let (capacity_residents, capacity_jobs) = profile_capacity(kind, level, area, profile);
 
     let phase = if spawn_operational {
         BuildingPhase::Operational
@@ -54,14 +57,15 @@ pub fn spawn_building_entity(
             level,
             phase,
             construction_start_day: city.day,
-            capacity_residents: kind.capacity_residents_for_level_area(level, area),
-            capacity_jobs: kind.capacity_jobs_for_level_area(level, area),
+            capacity_residents,
+            capacity_jobs,
             occupancy_residents: 0,
             occupancy_jobs: 0,
             target_occupancy_residents: 0,
             target_occupancy_jobs: 0,
             parking_spots,
         },
+        profile,
         tf,
     ));
 }

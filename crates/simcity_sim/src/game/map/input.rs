@@ -287,7 +287,11 @@ pub(super) fn cursor_paint_to_command(
                 ToolMode::Commercial => ZoneKind::Commercial,
                 _ => ZoneKind::Industrial,
             };
-            out.write(GameCommand::SetZone { pos: tile, zone });
+            out.write(GameCommand::SetZone {
+                pos: tile,
+                zone,
+                density: p.ui_state.zone_density,
+            });
         }
         ToolMode::FireStation
         | ToolMode::PoliceStation

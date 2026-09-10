@@ -200,7 +200,7 @@ pub(crate) fn apply_game_commands_to_grid(
                 // B) Transport: bump road graph version when road topology changes.
                 graph_version.bump();
             }
-            GameCommand::SetZone { pos, zone } => {
+            GameCommand::SetZone { pos, zone, density } => {
                 let Some(idx) = grid.idx(pos) else {
                     continue;
                 };
@@ -211,7 +211,7 @@ pub(crate) fn apply_game_commands_to_grid(
                     continue;
                 }
 
-                if cell.zone == zone {
+                if cell.zone == zone && cell.density == density {
                     continue;
                 }
 
@@ -223,10 +223,13 @@ pub(crate) fn apply_game_commands_to_grid(
                     pos,
                     old: old_zone,
                     new: zone,
+                    old_density: cell.density,
+                    new_density: density,
                 });
 
                 // Zones are free to place (zoning is just marking land for development).
                 cell.zone = zone;
+                cell.density = density;
                 // Zoning edits clear any existing building on tile for simplicity.
                 cell.building = None;
                 grid.set(pos, cell);
@@ -585,15 +588,17 @@ fn restore_zone_cell(
     map_edit_version: &mut MapEditVersion,
     pos: TilePos,
     zone: ZoneKind,
+    density: crate::game::map::ZoneDensity,
 ) {
     let Some(idx) = grid.idx(pos) else {
         return;
     };
     let mut cell = grid.get(pos).unwrap_or_default();
-    if cell.zone == zone {
+    if cell.zone == zone && cell.density == density {
         return;
     }
     cell.zone = zone;
+    cell.density = density;
     grid.set(pos, cell);
     dirty.mark(idx);
     map_edit_version.bump();
@@ -631,10 +636,20 @@ fn apply_history_entry(
                 road,
             );
         }
-        UndoableCommand::SetZone { pos, old, new } => {
-            let zone = if forward { *new } else { *old };
+        UndoableCommand::SetZone {
+            pos,
+            old,
+            new,
+            old_density,
+            new_density,
+        } => {
+            let (zone, density) = if forward {
+                (*new, *new_density)
+            } else {
+                (*old, *old_density)
+            };
             clear_building_at(commands, grid, dirty, q_buildings, *pos);
-            restore_zone_cell(grid, dirty, map_edit_version, *pos, zone);
+            restore_zone_cell(grid, dirty, map_edit_version, *pos, zone, density);
         }
         UndoableCommand::PlaceBuilding {
             pos,
@@ -717,7 +732,9 @@ fn apply_history_entry(
                     *pos,
                     *old_road,
                 );
-                restore_zone_cell(grid, dirty, map_edit_version, *pos, *old_zone);
+                // Erasing clears the zone but leaves the tile density, so undo keeps it.
+                let density = grid.get(*pos).map(|cell| cell.density).unwrap_or_default();
+                restore_zone_cell(grid, dirty, map_edit_version, *pos, *old_zone, density);
                 if let Some(b) = old_building {
                     // A different building may have (re)grown over parts of the
                     // old footprint since the erase — whole-erase it first so

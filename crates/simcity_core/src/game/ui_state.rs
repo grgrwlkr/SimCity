@@ -15,6 +15,8 @@ pub struct UiState {
     pub sim_speed: SimSpeed,
     /// One-way road mode (when Road tool is selected)
     pub one_way_mode: bool,
+    /// The density the zone tools paint.
+    pub zone_density: crate::game::map::ZoneDensity,
 }
 
 impl Default for UiState {
@@ -25,6 +27,7 @@ impl Default for UiState {
             overlay: OverlayMode::None,
             sim_speed: SimSpeed::X3,
             one_way_mode: false,
+            zone_density: crate::game::map::ZoneDensity::Medium,
         }
     }
 }

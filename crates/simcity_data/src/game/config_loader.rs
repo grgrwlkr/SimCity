@@ -70,7 +70,7 @@ mod tests {
 
     use super::*;
     use crate::game::emergencies::EmergencyStats;
-    use crate::game::map::{TileKind, TilePos, ZoneKind};
+    use crate::game::map::{TileKind, TilePos, ZoneDensity, ZoneKind};
     use crate::game::persistence_contract::{MapGridV1, MapTileV1, SaveGameV3};
     use crate::game::roads::RoadCell;
     use crate::game::scenarios::Scenario;
@@ -96,9 +96,31 @@ mod tests {
                 terrain: TileKind::Grass,
                 road: RoadCell::none(),
                 zone: ZoneKind::None,
+                density: ZoneDensity::Medium,
                 building: None,
             }],
         }
+    }
+
+    #[test]
+    fn zone_density_survives_the_save_and_an_old_save_zones_at_medium() {
+        let tile = MapTileV1 {
+            height: 0,
+            water: false,
+            terrain: TileKind::Grass,
+            road: RoadCell::none(),
+            zone: ZoneKind::Residential,
+            density: ZoneDensity::High,
+            building: None,
+        };
+        let text = ron::ser::to_string(&tile).expect("a tile serialises");
+        let back: MapTileV1 = ron::from_str(&text).expect("and parses back");
+        assert_eq!(back.density, ZoneDensity::High);
+
+        let old = text.replace("density:High,", "");
+        assert_ne!(old, text, "the saved tile names its density: {text}");
+        let legacy: MapTileV1 = ron::from_str(&old).expect("a tile saved before densities parses");
+        assert_eq!(legacy.density, ZoneDensity::Medium);
     }
 
     #[test]
@@ -138,6 +160,7 @@ mod tests {
             terrain: TileKind::Grass,
             road: four_lane,
             zone: ZoneKind::None,
+            density: ZoneDensity::Medium,
             building: None,
         });
 

@@ -560,6 +560,7 @@ pub fn generate_test_city(
                         kind,
                         city,
                         true,
+                        simcity_sim::game::buildings::BuildingProfile::default(),
                     );
                     return true;
                 }

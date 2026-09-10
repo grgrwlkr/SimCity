@@ -2,7 +2,7 @@ use bevy::prelude::*;
 
 use crate::game::roads::RoadCell;
 
-use super::{BuildingKind, TileKind, TilePos, ZoneKind};
+use super::{BuildingKind, TileKind, TilePos, ZoneDensity, ZoneKind};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MapCell {
@@ -12,6 +12,8 @@ pub struct MapCell {
     pub terrain: TileKind,
     pub road: RoadCell,
     pub zone: ZoneKind,
+    /// How densely the zone on this tile builds.
+    pub density: ZoneDensity,
     pub building: Option<BuildingKind>,
 }
 
@@ -37,6 +39,7 @@ impl MapGrid {
                     terrain: TileKind::Grass,
                     road: RoadCell::none(),
                     zone: ZoneKind::None,
+                    density: ZoneDensity::Medium,
                     building: None,
                 };
                 len

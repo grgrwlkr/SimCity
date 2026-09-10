@@ -9,7 +9,7 @@ use crate::game::notifications::{NotificationKind, Notifications};
 use crate::game::sim_events::DayAdvanced;
 use crate::game::utilities::{UtilityKind, UtilityNetwork};
 
-use super::components::Building;
+use super::components::{Building, BuildingProfile};
 use super::zone_depth::{MAX_ZONE_DEPTH, is_within_zone_depth};
 
 /// A reason growth or an upgrade is held back.
@@ -93,6 +93,7 @@ pub fn growth_blockers(
 /// The first thing keeping `building` from its next level; `None` when it may rise.
 pub fn upgrade_blocker(
     building: &Building,
+    profile: &BuildingProfile,
     grid: &MapGrid,
     network: &UtilityNetwork,
     demand: &RciDemand,
@@ -103,7 +104,7 @@ pub fn upgrade_blocker(
     ) {
         return Some(GrowthBlocker::NotZoned);
     }
-    if building.level >= 3 {
+    if building.level >= profile.density.levels().1 {
         return Some(GrowthBlocker::TopLevel);
     }
     let supplied = |kind| {
@@ -223,10 +224,11 @@ mod tests {
     use bevy::prelude::*;
 
     use super::*;
+    use crate::game::buildings::profile_capacity;
     use crate::game::buildings::{
         BuildingGrowthRng, BuildingPhase, grow_buildings, update_occupancy,
     };
-    use crate::game::map::{DirtyTiles, MapConfig, ZoneKind};
+    use crate::game::map::{DirtyTiles, MapConfig, ZoneDensity, ZoneKind};
     use crate::game::roads::{LaneType, RoadCell, RoadDir, RoadFlow, RoadKind};
     use crate::game::sim::City;
     use crate::game::sim_events::{DayAdvanced, HourAdvanced};
@@ -538,32 +540,146 @@ mod tests {
     }
 
     #[test]
+    fn zone_density_sets_footprint_levels_capacity_and_height() {
+        assert_eq!(ZoneDensity::Low.footprint_sides(), (3, 4));
+        assert_eq!(ZoneDensity::Medium.footprint_sides(), (3, 6));
+        assert_eq!(ZoneDensity::High.footprint_sides(), (4, 6));
+        assert_eq!(ZoneDensity::Low.levels(), (1, 2));
+        assert_eq!(ZoneDensity::Medium.levels(), (1, 3));
+        assert_eq!(ZoneDensity::High.levels(), (2, 3));
+
+        let profile = |density| BuildingProfile {
+            density,
+            ..BuildingProfile::default()
+        };
+        let homes = |density| profile_capacity(BuildingKind::Residential, 2, 16, profile(density));
+        assert_eq!(
+            homes(ZoneDensity::Medium).0,
+            BuildingKind::Residential.capacity_residents_for_level_area(2, 16),
+            "Medium holds what every building held before densities"
+        );
+        assert!(
+            homes(ZoneDensity::High).0 > homes(ZoneDensity::Medium).0,
+            "{:?} against {:?}",
+            homes(ZoneDensity::High),
+            homes(ZoneDensity::Medium)
+        );
+        let shops = |density| profile_capacity(BuildingKind::Commercial, 2, 16, profile(density));
+        assert!(shops(ZoneDensity::High).1 > shops(ZoneDensity::Medium).1);
+        assert!(ZoneDensity::High.height_factor() > ZoneDensity::Medium.height_factor());
+        assert!(ZoneDensity::Medium.height_factor() > ZoneDensity::Low.height_factor());
+    }
+
+    /// Roads along y = 2 and y = 9 with a residential zone of `density` between them and a plant.
+    fn two_road_block(density: ZoneDensity) -> MapGrid {
+        let mut grid = MapGrid::new(30, 12);
+        road_row(&mut grid, 2, 0..=29);
+        road_row(&mut grid, 9, 0..=29);
+        for x in 4..=20 {
+            for y in 3..=8 {
+                let pos = TilePos { x, y };
+                let mut cell = grid.get(pos).expect("inside");
+                cell.zone = ZoneKind::Residential;
+                cell.density = density;
+                grid.set(pos, cell);
+            }
+        }
+        station(&mut grid, BuildingKind::PowerPlant, 24, 3);
+        grid
+    }
+
+    #[test]
+    fn zone_density_high_zone_grows_large_tall_buildings_and_low_zone_small_ones() {
+        for density in [ZoneDensity::Low, ZoneDensity::High] {
+            let mut app = growth_app(two_road_block(density));
+            grow_for_hours(&mut app, 48);
+            let world = app.world_mut();
+            let grown: Vec<(u8, u8, u8, BuildingProfile)> = world
+                .query::<(&Building, &BuildingProfile)>()
+                .iter(world)
+                .map(|(building, profile)| {
+                    (
+                        building.footprint_width,
+                        building.footprint_length,
+                        building.level,
+                        *profile,
+                    )
+                })
+                .collect();
+            assert!(!grown.is_empty(), "the {density:?} block grows");
+            let (shortest, longest) = density.footprint_sides();
+            let (first_level, _) = density.levels();
+            for (width, length, level, profile) in grown {
+                assert_eq!(profile.density, density);
+                assert!(
+                    width.min(length) >= shortest && width.max(length) <= longest,
+                    "{density:?} grew {width}x{length}"
+                );
+                assert_eq!(
+                    level, first_level,
+                    "a new {density:?} building starts at {first_level}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn utility_network_building_without_water_stays_at_level_one() {
         let mut grid = block();
         let dark = network(&grid);
         assert_eq!(
-            upgrade_blocker(&house(1), &grid, &dark, &demand(0.5)),
+            upgrade_blocker(
+                &house(1),
+                &BuildingProfile::default(),
+                &grid,
+                &dark,
+                &demand(0.5)
+            ),
             Some(GrowthBlocker::NoPower)
         );
 
         station(&mut grid, BuildingKind::PowerPlant, 16, 3);
         assert_eq!(
-            upgrade_blocker(&house(1), &grid, &network(&grid), &demand(0.5)),
+            upgrade_blocker(
+                &house(1),
+                &BuildingProfile::default(),
+                &grid,
+                &network(&grid),
+                &demand(0.5)
+            ),
             Some(GrowthBlocker::NoWater)
         );
 
         station(&mut grid, BuildingKind::WaterPump, 20, 3);
         let supplied = network(&grid);
         assert_eq!(
-            upgrade_blocker(&house(1), &grid, &supplied, &demand(0.5)),
+            upgrade_blocker(
+                &house(1),
+                &BuildingProfile::default(),
+                &grid,
+                &supplied,
+                &demand(0.5)
+            ),
             None
         );
         assert_eq!(
-            upgrade_blocker(&house(1), &grid, &supplied, &demand(0.1)),
+            upgrade_blocker(
+                &house(1),
+                &BuildingProfile::default(),
+                &grid,
+                &supplied,
+                &demand(0.1)
+            ),
             Some(GrowthBlocker::NoDemand)
         );
         assert_eq!(
-            upgrade_blocker(&house(3), &grid, &supplied, &demand(0.5)),
+            upgrade_blocker(
+                &house(3),
+                &BuildingProfile::default(),
+                &grid,
+                &supplied,
+                &demand(0.5)
+            ),
             Some(GrowthBlocker::TopLevel)
         );
     }

@@ -416,6 +416,8 @@ mod tests {
                     pos: map::TilePos { x: 1, y: 1 },
                     old: map::ZoneKind::None,
                     new: map::ZoneKind::Residential,
+                    old_density: map::ZoneDensity::Medium,
+                    new_density: map::ZoneDensity::Medium,
                 });
             }
             let _ = history.undo();

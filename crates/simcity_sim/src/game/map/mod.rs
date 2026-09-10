@@ -9,7 +9,7 @@ use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 
 mod types;
-pub use types::{BuildingKind, HoveredTile, MapConfig, TileKind, TilePos, ZoneKind};
+pub use types::{BuildingKind, HoveredTile, MapConfig, TileKind, TilePos, ZoneDensity, ZoneKind};
 
 mod grid;
 pub use grid::{MapCell, MapGrid, MapSeed};

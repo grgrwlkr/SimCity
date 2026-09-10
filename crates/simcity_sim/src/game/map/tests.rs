@@ -367,6 +367,7 @@ fn undo_undo_then_redo_redo_walks_history() {
         GameCommand::SetZone {
             pos: zone_pos,
             zone: ZoneKind::Residential,
+            density: ZoneDensity::Medium,
         },
     );
     app.update();
@@ -503,6 +504,7 @@ fn undo_place_building_clears_footprint_and_restores_zones() {
         GameCommand::SetZone {
             pos: TilePos { x: 2, y: 2 },
             zone: ZoneKind::Residential,
+            density: ZoneDensity::Medium,
         },
     );
     app.update();
@@ -695,6 +697,7 @@ fn undo_set_zone_under_grown_building_clears_whole_footprint() {
         GameCommand::SetZone {
             pos: anchor,
             zone: ZoneKind::Residential,
+            density: ZoneDensity::Medium,
         },
     );
     app.update();
@@ -1650,5 +1653,71 @@ fn budget_report_building_a_road_is_a_construction_line() {
             .get(BudgetItem::Construction),
         -spent,
         "what the road cost is a construction line of the month"
+    );
+}
+
+#[test]
+fn zone_density_zone_command_paints_density_and_undo_restores_it() {
+    let mut app = build_command_apply_app(8, 8);
+    send_command(
+        &mut app,
+        GameCommand::SetRoad {
+            pos: TilePos { x: 1, y: 1 },
+            road: road_cell(RoadKind::TwoLane),
+        },
+    );
+    app.update();
+    let zone_pos = TilePos { x: 2, y: 1 };
+    let cell_at = |app: &App| {
+        app.world()
+            .resource::<MapGrid>()
+            .get(zone_pos)
+            .expect("inside")
+    };
+
+    send_command(
+        &mut app,
+        GameCommand::SetZone {
+            pos: zone_pos,
+            zone: ZoneKind::Residential,
+            density: ZoneDensity::High,
+        },
+    );
+    app.update();
+    let cell = cell_at(&app);
+    assert_eq!(
+        (cell.zone, cell.density),
+        (ZoneKind::Residential, ZoneDensity::High)
+    );
+
+    send_command(
+        &mut app,
+        GameCommand::SetZone {
+            pos: zone_pos,
+            zone: ZoneKind::Residential,
+            density: ZoneDensity::Low,
+        },
+    );
+    app.update();
+    assert_eq!(
+        cell_at(&app).density,
+        ZoneDensity::Low,
+        "the same zone at another density is an edit"
+    );
+
+    request_undo_redo(&mut app, false);
+    app.update();
+    assert_eq!(
+        cell_at(&app).density,
+        ZoneDensity::High,
+        "undo restores the density it replaced"
+    );
+
+    request_undo_redo(&mut app, false);
+    app.update();
+    let cell = cell_at(&app);
+    assert_eq!(
+        (cell.zone, cell.density),
+        (ZoneKind::None, ZoneDensity::Medium)
     );
 }

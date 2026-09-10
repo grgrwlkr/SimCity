@@ -1,0 +1,54 @@
+app frames 7571; every figure is per app frame over the whole trace
+  whole app update       13.542
+  main app               8.726
+  render thread schedule 10.841
+
+SIMULATION systems on Update (outside the fixed step): 0.060 ms per app frame (47 zones)
+      0.011    7570  system{name="simcity_sim::game::map::props_render::sync_props"}
+      0.005    7570  system{name="simcity_sim::game::intersections::render::render_traffic_lights"}
+
+DEV SNAPSHOT systems: 2.174 ms per app frame (18 zones)
+      1.988    7571  system{name="simcity_debug::game::debug_world::update_debug_render_snapshot"}
+      0.129    7571  system{name="simcity_debug::game::debug_world::update_debug_environment_snapshot"}
+      0.032    7571  system{name="simcity_debug::game::debug_world::update_debug_traffic_snapshot"}
+      0.006    7571  system{name="simcity_debug::game::debug_world::update_debug_lanelet_state"}
+
+MOVING ENTITIES, main-thread systems: 0.868 ms per app frame (8 zones)
+      0.554    7571  system{name="bevy_camera::visibility::check_visibility_cpu_culling"}
+      0.100    7572  system{name="bevy_transform::systems::mark_dirty_trees"}
+      0.083    7571  system{name="bevy_camera::visibility::calculate_bounds"}
+      0.060    7571  system{name="bevy_camera::visibility::visibility_propagate_system"}
+      0.036    7572  system{name="bevy_transform::systems::sync_simple_transforms"}
+      0.032    7572  system{name="bevy_transform::systems::parallel::propagate_parent_transforms"}
+
+MOVING ENTITIES, worker-thread par_for_each (CPU time, nested in the systems above): 1.964 ms per app frame (9 zones)
+      0.785   52988  par_for_each{query="(bevy_ecs::entity::Entity, &bevy_camera::visibility::InheritedVisibility, &mut bevy_camera
+      0.629   37840  par_for_each{query="(bevy_ecs::entity::Entity, &bevy_camera::visibility::InheritedVisibility, core::option::Op
+      0.284   52986  par_for_each{query="(bevy_ecs::entity::Entity, &bevy_camera::visibility::ViewVisibility, &bevy_transform::comp
+      0.095   53008  par_for_each{query="bevy_ecs::entity::Entity" filter="bevy_ecs::query::filter::Or<(bevy_ecs::query::filter::Ch
+      0.085   52979  par_for_each{query="(&bevy_mesh::components::Mesh3d, &mut bevy_camera::primitives::Aabb)" filter="(bevy_ecs::q
+      0.031   52972  par_for_each{query="(bevy_ecs::change_detection::params::Ref<'_, bevy_transform::components::global_transform:
+      0.030  105993  par_for_each{query="&mut bevy_camera::visibility::ViewVisibility" filter="bevy_ecs::query::filter::Without<bev
+      0.017   51265  par_for_each{query="(&bevy_transform::components::transform::Transform, &mut bevy_transform::components::globa
+      0.009   73426  par_for_each{query="(bevy_ecs::entity::Entity, bevy_ecs::change_detection::params::Ref<'_, bevy_transform::com
+
+EXTRACTION systems (nested in ExtractSchedule, shown for the breakdown only): 0.696 ms per app frame (116 zones)
+      0.190    7571  system{name="bevy_pbr::render::mesh::extract_meshes_for_gpu_building"}
+      0.092    7571  system{name="bevy_render::extract_plugin::apply_extract_commands"}
+      0.076    7571  system{name="bevy_render::camera::extract_cameras"}
+      0.072    7571  system{name="bevy_pbr::material::extract_mesh_materials<bevy_pbr::pbr_material::StandardMaterial>"}
+      0.051    7571  system{name="bevy_pbr::render::light::extract_lights"}
+      0.023    7571  system{name="bevy_pbr::render::light::extract_shadow_lod_origin"}
+      0.014    7571  system{name="bevy_pbr::material::extract_entities_needs_specialization<bevy_pbr::pbr_material::StandardMateria
+      0.010    7571  system{name="bevy_anti_alias::taa::extract_taa_settings"}
+      0.010    7571  system{name="bevy_egui::render::extract_egui_camera_view_system"}
+      0.009    7571  system{name="bevy_ui_render::extract_text_sections"}
+      0.008    7571  system{name="bevy_ui_render::extract_uinode_background_colors"}
+      0.008    7571  system{name="bevy_pbr::cluster::gpu::extract_clusters_for_gpu_clustering"}
+      0.007    7571  system{name="bevy_ui_render::extract_uinode_borders"}
+
+SUMMARY, main-thread wall time per app frame
+  simulation       2.463  (fixed step 2.403 + Update 0.060)
+  dev snapshots    2.174
+  moving entities  1.421  (visibility and transforms 0.868 + ExtractSchedule 0.553)
+  plus worker CPU  1.964  on moving-entity visibility queries

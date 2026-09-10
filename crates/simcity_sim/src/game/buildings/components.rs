@@ -13,7 +13,36 @@ pub enum BuildingPhase {
     Operational,
 }
 
+/// The density a building grew in and the wealth class of its people (B2), fixed when it spawns.
+#[derive(
+    Component, Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
+pub struct BuildingProfile {
+    pub density: crate::game::map::ZoneDensity,
+    pub class: crate::game::economy::WealthClass,
+}
+
+/// Residents and jobs a building of this kind, level, footprint area and profile holds.
+pub fn profile_capacity(
+    kind: crate::game::map::BuildingKind,
+    level: u8,
+    area: u32,
+    profile: BuildingProfile,
+) -> (u16, u16) {
+    let factor = profile.density.capacity_factor();
+    let scale = |base: u16| {
+        (f32::from(base) * factor)
+            .round()
+            .clamp(0.0, f32::from(u16::MAX)) as u16
+    };
+    (
+        scale(kind.capacity_residents_for_level_area(level, area)),
+        scale(kind.capacity_jobs_for_level_area(level, area)),
+    )
+}
+
 #[derive(Component, Debug, Clone)]
+#[require(BuildingProfile)]
 pub struct Building {
     pub kind: crate::game::map::BuildingKind,
     /// Anchor position (top-left corner of the footprint)
