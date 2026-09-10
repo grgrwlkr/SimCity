@@ -150,14 +150,8 @@ pub fn grow_buildings(mut p: GrowBuildingsParams) {
 
         // Emit notification
         if let Some(ref mut notif) = p.notifications {
-            let kind_name = match kind {
-                BuildingKind::Residential => "Residential",
-                BuildingKind::Commercial => "Commercial",
-                BuildingKind::Industrial => "Industrial",
-                _ => "Building",
-            };
             notif.add_at(
-                format!("New {} building constructed", kind_name),
+                construction_notice(kind),
                 NotificationKind::Info,
                 3.0,
                 footprint.anchor,
@@ -544,6 +538,25 @@ pub fn reset_growth_rng_on_new_map(
     for cmd in reader.read() {
         if matches!(cmd, crate::game::commands::GameCommand::GenerateMap { .. }) {
             rng.rng = StdRng::seed_from_u64(seed.0);
+        }
+    }
+}
+
+/// The feed line for a new building, one line for every zone.
+pub(crate) fn construction_notice(_kind: BuildingKind) -> String {
+    "New building constructed".to_string()
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::*;
+
+    #[test]
+    fn notification_dedup_every_construction_is_the_same_line() {
+        let line = construction_notice(BuildingKind::Residential);
+        assert!(!line.is_empty());
+        for kind in [BuildingKind::Commercial, BuildingKind::Industrial] {
+            assert_eq!(construction_notice(kind), line, "{kind:?}");
         }
     }
 }

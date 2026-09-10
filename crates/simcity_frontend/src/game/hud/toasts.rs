@@ -92,7 +92,6 @@ pub fn update_toast_feed(
                     Button,
                     Node {
                         align_items: AlignItems::Center,
-                        max_width: Val::Px(360.0),
                         padding: UiRect::new(
                             space.px(3.0),
                             space.px(3.0),
@@ -109,6 +108,8 @@ pub fn update_toast_feed(
                 .with_child((
                     Text::new(toast_label(&line.text, line.count)),
                     text_style(theme.type_scale.body, theme.palette.ink),
+                    // One line of the feed is one line on screen.
+                    TextLayout::no_wrap(),
                 ))
                 .id();
             commands.entity(feed).add_child(toast);
@@ -305,6 +306,36 @@ mod tests {
                 .count(),
             1,
             "a shown line is a button a click can activate"
+        );
+    }
+
+    #[test]
+    fn ui_shell_a_toast_stays_on_one_line() {
+        let mut app = feed_app();
+        notify(&mut app, "New building constructed", 71);
+        app.update();
+        let lines = shown(&mut app);
+        assert_eq!(lines.len(), 1);
+        let world = app.world_mut();
+        let toast = lines[0].0;
+        assert_eq!(
+            world.get::<Node>(toast).map(|node| node.max_width),
+            Some(Val::Auto),
+            "a width cap is what folded a counted line in two"
+        );
+        let children: Vec<Entity> = world
+            .get::<Children>(toast)
+            .map(|children| children.iter().collect())
+            .unwrap_or_default();
+        let layouts: Vec<bevy::text::LineBreak> = children
+            .iter()
+            .filter_map(|child| world.get::<TextLayout>(*child))
+            .map(|layout| layout.linebreak)
+            .collect();
+        assert_eq!(
+            layouts,
+            vec![bevy::text::LineBreak::NoWrap],
+            "the line's text never wraps"
         );
     }
 }
