@@ -10,6 +10,7 @@ use simcity_core::game::sets::GameSet;
 use simcity_core::game::state::AppState;
 use simcity_core::game::ui_state::{GameUiRoot, PointerOverGameUi};
 
+pub mod data_map_panel;
 pub mod glass;
 pub mod hud_bar;
 pub mod pointer;
@@ -32,6 +33,7 @@ impl Plugin for HudPlugin {
             .add_observer(hud_bar::on_speed_button)
             .add_observer(tool_palette::on_tool_button)
             .add_observer(toasts::on_toast)
+            .add_observer(data_map_panel::on_overlay_button)
             .add_systems(Startup, spawn_game_ui)
             // Straight after hover is computed, so every consumer of the frame reads it fresh.
             .add_systems(
@@ -46,6 +48,11 @@ impl Plugin for HudPlugin {
                     toasts::update_toast_feed,
                     tile_tooltip::update_tile_tooltip,
                     tile_tooltip::place_tile_tooltip,
+                    (
+                        data_map_panel::update_data_map_panel,
+                        data_map_panel::update_overlay_reading,
+                    )
+                        .chain(),
                     show_game_ui_in_game,
                 )
                     .in_set(GameSet::Ui),
@@ -60,6 +67,7 @@ fn spawn_game_ui(
 ) {
     let glass = materials.add(glass::GlassMaterial::from_theme(&theme));
     hud_bar::spawn_hud_bar(&mut commands, &theme, glass.clone());
+    data_map_panel::spawn_data_map_panel(&mut commands, &theme, glass.clone());
     tool_palette::spawn_tool_palette(&mut commands, &theme, glass);
     toasts::spawn_toast_feed(&mut commands, &theme);
     tile_tooltip::spawn_tile_tooltip(&mut commands, &theme);
