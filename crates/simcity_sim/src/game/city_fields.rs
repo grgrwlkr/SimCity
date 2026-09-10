@@ -7,12 +7,16 @@
 //! - education decides whether a workplace may take the high class;
 //! - attractiveness decides where a zone may grow.
 //!
-//! Recomputed a chunk of tiles per tick, like land value, from service coverage, utilities,
-//! pollution, land value, unemployment and the homes nearby.
+//! Recomputed a chunk of tiles per tick, like land value, from service coverage, the reach of
+//! schools, universities and parks, utilities, pollution, land value, unemployment and the homes
+//! nearby.
 
 use bevy::prelude::*;
 
 use crate::game::buildings::{Building, BuildingProfile, block_has};
+use crate::game::civic_coverage::{
+    CivicCoverage, CivicKind, PARK_HEALTH, SCHOOL_EDUCATION, UNIVERSITY_EDUCATION,
+};
 use crate::game::economy::WealthClass;
 use crate::game::employment::EmploymentStats;
 use crate::game::land_value::LandValueIndex;
@@ -224,6 +228,10 @@ pub struct TileInputs {
     pub land_value: f32,
     /// The city's share of workers without a job.
     pub unemployment: f32,
+    /// How strongly a school, a university and a park reach the tile, each 0..1.
+    pub school: f32,
+    pub university: f32,
+    pub park: f32,
 }
 
 /// A home as education sees it.
@@ -258,13 +266,14 @@ pub fn fire_hazard(inputs: &TileInputs) -> f32 {
     .clamp(0.0, 1.0)
 }
 
-/// Health: a hospital's cover and garbage collection raise it, pollution takes it away.
+/// Health: a hospital's cover, garbage collection and a park raise it, pollution takes it away.
 pub fn health(inputs: &TileInputs) -> f32 {
-    (0.45 + 0.3 * flag(inputs.medical) + 0.15 * flag(inputs.garbage) - 0.5 * inputs.pollution)
+    (0.45 + 0.3 * flag(inputs.medical) + 0.15 * flag(inputs.garbage) + PARK_HEALTH * inputs.park
+        - 0.5 * inputs.pollution)
         .clamp(0.0, 1.0)
 }
 
-/// How much schooling a class brings, until schools exist (B4).
+/// How much schooling a class brings from home.
 fn schooling(class: WealthClass) -> f32 {
     match class {
         WealthClass::Low => 0.0,
@@ -293,6 +302,13 @@ pub fn education(tile: TilePos, homes: &[Home]) -> f32 {
     } else {
         0.0
     }
+}
+
+/// Education with schools: what the homes around bring, plus what the schools and universities
+/// reaching the tile teach.
+pub fn education_with_schools(from_homes: f32, inputs: &TileInputs) -> f32 {
+    (from_homes + SCHOOL_EDUCATION * inputs.school + UNIVERSITY_EDUCATION * inputs.university)
+        .clamp(0.0, 1.0)
 }
 
 /// Attractiveness: what a place is worth, less its crime and pollution, plus its health and
@@ -356,9 +372,10 @@ impl Plugin for CityFieldsPlugin {
 
 /// Recompute one chunk of tiles.
 #[allow(clippy::too_many_arguments)]
-fn compute_city_fields(
+pub(crate) fn compute_city_fields(
     grid: Res<MapGrid>,
     coverage: Option<Res<ServiceCoverageIndex>>,
+    civic: Option<Res<CivicCoverage>>,
     network: Option<Res<UtilityNetwork>>,
     pollution: Option<Res<PollutionIndex>>,
     land_value: Option<Res<LandValueIndex>>,
@@ -376,6 +393,7 @@ fn compute_city_fields(
 
     // An index not yet laid over this map is left out rather than read as a measurement.
     let coverage = coverage.as_deref().filter(|c| c.coverage_map.len() == len);
+    let civic = civic.as_deref().filter(|civic| civic.covers(len));
     let network = network.as_deref().filter(|n| n.served.len() == len);
     let pollution = pollution.as_deref().filter(|p| p.pollution.len() == len);
     let land_value = land_value.as_deref().filter(|lv| lv.values.len() == len);
@@ -424,10 +442,13 @@ fn compute_city_fields(
             pollution: pollution.map_or(0.0, |p| p.get(idx)),
             land_value: land_value.map_or(0.5, |lv| lv.get(idx)),
             unemployment,
+            school: civic.map_or(0.0, |civic| civic.get(CivicKind::School, idx)),
+            university: civic.map_or(0.0, |civic| civic.get(CivicKind::University, idx)),
+            park: civic.map_or(0.0, |civic| civic.get(CivicKind::Park, idx)),
         };
         let crime_level = crime(&inputs);
         let health_level = health(&inputs);
-        let education_level = education(tile, &homes);
+        let education_level = education_with_schools(education(tile, &homes), &inputs);
         let values = [
             crime_level,
             fire_hazard(&inputs),

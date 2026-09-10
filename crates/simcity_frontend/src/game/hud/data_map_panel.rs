@@ -309,6 +309,7 @@ pub fn update_overlay_reading(
     coverage: Option<Res<ServiceCoverageIndex>>,
     utilities: Option<Res<simcity_sim::game::utilities::UtilityNetwork>>,
     fields: Option<Res<simcity_sim::game::city_fields::CityFields>>,
+    civic: Option<Res<simcity_sim::game::civic_coverage::CivicCoverage>>,
     mut readings: Query<(&mut Text, &mut Node), With<OverlayReadingText>>,
 ) {
     let shown = legend_for(ui.overlay).map(|_| match hovered.tile {
@@ -322,6 +323,7 @@ pub fn update_overlay_reading(
                 coverage: coverage.as_deref(),
                 utilities: utilities.as_deref(),
                 fields: fields.as_deref(),
+                civic: civic.as_deref(),
             };
             overlay_reading(ui.overlay, tile, &inputs).unwrap_or_else(|| "Off the map".to_string())
         }

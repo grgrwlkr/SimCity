@@ -7,6 +7,7 @@
 use bevy::prelude::*;
 
 use crate::game::city_fields::{CityField, CityFields};
+use crate::game::civic_coverage::{CivicCoverage, CivicKind};
 use crate::game::land_value::LandValueIndex;
 use crate::game::pollution::PollutionIndex;
 use crate::game::services::ServiceCoverageIndex;
@@ -210,6 +211,9 @@ pub fn legend_for(mode: OverlayMode) -> Option<Legend> {
             ("Fire", Color::srgb(0.9, 0.0, 0.0)),
             ("Police", Color::srgb(0.0, 0.0, 0.9)),
             ("Medical", Color::srgb(0.0, 0.8, 0.0)),
+            ("School", CivicKind::School.color()),
+            ("University", CivicKind::University.color()),
+            ("Park", CivicKind::Park.color()),
             ("Zone without cover", Color::srgb(0.9, 0.1, 0.1)),
         ])),
     }
@@ -224,6 +228,7 @@ pub struct DataMapInputs<'a> {
     pub coverage: Option<&'a ServiceCoverageIndex>,
     pub utilities: Option<&'a UtilityNetwork>,
     pub fields: Option<&'a CityFields>,
+    pub civic: Option<&'a CivicCoverage>,
 }
 
 /// The value `mode` shows at `tile`, in words and numbers.
@@ -310,25 +315,39 @@ pub fn overlay_reading(mode: OverlayMode, tile: TilePos, inputs: &DataMapInputs)
             ZoneKind::Industrial => "Industrial zone",
         }
         .to_string(),
-        OverlayMode::ServiceCoverage => match inputs.coverage {
-            Some(coverage) => {
-                let services: Vec<&str> = [
-                    (ServiceCoverageIndex::MASK_FIRE, "fire"),
-                    (ServiceCoverageIndex::MASK_POLICE, "police"),
-                    (ServiceCoverageIndex::MASK_MEDICAL, "medical"),
-                ]
-                .into_iter()
-                .filter(|(mask, _)| coverage.is_covered(idx, *mask))
-                .map(|(_, name)| name)
-                .collect();
+        OverlayMode::ServiceCoverage => {
+            let civic = inputs.civic.filter(|civic| civic.covers(grid.len()));
+            if inputs.coverage.is_none() && civic.is_none() {
+                "Coverage not computed yet".to_string()
+            } else {
+                let mut services: Vec<String> = Vec::new();
+                if let Some(coverage) = inputs.coverage {
+                    for (mask, name) in [
+                        (ServiceCoverageIndex::MASK_FIRE, "fire"),
+                        (ServiceCoverageIndex::MASK_POLICE, "police"),
+                        (ServiceCoverageIndex::MASK_MEDICAL, "medical"),
+                    ] {
+                        if coverage.is_covered(idx, mask) {
+                            services.push(name.to_string());
+                        }
+                    }
+                }
+                // A crowded school reaches with less than its full strength, and says how much.
+                for kind in CivicKind::ALL {
+                    let strength = civic.map_or(0.0, |civic| civic.get(kind, idx));
+                    if strength >= 1.0 {
+                        services.push(kind.name().to_string());
+                    } else if strength > 0.0 {
+                        services.push(format!("{} at {}%", kind.name(), percent(strength)));
+                    }
+                }
                 if services.is_empty() {
                     "No service coverage".to_string()
                 } else {
                     format!("Covered by {}", services.join(", "))
                 }
             }
-            None => "Coverage not computed yet".to_string(),
-        },
+        }
     };
     Some(reading)
 }
@@ -391,6 +410,44 @@ mod tests {
         };
         assert_eq!(stops.first(), Some(&height_color(0)));
         assert_eq!(stops.last(), Some(&height_color(255)));
+    }
+
+    /// The service map names schools, universities and parks beside the stations, and how
+    /// strongly they reach where they are crowded.
+    #[test]
+    fn service_building_coverage_overlay_names_schools_universities_and_parks() {
+        use crate::game::civic_coverage::CivicKind;
+
+        let Some(Legend::Swatches(swatches)) = legend_for(OverlayMode::ServiceCoverage) else {
+            panic!("service coverage is categories");
+        };
+        for label in ["School", "University", "Park"] {
+            assert!(
+                swatches.iter().any(|(name, _)| *name == label),
+                "{label} is missing from {swatches:?}"
+            );
+        }
+
+        let grid = MapGrid::new(4, 1);
+        let mut civic = CivicCoverage::default();
+        civic.lay_over(grid.len());
+        civic.set(CivicKind::School, 0, 1.0);
+        civic.set(CivicKind::Park, 0, 1.0);
+        civic.set(CivicKind::School, 1, 0.5);
+        let inputs = DataMapInputs {
+            grid: &grid,
+            land_value: None,
+            pollution: None,
+            traffic: None,
+            coverage: None,
+            utilities: None,
+            fields: None,
+            civic: Some(&civic),
+        };
+        let read = |x| overlay_reading(OverlayMode::ServiceCoverage, TilePos { x, y: 0 }, &inputs);
+        assert_eq!(read(0).as_deref(), Some("Covered by school, park"));
+        assert_eq!(read(1).as_deref(), Some("Covered by school at 50%"));
+        assert_eq!(read(2).as_deref(), Some("No service coverage"));
     }
 
     #[test]
@@ -491,6 +548,7 @@ mod tests {
             coverage: Some(&coverage),
             utilities: None,
             fields: None,
+            civic: None,
         };
         let read = |mode, tile| overlay_reading(mode, tile, &inputs);
 
@@ -551,6 +609,7 @@ mod tests {
             coverage: None,
             utilities: None,
             fields: None,
+            civic: None,
         };
         assert_eq!(
             overlay_reading(OverlayMode::LandValue, at(4, 4), &blind).as_deref(),
@@ -585,6 +644,7 @@ mod tests {
             coverage: None,
             utilities: Some(&network),
             fields: None,
+            civic: None,
         };
 
         for (mode, kind, label, supplied, missing) in [
@@ -661,6 +721,7 @@ mod tests {
             coverage: None,
             utilities: None,
             fields: None,
+            civic: None,
         };
         assert_eq!(
             overlay_reading(OverlayMode::Power, at(2, 2), &blind).as_deref(),
@@ -711,6 +772,7 @@ mod tests {
             coverage: None,
             utilities: None,
             fields: Some(&fields),
+            civic: None,
         };
         let blind = DataMapInputs {
             grid: &grid,
@@ -720,6 +782,7 @@ mod tests {
             coverage: None,
             utilities: None,
             fields: None,
+            civic: None,
         };
         for (mode, field, reading) in [
             (OverlayMode::Crime, CityField::Crime, "Crime 37%"),
@@ -823,6 +886,7 @@ mod tests {
             coverage: None,
             utilities: Some(&network),
             fields: None,
+            civic: None,
         };
         assert!(utility_reaches(
             &grid,

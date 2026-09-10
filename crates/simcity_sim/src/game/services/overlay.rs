@@ -4,6 +4,8 @@ use crate::game::map::{MapConfig, MapGrid, TilePos};
 use crate::game::render_primitives::{RenderPrimitives, layer};
 use crate::game::ui_state::{OverlayMode, UiState};
 
+use crate::game::civic_coverage::{CivicCoverage, CivicKind};
+
 use super::coverage::ServiceCoverageIndex;
 
 #[derive(Component, Copy, Clone)]
@@ -18,6 +20,7 @@ pub(super) struct ServiceCoverageOverlayPool {
     uncovered: Vec<Entity>,
     last_enabled: bool,
     last_version: u64,
+    last_civic_version: u64,
     last_cfg_w: i32,
     last_cfg_h: i32,
     last_tile_size: f32,
@@ -29,6 +32,7 @@ pub(super) fn render_service_coverage_overlay(
     cfg: Res<MapConfig>,
     grid: Res<MapGrid>,
     coverage: Res<ServiceCoverageIndex>,
+    civic: Option<Res<CivicCoverage>>,
     mut pool: ResMut<ServiceCoverageOverlayPool>,
     mut commands: Commands,
     mut prims: ResMut<RenderPrimitives>,
@@ -77,7 +81,12 @@ pub(super) fn render_service_coverage_overlay(
     let cfg_changed = pool.last_cfg_w != cfg.width
         || pool.last_cfg_h != cfg.height
         || (pool.last_tile_size - cfg.tile_size).abs() > f32::EPSILON;
-    let needs_update = !pool.last_enabled || pool.last_version != coverage.version || cfg_changed;
+    let civic = civic.as_deref().filter(|civic| civic.covers(grid.len()));
+    let civic_version = civic.map_or(0, |civic| civic.version);
+    let needs_update = !pool.last_enabled
+        || pool.last_version != coverage.version
+        || pool.last_civic_version != civic_version
+        || cfg_changed;
     if !needs_update {
         return;
     }
@@ -98,7 +107,7 @@ pub(super) fn render_service_coverage_overlay(
             let Some(idx) = grid.idx(pos) else { continue };
             let mask = coverage.coverage_map.get(idx).copied().unwrap_or(0);
 
-            if mask != 0 {
+            let emergency = (mask != 0).then(|| {
                 // Blend tint by active service bits.
                 let mut r: f32 = 0.0;
                 let mut g: f32 = 0.0;
@@ -122,7 +131,35 @@ pub(super) fn render_service_coverage_overlay(
                     2 => 0.08,
                     _ => 0.10,
                 };
-                tint_tiles.push((pos, Color::srgba(r.min(1.0), g.min(1.0), b.min(1.0), alpha)));
+                Color::srgba(r.min(1.0), g.min(1.0), b.min(1.0), alpha)
+            });
+            // Schools, universities and parks tint in their own colour, the strongest on the tile,
+            // fainter where a crowd weakens it.
+            let civic_tint = civic.and_then(|civic| {
+                CivicKind::ALL
+                    .into_iter()
+                    .map(|kind| (kind, civic.get(kind, idx)))
+                    .filter(|(_, strength)| *strength > 0.0)
+                    .max_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(kind, strength)| {
+                        let color = kind.color().to_srgba();
+                        Color::srgba(color.red, color.green, color.blue, 0.06 + 0.06 * strength)
+                    })
+            });
+            let tint = match (emergency, civic_tint) {
+                (Some(emergency), Some(civic)) => {
+                    let (a, b) = (emergency.to_srgba(), civic.to_srgba());
+                    Some(Color::srgba(
+                        (a.red + b.red) / 2.0,
+                        (a.green + b.green) / 2.0,
+                        (a.blue + b.blue) / 2.0,
+                        a.alpha.max(b.alpha),
+                    ))
+                }
+                (emergency, civic) => emergency.or(civic),
+            };
+            if let Some(tint) = tint {
+                tint_tiles.push((pos, tint));
             }
 
             if cell.zone != crate::game::map::ZoneKind::None && mask == 0 {
@@ -196,6 +233,7 @@ pub(super) fn render_service_coverage_overlay(
 
     pool.last_enabled = true;
     pool.last_version = coverage.version;
+    pool.last_civic_version = civic_version;
     pool.last_cfg_w = cfg.width;
     pool.last_cfg_h = cfg.height;
     pool.last_tile_size = cfg.tile_size;

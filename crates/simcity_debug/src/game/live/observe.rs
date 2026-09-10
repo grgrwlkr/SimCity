@@ -155,6 +155,7 @@ pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpR
 
     let utilities = utilities_json(world);
     let city_fields = city_fields_json(world);
+    let civic_coverage = civic_coverage_json(world);
     let buildings = buildings_json(world, region);
     let state = world
         .get_resource::<State<AppState>>()
@@ -256,6 +257,7 @@ pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpR
         "budget": budget,
         "utilities": utilities,
         "city_fields": city_fields,
+        "civic_coverage": civic_coverage,
         "buildings": buildings,
     }))
 }
@@ -315,6 +317,68 @@ fn city_fields_json(world: &World) -> Value {
         "version": fields.version,
         "covers_map": covers_map,
         "fields": summary,
+        "hovered": hovered,
+    })
+}
+
+/// Schools, universities and parks: how many tiles each kind reaches, every open one with the
+/// residents around it and the strength that leaves it, and the hovered tile's strengths.
+fn civic_coverage_json(world: &World) -> Value {
+    use simcity_sim::game::civic_coverage::{CivicCoverage, CivicKind};
+    use simcity_sim::game::map::{HoveredTile, MapGrid};
+
+    let Some(civic) = world.get_resource::<CivicCoverage>() else {
+        return json!({ "version": Value::Null, "note": "no civic coverage in this world" });
+    };
+    let grid = world.get_resource::<MapGrid>();
+    let covers_map = grid.is_some_and(|grid| civic.covers(grid.len()));
+    let covered_tiles: serde_json::Map<String, Value> = CivicKind::ALL
+        .into_iter()
+        .map(|kind| {
+            let tiles = grid.filter(|_| covers_map).map_or(0, |grid| {
+                (0..grid.len())
+                    .filter(|idx| civic.get(kind, *idx) > 0.0)
+                    .count()
+            });
+            (format!("{kind:?}"), json!(tiles))
+        })
+        .collect();
+    let sources: Vec<Value> = civic
+        .sources()
+        .iter()
+        .map(|source| {
+            json!({
+                "kind": format!("{:?}", source.kind),
+                "anchor": [source.anchor.x, source.anchor.y],
+                "capacity": source.capacity,
+                "residents": source.residents,
+                "strength": source.strength,
+            })
+        })
+        .collect();
+    let hovered = match (
+        world
+            .get_resource::<HoveredTile>()
+            .and_then(|hovered| hovered.tile),
+        grid,
+    ) {
+        (Some(tile), Some(grid)) if covers_map => {
+            let mut entry = serde_json::Map::new();
+            entry.insert("tile".to_string(), json!([tile.x, tile.y]));
+            if let Some(idx) = grid.idx(tile) {
+                for kind in CivicKind::ALL {
+                    entry.insert(format!("{kind:?}"), json!(civic.get(kind, idx)));
+                }
+            }
+            Value::Object(entry)
+        }
+        _ => Value::Null,
+    };
+    json!({
+        "version": civic.version,
+        "covers_map": covers_map,
+        "covered_tiles": covered_tiles,
+        "sources": sources,
         "hovered": hovered,
     })
 }
@@ -567,6 +631,7 @@ mod tests {
             "budget",
             "utilities",
             "city_fields",
+            "civic_coverage",
             "buildings",
         ] {
             assert!(
@@ -808,6 +873,52 @@ mod tests {
             near(&section["hovered"]["LandValue"], 0.8),
             "the hovered tile carries its land value: {section}"
         );
+    }
+
+    #[test]
+    fn service_building_civic_coverage_is_reported_so_a_school_run_can_be_judged() {
+        use simcity_sim::game::civic_coverage::{CivicCoverage, CivicKind, CivicSource};
+        use simcity_sim::game::map::{HoveredTile, MapGrid, TilePos};
+
+        let grid = MapGrid::new(4, 1);
+        let mut civic = CivicCoverage::default();
+        civic.lay_over(grid.len());
+        civic.set(CivicKind::School, 0, 1.0);
+        civic.set(CivicKind::School, 1, 0.5);
+        civic.set(CivicKind::Park, 0, 1.0);
+        civic.set_sources(vec![CivicSource {
+            kind: CivicKind::School,
+            anchor: TilePos { x: 0, y: 0 },
+            capacity: 400,
+            residents: 800,
+            strength: 0.5,
+        }]);
+        let mut world = World::new();
+        world.insert_resource(grid);
+        world.insert_resource(civic);
+        world.insert_resource(HoveredTile {
+            tile: Some(TilePos { x: 1, y: 0 }),
+        });
+
+        let answer = observe_handler(In(None), &mut world).expect("observe always answers");
+        let section = &answer["civic_coverage"];
+        assert_eq!(section["covers_map"], true, "{section}");
+        assert_eq!(section["covered_tiles"]["School"], 2, "{section}");
+        assert_eq!(section["covered_tiles"]["University"], 0, "{section}");
+        assert_eq!(section["covered_tiles"]["Park"], 1, "{section}");
+        assert_eq!(
+            section["sources"],
+            json!([{
+                "kind": "School",
+                "anchor": [0, 0],
+                "capacity": 400,
+                "residents": 800,
+                "strength": 0.5,
+            }]),
+            "{section}"
+        );
+        assert_eq!(section["hovered"]["tile"], json!([1, 0]), "{section}");
+        assert_eq!(section["hovered"]["School"], 0.5, "{section}");
     }
 
     #[test]

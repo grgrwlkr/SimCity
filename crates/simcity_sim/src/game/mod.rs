@@ -4,6 +4,7 @@ pub mod atlas;
 pub mod buildings;
 pub mod citizens;
 pub mod city_fields;
+pub mod civic_coverage;
 pub mod command_history;
 pub mod day_night;
 pub mod demand;
@@ -164,7 +165,8 @@ pub enum PostSimStep {
     TrafficIndex,
     /// `PollutionIndex` (read by land value).
     Pollution,
-    /// `ServiceCoverageIndex` (read by land value and economy).
+    /// `ServiceCoverageIndex` (read by land value and economy) and `CivicCoverage` (read by the
+    /// city fields).
     Coverage,
     /// `UtilityNetwork` (read by growth, occupancy and the city fields).
     Utilities,
@@ -296,6 +298,7 @@ impl Plugin for SimPlugin {
                 intersections::IntersectionsPlugin,
                 land_value::LandValuePlugin,
                 city_fields::CityFieldsPlugin,
+                civic_coverage::CivicCoveragePlugin,
                 notifications::NotificationsPlugin,
                 pollution::PollutionPlugin,
                 public_transport::PublicTransportPlugin,
