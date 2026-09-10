@@ -1519,3 +1519,52 @@ fn one_way_stroke_across_an_intersection_keeps_the_crossing_drivable() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Pointer override: automation hovers a tile without a pointer.
+//
+// The live debug API drives the game from inside it and must never move the real cursor, so
+// the hovered tile has to be settable without one. A player's build never sets the override.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hovered_tile_follows_the_pointer_override_without_a_window() {
+    let mut app = App::new();
+    app.insert_resource(MapConfig {
+        width: 8,
+        height: 8,
+        tile_size: 16.0,
+    });
+    app.init_resource::<HoveredTile>();
+    app.insert_resource(crate::game::ui_state::PointerOverride {
+        tile: Some(TilePos { x: 3, y: 4 }),
+    });
+    app.add_systems(Update, super::input::update_hovered_tile);
+    app.update();
+    assert_eq!(
+        app.world().resource::<HoveredTile>().tile,
+        Some(TilePos { x: 3, y: 4 }),
+        "with the override set, the hovered tile is the override even with no window at all"
+    );
+}
+
+#[test]
+fn hovered_tile_ignores_an_empty_pointer_override() {
+    let mut app = App::new();
+    app.insert_resource(MapConfig {
+        width: 8,
+        height: 8,
+        tile_size: 16.0,
+    });
+    app.insert_resource(HoveredTile {
+        tile: Some(TilePos { x: 1, y: 1 }),
+    });
+    app.init_resource::<crate::game::ui_state::PointerOverride>();
+    app.add_systems(Update, super::input::update_hovered_tile);
+    app.update();
+    assert_eq!(
+        app.world().resource::<HoveredTile>().tile,
+        None,
+        "an empty override changes nothing: with no window there is no hovered tile"
+    );
+}

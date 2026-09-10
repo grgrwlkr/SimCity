@@ -244,6 +244,7 @@ impl Plugin for SimPlugin {
             .add_message::<sim_events::DayAdvanced>()
             .init_resource::<ui_state::UiState>()
             .init_resource::<ui_state::InputFocus>()
+            .init_resource::<ui_state::PointerOverride>()
             .init_resource::<AutoStartTestCity>()
             .add_plugins((
                 render_primitives::RenderPrimitivesPlugin,

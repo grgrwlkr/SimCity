@@ -64,7 +64,8 @@ pub const TOOLS: &[ToolDoc] = &[
                       that was written. Renders through an offscreen camera, so it works \
                       with the window hidden, occluded or unfocused, and returns only once \
                       the file is complete — there is nothing to poll and no sleep to \
-                      guess. Check `looks_rendered` before trusting the image.",
+                      guess. Check `looks_rendered` before trusting the image. With `ui: true` the \
+                      game interface is drawn into the frame at the window's size and scale.",
         dispatch: Dispatch::Watching,
         params_schema: schema_of::<CaptureParams>,
     },
@@ -111,8 +112,10 @@ pub const TOOLS: &[ToolDoc] = &[
         method: "simcity/input",
         description: "Drive the game's own input from inside the game: press keys, released by \
                       frame count so a paused simulation cannot leave one held; put keyboard \
-                      focus on a UI field; or apply the active road tool between two tiles, as \
-                      the player's two clicks would. Never moves the real cursor, which is why \
+                      focus on a UI field; apply the active road tool between two tiles, as \
+                      the player's two clicks would; activate a visible, enabled button by its \
+                      Name, as one click would; or hover a tile without a pointer (null hands \
+                      hovering back). Never moves the real cursor, which is why \
                       the brp_extras mouse and keyboard methods answer with a refusal. Set focus \
                       in one call and send keys in a later one, once simcity/observe shows \
                       keyboard_captured; every effect lands on the following frames.",
@@ -141,7 +144,8 @@ pub struct ObserveParams {
     pub log_lines: Option<u32>,
 }
 
-/// Parameters of `simcity/input`. Give `keys`, `focus` or `stroke`; `focus` with `keys` is refused.
+/// Parameters of `simcity/input`. Give `keys`, `focus`, `stroke`, `activate` or `hover_tile`;
+/// `focus` with `keys` is refused.
 #[derive(JsonSchema, Deserialize)]
 pub struct InputParams {
     /// Bevy `KeyCode` names to press: `KeyA`..`KeyZ`, `Digit0`..`Digit9`, `Space`, `Enter`,
@@ -154,6 +158,12 @@ pub struct InputParams {
     pub focus: Option<String>,
     /// Apply the active road tool from `from` to `to`, both `[x, y]` tiles on the map.
     pub stroke: Option<StrokeParams>,
+    /// `Name` of a game-interface button to activate, e.g. `hud.speed.x2`. Refused when the
+    /// name is unknown, not a button, shared by several, hidden or disabled.
+    pub activate: Option<String>,
+    /// `[x, y]` tile to hover without a pointer, driving previews and tooltips; `null` hands
+    /// hovering back to the real pointer.
+    pub hover_tile: Option<[i32; 2]>,
 }
 
 /// Two tiles for a tool stroke.
@@ -179,6 +189,9 @@ pub struct CaptureParams {
     pub source: Option<String>,
     /// Frames to let the render settle before reading the pixels. Defaults to 3.
     pub settle_frames: Option<u32>,
+    /// Draw the game interface into the offscreen frame, at the window's size and scale.
+    /// Offscreen only, and not together with `width` and `height`.
+    pub ui: Option<bool>,
 }
 
 /// Parameters of `simcity/camera`.

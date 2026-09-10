@@ -63,6 +63,12 @@ impl Plugin for LiveDebugPlugin {
                 .before(TransformSystems::Propagate)
                 .before(CameraUpdateSystems),
         );
+        // Before `UiSystems::Prepare`, where every UI root's target camera is resolved: a later
+        // retarget would land a frame after the capture it was meant for.
+        app.add_systems(
+            PostUpdate,
+            capture::retarget_game_ui_to_eye.before(bevy::ui::UiSystems::Prepare),
+        );
         register_methods(app.world_mut());
         // Publish the instant methods where `brp_list_agent_tools` can find them. The
         // watching capture stays out — upstream refuses the whole catalogue over it.

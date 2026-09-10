@@ -8,7 +8,9 @@
 //!
 //! `simcity/input` does the same jobs through the game's own channels: key events written into
 //! the ECS and released by frame count, keyboard focus set through egui's memory, and the active
-//! tool applied between two tiles through the code the cursor path itself calls. It never
+//! tool applied between two tiles through the code the cursor path itself calls, a button
+//! activated by name through the same event a click delivers, and the hovered tile set without
+//! a pointer. It never
 //! writes a window's cursor position — the one change that reaches the OS — and the
 //! `brp_extras` input methods are refused so there is exactly one way to drive input.
 
@@ -16,10 +18,13 @@ use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput, NativeKey};
 use bevy::prelude::*;
 use bevy::remote::{BrpError, BrpResult, RemoteMethodSystemId, RemoteMethods, error_codes};
+use bevy::ui::InteractionDisabled;
+// Explicit import wins over the prelude's legacy `Button`: only this one emits `Activate`.
+use bevy::ui_widgets::{Activate, Button};
 use bevy_egui::{EguiContext, PrimaryEguiContext, egui};
 use serde_json::{Map, Value, json};
 use simcity_core::game::map::TilePos;
-use simcity_core::game::ui_state::{SEED_FIELD_ID, ToolMode, UiState};
+use simcity_core::game::ui_state::{PointerOverride, SEED_FIELD_ID, ToolMode, UiState};
 use simcity_sim::game::map::{MapGrid, road_segment_commands};
 use simcity_sim::game::traffic::TrafficConfig;
 
@@ -61,12 +66,20 @@ pub struct InputRequest {
     pub hold_frames: u32,
     pub focus: Option<FocusTarget>,
     pub stroke: Option<(TilePos, TilePos)>,
+    /// `Name` of a button to activate, as one click on it would.
+    pub activate: Option<String>,
+    /// `Some(Some(tile))` hovers that tile without a pointer; `Some(None)` hands hovering back
+    /// to the real pointer.
+    pub hover_tile: Option<Option<TilePos>>,
 }
 
 impl InputRequest {
     pub fn parse(params: Option<&Value>) -> Result<Self, String> {
         let Some(params) = params else {
-            return Err("simcity/input needs `keys`, `focus` or `stroke`".to_string());
+            return Err(
+                "simcity/input needs `keys`, `focus`, `stroke`, `activate` or `hover_tile`"
+                    .to_string(),
+            );
         };
 
         let keys = match params.get("keys") {
@@ -119,7 +132,27 @@ impl InputRequest {
 
         let stroke = match params.get("stroke") {
             None | Some(Value::Null) => None,
-            Some(stroke) => Some((tile_param(stroke, "from")?, tile_param(stroke, "to")?)),
+            Some(stroke) => Some((
+                tile_from(stroke.get("from"), "stroke.from")?,
+                tile_from(stroke.get("to"), "stroke.to")?,
+            )),
+        };
+
+        let activate = match params.get("activate") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(name)) => Some(name.clone()),
+            Some(other) => {
+                return Err(format!(
+                    "`activate` must be the Name of a button, got {other}"
+                ));
+            }
+        };
+
+        // Null is a request of its own here: it hands hovering back to the real pointer.
+        let hover_tile = match params.get("hover_tile") {
+            None => None,
+            Some(Value::Null) => Some(None),
+            Some(tile) => Some(Some(tile_from(Some(tile), "hover_tile")?)),
         };
 
         if focus.is_some() && !keys.is_empty() {
@@ -130,8 +163,16 @@ impl InputRequest {
                     .to_string(),
             );
         }
-        if keys.is_empty() && focus.is_none() && stroke.is_none() {
-            return Err("simcity/input needs `keys`, `focus` or `stroke`".to_string());
+        if keys.is_empty()
+            && focus.is_none()
+            && stroke.is_none()
+            && activate.is_none()
+            && hover_tile.is_none()
+        {
+            return Err(
+                "simcity/input needs `keys`, `focus`, `stroke`, `activate` or `hover_tile`"
+                    .to_string(),
+            );
         }
 
         Ok(Self {
@@ -139,21 +180,22 @@ impl InputRequest {
             hold_frames,
             focus,
             stroke,
+            activate,
+            hover_tile,
         })
     }
 }
 
-fn tile_param(stroke: &Value, field: &str) -> Result<TilePos, String> {
-    let pair = stroke
-        .get(field)
+fn tile_from(value: Option<&Value>, field: &str) -> Result<TilePos, String> {
+    let pair = value
         .and_then(Value::as_array)
         .filter(|pair| pair.len() == 2)
-        .ok_or_else(|| format!("`stroke.{field}` must be an [x, y] tile"))?;
+        .ok_or_else(|| format!("`{field}` must be an [x, y] tile"))?;
     let coordinate = |value: &Value| {
         value
             .as_i64()
             .and_then(|number| i32::try_from(number).ok())
-            .ok_or_else(|| format!("`stroke.{field}` holds a non-integer coordinate {value}"))
+            .ok_or_else(|| format!("`{field}` holds a non-integer coordinate {value}"))
     };
     Ok(TilePos {
         x: coordinate(&pair[0])?,
@@ -165,7 +207,8 @@ fn tile_param(stroke: &Value, field: &str) -> Result<TilePos, String> {
 #[derive(Resource, Debug, Default)]
 pub struct HeldKeys(pub Vec<(KeyCode, u32)>);
 
-/// `simcity/input` — press keys, move keyboard focus, or apply the active tool between tiles.
+/// `simcity/input` — press keys, move keyboard focus, apply the active tool between tiles,
+/// activate a button by name, or hover a tile without a pointer.
 ///
 /// Instant, like `simcity/command`: a watching handler is polled again after its final answer,
 /// and a second poll would press every key twice.
@@ -241,11 +284,92 @@ pub fn input_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpRes
         );
     }
 
+    if let Some(tile) = request.hover_tile {
+        if let Some(tile) = tile {
+            let grid = world
+                .get_resource::<MapGrid>()
+                .ok_or_else(|| internal_error("this world has no MapGrid".to_string()))?;
+            if grid.idx(tile).is_none() {
+                return Err(invalid_params(format!(
+                    "tile [{}, {}] is off the map, where the cursor can never point",
+                    tile.x, tile.y
+                )));
+            }
+        }
+        world
+            .get_resource_mut::<PointerOverride>()
+            .ok_or_else(|| internal_error("this world has no PointerOverride".to_string()))?
+            .tile = tile;
+        answer.insert(
+            "hover_tile".to_string(),
+            match tile {
+                Some(tile) => json!([tile.x, tile.y]),
+                None => json!("handed back to the pointer"),
+            },
+        );
+    }
+
+    if let Some(name) = request.activate {
+        let entity = pressable_button(world, &name)?;
+        world.trigger(Activate { entity });
+        answer.insert(
+            "activated".to_string(),
+            json!({ "name": name, "entity": format!("{entity}") }),
+        );
+    }
+
     answer.insert(
         "note".to_string(),
         json!("queued: effects land on the following frames, read simcity/observe to see them"),
     );
     Ok(Value::Object(answer))
+}
+
+/// The one button named `name` that a player could click right now.
+///
+/// A click cannot reach a hidden or disabled button, so neither may `activate`: a pass through
+/// this path must mean the player could have done the same.
+fn pressable_button(world: &mut World, name: &str) -> Result<Entity, BrpError> {
+    let mut query = world.query::<(
+        Entity,
+        &Name,
+        Has<Button>,
+        Option<&InheritedVisibility>,
+        Has<InteractionDisabled>,
+    )>();
+    let named: Vec<_> = query
+        .iter(world)
+        .filter(|(_, entity_name, ..)| entity_name.as_str() == name)
+        .map(|(entity, _, button, visibility, disabled)| {
+            (entity, button, visibility.copied(), disabled)
+        })
+        .collect();
+    let buttons: Vec<_> = named.iter().filter(|(_, button, ..)| *button).collect();
+    match buttons.as_slice() {
+        [] if named.is_empty() => Err(invalid_params(format!(
+            "no entity is named {name:?}; world.find_entities_by_name lists what exists"
+        ))),
+        [] => Err(invalid_params(format!(
+            "{name:?} is not a button, so there is nothing a click on it would do"
+        ))),
+        [(entity, _, visibility, disabled)] => {
+            if visibility.is_some_and(|visibility| !visibility.get()) {
+                return Err(invalid_params(format!(
+                    "{name:?} is hidden, so a player could not click it"
+                )));
+            }
+            if *disabled {
+                return Err(invalid_params(format!(
+                    "{name:?} is disabled and ignores clicks"
+                )));
+            }
+            Ok(*entity)
+        }
+        several => Err(invalid_params(format!(
+            "{} buttons are named {name:?}; pressing one at random proves nothing",
+            several.len()
+        ))),
+    }
 }
 
 fn request_focus(world: &mut World, target: FocusTarget) -> Result<(), BrpError> {
@@ -445,8 +569,11 @@ mod tests {
     use super::*;
     use bevy::ecs::system::{RunSystemOnce, SystemId};
     use bevy::math::DVec2;
+    use bevy::ui::InteractionDisabled;
+    use bevy::ui_widgets::{Activate, Button};
     use simcity_core::game::commands::GameCommand;
     use simcity_core::game::roads::{RoadDir, RoadFlow, RoadKind};
+    use simcity_core::game::ui_state::PointerOverride;
 
     #[derive(Resource, Default)]
     struct KeyLog(Vec<(KeyCode, ButtonState)>);
@@ -630,9 +757,11 @@ mod tests {
             .get::<Window>(entity)
             .map(Window::physical_cursor_position);
 
+        app.init_resource::<PointerOverride>();
         for params in [
             json!({ "keys": ["KeyW", "Digit1"] }),
             json!({ "stroke": { "from": [10, 20], "to": [14, 20] } }),
+            json!({ "hover_tile": [10, 20] }),
         ] {
             let _ = app
                 .world_mut()
@@ -696,5 +825,151 @@ mod tests {
             "the refusal must say what to use instead: {}",
             error.message
         );
+    }
+    #[test]
+    fn parse_reads_activate_and_hover_tile() {
+        let request = InputRequest::parse(Some(&json!({ "activate": "hud.speed.x2" }))).unwrap();
+        assert_eq!(request.activate.as_deref(), Some("hud.speed.x2"));
+        let request = InputRequest::parse(Some(&json!({ "hover_tile": [3, 4] }))).unwrap();
+        assert_eq!(request.hover_tile, Some(Some(TilePos { x: 3, y: 4 })));
+        let request = InputRequest::parse(Some(&json!({ "hover_tile": null }))).unwrap();
+        assert_eq!(
+            request.hover_tile,
+            Some(None),
+            "null hands hovering back to the real pointer, which is a request of its own"
+        );
+    }
+
+    #[test]
+    fn parse_refuses_an_activate_that_is_not_a_name() {
+        let error = InputRequest::parse(Some(&json!({ "activate": 7 }))).unwrap_err();
+        assert!(error.contains("`activate`"), "{error}");
+    }
+
+    #[test]
+    fn parse_refuses_a_hover_tile_that_is_not_a_tile() {
+        let error = InputRequest::parse(Some(&json!({ "hover_tile": [3] }))).unwrap_err();
+        assert!(error.contains("`hover_tile`"), "{error}");
+    }
+
+    #[derive(Resource, Default)]
+    struct Activated(Vec<Entity>);
+
+    fn log_activations(activate: On<Activate>, mut log: ResMut<Activated>) {
+        log.0.push(activate.entity);
+    }
+
+    fn button_world() -> App {
+        let mut app = App::new();
+        app.init_resource::<Activated>();
+        app.add_observer(log_activations);
+        app
+    }
+
+    fn activate(app: &mut App, name: &str) -> BrpResult {
+        app.world_mut()
+            .run_system_once_with(input_handler, Some(json!({ "activate": name })))
+            .expect("system runs")
+    }
+
+    #[test]
+    fn activate_triggers_the_named_button_as_a_click_would() {
+        let mut app = button_world();
+        app.world_mut().spawn((Name::new("hud.speed.x1"), Button));
+        let x2 = app
+            .world_mut()
+            .spawn((
+                Name::new("hud.speed.x2"),
+                Button,
+                InheritedVisibility::VISIBLE,
+            ))
+            .id();
+
+        activate(&mut app, "hud.speed.x2").expect("a visible, enabled button is accepted");
+
+        assert_eq!(
+            app.world().resource::<Activated>().0,
+            vec![x2],
+            "exactly the named button receives the same Activate a click delivers"
+        );
+    }
+
+    #[test]
+    fn activate_refuses_a_name_that_is_not_a_button() {
+        let mut app = button_world();
+        app.world_mut().spawn(Name::new("hud.money"));
+
+        let error = activate(&mut app, "hud.money").expect_err("only a button can be pressed");
+        assert!(error.message.contains("hud.money"), "{}", error.message);
+        let error = activate(&mut app, "hud.nowhere").expect_err("an unknown name is refused");
+        assert!(error.message.contains("hud.nowhere"), "{}", error.message);
+        assert!(app.world().resource::<Activated>().0.is_empty());
+    }
+
+    #[test]
+    fn activate_refuses_an_ambiguous_name() {
+        let mut app = button_world();
+        app.world_mut().spawn((Name::new("hud.speed.x2"), Button));
+        app.world_mut().spawn((Name::new("hud.speed.x2"), Button));
+
+        let error = activate(&mut app, "hud.speed.x2")
+            .expect_err("pressing one of two same-named buttons at random proves nothing");
+        assert!(error.message.contains('2'), "{}", error.message);
+        assert!(app.world().resource::<Activated>().0.is_empty());
+    }
+
+    #[test]
+    fn activate_refuses_a_button_the_player_could_not_press() {
+        let mut app = button_world();
+        app.world_mut()
+            .spawn((Name::new("hud.hidden"), Button, InheritedVisibility::HIDDEN));
+        app.world_mut()
+            .spawn((Name::new("hud.disabled"), Button, InteractionDisabled));
+
+        let error =
+            activate(&mut app, "hud.hidden").expect_err("a hidden button cannot be clicked");
+        assert!(error.message.contains("hidden"), "{}", error.message);
+        let error =
+            activate(&mut app, "hud.disabled").expect_err("a disabled button ignores clicks");
+        assert!(error.message.contains("disabled"), "{}", error.message);
+        assert!(app.world().resource::<Activated>().0.is_empty());
+    }
+
+    fn hover_world() -> App {
+        let mut app = App::new();
+        app.insert_resource(MapGrid::new(64, 64));
+        app.init_resource::<PointerOverride>();
+        app
+    }
+
+    #[test]
+    fn hover_tile_sets_and_clears_the_pointer_override() {
+        let mut app = hover_world();
+        app.world_mut()
+            .run_system_once_with(input_handler, Some(json!({ "hover_tile": [3, 4] })))
+            .expect("system runs")
+            .expect("a tile on the map is accepted");
+        assert_eq!(
+            app.world().resource::<PointerOverride>().tile,
+            Some(TilePos { x: 3, y: 4 })
+        );
+
+        app.world_mut()
+            .run_system_once_with(input_handler, Some(json!({ "hover_tile": null })))
+            .expect("system runs")
+            .expect("clearing is accepted");
+        assert_eq!(app.world().resource::<PointerOverride>().tile, None);
+    }
+
+    #[test]
+    fn hover_tile_off_the_map_is_refused() {
+        let mut app = hover_world();
+        let error = app
+            .world_mut()
+            .run_system_once_with(input_handler, Some(json!({ "hover_tile": [900, 4] })))
+            .expect("system runs")
+            .expect_err("the cursor can never point off the map");
+        assert!(error.message.contains("map"), "{}", error.message);
+        assert_eq!(app.world().resource::<PointerOverride>().tile, None);
     }
 }

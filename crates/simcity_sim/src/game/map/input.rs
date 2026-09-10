@@ -9,7 +9,7 @@ use crate::game::commands::{GameCommand, UndoRedoRequested};
 use crate::game::intersections::IntersectionIndex;
 use crate::game::roads::{RoadCell, RoadDir, RoadKind};
 use crate::game::traffic::TrafficConfig;
-use crate::game::ui_state::{InputFocus, OverlayMode, ToolMode, UiState};
+use crate::game::ui_state::{InputFocus, OverlayMode, PointerOverride, ToolMode, UiState};
 use crate::game::zone_placement::can_zone_tile;
 
 use super::coords::{cursor_tile, tile_to_world};
@@ -120,10 +120,17 @@ pub(super) fn update_cursor_highlight(
 
 pub(super) fn update_hovered_tile(
     cfg: Res<MapConfig>,
+    pointer: Res<PointerOverride>,
     q_window: Query<&Window, With<PrimaryWindow>>,
     q_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
     mut hovered: ResMut<HoveredTile>,
 ) {
+    // A tile set from inside the game stands in for the pointer; see `PointerOverride`.
+    if let Some(tile) = pointer.tile {
+        hovered.tile = Some(tile);
+        return;
+    }
+
     let Ok(window) = q_window.single() else {
         hovered.tile = None;
         return;

@@ -29,6 +29,16 @@ impl Default for UiState {
     }
 }
 
+/// A tile the live debug API has put the cursor on, standing in for the pointer.
+///
+/// Automation drives the game from inside it: it has no pointer, and moving the real one is
+/// off-limits. When set, the hovered tile is this tile instead of the one under the window's
+/// cursor. Stays `None` in a player's build — only the dev-only `simcity/input` writes it.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PointerOverride {
+    pub tile: Option<crate::game::map::TilePos>,
+}
+
 /// Marks the root of a piece of the player's game interface (not the developer panels).
 ///
 /// A contract with the live debug API: `simcity/capture` with `"ui": true` retargets exactly these
