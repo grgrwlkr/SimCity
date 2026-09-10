@@ -143,6 +143,77 @@ mod tests {
         out.write(commands::GameCommand::LoadTestCity);
     }
 
+    /// An app that has just loaded the test city.
+    fn loaded_test_city() -> App {
+        let cfg = map::MapConfig::default();
+        let tile_count = (cfg.width as usize) * (cfg.height as usize);
+        let mut app = App::new();
+        simcity_sim::game::render_primitives::init_for_test(&mut app);
+        app.add_message::<commands::GameCommand>()
+            .add_message::<sim_events::DayAdvanced>()
+            .insert_resource(cfg.clone())
+            .insert_resource(map::MapSeed(1))
+            .insert_resource(map::MapGrid::new(cfg.width, cfg.height))
+            .insert_resource(map::DirtyTiles::new(tile_count))
+            .insert_resource(map::RoadDirtyTiles::new(tile_count))
+            .insert_resource(sim::City::default())
+            .insert_resource(transport::GraphVersion(1))
+            .insert_resource(map::MapEditVersion::default())
+            .insert_resource(command_history::CommandHistory::new(100))
+            .insert_resource(intersections::IntersectionIndex::default())
+            .insert_resource(TestCommandOnce::default())
+            .add_systems(
+                Update,
+                (send_load_test_city_once, handle_load_test_city).chain(),
+            );
+        app.update();
+        app
+    }
+
+    /// B1: supply travels only along roads, so the stations the test city places must reach
+    /// every zoned block that has a road — otherwise the demo city would never grow.
+    #[test]
+    fn utility_network_test_city_supplies_every_zoned_block_with_a_road() {
+        use simcity_sim::game::utilities::{UtilityKind, UtilityNetwork, compute_served};
+
+        let app = loaded_test_city();
+        let grid = app.world().resource::<map::MapGrid>();
+        let network = UtilityNetwork {
+            version: 1,
+            map_version: 0,
+            served: compute_served(grid),
+        };
+        let mut zoned = 0usize;
+        let mut dark: Vec<(UtilityKind, map::TilePos)> = Vec::new();
+        for y in 0..grid.height {
+            for x in 0..grid.width {
+                let pos = map::TilePos { x, y };
+                let Some(cell) = grid.get(pos) else {
+                    continue;
+                };
+                if cell.zone == map::ZoneKind::None
+                    || !buildings::is_within_zone_depth(pos, grid, buildings::MAX_ZONE_DEPTH)
+                {
+                    continue;
+                }
+                zoned += 1;
+                for kind in UtilityKind::ALL {
+                    if !buildings::block_has(grid, &network, pos, kind) {
+                        dark.push((kind, pos));
+                    }
+                }
+            }
+        }
+        assert!(zoned > 0, "the test city has zoned blocks");
+        assert!(
+            dark.is_empty(),
+            "{} of {} zoned tiles lack a utility, examples: {:?}",
+            dark.len(),
+            zoned,
+            dark.iter().take(8).collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn load_test_city_keeps_zones_without_prebuilt_rci() {
         let cfg = map::MapConfig::default();

@@ -19,7 +19,7 @@ mod zone_depth;
 #[cfg(test)]
 mod tests;
 
-pub use blockers::{GrowthBlocker, growth_blockers, upgrade_blocker};
+pub use blockers::{GrowthBlocker, block_has, growth_blockers, upgrade_blocker};
 pub use components::*;
 pub use construction::*;
 pub use decay::*;
