@@ -85,6 +85,18 @@ impl CaptureRequest {
         if path.trim().is_empty() {
             return Err("`path` is empty".to_string());
         }
+        // The caller picks the destination freely — this whole surface is dev-only and
+        // already offers unauthenticated world mutation on the same port, so locking
+        // captures into one directory would guard the smallest gap in a fence that has no
+        // other sides, and would break the normal case of writing into a scratch dir
+        // outside the repository. Insisting on the extension costs nothing and does rule
+        // out quietly overwriting a config file with image bytes.
+        if !Path::new(path)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+        {
+            return Err(format!("`path` must end in .png, got {path:?}"));
+        }
 
         let size = match (
             params.get("width").and_then(Value::as_u64),
@@ -535,6 +547,18 @@ mod tests {
             err.contains("path"),
             "error should name the missing field: {err}"
         );
+    }
+
+    #[test]
+    fn parse_insists_the_destination_is_a_png() {
+        for bad in ["/tmp/a.txt", "/tmp/a", "/Users/someone/.zshrc"] {
+            let err = CaptureRequest::parse(Some(&json!({ "path": bad }))).unwrap_err();
+            assert!(
+                err.contains(".png"),
+                "{bad:?} should be refused for not being a png: {err}"
+            );
+        }
+        assert!(CaptureRequest::parse(Some(&json!({ "path": "/tmp/a.PNG" }))).is_ok());
     }
 
     #[test]

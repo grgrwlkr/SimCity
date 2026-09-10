@@ -14,6 +14,7 @@ use bevy::remote::{RemoteMethodSystemId, RemoteMethods};
 use bevy::transform::TransformSystems;
 
 pub mod capture;
+pub mod runtime;
 pub mod stats;
 
 /// Registers the `simcity/*` methods and the machinery they drive.
@@ -23,6 +24,8 @@ pub struct LiveDebugPlugin;
 
 impl Plugin for LiveDebugPlugin {
     fn build(&self, app: &mut App) {
+        // A remotely driven instance is unfocused by definition — never throttled.
+        app.insert_resource(runtime::continuous_update_settings());
         app.init_resource::<capture::CaptureJobs>();
         app.init_resource::<capture::EyeControl>();
         app.add_systems(Startup, capture::spawn_eye);

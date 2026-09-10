@@ -34,11 +34,20 @@ fn present_mode_from_env(value: Option<&str>) -> bevy::window::PresentMode {
 fn main() {
     let mut app = App::new();
     app.insert_resource(ClearColor(Color::srgb(0.08, 0.09, 0.11)));
+    // How this instance was launched: which BRP port, and whether it puts a window on the
+    // screen at all. Release builds have no remote stack, so they are always a normal window.
+    #[cfg(feature = "dev")]
+    let live = simcity_debug::game::live::runtime::LiveRuntimeConfig::from_env();
+    #[cfg(not(feature = "dev"))]
+    let live = simcity_debug::game::live::runtime::LiveRuntimeConfig::default();
     // Remote debugging (BRP + HTTP transport) is dev-only — see the import block above.
     #[cfg(feature = "dev")]
     {
         app.add_plugins(remote_plugin());
-        app.add_plugins(RemoteHttpPlugin::default());
+        // Our own transport, so `BRP_EXTRAS_PORT` has to be honoured here: when
+        // `RemoteHttpPlugin` is already present, `BrpExtrasPlugin` skips its own port
+        // configuration and only logs a warning.
+        app.add_plugins(RemoteHttpPlugin::default().with_port(live.port));
         // Composable: our RemotePlugin/RemoteHttpPlugin are already in, so this only
         // registers the brp_extras/* methods (synthetic mouse/keyboard input, screenshot,
         // diagnostics) into the existing RemoteMethods resource.
@@ -51,6 +60,9 @@ fn main() {
             present_mode: present_mode_from_env(
                 std::env::var("SIMCITY_PRESENT_MODE").ok().as_deref(),
             ),
+            // A hidden instance never appears on screen and never takes focus, so several
+            // of them can be driven over BRP while a person works on the same machine.
+            visible: live.window.visible(),
             ..default()
         }),
         ..default()
