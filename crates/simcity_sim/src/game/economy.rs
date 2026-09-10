@@ -21,6 +21,7 @@ impl Plugin for EconomyPlugin {
             .init_resource::<BudgetLedger>()
             .init_resource::<TaxRates>()
             .init_resource::<ServiceFunding>()
+            .init_resource::<Loans>()
             .add_systems(START_OF_GAME, restart_budget_ledger)
             .add_systems(
                 FixedUpdate,
@@ -281,6 +282,66 @@ impl Default for ServiceFunding {
     }
 }
 
+/// Money borrowed from the bank, repaid in equal monthly payments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Loan {
+    pub principal: i64,
+    pub monthly_payment: i64,
+    pub months_left: u32,
+}
+
+/// The city's active loans.
+#[derive(Resource, Debug, Clone, Default, PartialEq, Eq)]
+pub struct Loans {
+    pub active: Vec<Loan>,
+}
+
+impl Loans {
+    /// The amounts the bank lends.
+    pub const SIZES: [i64; 3] = [10_000, 25_000, 50_000];
+    pub const MONTHLY_INTEREST_PERCENT: i64 = 1;
+    pub const TERM_MONTHS: u32 = 12;
+    pub const MAX_ACTIVE: usize = 3;
+
+    /// The annuity payment for `principal` over the term, rounded up to the dollar.
+    pub fn monthly_payment(principal: i64) -> i64 {
+        let rate = Self::MONTHLY_INTEREST_PERCENT as f64 / 100.0;
+        let months = Self::TERM_MONTHS as i32;
+        (principal as f64 * rate / (1.0 - (1.0 + rate).powi(-months))).ceil() as i64
+    }
+
+    /// Borrow one of `SIZES`: the money arrives today as a loan line of the budget.
+    pub fn take(
+        &mut self,
+        principal: i64,
+        ledger: &mut BudgetLedger,
+        city: &mut City,
+    ) -> Result<(), &'static str> {
+        if !Self::SIZES.contains(&principal) {
+            return Err("the bank lends $10 000, $25 000 or $50 000");
+        }
+        if self.active.len() >= Self::MAX_ACTIVE {
+            return Err("the bank will not lend to a city with three loans open");
+        }
+        ledger.post(BudgetItem::LoanProceeds, principal, city);
+        self.active.push(Loan {
+            principal,
+            monthly_payment: Self::monthly_payment(principal),
+            months_left: Self::TERM_MONTHS,
+        });
+        Ok(())
+    }
+
+    /// Charge every active loan its payment and drop the ones that are repaid.
+    pub fn charge_month(&mut self, ledger: &mut BudgetLedger, city: &mut City) {
+        for loan in &mut self.active {
+            ledger.post(BudgetItem::LoanRepayment, -loan.monthly_payment, city);
+            loan.months_left = loan.months_left.saturating_sub(1);
+        }
+        self.active.retain(|loan| loan.months_left > 0);
+    }
+}
+
 /// Where money came from or went: one line of the budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum BudgetItem {
@@ -349,6 +410,11 @@ impl BudgetLedger {
         *self.current.0.entry(item).or_insert(0) += amount;
     }
 
+    /// Whether the day being counted next is the last of the month.
+    pub fn closes_month_today(&self, days_per_month: u32) -> bool {
+        self.days_elapsed + 1 >= days_per_month.max(1)
+    }
+
     /// Count a day; after `days_per_month` of them, close the month into `last`.
     pub fn end_of_day(&mut self, days_per_month: u32, city: &City) {
         self.days_elapsed += 1;
@@ -380,6 +446,7 @@ fn apply_daily_economy(
     land_value: Option<Res<LandValueIndex>>,
     buildings: Query<&Building>,
     funding: Option<Res<ServiceFunding>>,
+    mut loans: Option<ResMut<Loans>>,
 ) {
     // Consume all day events (if sim speed is high, multiple days can advance).
     for evt in day_events.read() {
@@ -464,6 +531,12 @@ fn apply_daily_economy(
         city.happiness += (target - city.happiness) * 0.02;
         city.happiness = city.happiness.clamp(0.0, 1.0);
 
+        // Loan payments fall on the last day of the month, inside the report they belong to.
+        if ledger.closes_month_today(cfg.days_per_month)
+            && let Some(loans) = loans.as_mut()
+        {
+            loans.charge_month(&mut ledger, &mut city);
+        }
         ledger.end_of_day(cfg.days_per_month, &city);
     }
 }
@@ -955,6 +1028,122 @@ mod tests {
                 .get(BudgetItem::ServiceMaintenance),
             -(cfg.fire_station_upkeep / 2 + cfg.hospital_upkeep * 3 / 2),
             "half-funded fire and one-and-a-half-funded medical"
+        );
+    }
+
+    fn annuity(principal: i64) -> i64 {
+        let rate = Loans::MONTHLY_INTEREST_PERCENT as f64 / 100.0;
+        let months = Loans::TERM_MONTHS as i32;
+        (principal as f64 * rate / (1.0 - (1.0 + rate).powi(-months))).ceil() as i64
+    }
+
+    #[test]
+    fn budget_report_monthly_payment_is_the_annuity() {
+        for principal in Loans::SIZES {
+            assert_eq!(
+                Loans::monthly_payment(principal),
+                annuity(principal),
+                "{principal}"
+            );
+        }
+        assert_eq!(Loans::monthly_payment(10_000), 889);
+        assert!(
+            Loans::monthly_payment(10_000) * i64::from(Loans::TERM_MONTHS) > 10_000,
+            "a loan costs more than it lends"
+        );
+    }
+
+    #[test]
+    fn budget_report_a_loan_is_income_the_day_it_is_taken() {
+        let (mut ledger, mut city) = ledger_at(1_000);
+        let mut loans = Loans::default();
+
+        assert_eq!(loans.take(10_000, &mut ledger, &mut city), Ok(()));
+        assert_eq!(city.money, 11_000);
+        assert_eq!(ledger.current.get(BudgetItem::LoanProceeds), 10_000);
+        assert_eq!(
+            loans.active,
+            vec![Loan {
+                principal: 10_000,
+                monthly_payment: annuity(10_000),
+                months_left: Loans::TERM_MONTHS,
+            }]
+        );
+
+        let refused = loans.take(12_345, &mut ledger, &mut city);
+        assert!(refused.is_err(), "only the bank's sizes are lent");
+        assert_eq!(city.money, 11_000, "a refused loan moves nothing");
+
+        assert_eq!(loans.take(25_000, &mut ledger, &mut city), Ok(()));
+        assert_eq!(loans.take(50_000, &mut ledger, &mut city), Ok(()));
+        assert!(
+            loans.take(10_000, &mut ledger, &mut city).is_err(),
+            "no more than MAX_ACTIVE loans at once"
+        );
+        assert_eq!(ledger.current.total(), city.money - 1_000);
+    }
+
+    #[test]
+    fn budget_report_loan_payments_close_every_month_until_repaid() {
+        let mut app = App::new();
+        app.add_message::<DayAdvanced>();
+        app.insert_resource(EconomyConfig {
+            days_per_month: 2,
+            ..EconomyConfig::default()
+        });
+        app.insert_resource(MapGrid::new(8, 8));
+        app.insert_resource(City {
+            money: 20_000,
+            ..Default::default()
+        });
+        let mut ledger = BudgetLedger::default();
+        ledger.restart(20_000);
+        app.insert_resource(ledger);
+        app.insert_resource(Loans {
+            active: vec![
+                Loan {
+                    principal: 10_000,
+                    monthly_payment: 889,
+                    months_left: 12,
+                },
+                Loan {
+                    principal: 25_000,
+                    monthly_payment: annuity(25_000),
+                    months_left: 1,
+                },
+            ],
+        });
+        app.add_systems(Update, apply_daily_economy);
+
+        app.world_mut().write_message(DayAdvanced { day: 2 });
+        app.update();
+        assert!(
+            app.world().resource::<BudgetLedger>().last.is_none(),
+            "no payment in the middle of a month"
+        );
+
+        app.world_mut().write_message(DayAdvanced { day: 3 });
+        app.update();
+        let report = app
+            .world()
+            .resource::<BudgetLedger>()
+            .last
+            .clone()
+            .expect("the second day closes a two-day month");
+        assert_eq!(
+            report.lines.get(BudgetItem::LoanRepayment),
+            -(889 + annuity(25_000)),
+            "both loans pay on the last day of the month"
+        );
+        assert_eq!(report.lines.total(), report.money_end - report.money_start);
+        assert_eq!(
+            app.world().resource::<Loans>().active,
+            vec![Loan {
+                principal: 10_000,
+                monthly_payment: 889,
+                months_left: 11,
+            }],
+            "the repaid loan is gone, the other has a month less"
         );
     }
 }
