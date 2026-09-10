@@ -95,6 +95,7 @@ pub(super) fn apply_game_commands_to_grid(
         (Entity, &crate::game::traffic::Vehicle),
         With<crate::game::public_transport::Bus>,
     >,
+    mut ledger: Option<ResMut<crate::game::economy::BudgetLedger>>,
 ) {
     let (mut bus_routes, mut path_pool) = transit;
     for cmd in cmd_reader.read() {
@@ -180,7 +181,14 @@ pub(super) fn apply_game_commands_to_grid(
                 });
 
                 // Allow roads to be built even when in debt (road tooling UX).
-                city.money -= cost;
+                match ledger.as_deref_mut() {
+                    Some(ledger) => ledger.post(
+                        crate::game::economy::BudgetItem::Construction,
+                        -cost,
+                        &mut city,
+                    ),
+                    None => city.money -= cost,
+                }
                 cell.road = new_road;
                 // Invalidate any grown building on this tile when the player edits it.
                 cell.building = None;
@@ -253,7 +261,14 @@ pub(super) fn apply_game_commands_to_grid(
                     old_zones,
                 });
 
-                city.money -= cost;
+                match ledger.as_deref_mut() {
+                    Some(ledger) => ledger.post(
+                        crate::game::economy::BudgetItem::Construction,
+                        -cost,
+                        &mut city,
+                    ),
+                    None => city.money -= cost,
+                }
 
                 // Mark all footprint tiles
                 for tile in &footprint_tiles {

@@ -149,6 +149,7 @@ fn apply_selected_scenario_on_enter(
     mut progress: ResMut<ScenarioProgress>,
     mut rt: ResMut<ScenarioRuntime>,
     mut out: MessageWriter<GameCommand>,
+    ledger: Option<ResMut<crate::game::economy::BudgetLedger>>,
 ) {
     if rt.applied {
         return;
@@ -162,6 +163,9 @@ fn apply_selected_scenario_on_enter(
     // Set initial conditions.
     city.money = s.starting_money;
     city.day = s.starting_day;
+    if let Some(mut ledger) = ledger {
+        ledger.restart(city.money);
+    }
 
     progress.active_id = Some(s.id.clone());
     progress.active_name = Some(s.name.clone());

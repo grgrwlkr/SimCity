@@ -609,6 +609,7 @@ struct LoadParams<'w, 's> {
     sim_rng: ResMut<'w, simcity_sim::game::sim::SimRng>,
     grid: ResMut<'w, MapGrid>,
     city: ResMut<'w, City>,
+    ledger: Option<ResMut<'w, crate::game::economy::BudgetLedger>>,
     id_gen: ResMut<'w, CitizenIdGen>,
     emergency_manager: Option<ResMut<'w, EmergencyManager>>,
     path_pool: ResMut<'w, crate::game::transport::PathPool>,
@@ -711,6 +712,9 @@ fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParam
         }
 
         *p.city = save.city.clone();
+        if let Some(ledger) = p.ledger.as_mut() {
+            ledger.restart(p.city.money);
+        }
         p.id_gen.set_next(save.next_citizen_id);
 
         if let Some(mgr) = p.emergency_manager.as_mut() {

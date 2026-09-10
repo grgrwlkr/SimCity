@@ -1602,3 +1602,53 @@ fn map_paint_stands_down_for_inspect_and_the_path_overlay() {
     };
     assert!(!super::input::map_paint_allowed(&path, free));
 }
+
+// ---------------------------------------------------------------------------
+// Budget: construction is a line of the monthly report.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn budget_report_building_a_road_is_a_construction_line() {
+    use crate::game::economy::{BudgetItem, BudgetLedger};
+
+    let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
+    let mut ledger = BudgetLedger::default();
+    ledger.restart(City::default().money);
+    app.add_message::<GameCommand>()
+        .add_message::<UndoRedoRequested>()
+        .add_message::<crate::game::sim_events::DayAdvanced>()
+        .insert_resource(MapConfig {
+            width: 8,
+            height: 8,
+            tile_size: 16.0,
+        })
+        .insert_resource(MapSeed(1))
+        .insert_resource(MapGrid::new(8, 8))
+        .insert_resource(DirtyTiles::new(64))
+        .insert_resource(RoadDirtyTiles::new(64))
+        .insert_resource(City::default())
+        .insert_resource(GraphVersion(1))
+        .insert_resource(MapEditVersion::default())
+        .insert_resource(CommandHistory::new(100))
+        .insert_resource(IntersectionIndex::default())
+        .insert_resource(TestCommandOnce::default())
+        .insert_resource(ledger)
+        .add_systems(
+            Update,
+            (send_road_command_once, apply_game_commands_to_grid).chain(),
+        );
+
+    app.update();
+
+    let spent = City::default().money - app.world().resource::<City>().money;
+    assert!(spent > 0, "a road costs money");
+    assert_eq!(
+        app.world()
+            .resource::<BudgetLedger>()
+            .current
+            .get(BudgetItem::Construction),
+        -spent,
+        "what the road cost is a construction line of the month"
+    );
+}

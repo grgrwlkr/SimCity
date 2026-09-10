@@ -71,6 +71,7 @@ fn handle_load_test_city(
     mut land_value_idx: Option<ResMut<land_value::LandValueIndex>>,
     mut bus_reset: BusResetParams,
     mut day_out: bevy::ecs::message::MessageWriter<sim_events::DayAdvanced>,
+    mut ledger: Option<ResMut<economy::BudgetLedger>>,
 ) {
     for cmd in cmd_reader.read() {
         if !matches!(cmd, commands::GameCommand::LoadTestCity) {
@@ -84,6 +85,9 @@ fn handle_load_test_city(
             &mut city,
             &mut intersections,
         );
+        if let Some(ledger) = ledger.as_mut() {
+            ledger.restart(city.money);
+        }
         dirty.mark_all();
         road_dirty.mark_all();
         map_edit_version.bump();
