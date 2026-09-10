@@ -36,7 +36,7 @@ pub use decay::despawn_invalid_buildings;
 pub use growth::{reset_growth_rng_on_new_map, seed_growth_rng_from_map};
 
 use crate::game::sets::GameSet;
-use crate::game::state::AppState;
+use crate::game::state::{AppState, START_OF_GAME};
 use bevy::prelude::*;
 
 pub struct BuildingsPlugin;
@@ -60,7 +60,7 @@ impl Plugin for BuildingsPlugin {
                 (cleanup_buildings, reset_building_upgrade_clock),
             )
             .add_systems(
-                OnEnter(AppState::InGame),
+                START_OF_GAME,
                 (seed_growth_rng_from_map, reset_building_upgrade_clock),
             )
             .add_systems(
