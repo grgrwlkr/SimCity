@@ -6,8 +6,8 @@ use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
 
 use crate::game::employment::EmploymentStats;
-use crate::game::map::{BuildingKind, MapGrid, TilePos};
-use crate::game::services::ServiceCoverageIndex;
+use crate::game::map::{MapGrid, TilePos};
+use crate::game::services::{ServiceCoverageIndex, ServiceKind, ServiceStation};
 use crate::game::sim::City;
 use crate::game::sim_events::DayAdvanced;
 use crate::game::state::{AppState, START_OF_GAME};
@@ -34,11 +34,31 @@ pub struct EconomyConfig {
     pub income_per_commercial: i64,
     pub income_per_industrial: i64,
     pub road_maintenance: i64,
-    pub building_maintenance: i64,
     pub happiness_target: f32,
     /// Game days in one budget month: the report closes when they have passed.
     #[serde(default = "default_days_per_month")]
     pub days_per_month: u32,
+    /// Daily upkeep of one fire station, whatever its footprint.
+    #[serde(default = "default_fire_station_upkeep")]
+    pub fire_station_upkeep: i64,
+    /// Daily upkeep of one police station, whatever its footprint.
+    #[serde(default = "default_police_station_upkeep")]
+    pub police_station_upkeep: i64,
+    /// Daily upkeep of one hospital, whatever its footprint.
+    #[serde(default = "default_hospital_upkeep")]
+    pub hospital_upkeep: i64,
+}
+
+fn default_fire_station_upkeep() -> i64 {
+    20
+}
+
+fn default_police_station_upkeep() -> i64 {
+    15
+}
+
+fn default_hospital_upkeep() -> i64 {
+    30
 }
 
 fn default_days_per_month() -> u32 {
@@ -52,9 +72,11 @@ impl Default for EconomyConfig {
             income_per_commercial: 6,
             income_per_industrial: 8,
             road_maintenance: 1,
-            building_maintenance: 2,
             happiness_target: 0.7,
             days_per_month: default_days_per_month(),
+            fire_station_upkeep: default_fire_station_upkeep(),
+            police_station_upkeep: default_police_station_upkeep(),
+            hospital_upkeep: default_hospital_upkeep(),
         }
     }
 }
@@ -145,6 +167,7 @@ impl BudgetLedger {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_daily_economy(
     mut day_events: MessageReader<DayAdvanced>,
     cfg: Res<EconomyConfig>,
@@ -153,20 +176,29 @@ fn apply_daily_economy(
     service: Option<Res<ServiceCoverageIndex>>,
     mut city: ResMut<City>,
     mut ledger: ResMut<BudgetLedger>,
+    stations: Query<&ServiceStation>,
 ) {
     // Consume all day events (if sim speed is high, multiple days can advance).
     for evt in day_events.read() {
         let _day = evt.day;
-        let (road_tiles, buildings) = count_world(&grid);
+        let road_tiles = count_road_tiles(&grid);
 
         let residential_tax = (city.population as i64) * cfg.tax_per_citizen;
         let commercial_tax = (employment.employed_commercial as i64) * cfg.income_per_commercial;
         let industrial_tax = (employment.employed_industrial as i64) * cfg.income_per_industrial;
         let road_upkeep = (road_tiles as i64) * cfg.road_maintenance;
-        let building_upkeep = (buildings.total() as i64) * cfg.building_maintenance;
+        // Upkeep is per station, whatever its footprint; zoned buildings pay taxes, not upkeep.
+        let service_upkeep: i64 = stations
+            .iter()
+            .map(|station| match station.kind {
+                ServiceKind::Fire => cfg.fire_station_upkeep,
+                ServiceKind::Police => cfg.police_station_upkeep,
+                ServiceKind::Medical => cfg.hospital_upkeep,
+            })
+            .sum();
 
         let income = residential_tax + commercial_tax + industrial_tax;
-        let expense = road_upkeep + building_upkeep;
+        let expense = road_upkeep + service_upkeep;
 
         city.last_income = income;
         city.last_expense = expense;
@@ -174,7 +206,7 @@ fn apply_daily_economy(
         ledger.post(BudgetItem::CommercialTax, commercial_tax, &mut city);
         ledger.post(BudgetItem::IndustrialTax, industrial_tax, &mut city);
         ledger.post(BudgetItem::RoadMaintenance, -road_upkeep, &mut city);
-        ledger.post(BudgetItem::ServiceMaintenance, -building_upkeep, &mut city);
+        ledger.post(BudgetItem::ServiceMaintenance, -service_upkeep, &mut city);
 
         // MVP: happiness drifts toward a target, reduced slightly by negative cashflow.
         let net = income - expense;
@@ -201,57 +233,28 @@ fn restart_budget_ledger(city: Res<City>, mut ledger: ResMut<BudgetLedger>) {
     ledger.restart(city.money);
 }
 
-#[derive(Default)]
-struct BuildingCounts {
-    residential: u32,
-    commercial: u32,
-    industrial: u32,
-}
-
-impl BuildingCounts {
-    fn total(&self) -> u32 {
-        self.residential + self.commercial + self.industrial
-    }
-}
-
-fn count_world(grid: &MapGrid) -> (u32, BuildingCounts) {
+/// Road tiles on dry land; roads are kept up per tile.
+fn count_road_tiles(grid: &MapGrid) -> u32 {
     let mut roads = 0u32;
-    let mut b = BuildingCounts::default();
-
-    let len = grid.len();
-    for idx in 0..len {
-        let x = (idx % (grid.width as usize)) as i32;
-        let y = (idx / (grid.width as usize)) as i32;
-        let pos = TilePos { x, y };
-        let Some(cell) = grid.get(pos) else {
-            continue;
+    for idx in 0..grid.len() {
+        let pos = TilePos {
+            x: (idx % (grid.width as usize)) as i32,
+            y: (idx / (grid.width as usize)) as i32,
         };
-        if cell.water {
-            continue;
-        }
-        if cell.road.is_some() {
+        if let Some(cell) = grid.get(pos)
+            && !cell.water
+            && cell.road.is_some()
+        {
             roads += 1;
         }
-        if let Some(kind) = cell.building {
-            match kind {
-                BuildingKind::Residential => b.residential += 1,
-                BuildingKind::Commercial => b.commercial += 1,
-                BuildingKind::Industrial => b.industrial += 1,
-                // Service buildings are not part of the current economy MVP accounting.
-                BuildingKind::FireStation
-                | BuildingKind::PoliceStation
-                | BuildingKind::Hospital => {}
-            }
-        }
     }
-
-    (roads, b)
+    roads
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::map::MapCell;
+    use crate::game::map::{BuildingKind, MapCell};
     use crate::game::roads::{LaneType, RoadCell, RoadDir, RoadFlow, RoadKind};
 
     fn ledger_at(money: i64) -> (BudgetLedger, City) {
@@ -349,5 +352,129 @@ mod tests {
         );
         assert!(ledger.current.get(BudgetItem::ResidentialTax) > 0);
         assert!(ledger.current.get(BudgetItem::RoadMaintenance) < 0);
+    }
+
+    /// One day of the daily economy over `grid` and the given stations, from a fresh ledger.
+    fn one_day(grid: MapGrid, stations: &[crate::game::services::ServiceKind]) -> BudgetLines {
+        use crate::game::services::ServiceStation;
+
+        let mut app = App::new();
+        app.add_message::<DayAdvanced>();
+        app.insert_resource(EconomyConfig::default());
+        app.insert_resource(EmploymentStats::default());
+        app.insert_resource(grid);
+        app.insert_resource(City {
+            money: 10_000,
+            ..Default::default()
+        });
+        let mut ledger = BudgetLedger::default();
+        ledger.restart(10_000);
+        app.insert_resource(ledger);
+        for (index, kind) in stations.iter().enumerate() {
+            app.world_mut().spawn(ServiceStation {
+                kind: *kind,
+                pos: TilePos {
+                    x: index as i32 * 4,
+                    y: 0,
+                },
+                total_vehicles: 2,
+                available_vehicles: 2,
+            });
+        }
+        app.add_systems(Update, apply_daily_economy);
+        app.world_mut().write_message(DayAdvanced { day: 2 });
+        app.update();
+        app.world().resource::<BudgetLedger>().current.clone()
+    }
+
+    fn with_building(mut grid: MapGrid, kind: BuildingKind, anchor: TilePos) -> MapGrid {
+        for dx in 0..3 {
+            for dy in 0..3 {
+                grid.set(
+                    TilePos {
+                        x: anchor.x + dx,
+                        y: anchor.y + dy,
+                    },
+                    MapCell {
+                        building: Some(kind),
+                        ..MapCell::default()
+                    },
+                );
+            }
+        }
+        grid
+    }
+
+    #[test]
+    fn maintenance_per_building_a_service_station_costs_its_upkeep_once_whatever_its_footprint() {
+        use crate::game::services::ServiceKind;
+
+        let grid = with_building(
+            MapGrid::new(16, 16),
+            BuildingKind::FireStation,
+            TilePos { x: 0, y: 0 },
+        );
+        let lines = one_day(grid, &[ServiceKind::Fire]);
+        assert_eq!(
+            lines.get(BudgetItem::ServiceMaintenance),
+            -EconomyConfig::default().fire_station_upkeep,
+            "nine footprint tiles are one fire station, and it is paid for once"
+        );
+
+        let lines = one_day(
+            MapGrid::new(16, 16),
+            &[ServiceKind::Fire, ServiceKind::Police, ServiceKind::Medical],
+        );
+        let cfg = EconomyConfig::default();
+        assert_eq!(
+            lines.get(BudgetItem::ServiceMaintenance),
+            -(cfg.fire_station_upkeep + cfg.police_station_upkeep + cfg.hospital_upkeep)
+        );
+    }
+
+    #[test]
+    fn maintenance_per_building_zoned_buildings_cost_the_city_nothing() {
+        let grid = with_building(
+            MapGrid::new(16, 16),
+            BuildingKind::Residential,
+            TilePos { x: 0, y: 0 },
+        );
+        let grid = with_building(grid, BuildingKind::Industrial, TilePos { x: 6, y: 6 });
+        let lines = one_day(grid, &[]);
+        assert_eq!(
+            lines.get(BudgetItem::ServiceMaintenance),
+            0,
+            "residents and firms pay taxes; the city does not keep their buildings up"
+        );
+        assert_eq!(
+            lines.total(),
+            0,
+            "no people, no roads, no stations: nothing moves"
+        );
+    }
+
+    #[test]
+    fn maintenance_per_building_roads_cost_per_tile() {
+        let mut grid = MapGrid::new(16, 16);
+        for x in 0..5 {
+            grid.set(
+                TilePos { x, y: 3 },
+                MapCell {
+                    road: RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir: RoadDir::East,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    },
+                    ..MapCell::default()
+                },
+            );
+        }
+        let lines = one_day(grid, &[]);
+        assert_eq!(
+            lines.get(BudgetItem::RoadMaintenance),
+            -5 * EconomyConfig::default().road_maintenance
+        );
     }
 }

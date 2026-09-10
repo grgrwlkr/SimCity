@@ -661,8 +661,12 @@ pub struct DebugConfigSnapshot {
     pub economy_income_per_industrial: i64,
     /// Economy: road maintenance.
     pub economy_road_maintenance: i64,
-    /// Economy: building maintenance.
-    pub economy_building_maintenance: i64,
+    /// Economy: daily upkeep of one fire station.
+    pub economy_fire_station_upkeep: i64,
+    /// Economy: daily upkeep of one police station.
+    pub economy_police_station_upkeep: i64,
+    /// Economy: daily upkeep of one hospital.
+    pub economy_hospital_upkeep: i64,
     /// Economy: happiness target.
     pub economy_happiness_target: f32,
     /// Employment: max assignments per tick.
@@ -2274,7 +2278,9 @@ fn update_debug_config_snapshot(
     snapshot.economy_income_per_commercial = economy_cfg.income_per_commercial;
     snapshot.economy_income_per_industrial = economy_cfg.income_per_industrial;
     snapshot.economy_road_maintenance = economy_cfg.road_maintenance;
-    snapshot.economy_building_maintenance = economy_cfg.building_maintenance;
+    snapshot.economy_fire_station_upkeep = economy_cfg.fire_station_upkeep;
+    snapshot.economy_police_station_upkeep = economy_cfg.police_station_upkeep;
+    snapshot.economy_hospital_upkeep = economy_cfg.hospital_upkeep;
     snapshot.economy_happiness_target = economy_cfg.happiness_target;
 
     snapshot.employment_max_assignments_per_tick = employment_cfg.max_assignments_per_tick as u32;

@@ -3,6 +3,9 @@
     income_per_commercial: 6,
     income_per_industrial: 8,
     road_maintenance: 1,
-    building_maintenance: 2,
     happiness_target: 0.7,
+    days_per_month: 10,
+    fire_station_upkeep: 20,
+    police_station_upkeep: 15,
+    hospital_upkeep: 30,
 )
