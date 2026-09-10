@@ -281,8 +281,9 @@ mod tests {
     use crate::game::buildings::{
         BuildingGrowthRng, BuildingPhase, grow_buildings, update_occupancy,
     };
+    use crate::game::buildings::{LowHappinessDecay, building_decay_low_happiness};
     use crate::game::city_fields::CityField;
-    use crate::game::economy::WealthClass;
+    use crate::game::economy::{EconomyConfig, WealthClass};
     use crate::game::map::{DirtyTiles, MapConfig, ZoneDensity, ZoneKind};
     use crate::game::roads::{LaneType, RoadCell, RoadDir, RoadFlow, RoadKind};
     use crate::game::sim::City;
@@ -678,6 +679,51 @@ mod tests {
                 .iter(world)
                 .all(|profile| profile.density == ZoneDensity::High)
         );
+    }
+
+    /// A big building fills at the market's pace: at a moderate demand a High block needs weeks to
+    /// reach its target, and it must not be abandoned for being half empty while it fills — that
+    /// demolished every High building two days after it opened and grew it again, empty. One that
+    /// had its weeks and stayed empty, or one the market gives nobody, is still abandoned.
+    #[test]
+    fn zone_density_a_large_building_filling_at_the_market_pace_is_not_abandoned() {
+        let decays = |occupancy: u16, target: u16, start_day: u32, today: u32| {
+            let grid = block();
+            let city = City {
+                day: today,
+                ..City::default()
+            };
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .add_message::<DayAdvanced>()
+                .insert_resource(DirtyTiles::new(grid.len()))
+                .insert_resource(grid)
+                .insert_resource(demand(0.08))
+                .insert_resource(city)
+                .init_resource::<EconomyConfig>()
+                .add_systems(Update, building_decay_low_happiness);
+            let mut tall = house(2);
+            tall.footprint_length = 6;
+            tall.capacity_residents = 36;
+            tall.occupancy_residents = occupancy;
+            tall.target_occupancy_residents = target;
+            tall.construction_start_day = start_day;
+            let entity = app.world_mut().spawn(tall).id();
+            app.world_mut()
+                .resource_mut::<bevy::ecs::message::Messages<DayAdvanced>>()
+                .write(DayAdvanced { day: today });
+            app.update();
+            app.world().get::<LowHappinessDecay>(entity).is_some()
+        };
+        assert!(
+            !decays(2, 15, 4, 10),
+            "three days open, two of fifteen: still filling at the market's pace"
+        );
+        assert!(
+            decays(2, 15, 4, 60),
+            "fifty days open and still two of fifteen: it failed to fill"
+        );
+        assert!(decays(0, 0, 4, 10), "a building the market gives nobody");
     }
 
     #[test]

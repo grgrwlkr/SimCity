@@ -8,6 +8,29 @@ use super::components::Building;
 use super::footprint::any_footprint_tile;
 use crate::game::map::BuildingKind;
 
+/// Demand at which occupancy pressure is one half (GDD 10.3.5.1).
+pub(crate) const OCCUPANCY_D_MID: f32 = 0.3;
+/// Steepness of the occupancy pressure curve (GDD 10.3.5.1).
+pub(crate) const OCCUPANCY_K: f32 = 6.0;
+
+/// How many occupants a building can be expected to hold `days_open` days after it opened: its
+/// target, reached at the pace occupancy fills (GDD 10.3.5.3). A new building is not unhappy for
+/// being empty before it had the days to fill.
+pub(crate) fn expected_occupancy(
+    target: u16,
+    level: u8,
+    area: u32,
+    demand: f32,
+    days_open: u32,
+) -> f32 {
+    let pressure = calculate_pressure(demand, OCCUPANCY_D_MID, OCCUPANCY_K);
+    let fill_days = calculate_fill_days(level, area, pressure);
+    let target = f32::from(target);
+    // Occupancy moves by at least one head a day, as `update_occupancy` steps it.
+    let per_day = (target / fill_days.max(1.0)).ceil().max(1.0);
+    (per_day * days_open as f32).min(target)
+}
+
 /// Calculate pressure from demand using sigmoid function (GDD 10.3.5.1)
 /// pressure(d) = 1 / (1 + e^(-k(d - d_mid)))
 /// where d_mid=0.3, k=6.0
@@ -122,9 +145,7 @@ pub fn update_occupancy(
             };
 
             // Calculate pressure and target ratio
-            const D_MID: f32 = 0.3;
-            const K: f32 = 6.0;
-            let pressure = calculate_pressure(demand_value, D_MID, K);
+            let pressure = calculate_pressure(demand_value, OCCUPANCY_D_MID, OCCUPANCY_K);
             let target_ratio = calculate_target_ratio(pressure);
 
             // Calculate target occupancy
