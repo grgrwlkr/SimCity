@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use super::data_map::{
     ROAD_OVERLAY_COLOR, WATER_OVERLAY_COLOR, height_color, land_value_color, pollution_color,
+    utility_for_overlay, utility_tile_color,
 };
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
@@ -15,6 +16,7 @@ use crate::game::render_primitives::{RenderPrimitives, flat_quad, layer};
 use crate::game::state::AppState;
 use crate::game::traffic::{Parked, Vehicle};
 use crate::game::ui_state::{OverlayMode, UiState};
+use crate::game::utilities::{UtilityKind, UtilityNetwork};
 
 use super::coords::{map_origin, tile_to_world, viewport_to_ground};
 use super::generation::generate_map_into_grid;
@@ -268,6 +270,7 @@ pub(super) struct SyncDirtyTilesParams<'w, 's> {
     index: Res<'w, MapIndex>,
     land_value: Option<Res<'w, LandValueIndex>>,
     pollution: Option<Res<'w, PollutionIndex>>,
+    utilities: Option<Res<'w, UtilityNetwork>>,
     dirty: ResMut<'w, DirtyTiles>,
     prims: ResMut<'w, RenderPrimitives>,
     materials: ResMut<'w, Assets<StandardMaterial>>,
@@ -378,6 +381,31 @@ pub(super) fn sync_dirty_tiles_to_render(
                         )
                     }
                 }
+            }
+            OverlayMode::Power | OverlayMode::WaterSupply | OverlayMode::Garbage => {
+                let kind = match p.ui.overlay {
+                    OverlayMode::Power => UtilityKind::Power,
+                    OverlayMode::WaterSupply => UtilityKind::Water,
+                    _ => UtilityKind::Garbage,
+                };
+                let supplied = p
+                    .utilities
+                    .as_deref()
+                    .zip(p.grid.idx(pos))
+                    .is_some_and(|(network, idx)| network.tile_has(idx, kind));
+                let k = if cell.water {
+                    TileKind::Water
+                } else if cell.road.is_some() {
+                    TileKind::Road
+                } else {
+                    base_terrain_or_zone
+                };
+                let zoned = cell.zone != super::ZoneKind::None;
+                (
+                    k,
+                    utility_tile_color(kind, supplied, zoned, cell.water),
+                    base_size,
+                )
             }
             OverlayMode::Pollution => {
                 // Pollution overlay: green (clean) to red (polluted)
@@ -502,6 +530,7 @@ pub(super) fn mark_dirty_on_overlay_change(
 pub(super) struct OverlayIndexVersions {
     land_value: u64,
     pollution: u64,
+    utilities: u64,
 }
 
 /// Keeps the LandValue/Pollution overlays live: without this, overlay tiles were painted once
@@ -511,6 +540,7 @@ pub(super) fn mark_dirty_on_index_publish(
     ui: Res<UiState>,
     land_value: Option<Res<LandValueIndex>>,
     pollution: Option<Res<PollutionIndex>>,
+    utilities: Option<Res<UtilityNetwork>>,
     mut seen: ResMut<OverlayIndexVersions>,
     mut dirty: ResMut<DirtyTiles>,
 ) {
@@ -540,6 +570,16 @@ pub(super) fn mark_dirty_on_index_publish(
                 p.current_chunk(),
                 published,
             );
+        }
+    }
+    // The network changes only on a map edit, and then a supply boundary can move anywhere, so a
+    // new network repaints the whole utility map rather than a chunk of it.
+    if let Some(network) = utilities.as_deref()
+        && network.version != seen.utilities
+    {
+        seen.utilities = network.version;
+        if utility_for_overlay(ui.overlay).is_some() {
+            dirty.mark_all();
         }
     }
 }
@@ -697,8 +737,33 @@ mod tests {
         .init_resource::<LandValueIndex>()
         .init_resource::<PollutionIndex>()
         .init_resource::<OverlayIndexVersions>()
+        .init_resource::<UtilityNetwork>()
         .add_systems(Update, mark_dirty_on_index_publish);
         app
+    }
+
+    #[test]
+    fn utility_network_overlay_repaints_when_the_network_changes() {
+        let mut app = build_app(OverlayMode::Power);
+        app.update();
+        assert!(!app.world().resource::<DirtyTiles>().is_marked(0));
+
+        app.world_mut().resource_mut::<UtilityNetwork>().version = 1;
+        app.update();
+        let dirty = app.world().resource::<DirtyTiles>();
+        assert!(
+            (0..64).all(|idx| dirty.is_marked(idx)),
+            "a new network can move a supply boundary anywhere, so the whole map repaints"
+        );
+
+        let mut other = build_app(OverlayMode::LandValue);
+        other.update();
+        other.world_mut().resource_mut::<UtilityNetwork>().version = 1;
+        other.update();
+        assert!(
+            !other.world().resource::<DirtyTiles>().is_marked(0),
+            "a map that does not show supply ignores it"
+        );
     }
 
     #[test]

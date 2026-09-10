@@ -2488,6 +2488,9 @@ fn overlay_label(overlay: OverlayMode) -> &'static str {
         OverlayMode::ServiceCoverage => "ServiceCoverage",
         OverlayMode::LandValue => "LandValue",
         OverlayMode::Pollution => "Pollution",
+        OverlayMode::Power => "Power",
+        OverlayMode::WaterSupply => "WaterSupply",
+        OverlayMode::Garbage => "Garbage",
     }
 }
 

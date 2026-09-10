@@ -115,6 +115,9 @@ pub enum OverlayMode {
     ServiceCoverage,
     LandValue,
     Pollution,
+    Power,
+    WaterSupply,
+    Garbage,
 }
 
 impl OverlayMode {
@@ -146,6 +149,9 @@ impl OverlayMode {
             "service" | "servicecoverage" => Some(Self::ServiceCoverage),
             "landvalue" => Some(Self::LandValue),
             "pollution" => Some(Self::Pollution),
+            "power" => Some(Self::Power),
+            "watersupply" => Some(Self::WaterSupply),
+            "garbage" => Some(Self::Garbage),
             _ => None,
         }
     }

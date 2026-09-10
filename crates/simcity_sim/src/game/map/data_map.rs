@@ -11,6 +11,7 @@ use crate::game::pollution::PollutionIndex;
 use crate::game::services::ServiceCoverageIndex;
 use crate::game::traffic::TrafficOccupancy;
 use crate::game::ui_state::OverlayMode;
+use crate::game::utilities::{UtilityKind, UtilityNetwork};
 
 use super::{MapGrid, TileKind, TilePos, ZoneKind};
 use crate::game::roads::RoadKind;
@@ -48,6 +49,41 @@ pub fn height_color(height: u8) -> Color {
 pub const WATER_OVERLAY_COLOR: Color = Color::srgba(0.15, 0.45, 0.95, 0.85);
 /// Road tiles under the roads overlay.
 pub const ROAD_OVERLAY_COLOR: Color = Color::srgb(0.92, 0.92, 0.96);
+
+/// A zoned tile a utility does not reach, on that utility's data map.
+pub const UNSUPPLIED_ZONE_COLOR: Color = Color::srgb(0.90, 0.15, 0.15);
+
+/// The utility a data map shows; `None` for every other map.
+pub fn utility_for_overlay(mode: OverlayMode) -> Option<UtilityKind> {
+    match mode {
+        OverlayMode::Power => Some(UtilityKind::Power),
+        OverlayMode::WaterSupply => Some(UtilityKind::Water),
+        OverlayMode::Garbage => Some(UtilityKind::Garbage),
+        _ => None,
+    }
+}
+
+/// The colour a utility paints where it reaches.
+pub fn utility_overlay_color(kind: UtilityKind) -> Color {
+    match kind {
+        UtilityKind::Power => Color::srgb(1.0, 0.85, 0.10),
+        UtilityKind::Water => Color::srgb(0.20, 0.60, 1.0),
+        UtilityKind::Garbage => Color::srgb(0.62, 0.46, 0.26),
+    }
+}
+
+/// How one tile reads on a utility's data map.
+pub fn utility_tile_color(kind: UtilityKind, supplied: bool, zoned: bool, water: bool) -> Color {
+    if water {
+        TileKind::Water.color()
+    } else if supplied {
+        utility_overlay_color(kind)
+    } else if zoned {
+        UNSUPPLIED_ZONE_COLOR
+    } else {
+        Color::srgba(0.0, 0.0, 0.0, 0.10)
+    }
+}
 
 /// Stops a gradient legend samples; odd, so one lands on the midpoint.
 const GRADIENT_STOPS: usize = 9;
@@ -91,6 +127,18 @@ pub fn legend_for(mode: OverlayMode) -> Option<Legend> {
         ])),
         OverlayMode::Roads => Some(Legend::Swatches(vec![("Road", ROAD_OVERLAY_COLOR)])),
         OverlayMode::Water => Some(Legend::Swatches(vec![("Water", WATER_OVERLAY_COLOR)])),
+        OverlayMode::Power => Some(Legend::Swatches(vec![
+            ("Powered", utility_overlay_color(UtilityKind::Power)),
+            ("Zoned, no power", UNSUPPLIED_ZONE_COLOR),
+        ])),
+        OverlayMode::WaterSupply => Some(Legend::Swatches(vec![
+            ("Water", utility_overlay_color(UtilityKind::Water)),
+            ("Zoned, no water", UNSUPPLIED_ZONE_COLOR),
+        ])),
+        OverlayMode::Garbage => Some(Legend::Swatches(vec![
+            ("Collected", utility_overlay_color(UtilityKind::Garbage)),
+            ("Zoned, no collection", UNSUPPLIED_ZONE_COLOR),
+        ])),
         OverlayMode::ServiceCoverage => Some(Legend::Swatches(vec![
             ("Fire", Color::srgb(0.9, 0.0, 0.0)),
             ("Police", Color::srgb(0.0, 0.0, 0.9)),
@@ -107,6 +155,7 @@ pub struct DataMapInputs<'a> {
     pub pollution: Option<&'a PollutionIndex>,
     pub traffic: Option<&'a TrafficOccupancy>,
     pub coverage: Option<&'a ServiceCoverageIndex>,
+    pub utilities: Option<&'a UtilityNetwork>,
 }
 
 /// The value `mode` shows at `tile`, in words and numbers.
@@ -117,6 +166,30 @@ pub fn overlay_reading(mode: OverlayMode, tile: TilePos, inputs: &DataMapInputs)
     let percent = |value: f32| (value.clamp(0.0, 1.0) * 100.0).round() as u32;
     let reading = match mode {
         OverlayMode::None | OverlayMode::Path => return None,
+        OverlayMode::Power | OverlayMode::WaterSupply | OverlayMode::Garbage => {
+            let (kind, name, supplied, missing) = match mode {
+                OverlayMode::Power => (UtilityKind::Power, "Power", "Power supplied", "No power"),
+                OverlayMode::WaterSupply => {
+                    (UtilityKind::Water, "Water", "Water supplied", "No water")
+                }
+                _ => (
+                    UtilityKind::Garbage,
+                    "Garbage collection",
+                    "Garbage collected",
+                    "No garbage collection",
+                ),
+            };
+            match inputs.utilities {
+                Some(network) if network.served.len() == grid.len() => {
+                    if network.tile_has(idx, kind) {
+                        supplied.to_string()
+                    } else {
+                        missing.to_string()
+                    }
+                }
+                _ => format!("{name} not computed yet"),
+            }
+        }
         // An index shorter than the map has not been computed for it yet; its getters would
         // answer with a default that reads like a measurement.
         OverlayMode::LandValue => match inputs.land_value {
@@ -250,6 +323,9 @@ mod tests {
             OverlayMode::ServiceCoverage,
             OverlayMode::LandValue,
             OverlayMode::Pollution,
+            OverlayMode::Power,
+            OverlayMode::WaterSupply,
+            OverlayMode::Garbage,
         ] {
             assert!(legend_for(mode).is_some(), "{mode:?} needs a legend");
         }
@@ -327,6 +403,7 @@ mod tests {
             pollution: Some(&pollution),
             traffic: Some(&traffic),
             coverage: Some(&coverage),
+            utilities: None,
         };
         let read = |mode, tile| overlay_reading(mode, tile, &inputs);
 
@@ -385,10 +462,119 @@ mod tests {
             pollution: None,
             traffic: None,
             coverage: None,
+            utilities: None,
         };
         assert_eq!(
             overlay_reading(OverlayMode::LandValue, at(4, 4), &blind).as_deref(),
             Some("Land value not computed yet")
+        );
+    }
+
+    #[test]
+    fn utility_network_overlays_have_a_legend_a_reading_and_their_colours() {
+        let mut grid = MapGrid::new(8, 8);
+        for tile in [at(2, 2), at(3, 3)] {
+            grid.set(
+                tile,
+                MapCell {
+                    zone: ZoneKind::Residential,
+                    ..MapCell::default()
+                },
+            );
+        }
+        let mut network = UtilityNetwork {
+            version: 1,
+            map_version: 0,
+            served: vec![0; 64],
+        };
+        network.served[grid.idx(at(2, 2)).expect("on the map")] =
+            UtilityKind::Power.mask() | UtilityKind::Water.mask() | UtilityKind::Garbage.mask();
+        let inputs = DataMapInputs {
+            grid: &grid,
+            land_value: None,
+            pollution: None,
+            traffic: None,
+            coverage: None,
+            utilities: Some(&network),
+        };
+
+        for (mode, kind, label, supplied, missing) in [
+            (
+                OverlayMode::Power,
+                UtilityKind::Power,
+                "Powered",
+                "Power supplied",
+                "No power",
+            ),
+            (
+                OverlayMode::WaterSupply,
+                UtilityKind::Water,
+                "Water",
+                "Water supplied",
+                "No water",
+            ),
+            (
+                OverlayMode::Garbage,
+                UtilityKind::Garbage,
+                "Collected",
+                "Garbage collected",
+                "No garbage collection",
+            ),
+        ] {
+            assert_eq!(utility_for_overlay(mode), Some(kind));
+            assert!(mode.is_data_map());
+            let Some(Legend::Swatches(swatches)) = legend_for(mode) else {
+                panic!("{mode:?} is a map of categories");
+            };
+            assert!(
+                swatches.contains(&(label, utility_overlay_color(kind))),
+                "{mode:?}: {swatches:?}"
+            );
+            assert!(
+                swatches
+                    .iter()
+                    .any(|(_, colour)| *colour == UNSUPPLIED_ZONE_COLOR),
+                "{mode:?} names the warning colour"
+            );
+            assert_eq!(
+                utility_tile_color(kind, true, true, false),
+                utility_overlay_color(kind)
+            );
+            assert_eq!(
+                utility_tile_color(kind, false, true, false),
+                UNSUPPLIED_ZONE_COLOR
+            );
+            assert_ne!(
+                utility_tile_color(kind, false, false, false),
+                UNSUPPLIED_ZONE_COLOR,
+                "unzoned land without supply is not a warning"
+            );
+            assert_eq!(
+                overlay_reading(mode, at(2, 2), &inputs).as_deref(),
+                Some(supplied)
+            );
+            assert_eq!(
+                overlay_reading(mode, at(3, 3), &inputs).as_deref(),
+                Some(missing)
+            );
+        }
+        assert_ne!(
+            utility_overlay_color(UtilityKind::Power),
+            utility_overlay_color(UtilityKind::Water)
+        );
+        assert_eq!(utility_for_overlay(OverlayMode::LandValue), None);
+
+        let blind = DataMapInputs {
+            grid: &grid,
+            land_value: None,
+            pollution: None,
+            traffic: None,
+            coverage: None,
+            utilities: None,
+        };
+        assert_eq!(
+            overlay_reading(OverlayMode::Power, at(2, 2), &blind).as_deref(),
+            Some("Power not computed yet")
         );
     }
 
@@ -405,6 +591,9 @@ mod tests {
             OverlayMode::ServiceCoverage,
             OverlayMode::LandValue,
             OverlayMode::Pollution,
+            OverlayMode::Power,
+            OverlayMode::WaterSupply,
+            OverlayMode::Garbage,
         ] {
             assert_eq!(mode.is_data_map(), legend_for(mode).is_some(), "{mode:?}");
         }

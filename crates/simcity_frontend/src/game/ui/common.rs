@@ -104,6 +104,9 @@ pub(super) fn overlay_tooltip(overlay: OverlayMode) -> &'static str {
         OverlayMode::ServiceCoverage => "Service coverage overlay\nShows service station coverage",
         OverlayMode::LandValue => "Land value overlay\nShows land value (red=low, green=high)",
         OverlayMode::Pollution => "Pollution overlay\nShows pollution (green=clean, red=polluted)",
+        OverlayMode::Power => "Power overlay\nShows where power reaches along roads",
+        OverlayMode::WaterSupply => "Water supply overlay\nShows where water reaches along roads",
+        OverlayMode::Garbage => "Garbage overlay\nShows where garbage is collected along roads",
     }
 }
 
@@ -121,6 +124,9 @@ pub(super) fn overlay_sources(o: OverlayMode) -> &'static str {
         OverlayMode::ServiceCoverage => "ServiceStation coverage (radius) + uncovered zones",
         OverlayMode::LandValue => "LandValueIndex.values (0.0-1.0)",
         OverlayMode::Pollution => "PollutionIndex.pollution (0.0-1.0)",
+        OverlayMode::Power => "UtilityNetwork.served (power bit)",
+        OverlayMode::WaterSupply => "UtilityNetwork.served (water bit)",
+        OverlayMode::Garbage => "UtilityNetwork.served (garbage bit)",
     }
 }
 
