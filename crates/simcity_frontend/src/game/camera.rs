@@ -5,46 +5,20 @@ use bevy::prelude::*;
 use bevy::time::Real;
 use bevy_egui::PrimaryEguiContext;
 
-pub use simcity_core::game::camera::MainCamera;
+pub use simcity_core::game::camera::{CameraRig, MainCamera};
+use simcity_core::game::camera::{PITCH_MAX, PITCH_MIN, ZOOM_MAX, ZOOM_MIN};
 
+use crate::game::camera_projection::{ProjectionPlan, projection_plan};
 use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::ui_settings::UiSettings;
+use simcity_core::game::render_config::RenderConfig;
 
 /// Pseudo-3D orthographic view: the world lives in the XY plane (Z = height),
 /// the camera hangs on an orbitable boom above a focus point on the ground.
 /// Pan moves the focus in XY; Q/E and Ctrl+LMB-drag orbit; zoom eases the
 /// orthographic scale toward a scroll-driven target.
-const DEFAULT_YAW: f32 = -std::f32::consts::FRAC_PI_4; // diagonal look, prototype-approved
-const DEFAULT_PITCH: f32 = 0.96; // ~55 deg above the ground plane
-const CAMERA_DIST: f32 = 500.0;
-const PITCH_MIN: f32 = 0.50; // ~29 deg — flat enough to feel 3D, still readable
-const PITCH_MAX: f32 = 1.35; // ~77 deg — almost top-down
 const MOUSE_ROTATE_SENS: f32 = 0.008;
-/// Prototype-parity zoom range: 0.05 shows ~5 tiles across (real close-up).
-const ZOOM_MIN: f32 = 0.05;
-const ZOOM_MAX: f32 = 6.0;
-
-/// Orbitable camera rig above a ground focus point.
-#[derive(Component, Debug, Clone, Copy)]
-pub struct CameraRig {
-    pub focus: Vec2,
-    pub yaw: f32,
-    pub pitch: f32,
-    /// Ortho scale the smooth-zoom system eases toward.
-    pub zoom_target: f32,
-}
-
-impl Default for CameraRig {
-    fn default() -> Self {
-        Self {
-            focus: Vec2::ZERO,
-            yaw: DEFAULT_YAW,
-            pitch: DEFAULT_PITCH,
-            zoom_target: 1.0,
-        }
-    }
-}
 
 pub struct CameraPlugin;
 
@@ -59,6 +33,7 @@ impl Plugin for CameraPlugin {
                 camera_mouse_rotate,
                 camera_mouse_wheel_zoom,
                 camera_smooth_zoom,
+                sync_camera_projection,
                 sync_camera_transform,
             )
                 .chain()
@@ -68,12 +43,12 @@ impl Plugin for CameraPlugin {
     }
 }
 
-fn boom_offset(yaw: f32, pitch: f32) -> Vec3 {
+fn boom_offset(yaw: f32, pitch: f32, distance: f32) -> Vec3 {
     Vec3::new(
         yaw.cos() * pitch.cos(),
         yaw.sin() * pitch.cos(),
         pitch.sin(),
-    ) * CAMERA_DIST
+    ) * distance
 }
 
 fn spawn_camera(mut commands: Commands) {
@@ -81,10 +56,13 @@ fn spawn_camera(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
         Projection::Orthographic(OrthographicProjection::default_3d()),
-        // Flat game palette must reach the screen untouched.
+        // Starting value only: `render_settings` overwrites it from render.ron
+        // on the first frame the config is present.
         Tonemapping::None,
-        Transform::from_translation(rig.focus.extend(0.0) + boom_offset(rig.yaw, rig.pitch))
-            .looking_at(rig.focus.extend(0.0), Vec3::Z),
+        Transform::from_translation(
+            rig.focus.extend(0.0) + boom_offset(rig.yaw, rig.pitch, rig.boom),
+        )
+        .looking_at(rig.focus.extend(0.0), Vec3::Z),
         rig,
         // Lit world (phase 5): soft fill so shadowed faces keep the palette readable.
         AmbientLight {
@@ -127,7 +105,7 @@ fn sync_camera_transform(mut q_cam: Query<(&CameraRig, &mut Transform), With<Mai
         return;
     };
     let target = rig.focus.extend(0.0);
-    *tf = Transform::from_translation(target + boom_offset(rig.yaw, rig.pitch))
+    *tf = Transform::from_translation(target + boom_offset(rig.yaw, rig.pitch, rig.boom))
         .looking_at(target, Vec3::Z);
 }
 
@@ -192,19 +170,63 @@ fn camera_mouse_rotate(
     }
 }
 
-/// Ease the orthographic scale toward the rig's zoom target every frame —
-/// scroll input only moves the target, so zoom feels smooth at any input rate.
+/// Ease the zoom toward the rig's target every frame — scroll input only moves
+/// the target, so zoom feels smooth at any input rate.
 fn camera_smooth_zoom(
     time: Res<Time<Real>>,
     settings: Res<UiSettings>,
-    mut q_cam: Query<(&CameraRig, &mut Projection), With<MainCamera>>,
+    mut q_cam: Query<&mut CameraRig, With<MainCamera>>,
 ) {
-    let Ok((rig, mut proj)) = q_cam.single_mut() else {
+    let Ok(mut rig) = q_cam.single_mut() else {
         return;
     };
-    if let Projection::Orthographic(ortho) = proj.as_mut() {
-        let t = 1.0 - (-time.delta_secs() * settings.zoom_ease.max(0.5)).exp();
-        ortho.scale += (rig.zoom_target - ortho.scale) * t;
+    let t = 1.0 - (-time.delta_secs() * settings.zoom_ease.max(0.5)).exp();
+    let step = (rig.zoom_target - rig.zoom) * t;
+    rig.zoom += step;
+}
+
+/// Turn the eased zoom into a projection and a boom length.
+///
+/// Close up the city is photographed, far out it is a map; the switch is placed
+/// where the perspective distortion has already faded, and the framing is
+/// identical on both sides of it (`camera_projection`).
+fn sync_camera_projection(
+    cfg: Option<Res<RenderConfig>>,
+    windows: Query<&Window>,
+    mut q_cam: Query<(&mut CameraRig, &mut Projection), With<MainCamera>>,
+) {
+    let Ok((mut rig, mut proj)) = q_cam.single_mut() else {
+        return;
+    };
+    // LOGICAL height, not physical: Bevy sizes the orthographic camera from
+    // `logical_viewport_size()`, so physical pixels here make the frame jump by
+    // the display's scale factor at the moment the projection switches.
+    let viewport_height = windows.iter().next().map(|w| w.height()).unwrap_or(1000.0);
+    let perspective = cfg.map(|c| c.perspective).unwrap_or_default();
+
+    match projection_plan(rig.zoom, viewport_height, &perspective) {
+        ProjectionPlan::Perspective {
+            fov_y_rad,
+            distance,
+        } => {
+            rig.boom = distance;
+            *proj = Projection::Perspective(PerspectiveProjection {
+                fov: fov_y_rad,
+                near: 0.1,
+                far: distance * 4.0,
+                ..default()
+            });
+        }
+        ProjectionPlan::Orthographic { scale, distance } => {
+            rig.boom = distance;
+            let mut ortho = OrthographicProjection::default_3d();
+            ortho.scale = scale;
+            // default_3d clips at far = 1000; the boom alone can exceed that and
+            // then the far half of the ground vanishes off the top of the frame.
+            ortho.near = 0.0;
+            ortho.far = distance * 4.0;
+            *proj = Projection::Orthographic(ortho);
+        }
     }
 }
 

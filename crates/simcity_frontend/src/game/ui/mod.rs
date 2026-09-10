@@ -4,7 +4,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::time::Real;
 use bevy::window::PrimaryWindow;
-use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
+use bevy_egui::{EguiContexts, EguiGlobalSettings, EguiPlugin, EguiPrimaryContextPass, egui};
 use std::collections::VecDeque;
 
 use crate::game::buildings::Building;
@@ -73,6 +73,15 @@ pub struct UiPlugin;
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(EguiPlugin::default())
+            // `MainCamera` carries `PrimaryEguiContext` explicitly, so egui's auto-attach
+            // has nothing to do — and it is actively harmful: it hangs the primary context
+            // on whichever camera it happens to see first, so adding any second camera
+            // (the offscreen debug eye, a minimap) panics with "must have a unique
+            // schedule" at the first frame.
+            .insert_resource(EguiGlobalSettings {
+                auto_create_primary_context: false,
+                ..default()
+            })
             .init_resource::<UiMetrics>()
             .init_resource::<UiHistory>()
             .add_systems(OnEnter(AppState::MainMenu), announce_main_menu)

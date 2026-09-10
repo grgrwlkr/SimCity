@@ -57,6 +57,34 @@ pub enum OverlayMode {
     Pollution,
 }
 
+impl OverlayMode {
+    /// Parse an overlay by the name the toolbar shows, case-insensitively.
+    ///
+    /// Exists so the overlays can be driven from a script (BRP) instead of only
+    /// from a menu: a screenshot proving an overlay still works has to be able
+    /// to switch to it without a human clicking.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name
+            .trim()
+            .to_ascii_lowercase()
+            .replace([' ', '_', '-'], "")
+            .as_str()
+        {
+            "none" => Some(Self::None),
+            "water" => Some(Self::Water),
+            "height" => Some(Self::Height),
+            "zones" => Some(Self::Zones),
+            "roads" => Some(Self::Roads),
+            "traffic" => Some(Self::Traffic),
+            "path" => Some(Self::Path),
+            "service" | "servicecoverage" => Some(Self::ServiceCoverage),
+            "landvalue" => Some(Self::LandValue),
+            "pollution" => Some(Self::Pollution),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum SimSpeed {
     Paused,
@@ -66,6 +94,24 @@ pub enum SimSpeed {
 }
 
 impl SimSpeed {
+    /// Parse a speed the way `OverlayMode::from_name` parses an overlay, so a
+    /// script can stop the clock without entering `AppState::Paused` — that
+    /// path resets the day and hour, which makes every frozen frame night.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name
+            .trim()
+            .to_ascii_lowercase()
+            .replace([' ', '_', '-'], "")
+            .as_str()
+        {
+            "paused" | "pause" | "0" => Some(Self::Paused),
+            "x1" | "1" => Some(Self::X1),
+            "x2" | "2" => Some(Self::X2),
+            "x3" | "3" => Some(Self::X3),
+            _ => None,
+        }
+    }
+
     /// Multiplier relative to x1 speed (drives virtual time scaling).
     pub fn multiplier(self) -> f32 {
         match self {

@@ -148,10 +148,7 @@ pub fn generate_test_city(
     // =========================================================================
     // WATER: Create a lake in the upper-right area
     // =========================================================================
-    let lake_center = TilePos {
-        x: cfg.width - 25,
-        y: cfg.height - 25,
-    };
+    let lake_center = lake_center(cfg);
     let lake_radius = 10;
     for dy in -lake_radius..=lake_radius {
         for dx in -lake_radius..=lake_radius {
@@ -634,22 +631,88 @@ pub fn generate_test_city(
             if let Some(cell) = grid.get(pos) {
                 let mut cell = cell;
                 if !cell.water {
-                    // Create rolling hills effect
-                    let fx = x as f32 / 20.0;
-                    let fy = y as f32 / 20.0;
-                    let height = ((fx.sin() + fy.cos()) * 0.5 + 0.5) * 20.0;
-                    // Add some variation near the lake (higher ground)
-                    let lake_dist =
-                        (((x - lake_center.x).pow(2) + (y - lake_center.y).pow(2)) as f32).sqrt();
-                    let lake_height = if lake_dist < 20.0 {
-                        (20.0 - lake_dist) * 0.5
-                    } else {
-                        0.0
-                    };
-                    cell.height = ((height + lake_height) as u8).min(50);
+                    cell.height = terrain_height(pos, lake_center);
                 }
                 grid.set(pos, cell);
             }
         }
+    }
+}
+
+/// Where the test city's lake sits.
+///
+/// Named so the terrain pin cannot drift from the generator: the first version
+/// of that test guessed a centre, and a guessed centre exercises terrain the
+/// game never produces.
+pub fn lake_center(cfg: &MapConfig) -> TilePos {
+    TilePos {
+        x: cfg.width - 25,
+        y: cfg.height - 25,
+    }
+}
+
+/// Terrain height of one tile of the test city, 0..=50.
+///
+/// Named rather than inline because the Height overlay paints `height / 255`,
+/// and how dark that comes out is a question about this range — the overlay
+/// reading near-black on the test city is the range, not a missing relief.
+pub fn terrain_height(pos: TilePos, lake_center: TilePos) -> u8 {
+    let fx = pos.x as f32 / 20.0;
+    let fy = pos.y as f32 / 20.0;
+    let hills = ((fx.sin() + fy.cos()) * 0.5 + 0.5) * 20.0;
+    let lake_dist =
+        (((pos.x - lake_center.x).pow(2) + (pos.y - lake_center.y).pow(2)) as f32).sqrt();
+    let lake_rise = if lake_dist < 20.0 {
+        (20.0 - lake_dist) * 0.5
+    } else {
+        0.0
+    };
+    ((hills + lake_rise) as u8).min(50)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Characterisation pin, written after the fact and named as such: it
+    /// records the range the Height overlay actually gets, because that range
+    /// was misread once as "the test city assigns no height at all".
+    #[test]
+    fn the_test_city_has_relief_and_it_is_gentle() {
+        let cfg = MapConfig {
+            width: 128,
+            height: 128,
+            tile_size: 16.0,
+        };
+        let lake = lake_center(&cfg);
+        let mut lo = u8::MAX;
+        let mut hi = 0u8;
+        let mut total = 0u32;
+        let mut count = 0u32;
+        for y in 0..cfg.height {
+            for x in 0..cfg.width {
+                let h = terrain_height(TilePos { x, y }, lake);
+                lo = lo.min(h);
+                hi = hi.max(h);
+                total += h as u32;
+                count += 1;
+            }
+        }
+        assert!(hi > lo, "the terrain must vary, not be a constant plate");
+        assert!(hi <= 50, "the generator caps at 50, got {hi}");
+        // The docs quote this range and mean; pin them so they cannot drift
+        // away from the code in silence.
+        let mean = total as f32 / count as f32;
+        assert_eq!((lo, hi), (0, 29), "range quoted in assets/README.md");
+        assert!(
+            (mean - 10.86).abs() < 0.01,
+            "mean quoted in assets/README.md is 10.86, got {mean}"
+        );
+        // The overlay paints height/255, so this is why its ground reads dark:
+        // even the highest ground is under a fifth of the ramp.
+        assert!(
+            (hi as f32) / 255.0 < 0.2,
+            "hi {hi} would no longer explain a dark Height overlay"
+        );
     }
 }

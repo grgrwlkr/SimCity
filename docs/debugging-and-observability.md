@@ -2,6 +2,14 @@
 
 Проект уже настроен как debug-first, а не только "запустить игру и смотреть глазами".
 
+> **Живой дебаг без окна и без фокуса — `docs/live-debug.md`.** Игра поднимается скрытой на своём
+> порту, кадры снимаются офскрин-камерой, камера/часы/правки мира идут прямыми вызовами
+> `simcity/*`. Пошаговый цикл — в скилле проекта `.claude/skills/simcity-live/SKILL.md`.
+>
+> **Прежний ad-hoc путь устарел:** поднимать окно игры в фронтмост через `osascript`, ждать
+> `sleep`, мерить кадр ImageMagick и набирать зум циклом `send_keys` больше не нужно и не следует.
+> Он отбирал экран, был недетерминирован и не работал для нескольких экземпляров сразу.
+
 ## Runtime Debug Stack
 
 > **BRP/MCP — только под фичей `dev`.** `RemotePlugin`, `RemoteHttpPlugin` и кастомные методы
@@ -107,6 +115,14 @@ cargo run --release --features profile_chrome
 3. при необходимости снять `F9` debug dump (работает в любом билде)
 4. для внешнего inspection через BRP/MCP — запуск `cargo run --features dev` (иначе remote-стека нет)
 5. для perf issues идти в profiling features + `performance-audit.md`
+
+## Practical Debug Workflow (agent-driven)
+
+Когда игру ведёт не человек за клавиатурой, а сессия по BRP, порядок другой и описан в
+`docs/live-debug.md`: поднять скрытый экземпляр → `simcity/observe` → `simcity/camera` +
+`simcity/sim` → `simcity/capture` → `simcity/command` → снова кадр → `brp_extras/shutdown`.
+Ключевые свойства: окно не появляется на экране, фокус не отбирается, один вызов возвращает
+готовый PNG со статистикой кадра, а шаг симуляции на паузе точен до тика.
 
 ## Known Gaps
 

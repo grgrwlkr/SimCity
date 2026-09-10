@@ -2,6 +2,8 @@ pub mod camera;
 pub mod commands;
 pub mod ids;
 pub mod map;
+pub mod props_config;
+pub mod render_config;
 pub mod roads;
 pub mod sets;
 pub mod sim_events;

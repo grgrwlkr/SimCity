@@ -1,6 +1,7 @@
 mod game;
 
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
+use bevy::log::LogPlugin;
 use bevy::prelude::*;
 // The remote debugging stack (BRP world access + the custom screenshot/debug_dump methods)
 // is a DEV-ONLY tool. It exposes unauthenticated world mutation and an arbitrary-path file
@@ -18,27 +19,64 @@ use game::GamePlugin;
 #[cfg(feature = "dev")]
 use serde_json::{Value, json};
 
+/// Present mode for the primary window, from `SIMCITY_PRESENT_MODE`.
+///
+/// Vsync caps the frame rate at the display refresh, which hides how much of the
+/// frame budget the renderer actually uses — a perf baseline taken under it cannot
+/// tell "fits comfortably" from "barely fits". `SIMCITY_PRESENT_MODE=immediate`
+/// lifts the cap for measurement runs; anything else keeps the shipping default.
+fn present_mode_from_env(value: Option<&str>) -> bevy::window::PresentMode {
+    match value.map(str::trim) {
+        Some("immediate") | Some("uncapped") => bevy::window::PresentMode::AutoNoVsync,
+        _ => bevy::window::PresentMode::AutoVsync,
+    }
+}
+
 fn main() {
     let mut app = App::new();
     app.insert_resource(ClearColor(Color::srgb(0.08, 0.09, 0.11)));
+    // How this instance was launched: which BRP port, and whether it puts a window on the
+    // screen at all. Release builds have no remote stack, so they are always a normal window.
+    #[cfg(feature = "dev")]
+    let live = simcity_debug::game::live::runtime::LiveRuntimeConfig::from_env();
+    #[cfg(not(feature = "dev"))]
+    let live = simcity_debug::game::live::runtime::LiveRuntimeConfig::default();
     // Remote debugging (BRP + HTTP transport) is dev-only — see the import block above.
     #[cfg(feature = "dev")]
     {
         app.add_plugins(remote_plugin());
-        app.add_plugins(RemoteHttpPlugin::default());
+        // Our own transport, so `BRP_EXTRAS_PORT` has to be honoured here: when
+        // `RemoteHttpPlugin` is already present, `BrpExtrasPlugin` skips its own port
+        // configuration and only logs a warning.
+        app.add_plugins(RemoteHttpPlugin::default().with_port(live.port));
         // Composable: our RemotePlugin/RemoteHttpPlugin are already in, so this only
         // registers the brp_extras/* methods (synthetic mouse/keyboard input, screenshot,
         // diagnostics) into the existing RemoteMethods resource.
         app.add_plugins(bevy_brp_extras::BrpExtrasPlugin::default());
     }
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(Window {
-            title: "SimCity (Bevy)".to_string(),
-            resolution: (2000, 1000).into(),
-            ..default()
-        }),
-        ..default()
-    }));
+    app.add_plugins(
+        DefaultPlugins
+            .set(LogPlugin {
+                // Keeps the last log lines in memory so `simcity/observe` can hand them to a
+                // caller that has no way to see this process's stdout.
+                custom_layer: simcity_debug::game::live::observe::log_tail_layer,
+                ..default()
+            })
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "SimCity (Bevy)".to_string(),
+                    resolution: (2000, 1000).into(),
+                    present_mode: present_mode_from_env(
+                        std::env::var("SIMCITY_PRESENT_MODE").ok().as_deref(),
+                    ),
+                    // A hidden instance never appears on screen and never takes focus, so several
+                    // of them can be driven over BRP while a person works on the same machine.
+                    visible: live.window.visible(),
+                    ..default()
+                }),
+                ..default()
+            }),
+    );
     // Bevy-native FPS/frame-time diagnostics (must be after DefaultPlugins). Under `dev`,
     // BrpExtrasPlugin's `diagnostics` feature already added it — re-adding panics.
     if !app.is_plugin_added::<FrameTimeDiagnosticsPlugin>() {
@@ -54,6 +92,8 @@ fn remote_plugin() -> RemotePlugin {
     RemotePlugin::default()
         .with_method_main("bevy_debugger/screenshot", screenshot_handler)
         .with_method_main("bevy_debugger/debug_dump", debug_dump_handler)
+        .with_method_main("bevy_debugger/set_overlay", set_overlay_handler)
+        .with_method_main("bevy_debugger/set_sim_speed", set_sim_speed_handler)
 }
 
 /// System that prints debug dump to console when the application is closing.
@@ -164,6 +204,64 @@ fn debug_dump_handler(
     Ok(json!({ "dump_ron": dump_ron }))
 }
 
+/// Switch the map overlay from a script.
+///
+/// The overlays live behind an egui menu, and a screenshot proving one still
+/// works cannot depend on a human opening that menu. Dev-only like the rest of
+/// the remote stack.
+#[cfg(feature = "dev")]
+fn set_overlay_handler(
+    In(params): In<Option<Value>>,
+    mut ui_state: ResMut<game::ui_state::UiState>,
+) -> BrpResult {
+    let name = params
+        .as_ref()
+        .and_then(|p| p.get("overlay"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("None");
+    match game::ui_state::OverlayMode::from_name(name) {
+        Some(mode) => {
+            ui_state.overlay = mode;
+            Ok(json!({ "overlay": format!("{mode:?}") }))
+        }
+        None => Err(bevy::remote::BrpError {
+            code: bevy::remote::error_codes::INVALID_PARAMS,
+            message: format!("unknown overlay {name:?}"),
+            data: None,
+        }),
+    }
+}
+
+/// Stop or resume the clock from a script, without touching `AppState`.
+///
+/// Entering `AppState::Paused` runs the game's end-of-game path, which resets
+/// the day and hour — so a frame frozen that way is always night, and a
+/// daylight screenshot could not be frozen at all. Setting the UI's sim speed
+/// stops virtual time instead and the hour stays where it was. Dev-only like
+/// the rest of the remote stack.
+#[cfg(feature = "dev")]
+fn set_sim_speed_handler(
+    In(params): In<Option<Value>>,
+    mut ui_state: ResMut<game::ui_state::UiState>,
+) -> BrpResult {
+    let name = params
+        .as_ref()
+        .and_then(|p| p.get("speed"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("x3");
+    match game::ui_state::SimSpeed::from_name(name) {
+        Some(speed) => {
+            ui_state.sim_speed = speed;
+            Ok(json!({ "speed": format!("{speed:?}") }))
+        }
+        None => Err(bevy::remote::BrpError {
+            code: bevy::remote::error_codes::INVALID_PARAMS,
+            message: format!("unknown sim speed {name:?}"),
+            data: None,
+        }),
+    }
+}
+
 /// Custom BRP handler for screenshot requests from the debugger
 #[cfg(feature = "dev")]
 fn screenshot_handler(In(params): In<Option<Value>>, mut commands: Commands) -> BrpResult {
@@ -201,4 +299,25 @@ fn screenshot_handler(In(params): In<Option<Value>>, mut commands: Commands) -> 
             .unwrap_or_default()
             .as_secs()
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::present_mode_from_env;
+    use bevy::window::PresentMode;
+
+    #[test]
+    fn present_mode_lifts_the_vsync_cap_only_when_asked() {
+        assert_eq!(present_mode_from_env(None), PresentMode::AutoVsync);
+        assert_eq!(present_mode_from_env(Some("")), PresentMode::AutoVsync);
+        assert_eq!(present_mode_from_env(Some("vsync")), PresentMode::AutoVsync);
+        assert_eq!(
+            present_mode_from_env(Some("immediate")),
+            PresentMode::AutoNoVsync
+        );
+        assert_eq!(
+            present_mode_from_env(Some(" uncapped ")),
+            PresentMode::AutoNoVsync
+        );
+    }
 }

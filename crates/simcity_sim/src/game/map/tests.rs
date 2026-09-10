@@ -871,3 +871,376 @@ mod core_coords_ray {
         assert_eq!(ray_ground_t(Vec3::new(0.0, 0.0, 10.0), Vec3::Z), None);
     }
 }
+
+/// Picking must survive the projection switch of phase 2. These call sites are
+/// where `viewport_to_world_2d` used to return garbage without saying so, and a
+/// perspective camera is exactly the case that would expose it.
+mod core_coords_projection {
+    use bevy::camera::RenderTargetInfo;
+    use bevy::camera::{Camera, OrthographicProjection, PerspectiveProjection, Projection};
+    use bevy::math::{UVec2, Vec2, Vec3};
+    use bevy::transform::components::GlobalTransform;
+    use simcity_core::game::map::coords::{tile_to_world, viewport_to_ground, world_to_tile};
+    use simcity_core::game::map::{MapConfig, TilePos};
+
+    const VIEWPORT: Vec2 = Vec2::new(1600.0, 1000.0);
+
+    fn cfg() -> MapConfig {
+        MapConfig {
+            width: 128,
+            height: 128,
+            tile_size: 16.0,
+        }
+    }
+
+    /// World origin sits on a tile corner, where rounding can go either way, so
+    /// the camera aims at a tile centre instead.
+    fn focus() -> Vec3 {
+        tile_to_world(&cfg(), TilePos { x: 64, y: 64 }).extend(0.0)
+    }
+
+    /// The game's rig: a boom over the focus, looking back down at it.
+    fn camera_at(distance: f32) -> GlobalTransform {
+        let (yaw, pitch) = (-std::f32::consts::FRAC_PI_4, 0.96_f32);
+        let offset = Vec3::new(
+            yaw.cos() * pitch.cos(),
+            yaw.sin() * pitch.cos(),
+            pitch.sin(),
+        ) * distance;
+        GlobalTransform::from(
+            bevy::transform::components::Transform::from_translation(focus() + offset)
+                .looking_at(focus(), Vec3::Z),
+        )
+    }
+
+    fn camera_with(projection: Projection) -> Camera {
+        let mut camera = Camera::default();
+        camera.computed.clip_from_view = projection.get_clip_from_view();
+        camera.computed.target_info = Some(RenderTargetInfo {
+            physical_size: UVec2::new(VIEWPORT.x as u32, VIEWPORT.y as u32),
+            scale_factor: 1.0,
+        });
+        camera
+    }
+
+    fn orthographic(scale: f32) -> Projection {
+        let mut ortho = OrthographicProjection::default_3d();
+        ortho.scale = scale;
+        let mut projection = Projection::Orthographic(ortho);
+        projection.update(VIEWPORT.x, VIEWPORT.y);
+        projection
+    }
+
+    /// Framed to show the same ground height as `orthographic(scale)` would.
+    fn perspective(visible_height: f32, distance: f32) -> Projection {
+        let mut projection = Projection::Perspective(PerspectiveProjection {
+            fov: 2.0 * (visible_height / (2.0 * distance)).atan(),
+            aspect_ratio: VIEWPORT.x / VIEWPORT.y,
+            near: 0.1,
+            far: distance * 4.0,
+            ..Default::default()
+        });
+        projection.update(VIEWPORT.x, VIEWPORT.y);
+        projection
+    }
+
+    /// Tile -> screen -> tile must be the identity, or picking lies.
+    fn assert_round_trip(label: &str, camera: &Camera, transform: &GlobalTransform) {
+        let cfg = cfg();
+        for tile in [
+            TilePos { x: 64, y: 64 },
+            TilePos { x: 62, y: 66 },
+            TilePos { x: 66, y: 62 },
+            TilePos { x: 60, y: 60 },
+        ] {
+            let world = tile_to_world(&cfg, tile);
+            let screen = camera
+                .world_to_viewport(transform, world.extend(0.0))
+                .unwrap_or_else(|e| panic!("{label}: tile {tile:?} is off screen: {e:?}"));
+            let back = viewport_to_ground(camera, transform, screen)
+                .unwrap_or_else(|| panic!("{label}: no ground under {screen:?}"));
+            assert_eq!(
+                world_to_tile(&cfg, back),
+                Some(tile),
+                "{label}: {tile:?} came back as {:?} (world {world:?} -> {back:?})",
+                world_to_tile(&cfg, back)
+            );
+        }
+    }
+
+    #[test]
+    fn picking_round_trips_in_both_projections() {
+        let scale = 0.2;
+        let visible_height = VIEWPORT.y * scale;
+        let ortho_distance = 900.0;
+        let perspective_distance = 300.0;
+
+        assert_round_trip(
+            "orthographic",
+            &camera_with(orthographic(scale)),
+            &camera_at(ortho_distance),
+        );
+        assert_round_trip(
+            "perspective",
+            &camera_with(perspective(visible_height, perspective_distance)),
+            &camera_at(perspective_distance),
+        );
+    }
+
+    #[test]
+    fn the_frame_centre_picks_the_same_tile_in_both_projections() {
+        let scale = 0.2;
+        let visible_height = VIEWPORT.y * scale;
+        let centre = VIEWPORT * 0.5;
+
+        let ortho_transform = camera_at(900.0);
+        let ortho_tile =
+            viewport_to_ground(&camera_with(orthographic(scale)), &ortho_transform, centre)
+                .and_then(|w| world_to_tile(&cfg(), w));
+
+        let perspective_transform = camera_at(300.0);
+        let perspective_tile = viewport_to_ground(
+            &camera_with(perspective(visible_height, 300.0)),
+            &perspective_transform,
+            centre,
+        )
+        .and_then(|w| world_to_tile(&cfg(), w));
+
+        assert!(ortho_tile.is_some(), "orthographic centre found no ground");
+        assert_eq!(
+            ortho_tile, perspective_tile,
+            "the two projections look at the same focus, so the centre pixel is the same tile"
+        );
+        assert_eq!(
+            ortho_tile,
+            Some(TilePos { x: 64, y: 64 }),
+            "and that tile is the one the camera is aimed at"
+        );
+    }
+}
+
+/// `simcity_core` holds no tests of its own (see CLAUDE.md), so its types are
+/// pinned from here like the coords ones above.
+mod core_overlay_names {
+    use simcity_core::game::ui_state::OverlayMode;
+
+    #[test]
+    fn every_overlay_the_toolbar_offers_can_be_named() {
+        for (name, mode) in [
+            ("None", OverlayMode::None),
+            ("Water", OverlayMode::Water),
+            ("Height", OverlayMode::Height),
+            ("Zones", OverlayMode::Zones),
+            ("Roads", OverlayMode::Roads),
+            ("Traffic", OverlayMode::Traffic),
+            ("Path", OverlayMode::Path),
+            ("Service", OverlayMode::ServiceCoverage),
+            ("Land Value", OverlayMode::LandValue),
+            ("Pollution", OverlayMode::Pollution),
+        ] {
+            assert_eq!(OverlayMode::from_name(name), Some(mode), "{name}");
+        }
+    }
+
+    #[test]
+    fn names_are_forgiving_about_case_and_spacing_but_not_about_nonsense() {
+        assert_eq!(
+            OverlayMode::from_name("  land_value "),
+            Some(OverlayMode::LandValue)
+        );
+        assert_eq!(
+            OverlayMode::from_name("SERVICECOVERAGE"),
+            Some(OverlayMode::ServiceCoverage)
+        );
+        assert_eq!(OverlayMode::from_name("smog"), None);
+        assert_eq!(OverlayMode::from_name(""), None);
+    }
+}
+
+/// `SimSpeed` is named from scripts for the same reason overlays are: a
+/// daylight screenshot needs the clock stopped, and entering `AppState::Paused`
+/// runs the end-of-game path, which resets the day and hour — so every frame
+/// frozen that way is night. Stopping virtual time instead keeps the hour.
+mod core_sim_speed_names {
+    use simcity_core::game::ui_state::SimSpeed;
+
+    #[test]
+    fn every_speed_the_toolbar_offers_can_be_named() {
+        for (name, speed) in [
+            ("Paused", SimSpeed::Paused),
+            ("x1", SimSpeed::X1),
+            ("x2", SimSpeed::X2),
+            ("x3", SimSpeed::X3),
+        ] {
+            assert_eq!(SimSpeed::from_name(name), Some(speed), "{name}");
+        }
+    }
+
+    #[test]
+    fn names_are_forgiving_about_case_and_spacing_but_not_about_nonsense() {
+        assert_eq!(SimSpeed::from_name("  PAUSE "), Some(SimSpeed::Paused));
+        assert_eq!(SimSpeed::from_name("1"), Some(SimSpeed::X1));
+        assert_eq!(SimSpeed::from_name("fast"), None);
+        assert_eq!(SimSpeed::from_name(""), None);
+    }
+}
+
+/// Where street furniture lands. Placement is a pure function of the grid and
+/// the map seed, like the trees before it: props are spawned once per map, so a
+/// roll that drifted between runs would be a save-load difference nobody sees
+/// until the city reloads wrong.
+mod props_placement {
+    use bevy::prelude::IVec2;
+
+    use crate::game::map::props::{
+        kerb_side, kerbside_side, prop_roll, road_side, wants_streetlight,
+    };
+    use crate::game::map::{MapGrid, TileKind, TilePos};
+    use crate::game::roads::{RoadCell, RoadKind};
+    use simcity_core::game::props_config::StreetlightConfig;
+
+    fn road_row(len: i32) -> MapGrid {
+        let mut grid = MapGrid::new(len + 4, 5);
+        for x in 0..len {
+            let pos = TilePos { x, y: 2 };
+            let mut cell = grid.get(pos).unwrap_or_default();
+            cell.terrain = TileKind::Road;
+            cell.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                ..RoadCell::none()
+            };
+            grid.set(pos, cell);
+        }
+        grid
+    }
+
+    #[test]
+    fn a_lamp_stands_on_the_kerb_and_never_mid_carriageway() {
+        let grid = road_row(12);
+        // The road runs along y = 2, so every road tile has a non-road
+        // neighbour above and below: that is a kerb.
+        assert!(kerb_side(TilePos { x: 4, y: 2 }, &grid).is_some());
+        // A tile off the road is not a lamp site at all.
+        assert!(kerb_side(TilePos { x: 4, y: 0 }, &grid).is_none());
+    }
+
+    #[test]
+    fn lamps_keep_the_configured_spacing() {
+        let grid = road_row(16);
+        let cfg = StreetlightConfig {
+            spacing_tiles: 4,
+            ..StreetlightConfig::default()
+        };
+        let lit: Vec<i32> = (0..16)
+            .filter(|&x| wants_streetlight(TilePos { x, y: 2 }, &grid, &cfg))
+            .collect();
+        assert!(
+            lit.len() >= 3,
+            "a 16-tile street should carry lamps: {lit:?}"
+        );
+        for pair in lit.windows(2) {
+            assert_eq!(
+                pair[1] - pair[0],
+                4,
+                "lamps must sit exactly spacing_tiles apart: {lit:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn switching_lamps_off_in_the_config_leaves_the_street_bare() {
+        let grid = road_row(16);
+        let cfg = StreetlightConfig {
+            enabled: false,
+            ..StreetlightConfig::default()
+        };
+        assert!(
+            (0..16).all(|x| !wants_streetlight(TilePos { x, y: 2 }, &grid, &cfg)),
+            "a disabled knob must actually disable"
+        );
+    }
+
+    /// Shop furniture needs a shop, and "is there a building here" cannot be
+    /// read off the grid: `MapCell::building` is written for service buildings
+    /// and hand-placed ones only, while R/C/I grown by the simulation leaves it
+    /// `None`. Trusting it found 15 tiles in a whole city and put signs nowhere.
+    #[test]
+    fn shop_furniture_needs_a_shop_and_takes_that_from_the_caller() {
+        let grid = road_row(8);
+        let lot = TilePos { x: 3, y: 3 };
+        // The tile faces the road either way — that part is geometry.
+        assert_eq!(road_side(lot, &grid), Some(IVec2::new(0, -1)));
+        // Whether a shop stands on it is the caller's to say.
+        assert!(
+            kerbside_side(lot, &grid, false).is_none(),
+            "no shop, no sign"
+        );
+        assert_eq!(
+            kerbside_side(lot, &grid, true),
+            Some(IVec2::new(0, -1)),
+            "with a shop, the furniture faces the road"
+        );
+    }
+
+    /// Parked cars come from a fixed palette, not from a free hash.
+    ///
+    /// The first version keyed the car mesh on a continuous tint and blew the
+    /// distinct-mesh count from 44 to 139 — the phase-7 "material per colour"
+    /// lesson, wearing a mesh instead of a material.
+    #[test]
+    fn parked_cars_draw_from_a_small_fixed_palette() {
+        use crate::game::map::props::{PARKED_CAR_TINTS, parked_car_tint};
+
+        assert!(
+            PARKED_CAR_TINTS.len() <= 4,
+            "a bigger palette is a bigger batch count"
+        );
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..400 {
+            let pos = TilePos {
+                x: i % 20,
+                y: i / 20,
+            };
+            let tint = parked_car_tint(pos, 42);
+            assert!(
+                PARKED_CAR_TINTS.contains(&tint),
+                "{tint:?} is not in the palette"
+            );
+            seen.insert(tint.map(f32::to_bits));
+        }
+        assert!(seen.len() > 1, "one colour for every car is not a palette");
+    }
+
+    #[test]
+    fn a_roll_is_stable_for_a_tile_and_spread_across_the_map() {
+        let pos = TilePos { x: 7, y: 9 };
+        let first = prop_roll(pos, 42, 1, 50);
+        assert_eq!(first, prop_roll(pos, 42, 1, 50), "same tile, same answer");
+        // Different salts are different props on the same tile; they must not
+        // all land together.
+        let bins = (0..400).filter(|i| {
+            let p = TilePos {
+                x: i % 20,
+                y: i / 20,
+            };
+            prop_roll(p, 42, 1, 25)
+        });
+        let hits = bins.count();
+        assert!(
+            (60..=140).contains(&hits),
+            "25% of 400 tiles should be roughly 100, got {hits}"
+        );
+        assert!(
+            (0..400).all(|i| !prop_roll(
+                TilePos {
+                    x: i % 20,
+                    y: i / 20
+                },
+                42,
+                1,
+                0
+            )),
+            "a zero chance must place nothing"
+        );
+    }
+}

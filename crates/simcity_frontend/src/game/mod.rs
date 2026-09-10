@@ -2,8 +2,11 @@ use bevy::prelude::*;
 
 mod audio_sfx;
 pub mod camera;
+pub mod camera_projection;
+pub mod render_settings;
 pub mod ui;
 mod ui_settings;
+pub mod vignette;
 
 pub use simcity_core::game::{
     camera as shared_camera, commands, ids, roads, sets, sim_events, state, trips, ui_state,
@@ -24,8 +27,10 @@ impl Plugin for FrontendPlugin {
         app.add_plugins((
             audio_sfx::AudioSfxPlugin,
             camera::CameraPlugin,
+            render_settings::RenderSettingsPlugin,
             ui::UiPlugin,
             ui_settings::UiSettingsPlugin,
+            vignette::VignettePlugin,
         ));
     }
 }
