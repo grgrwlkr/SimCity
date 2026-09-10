@@ -59,6 +59,7 @@ dev = [
     "bevy/dynamic_linking",
     "simcity_debug/dev",
     "simcity_sim/dev",
+    "simcity_frontend/dev",
     "dep:bevy_brp_extras",
 ]
 

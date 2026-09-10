@@ -1,3 +1,7 @@
+// Without `dev` the developer panels below still compile but are never registered (see
+// `DevUiPlugin`); their helpers would otherwise warn as unused in every player build.
+#![cfg_attr(not(feature = "dev"), allow(dead_code, unused_imports))]
+
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::ecs::message::MessageWriter;
 use bevy::ecs::system::SystemParam;
@@ -68,6 +72,10 @@ use stats_window::{ShowStatsWindow, stats_ui};
 pub mod debug_dump;
 use debug_dump::debug_dump_ui;
 
+// Only a build without `dev` can show that the developer panels are absent.
+#[cfg(all(test, not(feature = "dev")))]
+mod dev_ui_gate;
+
 pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
@@ -93,28 +101,9 @@ impl Plugin for UiPlugin {
             .add_systems(OnEnter(AppState::InGame), announce_ingame)
             .add_systems(OnEnter(AppState::InGame), reset_debug_telemetry)
             .add_systems(OnEnter(AppState::Paused), announce_paused)
-            .init_resource::<ShowShortcuts>()
-            .init_resource::<ShowStatsWindow>()
             .init_resource::<DebugDumpUiState>()
             .init_resource::<DebugTelemetry>()
             .init_resource::<UiEntityCounts>()
-            .add_systems(EguiPrimaryContextPass, top_status_bar_ui)
-            .add_systems(
-                EguiPrimaryContextPass,
-                debug_dump_ui.after(top_status_bar_ui),
-            )
-            .add_systems(
-                EguiPrimaryContextPass,
-                bottom_toolbar_ui.after(top_status_bar_ui),
-            )
-            .add_systems(
-                EguiPrimaryContextPass,
-                right_sidebar_ui.after(top_status_bar_ui),
-            )
-            .add_systems(EguiPrimaryContextPass, shortcuts_ui.after(right_sidebar_ui))
-            .add_systems(Update, toggle_shortcuts.in_set(GameSet::Input))
-            .add_systems(EguiPrimaryContextPass, stats_ui.after(shortcuts_ui))
-            .add_systems(EguiPrimaryContextPass, building_popup_ui.after(stats_ui))
             .add_systems(
                 Update,
                 track_ui_entity_counts
@@ -135,6 +124,40 @@ impl Plugin for UiPlugin {
                     .in_set(GameSet::Ui),
             )
             .add_systems(Update, update_window_title.in_set(GameSet::Ui));
+
+        #[cfg(feature = "dev")]
+        app.add_plugins(DevUiPlugin);
+    }
+}
+
+/// The egui panels that carry developer controls: FPS and MCP status, the map seed, Load Test
+/// City, the debug dump window, shortcuts and statistics. Part of the build only under `dev` —
+/// a player gets the game interface, not the tools it was built with.
+#[cfg(feature = "dev")]
+struct DevUiPlugin;
+
+#[cfg(feature = "dev")]
+impl Plugin for DevUiPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<ShowShortcuts>()
+            .init_resource::<ShowStatsWindow>()
+            .add_systems(EguiPrimaryContextPass, top_status_bar_ui)
+            .add_systems(
+                EguiPrimaryContextPass,
+                debug_dump_ui.after(top_status_bar_ui),
+            )
+            .add_systems(
+                EguiPrimaryContextPass,
+                bottom_toolbar_ui.after(top_status_bar_ui),
+            )
+            .add_systems(
+                EguiPrimaryContextPass,
+                right_sidebar_ui.after(top_status_bar_ui),
+            )
+            .add_systems(EguiPrimaryContextPass, shortcuts_ui.after(right_sidebar_ui))
+            .add_systems(Update, toggle_shortcuts.in_set(GameSet::Input))
+            .add_systems(EguiPrimaryContextPass, stats_ui.after(shortcuts_ui))
+            .add_systems(EguiPrimaryContextPass, building_popup_ui.after(stats_ui));
     }
 }
 

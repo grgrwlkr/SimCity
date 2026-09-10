@@ -4,7 +4,9 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "dev")]
 use crate::game::sets::GameSet;
+#[cfg(feature = "dev")]
 use crate::game::state::AppState;
 use simcity_core::game::render_config::RenderConfig;
 
@@ -61,7 +63,11 @@ pub struct UiSettingsPlugin;
 
 impl Plugin for UiSettingsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<UiSettings>().add_systems(
+        app.init_resource::<UiSettings>();
+        // The F10 panel exposes live render and camera tuning knobs, a developer tool. The
+        // settings resource itself stays in every build, because the camera reads it.
+        #[cfg(feature = "dev")]
+        app.add_systems(
             Update,
             settings_ui
                 .in_set(GameSet::Ui)
@@ -71,6 +77,7 @@ impl Plugin for UiSettingsPlugin {
 }
 
 /// Settings UI panel
+#[cfg_attr(not(feature = "dev"), allow(dead_code))]
 fn settings_ui(
     mut contexts: EguiContexts,
     mut settings: ResMut<UiSettings>,
