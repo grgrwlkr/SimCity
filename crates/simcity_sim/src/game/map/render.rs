@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use super::data_map::{
-    ROAD_OVERLAY_COLOR, WATER_OVERLAY_COLOR, height_color, land_value_color, pollution_color,
-    utility_for_overlay, utility_tile_color,
+    ROAD_OVERLAY_COLOR, WATER_OVERLAY_COLOR, city_field_color, city_field_for_overlay,
+    height_color, land_value_color, pollution_color, utility_for_overlay, utility_tile_color,
 };
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
@@ -10,6 +10,7 @@ use bevy::window::PrimaryWindow;
 
 use crate::game::atlas::cell_for_tile;
 use crate::game::camera::MainCamera;
+use crate::game::city_fields::CityFields;
 use crate::game::land_value::LandValueIndex;
 use crate::game::pollution::PollutionIndex;
 use crate::game::render_primitives::{RenderPrimitives, flat_quad, layer};
@@ -271,6 +272,7 @@ pub(super) struct SyncDirtyTilesParams<'w, 's> {
     land_value: Option<Res<'w, LandValueIndex>>,
     pollution: Option<Res<'w, PollutionIndex>>,
     utilities: Option<Res<'w, UtilityNetwork>>,
+    fields: Option<Res<'w, CityFields>>,
     dirty: ResMut<'w, DirtyTiles>,
     prims: ResMut<'w, RenderPrimitives>,
     materials: ResMut<'w, Assets<StandardMaterial>>,
@@ -436,6 +438,41 @@ pub(super) fn sync_dirty_tiles_to_render(
                     }
                 }
             }
+            OverlayMode::Crime
+            | OverlayMode::FireHazard
+            | OverlayMode::Health
+            | OverlayMode::Education
+            | OverlayMode::Attractiveness => {
+                // A city field paints land and roads with its value; water stays water.
+                let painted = city_field_for_overlay(p.ui.overlay)
+                    .zip(
+                        p.fields
+                            .as_deref()
+                            .filter(|fields| fields.covers(p.grid.len())),
+                    )
+                    .zip(p.grid.idx(pos))
+                    .filter(|_| !cell.water)
+                    .map(|((field, fields), idx)| city_field_color(field, fields.get(field, idx)));
+                let k = if cell.water {
+                    TileKind::Water
+                } else if cell.road.is_some() {
+                    TileKind::Road
+                } else {
+                    base_terrain_or_zone
+                };
+                match painted {
+                    Some(color) => (k, color, base_size),
+                    None if cell.water => (TileKind::Water, TileKind::Water.color(), base_size),
+                    None if cell.road.is_some() => {
+                        (TileKind::Road, cell.road.kind.color(), base_size)
+                    }
+                    None => (
+                        base_terrain_or_zone,
+                        base_terrain_or_zone.color(),
+                        base_size,
+                    ),
+                }
+            }
             OverlayMode::Zones
             | OverlayMode::None
             | OverlayMode::Traffic
@@ -531,6 +568,7 @@ pub(super) struct OverlayIndexVersions {
     land_value: u64,
     pollution: u64,
     utilities: u64,
+    city_fields: u64,
 }
 
 /// Keeps the LandValue/Pollution overlays live: without this, overlay tiles were painted once
@@ -541,6 +579,7 @@ pub(super) fn mark_dirty_on_index_publish(
     land_value: Option<Res<LandValueIndex>>,
     pollution: Option<Res<PollutionIndex>>,
     utilities: Option<Res<UtilityNetwork>>,
+    fields: Option<Res<CityFields>>,
     mut seen: ResMut<OverlayIndexVersions>,
     mut dirty: ResMut<DirtyTiles>,
 ) {
@@ -568,6 +607,19 @@ pub(super) fn mark_dirty_on_index_publish(
                 p.pollution.len(),
                 p.chunk_size(),
                 p.current_chunk(),
+                published,
+            );
+        }
+    }
+    if let Some(fields) = fields.as_deref() {
+        let published = fields.version.wrapping_sub(seen.city_fields);
+        seen.city_fields = fields.version;
+        if city_field_for_overlay(ui.overlay).is_some() {
+            mark_published_chunks_dirty(
+                &mut dirty,
+                fields.tile_count(),
+                fields.chunk_size(),
+                fields.current_chunk(),
                 published,
             );
         }
@@ -738,6 +790,7 @@ mod tests {
         .init_resource::<PollutionIndex>()
         .init_resource::<OverlayIndexVersions>()
         .init_resource::<UtilityNetwork>()
+        .init_resource::<CityFields>()
         .add_systems(Update, mark_dirty_on_index_publish);
         app
     }
@@ -821,6 +874,45 @@ mod tests {
                 "unpublished tile {idx} must stay clean"
             );
         }
+    }
+
+    #[test]
+    fn city_fields_overlay_tiles_refresh_when_the_fields_publish_a_chunk() {
+        let mut app = build_app(OverlayMode::Crime);
+        app.update();
+        assert!(!app.world().resource::<DirtyTiles>().is_marked(0));
+
+        // The fields publish chunk 0 (tiles 0..32); the next chunk to recompute is 1.
+        app.world_mut()
+            .resource_mut::<CityFields>()
+            .set_publish_state_for_test(64, 32, 1, 1);
+        app.update();
+        let dirty = app.world().resource::<DirtyTiles>();
+        for idx in 0..32 {
+            assert!(
+                dirty.is_marked(idx),
+                "published field tile {idx} must repaint"
+            );
+        }
+        for idx in 32..64 {
+            assert!(
+                !dirty.is_marked(idx),
+                "unpublished tile {idx} must stay clean"
+            );
+        }
+
+        let mut other = build_app(OverlayMode::LandValue);
+        other.update();
+        other
+            .world_mut()
+            .resource_mut::<CityFields>()
+            .set_publish_state_for_test(64, 32, 1, 1);
+        other.update();
+        let dirty = other.world().resource::<DirtyTiles>();
+        assert!(
+            (0..64).all(|idx| !dirty.is_marked(idx)),
+            "a map that does not show the fields ignores them"
+        );
     }
 
     #[test]

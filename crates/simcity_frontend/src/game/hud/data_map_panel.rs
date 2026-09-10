@@ -34,7 +34,7 @@ pub struct OverlayReadingText;
 
 /// The overlays a player picks from, with their names for automation and their labels. The
 /// vehicle path view stays a developer tool.
-const PLAYER_OVERLAYS: [(OverlayMode, &str, &str); 12] = [
+const PLAYER_OVERLAYS: [(OverlayMode, &str, &str); 17] = [
     (OverlayMode::None, "hud.overlay.off", "Off"),
     (
         OverlayMode::LandValue,
@@ -50,6 +50,19 @@ const PLAYER_OVERLAYS: [(OverlayMode, &str, &str); 12] = [
         "Water supply",
     ),
     (OverlayMode::Garbage, "hud.overlay.garbage", "Garbage"),
+    (OverlayMode::Crime, "hud.overlay.crime", "Crime"),
+    (
+        OverlayMode::FireHazard,
+        "hud.overlay.fire_hazard",
+        "Fire hazard",
+    ),
+    (OverlayMode::Health, "hud.overlay.health", "Health"),
+    (OverlayMode::Education, "hud.overlay.education", "Education"),
+    (
+        OverlayMode::Attractiveness,
+        "hud.overlay.attractiveness",
+        "Attractiveness",
+    ),
     (
         OverlayMode::ServiceCoverage,
         "hud.overlay.services",
@@ -295,6 +308,7 @@ pub fn update_overlay_reading(
     traffic: Option<Res<TrafficOccupancy>>,
     coverage: Option<Res<ServiceCoverageIndex>>,
     utilities: Option<Res<simcity_sim::game::utilities::UtilityNetwork>>,
+    fields: Option<Res<simcity_sim::game::city_fields::CityFields>>,
     mut readings: Query<(&mut Text, &mut Node), With<OverlayReadingText>>,
 ) {
     let shown = legend_for(ui.overlay).map(|_| match hovered.tile {
@@ -307,6 +321,7 @@ pub fn update_overlay_reading(
                 traffic: traffic.as_deref(),
                 coverage: coverage.as_deref(),
                 utilities: utilities.as_deref(),
+                fields: fields.as_deref(),
             };
             overlay_reading(ui.overlay, tile, &inputs).unwrap_or_else(|| "Off the map".to_string())
         }
@@ -332,7 +347,7 @@ mod tests {
     use super::*;
     use simcity_sim::game::map::TilePos;
 
-    const EVERY_PLAYER_OVERLAY: [OverlayMode; 12] = [
+    const EVERY_PLAYER_OVERLAY: [OverlayMode; 17] = [
         OverlayMode::None,
         OverlayMode::LandValue,
         OverlayMode::Pollution,
@@ -345,6 +360,11 @@ mod tests {
         OverlayMode::Power,
         OverlayMode::WaterSupply,
         OverlayMode::Garbage,
+        OverlayMode::Crime,
+        OverlayMode::FireHazard,
+        OverlayMode::Health,
+        OverlayMode::Education,
+        OverlayMode::Attractiveness,
     ];
 
     fn panel_app() -> App {

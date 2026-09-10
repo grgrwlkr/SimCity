@@ -1028,6 +1028,20 @@ mod core_overlay_names {
     use simcity_core::game::ui_state::OverlayMode;
 
     #[test]
+    fn city_fields_overlays_can_be_named() {
+        for (name, mode) in [
+            ("Crime", OverlayMode::Crime),
+            ("Fire hazard", OverlayMode::FireHazard),
+            ("fire_hazard", OverlayMode::FireHazard),
+            ("Health", OverlayMode::Health),
+            ("Education", OverlayMode::Education),
+            ("Attractiveness", OverlayMode::Attractiveness),
+        ] {
+            assert_eq!(OverlayMode::from_name(name), Some(mode), "{name}");
+        }
+    }
+
+    #[test]
     fn every_overlay_the_toolbar_offers_can_be_named() {
         for (name, mode) in [
             ("None", OverlayMode::None),

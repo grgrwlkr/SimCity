@@ -121,6 +121,11 @@ pub enum OverlayMode {
     Power,
     WaterSupply,
     Garbage,
+    Crime,
+    FireHazard,
+    Health,
+    Education,
+    Attractiveness,
 }
 
 impl OverlayMode {
@@ -155,6 +160,11 @@ impl OverlayMode {
             "power" => Some(Self::Power),
             "watersupply" => Some(Self::WaterSupply),
             "garbage" => Some(Self::Garbage),
+            "crime" => Some(Self::Crime),
+            "firehazard" | "fire" => Some(Self::FireHazard),
+            "health" => Some(Self::Health),
+            "education" => Some(Self::Education),
+            "attractiveness" => Some(Self::Attractiveness),
             _ => None,
         }
     }

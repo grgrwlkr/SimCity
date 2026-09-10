@@ -107,6 +107,13 @@ pub(super) fn overlay_tooltip(overlay: OverlayMode) -> &'static str {
         OverlayMode::Power => "Power overlay\nShows where power reaches along roads",
         OverlayMode::WaterSupply => "Water supply overlay\nShows where water reaches along roads",
         OverlayMode::Garbage => "Garbage overlay\nShows where garbage is collected along roads",
+        OverlayMode::Crime => "Crime overlay\nShows crime (green=safe, red=crime-ridden)",
+        OverlayMode::FireHazard => "Fire hazard overlay\nShows fire risk (green=safe, red=risky)",
+        OverlayMode::Health => "Health overlay\nShows health (red=poor, green=healthy)",
+        OverlayMode::Education => "Education overlay\nShows education (red=none, green=educated)",
+        OverlayMode::Attractiveness => {
+            "Attractiveness overlay\nShows where the city wants to grow (red=shunned, green=sought)"
+        }
     }
 }
 
@@ -127,6 +134,11 @@ pub(super) fn overlay_sources(o: OverlayMode) -> &'static str {
         OverlayMode::Power => "UtilityNetwork.served (power bit)",
         OverlayMode::WaterSupply => "UtilityNetwork.served (water bit)",
         OverlayMode::Garbage => "UtilityNetwork.served (garbage bit)",
+        OverlayMode::Crime => "CityFields crime (0.0-1.0)",
+        OverlayMode::FireHazard => "CityFields fire hazard (0.0-1.0)",
+        OverlayMode::Health => "CityFields health (0.0-1.0)",
+        OverlayMode::Education => "CityFields education (0.0-1.0)",
+        OverlayMode::Attractiveness => "CityFields attractiveness (0.0-1.0)",
     }
 }
 

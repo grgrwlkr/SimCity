@@ -6,6 +6,7 @@
 
 use bevy::prelude::*;
 
+use crate::game::city_fields::{CityField, CityFields};
 use crate::game::land_value::LandValueIndex;
 use crate::game::pollution::PollutionIndex;
 use crate::game::services::ServiceCoverageIndex;
@@ -85,6 +86,41 @@ pub fn utility_tile_color(kind: UtilityKind, supplied: bool, zoned: bool, water:
     }
 }
 
+/// The city field a data map shows; `None` for every other map.
+pub fn city_field_for_overlay(mode: OverlayMode) -> Option<CityField> {
+    match mode {
+        OverlayMode::Crime => Some(CityField::Crime),
+        OverlayMode::FireHazard => Some(CityField::FireHazard),
+        OverlayMode::Health => Some(CityField::Health),
+        OverlayMode::Education => Some(CityField::Education),
+        OverlayMode::Attractiveness => Some(CityField::Attractiveness),
+        _ => None,
+    }
+}
+
+/// The colour a city field paints at `value`. Red marks the trouble on every field: where more is
+/// worse (crime, fire hazard) the scale runs green to red, where more is better it runs red to
+/// green.
+pub fn city_field_color(field: CityField, value: f32) -> Color {
+    match field {
+        CityField::Crime | CityField::FireHazard => pollution_color(value),
+        CityField::Health | CityField::Education | CityField::Attractiveness => {
+            land_value_color(value)
+        }
+    }
+}
+
+/// The words at the low and the high end of a city field's scale.
+pub fn city_field_scale(field: CityField) -> (&'static str, &'static str) {
+    match field {
+        CityField::Crime => ("Safe", "Crime-ridden"),
+        CityField::FireHazard => ("Safe", "Fire risk"),
+        CityField::Health => ("Poor", "Healthy"),
+        CityField::Education => ("None", "Educated"),
+        CityField::Attractiveness => ("Shunned", "Sought after"),
+    }
+}
+
 /// Stops a gradient legend samples; odd, so one lands on the midpoint.
 const GRADIENT_STOPS: usize = 9;
 
@@ -112,6 +148,18 @@ pub fn legend_for(mode: OverlayMode) -> Option<Legend> {
     let gradient = |low, high, stops| Some(Legend::Gradient { low, high, stops });
     match mode {
         OverlayMode::None | OverlayMode::Path => None,
+        OverlayMode::Crime
+        | OverlayMode::FireHazard
+        | OverlayMode::Health
+        | OverlayMode::Education
+        | OverlayMode::Attractiveness => city_field_for_overlay(mode).map(|field| {
+            let (low, high) = city_field_scale(field);
+            Legend::Gradient {
+                low,
+                high,
+                stops: sample(|value| city_field_color(field, value)),
+            }
+        }),
         OverlayMode::LandValue => gradient("Low", "High", sample(land_value_color)),
         OverlayMode::Pollution => gradient("Clean", "Polluted", sample(pollution_color)),
         OverlayMode::Traffic => gradient("Free", "Jammed", sample(traffic_heat_color)),
@@ -156,6 +204,7 @@ pub struct DataMapInputs<'a> {
     pub traffic: Option<&'a TrafficOccupancy>,
     pub coverage: Option<&'a ServiceCoverageIndex>,
     pub utilities: Option<&'a UtilityNetwork>,
+    pub fields: Option<&'a CityFields>,
 }
 
 /// The value `mode` shows at `tile`, in words and numbers.
@@ -166,6 +215,19 @@ pub fn overlay_reading(mode: OverlayMode, tile: TilePos, inputs: &DataMapInputs)
     let percent = |value: f32| (value.clamp(0.0, 1.0) * 100.0).round() as u32;
     let reading = match mode {
         OverlayMode::None | OverlayMode::Path => return None,
+        OverlayMode::Crime
+        | OverlayMode::FireHazard
+        | OverlayMode::Health
+        | OverlayMode::Education
+        | OverlayMode::Attractiveness => {
+            let field = city_field_for_overlay(mode)?;
+            match inputs.fields {
+                Some(fields) if fields.covers(grid.len()) => {
+                    format!("{} {}%", field.name(), percent(fields.get(field, idx)))
+                }
+                _ => format!("{} not computed yet", field.name()),
+            }
+        }
         OverlayMode::Power | OverlayMode::WaterSupply | OverlayMode::Garbage => {
             let (kind, name, supplied, missing) = match mode {
                 OverlayMode::Power => (UtilityKind::Power, "Power", "Power supplied", "No power"),
@@ -326,6 +388,11 @@ mod tests {
             OverlayMode::Power,
             OverlayMode::WaterSupply,
             OverlayMode::Garbage,
+            OverlayMode::Crime,
+            OverlayMode::FireHazard,
+            OverlayMode::Health,
+            OverlayMode::Education,
+            OverlayMode::Attractiveness,
         ] {
             assert!(legend_for(mode).is_some(), "{mode:?} needs a legend");
         }
@@ -404,6 +471,7 @@ mod tests {
             traffic: Some(&traffic),
             coverage: Some(&coverage),
             utilities: None,
+            fields: None,
         };
         let read = |mode, tile| overlay_reading(mode, tile, &inputs);
 
@@ -463,6 +531,7 @@ mod tests {
             traffic: None,
             coverage: None,
             utilities: None,
+            fields: None,
         };
         assert_eq!(
             overlay_reading(OverlayMode::LandValue, at(4, 4), &blind).as_deref(),
@@ -496,6 +565,7 @@ mod tests {
             traffic: None,
             coverage: None,
             utilities: Some(&network),
+            fields: None,
         };
 
         for (mode, kind, label, supplied, missing) in [
@@ -571,6 +641,7 @@ mod tests {
             traffic: None,
             coverage: None,
             utilities: None,
+            fields: None,
         };
         assert_eq!(
             overlay_reading(OverlayMode::Power, at(2, 2), &blind).as_deref(),
@@ -594,8 +665,96 @@ mod tests {
             OverlayMode::Power,
             OverlayMode::WaterSupply,
             OverlayMode::Garbage,
+            OverlayMode::Crime,
+            OverlayMode::FireHazard,
+            OverlayMode::Health,
+            OverlayMode::Education,
+            OverlayMode::Attractiveness,
         ] {
             assert_eq!(mode.is_data_map(), legend_for(mode).is_some(), "{mode:?}");
         }
+    }
+
+    #[test]
+    fn city_fields_overlays_have_a_legend_a_reading_and_their_colours() {
+        let grid = MapGrid::new(8, 8);
+        let idx = grid.idx(at(4, 4)).expect("on the map");
+        let mut fields = CityFields::default();
+        fields.lay_over(grid.len());
+        for field in CityField::ALL {
+            fields.set(field, idx, 0.37);
+        }
+        let inputs = DataMapInputs {
+            grid: &grid,
+            land_value: None,
+            pollution: None,
+            traffic: None,
+            coverage: None,
+            utilities: None,
+            fields: Some(&fields),
+        };
+        let blind = DataMapInputs {
+            grid: &grid,
+            land_value: None,
+            pollution: None,
+            traffic: None,
+            coverage: None,
+            utilities: None,
+            fields: None,
+        };
+        for (mode, field, reading) in [
+            (OverlayMode::Crime, CityField::Crime, "Crime 37%"),
+            (
+                OverlayMode::FireHazard,
+                CityField::FireHazard,
+                "Fire hazard 37%",
+            ),
+            (OverlayMode::Health, CityField::Health, "Health 37%"),
+            (
+                OverlayMode::Education,
+                CityField::Education,
+                "Education 37%",
+            ),
+            (
+                OverlayMode::Attractiveness,
+                CityField::Attractiveness,
+                "Attractiveness 37%",
+            ),
+        ] {
+            assert_eq!(city_field_for_overlay(mode), Some(field));
+            assert!(mode.is_data_map());
+            let Some(Legend::Gradient { low, high, stops }) = legend_for(mode) else {
+                panic!("{mode:?} is a continuous scale");
+            };
+            assert_eq!((low, high), city_field_scale(field), "{mode:?}");
+            assert_ne!(low, high);
+            assert_eq!(
+                stops.first(),
+                Some(&city_field_color(field, 0.0)),
+                "{mode:?}"
+            );
+            assert_eq!(
+                stops.last(),
+                Some(&city_field_color(field, 1.0)),
+                "{mode:?}"
+            );
+            assert_eq!(
+                overlay_reading(mode, at(4, 4), &inputs).as_deref(),
+                Some(reading)
+            );
+            assert_eq!(
+                overlay_reading(mode, at(4, 4), &blind),
+                Some(format!("{} not computed yet", field.name()))
+            );
+        }
+        // Red marks the trouble on every field: much crime and fire hazard, little health,
+        // education and attractiveness.
+        let red = Color::srgb(1.0, 0.0, 0.0);
+        assert_eq!(city_field_color(CityField::Crime, 1.0), red);
+        assert_eq!(city_field_color(CityField::FireHazard, 1.0), red);
+        assert_eq!(city_field_color(CityField::Health, 0.0), red);
+        assert_eq!(city_field_color(CityField::Education, 0.0), red);
+        assert_eq!(city_field_color(CityField::Attractiveness, 0.0), red);
+        assert_eq!(city_field_for_overlay(OverlayMode::LandValue), None);
     }
 }

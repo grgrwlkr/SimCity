@@ -142,7 +142,7 @@ impl CityFields {
     }
 
     /// Lay the fields over a map of `len` tiles, every tile neutral.
-    fn resize(&mut self, len: usize) {
+    pub fn lay_over(&mut self, len: usize) {
         for field in CityField::ALL {
             let values = &mut self.values[field.slot()];
             values.clear();
@@ -150,6 +150,41 @@ impl CityFields {
         }
         self.chunk_size = CHUNK_TILES;
         self.current_chunk = 0;
+    }
+
+    /// Set one tile of one field; a tile off the laid-over map is ignored.
+    pub fn set(&mut self, field: CityField, idx: usize, value: f32) {
+        if let Some(slot) = self.values[field.slot()].get_mut(idx) {
+            *slot = value;
+        }
+    }
+
+    pub(crate) fn tile_count(&self) -> usize {
+        self.values[0].len()
+    }
+
+    pub(crate) fn chunk_size(&self) -> usize {
+        self.chunk_size
+    }
+
+    /// The chunk that will be recomputed next; the most recently published chunk is the one
+    /// immediately before it (wrapping).
+    pub(crate) fn current_chunk(&self) -> usize {
+        self.current_chunk
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_publish_state_for_test(
+        &mut self,
+        len: usize,
+        chunk_size: usize,
+        current_chunk: usize,
+        version: u64,
+    ) {
+        self.lay_over(len);
+        self.chunk_size = chunk_size;
+        self.current_chunk = current_chunk;
+        self.version = version;
     }
 
     /// Reset for a freshly loaded or generated map: the previous city's fields must not feed
@@ -165,7 +200,7 @@ impl CityFields {
     #[cfg(test)]
     pub(crate) fn set_for_test(&mut self, field: CityField, values: Vec<f32>) {
         if !self.covers(values.len()) {
-            self.resize(values.len());
+            self.lay_over(values.len());
         }
         self.values[field.slot()] = values;
     }
@@ -336,7 +371,7 @@ fn compute_city_fields(
         return;
     }
     if !fields.covers(len) {
-        fields.resize(len);
+        fields.lay_over(len);
     }
 
     // An index not yet laid over this map is left out rather than read as a measurement.

@@ -137,6 +137,7 @@ pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpR
     };
 
     let utilities = utilities_json(world);
+    let city_fields = city_fields_json(world);
     let state = world
         .get_resource::<State<AppState>>()
         .map(|state| format!("{:?}", state.get()));
@@ -236,7 +237,61 @@ pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpR
         "log": log,
         "budget": budget,
         "utilities": utilities,
+        "city_fields": city_fields,
     }))
+}
+
+/// Each city field over the whole map (min, mean, max) and at the hovered tile — enough to judge a
+/// growth or decay run.
+fn city_fields_json(world: &World) -> Value {
+    use simcity_sim::game::city_fields::{CityField, CityFields};
+    use simcity_sim::game::map::{HoveredTile, MapGrid};
+
+    let Some(fields) = world.get_resource::<CityFields>() else {
+        return json!({ "version": Value::Null, "note": "no city fields in this world" });
+    };
+    let grid = world.get_resource::<MapGrid>();
+    let covers_map = grid.is_some_and(|grid| fields.covers(grid.len()));
+    let summary: serde_json::Map<String, Value> = CityField::ALL
+        .into_iter()
+        .map(|field| {
+            let values = fields.values(field);
+            let stats = if values.is_empty() {
+                Value::Null
+            } else {
+                let min = values.iter().copied().fold(f32::INFINITY, f32::min);
+                let max = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                let mean =
+                    values.iter().map(|value| f64::from(*value)).sum::<f64>() / values.len() as f64;
+                json!({ "min": min, "mean": mean, "max": max })
+            };
+            (format!("{field:?}"), stats)
+        })
+        .collect();
+    let hovered = match (
+        world
+            .get_resource::<HoveredTile>()
+            .and_then(|hovered| hovered.tile),
+        grid,
+    ) {
+        (Some(tile), Some(grid)) if covers_map => {
+            let mut entry = serde_json::Map::new();
+            entry.insert("tile".to_string(), json!([tile.x, tile.y]));
+            if let Some(idx) = grid.idx(tile) {
+                for field in CityField::ALL {
+                    entry.insert(format!("{field:?}"), json!(fields.get(field, idx)));
+                }
+            }
+            Value::Object(entry)
+        }
+        _ => Value::Null,
+    };
+    json!({
+        "version": fields.version,
+        "covers_map": covers_map,
+        "fields": summary,
+        "hovered": hovered,
+    })
 }
 
 /// Supply by utility, zoned buildings without it, and why the hovered tile is held back.
@@ -420,6 +475,7 @@ mod tests {
             "log",
             "budget",
             "utilities",
+            "city_fields",
         ] {
             assert!(
                 answer.get(section).is_some(),
@@ -614,6 +670,40 @@ mod tests {
         assert_eq!(utilities["buildings_without"]["water"], 0);
         assert_eq!(utilities["hovered"]["blockers"], json!(["NoPower"]));
         assert_eq!(utilities["hovered"]["tile"], json!([8, 4]));
+    }
+
+    #[test]
+    fn city_fields_are_reported_so_a_growth_run_can_be_judged() {
+        use simcity_sim::game::city_fields::{CityField, CityFields};
+        use simcity_sim::game::map::{HoveredTile, MapGrid, TilePos};
+
+        let grid = MapGrid::new(4, 1);
+        let mut fields = CityFields::default();
+        fields.lay_over(grid.len());
+        for (idx, crime) in [0.1, 0.2, 0.3, 0.4].into_iter().enumerate() {
+            fields.set(CityField::Crime, idx, crime);
+        }
+        let mut world = World::new();
+        world.insert_resource(grid);
+        world.insert_resource(fields);
+        world.insert_resource(HoveredTile {
+            tile: Some(TilePos { x: 3, y: 0 }),
+        });
+
+        let answer = observe_handler(In(None), &mut world).expect("observe always answers");
+        let section = &answer["city_fields"];
+        assert_eq!(section["covers_map"], true, "{section}");
+        let near = |value: &Value, expected: f64| {
+            value
+                .as_f64()
+                .is_some_and(|actual| (actual - expected).abs() < 1e-6)
+        };
+        let crime = &section["fields"]["Crime"];
+        assert!(near(&crime["min"], 0.1), "{crime}");
+        assert!(near(&crime["mean"], 0.25), "{crime}");
+        assert!(near(&crime["max"], 0.4), "{crime}");
+        assert_eq!(section["hovered"]["tile"], json!([3, 0]));
+        assert!(near(&section["hovered"]["Crime"], 0.4), "{section}");
     }
 
     #[test]
