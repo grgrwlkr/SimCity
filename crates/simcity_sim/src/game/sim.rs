@@ -177,6 +177,7 @@ fn sim_tick(
     mut city: ResMut<City>,
     mut day_out: bevy::ecs::message::MessageWriter<DayAdvanced>,
     mut hour_out: bevy::ecs::message::MessageWriter<HourAdvanced>,
+    notifications: Option<ResMut<crate::game::notifications::Notifications>>,
 ) {
     const SECS_PER_GAME_HOUR: f32 = 1.0;
     // Timer duration uses base hour length; global time scale handles speed.
@@ -212,6 +213,12 @@ fn sim_tick(
             city.day = city.day.saturating_add(1);
             day_out.write(DayAdvanced { day: city.day });
         }
+    }
+
+    // Events that arrive from here on happen on the day the clock has reached, even when many ticks
+    // run in one frame. The date alone changes nothing on screen.
+    if let Some(mut notifications) = notifications {
+        notifications.bypass_change_detection().set_day(city.day);
     }
 
     // If we hit the limit, reset timer to prevent accumulating a backlog.
@@ -411,6 +418,49 @@ mod pause_preserves_game_tests {
             growth_after,
             expected[4..],
             "pause must not restart the building growth stream"
+        );
+    }
+
+    /// The feed dates an event with the day the clock has reached, even when the day turned
+    /// inside the same update the event arrives in, as it does when many ticks run in one frame.
+    #[test]
+    fn advisor_feed_follows_the_clock_across_a_day_in_one_update() {
+        use crate::game::notifications::{NotificationKind, Notifications};
+
+        let mut app = App::new();
+        app.add_message::<DayAdvanced>()
+            .add_message::<HourAdvanced>()
+            .insert_resource(City {
+                day: 3,
+                hour: 23,
+                ..City::default()
+            })
+            .init_resource::<SimClock>()
+            .init_resource::<Notifications>()
+            .init_resource::<Time<Fixed>>()
+            .add_systems(Update, sim_tick);
+        app.world_mut()
+            .resource_mut::<Time<Fixed>>()
+            .advance_by(Duration::from_secs(1));
+        app.update();
+        assert_eq!(
+            app.world().resource::<City>().day,
+            4,
+            "the clock crossed midnight"
+        );
+
+        app.world_mut().resource_mut::<Notifications>().add(
+            "Fire emergency".to_string(),
+            NotificationKind::Warning,
+            5.0,
+        );
+        assert_eq!(
+            app.world()
+                .resource::<Notifications>()
+                .history()
+                .back()
+                .map(|line| line.day),
+            Some(4)
         );
     }
 

@@ -37,7 +37,8 @@ pub enum AdvisorAction {
     Toggle,
 }
 
-/// Spawn the advisor's panel, closed, at the right of the screen under its own game-interface root.
+/// Spawn the advisor's panel, closed, on the left below the data map panel, clear of the toasts in
+/// the top right, under its own game-interface root.
 pub fn spawn_advisor_panel(commands: &mut Commands, theme: &Theme, glass: Handle<GlassMaterial>) {
     let space = theme.space;
     let root = commands
@@ -48,8 +49,8 @@ pub fn spawn_advisor_panel(commands: &mut Commands, theme: &Theme, glass: Handle
             Pickable::IGNORE,
             Node {
                 position_type: PositionType::Absolute,
-                top: space.px(18.0),
-                right: space.px(4.0),
+                top: space.px(88.0),
+                left: space.px(3.0),
                 ..default()
             },
         ))
