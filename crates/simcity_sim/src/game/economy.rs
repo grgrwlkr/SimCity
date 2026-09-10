@@ -34,8 +34,11 @@ impl Plugin for EconomyPlugin {
 
 #[derive(Resource, serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct EconomyConfig {
-    pub road_maintenance: i64,
     pub happiness_target: f32,
+    /// Daily upkeep of a hundred road tiles, in dollars: a road tile costs a tenth of a dollar a
+    /// day at the default, so a city's road network is paid for by the taxes it enables.
+    #[serde(default = "default_road_upkeep_per_100_tiles")]
+    pub road_upkeep_per_100_tiles: i64,
     /// Game days in one budget month: the report closes when they have passed.
     #[serde(default = "default_days_per_month")]
     pub days_per_month: u32,
@@ -115,6 +118,10 @@ fn default_hospital_upkeep() -> i64 {
     30
 }
 
+fn default_road_upkeep_per_100_tiles() -> i64 {
+    10
+}
+
 fn default_days_per_month() -> u32 {
     10
 }
@@ -122,9 +129,9 @@ fn default_days_per_month() -> u32 {
 impl Default for EconomyConfig {
     fn default() -> Self {
         Self {
-            road_maintenance: 1,
             happiness_target: 0.7,
             days_per_month: default_days_per_month(),
+            road_upkeep_per_100_tiles: default_road_upkeep_per_100_tiles(),
             resident_income: default_resident_income(),
             commercial_income: default_commercial_income(),
             industrial_income: default_industrial_income(),
@@ -488,7 +495,7 @@ fn apply_daily_economy(
         let residential_tax = owed[TaxZone::Residential.index()].round() as i64;
         let commercial_tax = owed[TaxZone::Commercial.index()].round() as i64;
         let industrial_tax = owed[TaxZone::Industrial.index()].round() as i64;
-        let road_upkeep = (road_tiles as i64) * cfg.road_maintenance;
+        let road_upkeep = (i64::from(road_tiles) * cfg.road_upkeep_per_100_tiles + 50) / 100;
         // Upkeep is per station, whatever its footprint; zoned buildings pay taxes, not upkeep.
         let default_funding = ServiceFunding::default();
         let funding = funding.as_deref().unwrap_or(&default_funding);
@@ -620,10 +627,14 @@ mod tests {
         let mut app = App::new();
         app.add_message::<DayAdvanced>();
         app.insert_resource(EconomyConfig::default());
-        let mut grid = MapGrid::new(8, 8);
-        for x in 0..3 {
+        // A hundred road tiles: enough to cost whole dollars a day at the calibrated upkeep.
+        let mut grid = MapGrid::new(16, 16);
+        for index in 0..100 {
             grid.set(
-                TilePos { x, y: 1 },
+                TilePos {
+                    x: index % 16,
+                    y: 8 + index / 16,
+                },
                 MapCell {
                     road: RoadCell {
                         kind: RoadKind::TwoLane,
@@ -773,10 +784,14 @@ mod tests {
 
     #[test]
     fn maintenance_per_building_roads_cost_per_tile() {
-        let mut grid = MapGrid::new(16, 16);
-        for x in 0..5 {
+        // 250 tiles at ten dollars per hundred tiles a day: twenty-five dollars, rounded once.
+        let mut grid = MapGrid::new(64, 64);
+        for index in 0..250 {
             grid.set(
-                TilePos { x, y: 3 },
+                TilePos {
+                    x: index % 50,
+                    y: 3 + index / 50,
+                },
                 MapCell {
                     road: RoadCell {
                         kind: RoadKind::TwoLane,
@@ -790,9 +805,14 @@ mod tests {
             );
         }
         let lines = one_day(grid, &[]);
+        let per_100 = EconomyConfig::default().road_upkeep_per_100_tiles;
+        assert_eq!(
+            per_100, 10,
+            "a road tile costs a tenth of a dollar a day by default"
+        );
         assert_eq!(
             lines.get(BudgetItem::RoadMaintenance),
-            -5 * EconomyConfig::default().road_maintenance
+            -(250 * per_100 + 50) / 100
         );
     }
 

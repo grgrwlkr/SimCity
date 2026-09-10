@@ -1,5 +1,5 @@
 (
-    road_maintenance: 1,
+    road_upkeep_per_100_tiles: 10,
     happiness_target: 0.7,
     days_per_month: 10,
     resident_income: (low: 13.3, middle: 22.2, high: 35.5),

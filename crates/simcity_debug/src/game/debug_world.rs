@@ -659,8 +659,8 @@ pub struct DebugConfigSnapshot {
     pub economy_commercial_income_middle: f32,
     /// Economy: daily taxable income of a middle-class industrial job.
     pub economy_industrial_income_middle: f32,
-    /// Economy: road maintenance.
-    pub economy_road_maintenance: i64,
+    /// Economy: daily upkeep of a hundred road tiles.
+    pub economy_road_upkeep_per_100_tiles: i64,
     /// Economy: daily upkeep of one fire station.
     pub economy_fire_station_upkeep: i64,
     /// Economy: daily upkeep of one police station.
@@ -2277,7 +2277,7 @@ fn update_debug_config_snapshot(
     snapshot.economy_resident_income_middle = economy_cfg.resident_income.middle;
     snapshot.economy_commercial_income_middle = economy_cfg.commercial_income.middle;
     snapshot.economy_industrial_income_middle = economy_cfg.industrial_income.middle;
-    snapshot.economy_road_maintenance = economy_cfg.road_maintenance;
+    snapshot.economy_road_upkeep_per_100_tiles = economy_cfg.road_upkeep_per_100_tiles;
     snapshot.economy_fire_station_upkeep = economy_cfg.fire_station_upkeep;
     snapshot.economy_police_station_upkeep = economy_cfg.police_station_upkeep;
     snapshot.economy_hospital_upkeep = economy_cfg.hospital_upkeep;
