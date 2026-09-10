@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 
+pub mod advisor;
 pub mod atlas;
 pub mod buildings;
 pub mod citizens;
@@ -301,6 +302,7 @@ impl Plugin for SimPlugin {
                 city_fields::CityFieldsPlugin,
                 civic_coverage::CivicCoveragePlugin,
                 milestones::MilestonesPlugin,
+                advisor::AdvisorPlugin,
                 notifications::NotificationsPlugin,
                 pollution::PollutionPlugin,
                 public_transport::PublicTransportPlugin,

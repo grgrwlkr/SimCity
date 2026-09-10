@@ -9,6 +9,7 @@ use bevy::prelude::*;
 use simcity_core::game::sets::GameSet;
 use simcity_core::game::ui_state::PointerOverGameUi;
 
+pub mod advisor_panel;
 pub mod budget_panel;
 pub mod data_map_panel;
 pub mod glass;
@@ -38,6 +39,8 @@ impl Plugin for HudPlugin {
             .add_observer(start_screen::on_menu_action)
             .init_resource::<budget_panel::BudgetPanelOpen>()
             .add_observer(budget_panel::on_budget_action)
+            .init_resource::<advisor_panel::AdvisorPanelOpen>()
+            .add_observer(advisor_panel::on_advisor_action)
             .add_systems(Startup, spawn_game_ui)
             // Straight after hover is computed, so every consumer of the frame reads it fresh.
             .add_systems(
@@ -60,6 +63,7 @@ impl Plugin for HudPlugin {
                     start_screen::update_scenario_list,
                     start_screen::show_screens_for_state,
                     budget_panel::update_budget_panel,
+                    advisor_panel::update_advisor_panel,
                 )
                     .in_set(GameSet::Ui),
             );
@@ -74,7 +78,9 @@ fn spawn_game_ui(
     let glass = materials.add(glass::GlassMaterial::from_theme(&theme));
     let bar = hud_bar::spawn_hud_bar(&mut commands, &theme, glass.clone());
     budget_panel::spawn_budget_toggle(&mut commands, &theme, bar);
+    advisor_panel::spawn_advisor_toggle(&mut commands, &theme, bar);
     budget_panel::spawn_budget_panel(&mut commands, &theme, glass.clone());
+    advisor_panel::spawn_advisor_panel(&mut commands, &theme, glass.clone());
     data_map_panel::spawn_data_map_panel(&mut commands, &theme, glass.clone());
     start_screen::spawn_start_screen(&mut commands, &theme, glass.clone());
     tool_palette::spawn_tool_palette(&mut commands, &theme, glass);

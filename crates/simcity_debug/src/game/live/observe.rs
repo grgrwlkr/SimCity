@@ -157,6 +157,7 @@ pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpR
     let city_fields = city_fields_json(world);
     let civic_coverage = civic_coverage_json(world);
     let milestones = milestones_json(world);
+    let advisor = advisor_json(world);
     let buildings = buildings_json(world, region);
     let state = world
         .get_resource::<State<AppState>>()
@@ -260,6 +261,7 @@ pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpR
         "city_fields": city_fields,
         "civic_coverage": civic_coverage,
         "milestones": milestones,
+        "advisor": advisor,
         "buildings": buildings,
     }))
 }
@@ -321,6 +323,28 @@ fn city_fields_json(world: &World) -> Value {
         "fields": summary,
         "hovered": hovered,
     })
+}
+
+/// The advisor's problems, worst first, each with its words, weight and place.
+fn advisor_json(world: &World) -> Value {
+    use simcity_sim::game::advisor::Advisor;
+
+    let Some(advisor) = world.get_resource::<Advisor>() else {
+        return json!({ "version": Value::Null, "note": "no advisor in this world" });
+    };
+    let problems: Vec<Value> = advisor
+        .problems
+        .iter()
+        .map(|problem| {
+            json!({
+                "kind": format!("{:?}", problem.kind),
+                "severity": problem.severity,
+                "text": problem.text,
+                "at": problem.at.map(|tile| [tile.x, tile.y]),
+            })
+        })
+        .collect();
+    json!({ "version": advisor.version, "problems": problems })
 }
 
 /// The population the city has reached, the next milestone ahead, and the buildings milestones
@@ -678,6 +702,7 @@ mod tests {
             "city_fields",
             "civic_coverage",
             "milestones",
+            "advisor",
             "buildings",
         ] {
             assert!(
@@ -977,6 +1002,36 @@ mod tests {
         assert!(
             near(&section["hovered"]["LandValue"], 0.8),
             "the hovered tile carries its land value: {section}"
+        );
+    }
+
+    #[test]
+    fn advisor_problems_are_reported_so_a_shortage_run_can_be_judged() {
+        use simcity_sim::game::advisor::{Advisor, Problem, ProblemKind};
+        use simcity_sim::game::map::TilePos;
+
+        let mut world = World::new();
+        world.insert_resource(Advisor {
+            version: 4,
+            problems: vec![Problem {
+                kind: ProblemKind::WaterShortage,
+                severity: 0.75,
+                text: "Water shortage: pumps supply 5 000, the city needs 6 200".to_string(),
+                at: Some(TilePos { x: 9, y: 4 }),
+            }],
+        });
+        let answer = observe_handler(In(None), &mut world).expect("observe always answers");
+        let section = &answer["advisor"];
+        assert_eq!(section["version"], 4, "{section}");
+        assert_eq!(
+            section["problems"],
+            json!([{
+                "kind": "WaterShortage",
+                "severity": 0.75,
+                "text": "Water shortage: pumps supply 5 000, the city needs 6 200",
+                "at": [9, 4],
+            }]),
+            "{section}"
         );
     }
 
