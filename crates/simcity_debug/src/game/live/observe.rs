@@ -140,12 +140,19 @@ pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpR
         .get_resource::<State<AppState>>()
         .map(|state| format!("{:?}", state.get()));
     let ui = world.get_resource::<UiState>();
-    let (speed, overlay) = ui.map_or((None, None), |ui| {
+    let (speed, overlay, tool, one_way_mode) = ui.map_or((None, None, None, None), |ui| {
         (
             Some(format!("{:?}", ui.sim_speed)),
             Some(format!("{:?}", ui.overlay)),
+            Some(format!("{:?}", ui.tool)),
+            Some(ui.one_way_mode),
         )
     });
+    // Whether a UI widget owned the keyboard this frame. Without it a live check cannot tell a
+    // key that went into a text field from a key that leaked into the game.
+    let keyboard_captured = world
+        .get_resource::<simcity_core::game::ui_state::InputFocus>()
+        .map(|focus| focus.keyboard_captured);
 
     let city = world.get_resource::<City>().map(|city| {
         json!({
@@ -214,6 +221,9 @@ pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpR
         "app_state": state,
         "sim_speed": speed,
         "overlay": overlay,
+        "tool": tool,
+        "one_way_mode": one_way_mode,
+        "keyboard_captured": keyboard_captured,
         "tick": tick,
         "city": city,
         "camera": camera,
@@ -256,6 +266,9 @@ mod tests {
             "app_state",
             "sim_speed",
             "overlay",
+            "tool",
+            "one_way_mode",
+            "keyboard_captured",
             "tick",
             "city",
             "camera",
@@ -281,6 +294,41 @@ mod tests {
         assert!(
             answer["log"]["lines"].is_null(),
             "with no tail installed the answer says so instead of pretending the log is empty"
+        );
+    }
+
+    #[test]
+    fn keyboard_focus_is_reported_so_a_hotkey_run_can_be_judged() {
+        let mut world = World::new();
+        world.insert_resource(simcity_core::game::ui_state::InputFocus {
+            keyboard_captured: true,
+        });
+        let answer = observe_handler(In(None), &mut world).expect("observe always answers");
+        assert_eq!(
+            answer["keyboard_captured"], true,
+            "without this a live check cannot tell whether typed keys reached a focused field \
+             or the game, which is the one fact deciding whether a hotkey leak is a bug"
+        );
+    }
+
+    #[test]
+    fn road_tool_state_is_reported_so_a_one_way_build_can_be_judged() {
+        let mut world = World::new();
+        world.insert_resource(UiState {
+            one_way_mode: true,
+            ..default()
+        });
+        let answer = observe_handler(In(None), &mut world).expect("observe always answers");
+        assert_eq!(
+            answer["one_way_mode"], true,
+            "one-way was unreachable for so long partly because nothing could see it"
+        );
+        assert!(
+            answer["tool"]
+                .as_str()
+                .is_some_and(|tool| tool.starts_with("Road")),
+            "the selected tool must be readable as state, not scraped from the window title: {}",
+            answer["tool"]
         );
     }
 

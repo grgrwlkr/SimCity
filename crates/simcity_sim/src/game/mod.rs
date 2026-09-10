@@ -52,6 +52,14 @@ impl Default for AutoStartTestCity {
     }
 }
 
+/// Whether this crate was built with the `dev` feature.
+///
+/// Public so a pin in another crate can branch on the build it is really running in — that
+/// crate's own `cfg(feature = "dev")` would test its feature set, not this one's. Deliberately
+/// NOT derived from `AutoStartTestCity`: a startup pin branching on the flag it checks would
+/// follow the flag into the dev branch and pass when auto-start is turned on unconditionally.
+pub const DEV_BUILD: bool = cfg!(feature = "dev");
+
 /// Frames to wait in InGame before auto-loading the test city, so the one-shot scenario `GenerateMap`
 /// (and its cascade: terrain regen, vehicle clear, growth reset) is fully applied first.
 const AUTO_START_SETTLE_FRAMES: u8 = 2;

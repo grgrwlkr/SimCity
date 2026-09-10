@@ -41,6 +41,7 @@ pub(super) fn shortcuts_ui(mut contexts: EguiContexts, show: Res<ShowShortcuts>)
             ui.label("3 — Commercial zone");
             ui.label("4 — Industrial zone");
             ui.label("5 — Erase tool");
+            ui.label("O — One-way mode for the next road segment");
 
             ui.separator();
             ui.heading("Game");

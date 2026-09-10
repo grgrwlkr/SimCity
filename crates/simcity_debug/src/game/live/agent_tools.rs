@@ -50,9 +50,10 @@ pub const TOOLS: &[ToolDoc] = &[
         name: "simcity.observe",
         method: "simcity/observe",
         description: "Read the whole state of the running game in one answer: app state, \
-                      simulation speed and clock, city and economy, camera pose, render \
-                      counts, frame timings, and the tail of the log. Takes no parameters \
-                      unless you want a different number of log lines.",
+                      simulation speed and clock, the selected tool and one-way road mode, \
+                      whether a UI widget holds keyboard focus, city and economy, camera \
+                      pose, render counts, frame timings, and the tail of the log. Takes no \
+                      parameters unless you want a different number of log lines.",
         dispatch: Dispatch::Instant,
         params_schema: schema_of::<ObserveParams>,
     },
