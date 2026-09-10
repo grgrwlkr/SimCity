@@ -380,7 +380,12 @@ fn derive_buildings_from_map(map: &MapGridV1, city: &City) -> Vec<BuildingSnapsh
 
 fn build_legacy_candidates(kind: BuildingKind) -> Vec<(u8, u8)> {
     match kind {
-        BuildingKind::FireStation | BuildingKind::PoliceStation | BuildingKind::Hospital => {
+        BuildingKind::FireStation
+        | BuildingKind::PoliceStation
+        | BuildingKind::Hospital
+        | BuildingKind::PowerPlant
+        | BuildingKind::WaterPump
+        | BuildingKind::Landfill => {
             vec![(3, 3)]
         }
         _ => {

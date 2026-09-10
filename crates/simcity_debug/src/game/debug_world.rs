@@ -1816,9 +1816,12 @@ fn update_debug_buildings_snapshot(
             BuildingKind::Residential => residential += 1,
             BuildingKind::Commercial => commercial += 1,
             BuildingKind::Industrial => industrial += 1,
-            BuildingKind::FireStation | BuildingKind::PoliceStation | BuildingKind::Hospital => {
-                service += 1
-            }
+            BuildingKind::FireStation
+            | BuildingKind::PoliceStation
+            | BuildingKind::Hospital
+            | BuildingKind::PowerPlant
+            | BuildingKind::WaterPump
+            | BuildingKind::Landfill => service += 1,
         }
 
         match b.phase {

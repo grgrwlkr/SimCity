@@ -24,6 +24,7 @@ pub mod sim;
 pub mod telemetry;
 pub mod traffic;
 pub mod transport;
+pub mod utilities;
 pub mod zone_placement;
 
 pub use simcity_core::game::{
@@ -161,6 +162,8 @@ pub enum PostSimStep {
     Pollution,
     /// `ServiceCoverageIndex` (read by land value and economy).
     Coverage,
+    /// `UtilityNetwork` (read by growth, occupancy and the city fields).
+    Utilities,
     /// `LandValueIndex` (read by RCI demand).
     LandValue,
     /// `EmploymentStats` (read by RCI demand and economy).
@@ -213,6 +216,7 @@ pub(crate) fn apply_fixed_update_set_order(app: &mut App) {
             PostSimStep::TrafficIndex,
             PostSimStep::Pollution,
             PostSimStep::Coverage,
+            PostSimStep::Utilities,
             PostSimStep::LandValue,
             PostSimStep::EmploymentStats,
             PostSimStep::Demand,
@@ -286,6 +290,7 @@ impl Plugin for SimPlugin {
                 notifications::NotificationsPlugin,
                 pollution::PollutionPlugin,
                 public_transport::PublicTransportPlugin,
+                utilities::UtilitiesPlugin,
             ))
             .add_systems(
                 Update,

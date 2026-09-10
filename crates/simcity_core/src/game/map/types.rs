@@ -93,6 +93,12 @@ pub enum BuildingKind {
     FireStation,
     PoliceStation,
     Hospital,
+    /// Supplies power along the roads it fronts.
+    PowerPlant,
+    /// Supplies water along the roads it fronts.
+    WaterPump,
+    /// Collects garbage along the roads it fronts.
+    Landfill,
 }
 
 impl BuildingKind {
@@ -104,6 +110,9 @@ impl BuildingKind {
             BuildingKind::FireStation => Color::srgb(0.75, 0.15, 0.12),
             BuildingKind::PoliceStation => Color::srgb(0.12, 0.22, 0.75),
             BuildingKind::Hospital => Color::srgb(0.12, 0.75, 0.22),
+            BuildingKind::PowerPlant => Color::srgb(0.85, 0.72, 0.15),
+            BuildingKind::WaterPump => Color::srgb(0.15, 0.55, 0.85),
+            BuildingKind::Landfill => Color::srgb(0.45, 0.36, 0.26),
         }
     }
 
@@ -112,9 +121,12 @@ impl BuildingKind {
             BuildingKind::Residential => ZoneKind::Residential,
             BuildingKind::Commercial => ZoneKind::Commercial,
             BuildingKind::Industrial => ZoneKind::Industrial,
-            BuildingKind::FireStation | BuildingKind::PoliceStation | BuildingKind::Hospital => {
-                ZoneKind::None
-            }
+            BuildingKind::FireStation
+            | BuildingKind::PoliceStation
+            | BuildingKind::Hospital
+            | BuildingKind::PowerPlant
+            | BuildingKind::WaterPump
+            | BuildingKind::Landfill => ZoneKind::None,
         }
     }
 
@@ -153,6 +165,9 @@ impl BuildingKind {
             BuildingKind::FireStation => 500,
             BuildingKind::PoliceStation => 400,
             BuildingKind::Hospital => 800,
+            BuildingKind::PowerPlant => 1000,
+            BuildingKind::WaterPump => 600,
+            BuildingKind::Landfill => 400,
         }
     }
 
@@ -161,7 +176,12 @@ impl BuildingKind {
             BuildingKind::Residential => 4,
             BuildingKind::Commercial => 0,
             BuildingKind::Industrial => 0,
-            BuildingKind::FireStation | BuildingKind::PoliceStation | BuildingKind::Hospital => 0,
+            BuildingKind::FireStation
+            | BuildingKind::PoliceStation
+            | BuildingKind::Hospital
+            | BuildingKind::PowerPlant
+            | BuildingKind::WaterPump
+            | BuildingKind::Landfill => 0,
         }
     }
 
@@ -170,7 +190,12 @@ impl BuildingKind {
             BuildingKind::Residential => 0,
             BuildingKind::Commercial => 3,
             BuildingKind::Industrial => 4,
-            BuildingKind::FireStation | BuildingKind::PoliceStation | BuildingKind::Hospital => 0,
+            BuildingKind::FireStation
+            | BuildingKind::PoliceStation
+            | BuildingKind::Hospital
+            | BuildingKind::PowerPlant
+            | BuildingKind::WaterPump
+            | BuildingKind::Landfill => 0,
         }
     }
 
