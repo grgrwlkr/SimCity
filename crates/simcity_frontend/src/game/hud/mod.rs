@@ -7,13 +7,13 @@ use bevy::asset::embedded_asset;
 use bevy::picking::PickingSystems;
 use bevy::prelude::*;
 use simcity_core::game::sets::GameSet;
-use simcity_core::game::state::AppState;
-use simcity_core::game::ui_state::{GameUiRoot, PointerOverGameUi};
+use simcity_core::game::ui_state::PointerOverGameUi;
 
 pub mod data_map_panel;
 pub mod glass;
 pub mod hud_bar;
 pub mod pointer;
+pub mod start_screen;
 pub mod theme;
 pub mod tile_tooltip;
 pub mod toasts;
@@ -34,6 +34,7 @@ impl Plugin for HudPlugin {
             .add_observer(tool_palette::on_tool_button)
             .add_observer(toasts::on_toast)
             .add_observer(data_map_panel::on_overlay_button)
+            .add_observer(start_screen::on_menu_action)
             .add_systems(Startup, spawn_game_ui)
             // Straight after hover is computed, so every consumer of the frame reads it fresh.
             .add_systems(
@@ -53,7 +54,8 @@ impl Plugin for HudPlugin {
                         data_map_panel::update_overlay_reading,
                     )
                         .chain(),
-                    show_game_ui_in_game,
+                    start_screen::update_scenario_list,
+                    start_screen::show_screens_for_state,
                 )
                     .in_set(GameSet::Ui),
             );
@@ -68,23 +70,8 @@ fn spawn_game_ui(
     let glass = materials.add(glass::GlassMaterial::from_theme(&theme));
     hud_bar::spawn_hud_bar(&mut commands, &theme, glass.clone());
     data_map_panel::spawn_data_map_panel(&mut commands, &theme, glass.clone());
+    start_screen::spawn_start_screen(&mut commands, &theme, glass.clone());
     tool_palette::spawn_tool_palette(&mut commands, &theme, glass);
     toasts::spawn_toast_feed(&mut commands, &theme);
     tile_tooltip::spawn_tile_tooltip(&mut commands, &theme);
-}
-
-/// The in-game interface belongs to a running city; the menu has its own screen.
-fn show_game_ui_in_game(
-    state: Res<State<AppState>>,
-    mut roots: Query<&mut Visibility, With<GameUiRoot>>,
-) {
-    let visible = matches!(state.get(), AppState::InGame | AppState::Paused);
-    let wanted = if visible {
-        Visibility::Inherited
-    } else {
-        Visibility::Hidden
-    };
-    for mut visibility in &mut roots {
-        visibility.set_if_neq(wanted);
-    }
 }

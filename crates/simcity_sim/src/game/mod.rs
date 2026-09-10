@@ -31,7 +31,7 @@ pub use simcity_core::game::{
 };
 
 #[derive(Resource, Debug, Copy, Clone)]
-pub(crate) struct AutoStartTestCity {
+pub struct AutoStartTestCity {
     pub(crate) pending: bool,
     /// InGame frames waited before firing LoadTestCity. The scenario system auto-applies on
     /// `OnEnter(InGame)` and writes `GenerateMap`, whose map regeneration clobbers the test city if we
@@ -49,6 +49,20 @@ impl Default for AutoStartTestCity {
             pending: cfg!(feature = "dev"),
             settle: 0,
         }
+    }
+}
+
+impl AutoStartTestCity {
+    /// Ask for the prebuilt city: the game leaves the menu and loads it once the scenario's own
+    /// map generation has settled.
+    pub fn request(&mut self) {
+        self.pending = true;
+        self.settle = 0;
+    }
+
+    /// A request that has not been carried out yet.
+    pub fn is_pending(&self) -> bool {
+        self.pending
     }
 }
 

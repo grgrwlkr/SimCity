@@ -81,6 +81,9 @@ pub struct ScenarioCatalog {
 pub struct ScenarioSelection {
     /// Selected scenario index in `ScenarioCatalog::scenarios`.
     pub selected: usize,
+    /// Start the selected scenario on this seed instead of its own: a new map is the sandbox on
+    /// a fresh seed.
+    pub seed: Option<u64>,
 }
 
 #[derive(Resource, Debug, Clone, Default)]
@@ -166,7 +169,9 @@ fn apply_selected_scenario_on_enter(
     progress.is_completed = false;
 
     // Generate map from the scenario seed.
-    out.write(GameCommand::GenerateMap { seed: s.seed });
+    out.write(GameCommand::GenerateMap {
+        seed: selection.seed.unwrap_or(s.seed),
+    });
 
     // Apply initial placements after generation (same command stream).
     for cmd in s.initial_commands.iter() {
@@ -215,4 +220,64 @@ fn update_scenario_progress(
     progress.objectives_total = s.objectives.len() as u32;
     progress.objectives_completed = done;
     progress.is_completed = !s.objectives.is_empty() && done == progress.objectives_total;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn catalog() -> ScenarioCatalog {
+        ScenarioCatalog {
+            scenarios: vec![Scenario {
+                id: "sandbox".to_string(),
+                name: "Sandbox".to_string(),
+                seed: 1,
+                starting_money: 2000,
+                starting_day: 1,
+                initial_commands: Vec::new(),
+                objectives: Vec::new(),
+            }],
+        }
+    }
+
+    #[derive(Resource, Default)]
+    struct Generated(Vec<u64>);
+
+    fn record_generation(mut reader: MessageReader<GameCommand>, mut seen: ResMut<Generated>) {
+        for command in reader.read() {
+            if let GameCommand::GenerateMap { seed } = command {
+                seen.0.push(*seed);
+            }
+        }
+    }
+
+    fn generated_seeds(selection: ScenarioSelection) -> Vec<u64> {
+        let mut app = App::new();
+        app.add_message::<GameCommand>();
+        app.insert_resource(catalog());
+        app.insert_resource(selection);
+        app.init_resource::<City>();
+        app.init_resource::<ScenarioProgress>();
+        app.init_resource::<ScenarioRuntime>();
+        app.init_resource::<Generated>();
+        app.add_systems(
+            Update,
+            (apply_selected_scenario_on_enter, record_generation).chain(),
+        );
+        app.update();
+        app.world().resource::<Generated>().0.clone()
+    }
+
+    #[test]
+    fn a_scenario_starts_on_its_own_seed_unless_one_is_given() {
+        assert_eq!(generated_seeds(ScenarioSelection::default()), vec![1]);
+        assert_eq!(
+            generated_seeds(ScenarioSelection {
+                selected: 0,
+                seed: Some(987_654),
+            }),
+            vec![987_654],
+            "a new map is the sandbox on the seed the menu rolled"
+        );
+    }
 }
