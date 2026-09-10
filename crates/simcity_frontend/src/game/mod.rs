@@ -3,6 +3,7 @@ use bevy::prelude::*;
 mod audio_sfx;
 pub mod camera;
 pub mod camera_projection;
+pub mod hud;
 pub mod render_settings;
 pub mod ui;
 mod ui_settings;
