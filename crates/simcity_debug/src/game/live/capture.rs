@@ -37,6 +37,10 @@ const DEFAULT_SIZE: UVec2 = UVec2::new(1280, 720);
 const DEFAULT_SETTLE_FRAMES: u32 = 3;
 /// Give up rather than hold a BRP request open forever if a frame never arrives.
 const TIMEOUT_FRAMES: u32 = 900;
+/// Largest side a capture may ask for. This is `wgpu`'s default
+/// `max_texture_dimension_2d`, so beyond it the texture would be refused by the driver
+/// anyway — refusing here turns a failure deep in the renderer into a plain answer.
+const MAX_CAPTURE_SIZE: u32 = 8192;
 
 // ---------------------------------------------------------------------------
 // Request
@@ -98,15 +102,9 @@ impl CaptureRequest {
             return Err(format!("`path` must end in .png, got {path:?}"));
         }
 
-        let size = match (
-            params.get("width").and_then(Value::as_u64),
-            params.get("height").and_then(Value::as_u64),
-        ) {
+        let size = match (dimension(params, "width")?, dimension(params, "height")?) {
             (None, None) => None,
-            (Some(0), _) | (_, Some(0)) => {
-                return Err("`width` and `height` must be above zero".to_string());
-            }
-            (Some(width), Some(height)) => Some(UVec2::new(width as u32, height as u32)),
+            (Some(width), Some(height)) => Some(UVec2::new(width, height)),
             (Some(_), None) => return Err("`width` was given without `height`".to_string()),
             (None, Some(_)) => return Err("`height` was given without `width`".to_string()),
         };
@@ -135,6 +133,38 @@ impl CaptureRequest {
             settle_frames,
         })
     }
+}
+
+/// Read one side of a requested capture size.
+///
+/// The range is checked on the way in, before anything narrows: reading as `u64` and
+/// casting afterwards let `2^32` past a test for zero and then made it zero, so a caller
+/// could ask for a texture of no width and be told nothing was wrong. `u32::try_from`
+/// puts the check and the type in the same place. A value out of range is also told apart
+/// from an absent field — `as_u64` answers `None` to both, and reporting a negative width
+/// as a missing one sends the caller hunting for a field they did supply.
+fn dimension(params: &Value, key: &str) -> Result<Option<u32>, String> {
+    let Some(value) = params.get(key) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+
+    let side = value
+        .as_u64()
+        .and_then(|side| u32::try_from(side).ok())
+        .ok_or_else(|| format!("`{key}` must be a whole number of pixels, got {value}"))?;
+
+    if side == 0 {
+        return Err(format!("`{key}` must be above zero"));
+    }
+    if side > MAX_CAPTURE_SIZE {
+        return Err(format!(
+            "`{key}` is {side}, above the {MAX_CAPTURE_SIZE} px a texture can be"
+        ));
+    }
+    Ok(Some(side))
 }
 
 // ---------------------------------------------------------------------------
@@ -580,6 +610,67 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.size, Some(UVec2::new(640, 360)));
         assert_eq!(parsed.source, CaptureSource::Window);
+    }
+
+    #[test]
+    fn parse_rejects_a_size_that_would_truncate_to_zero() {
+        // 2^32 is not zero as a u64, so a check that runs before the cast lets it through
+        // and the cast then makes it zero — a texture of no width, asked for politely.
+        let err = CaptureRequest::parse(Some(&json!({
+            "path": "/tmp/a.png",
+            "width": 4_294_967_296u64,
+            "height": 720,
+        })))
+        .unwrap_err();
+        assert!(
+            err.contains("width"),
+            "the error should name the field: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_a_size_past_what_a_texture_can_be() {
+        let err = CaptureRequest::parse(Some(&json!({
+            "path": "/tmp/a.png",
+            "width": 100_000,
+            "height": 100_000,
+        })))
+        .unwrap_err();
+        assert!(
+            err.contains(&MAX_CAPTURE_SIZE.to_string()),
+            "the error should name the limit: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_accepts_the_limit_itself() {
+        let parsed = CaptureRequest::parse(Some(&json!({
+            "path": "/tmp/a.png",
+            "width": MAX_CAPTURE_SIZE,
+            "height": MAX_CAPTURE_SIZE,
+        })))
+        .expect("the limit is a usable size");
+        assert_eq!(
+            parsed.size,
+            Some(UVec2::new(MAX_CAPTURE_SIZE, MAX_CAPTURE_SIZE))
+        );
+    }
+
+    #[test]
+    fn parse_says_what_is_wrong_with_a_negative_size() {
+        // `as_u64` answers `None` for a negative number exactly as it does for an absent
+        // field, so a naive reading reports "width was given without height" — which sends
+        // the caller looking for a field they did supply.
+        let err = CaptureRequest::parse(Some(&json!({
+            "path": "/tmp/a.png",
+            "width": -8,
+            "height": 720,
+        })))
+        .unwrap_err();
+        assert!(
+            err.contains("width") && !err.contains("without"),
+            "the error should be about the bad width, not about a missing field: {err}"
+        );
     }
 
     #[test]
