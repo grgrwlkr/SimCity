@@ -201,23 +201,14 @@ pub(super) fn cursor_paint_to_command(
             } else {
                 // Second click: apply the road.
                 let start = road_build.start.unwrap();
-                let tiles = compute_road_line(start, current_tile);
-
-                if !tiles.is_empty() {
-                    // Determine direction from start to end.
-                    let road_dir = compute_road_direction(start, current_tile);
-                    let drive_on_right = p.traffic_cfg.drive_on_right;
-
-                    for pos in tiles {
-                        emit_road_commands(
-                            &mut out,
-                            pos,
-                            kind,
-                            road_dir,
-                            drive_on_right,
-                            p.ui_state.one_way_mode,
-                        );
-                    }
+                for command in road_segment_commands(
+                    start,
+                    current_tile,
+                    kind,
+                    p.traffic_cfg.drive_on_right,
+                    p.ui_state.one_way_mode,
+                ) {
+                    out.write(command);
                 }
 
                 // Reset state for next road segment.
@@ -346,8 +337,28 @@ pub(super) fn compute_road_direction(start: TilePos, end: TilePos) -> RoadDir {
 }
 
 /// Emit road commands for a single tile position with proper lane layout.
-pub(super) fn emit_road_commands(
-    out: &mut MessageWriter<GameCommand>,
+/// Every `SetRoad` the two-click road tool issues for a segment from `start` to `end`.
+///
+/// Shared by the cursor path and by in-game automation, which has no pointer: driving the road
+/// tool through tile coordinates must reach exactly the commands a player's two clicks reach,
+/// or a check run that way proves nothing about the game.
+pub fn road_segment_commands(
+    start: TilePos,
+    end: TilePos,
+    kind: RoadKind,
+    drive_on_right: bool,
+    one_way: bool,
+) -> Vec<GameCommand> {
+    let road_dir = compute_road_direction(start, end);
+    let mut commands = Vec::new();
+    for pos in compute_road_line(start, end) {
+        road_tile_commands(&mut commands, pos, kind, road_dir, drive_on_right, one_way);
+    }
+    commands
+}
+
+fn road_tile_commands(
+    out: &mut Vec<GameCommand>,
     pos: TilePos,
     kind: RoadKind,
     road_dir: RoadDir,
@@ -392,7 +403,7 @@ pub(super) fn emit_road_commands(
             crate::game::roads::RoadFlow::TwoWay
         };
 
-        out.write(GameCommand::SetRoad {
+        out.push(GameCommand::SetRoad {
             pos: lane_pos,
             road: RoadCell {
                 kind,

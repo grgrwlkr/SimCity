@@ -29,6 +29,11 @@ impl Default for UiState {
     }
 }
 
+/// Stable identity of the map-seed text field, shared by the toolbar that draws it and by
+/// in-game automation that focuses it. A widget id derived from layout would change with any
+/// edit to the toolbar and silently point automation at nothing.
+pub const SEED_FIELD_ID: &str = "simcity.seed_field";
+
 /// Whether a UI widget currently owns keyboard input.
 ///
 /// Written once per frame by the UI layer at the head of `GameSet::Input`, read by every

@@ -12,6 +12,10 @@ dev = ["dep:bevy_brp_extras"]
 
 [dependencies]
 bevy = { workspace = true }
+# `simcity/input` puts keyboard focus on a UI field through egui's own memory, so the game is
+# driven from inside rather than by moving the real pointer. The frontend already pulls this
+# crate into the graph, so nothing new is compiled.
+bevy_egui = { workspace = true }
 # Only under `dev`: the agent-tool catalog the live API publishes itself into. `schemars`
 # is unconditional on purpose — the parameter schemas are the API's own documentation, and
 # they should stay testable in a build without the remote stack.

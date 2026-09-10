@@ -5201,6 +5201,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bevy_brp_extras",
+ "bevy_egui",
  "schemars",
  "serde",
  "serde_json",

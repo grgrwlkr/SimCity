@@ -144,7 +144,10 @@ pub(super) fn bottom_toolbar_ui(mut contexts: EguiContexts, mut p: TopBarParams)
 
                 // Map seed + generation
                 ui.label("Seed:");
-                ui.text_edit_singleline(&mut p.ui_state.seed_text);
+                ui.add(
+                    egui::TextEdit::singleline(&mut p.ui_state.seed_text)
+                        .id(egui::Id::new(simcity_sim::game::ui_state::SEED_FIELD_ID)),
+                );
                 let seed = p.ui_state.seed_text.trim().parse::<u64>().unwrap_or(1);
                 if ui.button("New Map").clicked() {
                     p.commands.write(GameCommand::GenerateMap { seed });

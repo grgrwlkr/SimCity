@@ -1334,3 +1334,58 @@ fn undo_hotkey_is_ignored_while_keyboard_is_captured() {
         "Ctrl+Z inside a text field belongs to the field, not to the map history"
     );
 }
+
+// ---------------------------------------------------------------------------
+// A2: the road tool driven by tiles issues exactly what two clicks issue.
+//
+// In-game automation has no pointer, so it drives the road tool through tile coordinates.
+// These pin that a one-way stroke really produces one-way lanes, the property a player
+// relies on when the O key is on, without anything having to move a real cursor.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn road_segment_one_way_stroke_makes_every_lane_flow_one_way() {
+    let start = TilePos { x: 10, y: 20 };
+    let end = TilePos { x: 14, y: 20 };
+    let tiles = super::input::compute_road_line(start, end);
+    let commands = road_segment_commands(start, end, RoadKind::FourLane, true, true);
+
+    assert_eq!(
+        commands.len(),
+        tiles.len() * usize::from(RoadKind::FourLane.lanes()),
+        "one SetRoad per lane per tile, exactly as the cursor path writes them"
+    );
+    for command in &commands {
+        let GameCommand::SetRoad { road, .. } = command else {
+            panic!("the road tool issued a non-road command: {command:?}");
+        };
+        assert_eq!(
+            road.flow,
+            crate::game::roads::RoadFlow::OneWay(RoadDir::East),
+            "a one-way stroke drawn west to east must make every lane flow East"
+        );
+        assert_eq!(road.kind, RoadKind::FourLane);
+    }
+}
+
+#[test]
+fn road_segment_two_way_stroke_keeps_lanes_two_way() {
+    let start = TilePos { x: 10, y: 20 };
+    let end = TilePos { x: 14, y: 20 };
+    let commands = road_segment_commands(start, end, RoadKind::TwoLane, true, false);
+
+    assert!(
+        !commands.is_empty(),
+        "a five-tile stroke must produce road commands"
+    );
+    for command in &commands {
+        let GameCommand::SetRoad { road, .. } = command else {
+            panic!("the road tool issued a non-road command: {command:?}");
+        };
+        assert_eq!(
+            road.flow,
+            crate::game::roads::RoadFlow::TwoWay,
+            "with one-way off, no lane of the stroke may come out one-way"
+        );
+    }
+}

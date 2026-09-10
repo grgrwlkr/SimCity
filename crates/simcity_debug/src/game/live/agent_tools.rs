@@ -106,6 +106,19 @@ pub const TOOLS: &[ToolDoc] = &[
         dispatch: Dispatch::Instant,
         params_schema: schema_of::<NoParams>,
     },
+    ToolDoc {
+        name: "simcity.input",
+        method: "simcity/input",
+        description: "Drive the game's own input from inside the game: press keys, released by \
+                      frame count so a paused simulation cannot leave one held; put keyboard \
+                      focus on a UI field; or apply the active road tool between two tiles, as \
+                      the player's two clicks would. Never moves the real cursor, which is why \
+                      the brp_extras mouse and keyboard methods answer with a refusal. Set focus \
+                      in one call and send keys in a later one, once simcity/observe shows \
+                      keyboard_captured; every effect lands on the following frames.",
+        dispatch: Dispatch::Instant,
+        params_schema: schema_of::<InputParams>,
+    },
 ];
 
 fn schema_of<T: JsonSchema>() -> Value {
@@ -126,6 +139,28 @@ fn schema_of<T: JsonSchema>() -> Value {
 pub struct ObserveParams {
     /// How many trailing log lines to include. Defaults to 20, capped at the buffer size.
     pub log_lines: Option<u32>,
+}
+
+/// Parameters of `simcity/input`. Give `keys`, `focus` or `stroke`; `focus` with `keys` is refused.
+#[derive(JsonSchema, Deserialize)]
+pub struct InputParams {
+    /// Bevy `KeyCode` names to press: `KeyA`..`KeyZ`, `Digit0`..`Digit9`, `Space`, `Enter`,
+    /// `Escape`, `Tab`, `Backspace`, `PageUp`, `PageDown`, `ArrowUp`, `ArrowDown`, `ArrowLeft`,
+    /// `ArrowRight`, `ShiftLeft`, `ControlLeft`, `Slash`.
+    pub keys: Option<Vec<String>>,
+    /// Frames each key stays down before release. Defaults to 2, at most 600.
+    pub hold_frames: Option<u32>,
+    /// `"seed"` puts keyboard focus on the map-seed field; `null` clears focus.
+    pub focus: Option<String>,
+    /// Apply the active road tool from `from` to `to`, both `[x, y]` tiles on the map.
+    pub stroke: Option<StrokeParams>,
+}
+
+/// Two tiles for a tool stroke.
+#[derive(JsonSchema, Deserialize)]
+pub struct StrokeParams {
+    pub from: [i32; 2],
+    pub to: [i32; 2],
 }
 
 /// Parameters of `simcity/capture`.
@@ -270,6 +305,7 @@ mod tests {
             "simcity/sim",
             "simcity/command",
             "simcity/tools",
+            "simcity/input",
             "simcity/teleport",
         ]);
         assert_eq!(
