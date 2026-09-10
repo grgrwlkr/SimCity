@@ -15,7 +15,7 @@ use crate::game::ui_state::{
 use crate::game::zone_placement::can_zone_tile;
 
 use super::coords::{cursor_tile, tile_to_world};
-use super::{BuildingKind, HoveredTile, MapConfig, MapGrid, TilePos, ZoneKind};
+use super::{HoveredTile, MapConfig, MapGrid, TilePos, ZoneKind};
 
 #[derive(Component)]
 pub(super) struct CursorHighlight;
@@ -289,7 +289,12 @@ pub(super) fn cursor_paint_to_command(
             };
             out.write(GameCommand::SetZone { pos: tile, zone });
         }
-        ToolMode::FireStation | ToolMode::PoliceStation | ToolMode::Hospital => {
+        ToolMode::FireStation
+        | ToolMode::PoliceStation
+        | ToolMode::Hospital
+        | ToolMode::PowerPlant
+        | ToolMode::WaterPump
+        | ToolMode::Landfill => {
             // Pre-validate the full footprint with the same rule the command
             // apply uses (free tiles + road access for the footprint as a
             // whole) so clicks that cannot succeed are dropped early.
@@ -297,10 +302,8 @@ pub(super) fn cursor_paint_to_command(
             if super::commands::validate_building_placement(&p.grid, tile, fw, fl).is_none() {
                 return;
             }
-            let kind = match p.ui_state.tool {
-                ToolMode::FireStation => BuildingKind::FireStation,
-                ToolMode::PoliceStation => BuildingKind::PoliceStation,
-                _ => BuildingKind::Hospital,
+            let Some(kind) = super::preview::placed_building_kind(p.ui_state.tool) else {
+                return;
             };
             out.write(GameCommand::PlaceBuilding { pos: tile, kind });
         }

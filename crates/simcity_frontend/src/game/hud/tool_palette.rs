@@ -72,6 +72,14 @@ const GROUPS: &[(&str, &[Entry])] = &[
         ],
     ),
     (
+        "utilities",
+        &[
+            Entry::Tool(ToolMode::PowerPlant, "hud.tool.power", "Power"),
+            Entry::Tool(ToolMode::WaterPump, "hud.tool.water", "Water"),
+            Entry::Tool(ToolMode::Landfill, "hud.tool.landfill", "Landfill"),
+        ],
+    ),
+    (
         "edit",
         &[
             Entry::Tool(ToolMode::Erase, "hud.tool.erase", "Bulldoze"),
@@ -285,7 +293,7 @@ pub fn update_tool_palette(ui: Res<UiState>, theme: Res<Theme>, mut buttons: Pal
 mod tests {
     use super::*;
 
-    const EVERY_TOOL: [ToolMode; 12] = [
+    const EVERY_TOOL: [ToolMode; 15] = [
         ToolMode::Road(RoadKind::TwoLane),
         ToolMode::Road(RoadKind::FourLane),
         ToolMode::Road(RoadKind::SixLane),
@@ -295,6 +303,9 @@ mod tests {
         ToolMode::FireStation,
         ToolMode::PoliceStation,
         ToolMode::Hospital,
+        ToolMode::PowerPlant,
+        ToolMode::WaterPump,
+        ToolMode::Landfill,
         ToolMode::TrafficLight,
         ToolMode::Erase,
         ToolMode::Inspect,

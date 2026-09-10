@@ -60,6 +60,15 @@ pub struct EconomyConfig {
     /// Daily upkeep of one hospital, whatever its footprint.
     #[serde(default = "default_hospital_upkeep")]
     pub hospital_upkeep: i64,
+    /// Daily upkeep of a power plant, paid once it has opened.
+    #[serde(default = "default_power_plant_upkeep")]
+    pub power_plant_upkeep: i64,
+    /// Daily upkeep of a water pump, paid once it has opened.
+    #[serde(default = "default_water_pump_upkeep")]
+    pub water_pump_upkeep: i64,
+    /// Daily upkeep of a landfill, paid once it has opened.
+    #[serde(default = "default_landfill_upkeep")]
+    pub landfill_upkeep: i64,
 }
 
 /// A daily amount per wealth class.
@@ -114,6 +123,18 @@ fn default_police_station_upkeep() -> i64 {
     15
 }
 
+fn default_power_plant_upkeep() -> i64 {
+    40
+}
+
+fn default_water_pump_upkeep() -> i64 {
+    25
+}
+
+fn default_landfill_upkeep() -> i64 {
+    20
+}
+
 fn default_hospital_upkeep() -> i64 {
     30
 }
@@ -138,6 +159,9 @@ impl Default for EconomyConfig {
             fire_station_upkeep: default_fire_station_upkeep(),
             police_station_upkeep: default_police_station_upkeep(),
             hospital_upkeep: default_hospital_upkeep(),
+            power_plant_upkeep: default_power_plant_upkeep(),
+            water_pump_upkeep: default_water_pump_upkeep(),
+            landfill_upkeep: default_landfill_upkeep(),
         }
     }
 }
@@ -357,6 +381,7 @@ pub enum BudgetItem {
     IndustrialTax,
     RoadMaintenance,
     ServiceMaintenance,
+    UtilityMaintenance,
     Construction,
     LoanProceeds,
     LoanRepayment,
@@ -511,8 +536,20 @@ fn apply_daily_economy(
             })
             .sum();
 
+        // Utility stations pay from the day they open, once each, like any other station.
+        let utility_upkeep: i64 = buildings
+            .iter()
+            .filter(|building| building.is_operational())
+            .map(|building| match building.kind {
+                BuildingKind::PowerPlant => cfg.power_plant_upkeep,
+                BuildingKind::WaterPump => cfg.water_pump_upkeep,
+                BuildingKind::Landfill => cfg.landfill_upkeep,
+                _ => 0,
+            })
+            .sum();
+
         let income = residential_tax + commercial_tax + industrial_tax;
-        let expense = road_upkeep + service_upkeep;
+        let expense = road_upkeep + service_upkeep + utility_upkeep;
 
         city.last_income = income;
         city.last_expense = expense;
@@ -521,6 +558,7 @@ fn apply_daily_economy(
         ledger.post(BudgetItem::IndustrialTax, industrial_tax, &mut city);
         ledger.post(BudgetItem::RoadMaintenance, -road_upkeep, &mut city);
         ledger.post(BudgetItem::ServiceMaintenance, -service_upkeep, &mut city);
+        ledger.post(BudgetItem::UtilityMaintenance, -utility_upkeep, &mut city);
 
         // MVP: happiness drifts toward a target, reduced slightly by negative cashflow.
         let net = income - expense;
@@ -813,6 +851,60 @@ mod tests {
         assert_eq!(
             lines.get(BudgetItem::RoadMaintenance),
             -(250 * per_100 + 50) / 100
+        );
+    }
+
+    #[test]
+    fn maintenance_per_building_utility_stations_cost_their_upkeep_once_open() {
+        let mut app = App::new();
+        app.add_message::<DayAdvanced>();
+        app.insert_resource(EconomyConfig::default());
+        app.insert_resource(MapGrid::new(16, 16));
+        app.insert_resource(City {
+            money: 10_000,
+            ..Default::default()
+        });
+        let mut ledger = BudgetLedger::default();
+        ledger.restart(10_000);
+        app.insert_resource(ledger);
+        for (index, kind) in [
+            BuildingKind::PowerPlant,
+            BuildingKind::WaterPump,
+            BuildingKind::Landfill,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            app.world_mut().spawn(zoned_building(
+                kind,
+                TilePos {
+                    x: index as i32 * 4,
+                    y: 0,
+                },
+                0,
+                0,
+            ));
+        }
+        let mut unfinished = zoned_building(BuildingKind::PowerPlant, TilePos { x: 0, y: 8 }, 0, 0);
+        unfinished.phase =
+            crate::game::buildings::BuildingPhase::UnderConstruction { days_remaining: 2 };
+        app.world_mut().spawn(unfinished);
+        app.add_systems(Update, apply_daily_economy);
+        app.world_mut().write_message(DayAdvanced { day: 2 });
+        app.update();
+
+        let cfg = EconomyConfig::default();
+        let lines = app.world().resource::<BudgetLedger>().current.clone();
+        assert_eq!(
+            lines.get(BudgetItem::UtilityMaintenance),
+            -(cfg.power_plant_upkeep + cfg.water_pump_upkeep + cfg.landfill_upkeep),
+            "three open stations pay; the one still being built does not"
+        );
+        assert_eq!(lines.get(BudgetItem::ServiceMaintenance), 0);
+        assert_eq!(
+            app.world().resource::<City>().money,
+            10_000 + lines.total(),
+            "the utility line is money that actually moved"
         );
     }
 

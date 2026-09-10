@@ -8,4 +8,7 @@
     fire_station_upkeep: 20,
     police_station_upkeep: 15,
     hospital_upkeep: 30,
+    power_plant_upkeep: 40,
+    water_pump_upkeep: 25,
+    landfill_upkeep: 20,
 )

@@ -40,6 +40,18 @@ pub fn preview_tool_at(
         ToolMode::FireStation => ("Builds a fire station".to_string(), None),
         ToolMode::PoliceStation => ("Builds a police station".to_string(), None),
         ToolMode::Hospital => ("Builds a hospital".to_string(), None),
+        ToolMode::PowerPlant => (
+            "Builds a power plant: power runs along the roads it touches".to_string(),
+            None,
+        ),
+        ToolMode::WaterPump => (
+            "Builds a water pump: water runs along the roads it touches".to_string(),
+            None,
+        ),
+        ToolMode::Landfill => (
+            "Builds a landfill: garbage is collected along the roads it touches".to_string(),
+            None,
+        ),
         ToolMode::TrafficLight => ("Toggles a traffic signal".to_string(), None),
         ToolMode::Erase => ("Bulldozes this tile".to_string(), None),
     };
@@ -85,8 +97,13 @@ pub fn preview_tool_at(
             };
             (Some(0), verdict)
         }
-        ToolMode::FireStation | ToolMode::PoliceStation | ToolMode::Hospital => {
-            let cost = service.map_or(0, BuildingKind::build_cost);
+        ToolMode::FireStation
+        | ToolMode::PoliceStation
+        | ToolMode::Hospital
+        | ToolMode::PowerPlant
+        | ToolMode::WaterPump
+        | ToolMode::Landfill => {
+            let cost = placed_building_kind(tool).map_or(0, BuildingKind::build_cost);
             let (width, length) = MANUAL_BUILDING_FOOTPRINT;
             let verdict = match validate_building_placement(grid, tile, width, length) {
                 Some(_) if money < cost => Err("Not enough money"),
@@ -124,6 +141,16 @@ pub fn preview_tool_at(
         verdict,
         radius,
     })
+}
+
+/// The building a placement tool puts down; `None` for a tool that places no building.
+pub fn placed_building_kind(tool: ToolMode) -> Option<BuildingKind> {
+    match tool {
+        ToolMode::PowerPlant => Some(BuildingKind::PowerPlant),
+        ToolMode::WaterPump => Some(BuildingKind::WaterPump),
+        ToolMode::Landfill => Some(BuildingKind::Landfill),
+        _ => service_kind(tool),
+    }
 }
 
 fn service_kind(tool: ToolMode) -> Option<BuildingKind> {
@@ -306,6 +333,29 @@ mod tests {
 
         let edge = preview(ToolMode::PoliceStation, at(30, 30), &grid, RICH);
         assert!(edge.verdict.unwrap_err().contains("map"));
+    }
+
+    #[test]
+    fn utility_network_station_tools_show_price_and_supply_not_a_radius() {
+        let grid = town();
+        for (tool, kind, word) in [
+            (ToolMode::PowerPlant, BuildingKind::PowerPlant, "power"),
+            (ToolMode::WaterPump, BuildingKind::WaterPump, "water"),
+            (ToolMode::Landfill, BuildingKind::Landfill, "garbage"),
+        ] {
+            assert_eq!(placed_building_kind(tool), Some(kind));
+            let beside = preview(tool, at(10, 11), &grid, RICH);
+            assert_eq!(beside.cost, Some(kind.build_cost()), "{tool:?}");
+            assert_eq!(beside.verdict, Ok(()), "{tool:?}");
+            assert_eq!(beside.radius, None, "supply follows roads, not a radius");
+            assert!(
+                beside.effect.to_lowercase().contains(word),
+                "{tool:?} says {:?}",
+                beside.effect
+            );
+            let far = preview(tool, at(20, 20), &grid, RICH);
+            assert!(far.verdict.unwrap_err().contains("road"), "{tool:?}");
+        }
     }
 
     #[test]

@@ -48,6 +48,7 @@ pub fn budget_item_label(item: BudgetItem) -> &'static str {
         BudgetItem::IndustrialTax => "Industrial taxes",
         BudgetItem::RoadMaintenance => "Road upkeep",
         BudgetItem::ServiceMaintenance => "Service upkeep",
+        BudgetItem::UtilityMaintenance => "Utility upkeep",
         BudgetItem::Construction => "Construction",
         BudgetItem::LoanProceeds => "Loans received",
         BudgetItem::LoanRepayment => "Loan payments",
@@ -55,13 +56,14 @@ pub fn budget_item_label(item: BudgetItem) -> &'static str {
 }
 
 /// Every line, income first, in the order the report reads.
-const ITEMS: [BudgetItem; 8] = [
+const ITEMS: [BudgetItem; 9] = [
     BudgetItem::ResidentialTax,
     BudgetItem::CommercialTax,
     BudgetItem::IndustrialTax,
     BudgetItem::LoanProceeds,
     BudgetItem::RoadMaintenance,
     BudgetItem::ServiceMaintenance,
+    BudgetItem::UtilityMaintenance,
     BudgetItem::Construction,
     BudgetItem::LoanRepayment,
 ];
