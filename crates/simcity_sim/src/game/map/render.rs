@@ -1,5 +1,8 @@
 use std::collections::HashMap;
 
+use super::data_map::{
+    ROAD_OVERLAY_COLOR, WATER_OVERLAY_COLOR, height_color, land_value_color, pollution_color,
+};
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
@@ -309,8 +312,7 @@ pub(super) fn sync_dirty_tiles_to_render(
 
         let (effective_kind, color, size) = match p.ui.overlay {
             OverlayMode::Height => {
-                let t = (cell.height as f32) / 255.0;
-                let gray = Color::srgb(t, t, t);
+                let gray = height_color(cell.height);
                 let k = if cell.water {
                     TileKind::Water
                 } else if cell.road.is_some() {
@@ -322,11 +324,7 @@ pub(super) fn sync_dirty_tiles_to_render(
             }
             OverlayMode::Water => {
                 if cell.water {
-                    (
-                        TileKind::Water,
-                        Color::srgba(0.15, 0.45, 0.95, 0.85),
-                        base_size,
-                    )
+                    (TileKind::Water, WATER_OVERLAY_COLOR, base_size)
                 } else {
                     (
                         base_terrain_or_zone,
@@ -337,7 +335,7 @@ pub(super) fn sync_dirty_tiles_to_render(
             }
             OverlayMode::Roads => {
                 if cell.road.is_some() {
-                    (TileKind::Road, Color::srgb(0.92, 0.92, 0.96), base_size)
+                    (TileKind::Road, ROAD_OVERLAY_COLOR, base_size)
                 } else if cell.water {
                     (
                         TileKind::Water,
@@ -357,17 +355,7 @@ pub(super) fn sync_dirty_tiles_to_render(
                 if let Some(land_val) = p.land_value.as_deref()
                     && let Some(idx) = p.grid.idx(pos)
                 {
-                    let value = land_val.get(idx);
-                    // Gradient from red (0.0) to green (1.0)
-                    let color = if value < 0.5 {
-                        // Red to yellow
-                        let t = value * 2.0;
-                        Color::srgb(1.0, t, 0.0)
-                    } else {
-                        // Yellow to green
-                        let t = (value - 0.5) * 2.0;
-                        Color::srgb(1.0 - t, 1.0, 0.0)
-                    };
+                    let color = land_value_color(land_val.get(idx));
                     let k = if cell.water {
                         TileKind::Water
                     } else if cell.road.is_some() {
@@ -396,17 +384,7 @@ pub(super) fn sync_dirty_tiles_to_render(
                 if let Some(poll) = p.pollution.as_deref()
                     && let Some(idx) = p.grid.idx(pos)
                 {
-                    let poll_value = poll.get(idx);
-                    // Gradient from green (0.0) to red (1.0)
-                    let color = if poll_value < 0.5 {
-                        // Green to yellow
-                        let t = poll_value * 2.0;
-                        Color::srgb(t, 1.0, 0.0)
-                    } else {
-                        // Yellow to red
-                        let t = (poll_value - 0.5) * 2.0;
-                        Color::srgb(1.0, 1.0 - t, 0.0)
-                    };
+                    let color = pollution_color(poll.get(idx));
                     let k = if cell.water {
                         TileKind::Water
                     } else if cell.road.is_some() {

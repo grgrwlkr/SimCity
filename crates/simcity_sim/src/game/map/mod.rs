@@ -38,6 +38,11 @@ use props_render::{PropIndex, sync_prop_visibility, sync_props};
 mod commands;
 use commands::apply_game_commands_to_grid;
 
+mod data_map;
+pub use data_map::{
+    DataMapInputs, Legend, height_color, land_value_color, legend_for, overlay_reading,
+    pollution_color, traffic_heat_color,
+};
 mod input;
 mod preview;
 use input::{
