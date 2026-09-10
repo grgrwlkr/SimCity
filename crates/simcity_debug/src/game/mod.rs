@@ -3,6 +3,7 @@ use bevy::prelude::*;
 pub mod debug_world;
 pub mod live;
 pub mod mcp_status;
+pub mod perf_run;
 
 pub use simcity_core::game::{camera, sets, state, trips, ui_state};
 pub use simcity_sim::game::{

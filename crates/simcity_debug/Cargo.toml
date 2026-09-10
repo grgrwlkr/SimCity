@@ -8,7 +8,10 @@ edition = "2024"
 # in `debug_world.rs`. Enabled transitively by the root `dev` feature; off in release so the
 # scans are never scheduled. The snapshot entity + component types stay in ALL builds so the
 # frontend F8 window's `DebugWorldSnapshot` query still compiles and returns a default value.
-dev = ["dep:bevy_brp_extras"]
+dev = ["snapshots", "dep:bevy_brp_extras"]
+# The world-scan snapshot updaters alone, without the remote stack or dynamic linking: a
+# measurement run turns this on to price them in a build that is otherwise a release build.
+snapshots = []
 
 [dependencies]
 bevy = { workspace = true }

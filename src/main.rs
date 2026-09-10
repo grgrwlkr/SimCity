@@ -35,12 +35,20 @@ fn present_mode_from_env(value: Option<&str>) -> bevy::window::PresentMode {
 fn main() {
     let mut app = App::new();
     app.insert_resource(ClearColor(Color::srgb(0.08, 0.09, 0.11)));
+    // A measurement run (`SIMCITY_PERF_RUN`) loads the city, times its frames and exits — see
+    // `simcity_debug::game::perf_run`. It works in every build, because the build it exists for
+    // is the one without `dev`.
+    let perf = simcity_debug::game::perf_run::PerfRunConfig::from_env();
     // How this instance was launched: which BRP port, and whether it puts a window on the
-    // screen at all. Release builds have no remote stack, so they are always a normal window.
+    // screen at all. Release builds have no remote stack, so they are a normal window unless a
+    // measurement run asks for a hidden one.
     #[cfg(feature = "dev")]
     let live = simcity_debug::game::live::runtime::LiveRuntimeConfig::from_env();
     #[cfg(not(feature = "dev"))]
-    let live = simcity_debug::game::live::runtime::LiveRuntimeConfig::default();
+    let live = simcity_debug::game::perf_run::launch_config(
+        perf.is_some(),
+        simcity_debug::game::live::runtime::LiveRuntimeConfig::from_env(),
+    );
     // Remote debugging (BRP + HTTP transport) is dev-only — see the import block above.
     #[cfg(feature = "dev")]
     {
@@ -83,6 +91,9 @@ fn main() {
         app.add_plugins(FrameTimeDiagnosticsPlugin::default());
     }
     app.add_plugins(GamePlugin);
+    if let Some(config) = perf {
+        app.add_plugins(simcity_debug::game::perf_run::PerfRunPlugin(config));
+    }
     app.add_systems(bevy::app::Last, dump_on_window_close_system);
     app.run();
 }

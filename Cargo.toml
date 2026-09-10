@@ -70,6 +70,9 @@ dev = [
 profile_tracy = ["bevy/trace_tracy"]
 profile_tracy_memory = ["bevy/trace_tracy", "bevy/trace_tracy_memory"]
 profile_chrome = ["bevy/trace_chrome"]
+# The dev snapshot updaters in an otherwise non-dev build, so a measurement run
+# (`SIMCITY_PERF_RUN`) can price them apart from BRP and dynamic linking.
+perf_snapshots = ["simcity_debug/snapshots"]
 
 [profile.dev]
 opt-level = 1
