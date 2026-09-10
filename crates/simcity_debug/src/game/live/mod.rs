@@ -13,8 +13,10 @@ use bevy::prelude::*;
 use bevy::remote::{RemoteMethodSystemId, RemoteMethods};
 use bevy::transform::TransformSystems;
 
+pub mod agent_tools;
 pub mod capture;
 pub mod control;
+pub mod observe;
 pub mod runtime;
 pub mod stats;
 
@@ -43,6 +45,10 @@ impl Plugin for LiveDebugPlugin {
                 .before(CameraUpdateSystems),
         );
         register_methods(app.world_mut());
+        // Publish the instant methods where `brp_list_agent_tools` can find them. The
+        // watching capture stays out — upstream refuses the whole catalogue over it.
+        #[cfg(feature = "dev")]
+        agent_tools::register_agent_tools(app);
     }
 }
 
@@ -51,6 +57,8 @@ fn register_methods(world: &mut World) {
     let camera = world.register_system(control::camera_handler);
     let sim = world.register_system(control::sim_handler);
     let command = world.register_system(control::command_handler);
+    let observe = world.register_system(observe::observe_handler);
+    let tools = world.register_system(agent_tools::tools_handler);
     let mut methods = world.resource_mut::<RemoteMethods>();
     // Watching, not instant: the handler is polled once per frame and answers `None`
     // until the PNG is on disk, which is what makes one call enough.
@@ -60,4 +68,6 @@ fn register_methods(world: &mut World) {
     // and a re-entered step ran twice while a re-entered command would edit twice.
     methods.insert("simcity/sim", RemoteMethodSystemId::Instant(sim));
     methods.insert("simcity/command", RemoteMethodSystemId::Instant(command));
+    methods.insert("simcity/observe", RemoteMethodSystemId::Instant(observe));
+    methods.insert("simcity/tools", RemoteMethodSystemId::Instant(tools));
 }

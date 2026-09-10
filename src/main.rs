@@ -1,6 +1,7 @@
 mod game;
 
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
+use bevy::log::LogPlugin;
 use bevy::prelude::*;
 // The remote debugging stack (BRP world access + the custom screenshot/debug_dump methods)
 // is a DEV-ONLY tool. It exposes unauthenticated world mutation and an arbitrary-path file
@@ -53,20 +54,29 @@ fn main() {
         // diagnostics) into the existing RemoteMethods resource.
         app.add_plugins(bevy_brp_extras::BrpExtrasPlugin::default());
     }
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(Window {
-            title: "SimCity (Bevy)".to_string(),
-            resolution: (2000, 1000).into(),
-            present_mode: present_mode_from_env(
-                std::env::var("SIMCITY_PRESENT_MODE").ok().as_deref(),
-            ),
-            // A hidden instance never appears on screen and never takes focus, so several
-            // of them can be driven over BRP while a person works on the same machine.
-            visible: live.window.visible(),
-            ..default()
-        }),
-        ..default()
-    }));
+    app.add_plugins(
+        DefaultPlugins
+            .set(LogPlugin {
+                // Keeps the last log lines in memory so `simcity/observe` can hand them to a
+                // caller that has no way to see this process's stdout.
+                custom_layer: simcity_debug::game::live::observe::log_tail_layer,
+                ..default()
+            })
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "SimCity (Bevy)".to_string(),
+                    resolution: (2000, 1000).into(),
+                    present_mode: present_mode_from_env(
+                        std::env::var("SIMCITY_PRESENT_MODE").ok().as_deref(),
+                    ),
+                    // A hidden instance never appears on screen and never takes focus, so several
+                    // of them can be driven over BRP while a person works on the same machine.
+                    visible: live.window.visible(),
+                    ..default()
+                }),
+                ..default()
+            }),
+    );
     // Bevy-native FPS/frame-time diagnostics (must be after DefaultPlugins). Under `dev`,
     // BrpExtrasPlugin's `diagnostics` feature already added it — re-adding panics.
     if !app.is_plugin_added::<FrameTimeDiagnosticsPlugin>() {

@@ -8,10 +8,15 @@ edition = "2024"
 # in `debug_world.rs`. Enabled transitively by the root `dev` feature; off in release so the
 # scans are never scheduled. The snapshot entity + component types stay in ALL builds so the
 # frontend F8 window's `DebugWorldSnapshot` query still compiles and returns a default value.
-dev = []
+dev = ["dep:bevy_brp_extras"]
 
 [dependencies]
 bevy = { workspace = true }
+# Only under `dev`: the agent-tool catalog the live API publishes itself into. `schemars`
+# is unconditional on purpose — the parameter schemas are the API's own documentation, and
+# they should stay testable in a build without the remote stack.
+bevy_brp_extras = { version = "0.22.5", optional = true }
+schemars = "1.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 simcity_core = { path = "../simcity_core" }
