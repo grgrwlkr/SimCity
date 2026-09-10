@@ -166,6 +166,8 @@ pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpR
         })
     });
 
+    let budget = budget_json(world);
+
     let tick = world.get_resource::<SimTickCount>().map(|count| count.0);
 
     let camera = world
@@ -231,7 +233,73 @@ pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpR
         "entities": entities,
         "performance": performance,
         "log": log,
+        "budget": budget,
     }))
+}
+
+/// Tax rates, demand by zone and class, and the ledger — enough to judge a tax change on a run.
+fn budget_json(world: &World) -> Value {
+    use simcity_sim::game::demand::{ClassDemand, RciDemand};
+    use simcity_sim::game::economy::{BudgetLedger, TaxRates};
+
+    let rates = world
+        .get_resource::<TaxRates>()
+        .map(|rates| zone_class_grid(|zone, class| json!(rates.get(zone, class))));
+    let demand = world.get_resource::<RciDemand>().map(|demand| {
+        json!({
+            "residential": demand.residential,
+            "commercial": demand.commercial,
+            "industrial": demand.industrial,
+        })
+    });
+    let class_demand = world
+        .get_resource::<ClassDemand>()
+        .map(|demand| zone_class_grid(|zone, class| json!(demand.get(zone, class))));
+    let ledger = world.get_resource::<BudgetLedger>();
+    json!({
+        "tax_rates": rates,
+        "demand": demand,
+        "class_demand": class_demand,
+        "month": ledger.map(|ledger| ledger.month),
+        "days_elapsed": ledger.map(|ledger| ledger.days_elapsed),
+        "money_start": ledger.map(|ledger| ledger.money_start),
+        "current": ledger.map(|ledger| lines_json(&ledger.current)),
+        "last_report": ledger.and_then(|ledger| ledger.last.as_ref()).map(|report| {
+            json!({
+                "month": report.month,
+                "money_start": report.money_start,
+                "money_end": report.money_end,
+                "lines": lines_json(&report.lines),
+            })
+        }),
+    })
+}
+
+fn lines_json(lines: &simcity_sim::game::economy::BudgetLines) -> Value {
+    Value::Object(
+        lines
+            .0
+            .iter()
+            .map(|(item, amount)| (format!("{item:?}"), json!(amount)))
+            .collect(),
+    )
+}
+
+/// `{ "residential": { "low": …, "middle": …, "high": … }, … }`.
+fn zone_class_grid(
+    read: impl Fn(simcity_sim::game::economy::TaxZone, simcity_sim::game::economy::WealthClass) -> Value,
+) -> Value {
+    use simcity_sim::game::economy::{TaxZone, WealthClass};
+
+    let mut zones = serde_json::Map::new();
+    for zone in TaxZone::ALL {
+        let mut classes = serde_json::Map::new();
+        for class in WealthClass::ALL {
+            classes.insert(format!("{class:?}").to_lowercase(), read(zone, class));
+        }
+        zones.insert(format!("{zone:?}").to_lowercase(), Value::Object(classes));
+    }
+    Value::Object(zones)
 }
 
 fn render_json(snapshot: &DebugRenderSnapshot) -> Value {
@@ -276,6 +344,7 @@ mod tests {
             "entities",
             "performance",
             "log",
+            "budget",
         ] {
             assert!(
                 answer.get(section).is_some(),
@@ -347,6 +416,48 @@ mod tests {
         assert_eq!(answer["city"]["hour"], 7);
         assert_eq!(answer["city"]["money"], 4321);
         assert_eq!(answer["city"]["population"], 99);
+    }
+
+    #[test]
+    fn the_budget_is_reported_so_a_tax_run_can_be_judged() {
+        use simcity_sim::game::demand::{ClassDemand, RciDemand};
+        use simcity_sim::game::economy::{
+            BudgetItem, BudgetLedger, TaxRates, TaxZone, WealthClass,
+        };
+
+        let mut world = World::new();
+        let mut rates = TaxRates::default();
+        rates.set(TaxZone::Residential, WealthClass::High, 20);
+        world.insert_resource(rates);
+        world.insert_resource(RciDemand {
+            residential: -0.3,
+            commercial: 0.2,
+            industrial: 0.1,
+        });
+        world.insert_resource(ClassDemand::default());
+        let mut city = City {
+            money: 1_000,
+            ..default()
+        };
+        let mut ledger = BudgetLedger::default();
+        ledger.restart(1_000);
+        ledger.post(BudgetItem::Construction, -40, &mut city);
+        ledger.end_of_day(1, &city);
+        ledger.post(BudgetItem::ResidentialTax, 25, &mut city);
+        world.insert_resource(ledger);
+        world.insert_resource(city);
+
+        let answer = observe_handler(In(None), &mut world).expect("observe always answers");
+        let budget = &answer["budget"];
+        assert_eq!(budget["tax_rates"]["residential"]["high"], 20);
+        assert_eq!(budget["tax_rates"]["commercial"]["low"], 9);
+        assert!((budget["demand"]["residential"].as_f64().unwrap_or(0.0) + 0.3).abs() < 1e-6);
+        assert!(budget["class_demand"]["residential"]["high"].is_number());
+        assert_eq!(budget["month"], 1);
+        assert_eq!(budget["current"]["ResidentialTax"], 25);
+        assert_eq!(budget["last_report"]["lines"]["Construction"], -40);
+        assert_eq!(budget["last_report"]["money_start"], 1_000);
+        assert_eq!(budget["last_report"]["money_end"], 960);
     }
 
     #[test]

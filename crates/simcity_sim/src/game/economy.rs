@@ -156,7 +156,7 @@ impl WealthClass {
         }
     }
 
-    fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         match self {
             WealthClass::Low => 0,
             WealthClass::Middle => 1,
@@ -180,7 +180,7 @@ impl TaxZone {
         TaxZone::Industrial,
     ];
 
-    fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         match self {
             TaxZone::Residential => 0,
             TaxZone::Commercial => 1,
