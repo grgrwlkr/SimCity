@@ -111,6 +111,7 @@ const GAME_UI_ROOTS: &[&str] = &[
     "hud.toasts",
     "hud.tooltip.root",
     "hud.menu.root",
+    "hud.budget.root",
 ];
 
 /// Name prefixes of every control a player can press.
@@ -120,6 +121,7 @@ const PLAYER_CONTROLS: &[&str] = &[
     "hud.overlay.",
     "hud.toast.",
     "hud.menu.",
+    "hud.budget.",
 ];
 
 /// The frontend as a build without `dev` composes it — the egui layer, the settings layer and the

@@ -51,7 +51,11 @@ pub(super) fn text_style(size: f32, color: Color) -> (TextFont, TextColor) {
 }
 
 /// Spawn the HUD bar under its own game-interface root.
-pub fn spawn_hud_bar(commands: &mut Commands, theme: &Theme, glass: Handle<GlassMaterial>) {
+pub fn spawn_hud_bar(
+    commands: &mut Commands,
+    theme: &Theme,
+    glass: Handle<GlassMaterial>,
+) -> Entity {
     let space = theme.space;
     let root = commands
         .spawn((
@@ -159,6 +163,7 @@ pub fn spawn_hud_bar(commands: &mut Commands, theme: &Theme, glass: Handle<Glass
             .id();
         commands.entity(speeds).add_child(button);
     }
+    bar
 }
 
 type MoneyText<'w> = (&'w mut Text, &'w mut TextColor);
