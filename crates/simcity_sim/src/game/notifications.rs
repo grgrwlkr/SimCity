@@ -26,7 +26,6 @@ pub enum NotificationKind {
     Info,
     Warning,
     Error,
-    #[allow(dead_code)] // Reserved for future use
     Achievement,
 }
 

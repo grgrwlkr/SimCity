@@ -146,6 +146,10 @@ pub struct SaveGameV3 {
     /// Open loans. Additive: without this a save and a load would wipe the city's debt.
     #[serde(default)]
     pub loans: crate::game::economy::Loans,
+    /// Milestones the city has reached. Additive: an older save loads with none, and the load
+    /// counts the population it carries as reached.
+    #[serde(default)]
+    pub milestones: simcity_sim::game::milestones::Milestones,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Copy, Clone)]

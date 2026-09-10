@@ -50,7 +50,7 @@ use input::{
     handle_undo_redo, update_cursor_highlight, update_hovered_tile,
 };
 pub use input::{ONE_WAY_HOTKEY, TOOL_HOTKEYS, road_segment_commands, tool_for_hotkey};
-pub use preview::{ToolPreview, preview_tool_at};
+pub use preview::{ToolPreview, placed_building_kind, preview_tool_at};
 
 mod render;
 use render::{

@@ -95,9 +95,13 @@ pub(crate) fn apply_game_commands_to_grid(
         (Entity, &crate::game::traffic::Vehicle),
         With<crate::game::public_transport::Bus>,
     >,
-    mut ledger: Option<ResMut<crate::game::economy::BudgetLedger>>,
+    progress: (
+        Option<ResMut<crate::game::economy::BudgetLedger>>,
+        Option<ResMut<crate::game::milestones::Milestones>>,
+    ),
 ) {
     let (mut bus_routes, mut path_pool) = transit;
+    let (mut ledger, mut milestones) = progress;
     for cmd in cmd_reader.read() {
         match *cmd {
             GameCommand::SetRoad { pos, road } => {
@@ -245,6 +249,14 @@ pub(crate) fn apply_game_commands_to_grid(
                 else {
                     continue;
                 };
+                // A building the city has not opened yet is refused here, whatever the palette
+                // showed.
+                if milestones
+                    .as_deref()
+                    .is_some_and(|milestones| !milestones.is_unlocked(kind))
+                {
+                    continue;
+                }
 
                 let cost = kind.build_cost();
                 if city.money < cost {
@@ -344,6 +356,10 @@ pub(crate) fn apply_game_commands_to_grid(
             GameCommand::GenerateMap { seed: new_seed } => {
                 seed.0 = new_seed;
                 generate_map_into_grid(&mut grid, new_seed);
+                // A new map is a new city: it earns its milestones again.
+                if let Some(milestones) = milestones.as_mut() {
+                    **milestones = crate::game::milestones::Milestones::default();
+                }
                 // History entries were recorded against the OLD grid; exact-restore
                 // would stamp stale cells into the new map validation-free (even
                 // roads onto water). Same rule as LoadGame/LoadTestCity.

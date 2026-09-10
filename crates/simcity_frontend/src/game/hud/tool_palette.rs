@@ -6,7 +6,8 @@ use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
 use simcity_core::game::roads::RoadKind;
 use simcity_core::game::ui_state::{GameUiRoot, ToolMode, UiState};
-use simcity_sim::game::map::{ONE_WAY_HOTKEY, TOOL_HOTKEYS, tool_for_hotkey};
+use simcity_sim::game::map::{ONE_WAY_HOTKEY, TOOL_HOTKEYS, placed_building_kind, tool_for_hotkey};
+use simcity_sim::game::milestones::{Milestones, unlock_population};
 
 use super::glass::GlassMaterial;
 use super::hud_bar::text_style;
@@ -27,6 +28,10 @@ pub struct OneWayToggle;
 /// The key printed on a button.
 #[derive(Component, Debug)]
 pub struct HotkeyLabel;
+
+/// The population a locked tool's building opens at, printed on its button while it is locked.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct LockCaption(pub ToolMode);
 
 /// One palette entry.
 #[derive(Debug, Clone, Copy)]
@@ -215,13 +220,29 @@ pub fn spawn_tool_palette(commands: &mut Commands, theme: &Theme, glass: Handle<
         commands.entity(panel).add_child(row);
         for entry in *entries {
             let button = match *entry {
-                Entry::Tool(tool, name, label) => spawn_button(
-                    commands,
-                    theme,
-                    (Name::new(name), ToolButton(tool)),
-                    label,
-                    hotkey_for(tool),
-                ),
+                Entry::Tool(tool, name, label) => {
+                    let button = spawn_button(
+                        commands,
+                        theme,
+                        (Name::new(name), ToolButton(tool)),
+                        label,
+                        hotkey_for(tool),
+                    );
+                    // A building a milestone opens says at what population; shown while locked.
+                    let opens_at = placed_building_kind(tool).map_or(0, unlock_population);
+                    if opens_at > 0 {
+                        let caption = commands
+                            .spawn((
+                                LockCaption(tool),
+                                Text::new(format!("Unlocks at {opens_at}")),
+                                text_style(theme.type_scale.caption, theme.palette.ink_muted),
+                                Visibility::Hidden,
+                            ))
+                            .id();
+                        commands.entity(button).add_child(caption);
+                    }
+                    button
+                }
                 Entry::Density(density, name, label) => spawn_button(
                     commands,
                     theme,
@@ -292,10 +313,13 @@ pub fn on_tool_button(
     tools: Query<&ToolButton>,
     densities: Query<&DensityButton>,
     toggles: Query<(), With<OneWayToggle>>,
+    milestones: Option<Res<Milestones>>,
     mut ui: ResMut<UiState>,
 ) {
     if let Ok(button) = tools.get(activate.entity) {
-        ui.tool = button.0;
+        if !is_locked(button.0, milestones.as_deref()) {
+            ui.tool = button.0;
+        }
     } else if let Ok(button) = densities.get(activate.entity) {
         ui.zone_density = button.0;
     } else if toggles.contains(activate.entity) {
@@ -315,10 +339,34 @@ type PaletteButtons<'w, 's> = Query<
     Or<(With<ToolButton>, With<DensityButton>, With<OneWayToggle>)>,
 >;
 
-/// Highlight the active tool and the one-way toggle. Runs its work only when either changed.
-pub fn update_tool_palette(ui: Res<UiState>, theme: Res<Theme>, mut buttons: PaletteButtons) {
-    if !ui.is_changed() && !theme.is_changed() {
+/// Whether `tool` places a building the city has not opened yet.
+fn is_locked(tool: ToolMode, milestones: Option<&Milestones>) -> bool {
+    placed_building_kind(tool)
+        .zip(milestones)
+        .is_some_and(|(kind, milestones)| !milestones.is_unlocked(kind))
+}
+
+/// Highlight the active tool and the one-way toggle, and show the lock of every tool still locked.
+/// Runs its work only when one of them changed.
+pub fn update_tool_palette(
+    ui: Res<UiState>,
+    theme: Res<Theme>,
+    milestones: Option<Res<Milestones>>,
+    mut buttons: PaletteButtons,
+    mut captions: Query<(&LockCaption, &mut Visibility)>,
+) {
+    let milestones_changed = milestones
+        .as_ref()
+        .is_some_and(|milestones| milestones.is_changed());
+    if !ui.is_changed() && !theme.is_changed() && !milestones_changed {
         return;
+    }
+    for (caption, mut visibility) in &mut captions {
+        visibility.set_if_neq(if is_locked(caption.0, milestones.as_deref()) {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
     }
     let on = theme.palette.accent.with_alpha(0.35);
     for (tool, density, toggle, mut background) in &mut buttons {
@@ -405,6 +453,67 @@ mod tests {
         app.world()
             .get::<BackgroundColor>(entity)
             .is_some_and(|background| background.0 != Color::NONE)
+    }
+
+    /// The lock caption under `entity` and whether it shows; `None` when the button has none.
+    fn lock_caption_under(app: &mut App, entity: Entity) -> Option<(String, bool)> {
+        let world = app.world_mut();
+        let children: Vec<Entity> = world
+            .get::<Children>(entity)
+            .map(|children| children.iter().collect())
+            .unwrap_or_default();
+        children
+            .into_iter()
+            .find(|child| world.get::<LockCaption>(*child).is_some())
+            .map(|child| {
+                let text = world
+                    .get::<Text>(child)
+                    .map(|text| text.0.clone())
+                    .unwrap_or_default();
+                let shown = world
+                    .get::<Visibility>(child)
+                    .is_some_and(|visibility| *visibility != Visibility::Hidden);
+                (text, shown)
+            })
+    }
+
+    /// B8: a tool whose building the city has not opened says at what population it opens and
+    /// cannot be picked; once the milestone is reached the caption goes and the tool is picked.
+    #[test]
+    fn milestone_locked_tool_button_says_when_it_unlocks_and_is_not_picked() {
+        use simcity_sim::game::milestones::Milestones;
+
+        let mut app = palette_app();
+        app.insert_resource(Milestones::default());
+        app.update();
+
+        let school = button_for(&mut app, ToolMode::School);
+        assert_eq!(
+            lock_caption_under(&mut app, school),
+            Some(("Unlocks at 250".to_string(), true))
+        );
+        let park = button_for(&mut app, ToolMode::Park);
+        assert_eq!(
+            lock_caption_under(&mut app, park),
+            None,
+            "a park is open from the start"
+        );
+        app.world_mut().resource_mut::<UiState>().tool = ToolMode::Inspect;
+        app.world_mut().trigger(Activate { entity: school });
+        assert_eq!(
+            app.world().resource::<UiState>().tool,
+            ToolMode::Inspect,
+            "a locked tool is not picked"
+        );
+
+        app.world_mut().resource_mut::<Milestones>().reach(300);
+        app.update();
+        assert_eq!(
+            lock_caption_under(&mut app, school).map(|(_, shown)| shown),
+            Some(false)
+        );
+        app.world_mut().trigger(Activate { entity: school });
+        assert_eq!(app.world().resource::<UiState>().tool, ToolMode::School);
     }
 
     #[test]

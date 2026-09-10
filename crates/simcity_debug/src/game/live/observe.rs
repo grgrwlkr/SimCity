@@ -156,6 +156,7 @@ pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpR
     let utilities = utilities_json(world);
     let city_fields = city_fields_json(world);
     let civic_coverage = civic_coverage_json(world);
+    let milestones = milestones_json(world);
     let buildings = buildings_json(world, region);
     let state = world
         .get_resource::<State<AppState>>()
@@ -258,6 +259,7 @@ pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpR
         "utilities": utilities,
         "city_fields": city_fields,
         "civic_coverage": civic_coverage,
+        "milestones": milestones,
         "buildings": buildings,
     }))
 }
@@ -318,6 +320,32 @@ fn city_fields_json(world: &World) -> Value {
         "covers_map": covers_map,
         "fields": summary,
         "hovered": hovered,
+    })
+}
+
+/// The population the city has reached, the next milestone ahead, and the buildings milestones
+/// have opened and still keep closed.
+fn milestones_json(world: &World) -> Value {
+    use simcity_sim::game::milestones::{MILESTONES, Milestones};
+
+    let Some(milestones) = world.get_resource::<Milestones>() else {
+        return json!({ "best_population": Value::Null, "note": "no milestones in this world" });
+    };
+    let names = |open: bool| -> Vec<String> {
+        MILESTONES
+            .iter()
+            .filter(|milestone| milestones.is_unlocked(milestone.unlocks) == open)
+            .map(|milestone| format!("{:?}", milestone.unlocks))
+            .collect()
+    };
+    json!({
+        "best_population": milestones.best_population,
+        "next": milestones.next().map(|milestone| json!({
+            "population": milestone.population,
+            "unlocks": format!("{:?}", milestone.unlocks),
+        })),
+        "unlocked": names(true),
+        "locked": names(false),
     })
 }
 
@@ -649,6 +677,7 @@ mod tests {
             "utilities",
             "city_fields",
             "civic_coverage",
+            "milestones",
             "buildings",
         ] {
             assert!(
@@ -949,6 +978,26 @@ mod tests {
             near(&section["hovered"]["LandValue"], 0.8),
             "the hovered tile carries its land value: {section}"
         );
+    }
+
+    #[test]
+    fn milestone_progress_is_reported_so_an_unlock_run_can_be_judged() {
+        use simcity_sim::game::milestones::Milestones;
+
+        let mut world = World::new();
+        world.insert_resource(Milestones {
+            best_population: 300,
+        });
+        let answer = observe_handler(In(None), &mut world).expect("observe always answers");
+        let section = &answer["milestones"];
+        assert_eq!(section["best_population"], 300, "{section}");
+        assert_eq!(
+            section["next"],
+            json!({ "population": 1000, "unlocks": "University" }),
+            "{section}"
+        );
+        assert_eq!(section["unlocked"], json!(["School"]), "{section}");
+        assert_eq!(section["locked"], json!(["University"]), "{section}");
     }
 
     #[test]

@@ -274,6 +274,7 @@ pub(crate) struct SaveParams<'w, 's> {
     tax_rates: Option<Res<'w, crate::game::economy::TaxRates>>,
     service_funding: Option<Res<'w, crate::game::economy::ServiceFunding>>,
     loans: Option<Res<'w, crate::game::economy::Loans>>,
+    milestones: Option<Res<'w, simcity_sim::game::milestones::Milestones>>,
 }
 
 /// Build the full V3 snapshot of the live world. Shared by `SaveGame` (which writes it
@@ -282,6 +283,7 @@ pub(crate) struct SaveParams<'w, 's> {
 pub(crate) fn snapshot_savegame(p: &SaveParams) -> SaveGameV3 {
     SaveGameV3 {
         save_version: 3,
+        milestones: p.milestones.as_deref().copied().unwrap_or_default(),
         seed: p.seed.0,
         map: snapshot_map(&p.grid),
         city: p.city.clone(),
@@ -547,6 +549,7 @@ fn upgrade_v2_to_v3(v2: SaveGameV2) -> SaveGameV3 {
     let buildings = derive_buildings_from_map(&v2.map, &v2.city);
     SaveGameV3 {
         save_version: 3,
+        milestones: Default::default(),
         seed: v2.seed,
         map: v2.map,
         city: v2.city,
@@ -567,6 +570,7 @@ fn upgrade_v1_to_v3(v1: SaveGameV1) -> SaveGameV3 {
     let service_stations = derive_service_stations_from_buildings(&buildings);
     SaveGameV3 {
         save_version: 3,
+        milestones: Default::default(),
         seed: v1.seed,
         map: v1.map,
         city: v1.city,
@@ -635,6 +639,7 @@ struct LoadParams<'w, 's> {
     tax_rates: Option<ResMut<'w, crate::game::economy::TaxRates>>,
     service_funding: Option<ResMut<'w, crate::game::economy::ServiceFunding>>,
     loans: Option<ResMut<'w, crate::game::economy::Loans>>,
+    milestones: Option<ResMut<'w, simcity_sim::game::milestones::Milestones>>,
     id_gen: ResMut<'w, CitizenIdGen>,
     emergency_manager: Option<ResMut<'w, EmergencyManager>>,
     path_pool: ResMut<'w, crate::game::transport::PathPool>,
@@ -669,6 +674,16 @@ pub(crate) fn restore_budget(
     }
     if let Some(loans) = loans {
         *loans = save.loans.clone();
+    }
+}
+
+/// Put a save's milestones back: what it reached, and at least the population it carries.
+pub(crate) fn restore_milestones(
+    save: &SaveGameV3,
+    milestones: Option<&mut simcity_sim::game::milestones::Milestones>,
+) {
+    if let Some(milestones) = milestones {
+        milestones.best_population = save.milestones.best_population.max(save.city.population);
     }
 }
 
@@ -768,6 +783,7 @@ fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParam
             p.service_funding.as_deref_mut(),
             p.loans.as_deref_mut(),
         );
+        restore_milestones(&save, p.milestones.as_deref_mut());
         p.id_gen.set_next(save.next_citizen_id);
 
         if let Some(mgr) = p.emergency_manager.as_mut() {
@@ -927,10 +943,65 @@ mod budget_save_tests {
         );
     }
 
+    fn save_with(city: City, milestones: simcity_sim::game::milestones::Milestones) -> SaveGameV3 {
+        SaveGameV3 {
+            save_version: 3,
+            seed: 1,
+            map: MapGridV1 {
+                width: 0,
+                height: 0,
+                tiles: Vec::new(),
+            },
+            city,
+            buildings: Vec::new(),
+            citizens: Vec::new(),
+            next_citizen_id: 1,
+            service_stations: Vec::new(),
+            emergency_stats: EmergencyStats::default(),
+            traffic_light_tiles: Vec::new(),
+            tax_rates: Default::default(),
+            service_funding: Default::default(),
+            loans: Default::default(),
+            milestones,
+        }
+    }
+
+    /// A reached milestone comes back with a save even when the city shrank since; a save from
+    /// before milestones counts the population it carries as reached.
+    #[test]
+    fn milestone_reached_milestones_come_back_with_a_save() {
+        use simcity_sim::game::milestones::Milestones;
+
+        let shrunk = City {
+            population: 120,
+            ..City::default()
+        };
+        let mut live = Milestones::default();
+        restore_milestones(
+            &save_with(
+                shrunk,
+                Milestones {
+                    best_population: 300,
+                },
+            ),
+            Some(&mut live),
+        );
+        assert_eq!(live.best_population, 300);
+
+        let older = City {
+            population: 400,
+            ..City::default()
+        };
+        let mut live = Milestones::default();
+        restore_milestones(&save_with(older, Milestones::default()), Some(&mut live));
+        assert_eq!(live.best_population, 400);
+    }
+
     #[test]
     fn budget_report_loading_restores_the_budget() {
         let (rates, funding, loans) = budget();
         let save = SaveGameV3 {
+            milestones: Default::default(),
             save_version: 3,
             seed: 1,
             map: MapGridV1 {

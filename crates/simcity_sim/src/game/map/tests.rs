@@ -486,6 +486,58 @@ fn service_building_utility_stations_have_supply_capacity() {
     assert_eq!(BuildingKind::School.utility_capacity(), None);
 }
 
+/// B8: a building the city has not opened is refused by the placement command itself, not only
+/// greyed out in the palette.
+#[test]
+fn milestone_a_locked_school_is_refused_by_the_placement_command() {
+    use crate::game::milestones::Milestones;
+
+    let mut app = build_command_apply_app(16, 16);
+    app.init_resource::<Milestones>();
+    for x in 2..5 {
+        send_command(
+            &mut app,
+            GameCommand::SetRoad {
+                pos: TilePos { x, y: 1 },
+                road: road_cell(RoadKind::TwoLane),
+            },
+        );
+    }
+    app.update();
+    let money_before = app.world().resource::<City>().money;
+    let place = GameCommand::PlaceBuilding {
+        pos: TilePos { x: 2, y: 2 },
+        kind: BuildingKind::School,
+    };
+    send_command(&mut app, place.clone());
+    app.update();
+    assert_eq!(
+        building_entity_count(&mut app),
+        0,
+        "a school before 250 residents is refused"
+    );
+    assert_eq!(app.world().resource::<City>().money, money_before);
+
+    app.world_mut().resource_mut::<Milestones>().reach(250);
+    send_command(&mut app, place);
+    app.update();
+    assert_eq!(building_entity_count(&mut app), 1);
+}
+
+/// A new map is a new city: it earns its milestones again.
+#[test]
+fn milestone_a_new_map_starts_its_milestones_over() {
+    use crate::game::milestones::Milestones;
+
+    let mut app = build_command_apply_app(16, 16);
+    app.insert_resource(Milestones {
+        best_population: 300,
+    });
+    send_command(&mut app, GameCommand::GenerateMap { seed: 7 });
+    app.update();
+    assert_eq!(app.world().resource::<Milestones>().best_population, 0);
+}
+
 /// A school goes down beside a road through the placement command and costs its price.
 #[test]
 fn service_building_a_school_is_placed_beside_a_road_and_paid_for() {

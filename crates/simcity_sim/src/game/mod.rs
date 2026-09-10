@@ -14,6 +14,7 @@ pub mod employment;
 pub mod intersections;
 pub mod land_value;
 pub mod map;
+pub mod milestones;
 #[cfg(test)]
 mod no_thread_rng_guard;
 pub mod notifications;
@@ -299,6 +300,7 @@ impl Plugin for SimPlugin {
                 land_value::LandValuePlugin,
                 city_fields::CityFieldsPlugin,
                 civic_coverage::CivicCoveragePlugin,
+                milestones::MilestonesPlugin,
                 notifications::NotificationsPlugin,
                 pollution::PollutionPlugin,
                 public_transport::PublicTransportPlugin,

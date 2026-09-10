@@ -165,6 +165,7 @@ mod tests {
         });
 
         let save = SaveGameV3 {
+            milestones: Default::default(),
             save_version: 3,
             seed: 1,
             map,

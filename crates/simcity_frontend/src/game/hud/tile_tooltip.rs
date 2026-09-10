@@ -138,9 +138,11 @@ pub fn update_tile_tooltip(
     mut headlines: Headlines,
     mut details: Details,
     supply: TileSupply,
+    milestones: Option<Res<simcity_sim::game::milestones::Milestones>>,
 ) {
     let tile = hovered.tile.filter(|_| !pointer.captured);
-    let preview = tile.and_then(|tile| preview_tool_at(ui.tool, tile, &grid, city.money));
+    let preview = tile
+        .and_then(|tile| preview_tool_at(ui.tool, tile, &grid, city.money, milestones.as_deref()));
     let diagnosis = match (tile, supply.0.as_deref(), supply.1.as_deref()) {
         (Some(tile), Some(network), Some(demand)) => simcity_sim::game::buildings::tile_diagnosis(
             &grid,

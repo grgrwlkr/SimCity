@@ -29,6 +29,7 @@ pub fn preview_tool_at(
     tile: TilePos,
     grid: &MapGrid,
     money: i64,
+    milestones: Option<&crate::game::milestones::Milestones>,
 ) -> Option<ToolPreview> {
     let service = service_kind(tool);
     let (effect, radius) = match tool {
@@ -120,10 +121,17 @@ pub fn preview_tool_at(
         | ToolMode::Park => {
             let cost = placed_building_kind(tool).map_or(0, BuildingKind::build_cost);
             let (width, length) = MANUAL_BUILDING_FOOTPRINT;
-            let verdict = match validate_building_placement(grid, tile, width, length) {
-                Some(_) if money < cost => Err("Not enough money"),
-                Some(_) => Ok(()),
-                None => Err(footprint_problem(grid, tile, width, length)),
+            let lock = placed_building_kind(tool)
+                .zip(milestones)
+                .and_then(|(kind, milestones)| milestones.lock(kind));
+            let verdict = if let Some(reason) = lock {
+                Err(reason)
+            } else {
+                match validate_building_placement(grid, tile, width, length) {
+                    Some(_) if money < cost => Err("Not enough money"),
+                    Some(_) => Ok(()),
+                    None => Err(footprint_problem(grid, tile, width, length)),
+                }
             };
             (Some(cost), verdict)
         }
@@ -264,7 +272,7 @@ mod tests {
     }
 
     fn preview(tool: ToolMode, tile: TilePos, grid: &MapGrid, money: i64) -> ToolPreview {
-        preview_tool_at(tool, tile, grid, money)
+        preview_tool_at(tool, tile, grid, money, None)
             .unwrap_or_else(|| panic!("{tool:?} at {tile:?} must explain itself"))
     }
 
@@ -376,6 +384,32 @@ mod tests {
         }
     }
 
+    /// A building the city has not opened yet says at what population it opens, before the click.
+    #[test]
+    fn milestone_locked_building_preview_says_when_it_unlocks() {
+        use crate::game::milestones::Milestones;
+
+        let grid = town();
+        let fresh = Milestones::default();
+        let school = preview_tool_at(ToolMode::School, at(10, 11), &grid, RICH, Some(&fresh))
+            .expect("the school tool explains itself");
+        assert_eq!(school.verdict, Err("Unlocks at 250 residents"));
+        assert_eq!(
+            school.cost,
+            Some(BuildingKind::School.build_cost()),
+            "the price still shows"
+        );
+        let park = preview_tool_at(ToolMode::Park, at(10, 11), &grid, RICH, Some(&fresh))
+            .expect("the park tool explains itself");
+        assert_eq!(park.verdict, Ok(()), "a park is open from the start");
+
+        let mut grown = Milestones::default();
+        grown.reach(300);
+        let school = preview_tool_at(ToolMode::School, at(10, 11), &grid, RICH, Some(&grown))
+            .expect("the school tool explains itself");
+        assert_eq!(school.verdict, Ok(()));
+    }
+
     #[test]
     fn service_building_tools_show_price_and_radius() {
         let grid = town();
@@ -432,7 +466,7 @@ mod tests {
         assert_eq!(street.verdict, Ok(()));
 
         assert_eq!(
-            preview_tool_at(ToolMode::Inspect, at(5, 10), &grid, RICH),
+            preview_tool_at(ToolMode::Inspect, at(5, 10), &grid, RICH, None),
             None
         );
 

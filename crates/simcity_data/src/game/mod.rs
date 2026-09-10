@@ -54,11 +54,13 @@ impl Plugin for DataPlugin {
     }
 }
 
-/// Derived environment fields, reset with the map: pollution, land value, city fields.
+/// State reset with the map: the derived environment fields (pollution, land value, city fields)
+/// and the milestones a new city earns again.
 type DerivedFields<'w> = (
     Option<ResMut<'w, pollution::PollutionIndex>>,
     Option<ResMut<'w, land_value::LandValueIndex>>,
     Option<ResMut<'w, simcity_sim::game::city_fields::CityFields>>,
+    Option<ResMut<'w, simcity_sim::game::milestones::Milestones>>,
 );
 
 #[allow(clippy::too_many_arguments)]
@@ -112,6 +114,9 @@ fn handle_load_test_city(
         }
         if let Some(fields) = derived.2.as_mut() {
             fields.reset_values();
+        }
+        if let Some(milestones) = derived.3.as_mut() {
+            **milestones = simcity_sim::game::milestones::Milestones::default();
         }
         // Bus routes reference tile positions from the previous map; reset and re-seed the demo
         // route for the freshly generated test city (player-placed routes are Phase B). Despawn
@@ -221,6 +226,39 @@ mod tests {
             zoned,
             dark.iter().take(8).collect::<Vec<_>>()
         );
+    }
+
+    /// A test city is a new city: the milestones of the city before it do not carry over.
+    #[test]
+    fn milestone_loading_the_test_city_starts_milestones_over() {
+        use simcity_sim::game::milestones::Milestones;
+
+        let cfg = map::MapConfig::default();
+        let tile_count = (cfg.width as usize) * (cfg.height as usize);
+        let mut app = App::new();
+        simcity_sim::game::render_primitives::init_for_test(&mut app);
+        app.add_message::<commands::GameCommand>()
+            .add_message::<sim_events::DayAdvanced>()
+            .insert_resource(cfg.clone())
+            .insert_resource(map::MapSeed(1))
+            .insert_resource(map::MapGrid::new(cfg.width, cfg.height))
+            .insert_resource(map::DirtyTiles::new(tile_count))
+            .insert_resource(map::RoadDirtyTiles::new(tile_count))
+            .insert_resource(sim::City::default())
+            .insert_resource(transport::GraphVersion(1))
+            .insert_resource(map::MapEditVersion::default())
+            .insert_resource(command_history::CommandHistory::new(100))
+            .insert_resource(intersections::IntersectionIndex::default())
+            .insert_resource(Milestones {
+                best_population: 500,
+            })
+            .insert_resource(TestCommandOnce::default())
+            .add_systems(
+                Update,
+                (send_load_test_city_once, handle_load_test_city).chain(),
+            );
+        app.update();
+        assert_eq!(app.world().resource::<Milestones>().best_population, 0);
     }
 
     #[test]
