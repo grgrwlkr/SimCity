@@ -447,7 +447,7 @@ fn utilities_json(world: &mut World) -> Value {
     use simcity_sim::game::buildings::{Building, growth_blockers, tile_diagnosis};
     use simcity_sim::game::demand::RciDemand;
     use simcity_sim::game::map::{BuildingKind, HoveredTile, MapGrid};
-    use simcity_sim::game::utilities::{UtilityKind, UtilityNetwork};
+    use simcity_sim::game::utilities::{UtilityKind, UtilityNetwork, UtilitySupply};
 
     let Some(network) = world.get_resource::<UtilityNetwork>().cloned() else {
         return json!({ "version": Value::Null, "note": "no utility network in this world" });
@@ -508,6 +508,23 @@ fn utilities_json(world: &mut World) -> Value {
         }
         _ => Value::Null,
     };
+    // Supply against demand for the whole city, and whether some district goes without.
+    let supply = world.get_resource::<UtilitySupply>().map(|supply| {
+        let entry = |kind| {
+            let totals = supply.totals(kind);
+            json!({
+                "supply": totals.supply,
+                "demand": totals.demand,
+                "supplied": totals.supplied,
+                "short": supply.is_short(kind),
+            })
+        };
+        json!({
+            "power": entry(UtilityKind::Power),
+            "water": entry(UtilityKind::Water),
+            "garbage": entry(UtilityKind::Garbage),
+        })
+    });
     json!({
         "version": network.version,
         "served_tiles": {
@@ -516,6 +533,7 @@ fn utilities_json(world: &mut World) -> Value {
             "garbage": served(UtilityKind::Garbage),
         },
         "buildings_without": { "power": without_power, "water": without_water },
+        "supply": supply,
         "hovered": hovered,
     })
 }
@@ -848,6 +866,47 @@ mod tests {
             hovered["diagnosis"],
             json!(["Residential zone", "No power: occupants are leaving"]),
             "{hovered}"
+        );
+    }
+
+    #[test]
+    fn utility_network_supply_and_demand_are_reported_so_a_shortage_run_can_be_judged() {
+        use simcity_sim::game::utilities::{
+            SupplyBalance, UtilityKind, UtilityNetwork, UtilitySupply,
+        };
+
+        let mut world = World::new();
+        world.insert_resource(UtilityNetwork::default());
+        world.insert_resource(UtilitySupply {
+            version: 2,
+            components: vec![
+                SupplyBalance {
+                    kind: UtilityKind::Water,
+                    supply: 5000,
+                    demand: 6200,
+                    supplied: 4900,
+                },
+                SupplyBalance {
+                    kind: UtilityKind::Power,
+                    supply: 5000,
+                    demand: 1200,
+                    supplied: 1200,
+                },
+            ],
+        });
+
+        let answer = observe_handler(In(None), &mut world).expect("observe always answers");
+        let supply = &answer["utilities"]["supply"];
+        assert_eq!(
+            supply["water"],
+            json!({ "supply": 5000, "demand": 6200, "supplied": 4900, "short": true }),
+            "{supply}"
+        );
+        assert_eq!(supply["power"]["short"], false, "{supply}");
+        assert_eq!(
+            supply["garbage"],
+            json!({ "supply": 0, "demand": 0, "supplied": 0, "short": false }),
+            "{supply}"
         );
     }
 

@@ -284,6 +284,16 @@ impl BuildingKind {
         }
     }
 
+    /// Units a utility station supplies to the roads it feeds; `None` for every other building.
+    pub fn utility_capacity(self) -> Option<u32> {
+        match self {
+            BuildingKind::PowerPlant => Some(5000),
+            BuildingKind::WaterPump => Some(5000),
+            BuildingKind::Landfill => Some(4000),
+            _ => None,
+        }
+    }
+
     pub fn capacity_residents_for_level(self, level: u8) -> u16 {
         match (self, level) {
             (BuildingKind::Residential, 1) => 4,

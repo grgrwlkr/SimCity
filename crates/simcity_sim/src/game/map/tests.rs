@@ -477,6 +477,15 @@ fn service_building_school_university_and_park_have_radius_capacity_and_price() 
     assert_eq!(BuildingKind::FireStation.service_capacity(), None);
 }
 
+/// B4: a power plant, a water pump and a landfill each supply a limited number of units.
+#[test]
+fn service_building_utility_stations_have_supply_capacity() {
+    assert_eq!(BuildingKind::PowerPlant.utility_capacity(), Some(5000));
+    assert_eq!(BuildingKind::WaterPump.utility_capacity(), Some(5000));
+    assert_eq!(BuildingKind::Landfill.utility_capacity(), Some(4000));
+    assert_eq!(BuildingKind::School.utility_capacity(), None);
+}
+
 /// A school goes down beside a road through the placement command and costs its price.
 #[test]
 fn service_building_a_school_is_placed_beside_a_road_and_paid_for() {
