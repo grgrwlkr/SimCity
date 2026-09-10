@@ -116,10 +116,11 @@ pub(crate) fn spawn_emergencies(
             EmergencyKind::Crime => "Crime",
             EmergencyKind::Medical => "Medical",
         };
-        notif.add(
-            format!("{} emergency at ({}, {})", kind_name, pos.x, pos.y),
+        notif.add_at(
+            format!("{} emergency", kind_name),
             NotificationKind::Warning,
             5.0,
+            pos,
         );
     }
 }
@@ -583,10 +584,11 @@ pub(crate) fn resolve_emergencies(mut p: ResolveParams) {
                             EmergencyKind::Crime => "Crime",
                             EmergencyKind::Medical => "Medical",
                         };
-                        notif.add(
+                        notif.add_at(
                             format!("{} emergency responded", kind_name),
                             NotificationKind::Info,
                             3.0,
+                            emergency.pos,
                         );
                     }
                 }
@@ -659,10 +661,11 @@ pub(crate) fn resolve_emergencies(mut p: ResolveParams) {
                                 EmergencyKind::Crime => "Crime",
                                 EmergencyKind::Medical => "Medical",
                             };
-                            notif.add(
+                            notif.add_at(
                                 format!("{} emergency resolved", kind_name),
                                 NotificationKind::Info,
                                 3.0,
+                                emergency.pos,
                             );
                         }
                     } else {
@@ -673,10 +676,11 @@ pub(crate) fn resolve_emergencies(mut p: ResolveParams) {
                                 EmergencyKind::Crime => "Crime",
                                 EmergencyKind::Medical => "Medical",
                             };
-                            notif.add(
+                            notif.add_at(
                                 format!("{} emergency failed - critical!", kind_name),
                                 NotificationKind::Error,
                                 7.0,
+                                emergency.pos,
                             );
                         }
                     }

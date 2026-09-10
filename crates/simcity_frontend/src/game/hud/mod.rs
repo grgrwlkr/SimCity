@@ -14,6 +14,7 @@ pub mod glass;
 pub mod hud_bar;
 pub mod pointer;
 pub mod theme;
+pub mod toasts;
 pub mod tool_palette;
 
 /// Registers the game interface: its material, its visual language and its pieces.
@@ -29,6 +30,7 @@ impl Plugin for HudPlugin {
             .init_resource::<PointerOverGameUi>()
             .add_observer(hud_bar::on_speed_button)
             .add_observer(tool_palette::on_tool_button)
+            .add_observer(toasts::on_toast)
             .add_systems(Startup, spawn_game_ui)
             // Straight after hover is computed, so every consumer of the frame reads it fresh.
             .add_systems(
@@ -40,6 +42,7 @@ impl Plugin for HudPlugin {
                 (
                     hud_bar::update_hud_bar,
                     tool_palette::update_tool_palette,
+                    toasts::update_toast_feed,
                     show_game_ui_in_game,
                 )
                     .in_set(GameSet::Ui),
@@ -55,6 +58,7 @@ fn spawn_game_ui(
     let glass = materials.add(glass::GlassMaterial::from_theme(&theme));
     hud_bar::spawn_hud_bar(&mut commands, &theme, glass.clone());
     tool_palette::spawn_tool_palette(&mut commands, &theme, glass);
+    toasts::spawn_toast_feed(&mut commands, &theme);
 }
 
 /// The in-game interface belongs to a running city; the menu has its own screen.

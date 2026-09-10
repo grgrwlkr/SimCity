@@ -156,10 +156,11 @@ pub fn grow_buildings(mut p: GrowBuildingsParams) {
                 BuildingKind::Industrial => "Industrial",
                 _ => "Building",
             };
-            notif.add(
+            notif.add_at(
                 format!("New {} building constructed", kind_name),
                 NotificationKind::Info,
                 3.0,
+                footprint.anchor,
             );
         }
 

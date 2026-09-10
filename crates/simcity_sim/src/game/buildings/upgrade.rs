@@ -93,10 +93,11 @@ pub fn upgrade_buildings(
                 _ => "Building",
             };
             if let Some(ref mut notif) = notifications {
-                notif.add(
+                notif.add_at(
                     format!("{} building upgraded to level {}", kind_name, level_name),
                     NotificationKind::Info,
                     3.0,
+                    building.anchor_pos,
                 );
             }
         }
