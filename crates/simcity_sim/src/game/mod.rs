@@ -157,6 +157,9 @@ pub(crate) enum TrafficStep {
 /// an unordered cross-crate system reintroduces executor-dependent state.
 #[derive(SystemSet, Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum PostSimStep {
+    /// Citizens left without a home despawn, their cars with them, and the tile index rebuilds —
+    /// first, so every index and statistic below counts the city they leave.
+    Citizens,
     /// `TrafficIndex` aggregation (read by RCI demand).
     TrafficIndex,
     /// `PollutionIndex` (read by land value).
@@ -216,6 +219,7 @@ pub(crate) fn apply_fixed_update_set_order(app: &mut App) {
     app.configure_sets(
         FixedUpdate,
         (
+            PostSimStep::Citizens,
             PostSimStep::TrafficIndex,
             PostSimStep::Pollution,
             PostSimStep::Coverage,
@@ -469,6 +473,88 @@ mod schedule_ambiguity_pin {
     /// multi-threaded executor chooses the order per run: a single unrelated system joining the
     /// schedule was enough to swing the day-18 freeze pin between 0 and 7 stuck vehicles from
     /// one run of the same binary to the next.
+    /// Whether `from` runs before `to` in a built schedule: a chain of ordering edges leads from a
+    /// set holding `from` (or `from` itself) to a set holding `to` (or `to` itself).
+    fn runs_before(
+        graph: &bevy::ecs::schedule::ScheduleGraph,
+        from: bevy::ecs::schedule::NodeId,
+        to: bevy::ecs::schedule::NodeId,
+    ) -> bool {
+        use bevy::ecs::schedule::NodeId;
+        use std::collections::{BTreeSet, VecDeque};
+        let hierarchy: Vec<(NodeId, NodeId)> = graph.hierarchy().graph().all_edges().collect();
+        // A system is only ever a child, which fixes the direction of every hierarchy edge.
+        let parent_first = hierarchy.iter().any(|(_, child)| child.is_system());
+        let enclosing = |node: NodeId| {
+            let mut found = BTreeSet::from([node]);
+            let mut stack = vec![node];
+            while let Some(current) = stack.pop() {
+                for &(a, b) in &hierarchy {
+                    let (parent, child) = if parent_first { (a, b) } else { (b, a) };
+                    if child == current && found.insert(parent) {
+                        stack.push(parent);
+                    }
+                }
+            }
+            found
+        };
+        let targets = enclosing(to);
+        let dependency: Vec<(NodeId, NodeId)> = graph.dependency().graph().all_edges().collect();
+        let mut visited = BTreeSet::new();
+        let mut queue: VecDeque<NodeId> = enclosing(from).into_iter().collect();
+        while let Some(node) = queue.pop_front() {
+            if !visited.insert(node) {
+                continue;
+            }
+            for &(before, after) in &dependency {
+                if before != node {
+                    continue;
+                }
+                if targets.contains(&after) {
+                    return true;
+                }
+                queue.extend(enclosing(after));
+            }
+        }
+        false
+    }
+
+    /// Citizens who lose their home are despawned through commands, which ambiguity detection
+    /// does not count as access. Left unordered with the post-sim steps, the despawn landed before
+    /// the employment stats in one run and after them in the next: two same-seed cities counted
+    /// 96 and 104 jobs at a day boundary, and once the city fields read unemployment the whole
+    /// city diverged.
+    #[test]
+    fn fixed_update_citizen_cleanup_runs_before_employment_stats() {
+        let mut app = App::new();
+        app.add_plugins(bevy::state::app::StatesPlugin);
+        app.add_plugins(super::SimPlugin);
+        app.world_mut()
+            .schedule_scope(FixedUpdate, |world, schedule| {
+                schedule.initialize(world).expect("schedule init");
+                let graph = schedule.graph();
+                // After initialization the systems live in the executable schedule, not the graph.
+                let system = |name: &str| {
+                    schedule
+                        .systems()
+                        .expect("initialized")
+                        .find(|(_, system)| system.name().to_string().ends_with(name))
+                        .map(|(key, _)| bevy::ecs::schedule::NodeId::System(key))
+                        .unwrap_or_else(|| panic!("no system named {name}"))
+                };
+                let cleanup = system("cleanup_homeless_citizens");
+                let stats = system("compute_employment_stats");
+                assert!(
+                    runs_before(graph, cleanup, stats),
+                    "citizen cleanup must run before the employment stats count the city"
+                );
+                assert!(
+                    !runs_before(graph, stats, cleanup),
+                    "and not the other way round"
+                );
+            });
+    }
+
     #[test]
     fn update_systems_that_change_the_city_have_a_fixed_order() {
         let mut app = App::new();

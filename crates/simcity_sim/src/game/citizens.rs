@@ -11,7 +11,6 @@ use crate::game::buildings::Building;
 use crate::game::ids::{CitizenId, CitizenIdComp, CitizenIdGen};
 use crate::game::map::{BuildingKind, MapGrid, TilePos};
 use crate::game::pedestrians::{PedestrianConfig, PedestrianGraph, PedestrianRoutingScratch};
-use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 use crate::game::traffic::{CarOwner, Parked, TrafficConfig};
 use crate::game::trips::{TripFinished, TripMode, TripPurpose, TripRequested};
@@ -61,7 +60,7 @@ impl Plugin for CitizensPlugin {
                     rebuild_citizen_tile_index,
                 )
                     .chain()
-                    .in_set(GameSet::PostSim)
+                    .in_set(crate::game::PostSimStep::Citizens)
                     .run_if(in_state(AppState::InGame)),
             );
     }
