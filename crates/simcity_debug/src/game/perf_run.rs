@@ -10,6 +10,7 @@
 use std::path::PathBuf;
 
 use bevy::prelude::*;
+use bevy::render::settings::{WgpuFeatures, WgpuSettings};
 use bevy::winit::WinitSettings;
 use serde::Serialize;
 use simcity_sim::game::AutoStartTestCity;
@@ -160,6 +161,23 @@ pub fn launch_config(perf_requested: bool, from_env: LiveRuntimeConfig) -> LiveR
         from_env
     } else {
         LiveRuntimeConfig::default()
+    }
+}
+
+/// Renderer settings for a measurement run: the GPU timing queries off.
+///
+/// A profiling build adds render diagnostics that open timestamp query sets, and on Metal with
+/// the window hidden that allocation fails and takes the device down within a second. The CPU
+/// zones the frame attribution rests on do not need them.
+pub fn measurement_render_settings() -> WgpuSettings {
+    WgpuSettings {
+        disabled_features: Some(
+            WgpuFeatures::TIMESTAMP_QUERY
+                | WgpuFeatures::TIMESTAMP_QUERY_INSIDE_ENCODERS
+                | WgpuFeatures::TIMESTAMP_QUERY_INSIDE_PASSES
+                | WgpuFeatures::PIPELINE_STATISTICS_QUERY,
+        ),
+        ..default()
     }
 }
 
@@ -407,6 +425,27 @@ mod tests {
         assert_eq!(summary.mean_ms, 68.0);
         assert_eq!(summary.fps_median, 100.0);
         assert!(summarize(&[]).is_none());
+    }
+
+    #[test]
+    fn perf_run_render_settings_turn_off_gpu_timing_queries() {
+        let settings = measurement_render_settings();
+        let disabled = settings
+            .disabled_features
+            .expect("a measurement run disables the timing queries");
+        for feature in [
+            WgpuFeatures::TIMESTAMP_QUERY,
+            WgpuFeatures::TIMESTAMP_QUERY_INSIDE_ENCODERS,
+            WgpuFeatures::TIMESTAMP_QUERY_INSIDE_PASSES,
+            WgpuFeatures::PIPELINE_STATISTICS_QUERY,
+        ] {
+            assert!(disabled.contains(feature), "{feature:?} stays on");
+        }
+        assert_eq!(
+            settings.features,
+            WgpuSettings::default().features,
+            "nothing else about the renderer changes"
+        );
     }
 
     #[test]
