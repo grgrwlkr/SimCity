@@ -471,7 +471,6 @@ pub fn apply_eye_control(
 // Handler
 // ---------------------------------------------------------------------------
 
-/// `simcity/capture` — one call in, one PNG plus its statistics out.
 /// The size and scale an interface capture renders at: the window's, shrunk together when the
 /// window is larger than a texture can be, so the logical layout stays the player's.
 pub fn ui_capture_size(physical: UVec2, scale_factor: f32) -> (UVec2, f32) {
@@ -573,6 +572,7 @@ fn set_eye_scale(targets: &mut Query<&mut RenderTarget, With<OffscreenEyeCamera>
     }
 }
 
+/// `simcity/capture` — one call in, one PNG plus its statistics out.
 pub fn capture_handler(
     In(params): In<Option<Value>>,
     world: &mut World,
@@ -650,7 +650,14 @@ fn shoot(world: &mut World, request: &CaptureRequest) {
                     .set_outcome(&request.path, Err("offscreen eye is not spawned".into()));
                 return;
             };
-            Screenshot::image(eye.image.clone())
+            let (camera, image) = (eye.camera, eye.image.clone());
+            // A render target's identity includes its scale factor, so the screenshot names the
+            // target exactly as the eye holds it. `Screenshot::image` asks for scale 1.0 and, for
+            // an interface capture at the window's scale, reads a texture nothing rendered into.
+            match world.get::<RenderTarget>(camera) {
+                Some(target) => Screenshot(target.clone()),
+                None => Screenshot::image(image),
+            }
         }
         CaptureSource::Window => Screenshot::primary_window(),
     };
@@ -1060,5 +1067,46 @@ mod tests {
             (eye_scale(world, eye) - 1.0).abs() < 1e-6,
             "eye scale goes back to 1.0"
         );
+    }
+    #[test]
+    fn a_capture_reads_the_target_exactly_as_the_eye_renders_into_it() {
+        // A render target's identity includes its scale factor. A screenshot of the same image
+        // at scale 1.0 reads a texture that an eye rendering at the window's scale never wrote:
+        // measured live, every `ui` capture on a scale-2 window came back fully black.
+        let mut world = World::new();
+        world.init_resource::<CaptureJobs>();
+        let image = Handle::<Image>::default();
+        let mut target = ImageRenderTarget::from(image.clone());
+        target.scale_factor = 2.0;
+        let eye = world
+            .spawn((OffscreenEyeCamera, RenderTarget::Image(target)))
+            .id();
+        world.insert_resource(OffscreenEye {
+            camera: eye,
+            image,
+            size: DEFAULT_SIZE,
+        });
+        let request = CaptureRequest {
+            path: "/tmp/a.png".to_string(),
+            size: None,
+            source: CaptureSource::Offscreen,
+            settle_frames: UI_SETTLE_FRAMES,
+            ui: true,
+        };
+
+        shoot(&mut world, &request);
+
+        let screenshot = world
+            .query::<&Screenshot>()
+            .single(&world)
+            .expect("one screenshot requested");
+        match &screenshot.0 {
+            RenderTarget::Image(asked) => assert!(
+                (asked.scale_factor - 2.0).abs() < 1e-6,
+                "the screenshot must name the eye's target at its scale, got {}",
+                asked.scale_factor
+            ),
+            other => panic!("an offscreen capture must read an image, got {other:?}"),
+        }
     }
 }
