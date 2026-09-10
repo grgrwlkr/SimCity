@@ -49,7 +49,7 @@ SIMCITY_WINDOW=hidden BRP_EXTRAS_PORT=15801 cargo run --features dev
 | `simcity/capture` | Пишет PNG и возвращает статистику записанного кадра. Один вызов — готовый файл. |
 | `simcity/camera` | Читает и ставит позу: `focus` или `focus_tile`, `yaw`, `pitch`, `zoom`. |
 | `simcity/sim` | Скорость, час, день, шаг на N тиков. |
-| `simcity/command` | Любой `GameCommand` — тем же каналом, каким его отправляет UI. |
+| `simcity/command` | Любой `GameCommand` — тем же каналом, каким его отправляет UI. Варианты — в `crates/simcity_core/src/game/commands.rs`, но вложенные типы (`TilePos`, `ZoneKind`, `BuildingKind`) в `map/types.rs`, а `RoadCell` — в `roads.rs`. |
 | `simcity/tools` | Каталог: все методы с описаниями и схемами. |
 
 Прежние `bevy_debugger/screenshot`, `debug_dump`, `set_overlay`, `set_sim_speed` остались и

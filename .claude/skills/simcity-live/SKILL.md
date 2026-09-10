@@ -98,9 +98,14 @@ watching-методы, а `simcity/capture` именно такой. Полны�
  "params":{"command":{"SetZone":{"pos":{"x":20,"y":20},"zone":"Residential"}}}}
 ```
 
-Варианты команд — в `crates/simcity_core/src/game/commands.rs` (`GameCommand`): `SetRoad`,
-`SetZone`, `PlaceBuilding`, `EraseTile`, `PlaceTrafficLight`, `RemoveTrafficLight`, `SaveGame`,
-`LoadGame`, `LoadTestCity`, `GenerateMap`.
+Варианты команд — в `crates/simcity_core/src/game/commands.rs` (`GameCommand`): `GenerateMap`,
+`SetRoad`, `SetZone`, `PlaceBuilding`, `EraseTile`, `DumpSaveContract`, `SaveGame`, `LoadGame`,
+`PlaceTrafficLight`, `RemoveTrafficLight`, `LoadTestCity`.
+
+Вложенные типы лежат не там же: `TilePos`, `ZoneKind` и `BuildingKind` — в
+`crates/simcity_core/src/game/map/types.rs`, `RoadCell` со своими `RoadKind`, `RoadDir`, `RoadFlow`
+и `LaneType` — в `crates/simcity_core/src/game/roads.rs`. Для `SetRoad` это существенно: полоса
+описывается пятью полями, и вручную её лучше не собирать.
 
 Ответ `queued` означает «отправлено», а не «применено». Правила игры могут отвергнуть команду
 молча: зданию нужен свободный футпринт 3×3, соседняя дорога и деньги. **Всегда проверяйте
