@@ -1,0 +1,102 @@
+{
+  "Crime": {
+    "overlay": "Crime",
+    "map": {
+      "min": 0.0,
+      "mean": 0.28059870000652154,
+      "max": 0.6449794769287109
+    },
+    "hovered": {
+      "tile": [
+        40,
+        40
+      ],
+      "Crime": 0.6449794769287109,
+      "FireHazard": 0.3499999940395355,
+      "Health": 0.6000000238418579,
+      "Education": 0.3923838436603546,
+      "Attractiveness": 0.475045770406723,
+      "LandValue": 0.3620082139968872
+    }
+  },
+  "FireHazard": {
+    "overlay": "FireHazard",
+    "map": {
+      "min": 0.0,
+      "mean": 0.12241083418621201,
+      "max": 0.9070000052452087
+    },
+    "hovered": {
+      "tile": [
+        20,
+        30
+      ],
+      "Crime": 0.6449794769287109,
+      "FireHazard": 0.4166185259819031,
+      "Health": 0.32230252027511597,
+      "Education": 0.0,
+      "Attractiveness": 0.3558652102947235,
+      "LandValue": 0.43985021114349365
+    }
+  },
+  "Health": {
+    "overlay": "Health",
+    "map": {
+      "min": 0.14186710119247437,
+      "mean": 0.5378610944208049,
+      "max": 0.8999999761581421
+    },
+    "hovered": {
+      "tile": [
+        64,
+        64
+      ],
+      "Crime": 0.2949795126914978,
+      "FireHazard": 0.10000000149011612,
+      "Health": 0.8999999761581421,
+      "Education": 0.0,
+      "Attractiveness": 0.7410041689872742,
+      "LandValue": 0.800000011920929
+    }
+  },
+  "Education": {
+    "overlay": "Education",
+    "map": {
+      "min": 0.0,
+      "mean": 0.1571967990672931,
+      "max": 1.0
+    },
+    "hovered": {
+      "tile": [
+        85,
+        97
+      ],
+      "Crime": 0.24497947096824646,
+      "FireHazard": 0.3499999940395355,
+      "Health": 0.6000000238418579,
+      "Education": 0.9683722853660583,
+      "Attractiveness": 0.7078413367271423,
+      "LandValue": 0.6000000238418579
+    }
+  },
+  "Attractiveness": {
+    "overlay": "Attractiveness",
+    "map": {
+      "min": 0.20205016434192657,
+      "mean": 0.593533631257742,
+      "max": 0.940000057220459
+    },
+    "hovered": {
+      "tile": [
+        81,
+        90
+      ],
+      "Crime": 0.0,
+      "FireHazard": 0.10000000149011612,
+      "Health": 0.8999999761581421,
+      "Education": 0.9457619190216064,
+      "Attractiveness": 0.9345762133598328,
+      "LandValue": 0.8999999761581421
+    }
+  }
+}
