@@ -15,8 +15,8 @@ use bevy::ecs::system::SystemParam;
 
 use crate::game::intersections::IntersectionIndex;
 use crate::game::transport::{
-    PathCache, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph, adjacent_road_towards,
-    find_road_path_cached,
+    PathCache, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph,
+    adjacent_road_towards_footprint, find_road_path_cached,
 };
 
 pub struct EmploymentPlugin;
@@ -362,8 +362,11 @@ fn assign_jobs(mut p: AssignJobsParams) {
     let mut caps = HashMap::<TilePos, u16>::new();
     // The class of every building by its anchor: a home's class picks which jobs its people take.
     let mut classes = HashMap::<TilePos, WealthClass>::new();
+    // Footprint of every building by its anchor: a building's entrance can be on any of its sides.
+    let mut footprints = HashMap::<TilePos, (u8, u8)>::new();
     for (b, profile) in &p.q_buildings {
         classes.insert(b.anchor_pos, profile.class);
+        footprints.insert(b.anchor_pos, (b.footprint_width, b.footprint_length));
         if !matches!(b.kind, BuildingKind::Commercial | BuildingKind::Industrial) {
             continue;
         }
@@ -452,10 +455,16 @@ fn assign_jobs(mut p: AssignJobsParams) {
             ) {
                 continue;
             }
-            let Some(home_road) = adjacent_road_towards(&p.grid, home, job_pos) else {
+            let (home_w, home_l) = footprints.get(&home).copied().unwrap_or((1, 1));
+            let Some(home_road) =
+                adjacent_road_towards_footprint(&p.grid, home, home_w, home_l, job_pos)
+            else {
                 continue;
             };
-            let Some(job_road) = adjacent_road_towards(&p.grid, job_pos, home) else {
+            let (job_w, job_l) = footprints.get(&job_pos).copied().unwrap_or((1, 1));
+            let Some(job_road) =
+                adjacent_road_towards_footprint(&p.grid, job_pos, job_w, job_l, home)
+            else {
                 continue;
             };
 

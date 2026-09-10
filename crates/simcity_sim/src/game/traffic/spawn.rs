@@ -1,6 +1,8 @@
 use super::*;
 use crate::game::transport::lanelet::pathfinding::find_route;
-use crate::game::transport::{LaneCostCtx, LaneGraph, LaneId, LaneletGraph, PathPool};
+use crate::game::transport::{
+    LaneCostCtx, LaneGraph, LaneId, LaneletGraph, PathPool, adjacent_road_towards_footprint,
+};
 use rand::{Rng, RngExt};
 
 fn sample_non_medium_driver_speed_factor(rng: &mut impl Rng) -> f32 {
@@ -28,6 +30,30 @@ fn sample_driver_max_speed_world(
 ) -> f32 {
     let kmh = rng.random_range(DRIVER_MAX_SPEED_KMH_MIN..=DRIVER_MAX_SPEED_KMH_MAX);
     kmh_to_world_speed(cfg, traffic_cfg, kmh)
+}
+
+/// The road a trip leaves from or arrives at for the building on `pos`: along its whole
+/// footprint, so a building whose anchor does not front its road is still reachable.
+fn building_entrance(
+    p: &SpawnTripVehiclesParams,
+    pos: TilePos,
+    towards: TilePos,
+) -> Option<TilePos> {
+    let building = p
+        .building_index
+        .as_deref()
+        .and_then(|index| index.get(pos))
+        .and_then(|entity| p.q_buildings.get(entity).ok());
+    match building {
+        Some(b) => adjacent_road_towards_footprint(
+            &p.grid,
+            b.anchor_pos,
+            b.footprint_width,
+            b.footprint_length,
+            towards,
+        ),
+        None => adjacent_road_towards(&p.grid, pos, towards),
+    }
 }
 
 pub(super) fn spawn_trip_vehicles(
@@ -67,10 +93,10 @@ pub(super) fn spawn_trip_vehicles(
             spawn_from = at;
         }
 
-        let Some(start) = adjacent_road_towards(&p.grid, spawn_from, msg.to) else {
+        let Some(start) = building_entrance(&p, spawn_from, msg.to) else {
             continue;
         };
-        let Some(goal) = adjacent_road_towards(&p.grid, msg.to, msg.from) else {
+        let Some(goal) = building_entrance(&p, msg.to, msg.from) else {
             continue;
         };
 
@@ -307,6 +333,8 @@ pub(super) struct SpawnTripVehiclesParams<'w, 's> {
     traffic_cfg: Res<'w, TrafficConfig>,
     sim_rng: bevy::prelude::ResMut<'w, crate::game::sim::SimRng>,
     producer_stats: ResMut<'w, RouteProducerStats>,
+    building_index: Option<Res<'w, crate::game::map::BuildingEntityIndex>>,
+    q_buildings: Query<'w, 's, &'static crate::game::buildings::Building>,
     prims: ResMut<'w, crate::game::render_primitives::RenderPrimitives>,
     materials: ResMut<'w, Assets<StandardMaterial>>,
     meshes: ResMut<'w, Assets<Mesh>>,

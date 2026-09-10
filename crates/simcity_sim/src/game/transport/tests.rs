@@ -1007,3 +1007,52 @@ fn no_uturn_edge_on_one_way_dead_end() {
         "one-way dead-end must NOT gain a U-turn edge (no legal opposite carriageway)"
     );
 }
+
+/// A building can touch its road on its far side: the entrance is found along the whole footprint,
+/// on the road tile nearest the destination, and an anchor that already fronts a road keeps it.
+#[test]
+fn zone_density_building_entrance_is_found_along_the_whole_footprint() {
+    let mut grid = MapGrid::new(12, 12);
+    for x in 0..12 {
+        let pos = TilePos { x, y: 6 };
+        let mut cell = grid.get(pos).unwrap_or_default();
+        cell.water = false;
+        cell.road = RoadCell {
+            kind: RoadKind::TwoLane,
+            dir: RoadDir::East,
+            lane: 0,
+            flow: RoadFlow::TwoWay,
+            lane_type: LaneType::Regular,
+        };
+        grid.set(pos, cell);
+    }
+    // A 4x4 building on (2,2)..(5,5): only its far edge (y = 5) touches the road along y = 6.
+    let anchor = TilePos { x: 2, y: 2 };
+    let target = TilePos { x: 10, y: 6 };
+    assert_eq!(
+        adjacent_road_towards(&grid, anchor, target),
+        None,
+        "the anchor tile alone sees no road"
+    );
+    assert_eq!(
+        adjacent_road_towards_footprint(&grid, anchor, 4, 4, target),
+        Some(TilePos { x: 5, y: 6 }),
+        "the road tile beside the footprint nearest the destination is the entrance"
+    );
+
+    let mut cell = grid.get(TilePos { x: 2, y: 1 }).unwrap_or_default();
+    cell.water = false;
+    cell.road = RoadCell {
+        kind: RoadKind::TwoLane,
+        dir: RoadDir::East,
+        lane: 0,
+        flow: RoadFlow::TwoWay,
+        lane_type: LaneType::Regular,
+    };
+    grid.set(TilePos { x: 2, y: 1 }, cell);
+    assert_eq!(
+        adjacent_road_towards_footprint(&grid, anchor, 4, 4, target),
+        Some(TilePos { x: 2, y: 1 }),
+        "an anchor that fronts a road keeps its own entrance"
+    );
+}

@@ -65,25 +65,18 @@ pub fn adjacent_road_towards(grid: &MapGrid, pos: TilePos, target: TilePos) -> O
     let mut best_non_opposite = None; // Not pointing straight against the desired direction.
 
     for cpos in candidates {
-        if let Some(cell) = grid.get(cpos)
-            && !cell.water
-            && cell.road.is_some()
-        {
-            // The wrong-way carriageway of a one-way road is not drivable — never an anchor.
-            if let crate::game::roads::RoadFlow::OneWay(one_way_dir) = cell.road.flow
-                && cell.road.dir != RoadDir::None
-                && cell.road.dir != one_way_dir
-            {
-                continue;
-            }
-            best_any = best_any.or(Some(cpos));
-            if cell.road.dir != want.opposite() {
-                best_non_opposite = best_non_opposite.or(Some(cpos));
-            }
-            // A lane matching the desired direction is always the right anchor.
-            if cell.road.dir == want {
+        match road_anchor_rank(grid, cpos, want) {
+            Some(AnchorRank::CorrectLane) => {
                 best_correct_lane = best_correct_lane.or(Some(cpos));
+                best_non_opposite = best_non_opposite.or(Some(cpos));
+                best_any = best_any.or(Some(cpos));
             }
+            Some(AnchorRank::NonOpposite) => {
+                best_non_opposite = best_non_opposite.or(Some(cpos));
+                best_any = best_any.or(Some(cpos));
+            }
+            Some(AnchorRank::Oncoming) => best_any = best_any.or(Some(cpos)),
+            None => {}
         }
     }
 
@@ -91,6 +84,77 @@ pub fn adjacent_road_towards(grid: &MapGrid, pos: TilePos, target: TilePos) -> O
     // (perpendicular / intersection tiles), and only as a last resort the oncoming lane —
     // anchoring trips on the oncoming lane made cars visually spawn against traffic.
     best_correct_lane.or(best_non_opposite).or(best_any)
+}
+
+/// How good a road tile is as a trip anchor, best first.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum AnchorRank {
+    /// A lane matching the desired direction is always the right anchor.
+    CorrectLane,
+    /// Perpendicular or intersection tiles: not pointing straight against us.
+    NonOpposite,
+    /// The oncoming lane, a last resort.
+    Oncoming,
+}
+
+fn road_anchor_rank(grid: &MapGrid, pos: TilePos, want: RoadDir) -> Option<AnchorRank> {
+    let cell = grid.get(pos)?;
+    if cell.water || !cell.road.is_some() {
+        return None;
+    }
+    // The wrong-way carriageway of a one-way road is not drivable — never an anchor.
+    if let crate::game::roads::RoadFlow::OneWay(one_way_dir) = cell.road.flow
+        && cell.road.dir != RoadDir::None
+        && cell.road.dir != one_way_dir
+    {
+        return None;
+    }
+    Some(if cell.road.dir == want {
+        AnchorRank::CorrectLane
+    } else if cell.road.dir != want.opposite() {
+        AnchorRank::NonOpposite
+    } else {
+        AnchorRank::Oncoming
+    })
+}
+
+/// Like [`adjacent_road_towards`], for a whole building: a footprint of `width` by `length` tiles
+/// from `anchor` can touch its road on any side, not only at the anchor tile. The anchor is tried
+/// first, so a building whose anchor already fronts a road keeps the entrance it always had;
+/// otherwise the best-ranked road tile along the footprint's edge wins, the one nearest `target`
+/// among equals.
+pub fn adjacent_road_towards_footprint(
+    grid: &MapGrid,
+    anchor: TilePos,
+    width: u8,
+    length: u8,
+    target: TilePos,
+) -> Option<TilePos> {
+    if let Some(road) = adjacent_road_towards(grid, anchor, target) {
+        return Some(road);
+    }
+    let want = desired_dir(anchor, target);
+    let (width, length) = (i32::from(width.max(1)), i32::from(length.max(1)));
+    let inside_x = anchor.x..anchor.x + width;
+    let inside_y = anchor.y..anchor.y + length;
+    let mut best: Option<(AnchorRank, i32, TilePos)> = None;
+    for y in anchor.y - 1..=anchor.y + length {
+        for x in anchor.x - 1..=anchor.x + width {
+            // Edge neighbours only: beside a footprint row or column, never a corner or inside.
+            if inside_x.contains(&x) == inside_y.contains(&y) {
+                continue;
+            }
+            let pos = TilePos { x, y };
+            let Some(rank) = road_anchor_rank(grid, pos, want) else {
+                continue;
+            };
+            let dist = (target.x - x).abs() + (target.y - y).abs();
+            if best.is_none_or(|(best_rank, best_dist, _)| (rank, dist) < (best_rank, best_dist)) {
+                best = Some((rank, dist, pos));
+            }
+        }
+    }
+    best.map(|(_, _, pos)| pos)
 }
 
 fn desired_dir(from: TilePos, to: TilePos) -> RoadDir {
