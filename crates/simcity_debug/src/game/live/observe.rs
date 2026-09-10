@@ -158,6 +158,7 @@ pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpR
     let civic_coverage = civic_coverage_json(world);
     let milestones = milestones_json(world);
     let advisor = advisor_json(world);
+    let feed = feed_json(world);
     let buildings = buildings_json(world, region);
     let state = world
         .get_resource::<State<AppState>>()
@@ -262,6 +263,7 @@ pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpR
         "civic_coverage": civic_coverage,
         "milestones": milestones,
         "advisor": advisor,
+        "feed": feed,
         "buildings": buildings,
     }))
 }
@@ -323,6 +325,28 @@ fn city_fields_json(world: &World) -> Value {
         "fields": summary,
         "hovered": hovered,
     })
+}
+
+/// The feed's history: the last events with the day they happened, oldest first.
+fn feed_json(world: &World) -> Value {
+    use simcity_sim::game::notifications::Notifications;
+
+    let Some(feed) = world.get_resource::<Notifications>() else {
+        return json!({ "history": Value::Null, "note": "no feed in this world" });
+    };
+    let history: Vec<Value> = feed
+        .history()
+        .iter()
+        .map(|line| {
+            json!({
+                "day": line.day,
+                "kind": format!("{:?}", line.kind),
+                "text": line.text,
+                "count": line.count,
+            })
+        })
+        .collect();
+    json!({ "history": history })
 }
 
 /// The advisor's problems, worst first, each with its words, weight and place.
@@ -703,6 +727,7 @@ mod tests {
             "civic_coverage",
             "milestones",
             "advisor",
+            "feed",
             "buildings",
         ] {
             assert!(
@@ -1002,6 +1027,33 @@ mod tests {
         assert!(
             near(&section["hovered"]["LandValue"], 0.8),
             "the hovered tile carries its land value: {section}"
+        );
+    }
+
+    #[test]
+    fn advisor_feed_history_is_reported_so_a_milestone_run_can_be_judged() {
+        use simcity_sim::game::notifications::{NotificationKind, Notifications};
+
+        let mut feed = Notifications::default();
+        feed.set_day(3);
+        feed.add(
+            "250 residents: School unlocked".to_string(),
+            NotificationKind::Achievement,
+            12.0,
+        );
+        let mut world = World::new();
+        world.insert_resource(feed);
+        let answer = observe_handler(In(None), &mut world).expect("observe always answers");
+        assert_eq!(
+            answer["feed"]["history"],
+            json!([{
+                "day": 3,
+                "kind": "Achievement",
+                "text": "250 residents: School unlocked",
+                "count": 1,
+            }]),
+            "{}",
+            answer["feed"]
         );
     }
 

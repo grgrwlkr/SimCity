@@ -6,13 +6,18 @@ use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
 use simcity_core::game::ui_state::GameUiRoot;
 use simcity_sim::game::advisor::Advisor;
+use simcity_sim::game::notifications::Notifications;
 
 use super::glass::GlassMaterial;
 use super::hud_bar::text_style;
 use super::theme::Theme;
+use super::toasts::toast_label;
 
 /// How many problems the panel names under the worst one.
 const MORE_PROBLEMS: usize = 2;
+
+/// How many past events the panel lists, newest first.
+const RECENT_EVENTS: usize = 5;
 
 /// Whether the advisor's panel is open.
 #[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -123,11 +128,14 @@ type AdvisorContents<'w, 's> =
     Query<'w, 's, (Entity, Option<&'static Children>), With<AdvisorContent>>;
 
 /// Show or hide the panel and rebuild it when the advice changes.
+#[allow(clippy::too_many_arguments)]
 pub fn update_advisor_panel(
     mut commands: Commands,
     open: Res<AdvisorPanelOpen>,
     theme: Res<Theme>,
     advisor: Option<Res<Advisor>>,
+    notifications: Option<Res<Notifications>>,
+    mut seen_history: Local<u64>,
     mut panels: AdvisorPanels,
     contents: AdvisorContents,
 ) {
@@ -142,9 +150,17 @@ pub fn update_advisor_panel(
     let Some(advisor) = advisor.filter(|_| open.0) else {
         return;
     };
-    if !open.is_changed() && !theme.is_changed() && !advisor.is_changed() {
+    let history_version = notifications
+        .as_deref()
+        .map_or(0, Notifications::history_version);
+    if !open.is_changed()
+        && !theme.is_changed()
+        && !advisor.is_changed()
+        && *seen_history == history_version
+    {
         return;
     }
+    *seen_history = history_version;
 
     let palette = theme.palette;
     let sizes = theme.type_scale;
@@ -188,6 +204,33 @@ pub fn update_advisor_panel(
                             .id(),
                     );
                 }
+            }
+        }
+        if let Some(feed) = notifications
+            .as_deref()
+            .filter(|feed| !feed.history().is_empty())
+        {
+            lines.push(
+                commands
+                    .spawn((
+                        Text::new("Recent events"),
+                        text_style(sizes.caption, palette.ink_muted),
+                    ))
+                    .id(),
+            );
+            for event in feed.history().iter().rev().take(RECENT_EVENTS) {
+                lines.push(
+                    commands
+                        .spawn((
+                            Text::new(format!(
+                                "Day {}: {}",
+                                event.day,
+                                toast_label(&event.text, event.count)
+                            )),
+                            text_style(sizes.body, palette.ink),
+                        ))
+                        .id(),
+                );
             }
         }
         commands.entity(content).add_children(&lines);
@@ -311,6 +354,40 @@ mod tests {
         );
         press(&mut app, "hud.advisor.toggle");
         assert!(!panel_open(&mut app));
+    }
+
+    /// The panel lists the latest events with their day, newest first.
+    #[test]
+    fn advisor_panel_lists_recent_events_with_their_day() {
+        use simcity_sim::game::notifications::{NotificationKind, Notifications};
+
+        let mut app = advisor_app(Vec::new());
+        let mut feed = Notifications::default();
+        feed.set_day(3);
+        feed.add(
+            "250 residents: School unlocked".to_string(),
+            NotificationKind::Achievement,
+            12.0,
+        );
+        feed.set_day(5);
+        feed.add(
+            "Fire emergency responded".to_string(),
+            NotificationKind::Info,
+            3.0,
+        );
+        app.insert_resource(feed);
+        press(&mut app, "hud.advisor.toggle");
+        let shown = texts(&mut app);
+        for expected in [
+            "Recent events",
+            "Day 3: 250 residents: School unlocked",
+            "Day 5: Fire emergency responded",
+        ] {
+            assert!(
+                shown.iter().any(|text| text == expected),
+                "{expected}: {shown:?}"
+            );
+        }
     }
 
     #[test]

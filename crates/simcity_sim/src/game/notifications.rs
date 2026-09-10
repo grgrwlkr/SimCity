@@ -1,10 +1,13 @@
 //! Game events for the player: grouped into lines, aged on real time, drawn by the game interface.
 
+use std::collections::VecDeque;
+
 use bevy::prelude::*;
 use bevy::time::Real;
 
 use crate::game::map::TilePos;
 use crate::game::sets::GameSet;
+use crate::game::sim::City;
 use crate::game::state::AppState;
 
 /// One line of the feed: every occurrence of the same message, collapsed.
@@ -29,10 +32,28 @@ pub enum NotificationKind {
     Achievement,
 }
 
+/// How many past events the feed remembers.
+pub const HISTORY_LINES: usize = 30;
+
+/// One past event: what happened and on which game day, a repeat in a row counted on its line.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HistoryLine {
+    pub day: u32,
+    pub text: String,
+    pub kind: NotificationKind,
+    pub count: u32,
+}
+
 /// Notification system resource
 #[derive(Resource, Default)]
 pub struct Notifications {
     messages: Vec<Notification>,
+    /// The last events, oldest first; they outlive the toasts.
+    history: VecDeque<HistoryLine>,
+    /// The game day new events are dated with.
+    day: u32,
+    /// Bumps whenever the history changes.
+    history_version: u64,
 }
 
 impl Notifications {
@@ -48,6 +69,25 @@ impl Notifications {
     /// Same text and severity is the same line: it counts up, takes the newest place and moves
     /// to the end, and its lifetime restarts from this occurrence.
     fn push(&mut self, text: String, kind: NotificationKind, duration: f32, at: Option<TilePos>) {
+        let day = self.day;
+        match self.history.back_mut() {
+            Some(last) if last.kind == kind && last.text == text && last.day == day => {
+                last.count += 1;
+            }
+            _ => {
+                self.history.push_back(HistoryLine {
+                    day,
+                    text: text.clone(),
+                    kind,
+                    count: 1,
+                });
+                if self.history.len() > HISTORY_LINES {
+                    self.history.pop_front();
+                }
+            }
+        }
+        self.history_version = self.history_version.wrapping_add(1);
+
         let line = match self
             .messages
             .iter()
@@ -75,6 +115,20 @@ impl Notifications {
 
     pub fn messages(&self) -> &[Notification] {
         &self.messages
+    }
+
+    /// The last events, oldest first.
+    pub fn history(&self) -> &VecDeque<HistoryLine> {
+        &self.history
+    }
+
+    pub fn history_version(&self) -> u64 {
+        self.history_version
+    }
+
+    /// Date the events that arrive from now on with `day`.
+    pub fn set_day(&mut self, day: u32) {
+        self.day = day;
     }
 
     /// Stamp lines that arrived since the last call and drop the ones whose time is up.
@@ -112,7 +166,15 @@ impl Plugin for NotificationsPlugin {
 
 /// Stamp new lines and drop expired ones on real time, so the feed ages while the game is paused
 /// as it always has. The feed is drawn by the game interface, not here.
-fn stamp_notifications(time: Res<Time<Real>>, mut notifications: ResMut<Notifications>) {
+fn stamp_notifications(
+    time: Res<Time<Real>>,
+    city: Option<Res<City>>,
+    mut notifications: ResMut<Notifications>,
+) {
+    // The day dates the events that arrive next; it changes nothing on screen by itself.
+    if let Some(city) = city.as_deref() {
+        notifications.bypass_change_detection().set_day(city.day);
+    }
     if notifications
         .bypass_change_detection()
         .stamp_and_expire(time.elapsed_secs_f64())
@@ -126,6 +188,78 @@ mod tests {
     use super::*;
 
     const UPGRADED: &str = "Residential building upgraded to level II";
+
+    /// B8: the feed remembers the last 30 events with the day they happened, oldest first, a repeat
+    /// in a row counted on its line, long after the toasts are gone.
+    #[test]
+    fn advisor_feed_keeps_the_last_30_events_with_their_day() {
+        let mut feed = Notifications::default();
+        feed.set_day(3);
+        feed.add(
+            "250 residents: School unlocked".to_string(),
+            NotificationKind::Achievement,
+            12.0,
+        );
+        feed.set_day(4);
+        for n in 0..35 {
+            feed.add(format!("Event {n}"), NotificationKind::Info, 3.0);
+        }
+        feed.add("Event 34".to_string(), NotificationKind::Info, 3.0);
+
+        let history: Vec<(u32, &str, u32)> = feed
+            .history()
+            .iter()
+            .map(|line| (line.day, line.text.as_str(), line.count))
+            .collect();
+        assert_eq!(history.len(), HISTORY_LINES);
+        assert_eq!(
+            history.first(),
+            Some(&(4, "Event 5", 1)),
+            "the oldest go first"
+        );
+        assert_eq!(
+            history.last(),
+            Some(&(4, "Event 34", 2)),
+            "a repeat in a row counts on its line"
+        );
+
+        feed.stamp_and_expire(0.0);
+        feed.stamp_and_expire(100.0);
+        assert!(feed.messages().is_empty());
+        assert_eq!(
+            feed.history().len(),
+            HISTORY_LINES,
+            "the history outlives the toasts"
+        );
+    }
+
+    #[test]
+    fn advisor_feed_dates_events_with_the_game_day() {
+        use crate::game::sim::City;
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(City {
+                day: 7,
+                ..City::default()
+            })
+            .init_resource::<Notifications>()
+            .add_systems(Update, stamp_notifications);
+        app.update();
+        app.world_mut().resource_mut::<Notifications>().add(
+            "Fire emergency".to_string(),
+            NotificationKind::Warning,
+            5.0,
+        );
+        assert_eq!(
+            app.world()
+                .resource::<Notifications>()
+                .history()
+                .back()
+                .map(|line| line.day),
+            Some(7)
+        );
+    }
 
     #[test]
     fn notification_dedup_identical_messages_collapse_into_one_line_with_a_count() {
