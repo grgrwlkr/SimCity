@@ -1389,3 +1389,37 @@ fn road_segment_two_way_stroke_keeps_lanes_two_way() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// A2 root cause: a one-way road has no oncoming carriageway.
+//
+// The builder used to lay a one-way segment with the two-way layout — half the lanes pointing
+// back against the flow. The route graph reads `flow` and treats those lanes as nonexistent,
+// while route validation and the wrong-way audit read `dir` and treat them as legal road in the
+// other direction. So a westbound route planned before a road was made one-way East survived
+// the edit, vehicles standing on the back half stranded with no edges, and no audit saw a car
+// driving against the flow. Found live: a car drove 28 tiles west on a "one-way East" block.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn road_segment_one_way_stroke_points_every_lane_the_one_way_direction() {
+    let start = TilePos { x: 10, y: 20 };
+    let end = TilePos { x: 14, y: 20 };
+    for kind in [RoadKind::TwoLane, RoadKind::FourLane, RoadKind::SixLane] {
+        for drive_on_right in [true, false] {
+            for command in road_segment_commands(start, end, kind, drive_on_right, true) {
+                let GameCommand::SetRoad { road, .. } = command else {
+                    panic!("the road tool issued a non-road command: {command:?}");
+                };
+                assert_eq!(
+                    road.dir,
+                    RoadDir::East,
+                    "{kind:?}, drive_on_right={drive_on_right}: lane {} of a one-way East \
+                     stroke points {:?} — a one-way road must not carry an oncoming lane",
+                    road.lane,
+                    road.dir
+                );
+            }
+        }
+    }
+}

@@ -378,9 +378,15 @@ fn road_tile_commands(
         let lane = (o + half) as u8;
         // Lanes are indexed 0..lanes-1 from rightmost to leftmost in `road_dir`.
         //
+        // - One-way: every lane goes `road_dir`. A one-way road has no oncoming carriageway; laying
+        //   half of it backwards left a lane the route graph ignores (it reads `flow`) but route
+        //   validation and the wrong-way audit accept (they read `dir`), so pre-edit routes kept
+        //   driving against the flow and vehicles on that half stranded.
         // - Right-hand traffic: rightmost half goes `road_dir`, leftmost half goes opposite.
         // - Left-hand traffic:  rightmost half goes opposite, leftmost half goes `road_dir`.
-        let lane_dir = if drive_on_right {
+        let lane_dir = if one_way {
+            road_dir
+        } else if drive_on_right {
             if (lane as i32) < half {
                 road_dir
             } else {
