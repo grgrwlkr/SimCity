@@ -20,6 +20,7 @@ impl Plugin for EconomyPlugin {
         app.init_resource::<EconomyConfig>()
             .init_resource::<BudgetLedger>()
             .init_resource::<TaxRates>()
+            .init_resource::<ServiceFunding>()
             .add_systems(START_OF_GAME, restart_budget_ledger)
             .add_systems(
                 FixedUpdate,
@@ -232,6 +233,54 @@ pub fn building_class(
     }
 }
 
+/// How much of its full budget each service gets, in whole percent.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServiceFunding {
+    percent: [u8; 3],
+}
+
+impl ServiceFunding {
+    pub const DEFAULT_PERCENT: u8 = 100;
+    pub const MAX_PERCENT: u8 = 150;
+
+    fn slot(kind: ServiceKind) -> usize {
+        match kind {
+            ServiceKind::Fire => 0,
+            ServiceKind::Police => 1,
+            ServiceKind::Medical => 2,
+        }
+    }
+
+    pub fn get(&self, kind: ServiceKind) -> u8 {
+        self.percent[Self::slot(kind)]
+    }
+
+    /// Set a service's funding, clamped to `MAX_PERCENT`.
+    pub fn set(&mut self, kind: ServiceKind, percent: u8) {
+        self.percent[Self::slot(kind)] = percent.min(Self::MAX_PERCENT);
+    }
+
+    /// The radius a station of `kind` reaches at its funding: below full funding it shrinks in
+    /// proportion, never under half; above full funding it does not grow.
+    pub fn scaled_radius(&self, kind: ServiceKind, radius: u16) -> u16 {
+        let percent = u32::from(self.get(kind).clamp(50, Self::DEFAULT_PERCENT));
+        ((u32::from(radius) * percent + 50) / 100) as u16
+    }
+
+    /// What a station of `kind` costs a day at its funding, rounded to the dollar.
+    pub fn scaled_upkeep(&self, kind: ServiceKind, upkeep: i64) -> i64 {
+        (upkeep * i64::from(self.get(kind)) + 50) / 100
+    }
+}
+
+impl Default for ServiceFunding {
+    fn default() -> Self {
+        Self {
+            percent: [Self::DEFAULT_PERCENT; 3],
+        }
+    }
+}
+
 /// Where money came from or went: one line of the budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum BudgetItem {
@@ -330,6 +379,7 @@ fn apply_daily_economy(
     rates: Option<Res<TaxRates>>,
     land_value: Option<Res<LandValueIndex>>,
     buildings: Query<&Building>,
+    funding: Option<Res<ServiceFunding>>,
 ) {
     // Consume all day events (if sim speed is high, multiple days can advance).
     for evt in day_events.read() {
@@ -373,12 +423,17 @@ fn apply_daily_economy(
         let industrial_tax = owed[TaxZone::Industrial.index()].round() as i64;
         let road_upkeep = (road_tiles as i64) * cfg.road_maintenance;
         // Upkeep is per station, whatever its footprint; zoned buildings pay taxes, not upkeep.
+        let default_funding = ServiceFunding::default();
+        let funding = funding.as_deref().unwrap_or(&default_funding);
         let service_upkeep: i64 = stations
             .iter()
-            .map(|station| match station.kind {
-                ServiceKind::Fire => cfg.fire_station_upkeep,
-                ServiceKind::Police => cfg.police_station_upkeep,
-                ServiceKind::Medical => cfg.hospital_upkeep,
+            .map(|station| {
+                let upkeep = match station.kind {
+                    ServiceKind::Fire => cfg.fire_station_upkeep,
+                    ServiceKind::Police => cfg.police_station_upkeep,
+                    ServiceKind::Medical => cfg.hospital_upkeep,
+                };
+                funding.scaled_upkeep(station.kind, upkeep)
             })
             .sum();
 
@@ -816,5 +871,90 @@ mod tests {
             expected_tax(30, cfg.industrial_income.middle, 12)
         );
         assert_eq!(lines.get(BudgetItem::ResidentialTax), 0);
+    }
+
+    #[test]
+    fn budget_report_funding_defaults_to_full_and_is_capped() {
+        use crate::game::services::ServiceKind;
+
+        let mut funding = ServiceFunding::default();
+        for kind in [ServiceKind::Fire, ServiceKind::Police, ServiceKind::Medical] {
+            assert_eq!(funding.get(kind), ServiceFunding::DEFAULT_PERCENT);
+        }
+        funding.set(ServiceKind::Police, 220);
+        assert_eq!(
+            funding.get(ServiceKind::Police),
+            ServiceFunding::MAX_PERCENT
+        );
+        funding.set(ServiceKind::Fire, 40);
+        assert_eq!(funding.get(ServiceKind::Fire), 40);
+        assert_eq!(
+            funding.get(ServiceKind::Medical),
+            ServiceFunding::DEFAULT_PERCENT
+        );
+
+        assert_eq!(funding.scaled_radius(ServiceKind::Medical, 30), 30);
+        funding.set(ServiceKind::Medical, 150);
+        assert_eq!(
+            funding.scaled_radius(ServiceKind::Medical, 30),
+            30,
+            "overfunding does not reach further"
+        );
+        funding.set(ServiceKind::Medical, 60);
+        assert_eq!(funding.scaled_radius(ServiceKind::Medical, 30), 18);
+        funding.set(ServiceKind::Medical, 10);
+        assert_eq!(
+            funding.scaled_radius(ServiceKind::Medical, 30),
+            15,
+            "never under half"
+        );
+    }
+
+    #[test]
+    fn maintenance_per_building_service_upkeep_follows_its_funding() {
+        use crate::game::services::{ServiceKind, ServiceStation};
+
+        let mut app = App::new();
+        app.add_message::<DayAdvanced>();
+        app.insert_resource(EconomyConfig::default());
+        app.insert_resource(MapGrid::new(16, 16));
+        app.insert_resource(City {
+            money: 10_000,
+            ..Default::default()
+        });
+        let mut ledger = BudgetLedger::default();
+        ledger.restart(10_000);
+        app.insert_resource(ledger);
+        let mut funding = ServiceFunding::default();
+        funding.set(ServiceKind::Fire, 50);
+        funding.set(ServiceKind::Medical, 150);
+        app.insert_resource(funding);
+        for (index, kind) in [ServiceKind::Fire, ServiceKind::Medical]
+            .into_iter()
+            .enumerate()
+        {
+            app.world_mut().spawn(ServiceStation {
+                kind,
+                pos: TilePos {
+                    x: index as i32 * 4,
+                    y: 0,
+                },
+                total_vehicles: 2,
+                available_vehicles: 2,
+            });
+        }
+        app.add_systems(Update, apply_daily_economy);
+        app.world_mut().write_message(DayAdvanced { day: 2 });
+        app.update();
+
+        let cfg = EconomyConfig::default();
+        assert_eq!(
+            app.world()
+                .resource::<BudgetLedger>()
+                .current
+                .get(BudgetItem::ServiceMaintenance),
+            -(cfg.fire_station_upkeep / 2 + cfg.hospital_upkeep * 3 / 2),
+            "half-funded fire and one-and-a-half-funded medical"
+        );
     }
 }
