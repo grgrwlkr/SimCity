@@ -15,7 +15,16 @@ pub enum BuildingPhase {
 
 /// The density a building grew in and the wealth class of its people (B2), fixed when it spawns.
 #[derive(
-    Component, Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+    Component,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 pub struct BuildingProfile {
     pub density: crate::game::map::ZoneDensity,
@@ -29,7 +38,7 @@ pub fn profile_capacity(
     area: u32,
     profile: BuildingProfile,
 ) -> (u16, u16) {
-    let factor = profile.density.capacity_factor();
+    let factor = profile.density.capacity_factor() * profile.class.capacity_factor();
     let scale = |base: u16| {
         (f32::from(base) * factor)
             .round()

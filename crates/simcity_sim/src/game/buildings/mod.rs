@@ -32,7 +32,9 @@ pub use occupancy::update_occupancy;
 pub use spawn::calculate_parking_spots;
 pub use spawn::spawn_building_entity;
 pub use upgrade::*;
-pub use visual::{BuildingBody, BuildingMeshCache, BuildingTint, building_height};
+pub use visual::{
+    BuildingBody, BuildingMeshCache, BuildingTint, building_height, profile_color, profile_height,
+};
 pub use zone_depth::{MAX_ZONE_DEPTH, is_within_zone_depth};
 
 // Re-export functions that were in the original file

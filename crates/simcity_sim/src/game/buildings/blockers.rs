@@ -624,6 +624,64 @@ mod tests {
     }
 
     #[test]
+    fn zone_density_class_changes_how_many_a_building_holds() {
+        use crate::game::economy::WealthClass;
+        let homes = |class| {
+            profile_capacity(
+                BuildingKind::Residential,
+                2,
+                16,
+                BuildingProfile {
+                    class,
+                    ..BuildingProfile::default()
+                },
+            )
+            .0
+        };
+        assert_eq!(
+            homes(WealthClass::Middle),
+            BuildingKind::Residential.capacity_residents_for_level_area(2, 16)
+        );
+        assert!(homes(WealthClass::Low) > homes(WealthClass::Middle));
+        assert!(homes(WealthClass::Middle) > homes(WealthClass::High));
+    }
+
+    #[test]
+    fn zone_density_dense_buildings_stand_taller_and_class_shows_in_colour() {
+        use crate::game::buildings::{building_height, profile_color, profile_height};
+        use crate::game::economy::WealthClass;
+        let profile = |density, class| BuildingProfile { density, class };
+        let squat = profile_height(
+            BuildingKind::Residential,
+            2,
+            profile(ZoneDensity::Low, WealthClass::Middle),
+        );
+        let tall = profile_height(
+            BuildingKind::Residential,
+            2,
+            profile(ZoneDensity::High, WealthClass::Middle),
+        );
+        assert!(tall > squat, "{tall} against {squat}");
+        assert_eq!(
+            profile_height(BuildingKind::Residential, 2, BuildingProfile::default()),
+            building_height(BuildingKind::Residential, 2)
+        );
+        let poor = profile_color(
+            BuildingKind::Residential,
+            profile(ZoneDensity::Medium, WealthClass::Low),
+        );
+        let rich = profile_color(
+            BuildingKind::Residential,
+            profile(ZoneDensity::Medium, WealthClass::High),
+        );
+        assert_ne!(poor, rich, "a rich block does not look like a poor one");
+        assert_eq!(
+            profile_color(BuildingKind::Residential, BuildingProfile::default()),
+            BuildingKind::Residential.color()
+        );
+    }
+
+    #[test]
     fn utility_network_building_without_water_stays_at_level_one() {
         let mut grid = block();
         let dark = network(&grid);

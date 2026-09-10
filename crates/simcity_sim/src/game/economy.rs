@@ -6,7 +6,6 @@ use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
 
 use crate::game::buildings::Building;
-use crate::game::land_value::LandValueIndex;
 use crate::game::map::{BuildingKind, MapGrid, TilePos};
 use crate::game::services::{ServiceCoverageIndex, ServiceKind, ServiceStation};
 use crate::game::sim::City;
@@ -190,6 +189,16 @@ pub enum WealthClass {
 impl WealthClass {
     pub const ALL: [WealthClass; 3] = [WealthClass::Low, WealthClass::Middle, WealthClass::High];
 
+    /// People a building of this class holds against a `Middle` one of the same size: the poor
+    /// crowd in, the rich take more room.
+    pub fn capacity_factor(self) -> f32 {
+        match self {
+            WealthClass::Low => 1.25,
+            WealthClass::Middle => 1.0,
+            WealthClass::High => 0.75,
+        }
+    }
+
     /// The class a building takes from the land value under it, until B2 gives buildings a
     /// class of their own.
     pub fn from_land_value(value: f32) -> Self {
@@ -260,21 +269,6 @@ impl Default for TaxRates {
         Self {
             percent: [[Self::DEFAULT_PERCENT; 3]; 3],
         }
-    }
-}
-
-/// The class of a building's people: from the land value under its anchor, or middle while
-/// land value has not been computed for this map yet.
-pub fn building_class(
-    building: &Building,
-    grid: &MapGrid,
-    land_value: Option<&LandValueIndex>,
-) -> WealthClass {
-    match (land_value, grid.idx(building.anchor_pos)) {
-        (Some(index), Some(idx)) if index.values.len() == grid.len() => {
-            WealthClass::from_land_value(index.get(idx))
-        }
-        _ => WealthClass::Middle,
     }
 }
 
@@ -488,8 +482,7 @@ fn apply_daily_economy(
     mut ledger: ResMut<BudgetLedger>,
     stations: Query<&ServiceStation>,
     rates: Option<Res<TaxRates>>,
-    land_value: Option<Res<LandValueIndex>>,
-    buildings: Query<&Building>,
+    buildings: Query<(&Building, &crate::game::buildings::BuildingProfile)>,
     funding: Option<Res<ServiceFunding>>,
     mut loans: Option<ResMut<Loans>>,
 ) {
@@ -503,9 +496,9 @@ fn apply_daily_economy(
         let default_rates = TaxRates::default();
         let rates = rates.as_deref().unwrap_or(&default_rates);
         let mut owed = [0.0f64; 3];
-        for building in buildings
+        for (building, profile) in buildings
             .iter()
-            .filter(|building| building.is_operational())
+            .filter(|(building, _)| building.is_operational())
         {
             let (zone, people, income) = match building.kind {
                 BuildingKind::Residential => (
@@ -525,7 +518,7 @@ fn apply_daily_economy(
                 ),
                 _ => continue,
             };
-            let class = building_class(building, &grid, land_value.as_deref());
+            let class = profile.class;
             owed[zone.index()] +=
                 f64::from(people) * f64::from(income.of(class)) * f64::from(rates.get(zone, class))
                     / 100.0;
@@ -552,8 +545,8 @@ fn apply_daily_economy(
         // Utility stations pay from the day they open, once each, like any other station.
         let utility_upkeep: i64 = buildings
             .iter()
-            .filter(|building| building.is_operational())
-            .map(|building| match building.kind {
+            .filter(|(building, _)| building.is_operational())
+            .map(|(building, _)| match building.kind {
                 BuildingKind::PowerPlant => cfg.power_plant_upkeep,
                 BuildingKind::WaterPump => cfg.water_pump_upkeep,
                 BuildingKind::Landfill => cfg.landfill_upkeep,
@@ -921,6 +914,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn zone_density_tax_comes_from_the_class_a_building_was_built_with() {
+        use crate::game::buildings::BuildingProfile;
+
+        let mut app = App::new();
+        app.add_message::<DayAdvanced>();
+        app.insert_resource(EconomyConfig::default());
+        app.insert_resource(MapGrid::new(16, 16));
+        let mut land_value = crate::game::land_value::LandValueIndex::default();
+        // Land that reads as the low class today.
+        land_value.values = vec![0.1; 256];
+        app.insert_resource(land_value);
+        app.insert_resource(TaxRates::default());
+        app.insert_resource(City {
+            money: 10_000,
+            ..Default::default()
+        });
+        let mut ledger = BudgetLedger::default();
+        ledger.restart(10_000);
+        app.insert_resource(ledger);
+        app.world_mut().spawn((
+            zoned_building(BuildingKind::Residential, TilePos { x: 0, y: 0 }, 30, 0),
+            BuildingProfile {
+                class: WealthClass::High,
+                ..BuildingProfile::default()
+            },
+        ));
+        app.add_systems(Update, apply_daily_economy);
+        app.world_mut().write_message(DayAdvanced { day: 2 });
+        app.update();
+
+        let cfg = EconomyConfig::default();
+        let rate = TaxRates::default().get(TaxZone::Residential, WealthClass::High);
+        let expected =
+            (30.0 * f64::from(cfg.resident_income.of(WealthClass::High)) * f64::from(rate) / 100.0)
+                .round() as i64;
+        assert_eq!(
+            app.world()
+                .resource::<BudgetLedger>()
+                .current
+                .get(BudgetItem::ResidentialTax),
+            expected,
+            "the class is the one the building was built with, not the land under it today"
+        );
+    }
+
     fn zoned_building(kind: BuildingKind, anchor: TilePos, residents: u16, jobs: u16) -> Building {
         Building {
             kind,
@@ -957,8 +996,16 @@ mod tests {
         let mut ledger = BudgetLedger::default();
         ledger.restart(10_000);
         app.insert_resource(ledger);
+        // A grown building keeps the class of the land it grew on.
+        let class = WealthClass::from_land_value(land);
         for building in buildings {
-            app.world_mut().spawn(building);
+            app.world_mut().spawn((
+                building,
+                crate::game::buildings::BuildingProfile {
+                    class,
+                    ..crate::game::buildings::BuildingProfile::default()
+                },
+            ));
         }
         app.add_systems(Update, apply_daily_economy);
         app.world_mut().write_message(DayAdvanced { day: 2 });

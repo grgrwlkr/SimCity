@@ -21,7 +21,7 @@ use crate::game::atlas::{AtlasCell, uv_in};
 use crate::game::map::{BuildingKind, MapConfig};
 use crate::game::render_primitives::{NightGlow, RenderPrimitives, layer};
 
-use super::components::Building;
+use super::components::{Building, BuildingProfile};
 
 /// Sim -> render channel: warning tint over the building's own colors
 /// (decay pipeline inserts/removes it; the render side swaps the material).
@@ -44,7 +44,7 @@ type BuildingMeshes = (Handle<Mesh>, Handle<Mesh>);
 
 #[derive(Resource, Default)]
 pub struct BuildingMeshCache {
-    by_key: HashMap<(BuildingKind, u8, u32, u32), BuildingMeshes>,
+    by_key: HashMap<(BuildingKind, u8, u32, u32, BuildingProfile), BuildingMeshes>,
 }
 
 impl BuildingMeshCache {
@@ -55,17 +55,24 @@ impl BuildingMeshCache {
         cfg: &MapConfig,
         atlas: &AtlasConfig,
         b: &Building,
+        profile: BuildingProfile,
     ) -> BuildingMeshes {
         let w = b.footprint_width as f32 * cfg.tile_size - 2.0;
         let d = b.footprint_length as f32 * cfg.tile_size - 2.0;
-        let key = (b.kind, b.level, w.to_bits(), d.to_bits());
+        let key = (b.kind, b.level, w.to_bits(), d.to_bits(), profile);
         self.by_key
             .entry(key)
             .or_insert_with(|| {
-                let h = building_height(b.kind, b.level);
+                let h = profile_height(b.kind, b.level, profile);
                 let floors = building_floors(b.kind, b.level);
                 (
-                    meshes.add(building_body_mesh(w, d, h, b.kind.color(), atlas)),
+                    meshes.add(building_body_mesh(
+                        w,
+                        d,
+                        h,
+                        profile_color(b.kind, profile),
+                        atlas,
+                    )),
                     meshes.add(building_windows_mesh(w, d, h, floors)),
                 )
             })
@@ -86,6 +93,22 @@ pub fn building_height(kind: BuildingKind, level: u8) -> f32 {
         BuildingKind::PowerPlant => 18.0,
         BuildingKind::WaterPump => 10.0,
         BuildingKind::Landfill => 6.0,
+    }
+}
+
+/// Body height of a building with this profile: its density stretches or squats the level's height.
+pub fn profile_height(kind: BuildingKind, level: u8, profile: BuildingProfile) -> f32 {
+    building_height(kind, level) * profile.density.height_factor()
+}
+
+/// Body colour of a building with this profile: its wealth class shades the kind's colour.
+pub fn profile_color(kind: BuildingKind, profile: BuildingProfile) -> Color {
+    let base = kind.color();
+    match profile.class {
+        crate::game::economy::WealthClass::Middle => base,
+        // The poor block reads darker and duller, the rich one lighter.
+        crate::game::economy::WealthClass::Low => base.darker(0.12),
+        crate::game::economy::WealthClass::High => base.lighter(0.18),
     }
 }
 
@@ -321,12 +344,18 @@ pub(super) fn rebuild_building_visuals(
     render_cfg: Option<Res<RenderConfig>>,
     glow: Res<NightGlow>,
     q_changed: Query<
-        (Entity, &Building, Option<&BuildingTint>, Option<&Children>),
+        (
+            Entity,
+            &Building,
+            &BuildingProfile,
+            Option<&BuildingTint>,
+            Option<&Children>,
+        ),
         Or<(Added<Building>, Changed<Building>)>,
     >,
 ) {
     let atlas = render_cfg.map(|c| c.atlas).unwrap_or_default();
-    for (e, b, tint, children) in q_changed.iter() {
+    for (e, b, profile, tint, children) in q_changed.iter() {
         // Building children are visuals only — clear and rebuild.
         if let Some(children) = children {
             for c in children.iter() {
@@ -334,9 +363,9 @@ pub(super) fn rebuild_building_visuals(
             }
         }
 
-        let (mesh, windows_mesh) = cache.get(&mut meshes, &cfg, &atlas, b);
+        let (mesh, windows_mesh) = cache.get(&mut meshes, &cfg, &atlas, b, *profile);
         let mat = body_material(&mut prims, &mut materials, tint);
-        let roof_z = building_height(b.kind, b.level) + layer::CHILD_ABOVE;
+        let roof_z = profile_height(b.kind, b.level, *profile) + layer::CHILD_ABOVE;
         let glyph_quad = prims.quad.clone();
         let glyph_mat = prims.material(&mut materials, crate::game::services::glyphs::GLYPH_COLOR);
 
