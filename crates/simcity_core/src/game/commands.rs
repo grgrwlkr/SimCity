@@ -4,7 +4,11 @@ use crate::game::map::{BuildingKind, TilePos, ZoneKind};
 use crate::game::roads::RoadCell;
 
 /// Commands produced by UI / input and applied by simulation systems.
-#[derive(Message, Debug, Clone)]
+///
+/// `Deserialize` is what lets the live debug API submit any of these over BRP: the world
+/// is changed through the same single channel the UI uses, so a remote edit cannot drift
+/// from what a click does.
+#[derive(Message, Debug, Clone, serde::Deserialize)]
 pub enum GameCommand {
     /// Start a new map (currently: resets the existing tile grid). Generation parameters will be
     /// added in the next milestone.

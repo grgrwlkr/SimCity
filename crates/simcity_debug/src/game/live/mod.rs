@@ -14,6 +14,7 @@ use bevy::remote::{RemoteMethodSystemId, RemoteMethods};
 use bevy::transform::TransformSystems;
 
 pub mod capture;
+pub mod control;
 pub mod runtime;
 pub mod stats;
 
@@ -28,7 +29,10 @@ impl Plugin for LiveDebugPlugin {
         app.insert_resource(runtime::continuous_update_settings());
         app.init_resource::<capture::CaptureJobs>();
         app.init_resource::<capture::EyeControl>();
+        app.init_resource::<control::SimTickCount>();
         app.add_systems(Startup, capture::spawn_eye);
+        // `FixedLast`, deliberately outside the ordered sets that `FixedUpdate` pins.
+        app.add_systems(FixedLast, control::count_sim_ticks);
         // Before transform propagation and the camera update, so activating the eye, its
         // pose and its projection are all in place by the time the renderer — and
         // `build_directional_light_cascades` in particular — looks at it this frame.
@@ -44,8 +48,16 @@ impl Plugin for LiveDebugPlugin {
 
 fn register_methods(world: &mut World) {
     let capture = world.register_system(capture::capture_handler);
+    let camera = world.register_system(control::camera_handler);
+    let sim = world.register_system(control::sim_handler);
+    let command = world.register_system(control::command_handler);
     let mut methods = world.resource_mut::<RemoteMethods>();
     // Watching, not instant: the handler is polled once per frame and answers `None`
     // until the PNG is on disk, which is what makes one call enough.
     methods.insert("simcity/capture", RemoteMethodSystemId::Watching(capture));
+    methods.insert("simcity/camera", RemoteMethodSystemId::Instant(camera));
+    // Instant, both of them: a watching handler is polled again after its terminal answer,
+    // and a re-entered step ran twice while a re-entered command would edit twice.
+    methods.insert("simcity/sim", RemoteMethodSystemId::Instant(sim));
+    methods.insert("simcity/command", RemoteMethodSystemId::Instant(command));
 }
