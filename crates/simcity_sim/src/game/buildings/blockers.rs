@@ -601,7 +601,11 @@ mod tests {
     fn zone_density_sets_footprint_levels_capacity_and_height() {
         assert_eq!(ZoneDensity::Low.footprint_sides(), (3, 4));
         assert_eq!(ZoneDensity::Medium.footprint_sides(), (3, 6));
-        assert_eq!(ZoneDensity::High.footprint_sides(), (4, 6));
+        assert_eq!(
+            ZoneDensity::High.footprint_sides(),
+            (3, 6),
+            "a zone is three tiles deep, so no density may need a fourth"
+        );
         assert_eq!(ZoneDensity::Low.levels(), (1, 2));
         assert_eq!(ZoneDensity::Medium.levels(), (1, 3));
         assert_eq!(ZoneDensity::High.levels(), (2, 3));
@@ -644,6 +648,36 @@ mod tests {
         }
         station(&mut grid, BuildingKind::PowerPlant, 24, 3);
         grid
+    }
+
+    /// A High zone beside a single road grows: the zone reaches three tiles deep, so a density
+    /// whose buildings needed a fourth never grew anywhere a player zones along one road.
+    #[test]
+    fn zone_density_high_zone_grows_beside_a_single_road() {
+        let mut grid = MapGrid::new(24, 12);
+        road_row(&mut grid, 2, 0..=23);
+        for x in 4..=15 {
+            for y in 3..=5 {
+                let pos = TilePos { x, y };
+                let mut cell = grid.get(pos).expect("inside");
+                cell.zone = ZoneKind::Residential;
+                cell.density = ZoneDensity::High;
+                grid.set(pos, cell);
+            }
+        }
+        station(&mut grid, BuildingKind::PowerPlant, 18, 3);
+        let mut app = growth_app(grid);
+        assert!(
+            grow_for_hours(&mut app, 48) > 0,
+            "a High zone three tiles deep beside one road grows"
+        );
+        let world = app.world_mut();
+        assert!(
+            world
+                .query::<&BuildingProfile>()
+                .iter(world)
+                .all(|profile| profile.density == ZoneDensity::High)
+        );
     }
 
     #[test]

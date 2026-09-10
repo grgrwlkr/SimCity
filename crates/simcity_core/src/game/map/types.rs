@@ -105,7 +105,7 @@ impl ZoneDensity {
         match self {
             ZoneDensity::Low => (3, 4),
             ZoneDensity::Medium => (3, 6),
-            ZoneDensity::High => (4, 6),
+            ZoneDensity::High => (3, 6),
         }
     }
 
