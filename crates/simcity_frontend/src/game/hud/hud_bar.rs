@@ -1,5 +1,6 @@
 //! The HUD bar: money, day and hour, population, simulation speed — and nothing else (D1).
 
+use bevy::picking::Pickable;
 use bevy::prelude::*;
 // Explicit import wins over the prelude's legacy `Button`: only this one emits `Activate`.
 use bevy::ui_widgets::{Activate, Button};
@@ -39,7 +40,7 @@ pub fn format_money(money: i64) -> String {
     }
 }
 
-fn text_style(size: f32, color: Color) -> (TextFont, TextColor) {
+pub(super) fn text_style(size: f32, color: Color) -> (TextFont, TextColor) {
     (
         TextFont {
             font_size: FontSize::Px(size),
@@ -56,6 +57,8 @@ pub fn spawn_hud_bar(commands: &mut Commands, theme: &Theme, glass: Handle<Glass
         .spawn((
             Name::new("hud.root"),
             GameUiRoot,
+            // Layout only: it spans the screen width to centre the bar, and that strip is map.
+            Pickable::IGNORE,
             Node {
                 position_type: PositionType::Absolute,
                 top: space.px(3.0),

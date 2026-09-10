@@ -245,6 +245,7 @@ impl Plugin for SimPlugin {
             .init_resource::<ui_state::UiState>()
             .init_resource::<ui_state::InputFocus>()
             .init_resource::<ui_state::PointerOverride>()
+            .init_resource::<ui_state::PointerOverGameUi>()
             .init_resource::<AutoStartTestCity>()
             .add_plugins((
                 render_primitives::RenderPrimitivesPlugin,

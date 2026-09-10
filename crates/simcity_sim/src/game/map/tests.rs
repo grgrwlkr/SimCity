@@ -1568,3 +1568,37 @@ fn hovered_tile_ignores_an_empty_pointer_override() {
         "an empty override changes nothing: with no window there is no hovered tile"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Map paint gate: a click belongs to the interface or to the map, never both.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn map_paint_stands_down_while_the_pointer_is_over_the_game_interface() {
+    use crate::game::ui_state::PointerOverGameUi;
+    let ui = UiState::default();
+    assert!(super::input::map_paint_allowed(
+        &ui,
+        PointerOverGameUi { captured: false }
+    ));
+    assert!(
+        !super::input::map_paint_allowed(&ui, PointerOverGameUi { captured: true }),
+        "a click on a panel must not also paint the tile beneath it"
+    );
+}
+
+#[test]
+fn map_paint_stands_down_for_inspect_and_the_path_overlay() {
+    use crate::game::ui_state::{OverlayMode, PointerOverGameUi};
+    let free = PointerOverGameUi::default();
+    let inspect = UiState {
+        tool: ToolMode::Inspect,
+        ..default()
+    };
+    assert!(!super::input::map_paint_allowed(&inspect, free));
+    let path = UiState {
+        overlay: OverlayMode::Path,
+        ..default()
+    };
+    assert!(!super::input::map_paint_allowed(&path, free));
+}

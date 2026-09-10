@@ -39,11 +39,11 @@ mod commands;
 use commands::apply_game_commands_to_grid;
 
 mod input;
-pub use input::road_segment_commands;
 use input::{
     CursorPaintState, RoadBuildState, build_mode_hotkeys, cursor_paint_to_command,
     handle_undo_redo, update_cursor_highlight, update_hovered_tile,
 };
+pub use input::{ONE_WAY_HOTKEY, TOOL_HOTKEYS, road_segment_commands, tool_for_hotkey};
 
 mod render;
 use render::{

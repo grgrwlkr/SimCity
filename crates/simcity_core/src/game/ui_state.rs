@@ -39,6 +39,16 @@ pub struct PointerOverride {
     pub tile: Option<crate::game::map::TilePos>,
 }
 
+/// Whether the pointer is over the player's game interface this frame.
+///
+/// Written by the game interface from the picking hover map, read by map editing: a click on a
+/// panel must not also paint the tile beneath it. Kept apart from [`InputFocus`] on purpose —
+/// the developer UI writes that one whole every frame and would erase this half.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PointerOverGameUi {
+    pub captured: bool,
+}
+
 /// Marks the root of a piece of the player's game interface (not the developer panels).
 ///
 /// A contract with the live debug API: `simcity/capture` with `"ui": true` retargets exactly these

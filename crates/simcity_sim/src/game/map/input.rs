@@ -9,7 +9,9 @@ use crate::game::commands::{GameCommand, UndoRedoRequested};
 use crate::game::intersections::IntersectionIndex;
 use crate::game::roads::{RoadCell, RoadDir, RoadKind};
 use crate::game::traffic::TrafficConfig;
-use crate::game::ui_state::{InputFocus, OverlayMode, PointerOverride, ToolMode, UiState};
+use crate::game::ui_state::{
+    InputFocus, OverlayMode, PointerOverGameUi, PointerOverride, ToolMode, UiState,
+};
 use crate::game::zone_placement::can_zone_tile;
 
 use super::coords::{cursor_tile, tile_to_world};
@@ -43,26 +45,49 @@ pub(super) fn build_mode_hotkeys(
     // One-way applies to whatever road kind is selected, so it is a modifier rather than a
     // tool: the downstream road builder has always honoured `one_way_mode`, but nothing in
     // the UI could set it, which left one-way roads unreachable to the player.
-    if keys.just_pressed(KeyCode::KeyO) {
+    if keys.just_pressed(ONE_WAY_HOTKEY) {
         ui.one_way_mode = !ui.one_way_mode;
         return;
     }
 
-    if keys.just_pressed(KeyCode::Digit1) {
-        ui.tool = match ui.tool {
+    if let Some(tool) = TOOL_HOTKEYS
+        .into_iter()
+        .find(|key| keys.just_pressed(*key))
+        .and_then(|key| tool_for_hotkey(ui.tool, key))
+    {
+        ui.tool = tool;
+    }
+}
+
+/// Keys that pick a tool, in the order they are tested when several go down in one frame.
+pub const TOOL_HOTKEYS: [KeyCode; 5] = [
+    KeyCode::Digit1,
+    KeyCode::Digit2,
+    KeyCode::Digit3,
+    KeyCode::Digit4,
+    KeyCode::Digit5,
+];
+
+/// Toggles one-way road building.
+pub const ONE_WAY_HOTKEY: KeyCode = KeyCode::KeyO;
+
+/// The tool `key` selects when `current` is active; `None` for a key that picks no tool.
+///
+/// One table for the hotkey system and for the labels the tool palette prints, so a button can
+/// never advertise a key that does something else.
+pub fn tool_for_hotkey(current: ToolMode, key: KeyCode) -> Option<ToolMode> {
+    match key {
+        KeyCode::Digit1 => Some(match current {
             ToolMode::Road(RoadKind::TwoLane) => ToolMode::Road(RoadKind::FourLane),
             ToolMode::Road(RoadKind::FourLane) => ToolMode::Road(RoadKind::SixLane),
             ToolMode::Road(RoadKind::SixLane) => ToolMode::Road(RoadKind::TwoLane),
             _ => ToolMode::Road(RoadKind::TwoLane),
-        };
-    } else if keys.just_pressed(KeyCode::Digit2) {
-        ui.tool = ToolMode::Residential;
-    } else if keys.just_pressed(KeyCode::Digit3) {
-        ui.tool = ToolMode::Commercial;
-    } else if keys.just_pressed(KeyCode::Digit4) {
-        ui.tool = ToolMode::Industrial;
-    } else if keys.just_pressed(KeyCode::Digit5) {
-        ui.tool = ToolMode::Erase;
+        }),
+        KeyCode::Digit2 => Some(ToolMode::Residential),
+        KeyCode::Digit3 => Some(ToolMode::Commercial),
+        KeyCode::Digit4 => Some(ToolMode::Industrial),
+        KeyCode::Digit5 => Some(ToolMode::Erase),
+        _ => None,
     }
 }
 
@@ -142,12 +167,18 @@ pub(super) fn update_hovered_tile(
     hovered.tile = cursor_tile(&cfg, window, camera, cam_gt);
 }
 
+/// Whether a click may edit the map this frame, before the developer UI has its say.
+pub(super) fn map_paint_allowed(ui: &UiState, pointer: PointerOverGameUi) -> bool {
+    ui.tool != ToolMode::Inspect && ui.overlay != OverlayMode::Path && !pointer.captured
+}
+
 #[derive(SystemParam)]
 pub(super) struct CursorPaintParams<'w, 's> {
     pub(super) buttons: Res<'w, ButtonInput<MouseButton>>,
     pub(super) cfg: Res<'w, MapConfig>,
     pub(super) traffic_cfg: Res<'w, TrafficConfig>,
     pub(super) ui_state: Res<'w, UiState>,
+    pub(super) game_ui_pointer: Res<'w, PointerOverGameUi>,
     pub(super) grid: Res<'w, MapGrid>,
     pub(super) intersections: Res<'w, IntersectionIndex>,
     pub(super) q_window: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
@@ -164,7 +195,7 @@ pub(super) fn cursor_paint_to_command(
     mut out: MessageWriter<GameCommand>,
 ) {
     // Building is allowed while paused (city-builder UX).
-    if p.ui_state.tool == ToolMode::Inspect || p.ui_state.overlay == OverlayMode::Path {
+    if !map_paint_allowed(&p.ui_state, *p.game_ui_pointer) {
         return;
     }
 

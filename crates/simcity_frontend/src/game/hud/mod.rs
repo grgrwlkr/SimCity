@@ -4,14 +4,17 @@
 //! player's interface, drawn from the tokens in [`theme`] so it reads as one visual language.
 
 use bevy::asset::embedded_asset;
+use bevy::picking::PickingSystems;
 use bevy::prelude::*;
 use simcity_core::game::sets::GameSet;
 use simcity_core::game::state::AppState;
-use simcity_core::game::ui_state::GameUiRoot;
+use simcity_core::game::ui_state::{GameUiRoot, PointerOverGameUi};
 
 pub mod glass;
 pub mod hud_bar;
+pub mod pointer;
 pub mod theme;
+pub mod tool_palette;
 
 /// Registers the game interface: its material, its visual language and its pieces.
 pub struct HudPlugin;
@@ -23,11 +26,23 @@ impl Plugin for HudPlugin {
         embedded_asset!(app, "glass.wgsl");
         app.init_resource::<theme::Theme>()
             .add_plugins(UiMaterialPlugin::<glass::GlassMaterial>::default())
+            .init_resource::<PointerOverGameUi>()
             .add_observer(hud_bar::on_speed_button)
+            .add_observer(tool_palette::on_tool_button)
             .add_systems(Startup, spawn_game_ui)
+            // Straight after hover is computed, so every consumer of the frame reads it fresh.
+            .add_systems(
+                PreUpdate,
+                pointer::track_pointer_over_game_ui.after(PickingSystems::Hover),
+            )
             .add_systems(
                 Update,
-                (hud_bar::update_hud_bar, show_game_ui_in_game).in_set(GameSet::Ui),
+                (
+                    hud_bar::update_hud_bar,
+                    tool_palette::update_tool_palette,
+                    show_game_ui_in_game,
+                )
+                    .in_set(GameSet::Ui),
             );
     }
 }
@@ -38,7 +53,8 @@ fn spawn_game_ui(
     mut materials: ResMut<Assets<glass::GlassMaterial>>,
 ) {
     let glass = materials.add(glass::GlassMaterial::from_theme(&theme));
-    hud_bar::spawn_hud_bar(&mut commands, &theme, glass);
+    hud_bar::spawn_hud_bar(&mut commands, &theme, glass.clone());
+    tool_palette::spawn_tool_palette(&mut commands, &theme, glass);
 }
 
 /// The in-game interface belongs to a running city; the menu has its own screen.
