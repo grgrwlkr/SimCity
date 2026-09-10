@@ -136,8 +136,26 @@ pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpR
         },
     };
 
+    let region = match params
+        .as_ref()
+        .and_then(|params| params.get("buildings_in"))
+    {
+        None | Some(Value::Null) => None,
+        Some(value) => match serde_json::from_value::<[i32; 4]>(value.clone()) {
+            Ok(region) => Some(region),
+            Err(_) => {
+                return Err(BrpError {
+                    code: error_codes::INVALID_PARAMS,
+                    message: format!("`buildings_in` must be [x0, y0, x1, y1] tiles, got {value}"),
+                    data: None,
+                });
+            }
+        },
+    };
+
     let utilities = utilities_json(world);
     let city_fields = city_fields_json(world);
+    let buildings = buildings_json(world, region);
     let state = world
         .get_resource::<State<AppState>>()
         .map(|state| format!("{:?}", state.get()));
@@ -238,6 +256,7 @@ pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpR
         "budget": budget,
         "utilities": utilities,
         "city_fields": city_fields,
+        "buildings": buildings,
     }))
 }
 
@@ -281,6 +300,12 @@ fn city_fields_json(world: &World) -> Value {
                 for field in CityField::ALL {
                     entry.insert(format!("{field:?}"), json!(fields.get(field, idx)));
                 }
+                if let Some(land_value) = world
+                    .get_resource::<simcity_sim::game::land_value::LandValueIndex>()
+                    .filter(|land_value| land_value.values.len() == grid.len())
+                {
+                    entry.insert("LandValue".to_string(), json!(land_value.get(idx)));
+                }
             }
             Value::Object(entry)
         }
@@ -291,6 +316,65 @@ fn city_fields_json(world: &World) -> Value {
         "covers_map": covers_map,
         "fields": summary,
         "hovered": hovered,
+    })
+}
+
+/// Stations with their anchors, and every building touching a tile rectangle with its profile —
+/// enough to find a station to demolish and to compare two districts.
+fn buildings_json(world: &mut World, region: Option<[i32; 4]>) -> Value {
+    use simcity_sim::game::buildings::{Building, BuildingProfile, profile_height};
+    use simcity_sim::game::map::BuildingKind;
+
+    let mut stations: Vec<(String, i32, i32, u8, u8)> = Vec::new();
+    let mut listed: Vec<((i32, i32), Value)> = Vec::new();
+    let mut query = world.query::<(&Building, &BuildingProfile)>();
+    for (building, profile) in query.iter(world) {
+        let (x, y) = (building.anchor_pos.x, building.anchor_pos.y);
+        let (width, length) = (building.footprint_width, building.footprint_length);
+        if !matches!(
+            building.kind,
+            BuildingKind::Residential | BuildingKind::Commercial | BuildingKind::Industrial
+        ) {
+            stations.push((format!("{:?}", building.kind), x, y, width, length));
+        }
+        let Some([x0, y0, x1, y1]) = region else {
+            continue;
+        };
+        let touches = x <= x0.max(x1)
+            && x + i32::from(width) > x0.min(x1)
+            && y <= y0.max(y1)
+            && y + i32::from(length) > y0.min(y1);
+        if touches {
+            listed.push((
+                (y, x),
+                json!({
+                    "kind": format!("{:?}", building.kind),
+                    "anchor": [x, y],
+                    "size": [width, length],
+                    "level": building.level,
+                    "phase": format!("{:?}", building.phase),
+                    "density": profile.density,
+                    "class": profile.class,
+                    "capacity_residents": building.capacity_residents,
+                    "capacity_jobs": building.capacity_jobs,
+                    "occupancy_residents": building.occupancy_residents,
+                    "occupancy_jobs": building.occupancy_jobs,
+                    "height": profile_height(building.kind, building.level, *profile),
+                }),
+            ));
+        }
+    }
+    stations.sort();
+    listed.sort_by_key(|(order, _)| *order);
+    let stations: Vec<Value> = stations
+        .into_iter()
+        .map(|(kind, x, y, width, length)| {
+            json!({ "kind": kind, "anchor": [x, y], "size": [width, length] })
+        })
+        .collect();
+    json!({
+        "stations": stations,
+        "in_region": region.map(|_| listed.into_iter().map(|(_, entry)| entry).collect::<Vec<_>>()),
     })
 }
 
@@ -476,6 +560,7 @@ mod tests {
             "budget",
             "utilities",
             "city_fields",
+            "buildings",
         ] {
             assert!(
                 answer.get(section).is_some(),
@@ -686,6 +771,9 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(grid);
         world.insert_resource(fields);
+        let mut land_value = simcity_sim::game::land_value::LandValueIndex::default();
+        land_value.values = vec![0.5, 0.6, 0.7, 0.8];
+        world.insert_resource(land_value);
         world.insert_resource(HoveredTile {
             tile: Some(TilePos { x: 3, y: 0 }),
         });
@@ -704,6 +792,92 @@ mod tests {
         assert!(near(&crime["max"], 0.4), "{crime}");
         assert_eq!(section["hovered"]["tile"], json!([3, 0]));
         assert!(near(&section["hovered"]["Crime"], 0.4), "{section}");
+        assert!(
+            near(&section["hovered"]["LandValue"], 0.8),
+            "the hovered tile carries its land value: {section}"
+        );
+    }
+
+    #[test]
+    fn zone_density_buildings_in_a_region_are_reported_so_a_density_run_can_be_judged() {
+        use simcity_sim::game::buildings::{
+            Building, BuildingPhase, BuildingProfile, profile_height,
+        };
+        use simcity_sim::game::economy::WealthClass;
+        use simcity_sim::game::map::{BuildingKind, TilePos, ZoneDensity};
+
+        let building = |kind, x, y, level| Building {
+            kind,
+            anchor_pos: TilePos { x, y },
+            footprint_width: 4,
+            footprint_length: 4,
+            level,
+            phase: BuildingPhase::Operational,
+            construction_start_day: 0,
+            capacity_residents: 30,
+            capacity_jobs: 0,
+            occupancy_residents: 20,
+            occupancy_jobs: 0,
+            target_occupancy_residents: 20,
+            target_occupancy_jobs: 0,
+            parking_spots: Vec::new(),
+        };
+        let tall = BuildingProfile {
+            density: ZoneDensity::High,
+            class: WealthClass::High,
+        };
+        let mut world = World::new();
+        world.spawn((building(BuildingKind::Residential, 10, 10, 2), tall));
+        world.spawn((
+            building(BuildingKind::Residential, 40, 10, 1),
+            BuildingProfile {
+                density: ZoneDensity::Low,
+                class: WealthClass::Middle,
+            },
+        ));
+        world.spawn((
+            building(BuildingKind::PowerPlant, 60, 60, 1),
+            BuildingProfile::default(),
+        ));
+
+        let answer = observe_handler(
+            In(Some(json!({ "buildings_in": [8, 8, 20, 20] }))),
+            &mut world,
+        )
+        .expect("observe always answers");
+        let buildings = &answer["buildings"];
+        assert_eq!(
+            buildings["stations"],
+            json!([{ "kind": "PowerPlant", "anchor": [60, 60], "size": [4, 4] }]),
+            "{buildings}"
+        );
+        let listed = buildings["in_region"]
+            .as_array()
+            .expect("a region lists its buildings");
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(listed[0]["anchor"], json!([10, 10]));
+        assert_eq!(listed[0]["density"], "High");
+        assert_eq!(listed[0]["class"], "High");
+        assert_eq!(listed[0]["level"], 2);
+        assert_eq!(listed[0]["capacity_residents"], 30);
+        let height = f64::from(profile_height(BuildingKind::Residential, 2, tall));
+        assert!(
+            listed[0]["height"]
+                .as_f64()
+                .is_some_and(|reported| (reported - height).abs() < 1e-4),
+            "{listed:?}"
+        );
+
+        let refused = observe_handler(In(Some(json!({ "buildings_in": [1, 2, 3] }))), &mut world);
+        assert!(
+            refused.is_err(),
+            "a malformed region is refused rather than ignored"
+        );
+        let without = observe_handler(In(None), &mut world).expect("observe always answers");
+        assert!(
+            without["buildings"]["in_region"].is_null(),
+            "no region, no listing"
+        );
     }
 
     #[test]

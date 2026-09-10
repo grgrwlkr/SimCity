@@ -142,6 +142,9 @@ fn schema_of<T: JsonSchema>() -> Value {
 pub struct ObserveParams {
     /// How many trailing log lines to include. Defaults to 20, capped at the buffer size.
     pub log_lines: Option<u32>,
+    /// `[x0, y0, x1, y1]` tile rectangle: list every building whose footprint touches it, with
+    /// its level, density, class, capacity and height. Stations are always listed.
+    pub buildings_in: Option<[i32; 4]>,
 }
 
 /// Parameters of `simcity/input`. Give `keys`, `focus`, `stroke`, `activate` or `hover_tile`;
