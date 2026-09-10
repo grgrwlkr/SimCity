@@ -68,7 +68,10 @@ pub(crate) use reroute_planner::{
 };
 
 mod swap_break;
+
+mod vehicle_seq;
 use swap_break::break_tile_swaps;
+pub(crate) use vehicle_seq::{VehicleSeqGen, assign_vehicle_seq};
 
 mod lane_change;
 use lane_change::{
@@ -372,10 +375,16 @@ impl Plugin for TrafficPlugin {
                     .in_set(crate::game::TrafficStep::Flow)
                     .run_if(in_state(AppState::InGame)),
             )
+            .init_resource::<VehicleSeqGen>()
             // Simulation - Part 2: lane changes, intersections, movement
             .add_systems(
                 FixedUpdate,
                 (
+                    // Every vehicle that entered since the last tick gets its number before any
+                    // decision below can break a tie on it.
+                    assign_vehicle_seq
+                        .after(spawn_trip_vehicles)
+                        .before(build_traffic_spatial_index_pre_lane_changes),
                     build_traffic_spatial_index_pre_lane_changes
                         .after(spawn_trip_vehicles)
                         .before(plan_lane_changes),

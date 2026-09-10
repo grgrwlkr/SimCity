@@ -53,6 +53,7 @@ pub fn create_vehicle_with_route(
     crate::game::traffic::components::Vehicle {
         path_handle,
         path_cursor: route_idx,
+        seq: 0,
         progress,
         speed,
         is_reversing: false,

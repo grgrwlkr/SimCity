@@ -270,6 +270,7 @@ pub(super) fn spawn_trip_vehicles(
                 is_reversing: false,
                 path_handle: p.path_pool.intern(route),
                 path_cursor: 0,
+                seq: 0,
                 progress: 0.0,
                 tile_pos: start,
                 speed: 0.0,

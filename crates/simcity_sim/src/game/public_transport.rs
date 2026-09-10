@@ -426,6 +426,7 @@ fn spawn_buses(
                 Vehicle {
                     path_handle,
                     path_cursor: 0,
+                    seq: 0,
                     progress: 0.0,
                     tile_pos: start,
                     speed: 0.0,
