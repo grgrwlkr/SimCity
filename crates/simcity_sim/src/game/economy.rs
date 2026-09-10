@@ -1,74 +1,605 @@
 //! M6: Economy loop (MVP).
 
+use std::collections::BTreeMap;
+
 use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
 
-use crate::game::employment::EmploymentStats;
+use crate::game::buildings::Building;
 use crate::game::map::{BuildingKind, MapGrid, TilePos};
-use crate::game::services::ServiceCoverageIndex;
+use crate::game::services::{ServiceCoverageIndex, ServiceKind, ServiceStation};
 use crate::game::sim::City;
 use crate::game::sim_events::DayAdvanced;
-use crate::game::state::AppState;
+use crate::game::state::{AppState, START_OF_GAME};
 
 pub struct EconomyPlugin;
 
 impl Plugin for EconomyPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<EconomyConfig>().add_systems(
-            FixedUpdate,
-            apply_daily_economy
-                .in_set(crate::game::PostSimStep::Economy)
-                .run_if(in_state(AppState::InGame)),
-        );
+        app.init_resource::<EconomyConfig>()
+            .init_resource::<BudgetLedger>()
+            .init_resource::<TaxRates>()
+            .init_resource::<ServiceFunding>()
+            .init_resource::<Loans>()
+            .add_systems(START_OF_GAME, restart_budget_ledger)
+            .add_systems(
+                FixedUpdate,
+                apply_daily_economy
+                    .in_set(crate::game::PostSimStep::Economy)
+                    .run_if(in_state(AppState::InGame)),
+            );
     }
 }
 
 #[derive(Resource, serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct EconomyConfig {
-    pub tax_per_citizen: i64,
-    pub income_per_commercial: i64,
-    pub income_per_industrial: i64,
-    pub road_maintenance: i64,
-    pub building_maintenance: i64,
     pub happiness_target: f32,
+    /// Daily upkeep of a hundred road tiles, in dollars: a road tile costs a tenth of a dollar a
+    /// day at the default, so a city's road network is paid for by the taxes it enables.
+    #[serde(default = "default_road_upkeep_per_100_tiles")]
+    pub road_upkeep_per_100_tiles: i64,
+    /// Game days in one budget month: the report closes when they have passed.
+    #[serde(default = "default_days_per_month")]
+    pub days_per_month: u32,
+    /// Daily taxable income of one resident of each class, taxed at the residential rate.
+    #[serde(default = "default_resident_income")]
+    pub resident_income: ClassIncome,
+    /// Daily taxable income of one commercial job of each class.
+    #[serde(default = "default_commercial_income")]
+    pub commercial_income: ClassIncome,
+    /// Daily taxable income of one industrial job of each class.
+    #[serde(default = "default_industrial_income")]
+    pub industrial_income: ClassIncome,
+    /// Daily upkeep of one fire station, whatever its footprint.
+    #[serde(default = "default_fire_station_upkeep")]
+    pub fire_station_upkeep: i64,
+    /// Daily upkeep of one police station, whatever its footprint.
+    #[serde(default = "default_police_station_upkeep")]
+    pub police_station_upkeep: i64,
+    /// Daily upkeep of one hospital, whatever its footprint.
+    #[serde(default = "default_hospital_upkeep")]
+    pub hospital_upkeep: i64,
+    /// Daily upkeep of a power plant, paid once it has opened.
+    #[serde(default = "default_power_plant_upkeep")]
+    pub power_plant_upkeep: i64,
+    /// Daily upkeep of a water pump, paid once it has opened.
+    #[serde(default = "default_water_pump_upkeep")]
+    pub water_pump_upkeep: i64,
+    /// Daily upkeep of a landfill, paid once it has opened.
+    #[serde(default = "default_landfill_upkeep")]
+    pub landfill_upkeep: i64,
+    /// Daily upkeep of a school, paid once it has opened.
+    #[serde(default = "default_school_upkeep")]
+    pub school_upkeep: i64,
+    /// Daily upkeep of a university, paid once it has opened.
+    #[serde(default = "default_university_upkeep")]
+    pub university_upkeep: i64,
+    /// Daily upkeep of a park, paid once it has opened.
+    #[serde(default = "default_park_upkeep")]
+    pub park_upkeep: i64,
+}
+
+/// A daily amount per wealth class.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq)]
+pub struct ClassIncome {
+    pub low: f32,
+    pub middle: f32,
+    pub high: f32,
+}
+
+impl ClassIncome {
+    pub fn of(self, class: WealthClass) -> f32 {
+        match class {
+            WealthClass::Low => self.low,
+            WealthClass::Middle => self.middle,
+            WealthClass::High => self.high,
+        }
+    }
+}
+
+// At the default 9 % rate a middle-class resident, commercial job and industrial job pay what
+// the flat model paid before (2, 6 and 8 a day); low earns 0.6 of middle, high 1.6.
+fn default_resident_income() -> ClassIncome {
+    ClassIncome {
+        low: 13.3,
+        middle: 22.2,
+        high: 35.5,
+    }
+}
+
+fn default_commercial_income() -> ClassIncome {
+    ClassIncome {
+        low: 40.0,
+        middle: 66.7,
+        high: 106.7,
+    }
+}
+
+fn default_industrial_income() -> ClassIncome {
+    ClassIncome {
+        low: 53.3,
+        middle: 88.9,
+        high: 142.2,
+    }
+}
+
+fn default_fire_station_upkeep() -> i64 {
+    20
+}
+
+fn default_police_station_upkeep() -> i64 {
+    15
+}
+
+fn default_power_plant_upkeep() -> i64 {
+    40
+}
+
+fn default_water_pump_upkeep() -> i64 {
+    25
+}
+
+fn default_landfill_upkeep() -> i64 {
+    20
+}
+
+fn default_school_upkeep() -> i64 {
+    25
+}
+
+fn default_university_upkeep() -> i64 {
+    60
+}
+
+fn default_park_upkeep() -> i64 {
+    5
+}
+
+fn default_hospital_upkeep() -> i64 {
+    30
+}
+
+fn default_road_upkeep_per_100_tiles() -> i64 {
+    10
+}
+
+fn default_days_per_month() -> u32 {
+    10
 }
 
 impl Default for EconomyConfig {
     fn default() -> Self {
         Self {
-            tax_per_citizen: 2,
-            income_per_commercial: 6,
-            income_per_industrial: 8,
-            road_maintenance: 1,
-            building_maintenance: 2,
             happiness_target: 0.7,
+            days_per_month: default_days_per_month(),
+            road_upkeep_per_100_tiles: default_road_upkeep_per_100_tiles(),
+            resident_income: default_resident_income(),
+            commercial_income: default_commercial_income(),
+            industrial_income: default_industrial_income(),
+            fire_station_upkeep: default_fire_station_upkeep(),
+            police_station_upkeep: default_police_station_upkeep(),
+            hospital_upkeep: default_hospital_upkeep(),
+            power_plant_upkeep: default_power_plant_upkeep(),
+            water_pump_upkeep: default_water_pump_upkeep(),
+            landfill_upkeep: default_landfill_upkeep(),
+            school_upkeep: default_school_upkeep(),
+            university_upkeep: default_university_upkeep(),
+            park_upkeep: default_park_upkeep(),
         }
     }
 }
 
+/// How well off the people of a building are.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub enum WealthClass {
+    Low,
+    #[default]
+    Middle,
+    High,
+}
+
+impl WealthClass {
+    pub const ALL: [WealthClass; 3] = [WealthClass::Low, WealthClass::Middle, WealthClass::High];
+
+    /// People a building of this class holds against a `Middle` one of the same size: the poor
+    /// crowd in, the rich take more room.
+    pub fn capacity_factor(self) -> f32 {
+        match self {
+            WealthClass::Low => 1.25,
+            WealthClass::Middle => 1.0,
+            WealthClass::High => 0.75,
+        }
+    }
+
+    /// The class a building takes from the land value under it, until B2 gives buildings a
+    /// class of their own.
+    pub fn from_land_value(value: f32) -> Self {
+        if value < 0.335 {
+            WealthClass::Low
+        } else if value < 0.665 {
+            WealthClass::Middle
+        } else {
+            WealthClass::High
+        }
+    }
+
+    pub(crate) fn index(self) -> usize {
+        match self {
+            WealthClass::Low => 0,
+            WealthClass::Middle => 1,
+            WealthClass::High => 2,
+        }
+    }
+}
+
+/// The zones that pay tax.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum TaxZone {
+    Residential,
+    Commercial,
+    Industrial,
+}
+
+impl TaxZone {
+    pub const ALL: [TaxZone; 3] = [
+        TaxZone::Residential,
+        TaxZone::Commercial,
+        TaxZone::Industrial,
+    ];
+
+    pub(crate) fn index(self) -> usize {
+        match self {
+            TaxZone::Residential => 0,
+            TaxZone::Commercial => 1,
+            TaxZone::Industrial => 2,
+        }
+    }
+}
+
+/// Tax rates in whole percent, one per zone and wealth class.
+#[derive(Resource, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TaxRates {
+    percent: [[u8; 3]; 3],
+}
+
+impl TaxRates {
+    pub const DEFAULT_PERCENT: u8 = 9;
+    pub const MAX_PERCENT: u8 = 20;
+
+    pub fn get(&self, zone: TaxZone, class: WealthClass) -> u8 {
+        self.percent[zone.index()][class.index()]
+    }
+
+    /// Set a rate, clamped to `MAX_PERCENT`.
+    pub fn set(&mut self, zone: TaxZone, class: WealthClass, percent: u8) {
+        self.percent[zone.index()][class.index()] = percent.min(Self::MAX_PERCENT);
+    }
+}
+
+impl Default for TaxRates {
+    fn default() -> Self {
+        Self {
+            percent: [[Self::DEFAULT_PERCENT; 3]; 3],
+        }
+    }
+}
+
+/// How much of its full budget each service gets, in whole percent.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServiceFunding {
+    percent: [u8; 3],
+}
+
+impl ServiceFunding {
+    pub const DEFAULT_PERCENT: u8 = 100;
+    pub const MAX_PERCENT: u8 = 150;
+
+    fn slot(kind: ServiceKind) -> usize {
+        match kind {
+            ServiceKind::Fire => 0,
+            ServiceKind::Police => 1,
+            ServiceKind::Medical => 2,
+        }
+    }
+
+    pub fn get(&self, kind: ServiceKind) -> u8 {
+        self.percent[Self::slot(kind)]
+    }
+
+    /// Set a service's funding, clamped to `MAX_PERCENT`.
+    pub fn set(&mut self, kind: ServiceKind, percent: u8) {
+        self.percent[Self::slot(kind)] = percent.min(Self::MAX_PERCENT);
+    }
+
+    /// The radius a station of `kind` reaches at its funding: below full funding it shrinks in
+    /// proportion, never under half; above full funding it does not grow.
+    pub fn scaled_radius(&self, kind: ServiceKind, radius: u16) -> u16 {
+        let percent = u32::from(self.get(kind).clamp(50, Self::DEFAULT_PERCENT));
+        ((u32::from(radius) * percent + 50) / 100) as u16
+    }
+
+    /// What a station of `kind` costs a day at its funding, rounded to the dollar.
+    pub fn scaled_upkeep(&self, kind: ServiceKind, upkeep: i64) -> i64 {
+        (upkeep * i64::from(self.get(kind)) + 50) / 100
+    }
+}
+
+impl Default for ServiceFunding {
+    fn default() -> Self {
+        Self {
+            percent: [Self::DEFAULT_PERCENT; 3],
+        }
+    }
+}
+
+/// Money borrowed from the bank, repaid in equal monthly payments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Loan {
+    pub principal: i64,
+    pub monthly_payment: i64,
+    pub months_left: u32,
+}
+
+/// The city's active loans.
+#[derive(Resource, Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Loans {
+    pub active: Vec<Loan>,
+}
+
+impl Loans {
+    /// The amounts the bank lends.
+    pub const SIZES: [i64; 3] = [10_000, 25_000, 50_000];
+    pub const MONTHLY_INTEREST_PERCENT: i64 = 1;
+    pub const TERM_MONTHS: u32 = 12;
+    pub const MAX_ACTIVE: usize = 3;
+
+    /// The annuity payment for `principal` over the term, rounded up to the dollar.
+    pub fn monthly_payment(principal: i64) -> i64 {
+        let rate = Self::MONTHLY_INTEREST_PERCENT as f64 / 100.0;
+        let months = Self::TERM_MONTHS as i32;
+        (principal as f64 * rate / (1.0 - (1.0 + rate).powi(-months))).ceil() as i64
+    }
+
+    /// Borrow one of `SIZES`: the money arrives today as a loan line of the budget.
+    pub fn take(
+        &mut self,
+        principal: i64,
+        ledger: &mut BudgetLedger,
+        city: &mut City,
+    ) -> Result<(), &'static str> {
+        if !Self::SIZES.contains(&principal) {
+            return Err("the bank lends $10 000, $25 000 or $50 000");
+        }
+        if self.active.len() >= Self::MAX_ACTIVE {
+            return Err("the bank will not lend to a city with three loans open");
+        }
+        ledger.post(BudgetItem::LoanProceeds, principal, city);
+        self.active.push(Loan {
+            principal,
+            monthly_payment: Self::monthly_payment(principal),
+            months_left: Self::TERM_MONTHS,
+        });
+        Ok(())
+    }
+
+    /// Charge every active loan its payment and drop the ones that are repaid.
+    pub fn charge_month(&mut self, ledger: &mut BudgetLedger, city: &mut City) {
+        for loan in &mut self.active {
+            ledger.post(BudgetItem::LoanRepayment, -loan.monthly_payment, city);
+            loan.months_left = loan.months_left.saturating_sub(1);
+        }
+        self.active.retain(|loan| loan.months_left > 0);
+    }
+}
+
+/// Where money came from or went: one line of the budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum BudgetItem {
+    ResidentialTax,
+    CommercialTax,
+    IndustrialTax,
+    RoadMaintenance,
+    ServiceMaintenance,
+    UtilityMaintenance,
+    Construction,
+    LoanProceeds,
+    LoanRepayment,
+}
+
+/// Amounts per budget line, in whole dollars; income positive, spending negative.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BudgetLines(pub BTreeMap<BudgetItem, i64>);
+
+impl BudgetLines {
+    pub fn get(&self, item: BudgetItem) -> i64 {
+        self.0.get(&item).copied().unwrap_or(0)
+    }
+
+    pub fn total(&self) -> i64 {
+        self.0.values().sum()
+    }
+}
+
+/// A closed budget month.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BudgetReport {
+    pub month: u32,
+    pub money_start: i64,
+    pub money_end: i64,
+    pub lines: BudgetLines,
+}
+
+/// The one way money enters or leaves the treasury, so the monthly report always adds up to
+/// the change in money.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct BudgetLedger {
+    /// Index of the month in progress, from 0 at the start of a game.
+    pub month: u32,
+    /// Days of the current month that have passed.
+    pub days_elapsed: u32,
+    /// Treasury when the current month began.
+    pub money_start: i64,
+    pub current: BudgetLines,
+    pub last: Option<BudgetReport>,
+}
+
+impl BudgetLedger {
+    /// Begin counting afresh from `money`: a new game, a scenario's starting funds, a load.
+    pub fn restart(&mut self, money: i64) {
+        *self = Self {
+            money_start: money,
+            ..Self::default()
+        };
+    }
+
+    /// Move `amount` into (positive) or out of (negative) the treasury under `item`.
+    pub fn post(&mut self, item: BudgetItem, amount: i64, city: &mut City) {
+        if amount == 0 {
+            return;
+        }
+        city.money = city.money.saturating_add(amount);
+        *self.current.0.entry(item).or_insert(0) += amount;
+    }
+
+    /// Whether the day being counted next is the last of the month.
+    pub fn closes_month_today(&self, days_per_month: u32) -> bool {
+        self.days_elapsed + 1 >= days_per_month.max(1)
+    }
+
+    /// Count a day; after `days_per_month` of them, close the month into `last`.
+    pub fn end_of_day(&mut self, days_per_month: u32, city: &City) {
+        self.days_elapsed += 1;
+        if self.days_elapsed < days_per_month.max(1) {
+            return;
+        }
+        self.last = Some(BudgetReport {
+            month: self.month,
+            money_start: self.money_start,
+            money_end: city.money,
+            lines: std::mem::take(&mut self.current),
+        });
+        self.month += 1;
+        self.days_elapsed = 0;
+        self.money_start = city.money;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn apply_daily_economy(
     mut day_events: MessageReader<DayAdvanced>,
     cfg: Res<EconomyConfig>,
-    employment: Res<EmploymentStats>,
     grid: Res<MapGrid>,
     service: Option<Res<ServiceCoverageIndex>>,
     mut city: ResMut<City>,
+    mut ledger: ResMut<BudgetLedger>,
+    stations: Query<&ServiceStation>,
+    rates: Option<Res<TaxRates>>,
+    buildings: Query<(&Building, &crate::game::buildings::BuildingProfile)>,
+    funding: Option<Res<ServiceFunding>>,
+    mut loans: Option<ResMut<Loans>>,
 ) {
     // Consume all day events (if sim speed is high, multiple days can advance).
     for evt in day_events.read() {
         let _day = evt.day;
-        let (road_tiles, buildings) = count_world(&grid);
+        let road_tiles = count_road_tiles(&grid);
 
-        let income = (city.population as i64) * cfg.tax_per_citizen
-            + (employment.employed_commercial as i64) * cfg.income_per_commercial
-            + (employment.employed_industrial as i64) * cfg.income_per_industrial;
+        // Tax is owed per building: its people, their class's taxable income and that zone's rate
+        // for the class. Rounded once per zone, so the posted line is exactly what moves money.
+        let default_rates = TaxRates::default();
+        let rates = rates.as_deref().unwrap_or(&default_rates);
+        let mut owed = [0.0f64; 3];
+        for (building, profile) in buildings
+            .iter()
+            .filter(|(building, _)| building.is_operational())
+        {
+            let (zone, people, income) = match building.kind {
+                BuildingKind::Residential => (
+                    TaxZone::Residential,
+                    building.occupancy_residents,
+                    cfg.resident_income,
+                ),
+                BuildingKind::Commercial => (
+                    TaxZone::Commercial,
+                    building.occupancy_jobs,
+                    cfg.commercial_income,
+                ),
+                BuildingKind::Industrial => (
+                    TaxZone::Industrial,
+                    building.occupancy_jobs,
+                    cfg.industrial_income,
+                ),
+                _ => continue,
+            };
+            let class = profile.class;
+            owed[zone.index()] +=
+                f64::from(people) * f64::from(income.of(class)) * f64::from(rates.get(zone, class))
+                    / 100.0;
+        }
+        let residential_tax = owed[TaxZone::Residential.index()].round() as i64;
+        let commercial_tax = owed[TaxZone::Commercial.index()].round() as i64;
+        let industrial_tax = owed[TaxZone::Industrial.index()].round() as i64;
+        let road_upkeep = (i64::from(road_tiles) * cfg.road_upkeep_per_100_tiles + 50) / 100;
+        // Upkeep is per station, whatever its footprint; zoned buildings pay taxes, not upkeep.
+        let default_funding = ServiceFunding::default();
+        let funding = funding.as_deref().unwrap_or(&default_funding);
+        let service_upkeep: i64 = stations
+            .iter()
+            .map(|station| {
+                let upkeep = match station.kind {
+                    ServiceKind::Fire => cfg.fire_station_upkeep,
+                    ServiceKind::Police => cfg.police_station_upkeep,
+                    ServiceKind::Medical => cfg.hospital_upkeep,
+                };
+                funding.scaled_upkeep(station.kind, upkeep)
+            })
+            .sum::<i64>()
+            // Schools, universities and parks pay from the day they open, like any station.
+            + buildings
+                .iter()
+                .filter(|(building, _)| building.is_operational())
+                .map(|(building, _)| match building.kind {
+                    BuildingKind::School => cfg.school_upkeep,
+                    BuildingKind::University => cfg.university_upkeep,
+                    BuildingKind::Park => cfg.park_upkeep,
+                    _ => 0,
+                })
+                .sum::<i64>();
 
-        let expense = (road_tiles as i64) * cfg.road_maintenance
-            + (buildings.total() as i64) * cfg.building_maintenance;
+        // Utility stations pay from the day they open, once each, like any other station.
+        let utility_upkeep: i64 = buildings
+            .iter()
+            .filter(|(building, _)| building.is_operational())
+            .map(|(building, _)| match building.kind {
+                BuildingKind::PowerPlant => cfg.power_plant_upkeep,
+                BuildingKind::WaterPump => cfg.water_pump_upkeep,
+                BuildingKind::Landfill => cfg.landfill_upkeep,
+                _ => 0,
+            })
+            .sum();
+
+        let income = residential_tax + commercial_tax + industrial_tax;
+        let expense = road_upkeep + service_upkeep + utility_upkeep;
 
         city.last_income = income;
         city.last_expense = expense;
-        city.money = city.money.saturating_add(income.saturating_sub(expense));
+        ledger.post(BudgetItem::ResidentialTax, residential_tax, &mut city);
+        ledger.post(BudgetItem::CommercialTax, commercial_tax, &mut city);
+        ledger.post(BudgetItem::IndustrialTax, industrial_tax, &mut city);
+        ledger.post(BudgetItem::RoadMaintenance, -road_upkeep, &mut city);
+        ledger.post(BudgetItem::ServiceMaintenance, -service_upkeep, &mut city);
+        ledger.post(BudgetItem::UtilityMaintenance, -utility_upkeep, &mut city);
 
         // MVP: happiness drifts toward a target, reduced slightly by negative cashflow.
         let net = income - expense;
@@ -85,52 +616,795 @@ fn apply_daily_economy(
         let target = (target + service_bonus).clamp(0.0, 1.0);
         city.happiness += (target - city.happiness) * 0.02;
         city.happiness = city.happiness.clamp(0.0, 1.0);
-    }
-}
 
-#[derive(Default)]
-struct BuildingCounts {
-    residential: u32,
-    commercial: u32,
-    industrial: u32,
-}
-
-impl BuildingCounts {
-    fn total(&self) -> u32 {
-        self.residential + self.commercial + self.industrial
-    }
-}
-
-fn count_world(grid: &MapGrid) -> (u32, BuildingCounts) {
-    let mut roads = 0u32;
-    let mut b = BuildingCounts::default();
-
-    let len = grid.len();
-    for idx in 0..len {
-        let x = (idx % (grid.width as usize)) as i32;
-        let y = (idx / (grid.width as usize)) as i32;
-        let pos = TilePos { x, y };
-        let Some(cell) = grid.get(pos) else {
-            continue;
-        };
-        if cell.water {
-            continue;
+        // Loan payments fall on the last day of the month, inside the report they belong to.
+        if ledger.closes_month_today(cfg.days_per_month)
+            && let Some(loans) = loans.as_mut()
+        {
+            loans.charge_month(&mut ledger, &mut city);
         }
-        if cell.road.is_some() {
+        ledger.end_of_day(cfg.days_per_month, &city);
+    }
+}
+
+/// A new game starts a new budget from whatever the treasury holds.
+fn restart_budget_ledger(city: Res<City>, mut ledger: ResMut<BudgetLedger>) {
+    ledger.restart(city.money);
+}
+
+/// Road tiles on dry land; roads are kept up per tile.
+fn count_road_tiles(grid: &MapGrid) -> u32 {
+    let mut roads = 0u32;
+    for idx in 0..grid.len() {
+        let pos = TilePos {
+            x: (idx % (grid.width as usize)) as i32,
+            y: (idx / (grid.width as usize)) as i32,
+        };
+        if let Some(cell) = grid.get(pos)
+            && !cell.water
+            && cell.road.is_some()
+        {
             roads += 1;
         }
-        if let Some(kind) = cell.building {
-            match kind {
-                BuildingKind::Residential => b.residential += 1,
-                BuildingKind::Commercial => b.commercial += 1,
-                BuildingKind::Industrial => b.industrial += 1,
-                // Service buildings are not part of the current economy MVP accounting.
-                BuildingKind::FireStation
-                | BuildingKind::PoliceStation
-                | BuildingKind::Hospital => {}
+    }
+    roads
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::map::MapCell;
+    use crate::game::roads::{LaneType, RoadCell, RoadDir, RoadFlow, RoadKind};
+
+    fn ledger_at(money: i64) -> (BudgetLedger, City) {
+        let mut ledger = BudgetLedger::default();
+        ledger.restart(money);
+        (
+            ledger,
+            City {
+                money,
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn budget_report_lines_sum_to_the_treasury_change() {
+        let (mut ledger, mut city) = ledger_at(1_000);
+        ledger.post(BudgetItem::ResidentialTax, 240, &mut city);
+        ledger.post(BudgetItem::RoadMaintenance, -35, &mut city);
+        ledger.post(BudgetItem::Construction, -120, &mut city);
+        ledger.post(BudgetItem::ResidentialTax, 60, &mut city);
+
+        assert_eq!(city.money, 1_000 + 240 - 35 - 120 + 60);
+        assert_eq!(ledger.current.get(BudgetItem::ResidentialTax), 300);
+        assert_eq!(ledger.current.total(), city.money - 1_000);
+    }
+
+    #[test]
+    fn budget_report_a_month_closes_after_its_days_and_the_next_begins() {
+        let (mut ledger, mut city) = ledger_at(5_000);
+        ledger.post(BudgetItem::CommercialTax, 400, &mut city);
+        ledger.end_of_day(3, &city);
+        ledger.end_of_day(3, &city);
+        assert_eq!(ledger.last, None, "two days of a three-day month");
+
+        ledger.post(BudgetItem::RoadMaintenance, -100, &mut city);
+        ledger.end_of_day(3, &city);
+        let report = ledger.last.clone().expect("the third day closes the month");
+        assert_eq!(report.month, 0);
+        assert_eq!(report.money_start, 5_000);
+        assert_eq!(report.money_end, 5_300);
+        assert_eq!(report.lines.total(), report.money_end - report.money_start);
+        assert!(ledger.current.0.is_empty(), "the next month starts empty");
+        assert_eq!(ledger.month, 1);
+        assert_eq!(ledger.money_start, 5_300);
+    }
+
+    #[test]
+    fn budget_report_daily_economy_goes_through_the_ledger() {
+        let mut app = App::new();
+        app.add_message::<DayAdvanced>();
+        app.insert_resource(EconomyConfig::default());
+        // A hundred road tiles: enough to cost whole dollars a day at the calibrated upkeep.
+        let mut grid = MapGrid::new(16, 16);
+        for index in 0..100 {
+            grid.set(
+                TilePos {
+                    x: index % 16,
+                    y: 8 + index / 16,
+                },
+                MapCell {
+                    road: RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir: RoadDir::East,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    },
+                    ..MapCell::default()
+                },
+            );
+        }
+        app.insert_resource(grid);
+        app.insert_resource(City {
+            money: 2_000,
+            population: 50,
+            ..Default::default()
+        });
+        let mut ledger = BudgetLedger::default();
+        ledger.restart(2_000);
+        app.insert_resource(ledger);
+        // Residents pay tax where they live: the base is the building, not a city-wide count.
+        app.world_mut().spawn(zoned_building(
+            BuildingKind::Residential,
+            TilePos { x: 4, y: 4 },
+            50,
+            0,
+        ));
+        app.add_systems(Update, apply_daily_economy);
+
+        app.world_mut().write_message(DayAdvanced { day: 2 });
+        app.world_mut().write_message(DayAdvanced { day: 3 });
+        app.update();
+
+        let city = app.world().resource::<City>();
+        let ledger = app.world().resource::<BudgetLedger>();
+        assert_ne!(
+            city.money, 2_000,
+            "two days of a city with people and roads move money"
+        );
+        assert_eq!(
+            ledger.current.total(),
+            city.money - 2_000,
+            "every dollar the day moved is on a line"
+        );
+        assert!(ledger.current.get(BudgetItem::ResidentialTax) > 0);
+        assert!(ledger.current.get(BudgetItem::RoadMaintenance) < 0);
+    }
+
+    /// One day of the daily economy over `grid` and the given stations, from a fresh ledger.
+    fn one_day(grid: MapGrid, stations: &[crate::game::services::ServiceKind]) -> BudgetLines {
+        use crate::game::services::ServiceStation;
+
+        let mut app = App::new();
+        app.add_message::<DayAdvanced>();
+        app.insert_resource(EconomyConfig::default());
+        app.insert_resource(grid);
+        app.insert_resource(City {
+            money: 10_000,
+            ..Default::default()
+        });
+        let mut ledger = BudgetLedger::default();
+        ledger.restart(10_000);
+        app.insert_resource(ledger);
+        for (index, kind) in stations.iter().enumerate() {
+            app.world_mut().spawn(ServiceStation {
+                kind: *kind,
+                pos: TilePos {
+                    x: index as i32 * 4,
+                    y: 0,
+                },
+                total_vehicles: 2,
+                available_vehicles: 2,
+            });
+        }
+        app.add_systems(Update, apply_daily_economy);
+        app.world_mut().write_message(DayAdvanced { day: 2 });
+        app.update();
+        app.world().resource::<BudgetLedger>().current.clone()
+    }
+
+    fn with_building(mut grid: MapGrid, kind: BuildingKind, anchor: TilePos) -> MapGrid {
+        for dx in 0..3 {
+            for dy in 0..3 {
+                grid.set(
+                    TilePos {
+                        x: anchor.x + dx,
+                        y: anchor.y + dy,
+                    },
+                    MapCell {
+                        building: Some(kind),
+                        ..MapCell::default()
+                    },
+                );
             }
+        }
+        grid
+    }
+
+    #[test]
+    fn maintenance_per_building_a_service_station_costs_its_upkeep_once_whatever_its_footprint() {
+        use crate::game::services::ServiceKind;
+
+        let grid = with_building(
+            MapGrid::new(16, 16),
+            BuildingKind::FireStation,
+            TilePos { x: 0, y: 0 },
+        );
+        let lines = one_day(grid, &[ServiceKind::Fire]);
+        assert_eq!(
+            lines.get(BudgetItem::ServiceMaintenance),
+            -EconomyConfig::default().fire_station_upkeep,
+            "nine footprint tiles are one fire station, and it is paid for once"
+        );
+
+        let lines = one_day(
+            MapGrid::new(16, 16),
+            &[ServiceKind::Fire, ServiceKind::Police, ServiceKind::Medical],
+        );
+        let cfg = EconomyConfig::default();
+        assert_eq!(
+            lines.get(BudgetItem::ServiceMaintenance),
+            -(cfg.fire_station_upkeep + cfg.police_station_upkeep + cfg.hospital_upkeep)
+        );
+    }
+
+    #[test]
+    fn maintenance_per_building_zoned_buildings_cost_the_city_nothing() {
+        let grid = with_building(
+            MapGrid::new(16, 16),
+            BuildingKind::Residential,
+            TilePos { x: 0, y: 0 },
+        );
+        let grid = with_building(grid, BuildingKind::Industrial, TilePos { x: 6, y: 6 });
+        let lines = one_day(grid, &[]);
+        assert_eq!(
+            lines.get(BudgetItem::ServiceMaintenance),
+            0,
+            "residents and firms pay taxes; the city does not keep their buildings up"
+        );
+        assert_eq!(
+            lines.total(),
+            0,
+            "no people, no roads, no stations: nothing moves"
+        );
+    }
+
+    #[test]
+    fn maintenance_per_building_roads_cost_per_tile() {
+        // 250 tiles at ten dollars per hundred tiles a day: twenty-five dollars, rounded once.
+        let mut grid = MapGrid::new(64, 64);
+        for index in 0..250 {
+            grid.set(
+                TilePos {
+                    x: index % 50,
+                    y: 3 + index / 50,
+                },
+                MapCell {
+                    road: RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir: RoadDir::East,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    },
+                    ..MapCell::default()
+                },
+            );
+        }
+        let lines = one_day(grid, &[]);
+        let per_100 = EconomyConfig::default().road_upkeep_per_100_tiles;
+        assert_eq!(
+            per_100, 10,
+            "a road tile costs a tenth of a dollar a day by default"
+        );
+        assert_eq!(
+            lines.get(BudgetItem::RoadMaintenance),
+            -(250 * per_100 + 50) / 100
+        );
+    }
+
+    #[test]
+    fn maintenance_per_building_utility_stations_cost_their_upkeep_once_open() {
+        let mut app = App::new();
+        app.add_message::<DayAdvanced>();
+        app.insert_resource(EconomyConfig::default());
+        app.insert_resource(MapGrid::new(16, 16));
+        app.insert_resource(City {
+            money: 10_000,
+            ..Default::default()
+        });
+        let mut ledger = BudgetLedger::default();
+        ledger.restart(10_000);
+        app.insert_resource(ledger);
+        for (index, kind) in [
+            BuildingKind::PowerPlant,
+            BuildingKind::WaterPump,
+            BuildingKind::Landfill,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            app.world_mut().spawn(zoned_building(
+                kind,
+                TilePos {
+                    x: index as i32 * 4,
+                    y: 0,
+                },
+                0,
+                0,
+            ));
+        }
+        let mut unfinished = zoned_building(BuildingKind::PowerPlant, TilePos { x: 0, y: 8 }, 0, 0);
+        unfinished.phase =
+            crate::game::buildings::BuildingPhase::UnderConstruction { days_remaining: 2 };
+        app.world_mut().spawn(unfinished);
+        app.add_systems(Update, apply_daily_economy);
+        app.world_mut().write_message(DayAdvanced { day: 2 });
+        app.update();
+
+        let cfg = EconomyConfig::default();
+        let lines = app.world().resource::<BudgetLedger>().current.clone();
+        assert_eq!(
+            lines.get(BudgetItem::UtilityMaintenance),
+            -(cfg.power_plant_upkeep + cfg.water_pump_upkeep + cfg.landfill_upkeep),
+            "three open stations pay; the one still being built does not"
+        );
+        assert_eq!(lines.get(BudgetItem::ServiceMaintenance), 0);
+        assert_eq!(
+            app.world().resource::<City>().money,
+            10_000 + lines.total(),
+            "the utility line is money that actually moved"
+        );
+    }
+
+    #[test]
+    fn service_building_school_university_and_park_charge_their_upkeep_once_open() {
+        let mut app = App::new();
+        app.add_message::<DayAdvanced>();
+        app.insert_resource(EconomyConfig::default());
+        app.insert_resource(MapGrid::new(16, 16));
+        app.insert_resource(City {
+            money: 10_000,
+            ..Default::default()
+        });
+        let mut ledger = BudgetLedger::default();
+        ledger.restart(10_000);
+        app.insert_resource(ledger);
+        for (index, kind) in [
+            BuildingKind::School,
+            BuildingKind::University,
+            BuildingKind::Park,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            app.world_mut().spawn(zoned_building(
+                kind,
+                TilePos {
+                    x: index as i32 * 4,
+                    y: 0,
+                },
+                0,
+                0,
+            ));
+        }
+        let mut unfinished = zoned_building(BuildingKind::School, TilePos { x: 0, y: 8 }, 0, 0);
+        unfinished.phase =
+            crate::game::buildings::BuildingPhase::UnderConstruction { days_remaining: 2 };
+        app.world_mut().spawn(unfinished);
+        app.add_systems(Update, apply_daily_economy);
+        app.world_mut().write_message(DayAdvanced { day: 2 });
+        app.update();
+
+        let cfg = EconomyConfig::default();
+        assert_eq!(
+            (cfg.school_upkeep, cfg.university_upkeep, cfg.park_upkeep),
+            (25, 60, 5)
+        );
+        let lines = app.world().resource::<BudgetLedger>().current.clone();
+        assert_eq!(
+            lines.get(BudgetItem::ServiceMaintenance),
+            -(cfg.school_upkeep + cfg.university_upkeep + cfg.park_upkeep),
+            "three open civic buildings pay; the school still being built does not"
+        );
+        assert_eq!(lines.get(BudgetItem::UtilityMaintenance), 0);
+        assert_eq!(app.world().resource::<City>().money, 10_000 + lines.total());
+    }
+
+    #[test]
+    fn zone_density_tax_comes_from_the_class_a_building_was_built_with() {
+        use crate::game::buildings::BuildingProfile;
+
+        let mut app = App::new();
+        app.add_message::<DayAdvanced>();
+        app.insert_resource(EconomyConfig::default());
+        app.insert_resource(MapGrid::new(16, 16));
+        let mut land_value = crate::game::land_value::LandValueIndex::default();
+        // Land that reads as the low class today.
+        land_value.values = vec![0.1; 256];
+        app.insert_resource(land_value);
+        app.insert_resource(TaxRates::default());
+        app.insert_resource(City {
+            money: 10_000,
+            ..Default::default()
+        });
+        let mut ledger = BudgetLedger::default();
+        ledger.restart(10_000);
+        app.insert_resource(ledger);
+        app.world_mut().spawn((
+            zoned_building(BuildingKind::Residential, TilePos { x: 0, y: 0 }, 30, 0),
+            BuildingProfile {
+                class: WealthClass::High,
+                ..BuildingProfile::default()
+            },
+        ));
+        app.add_systems(Update, apply_daily_economy);
+        app.world_mut().write_message(DayAdvanced { day: 2 });
+        app.update();
+
+        let cfg = EconomyConfig::default();
+        let rate = TaxRates::default().get(TaxZone::Residential, WealthClass::High);
+        let expected =
+            (30.0 * f64::from(cfg.resident_income.of(WealthClass::High)) * f64::from(rate) / 100.0)
+                .round() as i64;
+        assert_eq!(
+            app.world()
+                .resource::<BudgetLedger>()
+                .current
+                .get(BudgetItem::ResidentialTax),
+            expected,
+            "the class is the one the building was built with, not the land under it today"
+        );
+    }
+
+    fn zoned_building(kind: BuildingKind, anchor: TilePos, residents: u16, jobs: u16) -> Building {
+        Building {
+            kind,
+            anchor_pos: anchor,
+            footprint_width: 3,
+            footprint_length: 3,
+            level: 1,
+            phase: crate::game::buildings::BuildingPhase::Operational,
+            construction_start_day: 1,
+            capacity_residents: residents,
+            capacity_jobs: jobs,
+            occupancy_residents: residents,
+            occupancy_jobs: jobs,
+            target_occupancy_residents: residents,
+            target_occupancy_jobs: jobs,
+            parking_spots: Vec::new(),
         }
     }
 
-    (roads, b)
+    /// One day of taxes over `buildings`, with land value `land` everywhere and the given rates.
+    fn taxes_for(buildings: Vec<Building>, land: f32, rates: TaxRates) -> BudgetLines {
+        let mut app = App::new();
+        app.add_message::<DayAdvanced>();
+        app.insert_resource(EconomyConfig::default());
+        app.insert_resource(MapGrid::new(16, 16));
+        let mut land_value = crate::game::land_value::LandValueIndex::default();
+        land_value.values = vec![land; 256];
+        app.insert_resource(land_value);
+        app.insert_resource(rates);
+        app.insert_resource(City {
+            money: 10_000,
+            ..Default::default()
+        });
+        let mut ledger = BudgetLedger::default();
+        ledger.restart(10_000);
+        app.insert_resource(ledger);
+        // A grown building keeps the class of the land it grew on.
+        let class = WealthClass::from_land_value(land);
+        for building in buildings {
+            app.world_mut().spawn((
+                building,
+                crate::game::buildings::BuildingProfile {
+                    class,
+                    ..crate::game::buildings::BuildingProfile::default()
+                },
+            ));
+        }
+        app.add_systems(Update, apply_daily_economy);
+        app.world_mut().write_message(DayAdvanced { day: 2 });
+        app.update();
+        app.world().resource::<BudgetLedger>().current.clone()
+    }
+
+    fn expected_tax(people: u16, income: f32, percent: u8) -> i64 {
+        (f64::from(people) * f64::from(income) * f64::from(percent) / 100.0).round() as i64
+    }
+
+    #[test]
+    fn tax_rate_defaults_to_nine_percent_everywhere_and_is_capped_at_twenty() {
+        let mut rates = TaxRates::default();
+        for zone in TaxZone::ALL {
+            for class in WealthClass::ALL {
+                assert_eq!(
+                    rates.get(zone, class),
+                    TaxRates::DEFAULT_PERCENT,
+                    "{zone:?} {class:?}"
+                );
+            }
+        }
+        rates.set(TaxZone::Commercial, WealthClass::High, 35);
+        assert_eq!(
+            rates.get(TaxZone::Commercial, WealthClass::High),
+            TaxRates::MAX_PERCENT
+        );
+        rates.set(TaxZone::Commercial, WealthClass::Low, 4);
+        assert_eq!(rates.get(TaxZone::Commercial, WealthClass::Low), 4);
+        assert_eq!(
+            rates.get(TaxZone::Residential, WealthClass::Low),
+            TaxRates::DEFAULT_PERCENT,
+            "one rate moves alone"
+        );
+    }
+
+    #[test]
+    fn tax_rate_class_comes_from_the_land_value_under_the_building() {
+        assert_eq!(WealthClass::from_land_value(0.0), WealthClass::Low);
+        assert_eq!(WealthClass::from_land_value(0.33), WealthClass::Low);
+        assert_eq!(WealthClass::from_land_value(0.34), WealthClass::Middle);
+        assert_eq!(WealthClass::from_land_value(0.66), WealthClass::Middle);
+        assert_eq!(WealthClass::from_land_value(0.67), WealthClass::High);
+        assert_eq!(WealthClass::from_land_value(1.0), WealthClass::High);
+    }
+
+    #[test]
+    fn tax_rate_residential_tax_follows_residents_class_and_rate() {
+        let cfg = EconomyConfig::default();
+        let home = || {
+            vec![zoned_building(
+                BuildingKind::Residential,
+                TilePos { x: 2, y: 2 },
+                100,
+                0,
+            )]
+        };
+
+        let lines = taxes_for(home(), 0.8, TaxRates::default());
+        assert_eq!(
+            lines.get(BudgetItem::ResidentialTax),
+            expected_tax(100, cfg.resident_income.high, 9),
+            "a hundred high-class residents at nine percent"
+        );
+
+        let mut rates = TaxRates::default();
+        rates.set(TaxZone::Residential, WealthClass::High, 18);
+        let lines = taxes_for(home(), 0.8, rates);
+        assert_eq!(
+            lines.get(BudgetItem::ResidentialTax),
+            expected_tax(100, cfg.resident_income.high, 18)
+        );
+
+        let mut rates = TaxRates::default();
+        rates.set(TaxZone::Residential, WealthClass::Low, 20);
+        let lines = taxes_for(home(), 0.8, rates);
+        assert_eq!(
+            lines.get(BudgetItem::ResidentialTax),
+            expected_tax(100, cfg.resident_income.high, 9),
+            "the low-class rate does not touch a high-class building"
+        );
+
+        let lines = taxes_for(home(), 0.2, TaxRates::default());
+        assert_eq!(
+            lines.get(BudgetItem::ResidentialTax),
+            expected_tax(100, cfg.resident_income.low, 9),
+            "the same building on cheap land is low class"
+        );
+    }
+
+    #[test]
+    fn tax_rate_commercial_and_industrial_tax_follow_jobs() {
+        let cfg = EconomyConfig::default();
+        let firms = vec![
+            zoned_building(BuildingKind::Commercial, TilePos { x: 1, y: 1 }, 0, 40),
+            zoned_building(BuildingKind::Industrial, TilePos { x: 8, y: 8 }, 0, 30),
+        ];
+        let mut rates = TaxRates::default();
+        rates.set(TaxZone::Industrial, WealthClass::Middle, 12);
+        let lines = taxes_for(firms, 0.5, rates);
+        assert_eq!(
+            lines.get(BudgetItem::CommercialTax),
+            expected_tax(40, cfg.commercial_income.middle, 9)
+        );
+        assert_eq!(
+            lines.get(BudgetItem::IndustrialTax),
+            expected_tax(30, cfg.industrial_income.middle, 12)
+        );
+        assert_eq!(lines.get(BudgetItem::ResidentialTax), 0);
+    }
+
+    #[test]
+    fn budget_report_funding_defaults_to_full_and_is_capped() {
+        use crate::game::services::ServiceKind;
+
+        let mut funding = ServiceFunding::default();
+        for kind in [ServiceKind::Fire, ServiceKind::Police, ServiceKind::Medical] {
+            assert_eq!(funding.get(kind), ServiceFunding::DEFAULT_PERCENT);
+        }
+        funding.set(ServiceKind::Police, 220);
+        assert_eq!(
+            funding.get(ServiceKind::Police),
+            ServiceFunding::MAX_PERCENT
+        );
+        funding.set(ServiceKind::Fire, 40);
+        assert_eq!(funding.get(ServiceKind::Fire), 40);
+        assert_eq!(
+            funding.get(ServiceKind::Medical),
+            ServiceFunding::DEFAULT_PERCENT
+        );
+
+        assert_eq!(funding.scaled_radius(ServiceKind::Medical, 30), 30);
+        funding.set(ServiceKind::Medical, 150);
+        assert_eq!(
+            funding.scaled_radius(ServiceKind::Medical, 30),
+            30,
+            "overfunding does not reach further"
+        );
+        funding.set(ServiceKind::Medical, 60);
+        assert_eq!(funding.scaled_radius(ServiceKind::Medical, 30), 18);
+        funding.set(ServiceKind::Medical, 10);
+        assert_eq!(
+            funding.scaled_radius(ServiceKind::Medical, 30),
+            15,
+            "never under half"
+        );
+    }
+
+    #[test]
+    fn maintenance_per_building_service_upkeep_follows_its_funding() {
+        use crate::game::services::{ServiceKind, ServiceStation};
+
+        let mut app = App::new();
+        app.add_message::<DayAdvanced>();
+        app.insert_resource(EconomyConfig::default());
+        app.insert_resource(MapGrid::new(16, 16));
+        app.insert_resource(City {
+            money: 10_000,
+            ..Default::default()
+        });
+        let mut ledger = BudgetLedger::default();
+        ledger.restart(10_000);
+        app.insert_resource(ledger);
+        let mut funding = ServiceFunding::default();
+        funding.set(ServiceKind::Fire, 50);
+        funding.set(ServiceKind::Medical, 150);
+        app.insert_resource(funding);
+        for (index, kind) in [ServiceKind::Fire, ServiceKind::Medical]
+            .into_iter()
+            .enumerate()
+        {
+            app.world_mut().spawn(ServiceStation {
+                kind,
+                pos: TilePos {
+                    x: index as i32 * 4,
+                    y: 0,
+                },
+                total_vehicles: 2,
+                available_vehicles: 2,
+            });
+        }
+        app.add_systems(Update, apply_daily_economy);
+        app.world_mut().write_message(DayAdvanced { day: 2 });
+        app.update();
+
+        let cfg = EconomyConfig::default();
+        assert_eq!(
+            app.world()
+                .resource::<BudgetLedger>()
+                .current
+                .get(BudgetItem::ServiceMaintenance),
+            -(cfg.fire_station_upkeep / 2 + cfg.hospital_upkeep * 3 / 2),
+            "half-funded fire and one-and-a-half-funded medical"
+        );
+    }
+
+    fn annuity(principal: i64) -> i64 {
+        let rate = Loans::MONTHLY_INTEREST_PERCENT as f64 / 100.0;
+        let months = Loans::TERM_MONTHS as i32;
+        (principal as f64 * rate / (1.0 - (1.0 + rate).powi(-months))).ceil() as i64
+    }
+
+    #[test]
+    fn budget_report_monthly_payment_is_the_annuity() {
+        for principal in Loans::SIZES {
+            assert_eq!(
+                Loans::monthly_payment(principal),
+                annuity(principal),
+                "{principal}"
+            );
+        }
+        assert_eq!(Loans::monthly_payment(10_000), 889);
+        assert!(
+            Loans::monthly_payment(10_000) * i64::from(Loans::TERM_MONTHS) > 10_000,
+            "a loan costs more than it lends"
+        );
+    }
+
+    #[test]
+    fn budget_report_a_loan_is_income_the_day_it_is_taken() {
+        let (mut ledger, mut city) = ledger_at(1_000);
+        let mut loans = Loans::default();
+
+        assert_eq!(loans.take(10_000, &mut ledger, &mut city), Ok(()));
+        assert_eq!(city.money, 11_000);
+        assert_eq!(ledger.current.get(BudgetItem::LoanProceeds), 10_000);
+        assert_eq!(
+            loans.active,
+            vec![Loan {
+                principal: 10_000,
+                monthly_payment: annuity(10_000),
+                months_left: Loans::TERM_MONTHS,
+            }]
+        );
+
+        let refused = loans.take(12_345, &mut ledger, &mut city);
+        assert!(refused.is_err(), "only the bank's sizes are lent");
+        assert_eq!(city.money, 11_000, "a refused loan moves nothing");
+
+        assert_eq!(loans.take(25_000, &mut ledger, &mut city), Ok(()));
+        assert_eq!(loans.take(50_000, &mut ledger, &mut city), Ok(()));
+        assert!(
+            loans.take(10_000, &mut ledger, &mut city).is_err(),
+            "no more than MAX_ACTIVE loans at once"
+        );
+        assert_eq!(ledger.current.total(), city.money - 1_000);
+    }
+
+    #[test]
+    fn budget_report_loan_payments_close_every_month_until_repaid() {
+        let mut app = App::new();
+        app.add_message::<DayAdvanced>();
+        app.insert_resource(EconomyConfig {
+            days_per_month: 2,
+            ..EconomyConfig::default()
+        });
+        app.insert_resource(MapGrid::new(8, 8));
+        app.insert_resource(City {
+            money: 20_000,
+            ..Default::default()
+        });
+        let mut ledger = BudgetLedger::default();
+        ledger.restart(20_000);
+        app.insert_resource(ledger);
+        app.insert_resource(Loans {
+            active: vec![
+                Loan {
+                    principal: 10_000,
+                    monthly_payment: 889,
+                    months_left: 12,
+                },
+                Loan {
+                    principal: 25_000,
+                    monthly_payment: annuity(25_000),
+                    months_left: 1,
+                },
+            ],
+        });
+        app.add_systems(Update, apply_daily_economy);
+
+        app.world_mut().write_message(DayAdvanced { day: 2 });
+        app.update();
+        assert!(
+            app.world().resource::<BudgetLedger>().last.is_none(),
+            "no payment in the middle of a month"
+        );
+
+        app.world_mut().write_message(DayAdvanced { day: 3 });
+        app.update();
+        let report = app
+            .world()
+            .resource::<BudgetLedger>()
+            .last
+            .clone()
+            .expect("the second day closes a two-day month");
+        assert_eq!(
+            report.lines.get(BudgetItem::LoanRepayment),
+            -(889 + annuity(25_000)),
+            "both loans pay on the last day of the month"
+        );
+        assert_eq!(report.lines.total(), report.money_end - report.money_start);
+        assert_eq!(
+            app.world().resource::<Loans>().active,
+            vec![Loan {
+                principal: 10_000,
+                monthly_payment: 889,
+                months_left: 11,
+            }],
+            "the repaid loan is gone, the other has a month less"
+        );
+    }
 }

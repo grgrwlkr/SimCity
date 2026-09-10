@@ -83,6 +83,8 @@ pub enum UndoableCommand {
         pos: TilePos,
         old: ZoneKind,
         new: ZoneKind,
+        old_density: crate::game::map::ZoneDensity,
+        new_density: crate::game::map::ZoneDensity,
     },
     PlaceBuilding {
         pos: TilePos,

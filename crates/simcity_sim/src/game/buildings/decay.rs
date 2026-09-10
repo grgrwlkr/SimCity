@@ -262,6 +262,8 @@ pub fn building_decay_low_happiness(
     mut dirty: ResMut<DirtyTiles>,
     city: Res<City>,
     economy_cfg: Res<EconomyConfig>,
+    fields: Option<Res<crate::game::city_fields::CityFields>>,
+    demand: Option<Res<crate::game::demand::RciDemand>>,
     mut q: Query<(
         Entity,
         &Building,
@@ -290,16 +292,56 @@ pub fn building_decay_low_happiness(
             continue;
         }
 
-        // Calculate approximate happiness based on occupancy vs target
-        // This is a simplified model - real happiness would come from citizen simulation
-        let occupancy_ratio = if b.kind == crate::game::map::BuildingKind::Residential {
-            b.occupancy_residents as f32 / b.capacity_residents as f32
+        // Approximate happiness from occupancy (a simplified model; real happiness would come from
+        // citizen simulation). Measured against what the market lets the building hold by now, so a
+        // big building filling at the market's pace is not abandoned for being half empty.
+        let (occupancy, capacity, target) = if b.kind == crate::game::map::BuildingKind::Residential
+        {
+            (
+                b.occupancy_residents,
+                b.capacity_residents,
+                b.target_occupancy_residents,
+            )
         } else {
-            b.occupancy_jobs as f32 / b.capacity_jobs as f32
+            (b.occupancy_jobs, b.capacity_jobs, b.target_occupancy_jobs)
+        };
+        let occupancy_ratio = match demand.as_deref() {
+            // The market gives it nobody: no road, no power, or demand has collapsed.
+            Some(_) if target == 0 => 0.0,
+            Some(demand) => {
+                let opened_day = b.construction_start_day
+                    + Building::calculate_construction_days(b.kind, b.level, b.area());
+                let expected = super::occupancy::expected_occupancy(
+                    target,
+                    b.level,
+                    b.area(),
+                    super::blockers::zone_demand(demand, b.kind),
+                    current_day.saturating_sub(opened_day),
+                );
+                if expected < 1.0 {
+                    1.0
+                } else {
+                    f32::from(occupancy) / expected
+                }
+            }
+            None => f32::from(occupancy) / f32::from(capacity.max(1)),
         };
 
-        // Happiness is high when occupancy is close to target
-        let estimated_happiness = occupancy_ratio.clamp(0.0, 1.0);
+        // Happiness is high when occupancy is close to target; crime drives people out of homes.
+        let crime = fields
+            .as_deref()
+            .filter(|_| b.kind == crate::game::map::BuildingKind::Residential)
+            .and_then(|fields| {
+                fields.footprint_mean(
+                    crate::game::city_fields::CityField::Crime,
+                    &grid,
+                    b.anchor_pos,
+                    b.footprint_width,
+                    b.footprint_length,
+                )
+            });
+        let estimated_happiness = occupancy_ratio.clamp(0.0, 1.0)
+            * crime.map_or(1.0, crate::game::city_fields::crime_contentment);
 
         if estimated_happiness >= LOW_HAPPINESS_THRESHOLD {
             // Happiness recovered - remove decay component

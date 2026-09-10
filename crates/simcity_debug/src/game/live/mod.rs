@@ -16,6 +16,7 @@ use bevy::transform::TransformSystems;
 pub mod agent_tools;
 pub mod capture;
 pub mod control;
+pub mod input;
 pub mod observe;
 pub mod runtime;
 pub mod stats;
@@ -30,6 +31,7 @@ pub const REGISTERED_METHODS: &[&str] = &[
     "simcity/command",
     "simcity/observe",
     "simcity/tools",
+    "simcity/input",
 ];
 
 /// Registers the `simcity/*` methods and the machinery they drive.
@@ -44,6 +46,11 @@ impl Plugin for LiveDebugPlugin {
         app.init_resource::<capture::CaptureJobs>();
         app.init_resource::<capture::EyeControl>();
         app.init_resource::<control::SimTickCount>();
+        app.init_resource::<input::HeldKeys>();
+        // Frames, not the virtual clock: a paused simulation must not leave a key held.
+        app.add_systems(First, input::release_held_keys);
+        // After every plugin has built, so it overwrites `brp_extras` whatever the order.
+        app.add_systems(Startup, input::refuse_os_input_methods);
         app.add_systems(Startup, capture::spawn_eye);
         // `FixedLast`, deliberately outside the ordered sets that `FixedUpdate` pins.
         app.add_systems(FixedLast, control::count_sim_ticks);
@@ -55,6 +62,12 @@ impl Plugin for LiveDebugPlugin {
             capture::apply_eye_control
                 .before(TransformSystems::Propagate)
                 .before(CameraUpdateSystems),
+        );
+        // Before `UiSystems::Prepare`, where every UI root's target camera is resolved: a later
+        // retarget would land a frame after the capture it was meant for.
+        app.add_systems(
+            PostUpdate,
+            capture::retarget_game_ui_to_eye.before(bevy::ui::UiSystems::Prepare),
         );
         register_methods(app.world_mut());
         // Publish the instant methods where `brp_list_agent_tools` can find them. The
@@ -71,6 +84,7 @@ fn register_methods(world: &mut World) {
     let command = world.register_system(control::command_handler);
     let observe = world.register_system(observe::observe_handler);
     let tools = world.register_system(agent_tools::tools_handler);
+    let input = world.register_system(input::input_handler);
     let mut methods = world.resource_mut::<RemoteMethods>();
     // Watching, not instant: the handler is polled once per frame and answers `None`
     // until the PNG is on disk, which is what makes one call enough.
@@ -82,6 +96,8 @@ fn register_methods(world: &mut World) {
     methods.insert("simcity/command", RemoteMethodSystemId::Instant(command));
     methods.insert("simcity/observe", RemoteMethodSystemId::Instant(observe));
     methods.insert("simcity/tools", RemoteMethodSystemId::Instant(tools));
+    // Instant for the reason the other two are: a re-polled watching call would press twice.
+    methods.insert("simcity/input", RemoteMethodSystemId::Instant(input));
 
     // The list, the catalogue and the actual registry have to be the same three things.
     // The first two are compared by a test; this catches the third, at the only moment it

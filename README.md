@@ -54,6 +54,9 @@ cargo run --release --features profile_chrome
 - `1` — road tool, повторное нажатие циклит `2/4/6` полос
 - `2` / `3` / `4` — residential / commercial / industrial
 - `5` — erase
+- `O` — одностороннее движение для следующего сегмента дороги (вкл/выкл)
+
+Хоткеи молчат, пока текстовое поле держит фокус клавиатуры: набор текста не переключает инструменты, не двигает камеру и не ставит паузу.
 - `Left click` — старт / завершение road segment
 - `Right click` или `Esc` во время road build — отмена текущего сегмента
 - `Left click + drag` — paint для зон и других drag-friendly инструментов

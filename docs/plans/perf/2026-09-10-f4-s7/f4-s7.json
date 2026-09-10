@@ -1,0 +1,265 @@
+{
+  "start": {
+    "day": 3,
+    "population": 15,
+    "milestones": {
+      "best_population": 15,
+      "next": {
+        "population": 250,
+        "unlocks": "School"
+      },
+      "unlocked": [],
+      "locked": [
+        "School",
+        "University"
+      ]
+    }
+  },
+  "milestone": {
+    "day": 8,
+    "population": 415,
+    "milestones": {
+      "best_population": 415,
+      "next": {
+        "population": 1000,
+        "unlocks": "University"
+      },
+      "unlocked": [
+        "School"
+      ],
+      "locked": [
+        "University"
+      ]
+    },
+    "feed_milestone_lines": [
+      {
+        "day": 8,
+        "kind": "Achievement",
+        "text": "250 residents: School unlocked",
+        "count": 1
+      }
+    ],
+    "toasts_shown": {
+      "prop_entities": 1253,
+      "visible_props": 1248,
+      "visible_shadow_casters": 5206,
+      "batch_estimate": 84,
+      "distinct_materials": 29
+    }
+  },
+  "site_search": {
+    "refusals": {
+      "Needs a road next to it": 93,
+      "The 3x3 footprint needs clear land": 21
+    }
+  },
+  "school_building": {
+    "site": [
+      50,
+      28
+    ],
+    "probe_tile": [
+      51,
+      38
+    ],
+    "education_at_probe": {
+      "tile": [
+        51,
+        38
+      ],
+      "Crime": 0.574999988079071,
+      "FireHazard": 0.10000000149011612,
+      "Health": 0.6000000238418579,
+      "Education": 0.0,
+      "Attractiveness": 0.460999995470047,
+      "LandValue": 0.39000001549720764
+    },
+    "civic_at_probe": {
+      "tile": [
+        51,
+        38
+      ],
+      "School": 0.0,
+      "University": 0.0,
+      "Park": 0.0
+    },
+    "civic_sources": [],
+    "education_map": {
+      "min": 0.0,
+      "mean": 0.0,
+      "max": 0.0
+    },
+    "school": [
+      {
+        "kind": "School",
+        "anchor": [
+          50,
+          28
+        ],
+        "size": [
+          3,
+          3
+        ],
+        "level": 1,
+        "phase": "UnderConstruction { days_remaining: 3 }",
+        "density": "Medium",
+        "class": "Middle",
+        "capacity_residents": 0,
+        "capacity_jobs": 0,
+        "occupancy_residents": 0,
+        "occupancy_jobs": 0,
+        "height": 14.0
+      }
+    ]
+  },
+  "school_open": {
+    "day": 13,
+    "education_at_probe": {
+      "tile": [
+        51,
+        38
+      ],
+      "Crime": 0.7342896461486816,
+      "FireHazard": 0.3499999940395355,
+      "Health": 0.6000000238418579,
+      "Education": 0.37319284677505493,
+      "Attractiveness": 0.46826988458633423,
+      "LandValue": 0.32628414034843445
+    },
+    "civic_at_probe": {
+      "tile": [
+        51,
+        38
+      ],
+      "School": 1.0,
+      "University": 0.0,
+      "Park": 0.0
+    },
+    "civic_sources": [
+      {
+        "kind": "School",
+        "anchor": [
+          50,
+          28
+        ],
+        "capacity": 400,
+        "residents": 40,
+        "strength": 1.0
+      }
+    ],
+    "covered_tiles": {
+      "School": 685,
+      "University": 0,
+      "Park": 0
+    },
+    "education_map": {
+      "min": 0.0,
+      "mean": 0.0685363433972519,
+      "max": 1.0
+    }
+  },
+  "advisor_before": {
+    "problems": [
+      {
+        "kind": "Unemployment",
+        "severity": 1.0,
+        "text": "Unemployment 91%: 321 residents have no job, most of them low-income",
+        "at": null
+      },
+      {
+        "kind": "Crime",
+        "severity": 0.7539358735084534,
+        "text": "High crime in 92% of the city: police cover 16% of buildings",
+        "at": null
+      },
+      {
+        "kind": "SchoolReach",
+        "severity": 0.604674220085144,
+        "text": "No school nearby: 313 residents live beyond a school's reach",
+        "at": null
+      },
+      {
+        "kind": "FireRisk",
+        "severity": 0.3014577329158783,
+        "text": "Fire risk in 17% of the city: fire stations cover 16% of buildings",
+        "at": null
+      },
+      {
+        "kind": "JobsWanted",
+        "severity": 0.27468085289001465,
+        "text": "Jobs wanted: commercial demand is 0%, industrial 59%",
+        "at": null
+      }
+    ],
+    "water_supply": {
+      "supply": 5000,
+      "demand": 785,
+      "supplied": 785,
+      "short": false
+    }
+  },
+  "advisor_after": {
+    "pump": {
+      "kind": "WaterPump",
+      "anchor": [
+        101,
+        58
+      ],
+      "size": [
+        3,
+        3
+      ]
+    },
+    "problems": [
+      {
+        "kind": "NoWater",
+        "severity": 1.0,
+        "text": "No water: the city has no water pump, 50 buildings go without",
+        "at": [
+          20,
+          10
+        ]
+      },
+      {
+        "kind": "Unemployment",
+        "severity": 1.0,
+        "text": "Unemployment 91%: 321 residents have no job, most of them low-income",
+        "at": null
+      },
+      {
+        "kind": "Crime",
+        "severity": 0.7497143149375916,
+        "text": "High crime in 92% of the city: police cover 16% of buildings",
+        "at": null
+      },
+      {
+        "kind": "SchoolReach",
+        "severity": 0.604674220085144,
+        "text": "No school nearby: 313 residents live beyond a school's reach",
+        "at": null
+      },
+      {
+        "kind": "FireRisk",
+        "severity": 0.2994285821914673,
+        "text": "Fire risk in 17% of the city: fire stations cover 16% of buildings",
+        "at": null
+      },
+      {
+        "kind": "JobsWanted",
+        "severity": 0.27468085289001465,
+        "text": "Jobs wanted: commercial demand is 0%, industrial 59%",
+        "at": null
+      }
+    ],
+    "water_supply": {
+      "supply": 0,
+      "demand": 0,
+      "supplied": 0,
+      "short": false
+    },
+    "buildings_without": {
+      "power": 0,
+      "water": 50
+    }
+  }
+}

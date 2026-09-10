@@ -1,6 +1,8 @@
 use bevy::prelude::*;
 
-pub use simcity_core::game::map::{BuildingKind, MapConfig, TileKind, TilePos, ZoneKind};
+pub use simcity_core::game::map::{
+    BuildingKind, MapConfig, TileKind, TilePos, ZoneDensity, ZoneKind,
+};
 
 /// Cursor hover read model for UI/inspector.
 #[derive(Resource, Debug, Default, Copy, Clone)]

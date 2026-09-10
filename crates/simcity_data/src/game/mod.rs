@@ -54,6 +54,15 @@ impl Plugin for DataPlugin {
     }
 }
 
+/// State reset with the map: the derived environment fields (pollution, land value, city fields)
+/// and the milestones a new city earns again.
+type DerivedFields<'w> = (
+    Option<ResMut<'w, pollution::PollutionIndex>>,
+    Option<ResMut<'w, land_value::LandValueIndex>>,
+    Option<ResMut<'w, simcity_sim::game::city_fields::CityFields>>,
+    Option<ResMut<'w, simcity_sim::game::milestones::Milestones>>,
+);
+
 #[allow(clippy::too_many_arguments)]
 fn handle_load_test_city(
     mut cmd_reader: MessageReader<commands::GameCommand>,
@@ -67,10 +76,10 @@ fn handle_load_test_city(
     mut graph_version: ResMut<transport::GraphVersion>,
     mut map_edit_version: ResMut<map::MapEditVersion>,
     mut history: ResMut<command_history::CommandHistory>,
-    mut pollution_idx: Option<ResMut<pollution::PollutionIndex>>,
-    mut land_value_idx: Option<ResMut<land_value::LandValueIndex>>,
+    mut derived: DerivedFields,
     mut bus_reset: BusResetParams,
     mut day_out: bevy::ecs::message::MessageWriter<sim_events::DayAdvanced>,
+    mut ledger: Option<ResMut<economy::BudgetLedger>>,
 ) {
     for cmd in cmd_reader.read() {
         if !matches!(cmd, commands::GameCommand::LoadTestCity) {
@@ -84,6 +93,9 @@ fn handle_load_test_city(
             &mut city,
             &mut intersections,
         );
+        if let Some(ledger) = ledger.as_mut() {
+            ledger.restart(city.money);
+        }
         dirty.mark_all();
         road_dirty.mark_all();
         map_edit_version.bump();
@@ -94,11 +106,17 @@ fn handle_load_test_city(
         // Same rule for derived environment fields: stale pollution/land value
         // from the previous city would feed growth and overlays for a whole
         // recompute pass (~51 s) after load.
-        if let Some(p) = pollution_idx.as_mut() {
+        if let Some(p) = derived.0.as_mut() {
             p.reset_values();
         }
-        if let Some(lv) = land_value_idx.as_mut() {
+        if let Some(lv) = derived.1.as_mut() {
             lv.reset_values();
+        }
+        if let Some(fields) = derived.2.as_mut() {
+            fields.reset_values();
+        }
+        if let Some(milestones) = derived.3.as_mut() {
+            **milestones = simcity_sim::game::milestones::Milestones::default();
         }
         // Bus routes reference tile positions from the previous map; reset and re-seed the demo
         // route for the freshly generated test city (player-placed routes are Phase B). Despawn
@@ -137,6 +155,110 @@ mod tests {
         }
         sent.0 = true;
         out.write(commands::GameCommand::LoadTestCity);
+    }
+
+    /// An app that has just loaded the test city.
+    fn loaded_test_city() -> App {
+        let cfg = map::MapConfig::default();
+        let tile_count = (cfg.width as usize) * (cfg.height as usize);
+        let mut app = App::new();
+        simcity_sim::game::render_primitives::init_for_test(&mut app);
+        app.add_message::<commands::GameCommand>()
+            .add_message::<sim_events::DayAdvanced>()
+            .insert_resource(cfg.clone())
+            .insert_resource(map::MapSeed(1))
+            .insert_resource(map::MapGrid::new(cfg.width, cfg.height))
+            .insert_resource(map::DirtyTiles::new(tile_count))
+            .insert_resource(map::RoadDirtyTiles::new(tile_count))
+            .insert_resource(sim::City::default())
+            .insert_resource(transport::GraphVersion(1))
+            .insert_resource(map::MapEditVersion::default())
+            .insert_resource(command_history::CommandHistory::new(100))
+            .insert_resource(intersections::IntersectionIndex::default())
+            .insert_resource(TestCommandOnce::default())
+            .add_systems(
+                Update,
+                (send_load_test_city_once, handle_load_test_city).chain(),
+            );
+        app.update();
+        app
+    }
+
+    /// B1: supply travels only along roads, so the stations the test city places must reach
+    /// every zoned block that has a road — otherwise the demo city would never grow.
+    #[test]
+    fn utility_network_test_city_supplies_every_zoned_block_with_a_road() {
+        use simcity_sim::game::utilities::{UtilityKind, UtilityNetwork, compute_served};
+
+        let app = loaded_test_city();
+        let grid = app.world().resource::<map::MapGrid>();
+        let network = UtilityNetwork {
+            version: 1,
+            map_version: 0,
+            served: compute_served(grid),
+        };
+        let mut zoned = 0usize;
+        let mut dark: Vec<(UtilityKind, map::TilePos)> = Vec::new();
+        for y in 0..grid.height {
+            for x in 0..grid.width {
+                let pos = map::TilePos { x, y };
+                let Some(cell) = grid.get(pos) else {
+                    continue;
+                };
+                if cell.zone == map::ZoneKind::None
+                    || !buildings::is_within_zone_depth(pos, grid, buildings::MAX_ZONE_DEPTH)
+                {
+                    continue;
+                }
+                zoned += 1;
+                for kind in UtilityKind::ALL {
+                    if !buildings::block_has(grid, &network, pos, kind) {
+                        dark.push((kind, pos));
+                    }
+                }
+            }
+        }
+        assert!(zoned > 0, "the test city has zoned blocks");
+        assert!(
+            dark.is_empty(),
+            "{} of {} zoned tiles lack a utility, examples: {:?}",
+            dark.len(),
+            zoned,
+            dark.iter().take(8).collect::<Vec<_>>()
+        );
+    }
+
+    /// A test city is a new city: the milestones of the city before it do not carry over.
+    #[test]
+    fn milestone_loading_the_test_city_starts_milestones_over() {
+        use simcity_sim::game::milestones::Milestones;
+
+        let cfg = map::MapConfig::default();
+        let tile_count = (cfg.width as usize) * (cfg.height as usize);
+        let mut app = App::new();
+        simcity_sim::game::render_primitives::init_for_test(&mut app);
+        app.add_message::<commands::GameCommand>()
+            .add_message::<sim_events::DayAdvanced>()
+            .insert_resource(cfg.clone())
+            .insert_resource(map::MapSeed(1))
+            .insert_resource(map::MapGrid::new(cfg.width, cfg.height))
+            .insert_resource(map::DirtyTiles::new(tile_count))
+            .insert_resource(map::RoadDirtyTiles::new(tile_count))
+            .insert_resource(sim::City::default())
+            .insert_resource(transport::GraphVersion(1))
+            .insert_resource(map::MapEditVersion::default())
+            .insert_resource(command_history::CommandHistory::new(100))
+            .insert_resource(intersections::IntersectionIndex::default())
+            .insert_resource(Milestones {
+                best_population: 500,
+            })
+            .insert_resource(TestCommandOnce::default())
+            .add_systems(
+                Update,
+                (send_load_test_city_once, handle_load_test_city).chain(),
+            );
+        app.update();
+        assert_eq!(app.world().resource::<Milestones>().best_population, 0);
     }
 
     #[test]
@@ -341,6 +463,8 @@ mod tests {
                     pos: map::TilePos { x: 1, y: 1 },
                     old: map::ZoneKind::None,
                     new: map::ZoneKind::Residential,
+                    old_density: map::ZoneDensity::Medium,
+                    new_density: map::ZoneDensity::Medium,
                 });
             }
             let _ = history.undo();

@@ -29,6 +29,16 @@ pub(super) fn bottom_toolbar_ui(mut contexts: EguiContexts, mut p: TopBarParams)
                             ui.close();
                         }
                     }
+
+                    ui.separator();
+
+                    // One-way is a modifier on whichever road kind is selected, not a kind of
+                    // its own. The road builder has always honoured it; until now nothing in
+                    // the UI could set it, so one-way roads were unreachable to the player.
+                    ui.checkbox(&mut p.ui_state.one_way_mode, "One-way (O)")
+                        .on_hover_text(
+                            "Build the next road segment one-way, in the direction you drag it.",
+                        );
                 });
 
                 // Zones category
@@ -134,7 +144,10 @@ pub(super) fn bottom_toolbar_ui(mut contexts: EguiContexts, mut p: TopBarParams)
 
                 // Map seed + generation
                 ui.label("Seed:");
-                ui.text_edit_singleline(&mut p.ui_state.seed_text);
+                ui.add(
+                    egui::TextEdit::singleline(&mut p.ui_state.seed_text)
+                        .id(egui::Id::new(simcity_sim::game::ui_state::SEED_FIELD_ID)),
+                );
                 let seed = p.ui_state.seed_text.trim().parse::<u64>().unwrap_or(1);
                 if ui.button("New Map").clicked() {
                     p.commands.write(GameCommand::GenerateMap { seed });
@@ -198,6 +211,12 @@ pub(super) fn bottom_toolbar_ui(mut contexts: EguiContexts, mut p: TopBarParams)
                         ToolMode::FireStation => "Fire Station".to_string(),
                         ToolMode::PoliceStation => "Police Station".to_string(),
                         ToolMode::Hospital => "Hospital".to_string(),
+                        ToolMode::PowerPlant => "Power Plant".to_string(),
+                        ToolMode::WaterPump => "Water Pump".to_string(),
+                        ToolMode::Landfill => "Landfill".to_string(),
+                        ToolMode::School => "School".to_string(),
+                        ToolMode::University => "University".to_string(),
+                        ToolMode::Park => "Park".to_string(),
                         ToolMode::TrafficLight => "Traffic Light".to_string(),
                         ToolMode::Erase => "Erase".to_string(),
                         ToolMode::Inspect => "Inspect".to_string(),

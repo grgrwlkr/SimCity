@@ -1,0 +1,86 @@
+{
+  "high": [
+    {
+      "kind": "Residential",
+      "anchor": [
+        84,
+        92
+      ],
+      "size": [
+        3,
+        4
+      ],
+      "level": 2,
+      "phase": "Operational",
+      "density": "High",
+      "class": "High",
+      "capacity_residents": 24,
+      "capacity_jobs": 0,
+      "occupancy_residents": 20,
+      "occupancy_jobs": 0,
+      "height": 35.20000076293945
+    },
+    {
+      "kind": "Residential",
+      "anchor": [
+        84,
+        96
+      ],
+      "size": [
+        3,
+        6
+      ],
+      "level": 2,
+      "phase": "Operational",
+      "density": "High",
+      "class": "High",
+      "capacity_residents": 36,
+      "capacity_jobs": 0,
+      "occupancy_residents": 31,
+      "occupancy_jobs": 0,
+      "height": 35.20000076293945
+    }
+  ],
+  "low": [
+    {
+      "kind": "Residential",
+      "anchor": [
+        77,
+        94
+      ],
+      "size": [
+        3,
+        4
+      ],
+      "level": 1,
+      "phase": "Operational",
+      "density": "Low",
+      "class": "Middle",
+      "capacity_residents": 5,
+      "capacity_jobs": 0,
+      "occupancy_residents": 4,
+      "occupancy_jobs": 0,
+      "height": 8.0
+    },
+    {
+      "kind": "Residential",
+      "anchor": [
+        77,
+        99
+      ],
+      "size": [
+        3,
+        4
+      ],
+      "level": 1,
+      "phase": "Operational",
+      "density": "Low",
+      "class": "Middle",
+      "capacity_residents": 5,
+      "capacity_jobs": 0,
+      "occupancy_residents": 4,
+      "occupancy_jobs": 0,
+      "height": 8.0
+    }
+  ]
+}

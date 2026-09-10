@@ -3,12 +3,15 @@ use bevy::prelude::*;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 use std::collections::HashSet;
 
+use crate::game::city_fields::{CityField, CityFields, attractiveness_to_grow, workplace_class};
 use crate::game::demand::RciDemand;
+use crate::game::economy::WealthClass;
 use crate::game::land_value::LandValueIndex;
-use crate::game::map::{BuildingKind, DirtyTiles, MapConfig, MapGrid, TilePos};
+use crate::game::map::{BuildingKind, DirtyTiles, MapConfig, MapGrid, TilePos, ZoneDensity};
 use crate::game::notifications::{NotificationKind, Notifications};
 use crate::game::sim::City;
 use crate::game::sim_events::HourAdvanced;
+use crate::game::utilities::{UtilityKind, UtilityNetwork};
 use bevy::ecs::message::MessageReader;
 
 use super::components::*;
@@ -23,6 +26,8 @@ pub struct GrowBuildingsParams<'w, 's> {
     grid: ResMut<'w, MapGrid>,
     demand: Res<'w, RciDemand>,
     land_value: Option<Res<'w, LandValueIndex>>,
+    fields: Option<Res<'w, crate::game::city_fields::CityFields>>,
+    network: Res<'w, UtilityNetwork>,
     city: ResMut<'w, City>,
     rng: ResMut<'w, BuildingGrowthRng>,
     dirty: ResMut<'w, DirtyTiles>,
@@ -101,6 +106,7 @@ pub fn grow_buildings(mut p: GrowBuildingsParams) {
         let Some(kind) = BuildingKind::from_zone(cell.zone) else {
             continue;
         };
+        let density = cell.density;
         if !demand_allows_growth(&p.demand, kind) {
             continue;
         }
@@ -109,10 +115,13 @@ pub fn grow_buildings(mut p: GrowBuildingsParams) {
         let Some(footprint) = find_best_footprint(
             seed_pos,
             kind,
+            density,
             &p.grid,
             &occupied,
             p.land_value.as_deref(),
+            p.fields.as_deref(),
             &p.q_buildings,
+            &p.network,
         ) else {
             continue;
         };
@@ -130,6 +139,32 @@ pub fn grow_buildings(mut p: GrowBuildingsParams) {
             }
         }
 
+        // The class comes from the land; a workplace takes the high class only where the people
+        // around are educated for it.
+        let land_class = p
+            .land_value
+            .as_deref()
+            .zip(p.grid.idx(footprint.anchor))
+            .filter(|(index, _)| index.values.len() == p.grid.len())
+            .map(|(index, idx)| WealthClass::from_land_value(index.get(idx)))
+            .unwrap_or_default();
+        let class = if matches!(kind, BuildingKind::Commercial | BuildingKind::Industrial) {
+            workplace_class(
+                land_class,
+                p.fields.as_deref().and_then(|fields| {
+                    fields.footprint_mean(
+                        CityField::Education,
+                        &p.grid,
+                        footprint.anchor,
+                        footprint.width,
+                        footprint.length,
+                    )
+                }),
+            )
+        } else {
+            land_class
+        };
+
         // Spawn render entity with footprint
         spawn_building_entity(
             &mut p.commands,
@@ -140,6 +175,7 @@ pub fn grow_buildings(mut p: GrowBuildingsParams) {
             kind,
             &p.city,
             false,
+            BuildingProfile { density, class },
         );
 
         // Mark all footprint tiles as occupied
@@ -150,16 +186,11 @@ pub fn grow_buildings(mut p: GrowBuildingsParams) {
 
         // Emit notification
         if let Some(ref mut notif) = p.notifications {
-            let kind_name = match kind {
-                BuildingKind::Residential => "Residential",
-                BuildingKind::Commercial => "Commercial",
-                BuildingKind::Industrial => "Industrial",
-                _ => "Building",
-            };
-            notif.add(
-                format!("New {} building constructed", kind_name),
+            notif.add_at(
+                construction_notice(kind),
                 NotificationKind::Info,
                 3.0,
+                footprint.anchor,
             );
         }
 
@@ -188,22 +219,27 @@ struct Footprint {
 /// Find the best valid footprint starting from a seed position.
 /// Algorithm from GDD 10.1.3: priority is area → length → width.
 /// Tries footprints from 6x6 down to 3x3, checking all orientations.
+#[allow(clippy::too_many_arguments)]
 fn find_best_footprint(
     seed_pos: TilePos,
     kind: BuildingKind,
+    density: ZoneDensity,
     grid: &MapGrid,
     occupied: &HashSet<TilePos>,
     land_value: Option<&LandValueIndex>,
+    fields: Option<&CityFields>,
     existing_buildings: &Query<&Building>,
+    network: &UtilityNetwork,
 ) -> Option<Footprint> {
     // Generate all possible footprints sorted by priority: area → length → width
     // GDD 10.1.3: priority is area (desc), then length (desc), then width (desc)
     // This means: 6x6, then 6x5, 5x6, then 6x4, 4x6, 5x5, then 6x3, 3x6, 5x4, 4x5, etc.
     let mut candidates = Vec::new();
     // Generate all valid (width, length) pairs where both are 3-6
-    for w in 3..=6 {
-        for l in 3..=6 {
-            candidates.push((w as u8, l as u8));
+    let (shortest, longest) = density.footprint_sides();
+    for w in shortest..=longest {
+        for l in shortest..=longest {
+            candidates.push((w, l));
         }
     }
 
@@ -225,10 +261,13 @@ fn find_best_footprint(
             width,
             length,
             kind,
+            density,
             grid,
             occupied,
             land_value,
+            fields,
             existing_buildings,
+            network,
         ) {
             return Some(footprint);
         }
@@ -250,10 +289,13 @@ fn find_best_footprint(
                 width,
                 length,
                 kind,
+                density,
                 grid,
                 occupied,
                 land_value,
+                fields,
                 existing_buildings,
+                network,
             ) {
                 return Some(footprint);
             }
@@ -272,10 +314,13 @@ fn try_footprint_at(
     width: u8,
     length: u8,
     kind: BuildingKind,
+    density: ZoneDensity,
     grid: &MapGrid,
     occupied: &HashSet<TilePos>,
     land_value: Option<&LandValueIndex>,
+    fields: Option<&CityFields>,
     existing_buildings: &Query<&Building>,
+    network: &UtilityNetwork,
 ) -> Option<Footprint> {
     let mut tiles = Vec::new();
     let required_zone = kind.as_zone();
@@ -296,8 +341,8 @@ fn try_footprint_at(
                 return None;
             }
 
-            // Check zone matches
-            if cell.zone != required_zone {
+            // Check zone matches, at the density the building grows in
+            if cell.zone != required_zone || cell.density != density {
                 return None;
             }
 
@@ -325,6 +370,11 @@ fn try_footprint_at(
         }
     }
     if !has_road_access {
+        return None;
+    }
+
+    // B1: nothing grows where the road carries no power.
+    if !network.footprint_has(grid, anchor, width, length, UtilityKind::Power) {
         return None;
     }
 
@@ -426,8 +476,18 @@ fn try_footprint_at(
         }
     }
 
-    // Check land value requirement (use minimum value from all tiles in footprint)
-    if let Some(land_val) = land_value {
+    // Once the city fields are measured a zone grows where it is attractive enough on every tile;
+    // before that, bare land value decides (minimum over the footprint).
+    if let Some(fields) = fields.filter(|fields| fields.covers(grid.len())) {
+        if let Some(floor) = attractiveness_to_grow(kind)
+            && tiles
+                .iter()
+                .filter_map(|tile| grid.idx(*tile))
+                .any(|idx| fields.get(CityField::Attractiveness, idx) < floor)
+        {
+            return None;
+        }
+    } else if let Some(land_val) = land_value {
         let min_value = match kind {
             BuildingKind::Residential => 0.3,
             BuildingKind::Commercial => 0.4,
@@ -543,6 +603,25 @@ pub fn reset_growth_rng_on_new_map(
     for cmd in reader.read() {
         if matches!(cmd, crate::game::commands::GameCommand::GenerateMap { .. }) {
             rng.rng = StdRng::seed_from_u64(seed.0);
+        }
+    }
+}
+
+/// The feed line for a new building, one line for every zone.
+pub(crate) fn construction_notice(_kind: BuildingKind) -> String {
+    "New building constructed".to_string()
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::*;
+
+    #[test]
+    fn notification_dedup_every_construction_is_the_same_line() {
+        let line = construction_notice(BuildingKind::Residential);
+        assert!(!line.is_empty());
+        for kind in [BuildingKind::Commercial, BuildingKind::Industrial] {
+            assert_eq!(construction_notice(kind), line, "{kind:?}");
         }
     }
 }

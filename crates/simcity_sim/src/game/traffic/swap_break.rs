@@ -19,6 +19,8 @@ use super::{
 pub(crate) struct SwapDeadlocked;
 
 pub(crate) struct IntentRec {
+    /// The vehicle's `Vehicle::seq`: decisions are keyed on it, not on the entity id.
+    seq: u64,
     handle: PathHandle,
     cursor: usize,
     cur: TilePos,
@@ -99,9 +101,9 @@ fn deferred_route(grid: &MapGrid, path_pool: &PathPool, rec: &IntentRec) -> Opti
 /// the intersection reservation system does not govern plain road tiles. A 2-swap cannot be resolved
 /// by yielding (if A waits, B still can't enter A's occupied tile), so we DEFER the lane change of one
 /// vehicle by a tile (see `deferred_route`); if neither side can defer, the victim is marked
-/// `SwapDeadlocked` and removed by the stuck layer. Fully deterministic (decisions keyed on
-/// `Entity.to_bits()` and grid geometry; no RNG, no HashMap-order dependence). Strict no-op unless a
-/// mutual swap exists.
+/// `SwapDeadlocked` and removed by the stuck layer. Fully deterministic (decisions keyed on each
+/// vehicle's sequence number and grid geometry; no RNG, no HashMap-order dependence, no entity-id
+/// order). Strict no-op unless a mutual swap exists.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn break_tile_swaps(
     grid: Res<MapGrid>,
@@ -138,6 +140,7 @@ pub(crate) fn break_tile_swaps(
                 intent.insert(
                     e,
                     IntentRec {
+                        seq: v.seq,
                         handle: v.path_handle,
                         cursor: v.path_cursor,
                         cur,
@@ -157,8 +160,11 @@ pub(crate) fn break_tile_swaps(
     }
 
     // Phase 2: detect mutual 2-swaps and pick a victim + its surgery, deterministically.
+    // Decisions follow the vehicle's sequence number; the entity id only separates test vehicles
+    // that were never numbered.
+    let order = |e: Entity| (intent.get(&e).map_or(0, |rec| rec.seq), e.to_bits());
     let mut ents: Vec<Entity> = intent.keys().copied().collect();
-    ents.sort_unstable_by_key(|e| e.to_bits());
+    ents.sort_unstable_by_key(|e| order(*e));
 
     let mut seen_pairs: HashSet<(u64, u64)> = HashSet::new();
     let mut victims_seen: HashSet<Entity> = HashSet::new();
@@ -187,7 +193,7 @@ pub(crate) fn break_tile_swaps(
             }
             if intent.get(&f).is_some_and(|rec_f| rec_f.next == rec_e.cur) {
                 partner = Some(match partner {
-                    Some(p) if p.to_bits() <= f.to_bits() => p,
+                    Some(p) if order(p) <= order(f) => p,
                     _ => f,
                 });
             }
@@ -209,7 +215,7 @@ pub(crate) fn break_tile_swaps(
         let df = deferred_route(&grid, &path_pool, &intent[&f]);
         let (victim, route) = match (de, df) {
             (Some(re), Some(rf)) => {
-                if e.to_bits() > f.to_bits() {
+                if order(e) > order(f) {
                     (e, Some(re))
                 } else {
                     (f, Some(rf))
@@ -218,7 +224,7 @@ pub(crate) fn break_tile_swaps(
             (Some(re), None) => (e, Some(re)),
             (None, Some(rf)) => (f, Some(rf)),
             (None, None) => {
-                let v = if e.to_bits() > f.to_bits() { e } else { f };
+                let v = if order(e) > order(f) { e } else { f };
                 (v, None)
             }
         };
@@ -244,7 +250,7 @@ pub(crate) fn break_tile_swaps(
     if actions.is_empty() {
         return;
     }
-    actions.sort_unstable_by_key(|(e, _)| e.to_bits());
+    actions.sort_unstable_by_key(|(e, _)| order(*e));
 
     // Phase 3: apply.
     let mut q = vehicles.p1();

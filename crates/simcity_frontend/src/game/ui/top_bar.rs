@@ -78,7 +78,15 @@ pub(super) fn top_status_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams)
                     ToolMode::Residential | ToolMode::Commercial | ToolMode::Industrial => {
                         format!("🏘 {:?}", p.ui_state.tool)
                     }
-                    ToolMode::FireStation | ToolMode::PoliceStation | ToolMode::Hospital => {
+                    ToolMode::FireStation
+                    | ToolMode::PoliceStation
+                    | ToolMode::Hospital
+                    | ToolMode::PowerPlant
+                    | ToolMode::WaterPump
+                    | ToolMode::Landfill
+                    | ToolMode::School
+                    | ToolMode::University
+                    | ToolMode::Park => {
                         format!("🏢 {:?}", p.ui_state.tool)
                     }
                     ToolMode::TrafficLight => "🚦 Traffic Light".to_string(),

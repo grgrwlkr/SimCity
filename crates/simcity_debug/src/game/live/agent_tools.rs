@@ -50,9 +50,10 @@ pub const TOOLS: &[ToolDoc] = &[
         name: "simcity.observe",
         method: "simcity/observe",
         description: "Read the whole state of the running game in one answer: app state, \
-                      simulation speed and clock, city and economy, camera pose, render \
-                      counts, frame timings, and the tail of the log. Takes no parameters \
-                      unless you want a different number of log lines.",
+                      simulation speed and clock, the selected tool and one-way road mode, \
+                      whether a UI widget holds keyboard focus, city and economy, camera \
+                      pose, render counts, frame timings, and the tail of the log. Takes no \
+                      parameters unless you want a different number of log lines.",
         dispatch: Dispatch::Instant,
         params_schema: schema_of::<ObserveParams>,
     },
@@ -63,7 +64,8 @@ pub const TOOLS: &[ToolDoc] = &[
                       that was written. Renders through an offscreen camera, so it works \
                       with the window hidden, occluded or unfocused, and returns only once \
                       the file is complete — there is nothing to poll and no sleep to \
-                      guess. Check `looks_rendered` before trusting the image.",
+                      guess. Check `looks_rendered` before trusting the image. With `ui: true` the \
+                      game interface is drawn into the frame at the window's size and scale.",
         dispatch: Dispatch::Watching,
         params_schema: schema_of::<CaptureParams>,
     },
@@ -105,6 +107,21 @@ pub const TOOLS: &[ToolDoc] = &[
         dispatch: Dispatch::Instant,
         params_schema: schema_of::<NoParams>,
     },
+    ToolDoc {
+        name: "simcity.input",
+        method: "simcity/input",
+        description: "Drive the game's own input from inside the game: press keys, released by \
+                      frame count so a paused simulation cannot leave one held; put keyboard \
+                      focus on a UI field; apply the active road tool between two tiles, as \
+                      the player's two clicks would; activate a visible, enabled button by its \
+                      Name, as one click would; or hover a tile without a pointer (null hands \
+                      hovering back). Never moves the real cursor, which is why \
+                      the brp_extras mouse and keyboard methods answer with a refusal. Set focus \
+                      in one call and send keys in a later one, once simcity/observe shows \
+                      keyboard_captured; every effect lands on the following frames.",
+        dispatch: Dispatch::Instant,
+        params_schema: schema_of::<InputParams>,
+    },
 ];
 
 fn schema_of<T: JsonSchema>() -> Value {
@@ -125,6 +142,41 @@ fn schema_of<T: JsonSchema>() -> Value {
 pub struct ObserveParams {
     /// How many trailing log lines to include. Defaults to 20, capped at the buffer size.
     pub log_lines: Option<u32>,
+    /// `[x0, y0, x1, y1]` tile rectangle: list every building whose footprint touches it, with
+    /// its level, density, class, capacity and height. Stations are always listed.
+    pub buildings_in: Option<[i32; 4]>,
+    /// `[x, y]` tile: what the active tool would do there — price, effect, verdict (`"ok"` or the
+    /// reason the click would be refused) and reach. Without it the hovered tile is previewed.
+    pub preview_at: Option<[i32; 2]>,
+}
+
+/// Parameters of `simcity/input`. Give `keys`, `focus`, `stroke`, `activate` or `hover_tile`;
+/// `focus` with `keys` is refused.
+#[derive(JsonSchema, Deserialize)]
+pub struct InputParams {
+    /// Bevy `KeyCode` names to press: `KeyA`..`KeyZ`, `Digit0`..`Digit9`, `Space`, `Enter`,
+    /// `Escape`, `Tab`, `Backspace`, `PageUp`, `PageDown`, `ArrowUp`, `ArrowDown`, `ArrowLeft`,
+    /// `ArrowRight`, `ShiftLeft`, `ControlLeft`, `Slash`.
+    pub keys: Option<Vec<String>>,
+    /// Frames each key stays down before release. Defaults to 2, at most 600.
+    pub hold_frames: Option<u32>,
+    /// `"seed"` puts keyboard focus on the map-seed field; `null` clears focus.
+    pub focus: Option<String>,
+    /// Apply the active road tool from `from` to `to`, both `[x, y]` tiles on the map.
+    pub stroke: Option<StrokeParams>,
+    /// `Name` of a game-interface button to activate, e.g. `hud.speed.x2`. Refused when the
+    /// name is unknown, not a button, shared by several, hidden or disabled.
+    pub activate: Option<String>,
+    /// `[x, y]` tile to hover without a pointer, driving previews and tooltips; `null` hands
+    /// hovering back to the real pointer.
+    pub hover_tile: Option<[i32; 2]>,
+}
+
+/// Two tiles for a tool stroke.
+#[derive(JsonSchema, Deserialize)]
+pub struct StrokeParams {
+    pub from: [i32; 2],
+    pub to: [i32; 2],
 }
 
 /// Parameters of `simcity/capture`.
@@ -132,9 +184,10 @@ pub struct ObserveParams {
 pub struct CaptureParams {
     /// Absolute path of the PNG to write. Must end in `.png`.
     pub path: String,
-    /// Width in pixels of the offscreen target. Give both width and height or neither.
+    /// Width in pixels of the offscreen target, 1 to 8192. Give both width and height or
+    /// neither; 8192 is the largest texture side the renderer accepts.
     pub width: Option<u32>,
-    /// Height in pixels of the offscreen target.
+    /// Height in pixels of the offscreen target, 1 to 8192.
     pub height: Option<u32>,
     /// `offscreen` (default) renders the world through a camera of its own and does not
     /// need the window to be visible; `window` captures the primary window including the
@@ -142,6 +195,9 @@ pub struct CaptureParams {
     pub source: Option<String>,
     /// Frames to let the render settle before reading the pixels. Defaults to 3.
     pub settle_frames: Option<u32>,
+    /// Draw the game interface into the offscreen frame, at the window's size and scale.
+    /// Offscreen only, and not together with `width` and `height`.
+    pub ui: Option<bool>,
 }
 
 /// Parameters of `simcity/camera`.
@@ -269,6 +325,7 @@ mod tests {
             "simcity/sim",
             "simcity/command",
             "simcity/tools",
+            "simcity/input",
             "simcity/teleport",
         ]);
         assert_eq!(

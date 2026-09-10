@@ -62,6 +62,8 @@ impl ArbiterIndexCache {
 /// grant sweep. All gate inputs are precomputed read-only so the sweep itself is pure.
 pub(crate) struct ArbiterGrantCandidate {
     pub vehicle: Entity,
+    /// The vehicle's `Vehicle::seq`: ties are broken on it, not on the entity id.
+    pub seq: u64,
     /// Local matrix-row index of the lanelet this vehicle is about to enter (meaningless when
     /// `coarse` — there is no resolved lanelet).
     pub local_idx: usize,
@@ -360,6 +362,8 @@ pub(crate) fn resolve_inbox_lanelet(
 /// A vehicle physically on a cluster tile that needs a safety-net reservation row.
 pub(crate) struct ArbiterInboxVehicle {
     pub vehicle: Entity,
+    /// The vehicle's `Vehicle::seq`: ties are broken on it, not on the entity id.
+    pub seq: u64,
     pub intersection: IntersectionId,
 }
 
@@ -489,8 +493,8 @@ fn count_admit(counts: &mut ArbiterCounts, cand: &ArbiterGrantCandidate) {
 /// The caller MUST have reset each ledger to the current matrix version before calling (T7 contract).
 ///
 /// Returns `(admitted, refused)` counts for this tick's observability. Fully order-independent: the
-/// inbox is sorted by entity here and per-id candidates are sorted below, so the input collection
-/// order never affects the output.
+/// inbox is sorted by vehicle sequence here and per-id candidates are sorted below, so neither the
+/// input collection order nor entity ids affect the output.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn arbitrate_grants_inner(
     now: f64,
@@ -504,10 +508,10 @@ pub(crate) fn arbitrate_grants_inner(
 
     // In-box safety net (successor of the legacy collect net): a car wedged
     // inside the box gets a precise single-tile Inside row so it stays visible to the entry gate and
-    // cleanup, and only blocks maneuvers that actually cross its tile. Sorted by entity so the row
-    // order is input-order independent.
+    // cleanup, and only blocks maneuvers that actually cross its tile. Sorted by vehicle sequence so
+    // the row order is independent of input order and of entity ids.
     let mut inbox_order: Vec<&ArbiterInboxVehicle> = inbox.iter().collect();
-    inbox_order.sort_by_key(|iv| iv.vehicle.to_bits());
+    inbox_order.sort_by_key(|iv| (iv.seq, iv.vehicle.to_bits()));
     for iv in inbox_order {
         if reservations.is_reserved_by(iv.intersection, iv.vehicle) {
             continue;
@@ -553,7 +557,7 @@ pub(crate) fn arbitrate_grants_inner(
                 // sort so the comparator stays a total order (the right-hand rule itself is cyclic
                 // for 3+ directions and would panic Rust's sort).
                 .then_with(|| dir_precedence(b.entry_dir).cmp(&dir_precedence(a.entry_dir)))
-                .then_with(|| a.vehicle.to_bits().cmp(&b.vehicle.to_bits()))
+                .then_with(|| (a.seq, a.vehicle.to_bits()).cmp(&(b.seq, b.vehicle.to_bits())))
         });
         // ПДД 13.11 (помеха-справа), pairwise correction: between two otherwise-EQUAL adjacent
         // candidates, the one whose rival approaches from its right yields (rival.entry_dir ==
@@ -771,6 +775,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
             if let Some(id) = intersections.intersection_id_at(cur) {
                 inbox.push(ArbiterInboxVehicle {
                     vehicle: e,
+                    seq: v.seq,
                     intersection: id,
                 });
                 if let Some(lid) = resolve_inbox_lanelet(
@@ -945,6 +950,7 @@ pub(crate) fn arbitrate_lanelet_reservations(
             .or_default()
             .push(ArbiterGrantCandidate {
                 vehicle: e,
+                seq: v.seq,
                 local_idx,
                 coarse,
                 priority,
@@ -1129,6 +1135,7 @@ mod tests {
     fn cand(vehicle: Entity, local_idx: usize, priority: u32) -> ArbiterGrantCandidate {
         ArbiterGrantCandidate {
             vehicle,
+            seq: 0,
             local_idx,
             coarse: false,
             priority,
@@ -1192,6 +1199,7 @@ mod tests {
             &m,
             &[ArbiterInboxVehicle {
                 vehicle: inbox_e,
+                seq: 0,
                 intersection: IntersectionId(0),
             }],
             &mut res3,
@@ -1896,6 +1904,75 @@ mod tests {
         assert_eq!(block_result(&crossings_a), (2, true, true));
     }
 
+    /// Entity ids are not simulation state: Bevy hands them out while systems run in parallel, so
+    /// two runs of one city can give the same vehicle different ids. Among otherwise equal
+    /// candidates the grant, and the order of in-box rows, follow the vehicle's own sequence.
+    #[test]
+    fn arbiter_breaks_ties_by_vehicle_seq_not_entity_id() {
+        let m = LaneletConflictMatrices {
+            by_intersection: HashMap::from([(
+                IntersectionId(0),
+                crate::game::transport::ConflictMatrix::from_paths(&[
+                    vec![TilePos { x: 0, y: 0 }, TilePos { x: 1, y: 0 }],
+                    vec![TilePos { x: 1, y: 0 }, TilePos { x: 1, y: 1 }],
+                    vec![TilePos { x: 5, y: 5 }],
+                ]),
+            )]),
+            version: 1,
+            ..Default::default()
+        };
+        let ordered = vec![IntersectionId(0)];
+
+        // Two conflicting, otherwise equal candidates, each given the earlier number in turn: the
+        // winner must follow the number both times, which no fixed entity order can do.
+        let (one, two) = (ent(1), ent(2));
+        for (seq_one, seq_two, winner, loser) in [(20, 10, two, one), (10, 20, one, two)] {
+            let mut first = cand(one, 0, 3);
+            first.seq = seq_one;
+            let mut second = cand(two, 1, 3);
+            second.seq = seq_two;
+            let mut cands = HashMap::new();
+            cands.insert(IntersectionId(0), vec![first, second]);
+            let mut res = IntersectionReservations::default();
+            arbitrate_grants_inner(0.0, &ordered, &cands, &m, &[], &mut res);
+            assert!(
+                res.is_reserved_by(IntersectionId(0), winner),
+                "the vehicle that came first wins the tie (seqs {seq_one}, {seq_two})"
+            );
+            assert!(
+                !res.is_reserved_by(IntersectionId(0), loser),
+                "the later vehicle waits (seqs {seq_one}, {seq_two})"
+            );
+        }
+
+        for (seq_forty, seq_fifty) in [(30, 5), (5, 30)] {
+            let inbox = vec![
+                ArbiterInboxVehicle {
+                    vehicle: ent(40),
+                    seq: seq_forty,
+                    intersection: IntersectionId(0),
+                },
+                ArbiterInboxVehicle {
+                    vehicle: ent(50),
+                    seq: seq_fifty,
+                    intersection: IntersectionId(0),
+                },
+            ];
+            let mut rows = IntersectionReservations::default();
+            arbitrate_grants_inner(0.0, &ordered, &HashMap::new(), &m, &inbox, &mut rows);
+            let order: Vec<u64> = rows.by_intersection[&IntersectionId(0)]
+                .iter()
+                .map(|row| row.vehicle.to_bits())
+                .collect();
+            let expected = if seq_fifty < seq_forty {
+                vec![ent(50).to_bits(), ent(40).to_bits()]
+            } else {
+                vec![ent(40).to_bits(), ent(50).to_bits()]
+            };
+            assert_eq!(order, expected, "in-box rows follow the vehicles' sequence");
+        }
+    }
+
     #[test]
     fn arbiter_output_is_input_order_independent() {
         // Cluster 0: lanelet 0 conflicts 1; lanelet 2 disjoint.
@@ -1932,10 +2009,12 @@ mod tests {
             vec![
                 ArbiterInboxVehicle {
                     vehicle: ent(50),
+                    seq: 0,
                     intersection: IntersectionId(0),
                 },
                 ArbiterInboxVehicle {
                     vehicle: ent(40),
+                    seq: 0,
                     intersection: IntersectionId(0),
                 },
             ]
@@ -1944,10 +2023,12 @@ mod tests {
             vec![
                 ArbiterInboxVehicle {
                     vehicle: ent(40),
+                    seq: 0,
                     intersection: IntersectionId(0),
                 },
                 ArbiterInboxVehicle {
                     vehicle: ent(50),
+                    seq: 0,
                     intersection: IntersectionId(0),
                 },
             ]

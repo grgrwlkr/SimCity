@@ -1,8 +1,11 @@
 use bevy::prelude::*;
 
+pub mod advisor;
 pub mod atlas;
 pub mod buildings;
 pub mod citizens;
+pub mod city_fields;
+pub mod civic_coverage;
 pub mod command_history;
 pub mod day_night;
 pub mod demand;
@@ -12,6 +15,7 @@ pub mod employment;
 pub mod intersections;
 pub mod land_value;
 pub mod map;
+pub mod milestones;
 #[cfg(test)]
 mod no_thread_rng_guard;
 pub mod notifications;
@@ -24,6 +28,7 @@ pub mod sim;
 pub mod telemetry;
 pub mod traffic;
 pub mod transport;
+pub mod utilities;
 pub mod zone_placement;
 
 pub use simcity_core::game::{
@@ -31,8 +36,8 @@ pub use simcity_core::game::{
 };
 
 #[derive(Resource, Debug, Copy, Clone)]
-struct AutoStartTestCity {
-    pending: bool,
+pub struct AutoStartTestCity {
+    pub(crate) pending: bool,
     /// InGame frames waited before firing LoadTestCity. The scenario system auto-applies on
     /// `OnEnter(InGame)` and writes `GenerateMap`, whose map regeneration clobbers the test city if we
     /// load it on the same frame. Letting it settle a couple frames makes our LoadTestCity the last
@@ -43,11 +48,36 @@ struct AutoStartTestCity {
 impl Default for AutoStartTestCity {
     fn default() -> Self {
         Self {
-            pending: true,
+            // Dev convenience only. A shipped build must open on the main menu and let the
+            // player choose a map or a scenario; auto-loading the test city is what kept the
+            // menu and the scenario catalogue from being the real entry point.
+            pending: cfg!(feature = "dev"),
             settle: 0,
         }
     }
 }
+
+impl AutoStartTestCity {
+    /// Ask for the prebuilt city: the game leaves the menu and loads it once the scenario's own
+    /// map generation has settled.
+    pub fn request(&mut self) {
+        self.pending = true;
+        self.settle = 0;
+    }
+
+    /// A request that has not been carried out yet.
+    pub fn is_pending(&self) -> bool {
+        self.pending
+    }
+}
+
+/// Whether this crate was built with the `dev` feature.
+///
+/// Public so a pin in another crate can branch on the build it is really running in — that
+/// crate's own `cfg(feature = "dev")` would test its feature set, not this one's. Deliberately
+/// NOT derived from `AutoStartTestCity`: a startup pin branching on the flag it checks would
+/// follow the flag into the dev branch and pass when auto-start is turned on unconditionally.
+pub const DEV_BUILD: bool = cfg!(feature = "dev");
 
 /// Frames to wait in InGame before auto-loading the test city, so the one-shot scenario `GenerateMap`
 /// (and its cascade: terrain regen, vehicle clear, growth reset) is fully applied first.
@@ -130,12 +160,20 @@ pub(crate) enum TrafficStep {
 /// an unordered cross-crate system reintroduces executor-dependent state.
 #[derive(SystemSet, Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum PostSimStep {
+    /// Citizens left without a home despawn, their cars with them, and the tile index rebuilds —
+    /// first, so every index and statistic below counts the city they leave.
+    Citizens,
     /// `TrafficIndex` aggregation (read by RCI demand).
     TrafficIndex,
     /// `PollutionIndex` (read by land value).
     Pollution,
-    /// `ServiceCoverageIndex` (read by land value and economy).
+    /// `ServiceCoverageIndex` (read by land value and economy) and `CivicCoverage` (read by the
+    /// city fields).
     Coverage,
+    /// `UtilityNetwork` (read by growth, occupancy and the city fields).
+    Utilities,
+    /// `CityFields` (read by land value, growth, upgrades, decay and emergencies).
+    Fields,
     /// `LandValueIndex` (read by RCI demand).
     LandValue,
     /// `EmploymentStats` (read by RCI demand and economy).
@@ -185,9 +223,12 @@ pub(crate) fn apply_fixed_update_set_order(app: &mut App) {
     app.configure_sets(
         FixedUpdate,
         (
+            PostSimStep::Citizens,
             PostSimStep::TrafficIndex,
             PostSimStep::Pollution,
             PostSimStep::Coverage,
+            PostSimStep::Utilities,
+            PostSimStep::Fields,
             PostSimStep::LandValue,
             PostSimStep::EmploymentStats,
             PostSimStep::Demand,
@@ -232,6 +273,9 @@ impl Plugin for SimPlugin {
             .add_message::<trips::TripFinished>()
             .add_message::<sim_events::DayAdvanced>()
             .init_resource::<ui_state::UiState>()
+            .init_resource::<ui_state::InputFocus>()
+            .init_resource::<ui_state::PointerOverride>()
+            .init_resource::<ui_state::PointerOverGameUi>()
             .init_resource::<AutoStartTestCity>()
             .add_plugins((
                 render_primitives::RenderPrimitivesPlugin,
@@ -255,9 +299,14 @@ impl Plugin for SimPlugin {
                 pedestrians::PedestriansPlugin,
                 intersections::IntersectionsPlugin,
                 land_value::LandValuePlugin,
+                city_fields::CityFieldsPlugin,
+                civic_coverage::CivicCoveragePlugin,
+                milestones::MilestonesPlugin,
+                advisor::AdvisorPlugin,
                 notifications::NotificationsPlugin,
                 pollution::PollutionPlugin,
                 public_transport::PublicTransportPlugin,
+                utilities::UtilitiesPlugin,
             ))
             .add_systems(
                 Update,
@@ -370,6 +419,33 @@ mod ordering_tests {
 }
 
 #[cfg(test)]
+mod auto_start_gate {
+    /// The main menu and the scenario catalogue only become the real entry point if a shipped
+    /// build stops loading the test city behind the player's back. Auto-start is dev tooling,
+    /// so its default follows the `dev` feature and nothing else.
+    #[test]
+    fn auto_start_test_city_is_pending_only_under_dev() {
+        let auto = super::AutoStartTestCity::default();
+        assert_eq!(
+            auto.pending,
+            cfg!(feature = "dev"),
+            "auto-loading the test city must be dev-only: a release build opens on the menu"
+        );
+    }
+
+    /// Guards the shipped case explicitly, so a stray `dev` reaching the default feature set
+    /// of any crate in the graph fails here rather than silently restoring the old startup.
+    #[cfg(not(feature = "dev"))]
+    #[test]
+    fn release_build_does_not_auto_start_test_city() {
+        assert!(
+            !super::AutoStartTestCity::default().pending,
+            "without the dev feature the game must stay in MainMenu until the player chooses"
+        );
+    }
+}
+
+#[cfg(test)]
 mod schedule_ambiguity_pin {
     use bevy::ecs::schedule::{LogLevel, ScheduleBuildSettings};
     use bevy::prelude::*;
@@ -397,5 +473,127 @@ mod schedule_ambiguity_pin {
                     "FixedUpdate has {n} ambiguous system pairs (see warnings above)"
                 );
             });
+    }
+
+    /// Update systems that change the city — its buildings, the intersection index, the map seed
+    /// and the vehicle counts — run in one fixed order. With an ambiguous pair among them the
+    /// multi-threaded executor chooses the order per run: a single unrelated system joining the
+    /// schedule was enough to swing the day-18 freeze pin between 0 and 7 stuck vehicles from
+    /// one run of the same binary to the next.
+    /// Whether `from` runs before `to` in a built schedule: a chain of ordering edges leads from a
+    /// set holding `from` (or `from` itself) to a set holding `to` (or `to` itself).
+    fn runs_before(
+        graph: &bevy::ecs::schedule::ScheduleGraph,
+        from: bevy::ecs::schedule::NodeId,
+        to: bevy::ecs::schedule::NodeId,
+    ) -> bool {
+        use bevy::ecs::schedule::NodeId;
+        use std::collections::{BTreeSet, VecDeque};
+        let hierarchy: Vec<(NodeId, NodeId)> = graph.hierarchy().graph().all_edges().collect();
+        // A system is only ever a child, which fixes the direction of every hierarchy edge.
+        let parent_first = hierarchy.iter().any(|(_, child)| child.is_system());
+        let enclosing = |node: NodeId| {
+            let mut found = BTreeSet::from([node]);
+            let mut stack = vec![node];
+            while let Some(current) = stack.pop() {
+                for &(a, b) in &hierarchy {
+                    let (parent, child) = if parent_first { (a, b) } else { (b, a) };
+                    if child == current && found.insert(parent) {
+                        stack.push(parent);
+                    }
+                }
+            }
+            found
+        };
+        let targets = enclosing(to);
+        let dependency: Vec<(NodeId, NodeId)> = graph.dependency().graph().all_edges().collect();
+        let mut visited = BTreeSet::new();
+        let mut queue: VecDeque<NodeId> = enclosing(from).into_iter().collect();
+        while let Some(node) = queue.pop_front() {
+            if !visited.insert(node) {
+                continue;
+            }
+            for &(before, after) in &dependency {
+                if before != node {
+                    continue;
+                }
+                if targets.contains(&after) {
+                    return true;
+                }
+                queue.extend(enclosing(after));
+            }
+        }
+        false
+    }
+
+    /// Citizens who lose their home are despawned through commands, which ambiguity detection
+    /// does not count as access. Left unordered with the post-sim steps, the despawn landed before
+    /// the employment stats in one run and after them in the next: two same-seed cities counted
+    /// 96 and 104 jobs at a day boundary, and once the city fields read unemployment the whole
+    /// city diverged.
+    #[test]
+    fn fixed_update_citizen_cleanup_runs_before_employment_stats() {
+        let mut app = App::new();
+        app.add_plugins(bevy::state::app::StatesPlugin);
+        app.add_plugins(super::SimPlugin);
+        app.world_mut()
+            .schedule_scope(FixedUpdate, |world, schedule| {
+                schedule.initialize(world).expect("schedule init");
+                let graph = schedule.graph();
+                // After initialization the systems live in the executable schedule, not the graph.
+                let system = |name: &str| {
+                    schedule
+                        .systems()
+                        .expect("initialized")
+                        .find(|(_, system)| system.name().to_string().ends_with(name))
+                        .map(|(key, _)| bevy::ecs::schedule::NodeId::System(key))
+                        .unwrap_or_else(|| panic!("no system named {name}"))
+                };
+                let cleanup = system("cleanup_homeless_citizens");
+                let stats = system("compute_employment_stats");
+                assert!(
+                    runs_before(graph, cleanup, stats),
+                    "citizen cleanup must run before the employment stats count the city"
+                );
+                assert!(
+                    !runs_before(graph, stats, cleanup),
+                    "and not the other way round"
+                );
+            });
+    }
+
+    #[test]
+    fn update_systems_that_change_the_city_have_a_fixed_order() {
+        let mut app = App::new();
+        app.add_plugins(bevy::state::app::StatesPlugin);
+        app.add_plugins(super::SimPlugin);
+        app.world_mut().schedule_scope(Update, |world, schedule| {
+            schedule.set_build_settings(ScheduleBuildSettings {
+                ambiguity_detection: LogLevel::Warn,
+                ..Default::default()
+            });
+            schedule.initialize(world).expect("schedule init");
+            let watched = [
+                world.component_id::<crate::game::buildings::Building>(),
+                world.component_id::<crate::game::intersections::IntersectionIndex>(),
+                world.component_id::<crate::game::map::MapSeed>(),
+                world.component_id::<crate::game::traffic::TrafficVehicleCounts>(),
+            ];
+            assert!(
+                watched.iter().all(Option::is_some),
+                "every watched type is used by the schedule: {watched:?}"
+            );
+            let offending = schedule
+                .graph()
+                .conflicting_systems()
+                .0
+                .iter()
+                .filter(|(_, _, conflicts)| conflicts.iter().any(|id| watched.contains(&Some(*id))))
+                .count();
+            assert_eq!(
+                offending, 0,
+                "{offending} ambiguous Update pairs change the city (see warnings above)"
+            );
+        });
     }
 }

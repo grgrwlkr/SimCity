@@ -92,7 +92,11 @@ pub(super) fn building_popup_ui(
     };
 
     let tax = if kind == BuildingKind::Residential {
-        (occupancy_residents as i64) * econ.tax_per_citizen
+        (f64::from(occupancy_residents)
+            * f64::from(econ.resident_income.middle)
+            * f64::from(crate::game::economy::TaxRates::DEFAULT_PERCENT)
+            / 100.0)
+            .round() as i64
     } else {
         0
     };

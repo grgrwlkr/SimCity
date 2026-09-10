@@ -55,7 +55,13 @@ bevy_brp_extras = { version = "0.22.5", optional = true }
 # observability stack (remote HTTP server + custom methods in `main.rs`, and the per-frame
 # world-scan snapshot systems in `simcity_debug`). Off in release so none of that ships.
 # `cargo run --features dev`
-dev = ["bevy/dynamic_linking", "simcity_debug/dev", "dep:bevy_brp_extras"]
+dev = [
+    "bevy/dynamic_linking",
+    "simcity_debug/dev",
+    "simcity_sim/dev",
+    "simcity_frontend/dev",
+    "dep:bevy_brp_extras",
+]
 
 # Official Bevy profiling backends (built-in tracing spans):
 # - Tracy (recommended): `cargo run --release --features profile_tracy`
@@ -64,6 +70,9 @@ dev = ["bevy/dynamic_linking", "simcity_debug/dev", "dep:bevy_brp_extras"]
 profile_tracy = ["bevy/trace_tracy"]
 profile_tracy_memory = ["bevy/trace_tracy", "bevy/trace_tracy_memory"]
 profile_chrome = ["bevy/trace_chrome"]
+# The dev snapshot updaters in an otherwise non-dev build, so a measurement run
+# (`SIMCITY_PERF_RUN`) can price them apart from BRP and dynamic linking.
+perf_snapshots = ["simcity_debug/snapshots"]
 
 [profile.dev]
 opt-level = 1

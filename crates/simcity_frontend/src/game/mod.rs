@@ -3,6 +3,7 @@ use bevy::prelude::*;
 mod audio_sfx;
 pub mod camera;
 pub mod camera_projection;
+pub mod hud;
 pub mod render_settings;
 pub mod ui;
 mod ui_settings;
@@ -27,6 +28,7 @@ impl Plugin for FrontendPlugin {
         app.add_plugins((
             audio_sfx::AudioSfxPlugin,
             camera::CameraPlugin,
+            hud::HudPlugin,
             render_settings::RenderSettingsPlugin,
             ui::UiPlugin,
             ui_settings::UiSettingsPlugin,

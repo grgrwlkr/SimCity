@@ -10,6 +10,7 @@
 //! lights grow light pools on the asphalt — all via the shared `NightGlow`
 //! material handles (a handful of asset writes per frame, city-wide effect).
 
+use crate::game::ui_state::UiState;
 use bevy::prelude::*;
 
 use crate::game::camera::MainCamera;
@@ -81,7 +82,7 @@ pub fn lighting_levels(day: f32, night: NightConfig, sun: &SunConfig) -> (f32, f
     (illuminance, ambient)
 }
 
-#[allow(clippy::too_many_arguments)] // one more Res than clippy's default limit
+#[allow(clippy::too_many_arguments)] // more Res than clippy's default limit
 fn drive_day_night_lighting(
     city: Res<City>,
     visual: Res<DayNightVisualConfig>,
@@ -91,17 +92,24 @@ fn drive_day_night_lighting(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut q_sun: Query<&mut DirectionalLight>,
     mut q_ambient: Query<&mut AmbientLight, With<MainCamera>>,
+    ui: Option<Res<UiState>>,
     mut last_hour: Local<Option<u8>>,
 ) {
+    // A data map is read in daylight: night would darken exactly what the player is reading.
+    let hour = if ui.is_some_and(|ui| ui.overlay.is_data_map()) {
+        12
+    } else {
+        city.hour
+    };
     // Mutating shared materials re-prepares every entity that uses them
     // (thousands of markings/windows) — only touch them when the hour flips.
-    if *last_hour == Some(city.hour) {
+    if *last_hour == Some(hour) {
         return;
     }
-    *last_hour = Some(city.hour);
+    *last_hour = Some(hour);
 
     // 0 at noon, up to ~1 at midnight, scaled by the configured darkness.
-    let darkness = (night_factor(city.hour) * (visual.max_night_alpha / 0.55)).clamp(0.0, 1.0);
+    let darkness = (night_factor(hour) * (visual.max_night_alpha / 0.55)).clamp(0.0, 1.0);
     let day = 1.0 - darkness;
 
     let render_cfg = render_cfg.map(|c| *c).unwrap_or_default();
@@ -356,6 +364,47 @@ mod tests {
                 - SunConfig::default().day_illuminance * 0.10)
                 .abs()
                 < 1e-3
+        );
+    }
+
+    /// Night darkens the whole map, and a data map read in the dark is not read: while one is
+    /// on the lighting is noon's, and it goes back to the clock's hour when the map is off.
+    #[test]
+    fn a_data_map_is_read_in_daylight_whatever_the_hour() {
+        use crate::game::ui_state::{OverlayMode, UiState};
+
+        let mut app = App::new();
+        render_primitives::init_for_test(&mut app);
+        app.init_resource::<DayNightVisualConfig>();
+        app.insert_resource(City {
+            hour: 0,
+            ..Default::default()
+        });
+        app.insert_resource(UiState {
+            overlay: OverlayMode::LandValue,
+            ..Default::default()
+        });
+        let sun = app.world_mut().spawn(DirectionalLight::default()).id();
+        app.world_mut().spawn((MainCamera, AmbientLight::default()));
+        app.add_systems(Update, drive_day_night_lighting);
+        let sun_lux = |app: &App| {
+            app.world()
+                .get::<DirectionalLight>(sun)
+                .unwrap()
+                .illuminance
+        };
+
+        app.update();
+        assert!(
+            sun_lux(&app) > SunConfig::default().day_illuminance * 0.9,
+            "midnight, but the land value map is on: full sun"
+        );
+
+        app.world_mut().resource_mut::<UiState>().overlay = OverlayMode::None;
+        app.update();
+        assert!(
+            sun_lux(&app) < SunConfig::default().day_illuminance * 0.15,
+            "the map is off: back to midnight"
         );
     }
 }

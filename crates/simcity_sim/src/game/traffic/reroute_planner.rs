@@ -691,3 +691,71 @@ mod tests {
         assert_eq!(plan.entries.len(), 1);
     }
 }
+
+#[cfg(test)]
+mod one_way_route_validation {
+    use super::route_direction_ok;
+    use crate::game::commands::GameCommand;
+    use crate::game::map::{MapGrid, TilePos, road_segment_commands};
+    use crate::game::roads::{RoadDir, RoadKind};
+
+    fn lay(grid: &mut MapGrid, commands: Vec<GameCommand>) {
+        for command in commands {
+            if let GameCommand::SetRoad { pos, road } = command
+                && let Some(mut cell) = grid.get(pos)
+            {
+                cell.road = road;
+                grid.set(pos, cell);
+            }
+        }
+    }
+
+    /// The live symptom, pinned at the check that let it through. A car kept driving west for 28
+    /// tiles on a block the player had just made one-way East: its route, planned before the
+    /// edit, still passed validation after it, because the block's back half kept `dir: West`.
+    #[test]
+    fn a_westbound_route_is_rejected_once_its_road_is_made_one_way_east() {
+        let mut grid = MapGrid::new(40, 20);
+        lay(
+            &mut grid,
+            road_segment_commands(
+                TilePos { x: 5, y: 10 },
+                TilePos { x: 30, y: 10 },
+                RoadKind::FourLane,
+                true,
+                false,
+            ),
+        );
+
+        let west_row = (0..20)
+            .find(|&y| {
+                grid.get(TilePos { x: 15, y })
+                    .is_some_and(|cell| cell.road.is_some() && cell.road.dir == RoadDir::West)
+            })
+            .expect("a two-way FourLane road has a westbound lane");
+        let route: Vec<TilePos> = (10..=20)
+            .rev()
+            .map(|x| TilePos { x, y: west_row })
+            .collect();
+        assert!(
+            route_direction_ok(&route, &grid),
+            "on the two-way road a westbound route along the westbound lane is legal"
+        );
+
+        lay(
+            &mut grid,
+            road_segment_commands(
+                TilePos { x: 8, y: 10 },
+                TilePos { x: 27, y: 10 },
+                RoadKind::FourLane,
+                true,
+                true,
+            ),
+        );
+        assert!(
+            !route_direction_ok(&route, &grid),
+            "once the block is one-way East, a westbound route along it must be seen as \
+             wrong-way and replanned, not kept"
+        );
+    }
+}

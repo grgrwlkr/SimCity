@@ -115,6 +115,7 @@ pub(in super::super) fn plan_lane_changes(
     #[derive(Debug)]
     struct Desire {
         e: Entity,
+        seq: u64,
         target: TilePos,
         priority: u8,
         ego_tile: TilePos,
@@ -273,6 +274,7 @@ pub(in super::super) fn plan_lane_changes(
                         let priority = if overtaking.is_some() { 2 } else { 1 };
                         desires.push(Desire {
                             e,
+                            seq: v.seq,
                             target,
                             priority,
                             ego_tile,
@@ -290,6 +292,7 @@ pub(in super::super) fn plan_lane_changes(
                 } else {
                     desires.push(Desire {
                         e,
+                        seq: v.seq,
                         target,
                         priority: if overtaking.is_some() { 1 } else { 0 },
                         ego_tile,
@@ -301,11 +304,12 @@ pub(in super::super) fn plan_lane_changes(
         }
     }
 
-    // Highest priority first (stable tie-breaker by entity id).
+    // Highest priority first; ties by vehicle sequence, which unlike entity ids is the same on every
+    // run of the same city.
     desires.sort_by(|a, b| {
         b.priority
             .cmp(&a.priority)
-            .then_with(|| a.e.to_bits().cmp(&b.e.to_bits()))
+            .then_with(|| (a.seq, a.e.to_bits()).cmp(&(b.seq, b.e.to_bits())))
     });
 
     let mut done = 0usize;

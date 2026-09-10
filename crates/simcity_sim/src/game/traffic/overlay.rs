@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::game::map::{MapConfig, MapGrid, TilePos, tile_to_world};
+use crate::game::map::{MapConfig, MapGrid, TilePos, tile_to_world, traffic_heat_color};
 use crate::game::render_primitives::{RenderPrimitives, layer};
 use crate::game::ui_state::{OverlayMode, UiState};
 
@@ -93,6 +93,6 @@ pub(super) fn render_traffic_overlay(
         };
         // The material cache quantizes to 8-bit RGBA, so the gradient stays bounded.
         let heat = (occ.heat_idx(idx) / max_heat).clamp(0.0, 1.0);
-        mat.0 = prims.material(&mut materials, Color::linear_rgb(heat, 1.0 - heat, 0.0));
+        mat.0 = prims.material(&mut materials, traffic_heat_color(heat));
     }
 }

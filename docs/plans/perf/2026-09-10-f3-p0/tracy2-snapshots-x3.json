@@ -1,0 +1,29 @@
+{
+  "dev_build": false,
+  "snapshots": true,
+  "speed": "X3",
+  "warmup_secs": 45.0,
+  "measure_secs": 60.0,
+  "sim_secs_per_real_sec": 6.0,
+  "frames": {
+    "frames": 3990,
+    "median_ms": 10.290334000000001,
+    "p10_ms": 6.220916,
+    "p90_ms": 37.376792,
+    "mean_ms": 15.040755764411024,
+    "fps_median": 97.17857554477823
+  },
+  "city": {
+    "day": 27,
+    "hour": 6,
+    "population": 309,
+    "money": 68757
+  },
+  "entities": {
+    "total": 25289,
+    "vehicles": 74,
+    "pedestrians": 0,
+    "citizens": 309,
+    "buildings": 75
+  }
+}

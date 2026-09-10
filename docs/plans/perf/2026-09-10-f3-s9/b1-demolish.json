@@ -1,0 +1,217 @@
+{
+  "plant": {
+    "kind": "PowerPlant",
+    "anchor": [
+      21,
+      58
+    ],
+    "size": [
+      3,
+      3
+    ]
+  },
+  "before": {
+    "served": {
+      "power": 5095,
+      "water": 5095,
+      "garbage": 5095
+    },
+    "without": {
+      "power": 0,
+      "water": 0
+    },
+    "stations": [
+      {
+        "kind": "FireStation",
+        "anchor": [
+          20,
+          48
+        ],
+        "size": [
+          3,
+          3
+        ]
+      },
+      {
+        "kind": "FireStation",
+        "anchor": [
+          20,
+          78
+        ],
+        "size": [
+          3,
+          3
+        ]
+      },
+      {
+        "kind": "Hospital",
+        "anchor": [
+          87,
+          67
+        ],
+        "size": [
+          3,
+          3
+        ]
+      },
+      {
+        "kind": "Landfill",
+        "anchor": [
+          88,
+          58
+        ],
+        "size": [
+          3,
+          3
+        ]
+      },
+      {
+        "kind": "PoliceStation",
+        "anchor": [
+          39,
+          67
+        ],
+        "size": [
+          3,
+          3
+        ]
+      },
+      {
+        "kind": "PoliceStation",
+        "anchor": [
+          84,
+          88
+        ],
+        "size": [
+          3,
+          3
+        ]
+      },
+      {
+        "kind": "PowerPlant",
+        "anchor": [
+          21,
+          58
+        ],
+        "size": [
+          3,
+          3
+        ]
+      },
+      {
+        "kind": "WaterPump",
+        "anchor": [
+          101,
+          58
+        ],
+        "size": [
+          3,
+          3
+        ]
+      }
+    ]
+  },
+  "after": {
+    "served": {
+      "power": 0,
+      "water": 5095,
+      "garbage": 5095
+    },
+    "without": {
+      "power": 89,
+      "water": 0
+    },
+    "stations": [
+      {
+        "kind": "FireStation",
+        "anchor": [
+          20,
+          48
+        ],
+        "size": [
+          3,
+          3
+        ]
+      },
+      {
+        "kind": "FireStation",
+        "anchor": [
+          20,
+          78
+        ],
+        "size": [
+          3,
+          3
+        ]
+      },
+      {
+        "kind": "Hospital",
+        "anchor": [
+          87,
+          67
+        ],
+        "size": [
+          3,
+          3
+        ]
+      },
+      {
+        "kind": "Landfill",
+        "anchor": [
+          88,
+          58
+        ],
+        "size": [
+          3,
+          3
+        ]
+      },
+      {
+        "kind": "PoliceStation",
+        "anchor": [
+          39,
+          67
+        ],
+        "size": [
+          3,
+          3
+        ]
+      },
+      {
+        "kind": "PoliceStation",
+        "anchor": [
+          84,
+          88
+        ],
+        "size": [
+          3,
+          3
+        ]
+      },
+      {
+        "kind": "WaterPump",
+        "anchor": [
+          101,
+          58
+        ],
+        "size": [
+          3,
+          3
+        ]
+      }
+    ]
+  },
+  "hovered_home": {
+    "tile": [
+      78,
+      97
+    ],
+    "blockers": [
+      "NoPower"
+    ],
+    "diagnosis": [
+      "Residential zone",
+      "No power: occupants are leaving"
+    ]
+  }
+}

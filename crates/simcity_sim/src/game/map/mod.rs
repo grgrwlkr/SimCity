@@ -9,7 +9,7 @@ use crate::game::sets::GameSet;
 use crate::game::state::AppState;
 
 mod types;
-pub use types::{BuildingKind, HoveredTile, MapConfig, TileKind, TilePos, ZoneKind};
+pub use types::{BuildingKind, HoveredTile, MapConfig, TileKind, TilePos, ZoneDensity, ZoneKind};
 
 mod grid;
 pub use grid::{MapCell, MapGrid, MapSeed};
@@ -36,13 +36,21 @@ pub use props_render::PropEntity;
 use props_render::{PropIndex, sync_prop_visibility, sync_props};
 
 mod commands;
-use commands::apply_game_commands_to_grid;
+pub(crate) use commands::apply_game_commands_to_grid;
 
+mod data_map;
+pub use data_map::{
+    DataMapInputs, Legend, height_color, land_value_color, legend_for, overlay_reading,
+    pollution_color, traffic_heat_color,
+};
 mod input;
+mod preview;
 use input::{
     CursorPaintState, RoadBuildState, build_mode_hotkeys, cursor_paint_to_command,
     handle_undo_redo, update_cursor_highlight, update_hovered_tile,
 };
+pub use input::{ONE_WAY_HOTKEY, TOOL_HOTKEYS, road_segment_commands, tool_for_hotkey};
+pub use preview::{ToolPreview, placed_building_kind, preview_tool_at};
 
 mod render;
 use render::{

@@ -9,10 +9,12 @@ mod render;
 
 #[allow(unused_imports)] // Re-exported for convenience (used by other modules/tests)
 pub use index::IntersectionCluster;
+pub(crate) use index::detect_intersections;
 pub use index::{
     IntersectionId, IntersectionIndex, IntersectionKey, build_intersection_clusters,
     cluster_has_open_exit,
 };
+pub(crate) use lights::sync_traffic_light_entities;
 pub use lights::{LeftTurnDemand, LightPhase, TrafficLight};
 pub(crate) use render::{render_traffic_lights, sync_traffic_light_visuals};
 

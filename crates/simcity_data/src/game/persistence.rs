@@ -87,6 +87,7 @@ fn snapshot_map(grid: &MapGrid) -> MapGridV1 {
                 terrain: cell.terrain,
                 road: cell.road,
                 zone: cell.zone,
+                density: cell.density,
                 building: cell.building,
             });
         }
@@ -270,6 +271,10 @@ pub(crate) struct SaveParams<'w, 's> {
     q_stations: Query<'w, 's, &'static ServiceStation>,
     emergency_manager: Option<Res<'w, EmergencyManager>>,
     intersections: Res<'w, IntersectionIndex>,
+    tax_rates: Option<Res<'w, crate::game::economy::TaxRates>>,
+    service_funding: Option<Res<'w, crate::game::economy::ServiceFunding>>,
+    loans: Option<Res<'w, crate::game::economy::Loans>>,
+    milestones: Option<Res<'w, simcity_sim::game::milestones::Milestones>>,
 }
 
 /// Build the full V3 snapshot of the live world. Shared by `SaveGame` (which writes it
@@ -278,6 +283,7 @@ pub(crate) struct SaveParams<'w, 's> {
 pub(crate) fn snapshot_savegame(p: &SaveParams) -> SaveGameV3 {
     SaveGameV3 {
         save_version: 3,
+        milestones: p.milestones.as_deref().copied().unwrap_or_default(),
         seed: p.seed.0,
         map: snapshot_map(&p.grid),
         city: p.city.clone(),
@@ -291,6 +297,9 @@ pub(crate) fn snapshot_savegame(p: &SaveParams) -> SaveGameV3 {
             .map(|m| m.stats.clone())
             .unwrap_or_default(),
         traffic_light_tiles: snapshot_traffic_lights(&p.intersections),
+        tax_rates: p.tax_rates.as_deref().cloned().unwrap_or_default(),
+        service_funding: p.service_funding.as_deref().copied().unwrap_or_default(),
+        loans: p.loans.as_deref().cloned().unwrap_or_default(),
     }
 }
 
@@ -331,6 +340,7 @@ fn apply_map_from_v1(grid: &mut MapGrid, v1: &MapGridV1) {
             terrain: t.terrain,
             road: t.road,
             zone: t.zone,
+            density: t.density,
             building: t.building,
         };
         grid.set(pos, cell);
@@ -374,7 +384,15 @@ fn derive_buildings_from_map(map: &MapGridV1, city: &City) -> Vec<BuildingSnapsh
 
 fn build_legacy_candidates(kind: BuildingKind) -> Vec<(u8, u8)> {
     match kind {
-        BuildingKind::FireStation | BuildingKind::PoliceStation | BuildingKind::Hospital => {
+        BuildingKind::FireStation
+        | BuildingKind::PoliceStation
+        | BuildingKind::Hospital
+        | BuildingKind::PowerPlant
+        | BuildingKind::WaterPump
+        | BuildingKind::Landfill
+        | BuildingKind::School
+        | BuildingKind::University
+        | BuildingKind::Park => {
             vec![(3, 3)]
         }
         _ => {
@@ -531,6 +549,7 @@ fn upgrade_v2_to_v3(v2: SaveGameV2) -> SaveGameV3 {
     let buildings = derive_buildings_from_map(&v2.map, &v2.city);
     SaveGameV3 {
         save_version: 3,
+        milestones: Default::default(),
         seed: v2.seed,
         map: v2.map,
         city: v2.city,
@@ -540,6 +559,9 @@ fn upgrade_v2_to_v3(v2: SaveGameV2) -> SaveGameV3 {
         service_stations: v2.service_stations,
         emergency_stats: v2.emergency_stats,
         traffic_light_tiles: Vec::new(),
+        tax_rates: Default::default(),
+        service_funding: Default::default(),
+        loans: Default::default(),
     }
 }
 
@@ -548,6 +570,7 @@ fn upgrade_v1_to_v3(v1: SaveGameV1) -> SaveGameV3 {
     let service_stations = derive_service_stations_from_buildings(&buildings);
     SaveGameV3 {
         save_version: 3,
+        milestones: Default::default(),
         seed: v1.seed,
         map: v1.map,
         city: v1.city,
@@ -557,6 +580,9 @@ fn upgrade_v1_to_v3(v1: SaveGameV1) -> SaveGameV3 {
         service_stations,
         emergency_stats: EmergencyStats::default(),
         traffic_light_tiles: Vec::new(),
+        tax_rates: Default::default(),
+        service_funding: Default::default(),
+        loans: Default::default(),
     }
 }
 
@@ -609,6 +635,11 @@ struct LoadParams<'w, 's> {
     sim_rng: ResMut<'w, simcity_sim::game::sim::SimRng>,
     grid: ResMut<'w, MapGrid>,
     city: ResMut<'w, City>,
+    ledger: Option<ResMut<'w, crate::game::economy::BudgetLedger>>,
+    tax_rates: Option<ResMut<'w, crate::game::economy::TaxRates>>,
+    service_funding: Option<ResMut<'w, crate::game::economy::ServiceFunding>>,
+    loans: Option<ResMut<'w, crate::game::economy::Loans>>,
+    milestones: Option<ResMut<'w, simcity_sim::game::milestones::Milestones>>,
     id_gen: ResMut<'w, CitizenIdGen>,
     emergency_manager: Option<ResMut<'w, EmergencyManager>>,
     path_pool: ResMut<'w, crate::game::transport::PathPool>,
@@ -619,12 +650,41 @@ struct LoadParams<'w, 's> {
     history: ResMut<'w, CommandHistory>,
     bus_routes: Option<ResMut<'w, crate::game::public_transport::BusRouteManager>>,
     pollution_idx: Option<ResMut<'w, crate::game::pollution::PollutionIndex>>,
+    city_fields: Option<ResMut<'w, simcity_sim::game::city_fields::CityFields>>,
     land_value_idx: Option<ResMut<'w, crate::game::land_value::LandValueIndex>>,
     q_buildings: Query<'w, 's, Entity, With<Building>>,
     q_vehicles: Query<'w, 's, Entity, With<Vehicle>>,
     q_vehicle_markers: Query<'w, 's, Entity, With<ServiceVehicleMarker>>,
     q_citizens: Query<'w, 's, Entity, With<Citizen>>,
     q_emergencies: Query<'w, 's, Entity, With<Emergency>>,
+}
+
+/// Put a save's budget back into the live resources: rates, funding and open loans.
+pub(crate) fn restore_budget(
+    save: &SaveGameV3,
+    rates: Option<&mut crate::game::economy::TaxRates>,
+    funding: Option<&mut crate::game::economy::ServiceFunding>,
+    loans: Option<&mut crate::game::economy::Loans>,
+) {
+    if let Some(rates) = rates {
+        *rates = save.tax_rates.clone();
+    }
+    if let Some(funding) = funding {
+        *funding = save.service_funding;
+    }
+    if let Some(loans) = loans {
+        *loans = save.loans.clone();
+    }
+}
+
+/// Put a save's milestones back: what it reached, and at least the population it carries.
+pub(crate) fn restore_milestones(
+    save: &SaveGameV3,
+    milestones: Option<&mut simcity_sim::game::milestones::Milestones>,
+) {
+    if let Some(milestones) = milestones {
+        milestones.best_population = save.milestones.best_population.max(save.city.population);
+    }
 }
 
 fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParams) {
@@ -681,6 +741,9 @@ fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParam
         if let Some(lv) = p.land_value_idx.as_mut() {
             lv.reset_values();
         }
+        if let Some(fields) = p.city_fields.as_mut() {
+            fields.reset_values();
+        }
 
         // Apply resources.
         p.seed.0 = save.seed;
@@ -711,6 +774,16 @@ fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParam
         }
 
         *p.city = save.city.clone();
+        if let Some(ledger) = p.ledger.as_mut() {
+            ledger.restart(p.city.money);
+        }
+        restore_budget(
+            &save,
+            p.tax_rates.as_deref_mut(),
+            p.service_funding.as_deref_mut(),
+            p.loans.as_deref_mut(),
+        );
+        restore_milestones(&save, p.milestones.as_deref_mut());
         p.id_gen.set_next(save.next_citizen_id);
 
         if let Some(mgr) = p.emergency_manager.as_mut() {
@@ -809,5 +882,156 @@ fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParam
 
         // Ensure we're in-game after load.
         NextState::set_if_neq(&mut *p.next_state, AppState::InGame);
+    }
+}
+
+#[cfg(test)]
+mod budget_save_tests {
+    use super::*;
+    use crate::game::economy::{Loan, Loans, ServiceFunding, TaxRates, TaxZone, WealthClass};
+    use crate::game::emergencies::EmergencyStats;
+
+    fn budget() -> (TaxRates, ServiceFunding, Loans) {
+        let mut rates = TaxRates::default();
+        rates.set(TaxZone::Industrial, WealthClass::Low, 15);
+        let mut funding = ServiceFunding::default();
+        funding.set(ServiceKind::Police, 70);
+        let loans = Loans {
+            active: vec![Loan {
+                principal: 25_000,
+                monthly_payment: Loans::monthly_payment(25_000),
+                months_left: 7,
+            }],
+        };
+        (rates, funding, loans)
+    }
+
+    #[derive(Resource, Default)]
+    struct Captured(Option<SaveGameV3>);
+
+    fn capture(p: SaveParams, mut out: ResMut<Captured>) {
+        out.0 = Some(snapshot_savegame(&p));
+    }
+
+    #[test]
+    fn budget_report_the_budget_is_part_of_the_save() {
+        let (rates, funding, loans) = budget();
+        let mut app = App::new();
+        app.insert_resource(MapSeed(1))
+            .insert_resource(MapGrid::new(4, 4))
+            .insert_resource(City::default())
+            .insert_resource(CitizenIdGen::default())
+            .insert_resource(IntersectionIndex::default())
+            .insert_resource(rates.clone())
+            .insert_resource(funding)
+            .insert_resource(loans.clone())
+            .init_resource::<Captured>()
+            .add_systems(Update, capture);
+        app.update();
+
+        let save = app
+            .world_mut()
+            .resource_mut::<Captured>()
+            .0
+            .take()
+            .expect("the snapshot ran");
+        assert_eq!(save.tax_rates, rates);
+        assert_eq!(save.service_funding, funding);
+        assert_eq!(
+            save.loans, loans,
+            "a save that forgets the debt lets a load erase it"
+        );
+    }
+
+    fn save_with(city: City, milestones: simcity_sim::game::milestones::Milestones) -> SaveGameV3 {
+        SaveGameV3 {
+            save_version: 3,
+            seed: 1,
+            map: MapGridV1 {
+                width: 0,
+                height: 0,
+                tiles: Vec::new(),
+            },
+            city,
+            buildings: Vec::new(),
+            citizens: Vec::new(),
+            next_citizen_id: 1,
+            service_stations: Vec::new(),
+            emergency_stats: EmergencyStats::default(),
+            traffic_light_tiles: Vec::new(),
+            tax_rates: Default::default(),
+            service_funding: Default::default(),
+            loans: Default::default(),
+            milestones,
+        }
+    }
+
+    /// A reached milestone comes back with a save even when the city shrank since; a save from
+    /// before milestones counts the population it carries as reached.
+    #[test]
+    fn milestone_reached_milestones_come_back_with_a_save() {
+        use simcity_sim::game::milestones::Milestones;
+
+        let shrunk = City {
+            population: 120,
+            ..City::default()
+        };
+        let mut live = Milestones::default();
+        restore_milestones(
+            &save_with(
+                shrunk,
+                Milestones {
+                    best_population: 300,
+                },
+            ),
+            Some(&mut live),
+        );
+        assert_eq!(live.best_population, 300);
+
+        let older = City {
+            population: 400,
+            ..City::default()
+        };
+        let mut live = Milestones::default();
+        restore_milestones(&save_with(older, Milestones::default()), Some(&mut live));
+        assert_eq!(live.best_population, 400);
+    }
+
+    #[test]
+    fn budget_report_loading_restores_the_budget() {
+        let (rates, funding, loans) = budget();
+        let save = SaveGameV3 {
+            milestones: Default::default(),
+            save_version: 3,
+            seed: 1,
+            map: MapGridV1 {
+                width: 0,
+                height: 0,
+                tiles: Vec::new(),
+            },
+            city: City::default(),
+            buildings: Vec::new(),
+            citizens: Vec::new(),
+            next_citizen_id: 1,
+            service_stations: Vec::new(),
+            emergency_stats: EmergencyStats::default(),
+            traffic_light_tiles: Vec::new(),
+            tax_rates: rates.clone(),
+            service_funding: funding,
+            loans: loans.clone(),
+        };
+
+        let mut live_rates = TaxRates::default();
+        let mut live_funding = ServiceFunding::default();
+        let mut live_loans = Loans::default();
+        restore_budget(
+            &save,
+            Some(&mut live_rates),
+            Some(&mut live_funding),
+            Some(&mut live_loans),
+        );
+        assert_eq!(live_rates, rates);
+        assert_eq!(live_funding, funding);
+        assert_eq!(live_loans, loans);
     }
 }

@@ -15,6 +15,8 @@ pub struct UiState {
     pub sim_speed: SimSpeed,
     /// One-way road mode (when Road tool is selected)
     pub one_way_mode: bool,
+    /// The density the zone tools paint.
+    pub zone_density: crate::game::map::ZoneDensity,
 }
 
 impl Default for UiState {
@@ -25,7 +27,65 @@ impl Default for UiState {
             overlay: OverlayMode::None,
             sim_speed: SimSpeed::X3,
             one_way_mode: false,
+            zone_density: crate::game::map::ZoneDensity::Medium,
         }
+    }
+}
+
+/// A tile the live debug API has put the cursor on, standing in for the pointer.
+///
+/// Automation drives the game from inside it: it has no pointer, and moving the real one is
+/// off-limits. When set, the hovered tile is this tile instead of the one under the window's
+/// cursor. Stays `None` in a player's build — only the dev-only `simcity/input` writes it.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PointerOverride {
+    pub tile: Option<crate::game::map::TilePos>,
+}
+
+/// Whether the pointer is over the player's game interface this frame.
+///
+/// Written by the game interface from the picking hover map, read by map editing: a click on a
+/// panel must not also paint the tile beneath it. Kept apart from [`InputFocus`] on purpose —
+/// the developer UI writes that one whole every frame and would erase this half.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PointerOverGameUi {
+    pub captured: bool,
+}
+
+/// Marks the root of a piece of the player's game interface (not the developer panels).
+///
+/// A contract with the live debug API: `simcity/capture` with `"ui": true` retargets exactly these
+/// roots onto its offscreen camera for the frames it captures, so the game interface can be judged
+/// without a window on screen. Put it on roots only — a marked child would be retargeted apart
+/// from its parent.
+#[derive(Component, Debug, Default, Clone, Copy)]
+pub struct GameUiRoot;
+
+/// Stable identity of the map-seed text field, shared by the toolbar that draws it and by
+/// in-game automation that focuses it. A widget id derived from layout would change with any
+/// edit to the toolbar and silently point automation at nothing.
+pub const SEED_FIELD_ID: &str = "simcity.seed_field";
+
+/// Whether a UI widget currently owns keyboard input.
+///
+/// Written once per frame by the UI layer at the head of `GameSet::Input`, read by every
+/// keyboard consumer. A resource rather than a run condition on purpose: a condition would
+/// have to reach into the UI toolkit, which no test can drive, and the writer changes when
+/// the player-facing UI moves off egui while the consumers stay untouched.
+///
+/// Without it, typing into any text field also drives the game: letters pan the camera,
+/// digits swap the active tool and space toggles pause. The pointer half was already
+/// guarded; this is the keyboard half.
+#[derive(Resource, Debug, Default, Clone, Copy, Eq, PartialEq)]
+pub struct InputFocus {
+    /// A widget is accepting text or otherwise consuming key presses this frame.
+    pub keyboard_captured: bool,
+}
+
+impl InputFocus {
+    /// True when a keyboard shortcut may act on the world this frame.
+    pub fn hotkeys_allowed(self) -> bool {
+        !self.keyboard_captured
     }
 }
 
@@ -38,6 +98,12 @@ pub enum ToolMode {
     FireStation,
     PoliceStation,
     Hospital,
+    PowerPlant,
+    WaterPump,
+    Landfill,
+    School,
+    University,
+    Park,
     TrafficLight,
     Erase,
     Inspect,
@@ -55,9 +121,23 @@ pub enum OverlayMode {
     ServiceCoverage,
     LandValue,
     Pollution,
+    Power,
+    WaterSupply,
+    Garbage,
+    Crime,
+    FireHazard,
+    Health,
+    Education,
+    Attractiveness,
 }
 
 impl OverlayMode {
+    /// A data map a player reads: every overlay but the plain map and the developer path view.
+    /// While one is on, the effects that get in the way of reading it stand aside.
+    pub fn is_data_map(self) -> bool {
+        !matches!(self, OverlayMode::None | OverlayMode::Path)
+    }
+
     /// Parse an overlay by the name the toolbar shows, case-insensitively.
     ///
     /// Exists so the overlays can be driven from a script (BRP) instead of only
@@ -80,6 +160,14 @@ impl OverlayMode {
             "service" | "servicecoverage" => Some(Self::ServiceCoverage),
             "landvalue" => Some(Self::LandValue),
             "pollution" => Some(Self::Pollution),
+            "power" => Some(Self::Power),
+            "watersupply" => Some(Self::WaterSupply),
+            "garbage" => Some(Self::Garbage),
+            "crime" => Some(Self::Crime),
+            "firehazard" | "fire" => Some(Self::FireHazard),
+            "health" => Some(Self::Health),
+            "education" => Some(Self::Education),
+            "attractiveness" => Some(Self::Attractiveness),
             _ => None,
         }
     }

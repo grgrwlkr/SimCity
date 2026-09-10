@@ -144,6 +144,7 @@ pub fn spawn_service_vehicle(
                 // Speed 0 keeps the vehicle stationary.
                 path_handle: path_pool.intern(vec![start_pos]),
                 path_cursor: 0,
+                seq: 0,
                 progress: 0.0,
                 tile_pos: start_pos,
                 speed: 0.0,

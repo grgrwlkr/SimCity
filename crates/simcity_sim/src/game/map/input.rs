@@ -9,11 +9,13 @@ use crate::game::commands::{GameCommand, UndoRedoRequested};
 use crate::game::intersections::IntersectionIndex;
 use crate::game::roads::{RoadCell, RoadDir, RoadKind};
 use crate::game::traffic::TrafficConfig;
-use crate::game::ui_state::{OverlayMode, ToolMode, UiState};
+use crate::game::ui_state::{
+    InputFocus, OverlayMode, PointerOverGameUi, PointerOverride, ToolMode, UiState,
+};
 use crate::game::zone_placement::can_zone_tile;
 
 use super::coords::{cursor_tile, tile_to_world};
-use super::{BuildingKind, HoveredTile, MapConfig, MapGrid, TilePos, ZoneKind};
+use super::{HoveredTile, MapConfig, MapGrid, TilePos, ZoneKind};
 
 #[derive(Component)]
 pub(super) struct CursorHighlight;
@@ -31,22 +33,61 @@ pub(super) struct RoadBuildState {
     pub(super) start: Option<TilePos>,
 }
 
-pub(super) fn build_mode_hotkeys(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut<UiState>) {
-    if keys.just_pressed(KeyCode::Digit1) {
-        ui.tool = match ui.tool {
+pub(super) fn build_mode_hotkeys(
+    keys: Res<ButtonInput<KeyCode>>,
+    focus: Res<InputFocus>,
+    mut ui: ResMut<UiState>,
+) {
+    if !focus.hotkeys_allowed() {
+        return;
+    }
+
+    // One-way applies to whatever road kind is selected, so it is a modifier rather than a
+    // tool: the downstream road builder has always honoured `one_way_mode`, but nothing in
+    // the UI could set it, which left one-way roads unreachable to the player.
+    if keys.just_pressed(ONE_WAY_HOTKEY) {
+        ui.one_way_mode = !ui.one_way_mode;
+        return;
+    }
+
+    if let Some(tool) = TOOL_HOTKEYS
+        .into_iter()
+        .find(|key| keys.just_pressed(*key))
+        .and_then(|key| tool_for_hotkey(ui.tool, key))
+    {
+        ui.tool = tool;
+    }
+}
+
+/// Keys that pick a tool, in the order they are tested when several go down in one frame.
+pub const TOOL_HOTKEYS: [KeyCode; 5] = [
+    KeyCode::Digit1,
+    KeyCode::Digit2,
+    KeyCode::Digit3,
+    KeyCode::Digit4,
+    KeyCode::Digit5,
+];
+
+/// Toggles one-way road building.
+pub const ONE_WAY_HOTKEY: KeyCode = KeyCode::KeyO;
+
+/// The tool `key` selects when `current` is active; `None` for a key that picks no tool.
+///
+/// One table for the hotkey system and for the labels the tool palette prints, so a button can
+/// never advertise a key that does something else.
+pub fn tool_for_hotkey(current: ToolMode, key: KeyCode) -> Option<ToolMode> {
+    match key {
+        KeyCode::Digit1 => Some(match current {
             ToolMode::Road(RoadKind::TwoLane) => ToolMode::Road(RoadKind::FourLane),
             ToolMode::Road(RoadKind::FourLane) => ToolMode::Road(RoadKind::SixLane),
             ToolMode::Road(RoadKind::SixLane) => ToolMode::Road(RoadKind::TwoLane),
             _ => ToolMode::Road(RoadKind::TwoLane),
-        };
-    } else if keys.just_pressed(KeyCode::Digit2) {
-        ui.tool = ToolMode::Residential;
-    } else if keys.just_pressed(KeyCode::Digit3) {
-        ui.tool = ToolMode::Commercial;
-    } else if keys.just_pressed(KeyCode::Digit4) {
-        ui.tool = ToolMode::Industrial;
-    } else if keys.just_pressed(KeyCode::Digit5) {
-        ui.tool = ToolMode::Erase;
+        }),
+        KeyCode::Digit2 => Some(ToolMode::Residential),
+        KeyCode::Digit3 => Some(ToolMode::Commercial),
+        KeyCode::Digit4 => Some(ToolMode::Industrial),
+        KeyCode::Digit5 => Some(ToolMode::Erase),
+        _ => None,
     }
 }
 
@@ -58,8 +99,13 @@ pub(super) fn build_mode_hotkeys(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut
 /// redo stack.
 pub(super) fn handle_undo_redo(
     keys: Res<ButtonInput<KeyCode>>,
+    focus: Res<InputFocus>,
     mut out: MessageWriter<UndoRedoRequested>,
 ) {
+    if !focus.hotkeys_allowed() {
+        return;
+    }
+
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
 
     if ctrl && keys.just_pressed(KeyCode::KeyZ) {
@@ -99,10 +145,17 @@ pub(super) fn update_cursor_highlight(
 
 pub(super) fn update_hovered_tile(
     cfg: Res<MapConfig>,
+    pointer: Res<PointerOverride>,
     q_window: Query<&Window, With<PrimaryWindow>>,
     q_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
     mut hovered: ResMut<HoveredTile>,
 ) {
+    // A tile set from inside the game stands in for the pointer; see `PointerOverride`.
+    if let Some(tile) = pointer.tile {
+        hovered.tile = Some(tile);
+        return;
+    }
+
     let Ok(window) = q_window.single() else {
         hovered.tile = None;
         return;
@@ -114,12 +167,18 @@ pub(super) fn update_hovered_tile(
     hovered.tile = cursor_tile(&cfg, window, camera, cam_gt);
 }
 
+/// Whether a click may edit the map this frame, before the developer UI has its say.
+pub(super) fn map_paint_allowed(ui: &UiState, pointer: PointerOverGameUi) -> bool {
+    ui.tool != ToolMode::Inspect && ui.overlay != OverlayMode::Path && !pointer.captured
+}
+
 #[derive(SystemParam)]
 pub(super) struct CursorPaintParams<'w, 's> {
     pub(super) buttons: Res<'w, ButtonInput<MouseButton>>,
     pub(super) cfg: Res<'w, MapConfig>,
     pub(super) traffic_cfg: Res<'w, TrafficConfig>,
     pub(super) ui_state: Res<'w, UiState>,
+    pub(super) game_ui_pointer: Res<'w, PointerOverGameUi>,
     pub(super) grid: Res<'w, MapGrid>,
     pub(super) intersections: Res<'w, IntersectionIndex>,
     pub(super) q_window: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
@@ -136,7 +195,7 @@ pub(super) fn cursor_paint_to_command(
     mut out: MessageWriter<GameCommand>,
 ) {
     // Building is allowed while paused (city-builder UX).
-    if p.ui_state.tool == ToolMode::Inspect || p.ui_state.overlay == OverlayMode::Path {
+    if !map_paint_allowed(&p.ui_state, *p.game_ui_pointer) {
         return;
     }
 
@@ -180,23 +239,14 @@ pub(super) fn cursor_paint_to_command(
             } else {
                 // Second click: apply the road.
                 let start = road_build.start.unwrap();
-                let tiles = compute_road_line(start, current_tile);
-
-                if !tiles.is_empty() {
-                    // Determine direction from start to end.
-                    let road_dir = compute_road_direction(start, current_tile);
-                    let drive_on_right = p.traffic_cfg.drive_on_right;
-
-                    for pos in tiles {
-                        emit_road_commands(
-                            &mut out,
-                            pos,
-                            kind,
-                            road_dir,
-                            drive_on_right,
-                            p.ui_state.one_way_mode,
-                        );
-                    }
+                for command in road_segment_commands(
+                    start,
+                    current_tile,
+                    kind,
+                    p.traffic_cfg.drive_on_right,
+                    p.ui_state.one_way_mode,
+                ) {
+                    out.write(command);
                 }
 
                 // Reset state for next road segment.
@@ -237,9 +287,21 @@ pub(super) fn cursor_paint_to_command(
                 ToolMode::Commercial => ZoneKind::Commercial,
                 _ => ZoneKind::Industrial,
             };
-            out.write(GameCommand::SetZone { pos: tile, zone });
+            out.write(GameCommand::SetZone {
+                pos: tile,
+                zone,
+                density: p.ui_state.zone_density,
+            });
         }
-        ToolMode::FireStation | ToolMode::PoliceStation | ToolMode::Hospital => {
+        ToolMode::FireStation
+        | ToolMode::PoliceStation
+        | ToolMode::Hospital
+        | ToolMode::PowerPlant
+        | ToolMode::WaterPump
+        | ToolMode::Landfill
+        | ToolMode::School
+        | ToolMode::University
+        | ToolMode::Park => {
             // Pre-validate the full footprint with the same rule the command
             // apply uses (free tiles + road access for the footprint as a
             // whole) so clicks that cannot succeed are dropped early.
@@ -247,10 +309,8 @@ pub(super) fn cursor_paint_to_command(
             if super::commands::validate_building_placement(&p.grid, tile, fw, fl).is_none() {
                 return;
             }
-            let kind = match p.ui_state.tool {
-                ToolMode::FireStation => BuildingKind::FireStation,
-                ToolMode::PoliceStation => BuildingKind::PoliceStation,
-                _ => BuildingKind::Hospital,
+            let Some(kind) = super::preview::placed_building_kind(p.ui_state.tool) else {
+                return;
             };
             out.write(GameCommand::PlaceBuilding { pos: tile, kind });
         }
@@ -325,8 +385,28 @@ pub(super) fn compute_road_direction(start: TilePos, end: TilePos) -> RoadDir {
 }
 
 /// Emit road commands for a single tile position with proper lane layout.
-pub(super) fn emit_road_commands(
-    out: &mut MessageWriter<GameCommand>,
+/// Every `SetRoad` the two-click road tool issues for a segment from `start` to `end`.
+///
+/// Shared by the cursor path and by in-game automation, which has no pointer: driving the road
+/// tool through tile coordinates must reach exactly the commands a player's two clicks reach,
+/// or a check run that way proves nothing about the game.
+pub fn road_segment_commands(
+    start: TilePos,
+    end: TilePos,
+    kind: RoadKind,
+    drive_on_right: bool,
+    one_way: bool,
+) -> Vec<GameCommand> {
+    let road_dir = compute_road_direction(start, end);
+    let mut commands = Vec::new();
+    for pos in compute_road_line(start, end) {
+        road_tile_commands(&mut commands, pos, kind, road_dir, drive_on_right, one_way);
+    }
+    commands
+}
+
+fn road_tile_commands(
+    out: &mut Vec<GameCommand>,
     pos: TilePos,
     kind: RoadKind,
     road_dir: RoadDir,
@@ -346,9 +426,15 @@ pub(super) fn emit_road_commands(
         let lane = (o + half) as u8;
         // Lanes are indexed 0..lanes-1 from rightmost to leftmost in `road_dir`.
         //
+        // - One-way: every lane goes `road_dir`. A one-way road has no oncoming carriageway; laying
+        //   half of it backwards left a lane the route graph ignores (it reads `flow`) but route
+        //   validation and the wrong-way audit accept (they read `dir`), so pre-edit routes kept
+        //   driving against the flow and vehicles on that half stranded.
         // - Right-hand traffic: rightmost half goes `road_dir`, leftmost half goes opposite.
         // - Left-hand traffic:  rightmost half goes opposite, leftmost half goes `road_dir`.
-        let lane_dir = if drive_on_right {
+        let lane_dir = if one_way {
+            road_dir
+        } else if drive_on_right {
             if (lane as i32) < half {
                 road_dir
             } else {
@@ -371,7 +457,7 @@ pub(super) fn emit_road_commands(
             crate::game::roads::RoadFlow::TwoWay
         };
 
-        out.write(GameCommand::SetRoad {
+        out.push(GameCommand::SetRoad {
             pos: lane_pos,
             road: RoadCell {
                 kind,

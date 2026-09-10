@@ -70,7 +70,7 @@ mod tests {
 
     use super::*;
     use crate::game::emergencies::EmergencyStats;
-    use crate::game::map::{TileKind, TilePos, ZoneKind};
+    use crate::game::map::{TileKind, TilePos, ZoneDensity, ZoneKind};
     use crate::game::persistence_contract::{MapGridV1, MapTileV1, SaveGameV3};
     use crate::game::roads::RoadCell;
     use crate::game::scenarios::Scenario;
@@ -96,9 +96,31 @@ mod tests {
                 terrain: TileKind::Grass,
                 road: RoadCell::none(),
                 zone: ZoneKind::None,
+                density: ZoneDensity::Medium,
                 building: None,
             }],
         }
+    }
+
+    #[test]
+    fn zone_density_survives_the_save_and_an_old_save_zones_at_medium() {
+        let tile = MapTileV1 {
+            height: 0,
+            water: false,
+            terrain: TileKind::Grass,
+            road: RoadCell::none(),
+            zone: ZoneKind::Residential,
+            density: ZoneDensity::High,
+            building: None,
+        };
+        let text = ron::ser::to_string(&tile).expect("a tile serialises");
+        let back: MapTileV1 = ron::from_str(&text).expect("and parses back");
+        assert_eq!(back.density, ZoneDensity::High);
+
+        let old = text.replace("density:High,", "");
+        assert_ne!(old, text, "the saved tile names its density: {text}");
+        let legacy: MapTileV1 = ron::from_str(&old).expect("a tile saved before densities parses");
+        assert_eq!(legacy.density, ZoneDensity::Medium);
     }
 
     #[test]
@@ -138,10 +160,12 @@ mod tests {
             terrain: TileKind::Grass,
             road: four_lane,
             zone: ZoneKind::None,
+            density: ZoneDensity::Medium,
             building: None,
         });
 
         let save = SaveGameV3 {
+            milestones: Default::default(),
             save_version: 3,
             seed: 1,
             map,
@@ -152,6 +176,23 @@ mod tests {
             service_stations: Vec::new(),
             emergency_stats: EmergencyStats::default(),
             traffic_light_tiles: vec![TilePos { x: 3, y: 4 }],
+            tax_rates: {
+                let mut rates = crate::game::economy::TaxRates::default();
+                rates.set(
+                    crate::game::economy::TaxZone::Commercial,
+                    crate::game::economy::WealthClass::High,
+                    14,
+                );
+                rates
+            },
+            service_funding: crate::game::economy::ServiceFunding::default(),
+            loans: crate::game::economy::Loans {
+                active: vec![crate::game::economy::Loan {
+                    principal: 10_000,
+                    monthly_payment: 889,
+                    months_left: 5,
+                }],
+            },
         };
 
         let pretty = ron::ser::PrettyConfig::new();
@@ -159,6 +200,14 @@ mod tests {
         let parsed: SaveGameV3 = ron::from_str(&text).expect("deserialize SaveGameV3");
         assert_eq!(parsed.save_version, 3);
         assert_eq!(parsed.traffic_light_tiles, vec![TilePos { x: 3, y: 4 }]);
+        assert_eq!(
+            parsed.tax_rates.get(
+                crate::game::economy::TaxZone::Commercial,
+                crate::game::economy::WealthClass::High
+            ),
+            14
+        );
+        assert_eq!(parsed.loans.active.len(), 1, "open loans survive the file");
         // The FourLane cell survives the roundtrip with every field intact.
         let roundtripped = parsed.map.tiles[1].road;
         assert_eq!(roundtripped.kind, RoadKind::FourLane);

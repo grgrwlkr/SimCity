@@ -3,7 +3,8 @@
 //! This creates a realistic city layout with:
 //! - All road types (TwoLane, FourLane, SixLane)
 //! - Zoned R/C/I areas for organic growth (no prebuilt R/C/I buildings)
-//! - Prebuilt service buildings (FireStation, PoliceStation, Hospital)
+//! - Prebuilt service buildings (FireStation, PoliceStation, Hospital) and utility stations
+//!   (PowerPlant, WaterPump, Landfill)
 //! - Water features
 //! - Proper intersections with traffic lights
 //! - Height variation
@@ -559,6 +560,7 @@ pub fn generate_test_city(
                         kind,
                         city,
                         true,
+                        simcity_sim::game::buildings::BuildingProfile::default(),
                     );
                     return true;
                 }
@@ -620,6 +622,36 @@ pub fn generate_test_city(
             y: secondary_y2 + 5,
         },
         BuildingKind::PoliceStation,
+    );
+
+    // Utility stations beside the highway. Supply travels along roads, so one of each on the
+    // connected network lights the whole city; without them nothing zoned would grow.
+    place_service_building(
+        commands,
+        grid,
+        TilePos {
+            x: arterial1_x - 8,
+            y: highway_y - 3,
+        },
+        BuildingKind::PowerPlant,
+    );
+    place_service_building(
+        commands,
+        grid,
+        TilePos {
+            x: arterial2_x + 8,
+            y: highway_y - 3,
+        },
+        BuildingKind::WaterPump,
+    );
+    place_service_building(
+        commands,
+        grid,
+        TilePos {
+            x: arterial2_x - 8,
+            y: highway_y - 6,
+        },
+        BuildingKind::Landfill,
     );
 
     // =========================================================================

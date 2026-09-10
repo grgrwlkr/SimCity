@@ -78,6 +78,11 @@ pub struct Vehicle {
     /// Flag indicating if vehicle is currently reversing (max 10 km/h, only when stuck,
     /// within the current tile only — see the reverse branch in movement/drive.rs).
     pub is_reversing: bool,
+
+    /// This vehicle's place in the order vehicles entered the city, from `VehicleSeqGen`. Ties
+    /// between vehicles are broken on it, never on `Entity`: entity ids are handed out while
+    /// systems run in parallel, so the same city can give the same vehicle different ids.
+    pub seq: u64,
 }
 
 impl Default for Vehicle {
@@ -94,6 +99,7 @@ impl Default for Vehicle {
             prev_world_pos: Vec2::ZERO,
             curr_world_pos: Vec2::ZERO,
             is_reversing: false,
+            seq: 0,
         }
     }
 }

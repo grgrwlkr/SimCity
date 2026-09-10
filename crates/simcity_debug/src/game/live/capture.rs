@@ -27,6 +27,9 @@ use serde_json::{Value, json};
 use simcity_core::game::camera::MainCamera;
 
 use super::stats::FrameStats;
+use bevy::ui::UiTargetCamera;
+use bevy::window::PrimaryWindow;
+use simcity_core::game::ui_state::GameUiRoot;
 
 /// Default size of the offscreen target — 720p is enough to judge a scene and small
 /// enough that a capture costs a few hundred kilobytes rather than five megabytes.
@@ -35,8 +38,15 @@ const DEFAULT_SIZE: UVec2 = UVec2::new(1280, 720);
 /// activated on the first call, and a freshly activated camera has nothing in its target
 /// until it has run through the render graph.
 const DEFAULT_SETTLE_FRAMES: u32 = 3;
+/// Frames an interface capture waits at least: layout and the glyph atlas need their first
+/// frames after the eye switches on. An estimate until measured on a live instance.
+const UI_SETTLE_FRAMES: u32 = 6;
 /// Give up rather than hold a BRP request open forever if a frame never arrives.
 const TIMEOUT_FRAMES: u32 = 900;
+/// Largest side a capture may ask for. This is `wgpu`'s default
+/// `max_texture_dimension_2d`, so beyond it the texture would be refused by the driver
+/// anyway — refusing here turns a failure deep in the renderer into a plain answer.
+const MAX_CAPTURE_SIZE: u32 = 8192;
 
 // ---------------------------------------------------------------------------
 // Request
@@ -69,6 +79,9 @@ pub struct CaptureRequest {
     pub size: Option<UVec2>,
     pub source: CaptureSource,
     pub settle_frames: u32,
+    /// Retarget the game interface onto the eye for this capture. Offscreen only; takes the
+    /// window's size and scale, so the layout is the one a player sees.
+    pub ui: bool,
 }
 
 impl CaptureRequest {
@@ -98,15 +111,9 @@ impl CaptureRequest {
             return Err(format!("`path` must end in .png, got {path:?}"));
         }
 
-        let size = match (
-            params.get("width").and_then(Value::as_u64),
-            params.get("height").and_then(Value::as_u64),
-        ) {
+        let size = match (dimension(params, "width")?, dimension(params, "height")?) {
             (None, None) => None,
-            (Some(0), _) | (_, Some(0)) => {
-                return Err("`width` and `height` must be above zero".to_string());
-            }
-            (Some(width), Some(height)) => Some(UVec2::new(width as u32, height as u32)),
+            (Some(width), Some(height)) => Some(UVec2::new(width, height)),
             (Some(_), None) => return Err("`width` was given without `height`".to_string()),
             (None, Some(_)) => return Err("`height` was given without `width`".to_string()),
         };
@@ -128,13 +135,71 @@ impl CaptureRequest {
                 frames.min(u64::from(TIMEOUT_FRAMES)) as u32
             });
 
+        let ui = match params.get("ui") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(flag)) => *flag,
+            Some(other) => return Err(format!("`ui` must be true or false, got {other}")),
+        };
+        if ui && source == CaptureSource::Window {
+            return Err(
+                "`ui` retargets the game interface onto the offscreen eye; a window \
+                        capture already carries the interface"
+                    .to_string(),
+            );
+        }
+        if ui && size.is_some() {
+            return Err(
+                "a `ui` capture takes the window's size so the layout is the one a \
+                        player sees; drop `width` and `height`"
+                    .to_string(),
+            );
+        }
+        let settle_frames = if ui {
+            settle_frames.max(UI_SETTLE_FRAMES)
+        } else {
+            settle_frames
+        };
+
         Ok(Self {
             path: path.to_string(),
             size,
             source,
             settle_frames,
+            ui,
         })
     }
+}
+
+/// Read one side of a requested capture size.
+///
+/// The range is checked on the way in, before anything narrows: reading as `u64` and
+/// casting afterwards let `2^32` past a test for zero and then made it zero, so a caller
+/// could ask for a texture of no width and be told nothing was wrong. `u32::try_from`
+/// puts the check and the type in the same place. A value out of range is also told apart
+/// from an absent field — `as_u64` answers `None` to both, and reporting a negative width
+/// as a missing one sends the caller hunting for a field they did supply.
+fn dimension(params: &Value, key: &str) -> Result<Option<u32>, String> {
+    let Some(value) = params.get(key) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+
+    let side = value
+        .as_u64()
+        .and_then(|side| u32::try_from(side).ok())
+        .ok_or_else(|| format!("`{key}` must be a whole number of pixels, got {value}"))?;
+
+    if side == 0 {
+        return Err(format!("`{key}` must be above zero"));
+    }
+    if side > MAX_CAPTURE_SIZE {
+        return Err(format!(
+            "`{key}` is {side}, above the {MAX_CAPTURE_SIZE} px a texture can be"
+        ));
+    }
+    Ok(Some(side))
 }
 
 // ---------------------------------------------------------------------------
@@ -318,6 +383,10 @@ pub fn spawn_eye(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
 pub struct EyeControl {
     pub active: bool,
     pub size: Option<UVec2>,
+    /// The game interface is retargeted onto the eye while it is active.
+    pub ui: bool,
+    /// Scale factor the eye's target takes for an interface capture.
+    pub ui_scale: f32,
 }
 
 /// The pose the eye copies from. Spelled out as an alias because clippy rightly objects to
@@ -402,6 +471,107 @@ pub fn apply_eye_control(
 // Handler
 // ---------------------------------------------------------------------------
 
+/// The size and scale an interface capture renders at: the window's, shrunk together when the
+/// window is larger than a texture can be, so the logical layout stays the player's.
+pub fn ui_capture_size(physical: UVec2, scale_factor: f32) -> (UVec2, f32) {
+    let longest = physical.x.max(physical.y);
+    if longest <= MAX_CAPTURE_SIZE {
+        return (physical, scale_factor);
+    }
+    let shrink = MAX_CAPTURE_SIZE as f32 / longest as f32;
+    let side = |value: u32| ((value as f32 * shrink).round() as u32).clamp(1, MAX_CAPTURE_SIZE);
+    (
+        UVec2::new(side(physical.x), side(physical.y)),
+        scale_factor * shrink,
+    )
+}
+
+/// A game-interface root currently pointed at the eye, with the target it had before.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct RetargetedForCapture {
+    pub previous: Option<Entity>,
+}
+
+/// Game-interface roots with their own target, if any, and the target they had before a capture.
+type GameUiRoots<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        Option<&'static UiTargetCamera>,
+        Option<&'static RetargetedForCapture>,
+    ),
+    With<GameUiRoot>,
+>;
+
+/// Point the game interface at the eye while it captures, and put it back afterwards.
+///
+/// Retargets the real roots rather than drawing a copy: hover, pressed and focus live on the
+/// original entities, so a copy would show a different interface from the one being judged. A
+/// root that had no target of its own gets none back — pinning it to the main camera would take
+/// it out of the default camera selection for good.
+pub fn retarget_game_ui_to_eye(
+    control: Res<EyeControl>,
+    eye: Option<Res<OffscreenEye>>,
+    roots: GameUiRoots,
+    mut targets: Query<&mut RenderTarget, With<OffscreenEyeCamera>>,
+    mut commands: Commands,
+) {
+    let Some(eye) = eye else {
+        return;
+    };
+
+    if control.active && control.ui {
+        for (root, target, retargeted) in &roots {
+            if retargeted.is_none() {
+                commands.entity(root).insert((
+                    UiTargetCamera(eye.camera),
+                    RetargetedForCapture {
+                        previous: target.map(|target| target.0),
+                    },
+                ));
+            }
+        }
+        set_eye_scale(&mut targets, control.ui_scale);
+        return;
+    }
+
+    let mut restored = false;
+    for (root, _, retargeted) in &roots {
+        let Some(retargeted) = retargeted else {
+            continue;
+        };
+        let mut entity = commands.entity(root);
+        match retargeted.previous {
+            Some(camera) => {
+                entity.insert(UiTargetCamera(camera));
+            }
+            None => {
+                entity.remove::<UiTargetCamera>();
+            }
+        }
+        entity.remove::<RetargetedForCapture>();
+        restored = true;
+    }
+    if restored {
+        set_eye_scale(&mut targets, 1.0);
+    }
+}
+
+/// Write the eye's target scale only when it differs, so the target is not marked changed on
+/// every frame of a capture.
+fn set_eye_scale(targets: &mut Query<&mut RenderTarget, With<OffscreenEyeCamera>>, scale: f32) {
+    for mut target in targets.iter_mut() {
+        let differs = matches!(
+            &*target,
+            RenderTarget::Image(image) if (image.scale_factor - scale).abs() > f32::EPSILON
+        );
+        if differs && let RenderTarget::Image(image) = &mut *target {
+            image.scale_factor = scale;
+        }
+    }
+}
+
 /// `simcity/capture` — one call in, one PNG plus its statistics out.
 pub fn capture_handler(
     In(params): In<Option<Value>>,
@@ -414,8 +584,30 @@ pub fn capture_handler(
     match step {
         Step::Prepare => {
             if request.source == CaptureSource::Offscreen {
+                let window = world
+                    .query_filtered::<&Window, With<PrimaryWindow>>()
+                    .iter(world)
+                    .next()
+                    .map(|window| {
+                        (
+                            UVec2::new(
+                                window.resolution.physical_width(),
+                                window.resolution.physical_height(),
+                            ),
+                            window.resolution.scale_factor(),
+                        )
+                    });
                 let mut control = world.resource_mut::<EyeControl>();
-                control.size = Some(request.size.unwrap_or(DEFAULT_SIZE));
+                if request.ui {
+                    let (physical, scale) = window.unwrap_or((DEFAULT_SIZE, 1.0));
+                    let (size, scale) = ui_capture_size(physical, scale);
+                    control.size = Some(size);
+                    control.ui = true;
+                    control.ui_scale = scale;
+                } else {
+                    control.size = Some(request.size.unwrap_or(DEFAULT_SIZE));
+                    control.ui = false;
+                }
                 control.active = true;
             }
             Ok(None)
@@ -458,7 +650,14 @@ fn shoot(world: &mut World, request: &CaptureRequest) {
                     .set_outcome(&request.path, Err("offscreen eye is not spawned".into()));
                 return;
             };
-            Screenshot::image(eye.image.clone())
+            let (camera, image) = (eye.camera, eye.image.clone());
+            // A render target's identity includes its scale factor, so the screenshot names the
+            // target exactly as the eye holds it. `Screenshot::image` asks for scale 1.0 and, for
+            // an interface capture at the window's scale, reads a texture nothing rendered into.
+            match world.get::<RenderTarget>(camera) {
+                Some(target) => Screenshot(target.clone()),
+                None => Screenshot::image(image),
+            }
         }
         CaptureSource::Window => Screenshot::primary_window(),
     };
@@ -525,6 +724,7 @@ mod tests {
             size: None,
             source: CaptureSource::Offscreen,
             settle_frames: 2,
+            ui: false,
         }
     }
 
@@ -580,6 +780,67 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.size, Some(UVec2::new(640, 360)));
         assert_eq!(parsed.source, CaptureSource::Window);
+    }
+
+    #[test]
+    fn parse_rejects_a_size_that_would_truncate_to_zero() {
+        // 2^32 is not zero as a u64, so a check that runs before the cast lets it through
+        // and the cast then makes it zero — a texture of no width, asked for politely.
+        let err = CaptureRequest::parse(Some(&json!({
+            "path": "/tmp/a.png",
+            "width": 4_294_967_296u64,
+            "height": 720,
+        })))
+        .unwrap_err();
+        assert!(
+            err.contains("width"),
+            "the error should name the field: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_a_size_past_what_a_texture_can_be() {
+        let err = CaptureRequest::parse(Some(&json!({
+            "path": "/tmp/a.png",
+            "width": 100_000,
+            "height": 100_000,
+        })))
+        .unwrap_err();
+        assert!(
+            err.contains(&MAX_CAPTURE_SIZE.to_string()),
+            "the error should name the limit: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_accepts_the_limit_itself() {
+        let parsed = CaptureRequest::parse(Some(&json!({
+            "path": "/tmp/a.png",
+            "width": MAX_CAPTURE_SIZE,
+            "height": MAX_CAPTURE_SIZE,
+        })))
+        .expect("the limit is a usable size");
+        assert_eq!(
+            parsed.size,
+            Some(UVec2::new(MAX_CAPTURE_SIZE, MAX_CAPTURE_SIZE))
+        );
+    }
+
+    #[test]
+    fn parse_says_what_is_wrong_with_a_negative_size() {
+        // `as_u64` answers `None` for a negative number exactly as it does for an absent
+        // field, so a naive reading reports "width was given without height" — which sends
+        // the caller looking for a field they did supply.
+        let err = CaptureRequest::parse(Some(&json!({
+            "path": "/tmp/a.png",
+            "width": -8,
+            "height": 720,
+        })))
+        .unwrap_err();
+        assert!(
+            err.contains("width") && !err.contains("without"),
+            "the error should be about the bad width, not about a missing field: {err}"
+        );
     }
 
     #[test]
@@ -683,5 +944,169 @@ mod tests {
             !jobs.is_tracking("/tmp/never.png"),
             "a timed-out job is forgotten"
         );
+    }
+    #[test]
+    fn parse_reads_the_ui_flag() {
+        let request =
+            CaptureRequest::parse(Some(&json!({ "path": "/tmp/a.png", "ui": true }))).unwrap();
+        assert!(request.ui);
+        assert!(
+            request.settle_frames >= UI_SETTLE_FRAMES,
+            "an interface capture waits for layout and glyphs"
+        );
+    }
+
+    #[test]
+    fn parse_refuses_a_ui_flag_that_is_not_a_bool() {
+        let err =
+            CaptureRequest::parse(Some(&json!({ "path": "/tmp/a.png", "ui": "yes" }))).unwrap_err();
+        assert!(err.contains("`ui`"), "{err}");
+    }
+
+    #[test]
+    fn parse_refuses_ui_on_a_window_capture() {
+        let err = CaptureRequest::parse(Some(
+            &json!({ "path": "/tmp/a.png", "ui": true, "source": "window" }),
+        ))
+        .unwrap_err();
+        assert!(err.contains("window"), "{err}");
+    }
+
+    #[test]
+    fn parse_refuses_ui_with_an_explicit_size() {
+        let err = CaptureRequest::parse(Some(
+            &json!({ "path": "/tmp/a.png", "ui": true, "width": 800, "height": 600 }),
+        ))
+        .unwrap_err();
+        assert!(err.contains("width"), "{err}");
+    }
+
+    #[test]
+    fn a_ui_capture_takes_the_window_size_and_scale() {
+        assert_eq!(
+            ui_capture_size(UVec2::new(4000, 2000), 2.0),
+            (UVec2::new(4000, 2000), 2.0)
+        );
+    }
+
+    #[test]
+    fn a_ui_capture_larger_than_a_texture_shrinks_size_and_scale_together() {
+        let (size, scale) = ui_capture_size(UVec2::new(10_000, 5_000), 2.0);
+        assert_eq!(size, UVec2::new(MAX_CAPTURE_SIZE, 4096));
+        let expected = 2.0 * MAX_CAPTURE_SIZE as f32 / 10_000.0;
+        assert!(
+            (scale - expected).abs() < 1e-4,
+            "the logical layout must stay the player's: scale {scale}, expected {expected}"
+        );
+    }
+
+    fn eye_scale(world: &World, eye: Entity) -> f32 {
+        match world.get::<RenderTarget>(eye) {
+            Some(RenderTarget::Image(target)) => target.scale_factor,
+            _ => panic!("the eye must render into an image"),
+        }
+    }
+
+    #[test]
+    fn game_ui_roots_follow_the_eye_while_it_captures_and_come_back_after() {
+        let mut app = App::new();
+        let main = app.world_mut().spawn_empty().id();
+        let eye = app
+            .world_mut()
+            .spawn((
+                OffscreenEyeCamera,
+                RenderTarget::Image(ImageRenderTarget::from(Handle::<Image>::default())),
+            ))
+            .id();
+        app.insert_resource(OffscreenEye {
+            camera: eye,
+            image: Handle::default(),
+            size: DEFAULT_SIZE,
+        });
+        app.insert_resource(EyeControl {
+            active: true,
+            size: None,
+            ui: true,
+            ui_scale: 2.0,
+        });
+        let free = app.world_mut().spawn(GameUiRoot).id();
+        let pinned = app
+            .world_mut()
+            .spawn((GameUiRoot, UiTargetCamera(main)))
+            .id();
+        let unrelated = app.world_mut().spawn(UiTargetCamera(main)).id();
+        app.add_systems(Update, retarget_game_ui_to_eye);
+
+        app.update();
+        let world = app.world();
+        assert_eq!(world.get::<UiTargetCamera>(free).map(|t| t.0), Some(eye));
+        assert_eq!(world.get::<UiTargetCamera>(pinned).map(|t| t.0), Some(eye));
+        assert_eq!(
+            world.get::<UiTargetCamera>(unrelated).map(|t| t.0),
+            Some(main),
+            "only game-interface roots move"
+        );
+        assert!(
+            (eye_scale(world, eye) - 2.0).abs() < 1e-6,
+            "eye takes the window scale"
+        );
+
+        app.world_mut().resource_mut::<EyeControl>().active = false;
+        app.update();
+        let world = app.world();
+        assert!(
+            world.get::<UiTargetCamera>(free).is_none(),
+            "a root that had no target gets none back, not the main camera"
+        );
+        assert_eq!(world.get::<UiTargetCamera>(pinned).map(|t| t.0), Some(main));
+        assert!(
+            world.get::<RetargetedForCapture>(free).is_none(),
+            "the bookkeeping is cleared once the interface is back"
+        );
+        assert!(
+            (eye_scale(world, eye) - 1.0).abs() < 1e-6,
+            "eye scale goes back to 1.0"
+        );
+    }
+    #[test]
+    fn a_capture_reads_the_target_exactly_as_the_eye_renders_into_it() {
+        // A render target's identity includes its scale factor. A screenshot of the same image
+        // at scale 1.0 reads a texture that an eye rendering at the window's scale never wrote:
+        // measured live, every `ui` capture on a scale-2 window came back fully black.
+        let mut world = World::new();
+        world.init_resource::<CaptureJobs>();
+        let image = Handle::<Image>::default();
+        let mut target = ImageRenderTarget::from(image.clone());
+        target.scale_factor = 2.0;
+        let eye = world
+            .spawn((OffscreenEyeCamera, RenderTarget::Image(target)))
+            .id();
+        world.insert_resource(OffscreenEye {
+            camera: eye,
+            image,
+            size: DEFAULT_SIZE,
+        });
+        let request = CaptureRequest {
+            path: "/tmp/a.png".to_string(),
+            size: None,
+            source: CaptureSource::Offscreen,
+            settle_frames: UI_SETTLE_FRAMES,
+            ui: true,
+        };
+
+        shoot(&mut world, &request);
+
+        let screenshot = world
+            .query::<&Screenshot>()
+            .single(&world)
+            .expect("one screenshot requested");
+        match &screenshot.0 {
+            RenderTarget::Image(asked) => assert!(
+                (asked.scale_factor - 2.0).abs() < 1e-6,
+                "the screenshot must name the eye's target at its scale, got {}",
+                asked.scale_factor
+            ),
+            other => panic!("an offscreen capture must read an image, got {other:?}"),
+        }
     }
 }

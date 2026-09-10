@@ -241,6 +241,65 @@ fn probe_first_divergence_tick() {
         out
     }
 
+    /// One row per vehicle, bit-exact, keyed and sorted by its sequence number: which one diverged
+    /// and in what. Not by entity: entity ids differ between runs without the city differing.
+    type VehicleRow = (u64, usize, u32, u32, u32, u32, String);
+    fn vehicle_rows(app: &mut App) -> Vec<VehicleRow> {
+        let world = app.world_mut();
+        let mut q = world.query::<(&traffic::Vehicle, Option<&traffic::VehicleTrafficState>)>();
+        let mut rows: Vec<VehicleRow> = q
+            .iter(world)
+            .map(|(v, state)| {
+                (
+                    v.seq,
+                    v.path_cursor,
+                    v.progress.to_bits(),
+                    v.speed.to_bits(),
+                    v.curr_world_pos.x.to_bits(),
+                    v.curr_world_pos.y.to_bits(),
+                    format!("{state:?}"),
+                )
+            })
+            .collect();
+        rows.sort_unstable_by_key(|row| row.0);
+        rows
+    }
+
+    fn print_vehicle_diff(label: &str, a: &[VehicleRow], b: &[VehicleRow]) {
+        use std::collections::BTreeMap;
+        let by_a: BTreeMap<u64, &VehicleRow> = a.iter().map(|row| (row.0, row)).collect();
+        let by_b: BTreeMap<u64, &VehicleRow> = b.iter().map(|row| (row.0, row)).collect();
+        for (entity, row_a) in &by_a {
+            match by_b.get(entity) {
+                Some(row_b) if row_a == row_b => {}
+                Some(row_b) => {
+                    println!(
+                        "  {label} vehicle {entity}: A cursor {} progress {} speed {} pos ({}, {}) {}",
+                        row_a.1,
+                        f32::from_bits(row_a.2),
+                        f32::from_bits(row_a.3),
+                        f32::from_bits(row_a.4),
+                        f32::from_bits(row_a.5),
+                        row_a.6
+                    );
+                    println!(
+                        "  {label} vehicle {entity}: B cursor {} progress {} speed {} pos ({}, {}) {}",
+                        row_b.1,
+                        f32::from_bits(row_b.2),
+                        f32::from_bits(row_b.3),
+                        f32::from_bits(row_b.4),
+                        f32::from_bits(row_b.5),
+                        row_b.6
+                    );
+                }
+                None => println!("  {label} vehicle {entity}: only in A"),
+            }
+        }
+        for entity in by_b.keys().filter(|entity| !by_a.contains_key(entity)) {
+            println!("  {label} vehicle {entity}: only in B");
+        }
+    }
+
     // Mirror the pin's structure exactly (sequential full runs, not alternating ticks): the
     // residual flake reproduces under the pin's access pattern but not under tick-interleaving.
     let mut a = build_headless_game();
@@ -250,17 +309,25 @@ fn probe_first_divergence_tick() {
 
     let mut series_a: Vec<[i64; 10]> = Vec::with_capacity(TICKS);
     let mut pairs_a: Vec<Vec<(u64, i32, i32)>> = Vec::with_capacity(TICKS);
+    let mut vehicles_a: Vec<Vec<VehicleRow>> = Vec::with_capacity(TICKS);
     for _ in 0..TICKS {
         tick(&mut a, 1);
         series_a.push(lite(&mut a));
         pairs_a.push(assignment_pairs(&mut a));
+        vehicles_a.push(vehicle_rows(&mut a));
     }
 
+    let mut previous_b: Vec<VehicleRow> = Vec::new();
     for t in 0..TICKS {
         tick(&mut b, 1);
         let fa = series_a[t];
         let fb = lite(&mut b);
-        if fa != fb {
+        let rows_b = vehicle_rows(&mut b);
+        if fa != fb || vehicles_a[t] != rows_b {
+            print_vehicle_diff("tick", &vehicles_a[t], &rows_b);
+            if t > 0 {
+                print_vehicle_diff("previous tick", &vehicles_a[t - 1], &previous_b);
+            }
             let pa: std::collections::BTreeSet<_> = pairs_a[t].iter().copied().collect();
             let pb: std::collections::BTreeSet<_> = assignment_pairs(&mut b).into_iter().collect();
             println!(
@@ -295,6 +362,7 @@ fn probe_first_divergence_tick() {
             }
             panic!("diverged at tick {t}");
         }
+        previous_b = rows_b;
     }
     println!("no divergence within {TICKS} ticks");
 }

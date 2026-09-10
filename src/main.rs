@@ -35,12 +35,20 @@ fn present_mode_from_env(value: Option<&str>) -> bevy::window::PresentMode {
 fn main() {
     let mut app = App::new();
     app.insert_resource(ClearColor(Color::srgb(0.08, 0.09, 0.11)));
+    // A measurement run (`SIMCITY_PERF_RUN`) loads the city, times its frames and exits — see
+    // `simcity_debug::game::perf_run`. It works in every build, because the build it exists for
+    // is the one without `dev`.
+    let perf = simcity_debug::game::perf_run::PerfRunConfig::from_env();
     // How this instance was launched: which BRP port, and whether it puts a window on the
-    // screen at all. Release builds have no remote stack, so they are always a normal window.
+    // screen at all. Release builds have no remote stack, so they are a normal window unless a
+    // measurement run asks for a hidden one.
     #[cfg(feature = "dev")]
     let live = simcity_debug::game::live::runtime::LiveRuntimeConfig::from_env();
     #[cfg(not(feature = "dev"))]
-    let live = simcity_debug::game::live::runtime::LiveRuntimeConfig::default();
+    let live = simcity_debug::game::perf_run::launch_config(
+        perf.is_some(),
+        simcity_debug::game::live::runtime::LiveRuntimeConfig::from_env(),
+    );
     // Remote debugging (BRP + HTTP transport) is dev-only — see the import block above.
     #[cfg(feature = "dev")]
     {
@@ -54,35 +62,44 @@ fn main() {
         // diagnostics) into the existing RemoteMethods resource.
         app.add_plugins(bevy_brp_extras::BrpExtrasPlugin::default());
     }
-    app.add_plugins(
-        DefaultPlugins
-            .set(LogPlugin {
-                // Keeps the last log lines in memory so `simcity/observe` can hand them to a
-                // caller that has no way to see this process's stdout.
-                custom_layer: simcity_debug::game::live::observe::log_tail_layer,
-                ..default()
-            })
-            .set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: "SimCity (Bevy)".to_string(),
-                    resolution: (2000, 1000).into(),
-                    present_mode: present_mode_from_env(
-                        std::env::var("SIMCITY_PRESENT_MODE").ok().as_deref(),
-                    ),
-                    // A hidden instance never appears on screen and never takes focus, so several
-                    // of them can be driven over BRP while a person works on the same machine.
-                    visible: live.window.visible(),
-                    ..default()
-                }),
+    let mut plugins = DefaultPlugins
+        .set(LogPlugin {
+            // Keeps the last log lines in memory so `simcity/observe` can hand them to a
+            // caller that has no way to see this process's stdout.
+            custom_layer: simcity_debug::game::live::observe::log_tail_layer,
+            ..default()
+        })
+        .set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "SimCity (Bevy)".to_string(),
+                resolution: (2000, 1000).into(),
+                present_mode: present_mode_from_env(
+                    std::env::var("SIMCITY_PRESENT_MODE").ok().as_deref(),
+                ),
+                // A hidden instance never appears on screen and never takes focus, so several
+                // of them can be driven over BRP while a person works on the same machine.
+                visible: live.window.visible(),
                 ..default()
             }),
-    );
+            ..default()
+        });
+    // A measurement run keeps the GPU timing queries off: see `measurement_render_settings`.
+    if perf.is_some() {
+        plugins = plugins.set(bevy::render::RenderPlugin {
+            render_creation: simcity_debug::game::perf_run::measurement_render_settings().into(),
+            ..default()
+        });
+    }
+    app.add_plugins(plugins);
     // Bevy-native FPS/frame-time diagnostics (must be after DefaultPlugins). Under `dev`,
     // BrpExtrasPlugin's `diagnostics` feature already added it — re-adding panics.
     if !app.is_plugin_added::<FrameTimeDiagnosticsPlugin>() {
         app.add_plugins(FrameTimeDiagnosticsPlugin::default());
     }
     app.add_plugins(GamePlugin);
+    if let Some(config) = perf {
+        app.add_plugins(simcity_debug::game::perf_run::PerfRunPlugin(config));
+    }
     app.add_systems(bevy::app::Last, dump_on_window_close_system);
     app.run();
 }

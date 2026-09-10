@@ -10,3 +10,8 @@ rand = { workspace = true }
 ron = { workspace = true }
 serde = { workspace = true }
 simcity_core = { path = "../simcity_core" }
+
+[features]
+# Dev-only startup convenience: auto-enter InGame and load the test city. Off in a shipped
+# build, where the main menu and the scenario catalogue are the real entry point.
+dev = []

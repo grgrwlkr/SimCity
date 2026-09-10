@@ -3,9 +3,10 @@ use rand::RngExt;
 
 use super::components::*;
 use crate::game::demand::RciDemand;
-use crate::game::map::BuildingKind;
+use crate::game::map::{BuildingKind, MapGrid};
 use crate::game::notifications::{NotificationKind, Notifications};
 use crate::game::sim::City;
+use crate::game::utilities::UtilityNetwork;
 
 #[allow(clippy::too_many_arguments)]
 pub fn upgrade_buildings(
@@ -15,7 +16,10 @@ pub fn upgrade_buildings(
     _city: ResMut<City>,
     mut notifications: Option<ResMut<Notifications>>,
     mut upgrade_clock: ResMut<BuildingUpgradeClock>,
-    mut q_buildings: Query<&mut Building>,
+    mut q_buildings: Query<(&mut Building, &BuildingProfile)>,
+    grid: Res<MapGrid>,
+    network: Res<UtilityNetwork>,
+    fields: Option<Res<crate::game::city_fields::CityFields>>,
 ) {
     let dt = time.delta_secs();
 
@@ -26,32 +30,18 @@ pub fn upgrade_buildings(
         return;
     }
 
-    // Check if notifications are available once
-    let has_notifications = notifications.is_some();
-
-    for mut building in q_buildings.iter_mut() {
-        // Only upgrade residential, commercial, and industrial buildings
-        if !matches!(
-            building.kind,
-            BuildingKind::Residential | BuildingKind::Commercial | BuildingKind::Industrial
-        ) {
-            continue;
-        }
-
-        // Already at max level
-        if building.level >= 3 {
-            continue;
-        }
-
-        // Check demand
-        let demand_ok = match building.kind {
-            BuildingKind::Residential => demand.residential > 0.3,
-            BuildingKind::Commercial => demand.commercial > 0.3,
-            BuildingKind::Industrial => demand.industrial > 0.3,
-            _ => false,
-        };
-
-        if !demand_ok {
+    for (mut building, profile) in q_buildings.iter_mut() {
+        // Zoned buildings only, below the top level, with power, water and enough demand.
+        if super::blockers::upgrade_blocker(
+            &building,
+            profile,
+            &grid,
+            &network,
+            &demand,
+            fields.as_deref(),
+        )
+        .is_some()
+        {
             continue;
         }
 
@@ -65,12 +55,9 @@ pub fn upgrade_buildings(
 
         // Update capacity
         let area = building.area();
-        building.capacity_residents = building
-            .kind
-            .capacity_residents_for_level_area(building.level, area);
-        building.capacity_jobs = building
-            .kind
-            .capacity_jobs_for_level_area(building.level, area);
+        let (residents, jobs) = profile_capacity(building.kind, building.level, area, *profile);
+        building.capacity_residents = residents;
+        building.capacity_jobs = jobs;
 
         // Population is now calculated from occupancy, not updated here
         // The occupancy system will adjust occupancy_residents based on new capacity and demand
@@ -79,26 +66,41 @@ pub fn upgrade_buildings(
         // Changed<Building> and swaps in the taller level mesh.
 
         // Emit notification
-        if has_notifications {
-            let level_name = match building.level {
-                1 => "I",
-                2 => "II",
-                3 => "III",
-                _ => "?",
-            };
-            let kind_name = match building.kind {
-                BuildingKind::Residential => "Residential",
-                BuildingKind::Commercial => "Commercial",
-                BuildingKind::Industrial => "Industrial",
-                _ => "Building",
-            };
-            if let Some(ref mut notif) = notifications {
-                notif.add(
-                    format!("{} building upgraded to level {}", kind_name, level_name),
-                    NotificationKind::Info,
-                    3.0,
-                );
-            }
+        if let Some(ref mut notif) = notifications {
+            notif.add_at(
+                upgrade_notice(building.kind, building.level),
+                NotificationKind::Info,
+                3.0,
+                building.anchor_pos,
+            );
+        }
+    }
+}
+
+/// The feed line for an upgrade. One kind of event is one line of the feed, so neither the zone
+/// nor the level may enter it: those details would split one stream into several lines.
+pub(crate) fn upgrade_notice(_kind: BuildingKind, _level: u8) -> String {
+    "Building upgraded".to_string()
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::*;
+
+    #[test]
+    fn notification_dedup_every_upgrade_is_the_same_line() {
+        let line = upgrade_notice(BuildingKind::Residential, 2);
+        assert!(!line.is_empty());
+        for (kind, level) in [
+            (BuildingKind::Residential, 3),
+            (BuildingKind::Commercial, 2),
+            (BuildingKind::Industrial, 3),
+        ] {
+            assert_eq!(
+                upgrade_notice(kind, level),
+                line,
+                "{kind:?} to level {level}"
+            );
         }
     }
 }

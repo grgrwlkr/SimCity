@@ -73,7 +73,7 @@ pub(crate) fn spawn_building_entity(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn apply_game_commands_to_grid(
+pub(crate) fn apply_game_commands_to_grid(
     mut cmd_reader: MessageReader<GameCommand>,
     mut undo_reader: MessageReader<UndoRedoRequested>,
     mut commands: Commands,
@@ -95,8 +95,13 @@ pub(super) fn apply_game_commands_to_grid(
         (Entity, &crate::game::traffic::Vehicle),
         With<crate::game::public_transport::Bus>,
     >,
+    progress: (
+        Option<ResMut<crate::game::economy::BudgetLedger>>,
+        Option<ResMut<crate::game::milestones::Milestones>>,
+    ),
 ) {
     let (mut bus_routes, mut path_pool) = transit;
+    let (mut ledger, mut milestones) = progress;
     for cmd in cmd_reader.read() {
         match *cmd {
             GameCommand::SetRoad { pos, road } => {
@@ -180,7 +185,14 @@ pub(super) fn apply_game_commands_to_grid(
                 });
 
                 // Allow roads to be built even when in debt (road tooling UX).
-                city.money -= cost;
+                match ledger.as_deref_mut() {
+                    Some(ledger) => ledger.post(
+                        crate::game::economy::BudgetItem::Construction,
+                        -cost,
+                        &mut city,
+                    ),
+                    None => city.money -= cost,
+                }
                 cell.road = new_road;
                 // Invalidate any grown building on this tile when the player edits it.
                 cell.building = None;
@@ -192,7 +204,7 @@ pub(super) fn apply_game_commands_to_grid(
                 // B) Transport: bump road graph version when road topology changes.
                 graph_version.bump();
             }
-            GameCommand::SetZone { pos, zone } => {
+            GameCommand::SetZone { pos, zone, density } => {
                 let Some(idx) = grid.idx(pos) else {
                     continue;
                 };
@@ -203,7 +215,7 @@ pub(super) fn apply_game_commands_to_grid(
                     continue;
                 }
 
-                if cell.zone == zone {
+                if cell.zone == zone && cell.density == density {
                     continue;
                 }
 
@@ -215,10 +227,13 @@ pub(super) fn apply_game_commands_to_grid(
                     pos,
                     old: old_zone,
                     new: zone,
+                    old_density: cell.density,
+                    new_density: density,
                 });
 
                 // Zones are free to place (zoning is just marking land for development).
                 cell.zone = zone;
+                cell.density = density;
                 // Zoning edits clear any existing building on tile for simplicity.
                 cell.building = None;
                 grid.set(pos, cell);
@@ -234,6 +249,14 @@ pub(super) fn apply_game_commands_to_grid(
                 else {
                     continue;
                 };
+                // A building the city has not opened yet is refused here, whatever the palette
+                // showed.
+                if milestones
+                    .as_deref()
+                    .is_some_and(|milestones| !milestones.is_unlocked(kind))
+                {
+                    continue;
+                }
 
                 let cost = kind.build_cost();
                 if city.money < cost {
@@ -253,7 +276,14 @@ pub(super) fn apply_game_commands_to_grid(
                     old_zones,
                 });
 
-                city.money -= cost;
+                match ledger.as_deref_mut() {
+                    Some(ledger) => ledger.post(
+                        crate::game::economy::BudgetItem::Construction,
+                        -cost,
+                        &mut city,
+                    ),
+                    None => city.money -= cost,
+                }
 
                 // Mark all footprint tiles
                 for tile in &footprint_tiles {
@@ -326,6 +356,10 @@ pub(super) fn apply_game_commands_to_grid(
             GameCommand::GenerateMap { seed: new_seed } => {
                 seed.0 = new_seed;
                 generate_map_into_grid(&mut grid, new_seed);
+                // A new map is a new city: it earns its milestones again.
+                if let Some(milestones) = milestones.as_mut() {
+                    **milestones = crate::game::milestones::Milestones::default();
+                }
                 // History entries were recorded against the OLD grid; exact-restore
                 // would stamp stale cells into the new map validation-free (even
                 // roads onto water). Same rule as LoadGame/LoadTestCity.
@@ -570,15 +604,17 @@ fn restore_zone_cell(
     map_edit_version: &mut MapEditVersion,
     pos: TilePos,
     zone: ZoneKind,
+    density: crate::game::map::ZoneDensity,
 ) {
     let Some(idx) = grid.idx(pos) else {
         return;
     };
     let mut cell = grid.get(pos).unwrap_or_default();
-    if cell.zone == zone {
+    if cell.zone == zone && cell.density == density {
         return;
     }
     cell.zone = zone;
+    cell.density = density;
     grid.set(pos, cell);
     dirty.mark(idx);
     map_edit_version.bump();
@@ -616,10 +652,20 @@ fn apply_history_entry(
                 road,
             );
         }
-        UndoableCommand::SetZone { pos, old, new } => {
-            let zone = if forward { *new } else { *old };
+        UndoableCommand::SetZone {
+            pos,
+            old,
+            new,
+            old_density,
+            new_density,
+        } => {
+            let (zone, density) = if forward {
+                (*new, *new_density)
+            } else {
+                (*old, *old_density)
+            };
             clear_building_at(commands, grid, dirty, q_buildings, *pos);
-            restore_zone_cell(grid, dirty, map_edit_version, *pos, zone);
+            restore_zone_cell(grid, dirty, map_edit_version, *pos, zone, density);
         }
         UndoableCommand::PlaceBuilding {
             pos,
@@ -702,7 +748,9 @@ fn apply_history_entry(
                     *pos,
                     *old_road,
                 );
-                restore_zone_cell(grid, dirty, map_edit_version, *pos, *old_zone);
+                // Erasing clears the zone but leaves the tile density, so undo keeps it.
+                let density = grid.get(*pos).map(|cell| cell.density).unwrap_or_default();
+                restore_zone_cell(grid, dirty, map_edit_version, *pos, *old_zone, density);
                 if let Some(b) = old_building {
                     // A different building may have (re)grown over parts of the
                     // old footprint since the erase — whole-erase it first so

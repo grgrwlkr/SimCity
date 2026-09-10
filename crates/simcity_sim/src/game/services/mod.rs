@@ -28,6 +28,7 @@ impl Plugin for ServicesPlugin {
         app.add_systems(
             Update,
             systems::sync_service_stations_from_buildings
+                .after(crate::game::buildings::update_occupancy)
                 .in_set(GameSet::Sim)
                 .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
         )

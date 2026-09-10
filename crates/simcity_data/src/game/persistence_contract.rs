@@ -13,7 +13,7 @@ use crate::game::citizens::CitizenState;
 use crate::game::commands::GameCommand;
 use crate::game::emergencies::EmergencyStats;
 use crate::game::ids::CitizenId;
-use crate::game::map::{BuildingKind, TileKind, TilePos, ZoneKind};
+use crate::game::map::{BuildingKind, TileKind, TilePos, ZoneDensity, ZoneKind};
 use crate::game::persistence::{SaveParams, snapshot_savegame};
 use crate::game::roads::RoadCell;
 use crate::game::services::ServiceKind;
@@ -137,6 +137,19 @@ pub struct SaveGameV3 {
     /// Additive field (P0-7); absent in pre-P0-7 saves → defaults to empty vec.
     #[serde(default)]
     pub traffic_light_tiles: Vec<TilePos>,
+    /// Tax rates in force. Additive: a save from before the budget loads with the defaults.
+    #[serde(default)]
+    pub tax_rates: crate::game::economy::TaxRates,
+    /// Service funding in force. Additive, defaults to full funding.
+    #[serde(default)]
+    pub service_funding: crate::game::economy::ServiceFunding,
+    /// Open loans. Additive: without this a save and a load would wipe the city's debt.
+    #[serde(default)]
+    pub loans: crate::game::economy::Loans,
+    /// Milestones the city has reached. Additive: an older save loads with none, and the load
+    /// counts the population it carries as reached.
+    #[serde(default)]
+    pub milestones: simcity_sim::game::milestones::Milestones,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Copy, Clone)]
@@ -161,6 +174,9 @@ pub struct MapTileV1 {
     pub terrain: TileKind,
     pub road: RoadCell,
     pub zone: ZoneKind,
+    /// Absent from saves made before densities: those zones build at `Medium`.
+    #[serde(default)]
+    pub density: ZoneDensity,
     pub building: Option<BuildingKind>,
 }
 

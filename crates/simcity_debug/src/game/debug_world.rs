@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy::time::Real;
 use std::collections::VecDeque;
 // Only the render-cost updater needs a set, and that updater is dev/test-only.
-#[cfg(any(feature = "dev", test))]
+#[cfg(any(feature = "snapshots", test))]
 use std::collections::HashSet;
 
 use crate::game::camera::MainCamera;
@@ -21,48 +21,48 @@ use crate::game::ui_state::{OverlayMode, SimSpeed, UiState};
 // same way to avoid unused-import warnings. `ArbiterTickStats` and the lanelet graph types are
 // also pulled in under `test`, because the two mirror unit tests at the bottom exercise the
 // `update_debug_arbiter_ledger_state` / `update_debug_lanelet_state` updaters directly.
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 use crate::game::buildings::{Building, BuildingPhase};
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 use crate::game::citizens::{Citizen, CitizenState, CommuteStats, ShoppingDemandStats};
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 use crate::game::demand::RciDemand;
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 use crate::game::economy::EconomyConfig;
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 use crate::game::emergencies::{Emergency, EmergencyKind, EmergencyManager, EmergencyMarker};
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 use crate::game::employment::{EmploymentConfig, EmploymentStats};
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 use crate::game::intersections::IntersectionIndex;
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 use crate::game::land_value::LandValueIndex;
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 use crate::game::map::{BuildingKind, MapEditVersion, MapGrid, TilePos, ZoneKind};
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 use crate::game::pedestrians::{
     BlockedAtUncontrolled, Pedestrian, PedestrianConfig, PedestrianCrossing,
 };
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 use crate::game::pollution::PollutionIndex;
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 use crate::game::services::{ServiceCoverageIndex, ServiceKind, ServiceStation, ServiceVehicle};
-#[cfg(any(feature = "dev", test))]
+#[cfg(any(feature = "snapshots", test))]
 use crate::game::traffic::ArbiterTickStats;
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 use crate::game::traffic::{
     IntersectionReservations, ManeuverKind, ReservationState, RouteProducerStats, TrafficConfig,
     TrafficOccupancy, TrafficVehicleCounts, TrafficViolationAudit, VehicleMotionStats,
 };
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 use crate::game::transport::{
     GraphVersion, LaneGraph, PathCache, PathPool, PathfindingConfig, RegionGraph, RoadGraph,
 };
-#[cfg(any(feature = "dev", test))]
+#[cfg(any(feature = "snapshots", test))]
 use crate::game::transport::{LaneletConflictMatrices, LaneletGraph};
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 use crate::game::trips::{TripFinished, TripMode, TripPurpose, TripRequested};
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 use bevy::ecs::message::MessageReader;
 
 /// ECS-visible snapshot for MCP debugging (small, flattened, reflection-friendly).
@@ -653,16 +653,20 @@ pub struct DebugConfigSnapshot {
     pub path_region_size: u32,
     /// Pathfinding: region pad.
     pub path_region_pad: i32,
-    /// Economy: tax per citizen.
-    pub economy_tax_per_citizen: i64,
-    /// Economy: income per commercial.
-    pub economy_income_per_commercial: i64,
-    /// Economy: income per industrial.
-    pub economy_income_per_industrial: i64,
-    /// Economy: road maintenance.
-    pub economy_road_maintenance: i64,
-    /// Economy: building maintenance.
-    pub economy_building_maintenance: i64,
+    /// Economy: daily taxable income of a middle-class resident.
+    pub economy_resident_income_middle: f32,
+    /// Economy: daily taxable income of a middle-class commercial job.
+    pub economy_commercial_income_middle: f32,
+    /// Economy: daily taxable income of a middle-class industrial job.
+    pub economy_industrial_income_middle: f32,
+    /// Economy: daily upkeep of a hundred road tiles.
+    pub economy_road_upkeep_per_100_tiles: i64,
+    /// Economy: daily upkeep of one fire station.
+    pub economy_fire_station_upkeep: i64,
+    /// Economy: daily upkeep of one police station.
+    pub economy_police_station_upkeep: i64,
+    /// Economy: daily upkeep of one hospital.
+    pub economy_hospital_upkeep: i64,
     /// Economy: happiness target.
     pub economy_happiness_target: f32,
     /// Employment: max assignments per tick.
@@ -828,9 +832,10 @@ impl Plugin for DebugWorldPlugin {
         // The remaining snapshot updaters each do a full-world scan every frame purely to publish
         // flat mirror components for BRP/MCP inspection. BRP is dev-only (see the remote-stack
         // gating in `src/main.rs`), so scheduling these in a release build is pure waste — gate
-        // the whole batch behind `dev`. The snapshot entity and all component types still exist in
+        // the whole batch behind `snapshots`, which `dev` turns on and a measurement run can turn
+        // on alone to price them. The snapshot entity and all component types still exist in
         // release (default/all-zero), so the frontend's UI queries keep compiling.
-        #[cfg(feature = "dev")]
+        #[cfg(feature = "snapshots")]
         app.add_systems(Update, update_debug_render_snapshot.in_set(GameSet::Ui))
             .add_systems(Update, update_debug_traffic_snapshot.in_set(GameSet::Ui))
             .add_systems(
@@ -1084,7 +1089,7 @@ pub fn camera_projection_readout(projection: &Projection) -> (&'static str, f32,
 }
 
 /// What the render-cost scan reads off every mesh entity.
-#[cfg(any(feature = "dev", test))]
+#[cfg(any(feature = "snapshots", test))]
 type RenderCostQuery = (
     &'static Mesh3d,
     &'static MeshMaterial3d<StandardMaterial>,
@@ -1097,7 +1102,7 @@ type RenderCostQuery = (
 ///
 /// Scans every mesh entity, so it is gated behind `dev` together with the other
 /// world-scan updaters.
-#[cfg(any(feature = "dev", test))]
+#[cfg(any(feature = "snapshots", test))]
 fn update_debug_render_snapshot(
     q_meshes: Query<RenderCostQuery>,
     q_point: Query<(), With<PointLight>>,
@@ -1392,7 +1397,7 @@ fn update_debug_snapshot(
 }
 
 /// Update traffic metrics debug snapshot.
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 #[allow(clippy::too_many_arguments)]
 fn update_debug_traffic_snapshot(
     traffic: Option<Res<TrafficIndex>>,
@@ -1537,7 +1542,7 @@ fn update_debug_traffic_snapshot(
 }
 
 /// Update intersection metrics debug snapshot.
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 fn update_debug_intersection_snapshot(
     intersections: Option<Res<IntersectionIndex>>,
     reservations: Option<Res<IntersectionReservations>>,
@@ -1611,7 +1616,7 @@ fn update_debug_intersection_snapshot(
 }
 
 /// Update transport/pathfinding metrics debug snapshot.
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 #[allow(clippy::too_many_arguments)]
 fn update_debug_transport_snapshot(
     graph_version: Res<GraphVersion>,
@@ -1692,7 +1697,7 @@ fn update_debug_transport_snapshot(
 }
 
 /// Update citizen metrics debug snapshot.
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 fn update_debug_citizens_snapshot(
     commute: Res<CommuteStats>,
     shopping: Res<ShoppingDemandStats>,
@@ -1742,7 +1747,7 @@ fn update_debug_citizens_snapshot(
 }
 
 /// Update employment metrics debug snapshot.
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 fn update_debug_employment_snapshot(
     stats: Res<EmploymentStats>,
     holder: Res<DebugSnapshotEntity>,
@@ -1778,7 +1783,7 @@ fn update_debug_employment_snapshot(
 }
 
 /// Update building metrics debug snapshot.
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 fn update_debug_buildings_snapshot(
     q_buildings: Query<&Building>,
     holder: Res<DebugSnapshotEntity>,
@@ -1811,9 +1816,15 @@ fn update_debug_buildings_snapshot(
             BuildingKind::Residential => residential += 1,
             BuildingKind::Commercial => commercial += 1,
             BuildingKind::Industrial => industrial += 1,
-            BuildingKind::FireStation | BuildingKind::PoliceStation | BuildingKind::Hospital => {
-                service += 1
-            }
+            BuildingKind::FireStation
+            | BuildingKind::PoliceStation
+            | BuildingKind::Hospital
+            | BuildingKind::PowerPlant
+            | BuildingKind::WaterPump
+            | BuildingKind::Landfill
+            | BuildingKind::School
+            | BuildingKind::University
+            | BuildingKind::Park => service += 1,
         }
 
         match b.phase {
@@ -1845,7 +1856,7 @@ fn update_debug_buildings_snapshot(
 }
 
 /// Update pedestrian metrics debug snapshot.
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 fn update_debug_pedestrians_snapshot(
     q_pedestrians: Query<&Pedestrian>,
     q_blocked: Query<&Pedestrian, With<BlockedAtUncontrolled>>,
@@ -1884,7 +1895,7 @@ fn update_debug_pedestrians_snapshot(
 }
 
 /// Update services metrics debug snapshot.
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 fn update_debug_services_snapshot(
     coverage: Option<Res<ServiceCoverageIndex>>,
     q_stations: Query<&ServiceStation>,
@@ -1947,7 +1958,7 @@ fn update_debug_services_snapshot(
 }
 
 /// Update emergency metrics debug snapshot.
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 fn update_debug_emergencies_snapshot(
     manager: Option<Res<EmergencyManager>>,
     q_emergencies: Query<&Emergency>,
@@ -2006,7 +2017,7 @@ fn update_debug_emergencies_snapshot(
 }
 
 /// Update trip event counters debug snapshot.
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 fn update_debug_trips_snapshot(
     mut requested: MessageReader<TripRequested>,
     mut finished: MessageReader<TripFinished>,
@@ -2046,7 +2057,7 @@ fn update_debug_trips_snapshot(
 }
 
 /// Cached map tile counts for debug snapshot.
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 #[derive(Default, Copy, Clone)]
 struct MapCounts {
     tiles_total: u32,
@@ -2060,7 +2071,7 @@ struct MapCounts {
 }
 
 /// Cached map stats keyed by edit version.
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 #[derive(Default)]
 struct MapDebugCache {
     version: u64,
@@ -2068,7 +2079,7 @@ struct MapDebugCache {
 }
 
 /// Update map tile counts debug snapshot.
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 fn update_debug_map_snapshot(
     grid: Res<MapGrid>,
     edit_v: Res<MapEditVersion>,
@@ -2100,7 +2111,7 @@ fn update_debug_map_snapshot(
 }
 
 /// Compute map tile counts for debug snapshot.
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 fn compute_map_counts(grid: &MapGrid) -> MapCounts {
     let mut counts = MapCounts {
         tiles_total: grid.len() as u32,
@@ -2143,7 +2154,7 @@ fn compute_map_counts(grid: &MapGrid) -> MapCounts {
 }
 
 /// Update land value and pollution debug snapshot.
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 fn update_debug_environment_snapshot(
     land_value: Option<Res<LandValueIndex>>,
     pollution: Option<Res<PollutionIndex>>,
@@ -2181,7 +2192,7 @@ fn update_debug_environment_snapshot(
 }
 
 /// Compute min/max/avg stats from a normalized slice.
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 fn stats_from_f32_slice(values: &[f32]) -> (f32, f32, f32) {
     if values.is_empty() {
         return (0.0, 0.0, 0.0);
@@ -2204,7 +2215,7 @@ fn stats_from_f32_slice(values: &[f32]) -> (f32, f32, f32) {
 }
 
 /// Update RCI demand debug snapshot.
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 fn update_debug_demand_snapshot(
     demand: Option<Res<RciDemand>>,
     holder: Res<DebugSnapshotEntity>,
@@ -2229,7 +2240,7 @@ fn update_debug_demand_snapshot(
 }
 
 /// Update config values debug snapshot.
-#[cfg(feature = "dev")]
+#[cfg(feature = "snapshots")]
 #[allow(clippy::too_many_arguments)]
 fn update_debug_config_snapshot(
     traffic_cfg: Res<TrafficConfig>,
@@ -2270,11 +2281,13 @@ fn update_debug_config_snapshot(
     snapshot.path_region_size = path_cfg.region_size as u32;
     snapshot.path_region_pad = path_cfg.region_pad;
 
-    snapshot.economy_tax_per_citizen = economy_cfg.tax_per_citizen;
-    snapshot.economy_income_per_commercial = economy_cfg.income_per_commercial;
-    snapshot.economy_income_per_industrial = economy_cfg.income_per_industrial;
-    snapshot.economy_road_maintenance = economy_cfg.road_maintenance;
-    snapshot.economy_building_maintenance = economy_cfg.building_maintenance;
+    snapshot.economy_resident_income_middle = economy_cfg.resident_income.middle;
+    snapshot.economy_commercial_income_middle = economy_cfg.commercial_income.middle;
+    snapshot.economy_industrial_income_middle = economy_cfg.industrial_income.middle;
+    snapshot.economy_road_upkeep_per_100_tiles = economy_cfg.road_upkeep_per_100_tiles;
+    snapshot.economy_fire_station_upkeep = economy_cfg.fire_station_upkeep;
+    snapshot.economy_police_station_upkeep = economy_cfg.police_station_upkeep;
+    snapshot.economy_hospital_upkeep = economy_cfg.hospital_upkeep;
     snapshot.economy_happiness_target = economy_cfg.happiness_target;
 
     snapshot.employment_max_assignments_per_tick = employment_cfg.max_assignments_per_tick as u32;
@@ -2315,7 +2328,7 @@ pub struct DebugLaneletState {
 }
 
 /// Update lanelet graph debug mirror.
-#[cfg(any(feature = "dev", test))]
+#[cfg(any(feature = "snapshots", test))]
 fn update_debug_lanelet_state(
     graph: Option<Res<LaneletGraph>>,
     matrices: Option<Res<LaneletConflictMatrices>>,
@@ -2407,7 +2420,7 @@ pub struct DebugArbiterLedgerState {
 }
 
 /// Update the arbiter ledger debug mirror from the per-tick `ArbiterTickStats`.
-#[cfg(any(feature = "dev", test))]
+#[cfg(any(feature = "snapshots", test))]
 fn update_debug_arbiter_ledger_state(
     stats: Option<Res<ArbiterTickStats>>,
     holder: Res<DebugSnapshotEntity>,
@@ -2478,6 +2491,14 @@ fn overlay_label(overlay: OverlayMode) -> &'static str {
         OverlayMode::ServiceCoverage => "ServiceCoverage",
         OverlayMode::LandValue => "LandValue",
         OverlayMode::Pollution => "Pollution",
+        OverlayMode::Power => "Power",
+        OverlayMode::WaterSupply => "WaterSupply",
+        OverlayMode::Garbage => "Garbage",
+        OverlayMode::Crime => "Crime",
+        OverlayMode::FireHazard => "FireHazard",
+        OverlayMode::Health => "Health",
+        OverlayMode::Education => "Education",
+        OverlayMode::Attractiveness => "Attractiveness",
     }
 }
 

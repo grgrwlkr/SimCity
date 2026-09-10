@@ -4,6 +4,7 @@ mod components;
 pub mod components_pub {
     pub use super::components::*;
 }
+mod blockers;
 mod construction;
 mod decay;
 mod footprint;
@@ -18,6 +19,10 @@ mod zone_depth;
 #[cfg(test)]
 mod tests;
 
+pub use blockers::{
+    BUILDINGS_WITHOUT_POWER, GrowthBlocker, block_has, growth_blockers,
+    report_buildings_without_power, tile_diagnosis, upgrade_blocker,
+};
 pub use components::*;
 pub use construction::*;
 pub use decay::*;
@@ -27,7 +32,9 @@ pub use occupancy::update_occupancy;
 pub use spawn::calculate_parking_spots;
 pub use spawn::spawn_building_entity;
 pub use upgrade::*;
-pub use visual::{BuildingBody, BuildingMeshCache, BuildingTint, building_height};
+pub use visual::{
+    BuildingBody, BuildingMeshCache, BuildingTint, building_height, profile_color, profile_height,
+};
 pub use zone_depth::{MAX_ZONE_DEPTH, is_within_zone_depth};
 
 // Re-export functions that were in the original file
@@ -36,7 +43,7 @@ pub use decay::despawn_invalid_buildings;
 pub use growth::{reset_growth_rng_on_new_map, seed_growth_rng_from_map};
 
 use crate::game::sets::GameSet;
-use crate::game::state::AppState;
+use crate::game::state::{AppState, START_OF_GAME};
 use bevy::prelude::*;
 
 pub struct BuildingsPlugin;
@@ -60,19 +67,21 @@ impl Plugin for BuildingsPlugin {
                 (cleanup_buildings, reset_building_upgrade_clock),
             )
             .add_systems(
-                OnEnter(AppState::InGame),
+                START_OF_GAME,
                 (seed_growth_rng_from_map, reset_building_upgrade_clock),
             )
             .add_systems(
                 Update,
                 (
                     reset_growth_rng_on_new_map
+                        .after(crate::game::map::apply_game_commands_to_grid)
                         .in_set(GameSet::CommandApply)
                         .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
                     update_construction_progress
                         .in_set(GameSet::Sim)
                         .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
                     update_occupancy
+                        .after(update_construction_progress)
                         .in_set(GameSet::Sim)
                         .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
                     population::update_city_population
@@ -80,6 +89,12 @@ impl Plugin for BuildingsPlugin {
                         .in_set(GameSet::PostSim)
                         .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
                 ),
+            )
+            .add_systems(
+                Update,
+                report_buildings_without_power
+                    .in_set(GameSet::PostSim)
+                    .run_if(in_state(AppState::InGame)),
             )
             .add_systems(
                 FixedUpdate,

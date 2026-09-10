@@ -367,6 +367,7 @@ fn undo_undo_then_redo_redo_walks_history() {
         GameCommand::SetZone {
             pos: zone_pos,
             zone: ZoneKind::Residential,
+            density: ZoneDensity::Medium,
         },
     );
     app.update();
@@ -404,6 +405,181 @@ fn undo_undo_then_redo_redo_walks_history() {
         post_b,
         "second redo must re-apply edit B"
     );
+}
+
+/// The zone command paints a block as deep as a building grows, at the density the tool carries,
+/// and refuses land beyond that depth.
+#[test]
+fn zone_density_zone_command_paints_a_block_as_deep_as_buildings_grow() {
+    let mut app = build_command_apply_app(16, 16);
+    for x in 0..16 {
+        send_command(
+            &mut app,
+            GameCommand::SetRoad {
+                pos: TilePos { x, y: 1 },
+                road: road_cell(RoadKind::TwoLane),
+            },
+        );
+    }
+    app.update();
+
+    for x in 2..8 {
+        for y in 2..6 {
+            send_command(
+                &mut app,
+                GameCommand::SetZone {
+                    pos: TilePos { x, y },
+                    zone: ZoneKind::Residential,
+                    density: ZoneDensity::High,
+                },
+            );
+        }
+    }
+    app.update();
+
+    let grid = app.world().resource::<MapGrid>();
+    for x in 2..8 {
+        for y in 2..5 {
+            let cell = grid.get(TilePos { x, y }).expect("inside");
+            assert_eq!(
+                cell.zone,
+                ZoneKind::Residential,
+                "({x},{y}) is within depth"
+            );
+            assert_eq!(
+                cell.density,
+                ZoneDensity::High,
+                "({x},{y}) keeps the density"
+            );
+        }
+        let far = grid.get(TilePos { x, y: 5 }).expect("inside");
+        assert_eq!(
+            far.zone,
+            ZoneKind::None,
+            "({x},5) is four tiles from the road"
+        );
+    }
+}
+
+/// B4: the new civic buildings each carry a radius, a capacity and a price.
+#[test]
+fn service_building_school_university_and_park_have_radius_capacity_and_price() {
+    for (kind, radius, capacity, cost) in [
+        (BuildingKind::School, 18, 400, 700),
+        (BuildingKind::University, 30, 1200, 2000),
+        (BuildingKind::Park, 8, 300, 150),
+    ] {
+        assert_eq!(kind.service_radius(), Some(radius), "{kind:?}");
+        assert_eq!(kind.service_capacity(), Some(capacity), "{kind:?}");
+        assert_eq!(kind.build_cost(), cost, "{kind:?}");
+        assert_eq!(kind.as_zone(), ZoneKind::None, "{kind:?}");
+    }
+    assert_eq!(BuildingKind::FireStation.service_capacity(), None);
+}
+
+/// B4: a power plant, a water pump and a landfill each supply a limited number of units.
+#[test]
+fn service_building_utility_stations_have_supply_capacity() {
+    assert_eq!(BuildingKind::PowerPlant.utility_capacity(), Some(5000));
+    assert_eq!(BuildingKind::WaterPump.utility_capacity(), Some(5000));
+    assert_eq!(BuildingKind::Landfill.utility_capacity(), Some(4000));
+    assert_eq!(BuildingKind::School.utility_capacity(), None);
+}
+
+/// B8: a building the city has not opened is refused by the placement command itself, not only
+/// greyed out in the palette.
+#[test]
+fn milestone_a_locked_school_is_refused_by_the_placement_command() {
+    use crate::game::milestones::Milestones;
+
+    let mut app = build_command_apply_app(16, 16);
+    app.init_resource::<Milestones>();
+    for x in 2..5 {
+        send_command(
+            &mut app,
+            GameCommand::SetRoad {
+                pos: TilePos { x, y: 1 },
+                road: road_cell(RoadKind::TwoLane),
+            },
+        );
+    }
+    app.update();
+    let money_before = app.world().resource::<City>().money;
+    let place = GameCommand::PlaceBuilding {
+        pos: TilePos { x: 2, y: 2 },
+        kind: BuildingKind::School,
+    };
+    send_command(&mut app, place.clone());
+    app.update();
+    assert_eq!(
+        building_entity_count(&mut app),
+        0,
+        "a school before 250 residents is refused"
+    );
+    assert_eq!(app.world().resource::<City>().money, money_before);
+
+    app.world_mut().resource_mut::<Milestones>().reach(250);
+    send_command(&mut app, place);
+    app.update();
+    assert_eq!(building_entity_count(&mut app), 1);
+}
+
+/// A new map is a new city: it earns its milestones again.
+#[test]
+fn milestone_a_new_map_starts_its_milestones_over() {
+    use crate::game::milestones::Milestones;
+
+    let mut app = build_command_apply_app(16, 16);
+    app.insert_resource(Milestones {
+        best_population: 300,
+    });
+    send_command(&mut app, GameCommand::GenerateMap { seed: 7 });
+    app.update();
+    assert_eq!(app.world().resource::<Milestones>().best_population, 0);
+}
+
+/// A school goes down beside a road through the placement command and costs its price.
+#[test]
+fn service_building_a_school_is_placed_beside_a_road_and_paid_for() {
+    let mut app = build_command_apply_app(16, 16);
+    for x in 2..5 {
+        send_command(
+            &mut app,
+            GameCommand::SetRoad {
+                pos: TilePos { x, y: 1 },
+                road: road_cell(RoadKind::TwoLane),
+            },
+        );
+    }
+    app.update();
+    let money_before = app.world().resource::<City>().money;
+    send_command(
+        &mut app,
+        GameCommand::PlaceBuilding {
+            pos: TilePos { x: 2, y: 2 },
+            kind: BuildingKind::School,
+        },
+    );
+    app.update();
+
+    let grid = app.world().resource::<MapGrid>();
+    for dx in 0..3 {
+        for dy in 0..3 {
+            let cell = grid
+                .get(TilePos {
+                    x: 2 + dx,
+                    y: 2 + dy,
+                })
+                .expect("inside");
+            assert_eq!(cell.building, Some(BuildingKind::School));
+        }
+    }
+    assert_eq!(
+        money_before - app.world().resource::<City>().money,
+        700,
+        "a school costs its price"
+    );
+    assert_eq!(building_entity_count(&mut app), 1);
 }
 
 /// B5 pin (positive): a 3x3 footprint adjacent to a road must place. Pre-fix
@@ -503,6 +679,7 @@ fn undo_place_building_clears_footprint_and_restores_zones() {
         GameCommand::SetZone {
             pos: TilePos { x: 2, y: 2 },
             zone: ZoneKind::Residential,
+            density: ZoneDensity::Medium,
         },
     );
     app.update();
@@ -695,6 +872,7 @@ fn undo_set_zone_under_grown_building_clears_whole_footprint() {
         GameCommand::SetZone {
             pos: anchor,
             zone: ZoneKind::Residential,
+            density: ZoneDensity::Medium,
         },
     );
     app.update();
@@ -1025,6 +1203,20 @@ mod core_overlay_names {
     use simcity_core::game::ui_state::OverlayMode;
 
     #[test]
+    fn city_fields_overlays_can_be_named() {
+        for (name, mode) in [
+            ("Crime", OverlayMode::Crime),
+            ("Fire hazard", OverlayMode::FireHazard),
+            ("fire_hazard", OverlayMode::FireHazard),
+            ("Health", OverlayMode::Health),
+            ("Education", OverlayMode::Education),
+            ("Attractiveness", OverlayMode::Attractiveness),
+        ] {
+            assert_eq!(OverlayMode::from_name(name), Some(mode), "{name}");
+        }
+    }
+
+    #[test]
     fn every_overlay_the_toolbar_offers_can_be_named() {
         for (name, mode) in [
             ("None", OverlayMode::None),
@@ -1243,4 +1435,478 @@ mod props_placement {
             "a zero chance must place nothing"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Ф0: keyboard hotkeys stand down while a UI widget owns the keyboard.
+//
+// Before `InputFocus` existed, only the POINTER was guarded: typing into any text field
+// also drove the game, so entering a map seed switched tools under the player's hands.
+// These pin the keyboard half at the consumer, which is what the player feels.
+// ---------------------------------------------------------------------------
+
+use crate::game::ui_state::{InputFocus, ToolMode, UiState};
+
+/// Drive one hotkey system over a world with the given focus and key held down.
+fn run_build_hotkeys(captured: bool, key: KeyCode) -> UiState {
+    let mut app = App::new();
+    app.init_resource::<UiState>();
+    app.insert_resource(InputFocus {
+        keyboard_captured: captured,
+    });
+
+    let mut keys = ButtonInput::<KeyCode>::default();
+    keys.press(key);
+    app.insert_resource(keys);
+
+    app.add_systems(Update, super::input::build_mode_hotkeys);
+    app.update();
+
+    app.world().resource::<UiState>().clone()
+}
+
+#[test]
+fn build_mode_hotkey_switches_tool_when_keyboard_is_free() {
+    let ui = run_build_hotkeys(false, KeyCode::Digit2);
+    assert_eq!(
+        ui.tool,
+        ToolMode::Residential,
+        "with no widget focused, a digit must still pick its tool"
+    );
+}
+
+#[test]
+fn build_mode_hotkey_is_ignored_while_keyboard_is_captured() {
+    let before = UiState::default();
+    let ui = run_build_hotkeys(true, KeyCode::Digit2);
+    assert_eq!(
+        ui.tool, before.tool,
+        "typing into a text field must not switch the active tool"
+    );
+}
+
+#[test]
+fn one_way_hotkey_toggles_the_mode() {
+    let ui = run_build_hotkeys(false, KeyCode::KeyO);
+    assert!(
+        ui.one_way_mode,
+        "one-way had full support downstream but no way to reach it from input"
+    );
+}
+
+#[test]
+fn one_way_hotkey_is_ignored_while_keyboard_is_captured() {
+    let ui = run_build_hotkeys(true, KeyCode::KeyO);
+    assert!(
+        !ui.one_way_mode,
+        "typing the letter O into a field must not flip road direction"
+    );
+}
+
+#[test]
+fn undo_hotkey_is_ignored_while_keyboard_is_captured() {
+    let mut app = App::new();
+    app.add_message::<UndoRedoRequested>();
+    app.insert_resource(InputFocus {
+        keyboard_captured: true,
+    });
+
+    let mut keys = ButtonInput::<KeyCode>::default();
+    keys.press(KeyCode::ControlLeft);
+    keys.press(KeyCode::KeyZ);
+    app.insert_resource(keys);
+
+    app.add_systems(Update, super::input::handle_undo_redo);
+    app.update();
+
+    let messages = app.world().resource::<Messages<UndoRedoRequested>>();
+    assert_eq!(
+        messages.len(),
+        0,
+        "Ctrl+Z inside a text field belongs to the field, not to the map history"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A2: the road tool driven by tiles issues exactly what two clicks issue.
+//
+// In-game automation has no pointer, so it drives the road tool through tile coordinates.
+// These pin that a one-way stroke really produces one-way lanes, the property a player
+// relies on when the O key is on, without anything having to move a real cursor.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn road_segment_one_way_stroke_makes_every_lane_flow_one_way() {
+    let start = TilePos { x: 10, y: 20 };
+    let end = TilePos { x: 14, y: 20 };
+    let tiles = super::input::compute_road_line(start, end);
+    let commands = road_segment_commands(start, end, RoadKind::FourLane, true, true);
+
+    assert_eq!(
+        commands.len(),
+        tiles.len() * usize::from(RoadKind::FourLane.lanes()),
+        "one SetRoad per lane per tile, exactly as the cursor path writes them"
+    );
+    for command in &commands {
+        let GameCommand::SetRoad { road, .. } = command else {
+            panic!("the road tool issued a non-road command: {command:?}");
+        };
+        assert_eq!(
+            road.flow,
+            crate::game::roads::RoadFlow::OneWay(RoadDir::East),
+            "a one-way stroke drawn west to east must make every lane flow East"
+        );
+        assert_eq!(road.kind, RoadKind::FourLane);
+    }
+}
+
+#[test]
+fn road_segment_two_way_stroke_keeps_lanes_two_way() {
+    let start = TilePos { x: 10, y: 20 };
+    let end = TilePos { x: 14, y: 20 };
+    let commands = road_segment_commands(start, end, RoadKind::TwoLane, true, false);
+
+    assert!(
+        !commands.is_empty(),
+        "a five-tile stroke must produce road commands"
+    );
+    for command in &commands {
+        let GameCommand::SetRoad { road, .. } = command else {
+            panic!("the road tool issued a non-road command: {command:?}");
+        };
+        assert_eq!(
+            road.flow,
+            crate::game::roads::RoadFlow::TwoWay,
+            "with one-way off, no lane of the stroke may come out one-way"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A2 root cause: a one-way road has no oncoming carriageway.
+//
+// The builder used to lay a one-way segment with the two-way layout — half the lanes pointing
+// back against the flow. The route graph reads `flow` and treats those lanes as nonexistent,
+// while route validation and the wrong-way audit read `dir` and treat them as legal road in the
+// other direction. So a westbound route planned before a road was made one-way East survived
+// the edit, vehicles standing on the back half stranded with no edges, and no audit saw a car
+// driving against the flow. Found live: a car drove 28 tiles west on a "one-way East" block.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn road_segment_one_way_stroke_points_every_lane_the_one_way_direction() {
+    let start = TilePos { x: 10, y: 20 };
+    let end = TilePos { x: 14, y: 20 };
+    for kind in [RoadKind::TwoLane, RoadKind::FourLane, RoadKind::SixLane] {
+        for drive_on_right in [true, false] {
+            for command in road_segment_commands(start, end, kind, drive_on_right, true) {
+                let GameCommand::SetRoad { road, .. } = command else {
+                    panic!("the road tool issued a non-road command: {command:?}");
+                };
+                assert_eq!(
+                    road.dir,
+                    RoadDir::East,
+                    "{kind:?}, drive_on_right={drive_on_right}: lane {} of a one-way East \
+                     stroke points {:?} — a one-way road must not carry an oncoming lane",
+                    road.lane,
+                    road.dir
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A2 follow-up: a one-way stroke laid across an existing intersection.
+//
+// `SetRoad` keeps a box tile a box (`dir: None`) and still overwrites the rest of the cell, so
+// the box tiles take the stroke's `flow`. Measured once as a probe, then pinned: no consumer
+// reads `flow` on a dir-None tile, the crossing road's movement through the box is untouched,
+// and the box's own horizontal movement turns to follow the one-way direction. Written after
+// the behaviour was already correct, so it has no red run; it guards against a later change
+// that starts reading `flow` on box tiles.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn one_way_stroke_across_an_intersection_keeps_the_crossing_drivable() {
+    let mut app = build_command_apply_app(24, 24);
+    for command in road_segment_commands(
+        TilePos { x: 12, y: 2 },
+        TilePos { x: 12, y: 21 },
+        RoadKind::FourLane,
+        true,
+        false,
+    ) {
+        send_command(&mut app, command);
+    }
+    app.update();
+    for command in road_segment_commands(
+        TilePos { x: 2, y: 12 },
+        TilePos { x: 21, y: 12 },
+        RoadKind::FourLane,
+        true,
+        false,
+    ) {
+        send_command(&mut app, command);
+    }
+    app.update();
+
+    let box_tiles: Vec<TilePos> = {
+        let grid = app.world().resource::<MapGrid>();
+        (0..24)
+            .flat_map(|y| (0..24).map(move |x| TilePos { x, y }))
+            .filter(|t| {
+                grid.get(*t)
+                    .is_some_and(|c| c.road.is_some() && c.road.dir == RoadDir::None)
+            })
+            .collect()
+    };
+    assert!(
+        !box_tiles.is_empty(),
+        "the crossing must form an intersection box"
+    );
+
+    let edges_of = |grid: &MapGrid| -> Vec<u8> {
+        let mut graph = RoadGraph::default();
+        rebuild_road_graph_inner(grid, &GraphVersion(1), &mut graph);
+        box_tiles
+            .iter()
+            .map(|t| graph.edges[grid.idx(*t).expect("box tile on map")])
+            .collect()
+    };
+    let edges_before = edges_of(app.world().resource::<MapGrid>());
+
+    for command in road_segment_commands(
+        TilePos { x: 2, y: 12 },
+        TilePos { x: 21, y: 12 },
+        RoadKind::FourLane,
+        true,
+        true,
+    ) {
+        send_command(&mut app, command);
+    }
+    app.update();
+
+    let grid = app.world().resource::<MapGrid>();
+    assert!(
+        box_tiles
+            .iter()
+            .all(|t| grid.get(*t).is_some_and(|c| c.road.dir == RoadDir::None)),
+        "a one-way stroke across a crossing must leave the crossing a box"
+    );
+    let edges_after = edges_of(grid);
+    for ((tile, before), after) in box_tiles.iter().zip(&edges_before).zip(&edges_after) {
+        // Bits 2 and 3 are the vertical moves, 0 and 1 the horizontal ones (West, East).
+        assert_eq!(
+            before & 0b1100,
+            after & 0b1100,
+            "box tile {tile:?}: the crossing road's movement through the box changed \
+             ({before:#06b} -> {after:#06b})"
+        );
+        assert_eq!(
+            after & 0b0011,
+            0b0010,
+            "box tile {tile:?}: inside a one-way East box every horizontal move must be East \
+             ({after:#06b})"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pointer override: automation hovers a tile without a pointer.
+//
+// The live debug API drives the game from inside it and must never move the real cursor, so
+// the hovered tile has to be settable without one. A player's build never sets the override.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hovered_tile_follows_the_pointer_override_without_a_window() {
+    let mut app = App::new();
+    app.insert_resource(MapConfig {
+        width: 8,
+        height: 8,
+        tile_size: 16.0,
+    });
+    app.init_resource::<HoveredTile>();
+    app.insert_resource(crate::game::ui_state::PointerOverride {
+        tile: Some(TilePos { x: 3, y: 4 }),
+    });
+    app.add_systems(Update, super::input::update_hovered_tile);
+    app.update();
+    assert_eq!(
+        app.world().resource::<HoveredTile>().tile,
+        Some(TilePos { x: 3, y: 4 }),
+        "with the override set, the hovered tile is the override even with no window at all"
+    );
+}
+
+#[test]
+fn hovered_tile_ignores_an_empty_pointer_override() {
+    let mut app = App::new();
+    app.insert_resource(MapConfig {
+        width: 8,
+        height: 8,
+        tile_size: 16.0,
+    });
+    app.insert_resource(HoveredTile {
+        tile: Some(TilePos { x: 1, y: 1 }),
+    });
+    app.init_resource::<crate::game::ui_state::PointerOverride>();
+    app.add_systems(Update, super::input::update_hovered_tile);
+    app.update();
+    assert_eq!(
+        app.world().resource::<HoveredTile>().tile,
+        None,
+        "an empty override changes nothing: with no window there is no hovered tile"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Map paint gate: a click belongs to the interface or to the map, never both.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn map_paint_stands_down_while_the_pointer_is_over_the_game_interface() {
+    use crate::game::ui_state::PointerOverGameUi;
+    let ui = UiState::default();
+    assert!(super::input::map_paint_allowed(
+        &ui,
+        PointerOverGameUi { captured: false }
+    ));
+    assert!(
+        !super::input::map_paint_allowed(&ui, PointerOverGameUi { captured: true }),
+        "a click on a panel must not also paint the tile beneath it"
+    );
+}
+
+#[test]
+fn map_paint_stands_down_for_inspect_and_the_path_overlay() {
+    use crate::game::ui_state::{OverlayMode, PointerOverGameUi};
+    let free = PointerOverGameUi::default();
+    let inspect = UiState {
+        tool: ToolMode::Inspect,
+        ..default()
+    };
+    assert!(!super::input::map_paint_allowed(&inspect, free));
+    let path = UiState {
+        overlay: OverlayMode::Path,
+        ..default()
+    };
+    assert!(!super::input::map_paint_allowed(&path, free));
+}
+
+// ---------------------------------------------------------------------------
+// Budget: construction is a line of the monthly report.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn budget_report_building_a_road_is_a_construction_line() {
+    use crate::game::economy::{BudgetItem, BudgetLedger};
+
+    let mut app = App::new();
+    crate::game::render_primitives::init_for_test(&mut app);
+    let mut ledger = BudgetLedger::default();
+    ledger.restart(City::default().money);
+    app.add_message::<GameCommand>()
+        .add_message::<UndoRedoRequested>()
+        .add_message::<crate::game::sim_events::DayAdvanced>()
+        .insert_resource(MapConfig {
+            width: 8,
+            height: 8,
+            tile_size: 16.0,
+        })
+        .insert_resource(MapSeed(1))
+        .insert_resource(MapGrid::new(8, 8))
+        .insert_resource(DirtyTiles::new(64))
+        .insert_resource(RoadDirtyTiles::new(64))
+        .insert_resource(City::default())
+        .insert_resource(GraphVersion(1))
+        .insert_resource(MapEditVersion::default())
+        .insert_resource(CommandHistory::new(100))
+        .insert_resource(IntersectionIndex::default())
+        .insert_resource(TestCommandOnce::default())
+        .insert_resource(ledger)
+        .add_systems(
+            Update,
+            (send_road_command_once, apply_game_commands_to_grid).chain(),
+        );
+
+    app.update();
+
+    let spent = City::default().money - app.world().resource::<City>().money;
+    assert!(spent > 0, "a road costs money");
+    assert_eq!(
+        app.world()
+            .resource::<BudgetLedger>()
+            .current
+            .get(BudgetItem::Construction),
+        -spent,
+        "what the road cost is a construction line of the month"
+    );
+}
+
+#[test]
+fn zone_density_zone_command_paints_density_and_undo_restores_it() {
+    let mut app = build_command_apply_app(8, 8);
+    send_command(
+        &mut app,
+        GameCommand::SetRoad {
+            pos: TilePos { x: 1, y: 1 },
+            road: road_cell(RoadKind::TwoLane),
+        },
+    );
+    app.update();
+    let zone_pos = TilePos { x: 2, y: 1 };
+    let cell_at = |app: &App| {
+        app.world()
+            .resource::<MapGrid>()
+            .get(zone_pos)
+            .expect("inside")
+    };
+
+    send_command(
+        &mut app,
+        GameCommand::SetZone {
+            pos: zone_pos,
+            zone: ZoneKind::Residential,
+            density: ZoneDensity::High,
+        },
+    );
+    app.update();
+    let cell = cell_at(&app);
+    assert_eq!(
+        (cell.zone, cell.density),
+        (ZoneKind::Residential, ZoneDensity::High)
+    );
+
+    send_command(
+        &mut app,
+        GameCommand::SetZone {
+            pos: zone_pos,
+            zone: ZoneKind::Residential,
+            density: ZoneDensity::Low,
+        },
+    );
+    app.update();
+    assert_eq!(
+        cell_at(&app).density,
+        ZoneDensity::Low,
+        "the same zone at another density is an edit"
+    );
+
+    request_undo_redo(&mut app, false);
+    app.update();
+    assert_eq!(
+        cell_at(&app).density,
+        ZoneDensity::High,
+        "undo restores the density it replaced"
+    );
+
+    request_undo_redo(&mut app, false);
+    app.update();
+    let cell = cell_at(&app);
+    assert_eq!(
+        (cell.zone, cell.density),
+        (ZoneKind::None, ZoneDensity::Medium)
+    );
 }

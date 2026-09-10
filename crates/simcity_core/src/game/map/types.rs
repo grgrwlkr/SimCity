@@ -85,6 +85,57 @@ impl ZoneKind {
     }
 }
 
+/// How densely a zone builds (B2). `Medium` is what every zone was before densities existed, so an
+/// old save and an untouched zone keep growing exactly as they did.
+#[derive(
+    serde::Serialize, serde::Deserialize, Debug, Copy, Clone, Eq, PartialEq, Hash, Default,
+)]
+pub enum ZoneDensity {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+impl ZoneDensity {
+    pub const ALL: [ZoneDensity; 3] = [ZoneDensity::Low, ZoneDensity::Medium, ZoneDensity::High];
+
+    /// Shortest and longest side of a footprint that grows in this density.
+    pub fn footprint_sides(self) -> (u8, u8) {
+        match self {
+            ZoneDensity::Low => (3, 4),
+            ZoneDensity::Medium => (3, 6),
+            ZoneDensity::High => (3, 6),
+        }
+    }
+
+    /// Lowest and highest level a building of this density reaches.
+    pub fn levels(self) -> (u8, u8) {
+        match self {
+            ZoneDensity::Low => (1, 2),
+            ZoneDensity::Medium => (1, 3),
+            ZoneDensity::High => (2, 3),
+        }
+    }
+
+    /// Residents or jobs a building holds against one of the same size and level in `Medium`.
+    pub fn capacity_factor(self) -> f32 {
+        match self {
+            ZoneDensity::Low | ZoneDensity::Medium => 1.0,
+            ZoneDensity::High => 2.0,
+        }
+    }
+
+    /// Height against a building of the same level in `Medium`.
+    pub fn height_factor(self) -> f32 {
+        match self {
+            ZoneDensity::Low => 0.8,
+            ZoneDensity::Medium => 1.0,
+            ZoneDensity::High => 1.6,
+        }
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum BuildingKind {
     Residential,
@@ -93,6 +144,18 @@ pub enum BuildingKind {
     FireStation,
     PoliceStation,
     Hospital,
+    /// Supplies power along the roads it fronts.
+    PowerPlant,
+    /// Supplies water along the roads it fronts.
+    WaterPump,
+    /// Collects garbage along the roads it fronts.
+    Landfill,
+    /// Teaches the residents within its radius: raises education (B4).
+    School,
+    /// Teaches further and wider than a school: raises education (B4).
+    University,
+    /// Green space for the residents within its radius: raises health (B4).
+    Park,
 }
 
 impl BuildingKind {
@@ -104,6 +167,12 @@ impl BuildingKind {
             BuildingKind::FireStation => Color::srgb(0.75, 0.15, 0.12),
             BuildingKind::PoliceStation => Color::srgb(0.12, 0.22, 0.75),
             BuildingKind::Hospital => Color::srgb(0.12, 0.75, 0.22),
+            BuildingKind::PowerPlant => Color::srgb(0.85, 0.72, 0.15),
+            BuildingKind::WaterPump => Color::srgb(0.15, 0.55, 0.85),
+            BuildingKind::Landfill => Color::srgb(0.45, 0.36, 0.26),
+            BuildingKind::School => Color::srgb(0.80, 0.58, 0.30),
+            BuildingKind::University => Color::srgb(0.55, 0.36, 0.62),
+            BuildingKind::Park => Color::srgb(0.30, 0.62, 0.28),
         }
     }
 
@@ -112,9 +181,15 @@ impl BuildingKind {
             BuildingKind::Residential => ZoneKind::Residential,
             BuildingKind::Commercial => ZoneKind::Commercial,
             BuildingKind::Industrial => ZoneKind::Industrial,
-            BuildingKind::FireStation | BuildingKind::PoliceStation | BuildingKind::Hospital => {
-                ZoneKind::None
-            }
+            BuildingKind::FireStation
+            | BuildingKind::PoliceStation
+            | BuildingKind::Hospital
+            | BuildingKind::PowerPlant
+            | BuildingKind::WaterPump
+            | BuildingKind::Landfill
+            | BuildingKind::School
+            | BuildingKind::University
+            | BuildingKind::Park => ZoneKind::None,
         }
     }
 
@@ -132,6 +207,9 @@ impl BuildingKind {
             BuildingKind::FireStation => Some(20),
             BuildingKind::PoliceStation => Some(25),
             BuildingKind::Hospital => Some(30),
+            BuildingKind::School => Some(18),
+            BuildingKind::University => Some(30),
+            BuildingKind::Park => Some(8),
             _ => None,
         }
     }
@@ -153,6 +231,12 @@ impl BuildingKind {
             BuildingKind::FireStation => 500,
             BuildingKind::PoliceStation => 400,
             BuildingKind::Hospital => 800,
+            BuildingKind::PowerPlant => 1000,
+            BuildingKind::WaterPump => 600,
+            BuildingKind::Landfill => 400,
+            BuildingKind::School => 700,
+            BuildingKind::University => 2000,
+            BuildingKind::Park => 150,
         }
     }
 
@@ -161,7 +245,15 @@ impl BuildingKind {
             BuildingKind::Residential => 4,
             BuildingKind::Commercial => 0,
             BuildingKind::Industrial => 0,
-            BuildingKind::FireStation | BuildingKind::PoliceStation | BuildingKind::Hospital => 0,
+            BuildingKind::FireStation
+            | BuildingKind::PoliceStation
+            | BuildingKind::Hospital
+            | BuildingKind::PowerPlant
+            | BuildingKind::WaterPump
+            | BuildingKind::Landfill
+            | BuildingKind::School
+            | BuildingKind::University
+            | BuildingKind::Park => 0,
         }
     }
 
@@ -170,7 +262,35 @@ impl BuildingKind {
             BuildingKind::Residential => 0,
             BuildingKind::Commercial => 3,
             BuildingKind::Industrial => 4,
-            BuildingKind::FireStation | BuildingKind::PoliceStation | BuildingKind::Hospital => 0,
+            BuildingKind::FireStation
+            | BuildingKind::PoliceStation
+            | BuildingKind::Hospital
+            | BuildingKind::PowerPlant
+            | BuildingKind::WaterPump
+            | BuildingKind::Landfill
+            | BuildingKind::School
+            | BuildingKind::University
+            | BuildingKind::Park => 0,
+        }
+    }
+
+    /// Residents a civic building serves at full strength; `None` for every other building.
+    pub fn service_capacity(self) -> Option<u32> {
+        match self {
+            BuildingKind::School => Some(400),
+            BuildingKind::University => Some(1200),
+            BuildingKind::Park => Some(300),
+            _ => None,
+        }
+    }
+
+    /// Units a utility station supplies to the roads it feeds; `None` for every other building.
+    pub fn utility_capacity(self) -> Option<u32> {
+        match self {
+            BuildingKind::PowerPlant => Some(5000),
+            BuildingKind::WaterPump => Some(5000),
+            BuildingKind::Landfill => Some(4000),
+            _ => None,
         }
     }
 

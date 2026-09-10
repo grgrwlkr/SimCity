@@ -14,9 +14,14 @@ use std::time::Duration;
 
 use crate::game::{buildings, sim, ui_state};
 
-/// Frames spent letting the auto-start flow (MainMenu -> InGame -> GenerateMap ->
-/// settle -> LoadTestCity) complete on `Update` before any fixed tick is injected.
+/// Frames `build_headless_game` spends driving the app from MainMenu into the loaded test
+/// city (enter InGame, let the scenario's GenerateMap settle, LoadTestCity) on `Update`,
+/// before any fixed tick is injected.
 pub const SETUP_FRAMES: usize = 8;
+
+/// Frames the scenario's one-shot `GenerateMap` (and its terrain/vehicle/growth cascade) gets
+/// to land before the test city is written over it. Mirrors the settle the dev auto-start used.
+const SETUP_SETTLE_FRAMES: usize = 3;
 /// 10 Hz fixed timestep — one game hour is 10 ticks, one game day is 240 ticks.
 pub const FIXED_DT: Duration = Duration::from_millis(100);
 
@@ -24,6 +29,15 @@ pub const FIXED_DT: Duration = Duration::from_millis(100);
 /// `SimSpeed::Paused` BEFORE the first update so no wall-clock-driven FixedUpdate
 /// tick can sneak in during setup — every fixed tick is injected by `tick`.
 pub fn build_headless_game() -> App {
+    let mut app = build_headless_app();
+    enter_test_city(&mut app);
+    app
+}
+
+/// The same composed app as `build_headless_game`, but left exactly where a player's build
+/// leaves it: nothing has been updated and nothing drives it into a map. Exists for pins
+/// about what the game does on its own at startup.
+pub fn build_headless_app() -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
         .add_plugins(bevy::state::app::StatesPlugin)
@@ -44,10 +58,34 @@ pub fn build_headless_game() -> App {
     app.world_mut()
         .resource_mut::<ui_state::UiState>()
         .sim_speed = ui_state::SimSpeed::Paused;
+    app
+}
 
-    // Let the auto-start flow run: MainMenu -> InGame -> scenario GenerateMap ->
-    // (settle) -> LoadTestCity. All command-driven on Update, no fixed ticks yet.
-    for _ in 0..SETUP_FRAMES {
+/// Drive a freshly built app into the test city and assert that it arrived.
+fn enter_test_city(app: &mut App) {
+    // Drive the entry explicitly instead of leaning on the dev-only auto-start: a shipped
+    // build opens on the main menu, so a harness that waited for LoadTestCity to arrive by
+    // itself would sit on an empty map. Same sequence the auto-start used to perform —
+    // enter InGame, let the scenario's GenerateMap and its cascade settle, then load the
+    // city so it is the last writer, exactly as a manual "Load Test City" click would be.
+    // One frame first: `init_map_grid` is a `Startup` system, and Bevy applies the initial
+    // state transition BEFORE `Startup` on the very first update. Requesting InGame any
+    // earlier fires `OnEnter(InGame)` against a world that has no `MapSeed` yet.
+    app.update();
+
+    app.world_mut()
+        .resource_mut::<NextState<simcity_sim::game::state::AppState>>()
+        .set(simcity_sim::game::state::AppState::InGame);
+
+    for _ in 0..SETUP_SETTLE_FRAMES {
+        app.update();
+    }
+
+    app.world_mut()
+        .resource_mut::<bevy::ecs::message::Messages<simcity_sim::game::commands::GameCommand>>()
+        .write(simcity_sim::game::commands::GameCommand::LoadTestCity);
+
+    for _ in 0..(SETUP_FRAMES - SETUP_SETTLE_FRAMES - 1) {
         app.update();
     }
 
@@ -58,8 +96,6 @@ pub fn build_headless_game() -> App {
         .iter()
         .any(|c| c.road.is_some());
     assert!(has_roads, "test city must be loaded before ticking");
-
-    app
 }
 
 /// Re-seed every sim-side RNG to a known value (normally both derive from `MapSeed`,
@@ -79,5 +115,48 @@ pub fn tick(app: &mut App, n: usize) {
             .resource_mut::<Time<Fixed>>()
             .accumulate_overstep(FIXED_DT);
         app.update();
+    }
+}
+
+#[cfg(test)]
+mod menu_first_pins {
+    use super::*;
+    use simcity_sim::game::state::AppState;
+
+    /// A shipped build must open on the main menu and leave the map empty until the player
+    /// picks a map or a scenario. Drives the real composed app with no help and reads what it
+    /// actually did, so this pins the runtime behaviour rather than the flag behind it.
+    #[test]
+    fn menu_first_startup_waits_in_the_main_menu_on_an_empty_map() {
+        let mut app = build_headless_app();
+        for _ in 0..(SETUP_FRAMES * 3) {
+            app.update();
+        }
+
+        let in_menu = matches!(
+            app.world().resource::<State<AppState>>().get(),
+            AppState::MainMenu
+        );
+        let has_roads = app
+            .world()
+            .resource::<crate::game::map::MapGrid>()
+            .cells
+            .iter()
+            .any(|c| c.road.is_some());
+
+        if simcity_sim::game::DEV_BUILD {
+            // Dev build: auto-start is the intended convenience, so the pin checks it still
+            // does its job rather than skipping silently.
+            assert!(has_roads, "dev auto-start should have loaded the test city");
+        } else {
+            assert!(
+                in_menu,
+                "a shipped build must wait on the main menu, not enter the game by itself"
+            );
+            assert!(
+                !has_roads,
+                "a shipped build must not load the test city behind the player's back"
+            );
+        }
     }
 }

@@ -14,6 +14,7 @@ use bevy::prelude::*;
 
 use crate::game::buildings::Building;
 use crate::game::citizens::ShoppingDemandStats;
+use crate::game::economy::{TaxRates, TaxZone, WealthClass};
 use crate::game::employment::EmploymentStats;
 use crate::game::land_value::LandValueIndex;
 use crate::game::sim::City;
@@ -24,12 +25,14 @@ pub struct DemandPlugin;
 
 impl Plugin for DemandPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<RciDemand>().add_systems(
-            FixedUpdate,
-            compute_rci_demand
-                .in_set(crate::game::PostSimStep::Demand)
-                .run_if(in_state(AppState::InGame)),
-        );
+        app.init_resource::<RciDemand>()
+            .init_resource::<ClassDemand>()
+            .add_systems(
+                FixedUpdate,
+                compute_rci_demand
+                    .in_set(crate::game::PostSimStep::Demand)
+                    .run_if(in_state(AppState::InGame)),
+            );
     }
 }
 
@@ -39,6 +42,42 @@ pub struct RciDemand {
     pub residential: f32,
     pub commercial: f32,
     pub industrial: f32,
+}
+
+/// How far a tax rate moves demand: nothing at the default rate, down 0.04 for every point above
+/// it, up 0.02 for every point below.
+pub fn tax_demand_shift(percent: u8) -> f32 {
+    let rate = i32::from(percent);
+    let neutral = i32::from(TaxRates::DEFAULT_PERCENT);
+    if rate >= neutral {
+        -((rate - neutral) as f32) * 0.04
+    } else {
+        ((neutral - rate) as f32) * 0.02
+    }
+}
+
+/// How far one class's job gap moves that class's demand: homes are wanted where the class has more
+/// jobs than workers, workplaces where it has more workers than jobs.
+pub fn class_gap_shift(zone: TaxZone, workers: usize, jobs: usize) -> f32 {
+    let scale = workers.max(jobs).max(1) as f32;
+    let gap = ((jobs as f32 - workers as f32) / scale).clamp(-1.0, 1.0) * 0.5;
+    match zone {
+        TaxZone::Residential => gap,
+        TaxZone::Commercial | TaxZone::Industrial => -gap,
+    }
+}
+
+/// Demand for every zone and wealth class, in [-1..1]: the zone's demand before tax, moved by
+/// that class's rate.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq)]
+pub struct ClassDemand {
+    by_class: [[f32; 3]; 3],
+}
+
+impl ClassDemand {
+    pub fn get(&self, zone: TaxZone, class: WealthClass) -> f32 {
+        self.by_class[zone.index()][class.index()]
+    }
 }
 
 /// Target residents served per commercial building. Drives the commercial demand bootstrap:
@@ -65,128 +104,167 @@ fn compute_rci_demand(
     land_value: Res<LandValueIndex>,
     q_buildings: Query<&Building>,
     mut demand: ResMut<RciDemand>,
+    rates: Option<Res<TaxRates>>,
+    class_demand: Option<ResMut<ClassDemand>>,
 ) {
     // Bootstrap: with zero population, allow residential growth so the sim can start.
-    if city.population == 0 {
-        *demand = RciDemand {
-            residential: 1.0,
-            commercial: 0.0,
-            industrial: 0.0,
-        };
-        return;
-    }
+    let pre_tax = if city.population == 0 {
+        [1.0, 0.0, 0.0]
+    } else {
+        let citizens = (city.population as f32).max(1.0);
 
-    let citizens = (city.population as f32).max(1.0);
+        // Total job capacity provided by commercial + industrial buildings.
+        let mut jobs_capacity = 0.0f32;
+        let mut residential_buildings = 0u32;
+        let mut commercial_buildings = 0u32;
+        let mut industrial_buildings = 0u32;
 
-    // Total job capacity provided by commercial + industrial buildings.
-    let mut jobs_capacity = 0.0f32;
-    let mut residential_buildings = 0u32;
-    let mut commercial_buildings = 0u32;
-    let mut industrial_buildings = 0u32;
-
-    for b in q_buildings.iter() {
-        jobs_capacity += b.capacity_jobs as f32;
-        match b.kind {
-            crate::game::map::BuildingKind::Residential => residential_buildings += 1,
-            crate::game::map::BuildingKind::Commercial => commercial_buildings += 1,
-            crate::game::map::BuildingKind::Industrial => industrial_buildings += 1,
-            _ => {}
+        for b in q_buildings.iter() {
+            jobs_capacity += b.capacity_jobs as f32;
+            match b.kind {
+                crate::game::map::BuildingKind::Residential => residential_buildings += 1,
+                crate::game::map::BuildingKind::Commercial => commercial_buildings += 1,
+                crate::game::map::BuildingKind::Industrial => industrial_buildings += 1,
+                _ => {}
+            }
         }
-    }
 
-    // Calculate average land value
-    let avg_land_value = if land_value.values.is_empty() {
-        0.5
-    } else {
-        land_value.values.iter().sum::<f32>() / land_value.values.len() as f32
-    };
+        // Calculate average land value
+        let avg_land_value = if land_value.values.is_empty() {
+            0.5
+        } else {
+            land_value.values.iter().sum::<f32>() / land_value.values.len() as f32
+        };
 
-    // =========================================================================
-    // Residential Demand
-    // =========================================================================
-    // Base: if jobs > citizens, we need more housing (workers need homes).
-    let jobs_to_population_ratio = jobs_capacity / citizens;
-    let residential_base = ((jobs_to_population_ratio - 1.0) * 0.5).clamp(-1.0, 1.0);
+        // =========================================================================
+        // Residential Demand
+        // =========================================================================
+        // Base: if jobs > citizens, we need more housing (workers need homes).
+        let jobs_to_population_ratio = jobs_capacity / citizens;
+        let residential_base = ((jobs_to_population_ratio - 1.0) * 0.5).clamp(-1.0, 1.0);
 
-    // Modifier 1: Commute time bonus (low congestion = more desirable to live here).
-    // When avg_congestion < 0.3, add up to +0.3 to demand.
-    let commute_bonus = (0.7 - traffic.avg_congestion).max(0.0) * 0.4;
+        // Modifier 1: Commute time bonus (low congestion = more desirable to live here).
+        // When avg_congestion < 0.3, add up to +0.3 to demand.
+        let commute_bonus = (0.7 - traffic.avg_congestion).max(0.0) * 0.4;
 
-    // Modifier 2: Land value (high land value = expensive area, slower growth).
-    // When avg land value is high, reduce demand slightly.
-    let land_value_penalty = if avg_land_value > 0.6 {
-        ((avg_land_value - 0.6) / 0.4).min(0.2)
-    } else {
-        0.0
-    };
+        // Modifier 2: Land value (high land value = expensive area, slower growth).
+        // When avg land value is high, reduce demand slightly.
+        let land_value_penalty = if avg_land_value > 0.6 {
+            ((avg_land_value - 0.6) / 0.4).min(0.2)
+        } else {
+            0.0
+        };
 
-    let residential = (residential_base + commute_bonus - land_value_penalty).clamp(-1.0, 1.0);
+        let residential = (residential_base + commute_bonus - land_value_penalty).clamp(-1.0, 1.0);
 
-    // =========================================================================
-    // Commercial Demand
-    // =========================================================================
-    // Base: unmet shopping desire from citizens, OR — when too few shops exist to even register
-    // unmet demand — a population-driven bootstrap floor. Residents are latent customers, so
-    // commercial demand must be able to rise from population alone before any shop is built (the
-    // density/industrial bonuses below are MULTIPLIERS on this base; a zero base annihilates them,
-    // which previously pinned commercial demand at 0 forever and left zoned commercial undeveloped).
-    // The shortfall against a population-scaled target decays to 0 as commercial catches up, after
-    // which real unmet shopping drives steady-state demand. Mirrors residential (jobs/pop) and
-    // industrial (employment gap), which both bootstrap additively from population/employment.
-    let target_commercial_buildings = citizens / COMMERCIAL_RESIDENTS_PER_BUILDING;
-    let commercial_shortfall = ((target_commercial_buildings - commercial_buildings as f32)
-        / target_commercial_buildings.max(1.0))
-    .clamp(0.0, 1.0);
-    let commercial_base = shopping
-        .unmet_ratio
-        .max(commercial_shortfall)
+        // =========================================================================
+        // Commercial Demand
+        // =========================================================================
+        // Base: unmet shopping desire from citizens, OR — when too few shops exist to even register
+        // unmet demand — a population-driven bootstrap floor. Residents are latent customers, so
+        // commercial demand must be able to rise from population alone before any shop is built (the
+        // density/industrial bonuses below are MULTIPLIERS on this base; a zero base annihilates them,
+        // which previously pinned commercial demand at 0 forever and left zoned commercial undeveloped).
+        // The shortfall against a population-scaled target decays to 0 as commercial catches up, after
+        // which real unmet shopping drives steady-state demand. Mirrors residential (jobs/pop) and
+        // industrial (employment gap), which both bootstrap additively from population/employment.
+        let target_commercial_buildings = citizens / COMMERCIAL_RESIDENTS_PER_BUILDING;
+        let commercial_shortfall = ((target_commercial_buildings - commercial_buildings as f32)
+            / target_commercial_buildings.max(1.0))
         .clamp(0.0, 1.0);
+        let commercial_base = shopping
+            .unmet_ratio
+            .max(commercial_shortfall)
+            .clamp(0.0, 1.0);
 
-    // Modifier 1: Population density bonus (more citizens = more customers).
-    // Density = citizens / (residential_buildings + 1).
-    let density = citizens / (residential_buildings as f32 + 1.0);
-    let density_bonus = (density / 10.0).min(0.5); // Cap at +0.5
+        // Modifier 1: Population density bonus (more citizens = more customers).
+        // Density = citizens / (residential_buildings + 1).
+        let density = citizens / (residential_buildings as f32 + 1.0);
+        let density_bonus = (density / 10.0).min(0.5); // Cap at +0.5
 
-    // Modifier 2: Industrial linkage (more industry = more goods to sell).
-    let industrial_linkage = (industrial_buildings as f32 / 10.0).min(0.3);
+        // Modifier 2: Industrial linkage (more industry = more goods to sell).
+        let industrial_linkage = (industrial_buildings as f32 / 10.0).min(0.3);
 
-    // Modifier 3: Traffic congestion penalty (hard to reach shops).
-    let congestion_penalty = traffic.avg_congestion * 0.3;
+        // Modifier 3: Traffic congestion penalty (hard to reach shops).
+        let congestion_penalty = traffic.avg_congestion * 0.3;
 
-    let commercial = (commercial_base * (1.0 + density_bonus + industrial_linkage)
-        - congestion_penalty)
-        .clamp(-1.0, 1.0);
+        let commercial = (commercial_base * (1.0 + density_bonus + industrial_linkage)
+            - congestion_penalty)
+            .clamp(-1.0, 1.0);
 
-    // =========================================================================
-    // Industrial Demand
-    // =========================================================================
-    // Base: employment gap (low employment rate = need more jobs).
-    let target_employment_rate = 0.85f32;
-    let industrial_base = ((target_employment_rate - employment.employment_rate)
-        / target_employment_rate)
-        .clamp(-1.0, 1.0);
+        // =========================================================================
+        // Industrial Demand
+        // =========================================================================
+        // Base: employment gap (low employment rate = need more jobs).
+        let target_employment_rate = 0.85f32;
+        let industrial_base = ((target_employment_rate - employment.employment_rate)
+            / target_employment_rate)
+            .clamp(-1.0, 1.0);
 
-    // Modifier 1: Commercial demand linkage (shops need goods).
-    // When commercial demand is high, boost industrial demand.
-    let commercial_demand_link = shopping.unmet_ratio * 0.4;
+        // Modifier 1: Commercial demand linkage (shops need goods).
+        // When commercial demand is high, boost industrial demand.
+        let commercial_demand_link = shopping.unmet_ratio * 0.4;
 
-    // Modifier 2: Pollution consideration (existing industry reduces new demand).
-    // This is a simple heuristic based on building count.
-    let pollution_saturation = (industrial_buildings as f32 / 20.0).min(0.3);
+        // Modifier 2: Pollution consideration (existing industry reduces new demand).
+        // This is a simple heuristic based on building count.
+        let pollution_saturation = (industrial_buildings as f32 / 20.0).min(0.3);
 
-    let industrial =
-        (industrial_base + commercial_demand_link - pollution_saturation).clamp(-1.0, 1.0);
+        let industrial =
+            (industrial_base + commercial_demand_link - pollution_saturation).clamp(-1.0, 1.0);
 
-    *demand = RciDemand {
-        residential,
-        commercial,
-        industrial,
+        [residential, commercial, industrial]
     };
+
+    // Tax moves demand: every class by its own rate, every zone by the mean of its classes' rates.
+    let default_rates = TaxRates::default();
+    let rates = rates.as_deref().unwrap_or(&default_rates);
+    let mut by_class = [[0.0f32; 3]; 3];
+    let mut zone = [0.0f32; 3];
+    for tax_zone in TaxZone::ALL {
+        let base = pre_tax[tax_zone.index()];
+        let mut shift_sum = 0.0;
+        for class in WealthClass::ALL {
+            let shift = tax_demand_shift(rates.get(tax_zone, class));
+            let gap = class_gap_shift(
+                tax_zone,
+                employment.workers_by_class[class.index()],
+                employment.jobs_by_class[class.index()],
+            );
+            by_class[tax_zone.index()][class.index()] = (base + shift + gap).clamp(-1.0, 1.0);
+            shift_sum += shift;
+        }
+        zone[tax_zone.index()] =
+            (base + shift_sum / WealthClass::ALL.len() as f32).clamp(-1.0, 1.0);
+    }
+    *demand = RciDemand {
+        residential: zone[TaxZone::Residential.index()],
+        commercial: zone[TaxZone::Commercial.index()],
+        industrial: zone[TaxZone::Industrial.index()],
+    };
+    if let Some(mut class_demand) = class_demand {
+        class_demand.by_class = by_class;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zone_density_class_demand_follows_each_class_job_gap() {
+        assert!(
+            class_gap_shift(TaxZone::Residential, 10, 30) > 0.0,
+            "jobs without workers call for homes of that class"
+        );
+        assert!(class_gap_shift(TaxZone::Commercial, 10, 30) < 0.0);
+        assert!(
+            class_gap_shift(TaxZone::Industrial, 30, 10) > 0.0,
+            "workers without jobs call for workplaces of that class"
+        );
+        assert!(class_gap_shift(TaxZone::Residential, 30, 10) < 0.0);
+        assert_eq!(class_gap_shift(TaxZone::Residential, 20, 20), 0.0);
+        assert_eq!(class_gap_shift(TaxZone::Commercial, 0, 0), 0.0);
+    }
 
     #[test]
     fn rci_demand_default_to_zero() {
@@ -288,5 +366,79 @@ mod tests {
         let many_buildings: f32 = 100.0;
         let saturation = (many_buildings / 20.0).min(0.3);
         assert_eq!(saturation, 0.3); // capped at 0.3
+    }
+
+    #[test]
+    fn tax_rate_demand_shift_is_neutral_at_the_default_rate() {
+        assert_eq!(tax_demand_shift(TaxRates::DEFAULT_PERCENT), 0.0);
+        assert!(
+            (tax_demand_shift(20) + 0.44).abs() < 1e-5,
+            "{}",
+            tax_demand_shift(20)
+        );
+        assert!(
+            (tax_demand_shift(0) - 0.18).abs() < 1e-5,
+            "{}",
+            tax_demand_shift(0)
+        );
+        assert!(tax_demand_shift(10) < 0.0 && tax_demand_shift(8) > 0.0);
+    }
+
+    fn demand_with(rates: TaxRates) -> (RciDemand, ClassDemand) {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(City {
+                population: 1000,
+                ..Default::default()
+            })
+            .insert_resource(EmploymentStats::default())
+            .insert_resource(ShoppingDemandStats::default())
+            .insert_resource(TrafficIndex::default())
+            .insert_resource(LandValueIndex::default())
+            .insert_resource(RciDemand::default())
+            .insert_resource(ClassDemand::default())
+            .insert_resource(rates)
+            .add_systems(Update, compute_rci_demand);
+        app.update();
+        (
+            *app.world().resource::<RciDemand>(),
+            *app.world().resource::<ClassDemand>(),
+        )
+    }
+
+    #[test]
+    fn tax_rate_raising_a_rate_lowers_that_zone_and_class_demand() {
+        let (base, base_class) = demand_with(TaxRates::default());
+        assert_eq!(
+            base_class.get(TaxZone::Residential, WealthClass::Middle),
+            base.residential,
+            "at the default rates every class wants what its zone wants"
+        );
+
+        let mut rates = TaxRates::default();
+        rates.set(TaxZone::Residential, WealthClass::High, 20);
+        let (taxed, taxed_class) = demand_with(rates);
+
+        assert!(
+            taxed.residential < base.residential - 0.1,
+            "residential demand must fall measurably: {} -> {}",
+            base.residential,
+            taxed.residential
+        );
+        assert_eq!(
+            taxed.commercial, base.commercial,
+            "other zones keep their demand"
+        );
+        assert_eq!(taxed.industrial, base.industrial);
+        assert!(
+            taxed_class.get(TaxZone::Residential, WealthClass::High)
+                < base_class.get(TaxZone::Residential, WealthClass::High) - 0.4,
+            "the taxed class falls hardest"
+        );
+        assert_eq!(
+            taxed_class.get(TaxZone::Residential, WealthClass::Low),
+            base_class.get(TaxZone::Residential, WealthClass::Low),
+            "other classes keep their demand"
+        );
     }
 }

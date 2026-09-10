@@ -76,8 +76,10 @@ fn compute_land_value(
     service_coverage: Option<Res<ServiceCoverageIndex>>,
     traffic: Option<Res<TrafficOccupancy>>,
     pollution: Option<Res<PollutionIndex>>,
+    fields: Option<Res<crate::game::city_fields::CityFields>>,
     mut land_value: ResMut<LandValueIndex>,
 ) {
+    let fields = fields.as_deref().filter(|fields| fields.covers(grid.len()));
     let len = grid.len();
     if land_value.values.len() != len {
         land_value.values.clear();
@@ -140,6 +142,13 @@ fn compute_land_value(
                 if local_norm > 0.7 {
                     value -= 0.2;
                 }
+            }
+
+            // Crime above what a district tolerates drags land value down.
+            if let Some(fields) = fields {
+                value -= crate::game::city_fields::crime_land_value_penalty(
+                    fields.get(crate::game::city_fields::CityField::Crime, idx),
+                );
             }
 
             // Clamp to [0.0, 1.0]
@@ -245,6 +254,7 @@ mod tests {
 
         let mut coverage = ServiceCoverageIndex {
             version: 0,
+            map_version: 0,
             fire: 1.0,
             police: 1.0,
             medical: 1.0,
@@ -265,6 +275,31 @@ mod tests {
         assert!(
             land_value.values[covered_idx] > land_value.values[uncovered_idx],
             "covered tile should get higher land value than uncovered tile"
+        );
+    }
+
+    #[test]
+    fn city_fields_crime_lowers_land_value() {
+        let grid = MapGrid::new(3, 1);
+        let mut fields = crate::game::city_fields::CityFields::default();
+        fields.set_for_test(
+            crate::game::city_fields::CityField::Crime,
+            vec![0.9, 0.2, 0.2],
+        );
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(grid)
+            .insert_resource(fields)
+            .insert_resource(LandValueIndex::default())
+            .add_systems(Update, compute_land_value);
+        app.update();
+
+        let lv = app.world().resource::<LandValueIndex>();
+        assert!(
+            lv.values[0] < lv.values[2],
+            "crime-ridden tile {} against a safe one {}",
+            lv.values[0],
+            lv.values[2]
         );
     }
 

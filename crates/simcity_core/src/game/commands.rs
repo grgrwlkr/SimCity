@@ -18,7 +18,13 @@ pub enum GameCommand {
     SetRoad { pos: TilePos, road: RoadCell },
 
     /// Paint zoning at the given tile position.
-    SetZone { pos: TilePos, zone: ZoneKind },
+    SetZone {
+        pos: TilePos,
+        zone: ZoneKind,
+        /// How densely the zone builds; a command without it zones at `Medium`.
+        #[serde(default)]
+        density: crate::game::map::ZoneDensity,
+    },
 
     /// Place a building directly (used for service buildings).
     PlaceBuilding { pos: TilePos, kind: BuildingKind },
