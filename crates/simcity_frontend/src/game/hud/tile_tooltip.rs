@@ -137,11 +137,7 @@ pub fn update_tile_tooltip(
     mut panels: Query<&mut Visibility, With<TooltipPanel>>,
     mut headlines: Headlines,
     mut details: Details,
-    supply: (
-        Option<Res<simcity_sim::game::utilities::UtilityNetwork>>,
-        Option<Res<simcity_sim::game::demand::RciDemand>>,
-        Option<Res<simcity_sim::game::city_fields::CityFields>>,
-    ),
+    supply: TileSupply,
 ) {
     let tile = hovered.tile.filter(|_| !pointer.captured);
     let preview = tile.and_then(|tile| preview_tool_at(ui.tool, tile, &grid, city.money));
@@ -217,6 +213,13 @@ pub fn place_tile_tooltip(
         }
     }
 }
+
+/// What a hovered tile's diagnosis reads: the utility network, demand and the city fields.
+type TileSupply<'w> = (
+    Option<Res<'w, simcity_sim::game::utilities::UtilityNetwork>>,
+    Option<Res<'w, simcity_sim::game::demand::RciDemand>>,
+    Option<Res<'w, simcity_sim::game::city_fields::CityFields>>,
+);
 
 #[cfg(test)]
 mod tests {

@@ -54,6 +54,13 @@ impl Plugin for DataPlugin {
     }
 }
 
+/// Derived environment fields, reset with the map: pollution, land value, city fields.
+type DerivedFields<'w> = (
+    Option<ResMut<'w, pollution::PollutionIndex>>,
+    Option<ResMut<'w, land_value::LandValueIndex>>,
+    Option<ResMut<'w, simcity_sim::game::city_fields::CityFields>>,
+);
+
 #[allow(clippy::too_many_arguments)]
 fn handle_load_test_city(
     mut cmd_reader: MessageReader<commands::GameCommand>,
@@ -67,12 +74,7 @@ fn handle_load_test_city(
     mut graph_version: ResMut<transport::GraphVersion>,
     mut map_edit_version: ResMut<map::MapEditVersion>,
     mut history: ResMut<command_history::CommandHistory>,
-    // Derived environment fields, reset with the map: pollution, land value, city fields.
-    mut derived: (
-        Option<ResMut<pollution::PollutionIndex>>,
-        Option<ResMut<land_value::LandValueIndex>>,
-        Option<ResMut<simcity_sim::game::city_fields::CityFields>>,
-    ),
+    mut derived: DerivedFields,
     mut bus_reset: BusResetParams,
     mut day_out: bevy::ecs::message::MessageWriter<sim_events::DayAdvanced>,
     mut ledger: Option<ResMut<economy::BudgetLedger>>,
