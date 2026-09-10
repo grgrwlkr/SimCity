@@ -145,7 +145,8 @@ fn spawn_menu_button(
                 border_radius: BorderRadius::all(Val::Px(theme.radii.control)),
                 ..default()
             },
-            BackgroundColor(theme.palette.accent.with_alpha(0.18)),
+            // Neutral fill: the accent is kept for what is selected, and nothing here is yet.
+            BackgroundColor(theme.palette.glass_highlight),
         ))
         .id();
     let label = commands
