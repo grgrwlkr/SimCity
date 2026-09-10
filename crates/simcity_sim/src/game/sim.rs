@@ -49,6 +49,7 @@ impl Plugin for SimPlugin {
             .add_systems(
                 Update,
                 reset_sim_rng_on_new_map
+                    .after(crate::game::map::apply_game_commands_to_grid)
                     .in_set(GameSet::CommandApply)
                     .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
             );

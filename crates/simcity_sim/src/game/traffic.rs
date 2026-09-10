@@ -338,6 +338,8 @@ impl Plugin for TrafficPlugin {
             .add_systems(
                 Update,
                 check_ring_free_topology
+                    .after(crate::game::intersections::detect_intersections)
+                    .after(crate::game::intersections::sync_traffic_light_entities)
                     .in_set(GameSet::GraphUpdate)
                     .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
             )
@@ -402,6 +404,7 @@ impl Plugin for TrafficPlugin {
             .add_systems(
                 Update,
                 track_vehicle_counts
+                    .after(clear_vehicles)
                     .in_set(GameSet::CommandApply)
                     .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
             )

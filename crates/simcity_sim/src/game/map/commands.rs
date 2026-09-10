@@ -73,7 +73,7 @@ pub(crate) fn spawn_building_entity(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn apply_game_commands_to_grid(
+pub(crate) fn apply_game_commands_to_grid(
     mut cmd_reader: MessageReader<GameCommand>,
     mut undo_reader: MessageReader<UndoRedoRequested>,
     mut commands: Commands,

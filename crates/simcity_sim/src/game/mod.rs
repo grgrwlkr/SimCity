@@ -458,4 +458,44 @@ mod schedule_ambiguity_pin {
                 );
             });
     }
+
+    /// Update systems that change the city — its buildings, the intersection index, the map seed
+    /// and the vehicle counts — run in one fixed order. With an ambiguous pair among them the
+    /// multi-threaded executor chooses the order per run: a single unrelated system joining the
+    /// schedule was enough to swing the day-18 freeze pin between 0 and 7 stuck vehicles from
+    /// one run of the same binary to the next.
+    #[test]
+    fn update_systems_that_change_the_city_have_a_fixed_order() {
+        let mut app = App::new();
+        app.add_plugins(bevy::state::app::StatesPlugin);
+        app.add_plugins(super::SimPlugin);
+        app.world_mut().schedule_scope(Update, |world, schedule| {
+            schedule.set_build_settings(ScheduleBuildSettings {
+                ambiguity_detection: LogLevel::Warn,
+                ..Default::default()
+            });
+            schedule.initialize(world).expect("schedule init");
+            let watched = [
+                world.component_id::<crate::game::buildings::Building>(),
+                world.component_id::<crate::game::intersections::IntersectionIndex>(),
+                world.component_id::<crate::game::map::MapSeed>(),
+                world.component_id::<crate::game::traffic::TrafficVehicleCounts>(),
+            ];
+            assert!(
+                watched.iter().all(Option::is_some),
+                "every watched type is used by the schedule: {watched:?}"
+            );
+            let offending = schedule
+                .graph()
+                .conflicting_systems()
+                .0
+                .iter()
+                .filter(|(_, _, conflicts)| conflicts.iter().any(|id| watched.contains(&Some(*id))))
+                .count();
+            assert_eq!(
+                offending, 0,
+                "{offending} ambiguous Update pairs change the city (see warnings above)"
+            );
+        });
+    }
 }

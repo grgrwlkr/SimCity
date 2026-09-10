@@ -44,6 +44,19 @@ pub fn tooltip_lines(preview: &ToolPreview) -> (String, Option<String>, bool) {
     }
 }
 
+/// What the tooltip says: the active tool's preview when it has one, otherwise why a zoned tile is
+/// held back. `None` when there is nothing to say.
+pub fn tooltip_content(
+    preview: Option<&ToolPreview>,
+    diagnosis: Option<&(String, String)>,
+) -> Option<(String, Option<String>, bool)> {
+    match (preview, diagnosis) {
+        (Some(preview), _) => Some(tooltip_lines(preview)),
+        (None, Some((headline, reason))) => Some((headline.clone(), Some(reason.clone()), false)),
+        (None, None) => None,
+    }
+}
+
 /// Spawn the tooltip under its own game-interface root, hidden.
 pub fn spawn_tile_tooltip(commands: &mut Commands, theme: &Theme) {
     let space = theme.space;
@@ -124,19 +137,26 @@ pub fn update_tile_tooltip(
     mut panels: Query<&mut Visibility, With<TooltipPanel>>,
     mut headlines: Headlines,
     mut details: Details,
+    supply: (
+        Option<Res<simcity_sim::game::utilities::UtilityNetwork>>,
+        Option<Res<simcity_sim::game::demand::RciDemand>>,
+    ),
 ) {
-    let preview = hovered
-        .tile
-        .filter(|_| !pointer.captured)
-        .and_then(|tile| preview_tool_at(ui.tool, tile, &grid, city.money));
-    let Some(preview) = preview else {
+    let tile = hovered.tile.filter(|_| !pointer.captured);
+    let preview = tile.and_then(|tile| preview_tool_at(ui.tool, tile, &grid, city.money));
+    let diagnosis = match (tile, supply.0.as_deref(), supply.1.as_deref()) {
+        (Some(tile), Some(network), Some(demand)) => {
+            simcity_sim::game::buildings::tile_diagnosis(&grid, network, demand, tile)
+        }
+        _ => None,
+    };
+    let Some((headline, detail, ok)) = tooltip_content(preview.as_ref(), diagnosis.as_ref()) else {
         for mut visibility in &mut panels {
             visibility.set_if_neq(Visibility::Hidden);
         }
         return;
     };
 
-    let (headline, detail, ok) = tooltip_lines(&preview);
     for mut text in &mut headlines {
         if text.0 != headline {
             text.0.clone_from(&headline);
@@ -317,6 +337,67 @@ mod tests {
             !panel_visible(&mut app),
             "inspect edits nothing, so it has no price"
         );
+    }
+
+    #[test]
+    fn utility_network_tooltip_names_why_a_zoned_tile_does_not_grow() {
+        let reason = (
+            "Residential zone".to_string(),
+            "Won't grow: No power".to_string(),
+        );
+        assert_eq!(
+            tooltip_content(None, Some(&reason)),
+            Some((
+                "Residential zone".to_string(),
+                Some("Won't grow: No power".to_string()),
+                false
+            ))
+        );
+        assert_eq!(tooltip_content(None, None), None);
+        let fire = preview(Some(500), Ok(()), Some(20));
+        assert_eq!(
+            tooltip_content(Some(&fire), Some(&reason)).map(|(headline, _, _)| headline),
+            Some("Builds a fire station, $500".to_string()),
+            "the tool's own preview comes first"
+        );
+
+        // Inspecting a zoned tile that no powered road reaches says so.
+        let mut app = tooltip_app(ToolMode::Inspect, Some(TilePos { x: 8, y: 4 }));
+        {
+            let mut grid = app.world_mut().resource_mut::<MapGrid>();
+            for x in 0..32 {
+                let pos = TilePos { x, y: 2 };
+                let mut cell = grid.get(pos).expect("inside");
+                cell.road = simcity_core::game::roads::RoadCell {
+                    kind: RoadKind::TwoLane,
+                    dir: simcity_core::game::roads::RoadDir::East,
+                    lane: 0,
+                    flow: simcity_core::game::roads::RoadFlow::TwoWay,
+                    lane_type: simcity_core::game::roads::LaneType::Regular,
+                };
+                grid.set(pos, cell);
+            }
+            let pos = TilePos { x: 8, y: 4 };
+            let mut cell = grid.get(pos).expect("inside");
+            cell.zone = simcity_sim::game::map::ZoneKind::Residential;
+            grid.set(pos, cell);
+        }
+        app.init_resource::<simcity_sim::game::utilities::UtilityNetwork>();
+        app.insert_resource(simcity_sim::game::demand::RciDemand {
+            residential: 1.0,
+            commercial: 0.0,
+            industrial: 0.0,
+        });
+        app.update();
+        assert!(panel_visible(&mut app), "a held-back zone explains itself");
+        assert_eq!(headline(&mut app), "Residential zone");
+        let world = app.world_mut();
+        let detail = world
+            .query_filtered::<&Text, With<TooltipDetail>>()
+            .single(world)
+            .map(|text| text.0.clone())
+            .expect("one detail line");
+        assert_eq!(detail, "Won't grow: No power");
     }
 
     #[test]

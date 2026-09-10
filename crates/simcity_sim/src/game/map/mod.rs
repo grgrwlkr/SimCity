@@ -36,7 +36,7 @@ pub use props_render::PropEntity;
 use props_render::{PropIndex, sync_prop_visibility, sync_props};
 
 mod commands;
-use commands::apply_game_commands_to_grid;
+pub(crate) use commands::apply_game_commands_to_grid;
 
 mod data_map;
 pub use data_map::{

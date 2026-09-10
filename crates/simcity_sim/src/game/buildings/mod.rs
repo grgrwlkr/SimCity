@@ -19,7 +19,10 @@ mod zone_depth;
 #[cfg(test)]
 mod tests;
 
-pub use blockers::{GrowthBlocker, block_has, growth_blockers, upgrade_blocker};
+pub use blockers::{
+    BUILDINGS_WITHOUT_POWER, GrowthBlocker, block_has, growth_blockers,
+    report_buildings_without_power, tile_diagnosis, upgrade_blocker,
+};
 pub use components::*;
 pub use construction::*;
 pub use decay::*;
@@ -69,12 +72,14 @@ impl Plugin for BuildingsPlugin {
                 Update,
                 (
                     reset_growth_rng_on_new_map
+                        .after(crate::game::map::apply_game_commands_to_grid)
                         .in_set(GameSet::CommandApply)
                         .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
                     update_construction_progress
                         .in_set(GameSet::Sim)
                         .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
                     update_occupancy
+                        .after(update_construction_progress)
                         .in_set(GameSet::Sim)
                         .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
                     population::update_city_population
@@ -82,6 +87,12 @@ impl Plugin for BuildingsPlugin {
                         .in_set(GameSet::PostSim)
                         .run_if(in_state(AppState::InGame).or_else(in_state(AppState::Paused))),
                 ),
+            )
+            .add_systems(
+                Update,
+                report_buildings_without_power
+                    .in_set(GameSet::PostSim)
+                    .run_if(in_state(AppState::InGame)),
             )
             .add_systems(
                 FixedUpdate,

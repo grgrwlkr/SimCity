@@ -136,6 +136,7 @@ pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpR
         },
     };
 
+    let utilities = utilities_json(world);
     let state = world
         .get_resource::<State<AppState>>()
         .map(|state| format!("{:?}", state.get()));
@@ -234,7 +235,74 @@ pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpR
         "performance": performance,
         "log": log,
         "budget": budget,
+        "utilities": utilities,
     }))
+}
+
+/// Supply by utility, zoned buildings without it, and why the hovered tile is held back.
+fn utilities_json(world: &mut World) -> Value {
+    use simcity_sim::game::buildings::{Building, growth_blockers};
+    use simcity_sim::game::demand::RciDemand;
+    use simcity_sim::game::map::{BuildingKind, HoveredTile, MapGrid};
+    use simcity_sim::game::utilities::{UtilityKind, UtilityNetwork};
+
+    let Some(network) = world.get_resource::<UtilityNetwork>().cloned() else {
+        return json!({ "version": Value::Null, "note": "no utility network in this world" });
+    };
+    let served = |kind: UtilityKind| {
+        network
+            .served
+            .iter()
+            .filter(|mask| **mask & kind.mask() != 0)
+            .count()
+    };
+    let mut without_power = 0usize;
+    let mut without_water = 0usize;
+    if let Some(grid) = world.get_resource::<MapGrid>().cloned() {
+        let mut query = world.query::<&Building>();
+        for building in query.iter(world).filter(|building| {
+            building.is_operational()
+                && matches!(
+                    building.kind,
+                    BuildingKind::Residential | BuildingKind::Commercial | BuildingKind::Industrial
+                )
+        }) {
+            let has = |kind| {
+                network.footprint_has(
+                    &grid,
+                    building.anchor_pos,
+                    building.footprint_width,
+                    building.footprint_length,
+                    kind,
+                )
+            };
+            without_power += usize::from(!has(UtilityKind::Power));
+            without_water += usize::from(!has(UtilityKind::Water));
+        }
+    }
+    let hovered = match (
+        world
+            .get_resource::<HoveredTile>()
+            .and_then(|hovered| hovered.tile),
+        world.get_resource::<MapGrid>(),
+        world.get_resource::<RciDemand>(),
+    ) {
+        (Some(tile), Some(grid), Some(demand)) => json!({
+            "tile": [tile.x, tile.y],
+            "blockers": growth_blockers(grid, &network, demand, tile),
+        }),
+        _ => Value::Null,
+    };
+    json!({
+        "version": network.version,
+        "served_tiles": {
+            "power": served(UtilityKind::Power),
+            "water": served(UtilityKind::Water),
+            "garbage": served(UtilityKind::Garbage),
+        },
+        "buildings_without": { "power": without_power, "water": without_water },
+        "hovered": hovered,
+    })
 }
 
 /// Tax rates, demand by zone and class, and the ledger — enough to judge a tax change on a run.
@@ -345,6 +413,7 @@ mod tests {
             "performance",
             "log",
             "budget",
+            "utilities",
         ] {
             assert!(
                 answer.get(section).is_some(),
@@ -458,6 +527,87 @@ mod tests {
         assert_eq!(budget["last_report"]["lines"]["Construction"], -40);
         assert_eq!(budget["last_report"]["money_start"], 1_000);
         assert_eq!(budget["last_report"]["money_end"], 960);
+    }
+
+    #[test]
+    fn utility_network_is_reported_so_a_supply_run_can_be_judged() {
+        use simcity_core::game::roads::{LaneType, RoadCell, RoadDir, RoadFlow, RoadKind};
+        use simcity_sim::game::buildings::{Building, BuildingPhase};
+        use simcity_sim::game::demand::RciDemand;
+        use simcity_sim::game::map::{BuildingKind, HoveredTile, MapGrid, TilePos, ZoneKind};
+        use simcity_sim::game::utilities::{UtilityNetwork, compute_served};
+
+        let mut grid = MapGrid::new(24, 12);
+        for x in 0..24 {
+            let pos = TilePos { x, y: 2 };
+            let mut cell = grid.get(pos).expect("inside");
+            cell.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                dir: RoadDir::East,
+                lane: 0,
+                flow: RoadFlow::TwoWay,
+                lane_type: LaneType::Regular,
+            };
+            grid.set(pos, cell);
+        }
+        for x in 4..=12 {
+            for y in 3..=5 {
+                let pos = TilePos { x, y };
+                let mut cell = grid.get(pos).expect("inside");
+                cell.zone = ZoneKind::Residential;
+                grid.set(pos, cell);
+            }
+        }
+        // A water pump, and no power plant anywhere.
+        for x in 16..19 {
+            for y in 3..6 {
+                let pos = TilePos { x, y };
+                let mut cell = grid.get(pos).expect("inside");
+                cell.building = Some(BuildingKind::WaterPump);
+                grid.set(pos, cell);
+            }
+        }
+        let mut world = World::new();
+        world.insert_resource(UtilityNetwork {
+            version: 3,
+            map_version: 0,
+            served: compute_served(&grid),
+        });
+        world.insert_resource(grid);
+        world.insert_resource(RciDemand {
+            residential: 1.0,
+            commercial: 0.0,
+            industrial: 0.0,
+        });
+        world.insert_resource(HoveredTile {
+            tile: Some(TilePos { x: 8, y: 4 }),
+        });
+        world.spawn(Building {
+            kind: BuildingKind::Residential,
+            anchor_pos: TilePos { x: 4, y: 3 },
+            footprint_width: 3,
+            footprint_length: 3,
+            level: 1,
+            phase: BuildingPhase::Operational,
+            construction_start_day: 0,
+            capacity_residents: 12,
+            capacity_jobs: 0,
+            occupancy_residents: 4,
+            occupancy_jobs: 0,
+            target_occupancy_residents: 4,
+            target_occupancy_jobs: 0,
+            parking_spots: Vec::new(),
+        });
+
+        let answer = observe_handler(In(None), &mut world).expect("observe always answers");
+        let utilities = &answer["utilities"];
+        assert_eq!(utilities["version"], 3);
+        assert_eq!(utilities["served_tiles"]["power"], 0);
+        assert!(utilities["served_tiles"]["water"].as_u64().unwrap_or(0) > 0);
+        assert_eq!(utilities["buildings_without"]["power"], 1);
+        assert_eq!(utilities["buildings_without"]["water"], 0);
+        assert_eq!(utilities["hovered"]["blockers"], json!(["NoPower"]));
+        assert_eq!(utilities["hovered"]["tile"], json!([8, 4]));
     }
 
     #[test]

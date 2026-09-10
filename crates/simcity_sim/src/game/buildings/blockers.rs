@@ -1,7 +1,12 @@
 //! Why a zoned tile does not grow and why a building does not rise — the reasons a player reads.
 
+use bevy::ecs::message::MessageReader;
+use bevy::prelude::*;
+
 use crate::game::demand::RciDemand;
 use crate::game::map::{BuildingKind, MapGrid, TilePos};
+use crate::game::notifications::{NotificationKind, Notifications};
+use crate::game::sim_events::DayAdvanced;
 use crate::game::utilities::{UtilityKind, UtilityNetwork};
 
 use super::components::Building;
@@ -120,6 +125,87 @@ pub fn upgrade_blocker(
         return Some(GrowthBlocker::NoDemand);
     }
     None
+}
+
+/// The feed line for zoned buildings that lost their power.
+pub const BUILDINGS_WITHOUT_POWER: &str = "Buildings without power";
+
+/// What a hovered zoned tile tells the player: its zone and the reason it is held back.
+/// `None` for an unzoned tile and for one where nothing is in the way.
+pub fn tile_diagnosis(
+    grid: &MapGrid,
+    network: &UtilityNetwork,
+    demand: &RciDemand,
+    tile: TilePos,
+) -> Option<(String, String)> {
+    let cell = grid.get(tile)?;
+    let zone = match cell.zone {
+        crate::game::map::ZoneKind::Residential => "Residential zone",
+        crate::game::map::ZoneKind::Commercial => "Commercial zone",
+        crate::game::map::ZoneKind::Industrial => "Industrial zone",
+        crate::game::map::ZoneKind::None => return None,
+    };
+    let reason = if cell.building.is_some() {
+        // A standing building: power keeps it occupied, water lets it rise.
+        if !block_has(grid, network, tile, UtilityKind::Power) {
+            "No power: occupants are leaving".to_string()
+        } else if !block_has(grid, network, tile, UtilityKind::Water) {
+            "No water: cannot rise above level 1".to_string()
+        } else {
+            return None;
+        }
+    } else {
+        let blockers = growth_blockers(grid, network, demand, tile);
+        if blockers.is_empty() {
+            return None;
+        }
+        let reasons: Vec<&str> = blockers.iter().map(|blocker| blocker.reason()).collect();
+        format!("Won't grow: {}", reasons.join(", "))
+    };
+    Some((zone.to_string(), reason))
+}
+
+/// Once a game day: one feed line for zoned buildings without power, placed on the first of them.
+pub fn report_buildings_without_power(
+    mut days: MessageReader<DayAdvanced>,
+    grid: Res<MapGrid>,
+    network: Res<UtilityNetwork>,
+    buildings: Query<&Building>,
+    notifications: Option<ResMut<Notifications>>,
+) {
+    if days.read().count() == 0 {
+        return;
+    }
+    let Some(mut notifications) = notifications else {
+        return;
+    };
+    // The top-left dark building, so the line points at the same place whatever the query order.
+    let first_dark = buildings
+        .iter()
+        .filter(|building| {
+            building.is_operational()
+                && matches!(
+                    building.kind,
+                    BuildingKind::Residential | BuildingKind::Commercial | BuildingKind::Industrial
+                )
+                && !network.footprint_has(
+                    &grid,
+                    building.anchor_pos,
+                    building.footprint_width,
+                    building.footprint_length,
+                    UtilityKind::Power,
+                )
+        })
+        .map(|building| building.anchor_pos)
+        .min_by_key(|pos| (pos.y, pos.x));
+    if let Some(at) = first_dark {
+        notifications.add_at(
+            BUILDINGS_WITHOUT_POWER.to_string(),
+            NotificationKind::Warning,
+            6.0,
+            at,
+        );
+    }
 }
 
 /// Demand of the zone a building kind grows in; services have none.
@@ -346,6 +432,107 @@ mod tests {
                     building.occupancy_residents
                 );
                 assert_eq!(building.target_occupancy_residents, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn utility_network_tile_diagnosis_names_the_reason_for_a_player() {
+        let mut grid = block();
+        let zoned = TilePos { x: 8, y: 4 };
+        assert_eq!(
+            tile_diagnosis(&grid, &network(&grid), &demand(1.0), zoned),
+            Some((
+                "Residential zone".to_string(),
+                "Won't grow: No power".to_string()
+            ))
+        );
+        assert_eq!(
+            tile_diagnosis(&grid, &network(&grid), &demand(0.0), zoned),
+            Some((
+                "Residential zone".to_string(),
+                "Won't grow: No power, No demand".to_string()
+            ))
+        );
+        assert_eq!(
+            tile_diagnosis(
+                &grid,
+                &network(&grid),
+                &demand(1.0),
+                TilePos { x: 20, y: 10 }
+            ),
+            None,
+            "an unzoned tile has nothing to explain"
+        );
+
+        let standing = TilePos { x: 5, y: 3 };
+        let mut cell = grid.get(standing).expect("inside");
+        cell.building = Some(BuildingKind::Residential);
+        grid.set(standing, cell);
+        assert_eq!(
+            tile_diagnosis(&grid, &network(&grid), &demand(1.0), standing),
+            Some((
+                "Residential zone".to_string(),
+                "No power: occupants are leaving".to_string()
+            ))
+        );
+
+        station(&mut grid, BuildingKind::PowerPlant, 16, 3);
+        assert_eq!(
+            tile_diagnosis(&grid, &network(&grid), &demand(1.0), zoned),
+            None
+        );
+        assert_eq!(
+            tile_diagnosis(&grid, &network(&grid), &demand(1.0), standing),
+            Some((
+                "Residential zone".to_string(),
+                "No water: cannot rise above level 1".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn utility_network_feed_reports_buildings_without_power_where_they_are() {
+        for powered in [false, true] {
+            let mut grid = block();
+            if powered {
+                station(&mut grid, BuildingKind::PowerPlant, 16, 3);
+            }
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .add_message::<DayAdvanced>()
+                .insert_resource(network(&grid))
+                .insert_resource(grid)
+                .init_resource::<Notifications>()
+                .add_systems(Update, report_buildings_without_power);
+            app.world_mut().spawn(house(1));
+            let mut further = house(1);
+            further.anchor_pos = TilePos { x: 9, y: 3 };
+            app.world_mut().spawn(further);
+            app.world_mut()
+                .resource_mut::<bevy::ecs::message::Messages<DayAdvanced>>()
+                .write(DayAdvanced { day: 1 });
+            app.update();
+
+            let lines = app.world().resource::<Notifications>().messages().to_vec();
+            if powered {
+                assert!(
+                    lines.is_empty(),
+                    "powered buildings raise nothing: {lines:?}"
+                );
+            } else {
+                assert_eq!(
+                    lines.len(),
+                    1,
+                    "one line, however many buildings: {lines:?}"
+                );
+                assert_eq!(lines[0].text, BUILDINGS_WITHOUT_POWER);
+                assert_eq!(lines[0].kind, NotificationKind::Warning);
+                assert_eq!(
+                    lines[0].at,
+                    Some(TilePos { x: 4, y: 3 }),
+                    "the first of them"
+                );
             }
         }
     }
