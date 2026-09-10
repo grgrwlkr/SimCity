@@ -1,10 +1,10 @@
 (
-    tax_per_citizen: 2,
-    income_per_commercial: 6,
-    income_per_industrial: 8,
     road_maintenance: 1,
     happiness_target: 0.7,
     days_per_month: 10,
+    resident_income: (low: 13.3, middle: 22.2, high: 35.5),
+    commercial_income: (low: 40.0, middle: 66.7, high: 106.7),
+    industrial_income: (low: 53.3, middle: 88.9, high: 142.2),
     fire_station_upkeep: 20,
     police_station_upkeep: 15,
     hospital_upkeep: 30,

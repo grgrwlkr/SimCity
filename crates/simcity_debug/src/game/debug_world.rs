@@ -653,12 +653,12 @@ pub struct DebugConfigSnapshot {
     pub path_region_size: u32,
     /// Pathfinding: region pad.
     pub path_region_pad: i32,
-    /// Economy: tax per citizen.
-    pub economy_tax_per_citizen: i64,
-    /// Economy: income per commercial.
-    pub economy_income_per_commercial: i64,
-    /// Economy: income per industrial.
-    pub economy_income_per_industrial: i64,
+    /// Economy: daily taxable income of a middle-class resident.
+    pub economy_resident_income_middle: f32,
+    /// Economy: daily taxable income of a middle-class commercial job.
+    pub economy_commercial_income_middle: f32,
+    /// Economy: daily taxable income of a middle-class industrial job.
+    pub economy_industrial_income_middle: f32,
     /// Economy: road maintenance.
     pub economy_road_maintenance: i64,
     /// Economy: daily upkeep of one fire station.
@@ -2274,9 +2274,9 @@ fn update_debug_config_snapshot(
     snapshot.path_region_size = path_cfg.region_size as u32;
     snapshot.path_region_pad = path_cfg.region_pad;
 
-    snapshot.economy_tax_per_citizen = economy_cfg.tax_per_citizen;
-    snapshot.economy_income_per_commercial = economy_cfg.income_per_commercial;
-    snapshot.economy_income_per_industrial = economy_cfg.income_per_industrial;
+    snapshot.economy_resident_income_middle = economy_cfg.resident_income.middle;
+    snapshot.economy_commercial_income_middle = economy_cfg.commercial_income.middle;
+    snapshot.economy_industrial_income_middle = economy_cfg.industrial_income.middle;
     snapshot.economy_road_maintenance = economy_cfg.road_maintenance;
     snapshot.economy_fire_station_upkeep = economy_cfg.fire_station_upkeep;
     snapshot.economy_police_station_upkeep = economy_cfg.police_station_upkeep;
