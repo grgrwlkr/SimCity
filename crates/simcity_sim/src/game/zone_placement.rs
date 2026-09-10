@@ -1,4 +1,5 @@
-//! 5.2 Zone placement constraints: zones can be painted only along roads.
+//! 5.2 Zone placement constraints: zones can be painted within zone depth of a road — as deep as a
+//! building grows (GDD 10.2.2), so every zone a player paints can hold a building.
 
 use std::collections::HashSet;
 
@@ -43,7 +44,8 @@ pub struct ZonePlacementCache {
     pub graph_version: u64,
 }
 
-/// True if `pos` is eligible for zoning placement (R/C/I).
+/// True if `pos` is eligible for zoning placement (R/C/I): land, not road or building, within
+/// zone depth of a road.
 /// Note: This does NOT check if a zone already exists - zones can be overwritten.
 pub fn can_zone_tile(grid: &MapGrid, pos: TilePos) -> bool {
     let Some(cell) = grid.get(pos) else {
@@ -60,36 +62,7 @@ pub fn can_zone_tile(grid: &MapGrid, pos: TilePos) -> bool {
         return false;
     }
 
-    has_adjacent_road(grid, pos)
-}
-
-fn has_adjacent_road(grid: &MapGrid, pos: TilePos) -> bool {
-    for npos in [
-        TilePos {
-            x: pos.x - 1,
-            y: pos.y,
-        },
-        TilePos {
-            x: pos.x + 1,
-            y: pos.y,
-        },
-        TilePos {
-            x: pos.x,
-            y: pos.y - 1,
-        },
-        TilePos {
-            x: pos.x,
-            y: pos.y + 1,
-        },
-    ] {
-        if let Some(cell) = grid.get(npos)
-            && !cell.water
-            && cell.road.is_some()
-        {
-            return true;
-        }
-    }
-    false
+    crate::game::buildings::is_within_zone_depth(pos, grid, crate::game::buildings::MAX_ZONE_DEPTH)
 }
 
 fn update_zone_placement_cache(
@@ -234,11 +207,14 @@ mod tests {
     use super::*;
     use crate::game::roads::{RoadCell, RoadDir, RoadKind};
 
+    /// Zones are painted as deep as buildings grow: a building needs its whole footprint zoned
+    /// within zone depth of a road, so a tool that only painted the row beside the road left the
+    /// player a strip nothing could ever grow on.
     #[test]
-    fn zoning_requires_adjacent_road_and_non_road_tile() {
-        let mut grid = MapGrid::new(5, 5);
+    fn zone_density_zoning_reaches_as_deep_as_buildings_grow() {
+        let mut grid = MapGrid::new(9, 9);
 
-        // Place a road lane tile at (2,2).
+        // A road lane tile at (2,2), and water at (8,8).
         let mut road_cell = grid.get(TilePos { x: 2, y: 2 }).unwrap_or_default();
         road_cell.road = RoadCell {
             kind: RoadKind::TwoLane,
@@ -248,14 +224,26 @@ mod tests {
             lane_type: crate::game::roads::LaneType::Regular,
         };
         grid.set(TilePos { x: 2, y: 2 }, road_cell);
+        let mut water = grid.get(TilePos { x: 8, y: 8 }).unwrap_or_default();
+        water.water = true;
+        grid.set(TilePos { x: 8, y: 8 }, water);
 
-        // Adjacent tile is valid.
-        assert!(can_zone_tile(&grid, TilePos { x: 2, y: 3 }));
-
-        // Non-adjacent tile is invalid.
-        assert!(!can_zone_tile(&grid, TilePos { x: 0, y: 0 }));
-
-        // Road tile itself is invalid.
-        assert!(!can_zone_tile(&grid, TilePos { x: 2, y: 2 }));
+        assert!(
+            can_zone_tile(&grid, TilePos { x: 2, y: 3 }),
+            "beside the road"
+        );
+        assert!(
+            can_zone_tile(&grid, TilePos { x: 2, y: 5 }),
+            "three tiles from the road, as deep as a building grows"
+        );
+        assert!(
+            !can_zone_tile(&grid, TilePos { x: 2, y: 6 }),
+            "four tiles from the road is too far"
+        );
+        assert!(
+            !can_zone_tile(&grid, TilePos { x: 2, y: 2 }),
+            "the road itself"
+        );
+        assert!(!can_zone_tile(&grid, TilePos { x: 8, y: 8 }), "water");
     }
 }

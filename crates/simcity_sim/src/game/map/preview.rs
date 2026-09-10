@@ -91,7 +91,7 @@ pub fn preview_tool_at(
             } else if cell.building.is_some() {
                 Err("A building is already here")
             } else if !can_zone_tile(grid, tile) {
-                Err("Zones need a road next to them")
+                Err("Zones need a road within 3 tiles")
             } else {
                 Ok(())
             };

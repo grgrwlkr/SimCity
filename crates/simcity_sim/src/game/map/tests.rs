@@ -407,6 +407,60 @@ fn undo_undo_then_redo_redo_walks_history() {
     );
 }
 
+/// The zone command paints a block as deep as a building grows, at the density the tool carries,
+/// and refuses land beyond that depth.
+#[test]
+fn zone_density_zone_command_paints_a_block_as_deep_as_buildings_grow() {
+    let mut app = build_command_apply_app(16, 16);
+    for x in 0..16 {
+        send_command(
+            &mut app,
+            GameCommand::SetRoad {
+                pos: TilePos { x, y: 1 },
+                road: road_cell(RoadKind::TwoLane),
+            },
+        );
+    }
+    app.update();
+
+    for x in 2..8 {
+        for y in 2..6 {
+            send_command(
+                &mut app,
+                GameCommand::SetZone {
+                    pos: TilePos { x, y },
+                    zone: ZoneKind::Residential,
+                    density: ZoneDensity::High,
+                },
+            );
+        }
+    }
+    app.update();
+
+    let grid = app.world().resource::<MapGrid>();
+    for x in 2..8 {
+        for y in 2..5 {
+            let cell = grid.get(TilePos { x, y }).expect("inside");
+            assert_eq!(
+                cell.zone,
+                ZoneKind::Residential,
+                "({x},{y}) is within depth"
+            );
+            assert_eq!(
+                cell.density,
+                ZoneDensity::High,
+                "({x},{y}) keeps the density"
+            );
+        }
+        let far = grid.get(TilePos { x, y: 5 }).expect("inside");
+        assert_eq!(
+            far.zone,
+            ZoneKind::None,
+            "({x},5) is four tiles from the road"
+        );
+    }
+}
+
 /// B5 pin (positive): a 3x3 footprint adjacent to a road must place. Pre-fix
 /// this was a guaranteed no-op: per-tile `can_zone_tile` required a road next
 /// to EVERY footprint tile, unsatisfiable for the road-free interior.
