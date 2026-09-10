@@ -5,8 +5,9 @@ use bevy::time::Fixed;
 use rand::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::game::buildings::Building;
+use crate::game::buildings::{Building, BuildingProfile};
 use crate::game::citizens::{Citizen, CitizenWorkplace};
+use crate::game::economy::WealthClass;
 use crate::game::map::{BuildingKind, MapGrid, TilePos};
 use crate::game::state::AppState;
 use crate::game::traffic::TrafficOccupancy;
@@ -19,6 +20,12 @@ use crate::game::transport::{
 };
 
 pub struct EmploymentPlugin;
+
+/// Whether a worker from a home of class `home` takes a job at a workplace of class `job`. The
+/// classes must match, so a mismatch leaves people unemployed beside open jobs (B2).
+pub fn class_job_matches(home: WealthClass, job: WealthClass) -> bool {
+    home == job
+}
 
 impl Plugin for EmploymentPlugin {
     fn build(&self, app: &mut App) {
@@ -87,6 +94,12 @@ pub struct EmploymentStats {
     pub employed_commercial: usize,
     pub employed_industrial: usize,
     pub employment_rate: f32,
+    /// Residents by the wealth class of their home: Low, Middle, High.
+    pub workers_by_class: [usize; 3],
+    /// Jobs by the wealth class of the workplace offering them: Low, Middle, High.
+    pub jobs_by_class: [usize; 3],
+    /// Residents without a job, by the wealth class of their home: Low, Middle, High.
+    pub unemployed_by_class: [usize; 3],
     /// Number of job-assignment pathfind attempts in the latest sim tick.
     pub pathfind_attempts_last_tick: u32,
     /// Number of failed job-assignment pathfind attempts in the latest sim tick.
@@ -304,7 +317,7 @@ impl EmploymentUnreachablePairCache {
 
 #[derive(SystemParam)]
 struct AssignJobsParams<'w, 's> {
-    q_buildings: Query<'w, 's, &'static Building>,
+    q_buildings: Query<'w, 's, (&'static Building, &'static BuildingProfile)>,
     q_citizens: Query<'w, 's, (&'static mut CitizenWorkplace, &'static Citizen)>,
     grid: Res<'w, MapGrid>,
     time: Res<'w, Time<Fixed>>,
@@ -347,7 +360,10 @@ fn assign_jobs(mut p: AssignJobsParams) {
     // Available job tiles = commercial/industrial buildings with job capacity.
     let mut jobs = Vec::<TilePos>::new();
     let mut caps = HashMap::<TilePos, u16>::new();
-    for b in &p.q_buildings {
+    // The class of every building by its anchor: a home's class picks which jobs its people take.
+    let mut classes = HashMap::<TilePos, WealthClass>::new();
+    for (b, profile) in &p.q_buildings {
+        classes.insert(b.anchor_pos, profile.class);
         if !matches!(b.kind, BuildingKind::Commercial | BuildingKind::Industrial) {
             continue;
         }
@@ -417,6 +433,7 @@ fn assign_jobs(mut p: AssignJobsParams) {
             break;
         }
         let home = citizen.home;
+        let home_class = classes.get(&home).copied().unwrap_or_default();
 
         // Search a limited number of candidate workplaces for reachability.
         let mut best: Option<(TilePos, usize)> = None; // (job_pos, path_len)
@@ -427,6 +444,12 @@ fn assign_jobs(mut p: AssignJobsParams) {
             }
             let used = taken.get(&job_pos).copied().unwrap_or(0);
             if used >= cap {
+                continue;
+            }
+            if !class_job_matches(
+                home_class,
+                classes.get(&job_pos).copied().unwrap_or_default(),
+            ) {
                 continue;
             }
             let Some(home_road) = adjacent_road_towards(&p.grid, home, job_pos) else {
@@ -523,30 +546,42 @@ fn clear_invalid_workplaces(grid: Res<MapGrid>, mut q: Query<&mut CitizenWorkpla
 }
 
 fn compute_employment_stats(
-    grid: Res<MapGrid>,
-    q_citizens: Query<&CitizenWorkplace>,
+    q_citizens: Query<(&Citizen, &CitizenWorkplace)>,
+    q_buildings: Query<(&Building, &BuildingProfile)>,
     mut stats: ResMut<EmploymentStats>,
 ) {
+    // Kind and class of every building by its anchor, and the jobs each class offers.
+    let mut buildings = HashMap::<TilePos, (BuildingKind, WealthClass)>::new();
+    let mut jobs_by_class = [0usize; 3];
+    for (building, profile) in &q_buildings {
+        buildings.insert(building.anchor_pos, (building.kind, profile.class));
+        if matches!(
+            building.kind,
+            BuildingKind::Commercial | BuildingKind::Industrial
+        ) {
+            jobs_by_class[profile.class.index()] += usize::from(building.capacity_jobs);
+        }
+    }
+
     let mut employed = 0usize;
     let mut unemployed = 0usize;
     let mut employed_commercial = 0usize;
     let mut employed_industrial = 0usize;
-
-    // Cache building kind for workplace tiles to avoid repeated lookups.
-    let mut kind_cache = HashMap::<TilePos, Option<BuildingKind>>::new();
-
-    for wp in &q_citizens {
+    let mut workers_by_class = [0usize; 3];
+    let mut unemployed_by_class = [0usize; 3];
+    for (citizen, wp) in &q_citizens {
+        let class = buildings
+            .get(&citizen.home)
+            .map(|(_, class)| *class)
+            .unwrap_or_default();
+        workers_by_class[class.index()] += 1;
         let Some(pos) = wp.workplace else {
             unemployed += 1;
+            unemployed_by_class[class.index()] += 1;
             continue;
         };
         employed += 1;
-
-        let kind = kind_cache
-            .entry(pos)
-            .or_insert_with(|| grid.get(pos).and_then(|c| c.building));
-
-        match kind {
+        match buildings.get(&pos).map(|(kind, _)| *kind) {
             Some(BuildingKind::Commercial) => employed_commercial += 1,
             Some(BuildingKind::Industrial) => employed_industrial += 1,
             _ => {}
@@ -557,6 +592,9 @@ fn compute_employment_stats(
     stats.unemployed = unemployed;
     stats.employed_commercial = employed_commercial;
     stats.employed_industrial = employed_industrial;
+    stats.workers_by_class = workers_by_class;
+    stats.jobs_by_class = jobs_by_class;
+    stats.unemployed_by_class = unemployed_by_class;
     let total = employed + unemployed;
     stats.employment_rate = if total > 0 {
         employed as f32 / (total as f32)
@@ -575,6 +613,113 @@ mod tests {
 
     fn pair(home: TilePos, job: TilePos) -> EmploymentRoadPairKey {
         EmploymentRoadPairKey::new(home, job)
+    }
+
+    fn resident(home: TilePos, workplace: Option<TilePos>) -> (Citizen, CitizenWorkplace) {
+        (
+            Citizen {
+                home,
+                state: crate::game::citizens::CitizenState::AtHome,
+                last_place: home,
+                tour_mode: None,
+                car_parked_at: home,
+                decision_timer: Timer::from_seconds(1.0, TimerMode::Repeating),
+                shopping_need: Timer::from_seconds(1.0, TimerMode::Repeating),
+                work_stay: Timer::from_seconds(1.0, TimerMode::Once),
+                shop_stay: Timer::from_seconds(1.0, TimerMode::Once),
+                trip_departed_at_sec: None,
+                trip_purpose: None,
+            },
+            CitizenWorkplace { workplace },
+        )
+    }
+
+    fn building(
+        kind: BuildingKind,
+        anchor: TilePos,
+        jobs: u16,
+        class: WealthClass,
+    ) -> (Building, BuildingProfile) {
+        (
+            Building {
+                kind,
+                anchor_pos: anchor,
+                footprint_width: 3,
+                footprint_length: 3,
+                level: 1,
+                phase: crate::game::buildings::BuildingPhase::Operational,
+                construction_start_day: 0,
+                capacity_residents: 0,
+                capacity_jobs: jobs,
+                occupancy_residents: 0,
+                occupancy_jobs: 0,
+                target_occupancy_residents: 0,
+                target_occupancy_jobs: 0,
+                parking_spots: Vec::new(),
+            },
+            BuildingProfile {
+                class,
+                ..BuildingProfile::default()
+            },
+        )
+    }
+
+    #[test]
+    fn zone_density_unemployment_is_counted_by_the_class_of_the_home() {
+        assert!(class_job_matches(WealthClass::Low, WealthClass::Low));
+        assert!(
+            !class_job_matches(WealthClass::High, WealthClass::Low),
+            "a rich worker does not take a poor job"
+        );
+
+        let mut app = App::new();
+        app.insert_resource(MapGrid::new(16, 16))
+            .init_resource::<EmploymentStats>()
+            .add_systems(Update, compute_employment_stats);
+        let rich_home = pos(0, 0);
+        let poor_shop = pos(8, 0);
+        let middle_home = pos(0, 8);
+        let middle_shop = pos(8, 8);
+        app.world_mut().spawn(building(
+            BuildingKind::Residential,
+            rich_home,
+            0,
+            WealthClass::High,
+        ));
+        app.world_mut().spawn(building(
+            BuildingKind::Commercial,
+            poor_shop,
+            5,
+            WealthClass::Low,
+        ));
+        app.world_mut().spawn(building(
+            BuildingKind::Residential,
+            middle_home,
+            0,
+            WealthClass::Middle,
+        ));
+        app.world_mut().spawn(building(
+            BuildingKind::Industrial,
+            middle_shop,
+            4,
+            WealthClass::Middle,
+        ));
+        for _ in 0..3 {
+            app.world_mut().spawn(resident(rich_home, None));
+        }
+        app.world_mut()
+            .spawn(resident(middle_home, Some(middle_shop)));
+        app.update();
+
+        let stats = app.world().resource::<EmploymentStats>();
+        assert_eq!(stats.workers_by_class, [0, 1, 3]);
+        assert_eq!(stats.jobs_by_class, [5, 4, 0]);
+        assert_eq!(
+            stats.unemployed_by_class,
+            [0, 0, 3],
+            "rich workers beside poor jobs stay unemployed"
+        );
+        assert_eq!(stats.employed_industrial, 1);
     }
 
     #[test]

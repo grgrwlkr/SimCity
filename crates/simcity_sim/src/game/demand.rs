@@ -56,6 +56,17 @@ pub fn tax_demand_shift(percent: u8) -> f32 {
     }
 }
 
+/// How far one class's job gap moves that class's demand: homes are wanted where the class has more
+/// jobs than workers, workplaces where it has more workers than jobs.
+pub fn class_gap_shift(zone: TaxZone, workers: usize, jobs: usize) -> f32 {
+    let scale = workers.max(jobs).max(1) as f32;
+    let gap = ((jobs as f32 - workers as f32) / scale).clamp(-1.0, 1.0) * 0.5;
+    match zone {
+        TaxZone::Residential => gap,
+        TaxZone::Commercial | TaxZone::Industrial => -gap,
+    }
+}
+
 /// Demand for every zone and wealth class, in [-1..1]: the zone's demand before tax, moved by
 /// that class's rate.
 #[derive(Resource, Debug, Default, Clone, Copy, PartialEq)]
@@ -214,7 +225,12 @@ fn compute_rci_demand(
         let mut shift_sum = 0.0;
         for class in WealthClass::ALL {
             let shift = tax_demand_shift(rates.get(tax_zone, class));
-            by_class[tax_zone.index()][class.index()] = (base + shift).clamp(-1.0, 1.0);
+            let gap = class_gap_shift(
+                tax_zone,
+                employment.workers_by_class[class.index()],
+                employment.jobs_by_class[class.index()],
+            );
+            by_class[tax_zone.index()][class.index()] = (base + shift + gap).clamp(-1.0, 1.0);
             shift_sum += shift;
         }
         zone[tax_zone.index()] =
@@ -233,6 +249,22 @@ fn compute_rci_demand(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zone_density_class_demand_follows_each_class_job_gap() {
+        assert!(
+            class_gap_shift(TaxZone::Residential, 10, 30) > 0.0,
+            "jobs without workers call for homes of that class"
+        );
+        assert!(class_gap_shift(TaxZone::Commercial, 10, 30) < 0.0);
+        assert!(
+            class_gap_shift(TaxZone::Industrial, 30, 10) > 0.0,
+            "workers without jobs call for workplaces of that class"
+        );
+        assert!(class_gap_shift(TaxZone::Residential, 30, 10) < 0.0);
+        assert_eq!(class_gap_shift(TaxZone::Residential, 20, 20), 0.0);
+        assert_eq!(class_gap_shift(TaxZone::Commercial, 0, 0), 0.0);
+    }
 
     #[test]
     fn rci_demand_default_to_zero() {
