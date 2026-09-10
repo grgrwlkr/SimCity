@@ -145,6 +145,9 @@ pub struct ObserveParams {
     /// `[x0, y0, x1, y1]` tile rectangle: list every building whose footprint touches it, with
     /// its level, density, class, capacity and height. Stations are always listed.
     pub buildings_in: Option<[i32; 4]>,
+    /// `[x, y]` tile: what the active tool would do there — price, effect, verdict (`"ok"` or the
+    /// reason the click would be refused) and reach. Without it the hovered tile is previewed.
+    pub preview_at: Option<[i32; 2]>,
 }
 
 /// Parameters of `simcity/input`. Give `keys`, `focus`, `stroke`, `activate` or `hover_tile`;

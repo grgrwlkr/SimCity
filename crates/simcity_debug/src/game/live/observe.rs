@@ -153,12 +153,27 @@ pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpR
         },
     };
 
+    let preview_at = match params.as_ref().and_then(|params| params.get("preview_at")) {
+        None | Some(Value::Null) => None,
+        Some(value) => match serde_json::from_value::<[i32; 2]>(value.clone()) {
+            Ok(tile) => Some(tile),
+            Err(_) => {
+                return Err(BrpError {
+                    code: error_codes::INVALID_PARAMS,
+                    message: format!("`preview_at` must be an [x, y] tile, got {value}"),
+                    data: None,
+                });
+            }
+        },
+    };
+
     let utilities = utilities_json(world);
     let city_fields = city_fields_json(world);
     let civic_coverage = civic_coverage_json(world);
     let milestones = milestones_json(world);
     let advisor = advisor_json(world);
     let feed = feed_json(world);
+    let tool_preview = tool_preview_json(world, preview_at);
     let buildings = buildings_json(world, region);
     let state = world
         .get_resource::<State<AppState>>()
@@ -264,6 +279,7 @@ pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpR
         "milestones": milestones,
         "advisor": advisor,
         "feed": feed,
+        "tool_preview": tool_preview,
         "buildings": buildings,
     }))
 }
@@ -325,6 +341,43 @@ fn city_fields_json(world: &World) -> Value {
         "fields": summary,
         "hovered": hovered,
     })
+}
+
+/// What the active tool would do at `at`, or at the hovered tile: the words and numbers the
+/// tooltip shows, with `"ok"` for a click that would go through.
+fn tool_preview_json(world: &World, at: Option<[i32; 2]>) -> Value {
+    use simcity_sim::game::map::{HoveredTile, MapGrid, TilePos, preview_tool_at};
+    use simcity_sim::game::milestones::Milestones;
+
+    let tile = at.map(|[x, y]| TilePos { x, y }).or_else(|| {
+        world
+            .get_resource::<HoveredTile>()
+            .and_then(|hovered| hovered.tile)
+    });
+    let (Some(tile), Some(grid), Some(ui)) = (
+        tile,
+        world.get_resource::<MapGrid>(),
+        world.get_resource::<UiState>(),
+    ) else {
+        return Value::Null;
+    };
+    let money = world.get_resource::<City>().map_or(0, |city| city.money);
+    let milestones = world.get_resource::<Milestones>();
+    let tool = format!("{:?}", ui.tool);
+    match preview_tool_at(ui.tool, tile, grid, money, milestones) {
+        None => json!({ "tile": [tile.x, tile.y], "tool": tool, "verdict": Value::Null }),
+        Some(preview) => json!({
+            "tile": [tile.x, tile.y],
+            "tool": tool,
+            "cost": preview.cost,
+            "effect": preview.effect,
+            "verdict": match preview.verdict {
+                Ok(()) => "ok",
+                Err(reason) => reason,
+            },
+            "radius": preview.radius,
+        }),
+    }
 }
 
 /// The feed's history: the last events with the day they happened, oldest first.
@@ -728,6 +781,7 @@ mod tests {
             "milestones",
             "advisor",
             "feed",
+            "tool_preview",
             "buildings",
         ] {
             assert!(
@@ -1027,6 +1081,69 @@ mod tests {
         assert!(
             near(&section["hovered"]["LandValue"], 0.8),
             "the hovered tile carries its land value: {section}"
+        );
+    }
+
+    /// A placement run reads the verdict for a tile before it sends the command, rather than
+    /// trying tiles blind and guessing why nothing happened.
+    #[test]
+    fn tool_preview_is_reported_so_a_placement_run_can_choose_its_tile() {
+        use simcity_core::game::roads::{LaneType, RoadCell, RoadDir, RoadFlow, RoadKind};
+        use simcity_core::game::ui_state::ToolMode;
+        use simcity_sim::game::map::{MapGrid, TilePos};
+        use simcity_sim::game::milestones::Milestones;
+
+        let mut grid = MapGrid::new(16, 16);
+        for x in 0..16 {
+            let pos = TilePos { x, y: 4 };
+            let mut cell = grid.get(pos).expect("inside");
+            cell.road = RoadCell {
+                kind: RoadKind::TwoLane,
+                dir: RoadDir::East,
+                lane: 0,
+                flow: RoadFlow::TwoWay,
+                lane_type: LaneType::Regular,
+            };
+            grid.set(pos, cell);
+        }
+        let mut world = World::new();
+        world.insert_resource(grid);
+        world.insert_resource(UiState {
+            tool: ToolMode::School,
+            ..UiState::default()
+        });
+        world.insert_resource(City {
+            money: 5000,
+            ..City::default()
+        });
+        world.insert_resource(Milestones::default());
+
+        let preview = |world: &mut World, at: [i32; 2]| {
+            observe_handler(In(Some(json!({ "preview_at": at }))), world)
+                .expect("observe always answers")["tool_preview"]
+                .clone()
+        };
+        let locked = preview(&mut world, [2, 5]);
+        assert_eq!(locked["tool"], "School", "{locked}");
+        assert_eq!(locked["tile"], json!([2, 5]), "{locked}");
+        assert_eq!(locked["verdict"], "Unlocks at 250 residents", "{locked}");
+        assert_eq!(locked["cost"], 700, "{locked}");
+        assert_eq!(locked["radius"], 18, "{locked}");
+
+        world.resource_mut::<Milestones>().reach(300);
+        assert_eq!(preview(&mut world, [2, 5])["verdict"], "ok");
+        let on_road = preview(&mut world, [2, 4]);
+        assert!(
+            on_road["verdict"].is_string() && on_road["verdict"] != "ok",
+            "a road tile is refused with its reason: {on_road}"
+        );
+
+        let refused = observe_handler(In(Some(json!({ "preview_at": "here" }))), &mut world)
+            .expect_err("a malformed tile is refused");
+        assert!(
+            refused.message.contains("preview_at"),
+            "{}",
+            refused.message
         );
     }
 
