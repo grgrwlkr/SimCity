@@ -132,9 +132,10 @@ pub struct ObserveParams {
 pub struct CaptureParams {
     /// Absolute path of the PNG to write. Must end in `.png`.
     pub path: String,
-    /// Width in pixels of the offscreen target. Give both width and height or neither.
+    /// Width in pixels of the offscreen target, 1 to 8192. Give both width and height or
+    /// neither; 8192 is the largest texture side the renderer accepts.
     pub width: Option<u32>,
-    /// Height in pixels of the offscreen target.
+    /// Height in pixels of the offscreen target, 1 to 8192.
     pub height: Option<u32>,
     /// `offscreen` (default) renders the world through a camera of its own and does not
     /// need the window to be visible; `window` captures the primary window including the
