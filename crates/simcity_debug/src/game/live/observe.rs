@@ -490,23 +490,22 @@ fn utilities_json(world: &mut World) -> Value {
         world.get_resource::<MapGrid>(),
         world.get_resource::<RciDemand>(),
     ) {
-        (Some(tile), Some(grid), Some(demand)) => json!({
-            "tile": [tile.x, tile.y],
-            "blockers": growth_blockers(
-                grid,
-                &network,
-                demand,
-                tile,
-                world.get_resource::<simcity_sim::game::city_fields::CityFields>(),
-            ),
-            "diagnosis": tile_diagnosis(
-                grid,
-                &network,
-                demand,
-                tile,
-                world.get_resource::<simcity_sim::game::city_fields::CityFields>(),
-            ),
-        }),
+        (Some(tile), Some(grid), Some(demand)) => {
+            let fields = world.get_resource::<simcity_sim::game::city_fields::CityFields>();
+            // Growth blockers describe an empty zoned tile; under a standing building they would
+            // name a missing road the building does not need, so it reports its diagnosis alone.
+            let built = grid.get(tile).is_some_and(|cell| cell.building.is_some());
+            json!({
+                "tile": [tile.x, tile.y],
+                "built": built,
+                "blockers": if built {
+                    Value::Null
+                } else {
+                    json!(growth_blockers(grid, &network, demand, tile, fields))
+                },
+                "diagnosis": tile_diagnosis(grid, &network, demand, tile, fields),
+            })
+        }
         _ => Value::Null,
     };
     json!({
@@ -832,6 +831,24 @@ mod tests {
             "the words the player reads for this tile"
         );
         assert_eq!(utilities["hovered"]["tile"], json!([8, 4]));
+        assert_eq!(utilities["hovered"]["built"], false);
+
+        // Over a standing building, growth blockers would describe an empty zone the tile is not:
+        // the answer carries only what the player reads for the building.
+        let house = TilePos { x: 5, y: 4 };
+        let mut cell = world.resource::<MapGrid>().get(house).expect("inside");
+        cell.building = Some(BuildingKind::Residential);
+        world.resource_mut::<MapGrid>().set(house, cell);
+        world.resource_mut::<HoveredTile>().tile = Some(house);
+        let answer = observe_handler(In(None), &mut world).expect("observe always answers");
+        let hovered = &answer["utilities"]["hovered"];
+        assert_eq!(hovered["built"], true, "{hovered}");
+        assert!(hovered["blockers"].is_null(), "{hovered}");
+        assert_eq!(
+            hovered["diagnosis"],
+            json!(["Residential zone", "No power: occupants are leaving"]),
+            "{hovered}"
+        );
     }
 
     #[test]
