@@ -1423,3 +1423,99 @@ fn road_segment_one_way_stroke_points_every_lane_the_one_way_direction() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// A2 follow-up: a one-way stroke laid across an existing intersection.
+//
+// `SetRoad` keeps a box tile a box (`dir: None`) and still overwrites the rest of the cell, so
+// the box tiles take the stroke's `flow`. Measured once as a probe, then pinned: no consumer
+// reads `flow` on a dir-None tile, the crossing road's movement through the box is untouched,
+// and the box's own horizontal movement turns to follow the one-way direction. Written after
+// the behaviour was already correct, so it has no red run; it guards against a later change
+// that starts reading `flow` on box tiles.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn one_way_stroke_across_an_intersection_keeps_the_crossing_drivable() {
+    let mut app = build_command_apply_app(24, 24);
+    for command in road_segment_commands(
+        TilePos { x: 12, y: 2 },
+        TilePos { x: 12, y: 21 },
+        RoadKind::FourLane,
+        true,
+        false,
+    ) {
+        send_command(&mut app, command);
+    }
+    app.update();
+    for command in road_segment_commands(
+        TilePos { x: 2, y: 12 },
+        TilePos { x: 21, y: 12 },
+        RoadKind::FourLane,
+        true,
+        false,
+    ) {
+        send_command(&mut app, command);
+    }
+    app.update();
+
+    let box_tiles: Vec<TilePos> = {
+        let grid = app.world().resource::<MapGrid>();
+        (0..24)
+            .flat_map(|y| (0..24).map(move |x| TilePos { x, y }))
+            .filter(|t| {
+                grid.get(*t)
+                    .is_some_and(|c| c.road.is_some() && c.road.dir == RoadDir::None)
+            })
+            .collect()
+    };
+    assert!(
+        !box_tiles.is_empty(),
+        "the crossing must form an intersection box"
+    );
+
+    let edges_of = |grid: &MapGrid| -> Vec<u8> {
+        let mut graph = RoadGraph::default();
+        rebuild_road_graph_inner(grid, &GraphVersion(1), &mut graph);
+        box_tiles
+            .iter()
+            .map(|t| graph.edges[grid.idx(*t).expect("box tile on map")])
+            .collect()
+    };
+    let edges_before = edges_of(app.world().resource::<MapGrid>());
+
+    for command in road_segment_commands(
+        TilePos { x: 2, y: 12 },
+        TilePos { x: 21, y: 12 },
+        RoadKind::FourLane,
+        true,
+        true,
+    ) {
+        send_command(&mut app, command);
+    }
+    app.update();
+
+    let grid = app.world().resource::<MapGrid>();
+    assert!(
+        box_tiles
+            .iter()
+            .all(|t| grid.get(*t).is_some_and(|c| c.road.dir == RoadDir::None)),
+        "a one-way stroke across a crossing must leave the crossing a box"
+    );
+    let edges_after = edges_of(grid);
+    for ((tile, before), after) in box_tiles.iter().zip(&edges_before).zip(&edges_after) {
+        // Bits 2 and 3 are the vertical moves, 0 and 1 the horizontal ones (West, East).
+        assert_eq!(
+            before & 0b1100,
+            after & 0b1100,
+            "box tile {tile:?}: the crossing road's movement through the box changed \
+             ({before:#06b} -> {after:#06b})"
+        );
+        assert_eq!(
+            after & 0b0011,
+            0b0010,
+            "box tile {tile:?}: inside a one-way East box every horizontal move must be East \
+             ({after:#06b})"
+        );
+    }
+}
