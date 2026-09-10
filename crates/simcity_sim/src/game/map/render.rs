@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use super::data_map::{
     ROAD_OVERLAY_COLOR, WATER_OVERLAY_COLOR, city_field_color, city_field_for_overlay,
-    height_color, land_value_color, pollution_color, utility_for_overlay, utility_tile_color,
+    height_color, land_value_color, pollution_color, utility_for_overlay, utility_reaches,
+    utility_tile_color,
 };
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
@@ -393,8 +394,7 @@ pub(super) fn sync_dirty_tiles_to_render(
                 let supplied = p
                     .utilities
                     .as_deref()
-                    .zip(p.grid.idx(pos))
-                    .is_some_and(|(network, idx)| network.tile_has(idx, kind));
+                    .is_some_and(|network| utility_reaches(&p.grid, network, pos, kind));
                 let k = if cell.water {
                     TileKind::Water
                 } else if cell.road.is_some() {

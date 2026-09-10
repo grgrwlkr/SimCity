@@ -64,6 +64,25 @@ pub fn utility_for_overlay(mode: OverlayMode) -> Option<UtilityKind> {
     }
 }
 
+/// Whether `kind` reaches `tile` as a player reads the map: a tile the network touches, or a zoned
+/// tile within zone depth of a supplied road — the reach growth and the diagnosis use.
+pub fn utility_reaches(
+    grid: &MapGrid,
+    network: &UtilityNetwork,
+    tile: TilePos,
+    kind: UtilityKind,
+) -> bool {
+    if grid
+        .idx(tile)
+        .is_some_and(|idx| network.tile_has(idx, kind))
+    {
+        return true;
+    }
+    grid.get(tile)
+        .is_some_and(|cell| cell.zone != ZoneKind::None && !cell.water)
+        && crate::game::buildings::block_has(grid, network, tile, kind)
+}
+
 /// The colour a utility paints where it reaches.
 pub fn utility_overlay_color(kind: UtilityKind) -> Color {
     match kind {
@@ -243,7 +262,7 @@ pub fn overlay_reading(mode: OverlayMode, tile: TilePos, inputs: &DataMapInputs)
             };
             match inputs.utilities {
                 Some(network) if network.served.len() == grid.len() => {
-                    if network.tile_has(idx, kind) {
+                    if utility_reaches(grid, network, tile, kind) {
                         supplied.to_string()
                     } else {
                         missing.to_string()
@@ -756,5 +775,84 @@ mod tests {
         assert_eq!(city_field_color(CityField::Education, 0.0), red);
         assert_eq!(city_field_color(CityField::Attractiveness, 0.0), red);
         assert_eq!(city_field_for_overlay(OverlayMode::LandValue), None);
+    }
+
+    /// The power map agrees with growth: a zoned tile three rows behind a supplied road is powered,
+    /// because a building there is; before, every zone but the front row read "no power" in a
+    /// fully powered city.
+    #[test]
+    fn utility_network_overlay_counts_a_zone_within_reach_of_a_supplied_road() {
+        let mut grid = MapGrid::new(8, 8);
+        let mut network = UtilityNetwork {
+            version: 1,
+            map_version: 0,
+            served: vec![0; 64],
+        };
+        for x in 0..8 {
+            grid.set(
+                at(x, 1),
+                MapCell {
+                    road: RoadCell {
+                        kind: RoadKind::TwoLane,
+                        dir: RoadDir::East,
+                        lane: 0,
+                        flow: RoadFlow::TwoWay,
+                        lane_type: LaneType::Regular,
+                    },
+                    ..MapCell::default()
+                },
+            );
+            for y in 0..3 {
+                network.served[grid.idx(at(x, y)).expect("on the map")] = UtilityKind::Power.mask();
+            }
+        }
+        for tile in [at(4, 4), at(4, 6)] {
+            grid.set(
+                tile,
+                MapCell {
+                    zone: ZoneKind::Residential,
+                    ..MapCell::default()
+                },
+            );
+        }
+        let inputs = DataMapInputs {
+            grid: &grid,
+            land_value: None,
+            pollution: None,
+            traffic: None,
+            coverage: None,
+            utilities: Some(&network),
+            fields: None,
+        };
+        assert!(utility_reaches(
+            &grid,
+            &network,
+            at(4, 4),
+            UtilityKind::Power
+        ));
+        assert_eq!(
+            overlay_reading(OverlayMode::Power, at(4, 4), &inputs).as_deref(),
+            Some("Power supplied"),
+            "three tiles behind the supplied road"
+        );
+        assert!(!utility_reaches(
+            &grid,
+            &network,
+            at(4, 6),
+            UtilityKind::Power
+        ));
+        assert_eq!(
+            overlay_reading(OverlayMode::Power, at(4, 6), &inputs).as_deref(),
+            Some("No power"),
+            "five tiles behind is out of reach"
+        );
+        assert!(
+            !utility_reaches(&grid, &network, at(6, 4), UtilityKind::Power),
+            "unzoned land is not supplied just by being near a road"
+        );
+        assert!(
+            utility_reaches(&grid, &network, at(6, 1), UtilityKind::Power),
+            "the road itself"
+        );
     }
 }

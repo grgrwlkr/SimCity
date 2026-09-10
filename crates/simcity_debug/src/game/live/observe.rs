@@ -380,7 +380,7 @@ fn buildings_json(world: &mut World, region: Option<[i32; 4]>) -> Value {
 
 /// Supply by utility, zoned buildings without it, and why the hovered tile is held back.
 fn utilities_json(world: &mut World) -> Value {
-    use simcity_sim::game::buildings::{Building, growth_blockers};
+    use simcity_sim::game::buildings::{Building, growth_blockers, tile_diagnosis};
     use simcity_sim::game::demand::RciDemand;
     use simcity_sim::game::map::{BuildingKind, HoveredTile, MapGrid};
     use simcity_sim::game::utilities::{UtilityKind, UtilityNetwork};
@@ -429,6 +429,13 @@ fn utilities_json(world: &mut World) -> Value {
         (Some(tile), Some(grid), Some(demand)) => json!({
             "tile": [tile.x, tile.y],
             "blockers": growth_blockers(
+                grid,
+                &network,
+                demand,
+                tile,
+                world.get_resource::<simcity_sim::game::city_fields::CityFields>(),
+            ),
+            "diagnosis": tile_diagnosis(
                 grid,
                 &network,
                 demand,
@@ -754,6 +761,11 @@ mod tests {
         assert_eq!(utilities["buildings_without"]["power"], 1);
         assert_eq!(utilities["buildings_without"]["water"], 0);
         assert_eq!(utilities["hovered"]["blockers"], json!(["NoPower"]));
+        assert_eq!(
+            utilities["hovered"]["diagnosis"],
+            json!(["Residential zone", "Won't grow: No power"]),
+            "the words the player reads for this tile"
+        );
         assert_eq!(utilities["hovered"]["tile"], json!([8, 4]));
     }
 
