@@ -14,6 +14,7 @@ pub mod glass;
 pub mod hud_bar;
 pub mod pointer;
 pub mod theme;
+pub mod tile_tooltip;
 pub mod toasts;
 pub mod tool_palette;
 
@@ -43,6 +44,8 @@ impl Plugin for HudPlugin {
                     hud_bar::update_hud_bar,
                     tool_palette::update_tool_palette,
                     toasts::update_toast_feed,
+                    tile_tooltip::update_tile_tooltip,
+                    tile_tooltip::place_tile_tooltip,
                     show_game_ui_in_game,
                 )
                     .in_set(GameSet::Ui),
@@ -59,6 +62,7 @@ fn spawn_game_ui(
     hud_bar::spawn_hud_bar(&mut commands, &theme, glass.clone());
     tool_palette::spawn_tool_palette(&mut commands, &theme, glass);
     toasts::spawn_toast_feed(&mut commands, &theme);
+    tile_tooltip::spawn_tile_tooltip(&mut commands, &theme);
 }
 
 /// The in-game interface belongs to a running city; the menu has its own screen.
