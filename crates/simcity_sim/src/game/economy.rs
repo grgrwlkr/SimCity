@@ -192,7 +192,7 @@ impl TaxZone {
 }
 
 /// Tax rates in whole percent, one per zone and wealth class.
-#[derive(Resource, Debug, Clone, PartialEq, Eq)]
+#[derive(Resource, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TaxRates {
     percent: [[u8; 3]; 3],
 }
@@ -235,7 +235,7 @@ pub fn building_class(
 }
 
 /// How much of its full budget each service gets, in whole percent.
-#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ServiceFunding {
     percent: [u8; 3],
 }
@@ -283,7 +283,7 @@ impl Default for ServiceFunding {
 }
 
 /// Money borrowed from the bank, repaid in equal monthly payments.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Loan {
     pub principal: i64,
     pub monthly_payment: i64,
@@ -291,7 +291,7 @@ pub struct Loan {
 }
 
 /// The city's active loans.
-#[derive(Resource, Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Resource, Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Loans {
     pub active: Vec<Loan>,
 }

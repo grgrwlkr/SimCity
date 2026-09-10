@@ -152,6 +152,23 @@ mod tests {
             service_stations: Vec::new(),
             emergency_stats: EmergencyStats::default(),
             traffic_light_tiles: vec![TilePos { x: 3, y: 4 }],
+            tax_rates: {
+                let mut rates = crate::game::economy::TaxRates::default();
+                rates.set(
+                    crate::game::economy::TaxZone::Commercial,
+                    crate::game::economy::WealthClass::High,
+                    14,
+                );
+                rates
+            },
+            service_funding: crate::game::economy::ServiceFunding::default(),
+            loans: crate::game::economy::Loans {
+                active: vec![crate::game::economy::Loan {
+                    principal: 10_000,
+                    monthly_payment: 889,
+                    months_left: 5,
+                }],
+            },
         };
 
         let pretty = ron::ser::PrettyConfig::new();
@@ -159,6 +176,14 @@ mod tests {
         let parsed: SaveGameV3 = ron::from_str(&text).expect("deserialize SaveGameV3");
         assert_eq!(parsed.save_version, 3);
         assert_eq!(parsed.traffic_light_tiles, vec![TilePos { x: 3, y: 4 }]);
+        assert_eq!(
+            parsed.tax_rates.get(
+                crate::game::economy::TaxZone::Commercial,
+                crate::game::economy::WealthClass::High
+            ),
+            14
+        );
+        assert_eq!(parsed.loans.active.len(), 1, "open loans survive the file");
         // The FourLane cell survives the roundtrip with every field intact.
         let roundtripped = parsed.map.tiles[1].road;
         assert_eq!(roundtripped.kind, RoadKind::FourLane);

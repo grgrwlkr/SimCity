@@ -137,6 +137,15 @@ pub struct SaveGameV3 {
     /// Additive field (P0-7); absent in pre-P0-7 saves → defaults to empty vec.
     #[serde(default)]
     pub traffic_light_tiles: Vec<TilePos>,
+    /// Tax rates in force. Additive: a save from before the budget loads with the defaults.
+    #[serde(default)]
+    pub tax_rates: crate::game::economy::TaxRates,
+    /// Service funding in force. Additive, defaults to full funding.
+    #[serde(default)]
+    pub service_funding: crate::game::economy::ServiceFunding,
+    /// Open loans. Additive: without this a save and a load would wipe the city's debt.
+    #[serde(default)]
+    pub loans: crate::game::economy::Loans,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Copy, Clone)]

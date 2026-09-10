@@ -270,6 +270,9 @@ pub(crate) struct SaveParams<'w, 's> {
     q_stations: Query<'w, 's, &'static ServiceStation>,
     emergency_manager: Option<Res<'w, EmergencyManager>>,
     intersections: Res<'w, IntersectionIndex>,
+    tax_rates: Option<Res<'w, crate::game::economy::TaxRates>>,
+    service_funding: Option<Res<'w, crate::game::economy::ServiceFunding>>,
+    loans: Option<Res<'w, crate::game::economy::Loans>>,
 }
 
 /// Build the full V3 snapshot of the live world. Shared by `SaveGame` (which writes it
@@ -291,6 +294,9 @@ pub(crate) fn snapshot_savegame(p: &SaveParams) -> SaveGameV3 {
             .map(|m| m.stats.clone())
             .unwrap_or_default(),
         traffic_light_tiles: snapshot_traffic_lights(&p.intersections),
+        tax_rates: p.tax_rates.as_deref().cloned().unwrap_or_default(),
+        service_funding: p.service_funding.as_deref().copied().unwrap_or_default(),
+        loans: p.loans.as_deref().cloned().unwrap_or_default(),
     }
 }
 
@@ -540,6 +546,9 @@ fn upgrade_v2_to_v3(v2: SaveGameV2) -> SaveGameV3 {
         service_stations: v2.service_stations,
         emergency_stats: v2.emergency_stats,
         traffic_light_tiles: Vec::new(),
+        tax_rates: Default::default(),
+        service_funding: Default::default(),
+        loans: Default::default(),
     }
 }
 
@@ -557,6 +566,9 @@ fn upgrade_v1_to_v3(v1: SaveGameV1) -> SaveGameV3 {
         service_stations,
         emergency_stats: EmergencyStats::default(),
         traffic_light_tiles: Vec::new(),
+        tax_rates: Default::default(),
+        service_funding: Default::default(),
+        loans: Default::default(),
     }
 }
 
@@ -610,6 +622,9 @@ struct LoadParams<'w, 's> {
     grid: ResMut<'w, MapGrid>,
     city: ResMut<'w, City>,
     ledger: Option<ResMut<'w, crate::game::economy::BudgetLedger>>,
+    tax_rates: Option<ResMut<'w, crate::game::economy::TaxRates>>,
+    service_funding: Option<ResMut<'w, crate::game::economy::ServiceFunding>>,
+    loans: Option<ResMut<'w, crate::game::economy::Loans>>,
     id_gen: ResMut<'w, CitizenIdGen>,
     emergency_manager: Option<ResMut<'w, EmergencyManager>>,
     path_pool: ResMut<'w, crate::game::transport::PathPool>,
@@ -626,6 +641,24 @@ struct LoadParams<'w, 's> {
     q_vehicle_markers: Query<'w, 's, Entity, With<ServiceVehicleMarker>>,
     q_citizens: Query<'w, 's, Entity, With<Citizen>>,
     q_emergencies: Query<'w, 's, Entity, With<Emergency>>,
+}
+
+/// Put a save's budget back into the live resources: rates, funding and open loans.
+pub(crate) fn restore_budget(
+    save: &SaveGameV3,
+    rates: Option<&mut crate::game::economy::TaxRates>,
+    funding: Option<&mut crate::game::economy::ServiceFunding>,
+    loans: Option<&mut crate::game::economy::Loans>,
+) {
+    if let Some(rates) = rates {
+        *rates = save.tax_rates.clone();
+    }
+    if let Some(funding) = funding {
+        *funding = save.service_funding;
+    }
+    if let Some(loans) = loans {
+        *loans = save.loans.clone();
+    }
 }
 
 fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParams) {
@@ -715,6 +748,12 @@ fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParam
         if let Some(ledger) = p.ledger.as_mut() {
             ledger.restart(p.city.money);
         }
+        restore_budget(
+            &save,
+            p.tax_rates.as_deref_mut(),
+            p.service_funding.as_deref_mut(),
+            p.loans.as_deref_mut(),
+        );
         p.id_gen.set_next(save.next_citizen_id);
 
         if let Some(mgr) = p.emergency_manager.as_mut() {
@@ -813,5 +852,101 @@ fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParam
 
         // Ensure we're in-game after load.
         NextState::set_if_neq(&mut *p.next_state, AppState::InGame);
+    }
+}
+
+#[cfg(test)]
+mod budget_save_tests {
+    use super::*;
+    use crate::game::economy::{Loan, Loans, ServiceFunding, TaxRates, TaxZone, WealthClass};
+    use crate::game::emergencies::EmergencyStats;
+
+    fn budget() -> (TaxRates, ServiceFunding, Loans) {
+        let mut rates = TaxRates::default();
+        rates.set(TaxZone::Industrial, WealthClass::Low, 15);
+        let mut funding = ServiceFunding::default();
+        funding.set(ServiceKind::Police, 70);
+        let loans = Loans {
+            active: vec![Loan {
+                principal: 25_000,
+                monthly_payment: Loans::monthly_payment(25_000),
+                months_left: 7,
+            }],
+        };
+        (rates, funding, loans)
+    }
+
+    #[derive(Resource, Default)]
+    struct Captured(Option<SaveGameV3>);
+
+    fn capture(p: SaveParams, mut out: ResMut<Captured>) {
+        out.0 = Some(snapshot_savegame(&p));
+    }
+
+    #[test]
+    fn budget_report_the_budget_is_part_of_the_save() {
+        let (rates, funding, loans) = budget();
+        let mut app = App::new();
+        app.insert_resource(MapSeed(1))
+            .insert_resource(MapGrid::new(4, 4))
+            .insert_resource(City::default())
+            .insert_resource(CitizenIdGen::default())
+            .insert_resource(IntersectionIndex::default())
+            .insert_resource(rates.clone())
+            .insert_resource(funding)
+            .insert_resource(loans.clone())
+            .init_resource::<Captured>()
+            .add_systems(Update, capture);
+        app.update();
+
+        let save = app
+            .world_mut()
+            .resource_mut::<Captured>()
+            .0
+            .take()
+            .expect("the snapshot ran");
+        assert_eq!(save.tax_rates, rates);
+        assert_eq!(save.service_funding, funding);
+        assert_eq!(
+            save.loans, loans,
+            "a save that forgets the debt lets a load erase it"
+        );
+    }
+
+    #[test]
+    fn budget_report_loading_restores_the_budget() {
+        let (rates, funding, loans) = budget();
+        let save = SaveGameV3 {
+            save_version: 3,
+            seed: 1,
+            map: MapGridV1 {
+                width: 0,
+                height: 0,
+                tiles: Vec::new(),
+            },
+            city: City::default(),
+            buildings: Vec::new(),
+            citizens: Vec::new(),
+            next_citizen_id: 1,
+            service_stations: Vec::new(),
+            emergency_stats: EmergencyStats::default(),
+            traffic_light_tiles: Vec::new(),
+            tax_rates: rates.clone(),
+            service_funding: funding,
+            loans: loans.clone(),
+        };
+
+        let mut live_rates = TaxRates::default();
+        let mut live_funding = ServiceFunding::default();
+        let mut live_loans = Loans::default();
+        restore_budget(
+            &save,
+            Some(&mut live_rates),
+            Some(&mut live_funding),
+            Some(&mut live_loans),
+        );
+        assert_eq!(live_rates, rates);
+        assert_eq!(live_funding, funding);
+        assert_eq!(live_loans, loans);
     }
 }
