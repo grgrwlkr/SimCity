@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 
+pub mod atlas;
 pub mod buildings;
 pub mod citizens;
 pub mod command_history;

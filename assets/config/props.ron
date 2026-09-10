@@ -1,0 +1,53 @@
+// Street furniture. Every field is optional — omit one and the built-in default
+// from `simcity_core::game::props_config` applies.
+//
+// Budget note: props are spawned ONCE per map and only their Visibility is
+// toggled (despawn churn reuses entity ids and shifts sim timing — see the soak
+// pin), and every one of them is NotShadowCaster. The phase-7 measurement that
+// forces that: 800 shadow casters took the frame from 72 FPS to 22.
+(
+    // One lamp every 4 kerb tiles along a road run, with wires strung between
+    // consecutive lamps. Denser than 4 turns a street into a picket fence at
+    // far zoom; sparser and the night reads unlit.
+    streetlight: (
+        enabled: true,
+        spacing_tiles: 4,
+        pole_height: 9.0,
+        arm_length: 2.5,
+        kerb_offset: 6.0,
+        wires: true,
+        wire_sag: 1.4,
+    ),
+
+    // The one prop meant to be seen after dark: unlit by day, emissive at night
+    // through the shared NightGlow material, so the whole city flips on one
+    // asset write rather than per-entity. Emissive was 5.0 first and blew the
+    // boards out to white bars under ACES; 2.8 keeps them warm and readable.
+    // Signs and awnings hang on BUILT tiles only — over an empty lot they read
+    // as a bug.
+    sign: (
+        enabled: true,
+        chance_percent: 45,
+        width: 5.0,
+        height: 1.8,
+        mount_height: 7.0,
+        night_emissive: 2.8,
+    ),
+
+    bin: (
+        enabled: true,
+        chance_percent: 30,
+    ),
+
+    awning: (
+        enabled: true,
+        chance_percent: 40,
+    ),
+
+    // Kerbside parking is visual only — these are not sim vehicles and carry no
+    // traffic components; the traffic model must not see them.
+    parked_car: (
+        enabled: true,
+        chance_percent: 28,
+    ),
+)

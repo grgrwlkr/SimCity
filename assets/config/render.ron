@@ -1,0 +1,108 @@
+// Look-and-feel of the renderer. Every field is optional — omit one and the
+// built-in default from `simcity_core::game::render_config` applies.
+//
+// Budget note (phase 0 baseline, docs/plans/2026-09-09-visual-baseline.md):
+// shadows already cost ~7 ms of a ~10.6 ms frame, so `shadows.soft_size` and a
+// larger `maximum_distance` are the two knobs here that can wreck the frame.
+(
+    tonemapping: AcesFitted,
+
+    // Msaa4 gives the cleanest edges but Bevy refuses to run it with SSAO —
+    // with `ssao.enabled` this silently becomes Fxaa.
+    anti_aliasing: Fxaa,
+
+    // OFF by default on measurement, not taste. Bevy's Bloom requires the Hdr
+    // component, which moves the whole frame to an Rgba16Float target: measured
+    // 16.5 ms with bloom against 11.2 ms without, on the same city and hour.
+    // Shrinking the mip chain does not help (192 px measured at 16.8 ms) — the
+    // cost is the HDR target, not the blur. Turn it on once phase 5 has bought
+    // the budget back from shadows.
+    bloom: (
+        enabled: false,
+        intensity: 0.12,
+        low_frequency_boost: 0.7,
+        max_mip_dimension: 512,
+    ),
+
+    ssao: (
+        enabled: true,
+        quality: Medium,
+    ),
+
+    color_grading: (
+        exposure: 0.0,
+        contrast: 1.08,
+        saturation: 1.05,
+        gamma: 1.0,
+    ),
+
+    vignette: (
+        enabled: true,
+        strength: 0.35,
+        inner_radius: 0.55,
+    ),
+
+    sun: (
+        // 14 deg, not the 38 the code defaults to: measured side by side, this is
+        // what turns short shading into long readable shadows, and it costs nothing
+        // (88.1 FPS against 83.1 at 38 deg).
+        noon_elevation_deg: 14.0,
+        azimuth_deg: 135.0,
+        illuminance_scale: 1.0,
+        // Noon anchors. The night floors below are fractions of these, so these
+        // two decide the whole cycle's absolute level.
+        day_illuminance: 12000.0,
+        day_ambient: 700.0,
+    ),
+
+    // How dark midnight gets, as a fraction of the daytime values. The old
+    // pre-ACES floors were 0.04 / 0.22 and render as a black plate under a
+    // filmic curve.
+    night: (
+        // Measured on an A/B of the same binary, same hour, same city: the
+        // pre-ACES night reads at gray median 0.139, and a filmic curve crushes
+        // exactly this range. At the old 0.04/0.22 the night measured 0.024 — a
+        // black plate. These are the ceiling: ambient at night now equals its
+        // noon value, and night stays night because the sun does the dimming.
+        // Result 0.091 — three and a half times darker than noon, everything
+        // still legible.
+        sun_floor: 0.30,
+        ambient_floor: 1.0,
+    ),
+
+    // Close up the city is photographed, far out it reads as a map. Bevy cannot
+    // blend one projection type into the other, so what is kept continuous is
+    // the framing: the visible ground height is identical on both sides of
+    // `ortho_above_zoom`, and the field of view is narrowed on the way there so
+    // the distortion has already faded before the switch happens.
+    perspective: (
+        ortho_above_zoom: 0.25,
+        near_fov_deg: 42.0,
+        far_fov_deg: 12.0,
+        ramp: 1.6,
+        min_distance: 40.0,
+        // Past this the shadow cascades stop covering the city.
+        max_distance: 900.0,
+        // Orthographic boom. Bevy's default 3d ortho clips at far = 1000, so a
+        // camera parked at 900 cut the far half of the ground off the top of the
+        // frame; the cascades are tuned for 500 too.
+        ortho_distance: 500.0,
+    ),
+
+    // Texel density of the atlas on building surfaces. One cell stretched over a
+    // whole facade reads as flat colour, so faces are split into sub-quads that
+    // each carry the cell whole; `max_repeats` is what keeps that from turning a
+    // tower into a few hundred quads.
+    atlas: (
+        world_units_per_cell: 12.0,
+        max_repeats: 4,
+    ),
+
+    shadows: (
+        maximum_distance: 900.0,
+        cascades: 4,
+        first_slice_depth: 90.0,
+        overlap_proportion: 0.2,
+        soft_size: 0.0,
+    ),
+)

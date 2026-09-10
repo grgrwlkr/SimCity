@@ -3,6 +3,9 @@ use bevy::ecs::system::{EntityCommands, SystemParam};
 use bevy::prelude::*;
 use bevy::time::Real;
 use std::collections::VecDeque;
+// Only the render-cost updater needs a set, and that updater is dev/test-only.
+#[cfg(any(feature = "dev", test))]
+use std::collections::HashSet;
 
 use crate::game::camera::MainCamera;
 use crate::game::map::{HoveredTile, MapConfig};
@@ -80,7 +83,16 @@ pub struct DebugWorldSnapshot {
     pub map_height: i32,
     pub tile_size: f32,
     pub camera_pos: Vec2,
+    /// Orthographic scale, or 0 when the camera is perspective — read
+    /// `camera_projection` before trusting it.
     pub camera_zoom: f32,
+    /// Which projection is live. Phase 2 made this change with the zoom, and a
+    /// snapshot that only knew how to read an orthographic camera reported a
+    /// perspective one as "zoom 1.0" — observability lying exactly where the
+    /// behaviour changed.
+    pub camera_projection: String,
+    /// Vertical field of view in degrees, or 0 when the camera is orthographic.
+    pub camera_fov_deg: f32,
     pub hovered_tile_valid: bool,
     pub hovered_tile_x: i32,
     pub hovered_tile_y: i32,
@@ -141,6 +153,38 @@ pub struct DebugWorldSnapshot {
     pub mcp_last_request_age_s: Option<f32>,
     pub mcp_is_active: bool,
     pub mcp_is_idle: bool,
+}
+
+/// Render-cost snapshot for MCP inspection.
+///
+/// Bevy exposes no draw-call counter, so `batch_estimate` counts the distinct
+/// (mesh, material) pairs among the visible mesh entities — the number of groups
+/// batching can collapse them into, and the number that grows the moment a
+/// per-color material is introduced instead of vertex colors.
+#[derive(Component, Reflect, Default, Copy, Clone)]
+#[reflect(Component)]
+pub struct DebugRenderSnapshot {
+    /// Entities carrying a `Mesh3d`, visible or not.
+    pub mesh_entities: u32,
+    /// Subset of `mesh_entities` that passed visibility this frame.
+    pub visible_mesh_entities: u32,
+    /// Distinct mesh assets among the visible mesh entities.
+    pub distinct_meshes: u32,
+    /// Distinct material assets among the visible mesh entities.
+    pub distinct_materials: u32,
+    /// Distinct (mesh, material) pairs — the draw-call estimate.
+    pub batch_estimate: u32,
+    /// Visible mesh entities that still cast shadows (no `NotShadowCaster`).
+    pub visible_shadow_casters: u32,
+    /// Street furniture, spawned or hidden. Counted apart from the mesh total
+    /// because props are added by the thousand and their cost has to be
+    /// attributable.
+    pub prop_entities: u32,
+    /// Subset of `prop_entities` on screen this frame.
+    pub visible_props: u32,
+    pub point_lights: u32,
+    pub spot_lights: u32,
+    pub directional_lights: u32,
 }
 
 /// Traffic subsystem snapshot for MCP inspection.
@@ -666,6 +710,8 @@ struct DebugSnapshotBundle {
     name: Name,
     /// World snapshot.
     world: DebugWorldSnapshot,
+    /// Render-cost snapshot.
+    render: DebugRenderSnapshot,
     /// Traffic snapshot.
     traffic: DebugTrafficSnapshot,
     /// Intersection snapshot.
@@ -706,6 +752,7 @@ impl DebugSnapshotBundle {
         Self {
             name: Name::new("DebugWorldSnapshot"),
             world: DebugWorldSnapshot::default(),
+            render: DebugRenderSnapshot::default(),
             traffic: DebugTrafficSnapshot::default(),
             intersections: DebugIntersectionSnapshot::default(),
             transport: DebugTransportSnapshot::default(),
@@ -729,6 +776,7 @@ impl DebugSnapshotBundle {
 #[derive(SystemParam)]
 struct DebugSnapshotEnsureQueries<'w, 's> {
     q_snapshot: Query<'w, 's, Entity, With<DebugWorldSnapshot>>,
+    q_render: Query<'w, 's, (), With<DebugRenderSnapshot>>,
     q_traffic: Query<'w, 's, (), With<DebugTrafficSnapshot>>,
     q_intersections: Query<'w, 's, (), With<DebugIntersectionSnapshot>>,
     q_transport: Query<'w, 's, (), With<DebugTransportSnapshot>>,
@@ -753,6 +801,7 @@ pub struct DebugWorldPlugin;
 impl Plugin for DebugWorldPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<DebugWorldSnapshot>()
+            .register_type::<DebugRenderSnapshot>()
             .register_type::<DebugTrafficSnapshot>()
             .register_type::<DebugIntersectionSnapshot>()
             .register_type::<DebugTransportSnapshot>()
@@ -782,7 +831,8 @@ impl Plugin for DebugWorldPlugin {
         // the whole batch behind `dev`. The snapshot entity and all component types still exist in
         // release (default/all-zero), so the frontend's UI queries keep compiling.
         #[cfg(feature = "dev")]
-        app.add_systems(Update, update_debug_traffic_snapshot.in_set(GameSet::Ui))
+        app.add_systems(Update, update_debug_render_snapshot.in_set(GameSet::Ui))
+            .add_systems(Update, update_debug_traffic_snapshot.in_set(GameSet::Ui))
             .add_systems(
                 Update,
                 update_debug_intersection_snapshot.in_set(GameSet::Ui),
@@ -840,6 +890,7 @@ fn ensure_debug_snapshot_entity(
         .next()
         .unwrap_or_else(|| commands.spawn(DebugSnapshotBundle::new()).id());
     let mut entity_cmd = commands.entity(entity);
+    ensure_component::<DebugRenderSnapshot>(&mut entity_cmd, entity, &queries.q_render);
     ensure_component::<DebugTrafficSnapshot>(&mut entity_cmd, entity, &queries.q_traffic);
     ensure_component::<DebugIntersectionSnapshot>(
         &mut entity_cmd,
@@ -1020,6 +1071,90 @@ fn compute_window_stats(
     }
 }
 
+/// Kind, orthographic scale and vertical field of view of a projection.
+///
+/// One of the last two is always zero: an orthographic camera has no field of
+/// view and a perspective one has no scale.
+pub fn camera_projection_readout(projection: &Projection) -> (&'static str, f32, f32) {
+    match projection {
+        Projection::Orthographic(o) => ("Orthographic", o.scale, 0.0),
+        Projection::Perspective(p) => ("Perspective", 0.0, p.fov.to_degrees()),
+        _ => ("Custom", 0.0, 0.0),
+    }
+}
+
+/// What the render-cost scan reads off every mesh entity.
+#[cfg(any(feature = "dev", test))]
+type RenderCostQuery = (
+    &'static Mesh3d,
+    &'static MeshMaterial3d<StandardMaterial>,
+    &'static ViewVisibility,
+    Has<bevy::light::NotShadowCaster>,
+    Has<simcity_sim::game::map::PropEntity>,
+);
+
+/// Publish the render-cost snapshot (batch estimate, shadow casters, lights).
+///
+/// Scans every mesh entity, so it is gated behind `dev` together with the other
+/// world-scan updaters.
+#[cfg(any(feature = "dev", test))]
+fn update_debug_render_snapshot(
+    q_meshes: Query<RenderCostQuery>,
+    q_point: Query<(), With<PointLight>>,
+    q_spot: Query<(), With<SpotLight>>,
+    q_dir: Query<(), With<DirectionalLight>>,
+    holder: Res<DebugSnapshotEntity>,
+    mut q_snapshot: Query<&mut DebugRenderSnapshot>,
+) {
+    let Some(entity) = holder.entity else {
+        return;
+    };
+    let Ok(mut snapshot) = q_snapshot.get_mut(entity) else {
+        return;
+    };
+
+    let mut meshes = HashSet::new();
+    let mut materials = HashSet::new();
+    let mut pairs = HashSet::new();
+    let mut mesh_entities = 0u32;
+    let mut visible = 0u32;
+    let mut casters = 0u32;
+    let mut props = 0u32;
+    let mut visible_props = 0u32;
+
+    for (mesh, material, view_visibility, not_shadow_caster, is_prop) in &q_meshes {
+        mesh_entities += 1;
+        if is_prop {
+            props += 1;
+        }
+        if !view_visibility.get() {
+            continue;
+        }
+        visible += 1;
+        if is_prop {
+            visible_props += 1;
+        }
+        if !not_shadow_caster {
+            casters += 1;
+        }
+        meshes.insert(mesh.0.id());
+        materials.insert(material.0.id());
+        pairs.insert((mesh.0.id(), material.0.id()));
+    }
+
+    snapshot.mesh_entities = mesh_entities;
+    snapshot.visible_mesh_entities = visible;
+    snapshot.distinct_meshes = meshes.len() as u32;
+    snapshot.distinct_materials = materials.len() as u32;
+    snapshot.batch_estimate = pairs.len() as u32;
+    snapshot.visible_shadow_casters = casters;
+    snapshot.prop_entities = props;
+    snapshot.visible_props = visible_props;
+    snapshot.point_lights = q_point.iter().count() as u32;
+    snapshot.spot_lights = q_spot.iter().count() as u32;
+    snapshot.directional_lights = q_dir.iter().count() as u32;
+}
+
 /// Update the debug snapshot from live resources for MCP inspection.
 #[allow(clippy::too_many_arguments)]
 fn update_debug_snapshot(
@@ -1063,13 +1198,15 @@ fn update_debug_snapshot(
 
     if let Ok((tf, proj)) = q_cam.single() {
         snapshot.camera_pos = tf.translation.truncate();
-        snapshot.camera_zoom = match proj {
-            Projection::Orthographic(o) => o.scale,
-            _ => 1.0,
-        };
+        let (kind, zoom, fov_deg) = camera_projection_readout(proj);
+        set_string(&mut snapshot.camera_projection, kind);
+        snapshot.camera_zoom = zoom;
+        snapshot.camera_fov_deg = fov_deg;
     } else {
         snapshot.camera_pos = Vec2::ZERO;
-        snapshot.camera_zoom = 1.0;
+        set_string(&mut snapshot.camera_projection, "None");
+        snapshot.camera_zoom = 0.0;
+        snapshot.camera_fov_deg = 0.0;
     }
 
     if let Some(tile) = hovered.tile {
@@ -2461,5 +2598,137 @@ mod tests {
         assert_eq!(state.admitted_right, 2);
         assert_eq!(state.admitted_left, 1);
         assert_eq!(state.admitted_uturn, 1);
+    }
+
+    /// Weak handle with a stable id — enough to tell mesh/material assets apart
+    /// without standing up the asset server.
+    fn asset<A: Asset>(id: u128) -> Handle<A> {
+        Handle::Uuid(
+            bevy::asset::uuid::Uuid::from_u128(id),
+            std::marker::PhantomData,
+        )
+    }
+
+    #[test]
+    fn the_projection_readout_tells_the_two_cameras_apart() {
+        use bevy::camera::{OrthographicProjection, PerspectiveProjection};
+
+        let mut ortho = OrthographicProjection::default_3d();
+        ortho.scale = 0.42;
+        let (kind, zoom, fov) = camera_projection_readout(&Projection::Orthographic(ortho));
+        assert_eq!(kind, "Orthographic");
+        assert!((zoom - 0.42).abs() < 1e-6);
+        assert_eq!(fov, 0.0, "an orthographic camera has no field of view");
+
+        let perspective = Projection::Perspective(PerspectiveProjection {
+            fov: 35.0_f32.to_radians(),
+            ..Default::default()
+        });
+        let (kind, zoom, fov) = camera_projection_readout(&perspective);
+        assert_eq!(kind, "Perspective");
+        assert_eq!(
+            zoom, 0.0,
+            "a perspective camera has no scale to report as zoom"
+        );
+        assert!(
+            (fov - 35.0).abs() < 1e-3,
+            "the field of view is what a perspective camera has instead, got {fov}"
+        );
+    }
+
+    #[test]
+    fn render_snapshot_counts_visible_batches_and_shadow_casters() {
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+        let entity = app.world_mut().spawn(DebugRenderSnapshot::default()).id();
+        app.insert_resource(DebugSnapshotEntity {
+            entity: Some(entity),
+        });
+
+        // Two meshes and two materials arranged into three distinct pairs, one of
+        // which is used twice — so batching can collapse 4 entities into 3 groups.
+        let spawn = |app: &mut App, mesh: u128, mat: u128, visible: bool, caster: bool| {
+            let mut e = app.world_mut().spawn((
+                Mesh3d(asset::<Mesh>(mesh)),
+                MeshMaterial3d(asset::<StandardMaterial>(mat)),
+                if visible {
+                    ViewVisibility::VISIBLE
+                } else {
+                    ViewVisibility::HIDDEN
+                },
+            ));
+            if !caster {
+                e.insert(bevy::light::NotShadowCaster);
+            }
+        };
+
+        spawn(&mut app, 1, 1, true, true);
+        spawn(&mut app, 1, 1, true, true); // same pair -> same batch
+        spawn(&mut app, 1, 2, true, false); // shares the mesh, new material
+        spawn(&mut app, 2, 1, true, false); // shares the material, new mesh
+        spawn(&mut app, 3, 3, false, true); // invisible -> counted only in the total
+
+        app.world_mut().spawn(PointLight::default());
+        app.world_mut().spawn(DirectionalLight::default());
+        app.world_mut().spawn(DirectionalLight::default());
+
+        app.add_systems(Update, update_debug_render_snapshot);
+        app.update();
+
+        let snap = app.world().get::<DebugRenderSnapshot>(entity).unwrap();
+        assert_eq!(snap.mesh_entities, 5);
+        assert_eq!(snap.visible_mesh_entities, 4);
+        assert_eq!(snap.distinct_meshes, 2);
+        assert_eq!(snap.distinct_materials, 2);
+        assert_eq!(snap.batch_estimate, 3);
+        assert_eq!(snap.visible_shadow_casters, 2);
+        assert_eq!(snap.point_lights, 1);
+        assert_eq!(snap.spot_lights, 0);
+        assert_eq!(snap.directional_lights, 2);
+    }
+
+    /// Props are counted separately from the mesh total: a phase that adds
+    /// thousands of entities has to be answerable over BRP, and "did the props
+    /// actually spawn" is not a question a screenshot answers reliably.
+    #[test]
+    fn the_snapshot_counts_props_apart_from_everything_else() {
+        use simcity_sim::game::map::PropEntity;
+
+        let mut app = App::new();
+        let entity = app.world_mut().spawn(DebugRenderSnapshot::default()).id();
+        app.insert_resource(DebugSnapshotEntity {
+            entity: Some(entity),
+        });
+
+        let mut prop = |visible: bool| {
+            app.world_mut().spawn((
+                Mesh3d(asset::<Mesh>(9)),
+                MeshMaterial3d(asset::<StandardMaterial>(9)),
+                if visible {
+                    ViewVisibility::VISIBLE
+                } else {
+                    ViewVisibility::HIDDEN
+                },
+                bevy::light::NotShadowCaster,
+                PropEntity,
+            ));
+        };
+        prop(true);
+        prop(true);
+        prop(false);
+        // A non-prop mesh must not be counted as one.
+        app.world_mut().spawn((
+            Mesh3d(asset::<Mesh>(1)),
+            MeshMaterial3d(asset::<StandardMaterial>(1)),
+            ViewVisibility::VISIBLE,
+        ));
+
+        app.add_systems(Update, update_debug_render_snapshot);
+        app.update();
+
+        let snap = app.world().get::<DebugRenderSnapshot>(entity).unwrap();
+        assert_eq!(snap.prop_entities, 3, "every prop, visible or not");
+        assert_eq!(snap.visible_props, 2, "only the ones on screen");
     }
 }
