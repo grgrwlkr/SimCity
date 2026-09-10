@@ -5,11 +5,15 @@
 
 use bevy::asset::embedded_asset;
 use bevy::prelude::*;
+use simcity_core::game::sets::GameSet;
+use simcity_core::game::state::AppState;
+use simcity_core::game::ui_state::GameUiRoot;
 
 pub mod glass;
+pub mod hud_bar;
 pub mod theme;
 
-/// Registers the game interface's material and visual language.
+/// Registers the game interface: its material, its visual language and its pieces.
 pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
@@ -18,6 +22,37 @@ impl Plugin for HudPlugin {
         // silently goes missing when the game is started from anywhere but the repository root.
         embedded_asset!(app, "glass.wgsl");
         app.init_resource::<theme::Theme>()
-            .add_plugins(UiMaterialPlugin::<glass::GlassMaterial>::default());
+            .add_plugins(UiMaterialPlugin::<glass::GlassMaterial>::default())
+            .add_observer(hud_bar::on_speed_button)
+            .add_systems(Startup, spawn_game_ui)
+            .add_systems(
+                Update,
+                (hud_bar::update_hud_bar, show_game_ui_in_game).in_set(GameSet::Ui),
+            );
+    }
+}
+
+fn spawn_game_ui(
+    mut commands: Commands,
+    theme: Res<theme::Theme>,
+    mut materials: ResMut<Assets<glass::GlassMaterial>>,
+) {
+    let glass = materials.add(glass::GlassMaterial::from_theme(&theme));
+    hud_bar::spawn_hud_bar(&mut commands, &theme, glass);
+}
+
+/// The in-game interface belongs to a running city; the menu has its own screen.
+fn show_game_ui_in_game(
+    state: Res<State<AppState>>,
+    mut roots: Query<&mut Visibility, With<GameUiRoot>>,
+) {
+    let visible = matches!(state.get(), AppState::InGame | AppState::Paused);
+    let wanted = if visible {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut visibility in &mut roots {
+        visibility.set_if_neq(wanted);
     }
 }

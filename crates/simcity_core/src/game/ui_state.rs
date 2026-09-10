@@ -29,6 +29,15 @@ impl Default for UiState {
     }
 }
 
+/// Marks the root of a piece of the player's game interface (not the developer panels).
+///
+/// A contract with the live debug API: `simcity/capture` with `"ui": true` retargets exactly these
+/// roots onto its offscreen camera for the frames it captures, so the game interface can be judged
+/// without a window on screen. Put it on roots only — a marked child would be retargeted apart
+/// from its parent.
+#[derive(Component, Debug, Default, Clone, Copy)]
+pub struct GameUiRoot;
+
 /// Stable identity of the map-seed text field, shared by the toolbar that draws it and by
 /// in-game automation that focuses it. A widget id derived from layout would change with any
 /// edit to the toolbar and silently point automation at nothing.

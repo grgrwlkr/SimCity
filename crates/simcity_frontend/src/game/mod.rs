@@ -28,6 +28,7 @@ impl Plugin for FrontendPlugin {
         app.add_plugins((
             audio_sfx::AudioSfxPlugin,
             camera::CameraPlugin,
+            hud::HudPlugin,
             render_settings::RenderSettingsPlugin,
             ui::UiPlugin,
             ui_settings::UiSettingsPlugin,
