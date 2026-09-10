@@ -9,6 +9,7 @@ use crate::game::map::{BuildingKind, DirtyTiles, MapConfig, MapGrid, TilePos};
 use crate::game::notifications::{NotificationKind, Notifications};
 use crate::game::sim::City;
 use crate::game::sim_events::HourAdvanced;
+use crate::game::utilities::{UtilityKind, UtilityNetwork};
 use bevy::ecs::message::MessageReader;
 
 use super::components::*;
@@ -23,6 +24,7 @@ pub struct GrowBuildingsParams<'w, 's> {
     grid: ResMut<'w, MapGrid>,
     demand: Res<'w, RciDemand>,
     land_value: Option<Res<'w, LandValueIndex>>,
+    network: Res<'w, UtilityNetwork>,
     city: ResMut<'w, City>,
     rng: ResMut<'w, BuildingGrowthRng>,
     dirty: ResMut<'w, DirtyTiles>,
@@ -113,6 +115,7 @@ pub fn grow_buildings(mut p: GrowBuildingsParams) {
             &occupied,
             p.land_value.as_deref(),
             &p.q_buildings,
+            &p.network,
         ) else {
             continue;
         };
@@ -190,6 +193,7 @@ fn find_best_footprint(
     occupied: &HashSet<TilePos>,
     land_value: Option<&LandValueIndex>,
     existing_buildings: &Query<&Building>,
+    network: &UtilityNetwork,
 ) -> Option<Footprint> {
     // Generate all possible footprints sorted by priority: area → length → width
     // GDD 10.1.3: priority is area (desc), then length (desc), then width (desc)
@@ -224,6 +228,7 @@ fn find_best_footprint(
             occupied,
             land_value,
             existing_buildings,
+            network,
         ) {
             return Some(footprint);
         }
@@ -249,6 +254,7 @@ fn find_best_footprint(
                 occupied,
                 land_value,
                 existing_buildings,
+                network,
             ) {
                 return Some(footprint);
             }
@@ -271,6 +277,7 @@ fn try_footprint_at(
     occupied: &HashSet<TilePos>,
     land_value: Option<&LandValueIndex>,
     existing_buildings: &Query<&Building>,
+    network: &UtilityNetwork,
 ) -> Option<Footprint> {
     let mut tiles = Vec::new();
     let required_zone = kind.as_zone();
@@ -320,6 +327,11 @@ fn try_footprint_at(
         }
     }
     if !has_road_access {
+        return None;
+    }
+
+    // B1: nothing grows where the road carries no power.
+    if !network.footprint_has(grid, anchor, width, length, UtilityKind::Power) {
         return None;
     }
 

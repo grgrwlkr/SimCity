@@ -3,9 +3,10 @@ use rand::RngExt;
 
 use super::components::*;
 use crate::game::demand::RciDemand;
-use crate::game::map::BuildingKind;
+use crate::game::map::{BuildingKind, MapGrid};
 use crate::game::notifications::{NotificationKind, Notifications};
 use crate::game::sim::City;
+use crate::game::utilities::UtilityNetwork;
 
 #[allow(clippy::too_many_arguments)]
 pub fn upgrade_buildings(
@@ -16,6 +17,8 @@ pub fn upgrade_buildings(
     mut notifications: Option<ResMut<Notifications>>,
     mut upgrade_clock: ResMut<BuildingUpgradeClock>,
     mut q_buildings: Query<&mut Building>,
+    grid: Res<MapGrid>,
+    network: Res<UtilityNetwork>,
 ) {
     let dt = time.delta_secs();
 
@@ -27,28 +30,8 @@ pub fn upgrade_buildings(
     }
 
     for mut building in q_buildings.iter_mut() {
-        // Only upgrade residential, commercial, and industrial buildings
-        if !matches!(
-            building.kind,
-            BuildingKind::Residential | BuildingKind::Commercial | BuildingKind::Industrial
-        ) {
-            continue;
-        }
-
-        // Already at max level
-        if building.level >= 3 {
-            continue;
-        }
-
-        // Check demand
-        let demand_ok = match building.kind {
-            BuildingKind::Residential => demand.residential > 0.3,
-            BuildingKind::Commercial => demand.commercial > 0.3,
-            BuildingKind::Industrial => demand.industrial > 0.3,
-            _ => false,
-        };
-
-        if !demand_ok {
+        // Zoned buildings only, below the top level, with power, water and enough demand.
+        if super::blockers::upgrade_blocker(&building, &grid, &network, &demand).is_some() {
             continue;
         }
 

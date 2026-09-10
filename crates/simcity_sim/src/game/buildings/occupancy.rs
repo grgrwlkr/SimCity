@@ -53,6 +53,7 @@ pub fn update_occupancy(
     demand: Res<RciDemand>,
     mut q_buildings: Query<&mut Building>,
     grid: Res<crate::game::map::MapGrid>,
+    network: Res<crate::game::utilities::UtilityNetwork>,
 ) {
     // Process all DayAdvanced events (usually one per day transition)
     for _event in day_events.read() {
@@ -84,8 +85,22 @@ pub fn update_occupancy(
                 },
             );
 
-            // If no road access, set target occupancy to 0 and decrease current occupancy
-            if !has_road_access {
+            // B1: a zoned building without power empties exactly as one without a road does.
+            let needs_power = matches!(
+                building.kind,
+                BuildingKind::Residential | BuildingKind::Commercial | BuildingKind::Industrial
+            );
+            let has_power = !needs_power
+                || network.footprint_has(
+                    &grid,
+                    building.anchor_pos,
+                    building.footprint_width,
+                    building.footprint_length,
+                    crate::game::utilities::UtilityKind::Power,
+                );
+
+            // If no road access or no power, set target occupancy to 0 and decrease current occupancy
+            if !has_road_access || !has_power {
                 building.target_occupancy_residents = 0;
                 building.target_occupancy_jobs = 0;
                 // Gradually decrease occupancy (people/jobs leave)

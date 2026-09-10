@@ -4,6 +4,7 @@ mod components;
 pub mod components_pub {
     pub use super::components::*;
 }
+mod blockers;
 mod construction;
 mod decay;
 mod footprint;
@@ -18,6 +19,7 @@ mod zone_depth;
 #[cfg(test)]
 mod tests;
 
+pub use blockers::{GrowthBlocker, growth_blockers, upgrade_blocker};
 pub use components::*;
 pub use construction::*;
 pub use decay::*;

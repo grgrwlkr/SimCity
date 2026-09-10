@@ -361,6 +361,12 @@ fn occupancy_increases_even_when_fill_days_gt_two() {
             grid.set(road_pos, cell);
             grid
         })
+        // Power reaches every tile: this test is about fill days, not supply.
+        .insert_resource(crate::game::utilities::UtilityNetwork {
+            version: 1,
+            map_version: 0,
+            served: vec![0b111; 16],
+        })
         .add_systems(Update, super::occupancy::update_occupancy);
 
     let e = app
