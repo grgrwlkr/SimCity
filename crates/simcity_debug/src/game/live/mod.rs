@@ -20,6 +20,18 @@ pub mod observe;
 pub mod runtime;
 pub mod stats;
 
+/// Every method the plugin registers. `agent_tools::catalogue_drift` checks the catalogue
+/// against this list, so a method added here and forgotten there fails a test rather than
+/// quietly becoming invisible to anyone reading the catalogue.
+pub const REGISTERED_METHODS: &[&str] = &[
+    "simcity/capture",
+    "simcity/camera",
+    "simcity/sim",
+    "simcity/command",
+    "simcity/observe",
+    "simcity/tools",
+];
+
 /// Registers the `simcity/*` methods and the machinery they drive.
 ///
 /// Must be added after `RemotePlugin`, whose `RemoteMethods` resource it writes into.
@@ -70,4 +82,19 @@ fn register_methods(world: &mut World) {
     methods.insert("simcity/command", RemoteMethodSystemId::Instant(command));
     methods.insert("simcity/observe", RemoteMethodSystemId::Instant(observe));
     methods.insert("simcity/tools", RemoteMethodSystemId::Instant(tools));
+
+    // The list, the catalogue and the actual registry have to be the same three things.
+    // The first two are compared by a test; this catches the third, at the only moment it
+    // can be checked — a dev build that starts is a dev build whose catalogue is honest.
+    for method in REGISTERED_METHODS {
+        assert!(
+            methods.get(method).is_some(),
+            "{method} is listed in REGISTERED_METHODS but was never inserted"
+        );
+    }
+    let problems = agent_tools::catalogue_drift(REGISTERED_METHODS);
+    assert!(
+        problems.is_empty(),
+        "live API catalogue drift: {problems:?}"
+    );
 }

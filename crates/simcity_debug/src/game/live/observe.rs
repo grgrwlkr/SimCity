@@ -20,7 +20,7 @@ use bevy::log::tracing::{Event, Subscriber};
 use bevy::log::tracing_subscriber::Layer;
 use bevy::log::tracing_subscriber::layer::Context;
 use bevy::prelude::*;
-use bevy::remote::BrpResult;
+use bevy::remote::{BrpError, BrpResult, error_codes};
 use serde_json::{Value, json};
 use simcity_core::game::camera::{CameraRig, MainCamera};
 use simcity_core::game::state::AppState;
@@ -120,13 +120,21 @@ pub fn log_tail_layer(app: &mut App) -> Option<BoxedLayer> {
 
 /// `simcity/observe` — the whole picture in one answer.
 pub fn observe_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
-    let lines = params
-        .as_ref()
-        .and_then(|params| params.get("log_lines"))
-        .and_then(Value::as_u64)
-        .map_or(DEFAULT_LOG_LINES, |count| {
-            (count as usize).min(LOG_TAIL_CAPACITY)
-        });
+    // A parameter of the wrong type is refused, not dropped: silently ignoring it would
+    // hand the caller a default and let them believe they asked for something else.
+    let lines = match params.as_ref().and_then(|params| params.get("log_lines")) {
+        None | Some(Value::Null) => DEFAULT_LOG_LINES,
+        Some(value) => match value.as_u64() {
+            Some(count) => (count as usize).min(LOG_TAIL_CAPACITY),
+            None => {
+                return Err(BrpError {
+                    code: error_codes::INVALID_PARAMS,
+                    message: format!("`log_lines` must be a number, got {value}"),
+                    data: None,
+                });
+            }
+        },
+    };
 
     let state = world
         .get_resource::<State<AppState>>()
@@ -239,6 +247,72 @@ fn world_json(snapshot: &DebugWorldSnapshot) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_answer_always_carries_every_section() {
+        let mut world = World::new();
+        let answer = observe_handler(In(None), &mut world).expect("observe always answers");
+        for section in [
+            "app_state",
+            "sim_speed",
+            "overlay",
+            "tick",
+            "city",
+            "camera",
+            "render",
+            "entities",
+            "performance",
+            "log",
+        ] {
+            assert!(
+                answer.get(section).is_some(),
+                "{section} is missing — a caller would have to guess whether the game has no \
+                 such state or the call forgot to look"
+            );
+        }
+    }
+
+    #[test]
+    fn a_world_without_the_game_reports_nulls_rather_than_failing() {
+        let mut world = World::new();
+        let answer = observe_handler(In(None), &mut world).expect("observe always answers");
+        assert!(answer["city"].is_null());
+        assert!(answer["app_state"].is_null());
+        assert!(
+            answer["log"]["lines"].is_null(),
+            "with no tail installed the answer says so instead of pretending the log is empty"
+        );
+    }
+
+    #[test]
+    fn the_city_is_reported_when_there_is_one() {
+        let mut world = World::new();
+        world.insert_resource(City {
+            day: 12,
+            hour: 7,
+            money: 4321,
+            population: 99,
+            ..default()
+        });
+        let answer = observe_handler(In(None), &mut world).expect("observe always answers");
+        assert_eq!(answer["city"]["day"], 12);
+        assert_eq!(answer["city"]["hour"], 7);
+        assert_eq!(answer["city"]["money"], 4321);
+        assert_eq!(answer["city"]["population"], 99);
+    }
+
+    #[test]
+    fn a_malformed_log_lines_is_refused_rather_than_ignored() {
+        let mut world = World::new();
+        let params = json!({ "log_lines": "twenty" });
+        let error = observe_handler(In(Some(params)), &mut world)
+            .expect_err("a parameter of the wrong type should not be silently dropped");
+        assert!(
+            error.message.contains("log_lines"),
+            "the error should name the field: {}",
+            error.message
+        );
+    }
 
     #[test]
     fn a_fresh_tail_is_empty() {

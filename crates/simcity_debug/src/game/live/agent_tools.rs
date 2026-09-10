@@ -184,6 +184,35 @@ pub struct CommandParams {
 #[derive(JsonSchema, Deserialize)]
 pub struct NoParams {}
 
+/// Compare what the plugin registers against what the catalogue documents.
+///
+/// The previous version of this check hard-coded the six method names, which meant it
+/// asserted the catalogue against a copy of itself: a seventh method added to the plugin
+/// and forgotten here would have sailed past. Taking the registered list as an argument is
+/// what makes the check able to fail.
+pub fn catalogue_drift(registered: &[&str]) -> Vec<String> {
+    let documented: Vec<&str> = TOOLS.iter().map(|tool| tool.method).collect();
+    let mut problems = Vec::new();
+
+    for method in registered {
+        if !documented.contains(method) {
+            problems.push(format!(
+                "{method} is registered but not documented — a caller reading the catalogue \
+                 would never learn it exists"
+            ));
+        }
+    }
+    for method in documented {
+        if !registered.contains(&method) {
+            problems.push(format!(
+                "{method} is documented but not registered — a caller following the catalogue \
+                 would get `method not found`"
+            ));
+        }
+    }
+    problems
+}
+
 /// `simcity/tools` — the complete catalogue, including the watching method.
 pub fn tools_handler(In(_params): In<Option<Value>>) -> BrpResult {
     let tools: Vec<Value> = TOOLS
@@ -232,22 +261,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_live_method_is_documented() {
-        let documented: Vec<&str> = TOOLS.iter().map(|tool| tool.method).collect();
-        for method in [
+    fn a_registered_method_missing_from_the_catalogue_is_reported() {
+        let problems = catalogue_drift(&[
             "simcity/observe",
             "simcity/capture",
             "simcity/camera",
             "simcity/sim",
             "simcity/command",
             "simcity/tools",
-        ] {
-            assert!(
-                documented.contains(&method),
-                "{method} is registered but not documented — a caller reading the catalogue \
-                 would never learn it exists"
-            );
-        }
+            "simcity/teleport",
+        ]);
+        assert_eq!(
+            problems.len(),
+            1,
+            "one method is undocumented: {problems:?}"
+        );
+        assert!(problems[0].contains("simcity/teleport"), "{problems:?}");
+    }
+
+    #[test]
+    fn a_documented_method_that_is_not_registered_is_reported() {
+        let problems = catalogue_drift(&["simcity/observe"]);
+        assert_eq!(problems.len(), TOOLS.len() - 1, "{problems:?}");
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.contains("simcity/capture")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn the_catalogue_agrees_with_what_the_plugin_registers() {
+        assert!(
+            catalogue_drift(super::super::REGISTERED_METHODS).is_empty(),
+            "the catalogue and the registration list disagree: {:?}",
+            catalogue_drift(super::super::REGISTERED_METHODS)
+        );
     }
 
     #[test]

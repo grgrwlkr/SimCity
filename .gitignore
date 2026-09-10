@@ -12,7 +12,12 @@
 /.cursor/hooks/state/
 
 .superpowers/
-.claude/
+# Everything under `.claude/` is local, except the project's own skills: they are how a
+# fresh session learns this repo's workflows, so they belong in the repository rather than
+# in one machine's config. Note the `/*` — nothing inside a directory that is itself
+# excluded can be re-included.
+.claude/*
+!.claude/skills/
 
 # Scratch screenshots written by the game into the worktree root.
 /p*.png
