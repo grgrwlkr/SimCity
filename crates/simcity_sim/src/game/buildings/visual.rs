@@ -93,6 +93,9 @@ pub fn building_height(kind: BuildingKind, level: u8) -> f32 {
         BuildingKind::PowerPlant => 18.0,
         BuildingKind::WaterPump => 10.0,
         BuildingKind::Landfill => 6.0,
+        BuildingKind::School => 14.0,
+        BuildingKind::University => 20.0,
+        BuildingKind::Park => 2.0,
     }
 }
 

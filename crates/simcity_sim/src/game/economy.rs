@@ -68,6 +68,15 @@ pub struct EconomyConfig {
     /// Daily upkeep of a landfill, paid once it has opened.
     #[serde(default = "default_landfill_upkeep")]
     pub landfill_upkeep: i64,
+    /// Daily upkeep of a school, paid once it has opened.
+    #[serde(default = "default_school_upkeep")]
+    pub school_upkeep: i64,
+    /// Daily upkeep of a university, paid once it has opened.
+    #[serde(default = "default_university_upkeep")]
+    pub university_upkeep: i64,
+    /// Daily upkeep of a park, paid once it has opened.
+    #[serde(default = "default_park_upkeep")]
+    pub park_upkeep: i64,
 }
 
 /// A daily amount per wealth class.
@@ -134,6 +143,18 @@ fn default_landfill_upkeep() -> i64 {
     20
 }
 
+fn default_school_upkeep() -> i64 {
+    25
+}
+
+fn default_university_upkeep() -> i64 {
+    60
+}
+
+fn default_park_upkeep() -> i64 {
+    5
+}
+
 fn default_hospital_upkeep() -> i64 {
     30
 }
@@ -161,6 +182,9 @@ impl Default for EconomyConfig {
             power_plant_upkeep: default_power_plant_upkeep(),
             water_pump_upkeep: default_water_pump_upkeep(),
             landfill_upkeep: default_landfill_upkeep(),
+            school_upkeep: default_school_upkeep(),
+            university_upkeep: default_university_upkeep(),
+            park_upkeep: default_park_upkeep(),
         }
     }
 }
@@ -540,7 +564,18 @@ fn apply_daily_economy(
                 };
                 funding.scaled_upkeep(station.kind, upkeep)
             })
-            .sum();
+            .sum::<i64>()
+            // Schools, universities and parks pay from the day they open, like any station.
+            + buildings
+                .iter()
+                .filter(|(building, _)| building.is_operational())
+                .map(|(building, _)| match building.kind {
+                    BuildingKind::School => cfg.school_upkeep,
+                    BuildingKind::University => cfg.university_upkeep,
+                    BuildingKind::Park => cfg.park_upkeep,
+                    _ => 0,
+                })
+                .sum::<i64>();
 
         // Utility stations pay from the day they open, once each, like any other station.
         let utility_upkeep: i64 = buildings
@@ -912,6 +947,60 @@ mod tests {
             10_000 + lines.total(),
             "the utility line is money that actually moved"
         );
+    }
+
+    #[test]
+    fn service_building_school_university_and_park_charge_their_upkeep_once_open() {
+        let mut app = App::new();
+        app.add_message::<DayAdvanced>();
+        app.insert_resource(EconomyConfig::default());
+        app.insert_resource(MapGrid::new(16, 16));
+        app.insert_resource(City {
+            money: 10_000,
+            ..Default::default()
+        });
+        let mut ledger = BudgetLedger::default();
+        ledger.restart(10_000);
+        app.insert_resource(ledger);
+        for (index, kind) in [
+            BuildingKind::School,
+            BuildingKind::University,
+            BuildingKind::Park,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            app.world_mut().spawn(zoned_building(
+                kind,
+                TilePos {
+                    x: index as i32 * 4,
+                    y: 0,
+                },
+                0,
+                0,
+            ));
+        }
+        let mut unfinished = zoned_building(BuildingKind::School, TilePos { x: 0, y: 8 }, 0, 0);
+        unfinished.phase =
+            crate::game::buildings::BuildingPhase::UnderConstruction { days_remaining: 2 };
+        app.world_mut().spawn(unfinished);
+        app.add_systems(Update, apply_daily_economy);
+        app.world_mut().write_message(DayAdvanced { day: 2 });
+        app.update();
+
+        let cfg = EconomyConfig::default();
+        assert_eq!(
+            (cfg.school_upkeep, cfg.university_upkeep, cfg.park_upkeep),
+            (25, 60, 5)
+        );
+        let lines = app.world().resource::<BudgetLedger>().current.clone();
+        assert_eq!(
+            lines.get(BudgetItem::ServiceMaintenance),
+            -(cfg.school_upkeep + cfg.university_upkeep + cfg.park_upkeep),
+            "three open civic buildings pay; the school still being built does not"
+        );
+        assert_eq!(lines.get(BudgetItem::UtilityMaintenance), 0);
+        assert_eq!(app.world().resource::<City>().money, 10_000 + lines.total());
     }
 
     #[test]

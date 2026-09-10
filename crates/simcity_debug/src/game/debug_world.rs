@@ -1821,7 +1821,10 @@ fn update_debug_buildings_snapshot(
             | BuildingKind::Hospital
             | BuildingKind::PowerPlant
             | BuildingKind::WaterPump
-            | BuildingKind::Landfill => service += 1,
+            | BuildingKind::Landfill
+            | BuildingKind::School
+            | BuildingKind::University
+            | BuildingKind::Park => service += 1,
         }
 
         match b.phase {

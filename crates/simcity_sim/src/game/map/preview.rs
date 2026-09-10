@@ -52,6 +52,18 @@ pub fn preview_tool_at(
             "Builds a landfill: garbage is collected along the roads it touches".to_string(),
             None,
         ),
+        ToolMode::School => (
+            "Builds a school: raises education around it".to_string(),
+            BuildingKind::School.service_radius(),
+        ),
+        ToolMode::University => (
+            "Builds a university: raises education far around it".to_string(),
+            BuildingKind::University.service_radius(),
+        ),
+        ToolMode::Park => (
+            "Builds a park: raises health around it".to_string(),
+            BuildingKind::Park.service_radius(),
+        ),
         ToolMode::TrafficLight => ("Toggles a traffic signal".to_string(), None),
         ToolMode::Erase => ("Bulldozes this tile".to_string(), None),
     };
@@ -102,7 +114,10 @@ pub fn preview_tool_at(
         | ToolMode::Hospital
         | ToolMode::PowerPlant
         | ToolMode::WaterPump
-        | ToolMode::Landfill => {
+        | ToolMode::Landfill
+        | ToolMode::School
+        | ToolMode::University
+        | ToolMode::Park => {
             let cost = placed_building_kind(tool).map_or(0, BuildingKind::build_cost);
             let (width, length) = MANUAL_BUILDING_FOOTPRINT;
             let verdict = match validate_building_placement(grid, tile, width, length) {
@@ -149,6 +164,9 @@ pub fn placed_building_kind(tool: ToolMode) -> Option<BuildingKind> {
         ToolMode::PowerPlant => Some(BuildingKind::PowerPlant),
         ToolMode::WaterPump => Some(BuildingKind::WaterPump),
         ToolMode::Landfill => Some(BuildingKind::Landfill),
+        ToolMode::School => Some(BuildingKind::School),
+        ToolMode::University => Some(BuildingKind::University),
+        ToolMode::Park => Some(BuildingKind::Park),
         _ => service_kind(tool),
     }
 }
@@ -355,6 +373,27 @@ mod tests {
             );
             let far = preview(tool, at(20, 20), &grid, RICH);
             assert!(far.verdict.unwrap_err().contains("road"), "{tool:?}");
+        }
+    }
+
+    #[test]
+    fn service_building_tools_show_price_and_radius() {
+        let grid = town();
+        for (tool, kind) in [
+            (ToolMode::School, BuildingKind::School),
+            (ToolMode::University, BuildingKind::University),
+            (ToolMode::Park, BuildingKind::Park),
+        ] {
+            assert_eq!(placed_building_kind(tool), Some(kind));
+            let beside = preview(tool, at(10, 11), &grid, RICH);
+            assert_eq!(beside.cost, Some(kind.build_cost()), "{tool:?}");
+            assert!(
+                beside.cost.is_some_and(|cost| cost > 0),
+                "{tool:?} has a price"
+            );
+            assert_eq!(beside.verdict, Ok(()), "{tool:?}");
+            assert!(beside.radius.is_some(), "{tool:?} shows its radius");
+            assert_eq!(beside.radius, kind.service_radius(), "{tool:?}");
         }
     }
 

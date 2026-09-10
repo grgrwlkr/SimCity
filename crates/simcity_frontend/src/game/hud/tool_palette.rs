@@ -92,6 +92,9 @@ const GROUPS: &[(&str, &[Entry])] = &[
             Entry::Tool(ToolMode::FireStation, "hud.tool.fire", "Fire"),
             Entry::Tool(ToolMode::PoliceStation, "hud.tool.police", "Police"),
             Entry::Tool(ToolMode::Hospital, "hud.tool.hospital", "Hospital"),
+            Entry::Tool(ToolMode::School, "hud.tool.school", "School"),
+            Entry::Tool(ToolMode::University, "hud.tool.university", "University"),
+            Entry::Tool(ToolMode::Park, "hud.tool.park", "Park"),
             Entry::Tool(ToolMode::TrafficLight, "hud.tool.signal", "Signal"),
         ],
     ),
@@ -330,7 +333,7 @@ pub fn update_tool_palette(ui: Res<UiState>, theme: Res<Theme>, mut buttons: Pal
 mod tests {
     use super::*;
 
-    const EVERY_TOOL: [ToolMode; 15] = [
+    const EVERY_TOOL: [ToolMode; 18] = [
         ToolMode::Road(RoadKind::TwoLane),
         ToolMode::Road(RoadKind::FourLane),
         ToolMode::Road(RoadKind::SixLane),
@@ -343,6 +346,9 @@ mod tests {
         ToolMode::PowerPlant,
         ToolMode::WaterPump,
         ToolMode::Landfill,
+        ToolMode::School,
+        ToolMode::University,
+        ToolMode::Park,
         ToolMode::TrafficLight,
         ToolMode::Erase,
         ToolMode::Inspect,

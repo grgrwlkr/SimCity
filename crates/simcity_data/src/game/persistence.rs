@@ -387,7 +387,10 @@ fn build_legacy_candidates(kind: BuildingKind) -> Vec<(u8, u8)> {
         | BuildingKind::Hospital
         | BuildingKind::PowerPlant
         | BuildingKind::WaterPump
-        | BuildingKind::Landfill => {
+        | BuildingKind::Landfill
+        | BuildingKind::School
+        | BuildingKind::University
+        | BuildingKind::Park => {
             vec![(3, 3)]
         }
         _ => {

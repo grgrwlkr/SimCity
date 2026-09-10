@@ -298,7 +298,10 @@ pub(super) fn cursor_paint_to_command(
         | ToolMode::Hospital
         | ToolMode::PowerPlant
         | ToolMode::WaterPump
-        | ToolMode::Landfill => {
+        | ToolMode::Landfill
+        | ToolMode::School
+        | ToolMode::University
+        | ToolMode::Park => {
             // Pre-validate the full footprint with the same rule the command
             // apply uses (free tiles + road access for the footprint as a
             // whole) so clicks that cannot succeed are dropped early.

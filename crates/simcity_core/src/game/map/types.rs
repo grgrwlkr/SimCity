@@ -150,6 +150,12 @@ pub enum BuildingKind {
     WaterPump,
     /// Collects garbage along the roads it fronts.
     Landfill,
+    /// Teaches the residents within its radius: raises education (B4).
+    School,
+    /// Teaches further and wider than a school: raises education (B4).
+    University,
+    /// Green space for the residents within its radius: raises health (B4).
+    Park,
 }
 
 impl BuildingKind {
@@ -164,6 +170,9 @@ impl BuildingKind {
             BuildingKind::PowerPlant => Color::srgb(0.85, 0.72, 0.15),
             BuildingKind::WaterPump => Color::srgb(0.15, 0.55, 0.85),
             BuildingKind::Landfill => Color::srgb(0.45, 0.36, 0.26),
+            BuildingKind::School => Color::srgb(0.80, 0.58, 0.30),
+            BuildingKind::University => Color::srgb(0.55, 0.36, 0.62),
+            BuildingKind::Park => Color::srgb(0.30, 0.62, 0.28),
         }
     }
 
@@ -177,7 +186,10 @@ impl BuildingKind {
             | BuildingKind::Hospital
             | BuildingKind::PowerPlant
             | BuildingKind::WaterPump
-            | BuildingKind::Landfill => ZoneKind::None,
+            | BuildingKind::Landfill
+            | BuildingKind::School
+            | BuildingKind::University
+            | BuildingKind::Park => ZoneKind::None,
         }
     }
 
@@ -195,6 +207,9 @@ impl BuildingKind {
             BuildingKind::FireStation => Some(20),
             BuildingKind::PoliceStation => Some(25),
             BuildingKind::Hospital => Some(30),
+            BuildingKind::School => Some(18),
+            BuildingKind::University => Some(30),
+            BuildingKind::Park => Some(8),
             _ => None,
         }
     }
@@ -219,6 +234,9 @@ impl BuildingKind {
             BuildingKind::PowerPlant => 1000,
             BuildingKind::WaterPump => 600,
             BuildingKind::Landfill => 400,
+            BuildingKind::School => 700,
+            BuildingKind::University => 2000,
+            BuildingKind::Park => 150,
         }
     }
 
@@ -232,7 +250,10 @@ impl BuildingKind {
             | BuildingKind::Hospital
             | BuildingKind::PowerPlant
             | BuildingKind::WaterPump
-            | BuildingKind::Landfill => 0,
+            | BuildingKind::Landfill
+            | BuildingKind::School
+            | BuildingKind::University
+            | BuildingKind::Park => 0,
         }
     }
 
@@ -246,7 +267,20 @@ impl BuildingKind {
             | BuildingKind::Hospital
             | BuildingKind::PowerPlant
             | BuildingKind::WaterPump
-            | BuildingKind::Landfill => 0,
+            | BuildingKind::Landfill
+            | BuildingKind::School
+            | BuildingKind::University
+            | BuildingKind::Park => 0,
+        }
+    }
+
+    /// Residents a civic building serves at full strength; `None` for every other building.
+    pub fn service_capacity(self) -> Option<u32> {
+        match self {
+            BuildingKind::School => Some(400),
+            BuildingKind::University => Some(1200),
+            BuildingKind::Park => Some(300),
+            _ => None,
         }
     }
 

@@ -83,7 +83,10 @@ pub(super) fn top_status_bar_ui(mut contexts: EguiContexts, mut p: TopBarParams)
                     | ToolMode::Hospital
                     | ToolMode::PowerPlant
                     | ToolMode::WaterPump
-                    | ToolMode::Landfill => {
+                    | ToolMode::Landfill
+                    | ToolMode::School
+                    | ToolMode::University
+                    | ToolMode::Park => {
                         format!("🏢 {:?}", p.ui_state.tool)
                     }
                     ToolMode::TrafficLight => "🚦 Traffic Light".to_string(),

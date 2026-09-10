@@ -461,6 +461,66 @@ fn zone_density_zone_command_paints_a_block_as_deep_as_buildings_grow() {
     }
 }
 
+/// B4: the new civic buildings each carry a radius, a capacity and a price.
+#[test]
+fn service_building_school_university_and_park_have_radius_capacity_and_price() {
+    for (kind, radius, capacity, cost) in [
+        (BuildingKind::School, 18, 400, 700),
+        (BuildingKind::University, 30, 1200, 2000),
+        (BuildingKind::Park, 8, 300, 150),
+    ] {
+        assert_eq!(kind.service_radius(), Some(radius), "{kind:?}");
+        assert_eq!(kind.service_capacity(), Some(capacity), "{kind:?}");
+        assert_eq!(kind.build_cost(), cost, "{kind:?}");
+        assert_eq!(kind.as_zone(), ZoneKind::None, "{kind:?}");
+    }
+    assert_eq!(BuildingKind::FireStation.service_capacity(), None);
+}
+
+/// A school goes down beside a road through the placement command and costs its price.
+#[test]
+fn service_building_a_school_is_placed_beside_a_road_and_paid_for() {
+    let mut app = build_command_apply_app(16, 16);
+    for x in 2..5 {
+        send_command(
+            &mut app,
+            GameCommand::SetRoad {
+                pos: TilePos { x, y: 1 },
+                road: road_cell(RoadKind::TwoLane),
+            },
+        );
+    }
+    app.update();
+    let money_before = app.world().resource::<City>().money;
+    send_command(
+        &mut app,
+        GameCommand::PlaceBuilding {
+            pos: TilePos { x: 2, y: 2 },
+            kind: BuildingKind::School,
+        },
+    );
+    app.update();
+
+    let grid = app.world().resource::<MapGrid>();
+    for dx in 0..3 {
+        for dy in 0..3 {
+            let cell = grid
+                .get(TilePos {
+                    x: 2 + dx,
+                    y: 2 + dy,
+                })
+                .expect("inside");
+            assert_eq!(cell.building, Some(BuildingKind::School));
+        }
+    }
+    assert_eq!(
+        money_before - app.world().resource::<City>().money,
+        700,
+        "a school costs its price"
+    );
+    assert_eq!(building_entity_count(&mut app), 1);
+}
+
 /// B5 pin (positive): a 3x3 footprint adjacent to a road must place. Pre-fix
 /// this was a guaranteed no-op: per-tile `can_zone_tile` required a road next
 /// to EVERY footprint tile, unsatisfiable for the road-free interior.
