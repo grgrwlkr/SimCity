@@ -138,9 +138,14 @@ fn sync_sim_speed(
 
 fn handle_state_hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
+    focus: Res<crate::game::ui_state::InputFocus>,
     state: Res<State<AppState>>,
     mut next: ResMut<NextState<AppState>>,
 ) {
+    if !focus.hotkeys_allowed() {
+        return;
+    }
+
     let next_state = &mut *next;
     // Global "back to menu"
     if keys.just_pressed(KeyCode::Escape) {

@@ -31,8 +31,8 @@ pub use simcity_core::game::{
 };
 
 #[derive(Resource, Debug, Copy, Clone)]
-struct AutoStartTestCity {
-    pending: bool,
+pub(crate) struct AutoStartTestCity {
+    pub(crate) pending: bool,
     /// InGame frames waited before firing LoadTestCity. The scenario system auto-applies on
     /// `OnEnter(InGame)` and writes `GenerateMap`, whose map regeneration clobbers the test city if we
     /// load it on the same frame. Letting it settle a couple frames makes our LoadTestCity the last
@@ -43,7 +43,10 @@ struct AutoStartTestCity {
 impl Default for AutoStartTestCity {
     fn default() -> Self {
         Self {
-            pending: true,
+            // Dev convenience only. A shipped build must open on the main menu and let the
+            // player choose a map or a scenario; auto-loading the test city is what kept the
+            // menu and the scenario catalogue from being the real entry point.
+            pending: cfg!(feature = "dev"),
             settle: 0,
         }
     }
@@ -232,6 +235,7 @@ impl Plugin for SimPlugin {
             .add_message::<trips::TripFinished>()
             .add_message::<sim_events::DayAdvanced>()
             .init_resource::<ui_state::UiState>()
+            .init_resource::<ui_state::InputFocus>()
             .init_resource::<AutoStartTestCity>()
             .add_plugins((
                 render_primitives::RenderPrimitivesPlugin,
@@ -365,6 +369,33 @@ mod ordering_tests {
             "With reversed order (Sim before GraphUpdate) the probe must see the stale \
              RoadGraph (version 0, not yet rebuilt), confirming the harness is sensitive \
              to set ordering"
+        );
+    }
+}
+
+#[cfg(test)]
+mod auto_start_gate {
+    /// The main menu and the scenario catalogue only become the real entry point if a shipped
+    /// build stops loading the test city behind the player's back. Auto-start is dev tooling,
+    /// so its default follows the `dev` feature and nothing else.
+    #[test]
+    fn auto_start_test_city_is_pending_only_under_dev() {
+        let auto = super::AutoStartTestCity::default();
+        assert_eq!(
+            auto.pending,
+            cfg!(feature = "dev"),
+            "auto-loading the test city must be dev-only: a release build opens on the menu"
+        );
+    }
+
+    /// Guards the shipped case explicitly, so a stray `dev` reaching the default feature set
+    /// of any crate in the graph fails here rather than silently restoring the old startup.
+    #[cfg(not(feature = "dev"))]
+    #[test]
+    fn release_build_does_not_auto_start_test_city() {
+        assert!(
+            !super::AutoStartTestCity::default().pending,
+            "without the dev feature the game must stay in MainMenu until the player chooses"
         );
     }
 }

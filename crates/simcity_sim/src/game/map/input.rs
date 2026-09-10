@@ -9,7 +9,7 @@ use crate::game::commands::{GameCommand, UndoRedoRequested};
 use crate::game::intersections::IntersectionIndex;
 use crate::game::roads::{RoadCell, RoadDir, RoadKind};
 use crate::game::traffic::TrafficConfig;
-use crate::game::ui_state::{OverlayMode, ToolMode, UiState};
+use crate::game::ui_state::{InputFocus, OverlayMode, ToolMode, UiState};
 use crate::game::zone_placement::can_zone_tile;
 
 use super::coords::{cursor_tile, tile_to_world};
@@ -31,7 +31,23 @@ pub(super) struct RoadBuildState {
     pub(super) start: Option<TilePos>,
 }
 
-pub(super) fn build_mode_hotkeys(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut<UiState>) {
+pub(super) fn build_mode_hotkeys(
+    keys: Res<ButtonInput<KeyCode>>,
+    focus: Res<InputFocus>,
+    mut ui: ResMut<UiState>,
+) {
+    if !focus.hotkeys_allowed() {
+        return;
+    }
+
+    // One-way applies to whatever road kind is selected, so it is a modifier rather than a
+    // tool: the downstream road builder has always honoured `one_way_mode`, but nothing in
+    // the UI could set it, which left one-way roads unreachable to the player.
+    if keys.just_pressed(KeyCode::KeyO) {
+        ui.one_way_mode = !ui.one_way_mode;
+        return;
+    }
+
     if keys.just_pressed(KeyCode::Digit1) {
         ui.tool = match ui.tool {
             ToolMode::Road(RoadKind::TwoLane) => ToolMode::Road(RoadKind::FourLane),
@@ -58,8 +74,13 @@ pub(super) fn build_mode_hotkeys(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut
 /// redo stack.
 pub(super) fn handle_undo_redo(
     keys: Res<ButtonInput<KeyCode>>,
+    focus: Res<InputFocus>,
     mut out: MessageWriter<UndoRedoRequested>,
 ) {
+    if !focus.hotkeys_allowed() {
+        return;
+    }
+
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
 
     if ctrl && keys.just_pressed(KeyCode::KeyZ) {

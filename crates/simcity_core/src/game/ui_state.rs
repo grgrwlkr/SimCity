@@ -29,6 +29,29 @@ impl Default for UiState {
     }
 }
 
+/// Whether a UI widget currently owns keyboard input.
+///
+/// Written once per frame by the UI layer at the head of `GameSet::Input`, read by every
+/// keyboard consumer. A resource rather than a run condition on purpose: a condition would
+/// have to reach into the UI toolkit, which no test can drive, and the writer changes when
+/// the player-facing UI moves off egui while the consumers stay untouched.
+///
+/// Without it, typing into any text field also drives the game: letters pan the camera,
+/// digits swap the active tool and space toggles pause. The pointer half was already
+/// guarded; this is the keyboard half.
+#[derive(Resource, Debug, Default, Clone, Copy, Eq, PartialEq)]
+pub struct InputFocus {
+    /// A widget is accepting text or otherwise consuming key presses this frame.
+    pub keyboard_captured: bool,
+}
+
+impl InputFocus {
+    /// True when a keyboard shortcut may act on the world this frame.
+    pub fn hotkeys_allowed(self) -> bool {
+        !self.keyboard_captured
+    }
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum ToolMode {
     Road(RoadKind),

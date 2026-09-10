@@ -17,6 +17,10 @@ use crate::game::{buildings, sim, ui_state};
 /// Frames spent letting the auto-start flow (MainMenu -> InGame -> GenerateMap ->
 /// settle -> LoadTestCity) complete on `Update` before any fixed tick is injected.
 pub const SETUP_FRAMES: usize = 8;
+
+/// Frames the scenario's one-shot `GenerateMap` (and its terrain/vehicle/growth cascade) gets
+/// to land before the test city is written over it. Mirrors the settle the dev auto-start used.
+const SETUP_SETTLE_FRAMES: usize = 3;
 /// 10 Hz fixed timestep — one game hour is 10 ticks, one game day is 240 ticks.
 pub const FIXED_DT: Duration = Duration::from_millis(100);
 
@@ -45,9 +49,29 @@ pub fn build_headless_game() -> App {
         .resource_mut::<ui_state::UiState>()
         .sim_speed = ui_state::SimSpeed::Paused;
 
-    // Let the auto-start flow run: MainMenu -> InGame -> scenario GenerateMap ->
-    // (settle) -> LoadTestCity. All command-driven on Update, no fixed ticks yet.
-    for _ in 0..SETUP_FRAMES {
+    // Drive the entry explicitly instead of leaning on the dev-only auto-start: a shipped
+    // build opens on the main menu, so a harness that waited for LoadTestCity to arrive by
+    // itself would sit on an empty map. Same sequence the auto-start used to perform —
+    // enter InGame, let the scenario's GenerateMap and its cascade settle, then load the
+    // city so it is the last writer, exactly as a manual "Load Test City" click would be.
+    // One frame first: `init_map_grid` is a `Startup` system, and Bevy applies the initial
+    // state transition BEFORE `Startup` on the very first update. Requesting InGame any
+    // earlier fires `OnEnter(InGame)` against a world that has no `MapSeed` yet.
+    app.update();
+
+    app.world_mut()
+        .resource_mut::<NextState<simcity_sim::game::state::AppState>>()
+        .set(simcity_sim::game::state::AppState::InGame);
+
+    for _ in 0..SETUP_SETTLE_FRAMES {
+        app.update();
+    }
+
+    app.world_mut()
+        .resource_mut::<bevy::ecs::message::Messages<simcity_sim::game::commands::GameCommand>>()
+        .write(simcity_sim::game::commands::GameCommand::LoadTestCity);
+
+    for _ in 0..(SETUP_FRAMES - SETUP_SETTLE_FRAMES - 1) {
         app.update();
     }
 

@@ -1244,3 +1244,93 @@ mod props_placement {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Ф0: keyboard hotkeys stand down while a UI widget owns the keyboard.
+//
+// Before `InputFocus` existed, only the POINTER was guarded: typing into any text field
+// also drove the game, so entering a map seed switched tools under the player's hands.
+// These pin the keyboard half at the consumer, which is what the player feels.
+// ---------------------------------------------------------------------------
+
+use crate::game::ui_state::{InputFocus, ToolMode, UiState};
+
+/// Drive one hotkey system over a world with the given focus and key held down.
+fn run_build_hotkeys(captured: bool, key: KeyCode) -> UiState {
+    let mut app = App::new();
+    app.init_resource::<UiState>();
+    app.insert_resource(InputFocus {
+        keyboard_captured: captured,
+    });
+
+    let mut keys = ButtonInput::<KeyCode>::default();
+    keys.press(key);
+    app.insert_resource(keys);
+
+    app.add_systems(Update, super::input::build_mode_hotkeys);
+    app.update();
+
+    app.world().resource::<UiState>().clone()
+}
+
+#[test]
+fn build_mode_hotkey_switches_tool_when_keyboard_is_free() {
+    let ui = run_build_hotkeys(false, KeyCode::Digit2);
+    assert_eq!(
+        ui.tool,
+        ToolMode::Residential,
+        "with no widget focused, a digit must still pick its tool"
+    );
+}
+
+#[test]
+fn build_mode_hotkey_is_ignored_while_keyboard_is_captured() {
+    let before = UiState::default();
+    let ui = run_build_hotkeys(true, KeyCode::Digit2);
+    assert_eq!(
+        ui.tool, before.tool,
+        "typing into a text field must not switch the active tool"
+    );
+}
+
+#[test]
+fn one_way_hotkey_toggles_the_mode() {
+    let ui = run_build_hotkeys(false, KeyCode::KeyO);
+    assert!(
+        ui.one_way_mode,
+        "one-way had full support downstream but no way to reach it from input"
+    );
+}
+
+#[test]
+fn one_way_hotkey_is_ignored_while_keyboard_is_captured() {
+    let ui = run_build_hotkeys(true, KeyCode::KeyO);
+    assert!(
+        !ui.one_way_mode,
+        "typing the letter O into a field must not flip road direction"
+    );
+}
+
+#[test]
+fn undo_hotkey_is_ignored_while_keyboard_is_captured() {
+    let mut app = App::new();
+    app.add_message::<UndoRedoRequested>();
+    app.insert_resource(InputFocus {
+        keyboard_captured: true,
+    });
+
+    let mut keys = ButtonInput::<KeyCode>::default();
+    keys.press(KeyCode::ControlLeft);
+    keys.press(KeyCode::KeyZ);
+    app.insert_resource(keys);
+
+    app.add_systems(Update, super::input::handle_undo_redo);
+    app.update();
+
+    let messages = app.world().resource::<Messages<UndoRedoRequested>>();
+    assert_eq!(
+        messages.len(),
+        0,
+        "Ctrl+Z inside a text field belongs to the field, not to the map history"
+    );
+}

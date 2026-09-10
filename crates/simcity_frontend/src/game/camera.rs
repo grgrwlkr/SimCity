@@ -27,9 +27,11 @@ impl Plugin for CameraPlugin {
         app.add_systems(Startup, spawn_camera).add_systems(
             Update,
             (
-                camera_keyboard_pan,
-                camera_keyboard_rotate,
-                camera_keyboard_zoom_steps,
+                // Only the keyboard-driven half is gated: a text field owns the keys, never
+                // the wheel or the orbit drag.
+                camera_keyboard_pan.run_if(keyboard_is_free),
+                camera_keyboard_rotate.run_if(keyboard_is_free),
+                camera_keyboard_zoom_steps.run_if(keyboard_is_free),
                 camera_mouse_rotate,
                 camera_mouse_wheel_zoom,
                 camera_smooth_zoom,
@@ -41,6 +43,11 @@ impl Plugin for CameraPlugin {
                 .run_if(in_game_or_paused),
         );
     }
+}
+
+/// Run condition: the keyboard is not owned by a UI widget this frame.
+fn keyboard_is_free(focus: Res<simcity_sim::game::ui_state::InputFocus>) -> bool {
+    focus.hotkeys_allowed()
 }
 
 fn boom_offset(yaw: f32, pitch: f32, distance: f32) -> Vec3 {

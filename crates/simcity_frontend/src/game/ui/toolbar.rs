@@ -29,6 +29,16 @@ pub(super) fn bottom_toolbar_ui(mut contexts: EguiContexts, mut p: TopBarParams)
                             ui.close();
                         }
                     }
+
+                    ui.separator();
+
+                    // One-way is a modifier on whichever road kind is selected, not a kind of
+                    // its own. The road builder has always honoured it; until now nothing in
+                    // the UI could set it, so one-way roads were unreachable to the player.
+                    ui.checkbox(&mut p.ui_state.one_way_mode, "One-way (O)")
+                        .on_hover_text(
+                            "Build the next road segment one-way, in the direction you drag it.",
+                        );
                 });
 
                 // Zones category

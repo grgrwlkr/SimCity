@@ -55,7 +55,12 @@ bevy_brp_extras = { version = "0.22.5", optional = true }
 # observability stack (remote HTTP server + custom methods in `main.rs`, and the per-frame
 # world-scan snapshot systems in `simcity_debug`). Off in release so none of that ships.
 # `cargo run --features dev`
-dev = ["bevy/dynamic_linking", "simcity_debug/dev", "dep:bevy_brp_extras"]
+dev = [
+    "bevy/dynamic_linking",
+    "simcity_debug/dev",
+    "simcity_sim/dev",
+    "dep:bevy_brp_extras",
+]
 
 # Official Bevy profiling backends (built-in tracing spans):
 # - Tracy (recommended): `cargo run --release --features profile_tracy`

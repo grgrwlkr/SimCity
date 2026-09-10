@@ -84,6 +84,11 @@ impl Plugin for UiPlugin {
             })
             .init_resource::<UiMetrics>()
             .init_resource::<UiHistory>()
+            // `First`, not `GameSet::Input`: it must precede every keyboard consumer across
+            // three crates, and putting it there would need cross-crate ordering for no gain.
+            // Reading the previous frame's focus is the wanted semantics anyway — the widget
+            // held focus at the moment the key went down.
+            .add_systems(First, sync_input_focus)
             .add_systems(OnEnter(AppState::MainMenu), announce_main_menu)
             .add_systems(OnEnter(AppState::InGame), announce_ingame)
             .add_systems(OnEnter(AppState::InGame), reset_debug_telemetry)
@@ -163,6 +168,26 @@ fn update_ui_history(
         let excess = hist.samples.len() - hist.max_len;
         hist.samples.drain(0..excess);
     }
+}
+
+/// Publish whether a UI widget owns the keyboard, so gameplay hotkeys can stand down.
+///
+/// The pointer half of this guard has always existed inside `cursor_paint_to_command`; the
+/// keyboard half did not, which is why typing a seed also switched tools, panned the camera
+/// and toggled pause. Consumers read `InputFocus` rather than egui so they stay testable and
+/// survive the player-facing UI moving off egui.
+fn sync_input_focus(
+    mut contexts: EguiContexts,
+    mut focus: ResMut<crate::game::ui_state::InputFocus>,
+) {
+    let captured = contexts
+        .ctx_mut()
+        .map(|ctx| ctx.egui_wants_keyboard_input())
+        .unwrap_or(false);
+
+    focus.set_if_neq(crate::game::ui_state::InputFocus {
+        keyboard_captured: captured,
+    });
 }
 
 fn reset_debug_telemetry(mut telemetry: ResMut<DebugTelemetry>, mut ui: ResMut<DebugDumpUiState>) {
