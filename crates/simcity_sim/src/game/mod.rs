@@ -3,6 +3,7 @@ use bevy::prelude::*;
 pub mod atlas;
 pub mod buildings;
 pub mod citizens;
+pub mod city_fields;
 pub mod command_history;
 pub mod day_night;
 pub mod demand;
@@ -164,6 +165,8 @@ pub enum PostSimStep {
     Coverage,
     /// `UtilityNetwork` (read by growth, occupancy and the city fields).
     Utilities,
+    /// `CityFields` (read by land value, growth, upgrades, decay and emergencies).
+    Fields,
     /// `LandValueIndex` (read by RCI demand).
     LandValue,
     /// `EmploymentStats` (read by RCI demand and economy).
@@ -217,6 +220,7 @@ pub(crate) fn apply_fixed_update_set_order(app: &mut App) {
             PostSimStep::Pollution,
             PostSimStep::Coverage,
             PostSimStep::Utilities,
+            PostSimStep::Fields,
             PostSimStep::LandValue,
             PostSimStep::EmploymentStats,
             PostSimStep::Demand,
@@ -287,6 +291,7 @@ impl Plugin for SimPlugin {
                 pedestrians::PedestriansPlugin,
                 intersections::IntersectionsPlugin,
                 land_value::LandValuePlugin,
+                city_fields::CityFieldsPlugin,
                 notifications::NotificationsPlugin,
                 pollution::PollutionPlugin,
                 public_transport::PublicTransportPlugin,

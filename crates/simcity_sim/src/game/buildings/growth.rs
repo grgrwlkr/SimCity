@@ -3,6 +3,7 @@ use bevy::prelude::*;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 use std::collections::HashSet;
 
+use crate::game::city_fields::{CityField, CityFields, attractiveness_to_grow, workplace_class};
 use crate::game::demand::RciDemand;
 use crate::game::economy::WealthClass;
 use crate::game::land_value::LandValueIndex;
@@ -25,6 +26,7 @@ pub struct GrowBuildingsParams<'w, 's> {
     grid: ResMut<'w, MapGrid>,
     demand: Res<'w, RciDemand>,
     land_value: Option<Res<'w, LandValueIndex>>,
+    fields: Option<Res<'w, crate::game::city_fields::CityFields>>,
     network: Res<'w, UtilityNetwork>,
     city: ResMut<'w, City>,
     rng: ResMut<'w, BuildingGrowthRng>,
@@ -117,6 +119,7 @@ pub fn grow_buildings(mut p: GrowBuildingsParams) {
             &p.grid,
             &occupied,
             p.land_value.as_deref(),
+            p.fields.as_deref(),
             &p.q_buildings,
             &p.network,
         ) else {
@@ -136,6 +139,32 @@ pub fn grow_buildings(mut p: GrowBuildingsParams) {
             }
         }
 
+        // The class comes from the land; a workplace takes the high class only where the people
+        // around are educated for it.
+        let land_class = p
+            .land_value
+            .as_deref()
+            .zip(p.grid.idx(footprint.anchor))
+            .filter(|(index, _)| index.values.len() == p.grid.len())
+            .map(|(index, idx)| WealthClass::from_land_value(index.get(idx)))
+            .unwrap_or_default();
+        let class = if matches!(kind, BuildingKind::Commercial | BuildingKind::Industrial) {
+            workplace_class(
+                land_class,
+                p.fields.as_deref().and_then(|fields| {
+                    fields.footprint_mean(
+                        CityField::Education,
+                        &p.grid,
+                        footprint.anchor,
+                        footprint.width,
+                        footprint.length,
+                    )
+                }),
+            )
+        } else {
+            land_class
+        };
+
         // Spawn render entity with footprint
         spawn_building_entity(
             &mut p.commands,
@@ -146,16 +175,7 @@ pub fn grow_buildings(mut p: GrowBuildingsParams) {
             kind,
             &p.city,
             false,
-            BuildingProfile {
-                density,
-                class: p
-                    .land_value
-                    .as_deref()
-                    .zip(p.grid.idx(footprint.anchor))
-                    .filter(|(index, _)| index.values.len() == p.grid.len())
-                    .map(|(index, idx)| WealthClass::from_land_value(index.get(idx)))
-                    .unwrap_or_default(),
-            },
+            BuildingProfile { density, class },
         );
 
         // Mark all footprint tiles as occupied
@@ -207,6 +227,7 @@ fn find_best_footprint(
     grid: &MapGrid,
     occupied: &HashSet<TilePos>,
     land_value: Option<&LandValueIndex>,
+    fields: Option<&CityFields>,
     existing_buildings: &Query<&Building>,
     network: &UtilityNetwork,
 ) -> Option<Footprint> {
@@ -244,6 +265,7 @@ fn find_best_footprint(
             grid,
             occupied,
             land_value,
+            fields,
             existing_buildings,
             network,
         ) {
@@ -271,6 +293,7 @@ fn find_best_footprint(
                 grid,
                 occupied,
                 land_value,
+                fields,
                 existing_buildings,
                 network,
             ) {
@@ -295,6 +318,7 @@ fn try_footprint_at(
     grid: &MapGrid,
     occupied: &HashSet<TilePos>,
     land_value: Option<&LandValueIndex>,
+    fields: Option<&CityFields>,
     existing_buildings: &Query<&Building>,
     network: &UtilityNetwork,
 ) -> Option<Footprint> {
@@ -452,8 +476,18 @@ fn try_footprint_at(
         }
     }
 
-    // Check land value requirement (use minimum value from all tiles in footprint)
-    if let Some(land_val) = land_value {
+    // Once the city fields are measured a zone grows where it is attractive enough on every tile;
+    // before that, bare land value decides (minimum over the footprint).
+    if let Some(fields) = fields.filter(|fields| fields.covers(grid.len())) {
+        if let Some(floor) = attractiveness_to_grow(kind)
+            && tiles
+                .iter()
+                .filter_map(|tile| grid.idx(*tile))
+                .any(|idx| fields.get(CityField::Attractiveness, idx) < floor)
+        {
+            return None;
+        }
+    } else if let Some(land_val) = land_value {
         let min_value = match kind {
             BuildingKind::Residential => 0.3,
             BuildingKind::Commercial => 0.4,

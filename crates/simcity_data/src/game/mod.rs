@@ -67,8 +67,12 @@ fn handle_load_test_city(
     mut graph_version: ResMut<transport::GraphVersion>,
     mut map_edit_version: ResMut<map::MapEditVersion>,
     mut history: ResMut<command_history::CommandHistory>,
-    mut pollution_idx: Option<ResMut<pollution::PollutionIndex>>,
-    mut land_value_idx: Option<ResMut<land_value::LandValueIndex>>,
+    // Derived environment fields, reset with the map: pollution, land value, city fields.
+    mut derived: (
+        Option<ResMut<pollution::PollutionIndex>>,
+        Option<ResMut<land_value::LandValueIndex>>,
+        Option<ResMut<simcity_sim::game::city_fields::CityFields>>,
+    ),
     mut bus_reset: BusResetParams,
     mut day_out: bevy::ecs::message::MessageWriter<sim_events::DayAdvanced>,
     mut ledger: Option<ResMut<economy::BudgetLedger>>,
@@ -98,11 +102,14 @@ fn handle_load_test_city(
         // Same rule for derived environment fields: stale pollution/land value
         // from the previous city would feed growth and overlays for a whole
         // recompute pass (~51 s) after load.
-        if let Some(p) = pollution_idx.as_mut() {
+        if let Some(p) = derived.0.as_mut() {
             p.reset_values();
         }
-        if let Some(lv) = land_value_idx.as_mut() {
+        if let Some(lv) = derived.1.as_mut() {
             lv.reset_values();
+        }
+        if let Some(fields) = derived.2.as_mut() {
+            fields.reset_values();
         }
         // Bus routes reference tile positions from the previous map; reset and re-seed the demo
         // route for the freshly generated test city (player-placed routes are Phase B). Despawn

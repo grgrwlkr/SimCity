@@ -19,6 +19,7 @@ pub fn upgrade_buildings(
     mut q_buildings: Query<(&mut Building, &BuildingProfile)>,
     grid: Res<MapGrid>,
     network: Res<UtilityNetwork>,
+    fields: Option<Res<crate::game::city_fields::CityFields>>,
 ) {
     let dt = time.delta_secs();
 
@@ -31,7 +32,15 @@ pub fn upgrade_buildings(
 
     for (mut building, profile) in q_buildings.iter_mut() {
         // Zoned buildings only, below the top level, with power, water and enough demand.
-        if super::blockers::upgrade_blocker(&building, profile, &grid, &network, &demand).is_some()
+        if super::blockers::upgrade_blocker(
+            &building,
+            profile,
+            &grid,
+            &network,
+            &demand,
+            fields.as_deref(),
+        )
+        .is_some()
         {
             continue;
         }

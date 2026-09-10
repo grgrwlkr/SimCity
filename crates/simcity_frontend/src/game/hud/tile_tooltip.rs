@@ -140,14 +140,19 @@ pub fn update_tile_tooltip(
     supply: (
         Option<Res<simcity_sim::game::utilities::UtilityNetwork>>,
         Option<Res<simcity_sim::game::demand::RciDemand>>,
+        Option<Res<simcity_sim::game::city_fields::CityFields>>,
     ),
 ) {
     let tile = hovered.tile.filter(|_| !pointer.captured);
     let preview = tile.and_then(|tile| preview_tool_at(ui.tool, tile, &grid, city.money));
     let diagnosis = match (tile, supply.0.as_deref(), supply.1.as_deref()) {
-        (Some(tile), Some(network), Some(demand)) => {
-            simcity_sim::game::buildings::tile_diagnosis(&grid, network, demand, tile)
-        }
+        (Some(tile), Some(network), Some(demand)) => simcity_sim::game::buildings::tile_diagnosis(
+            &grid,
+            network,
+            demand,
+            tile,
+            supply.2.as_deref(),
+        ),
         _ => None,
     };
     let Some((headline, detail, ok)) = tooltip_content(preview.as_ref(), diagnosis.as_ref()) else {

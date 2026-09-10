@@ -642,6 +642,7 @@ struct LoadParams<'w, 's> {
     history: ResMut<'w, CommandHistory>,
     bus_routes: Option<ResMut<'w, crate::game::public_transport::BusRouteManager>>,
     pollution_idx: Option<ResMut<'w, crate::game::pollution::PollutionIndex>>,
+    city_fields: Option<ResMut<'w, simcity_sim::game::city_fields::CityFields>>,
     land_value_idx: Option<ResMut<'w, crate::game::land_value::LandValueIndex>>,
     q_buildings: Query<'w, 's, Entity, With<Building>>,
     q_vehicles: Query<'w, 's, Entity, With<Vehicle>>,
@@ -721,6 +722,9 @@ fn handle_load_commands(mut reader: MessageReader<GameCommand>, mut p: LoadParam
         }
         if let Some(lv) = p.land_value_idx.as_mut() {
             lv.reset_values();
+        }
+        if let Some(fields) = p.city_fields.as_mut() {
+            fields.reset_values();
         }
 
         // Apply resources.

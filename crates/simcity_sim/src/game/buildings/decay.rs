@@ -262,6 +262,7 @@ pub fn building_decay_low_happiness(
     mut dirty: ResMut<DirtyTiles>,
     city: Res<City>,
     economy_cfg: Res<EconomyConfig>,
+    fields: Option<Res<crate::game::city_fields::CityFields>>,
     mut q: Query<(
         Entity,
         &Building,
@@ -298,8 +299,21 @@ pub fn building_decay_low_happiness(
             b.occupancy_jobs as f32 / b.capacity_jobs as f32
         };
 
-        // Happiness is high when occupancy is close to target
-        let estimated_happiness = occupancy_ratio.clamp(0.0, 1.0);
+        // Happiness is high when occupancy is close to target; crime drives people out of homes.
+        let crime = fields
+            .as_deref()
+            .filter(|_| b.kind == crate::game::map::BuildingKind::Residential)
+            .and_then(|fields| {
+                fields.footprint_mean(
+                    crate::game::city_fields::CityField::Crime,
+                    &grid,
+                    b.anchor_pos,
+                    b.footprint_width,
+                    b.footprint_length,
+                )
+            });
+        let estimated_happiness = occupancy_ratio.clamp(0.0, 1.0)
+            * crime.map_or(1.0, crate::game::city_fields::crime_contentment);
 
         if estimated_happiness >= LOW_HAPPINESS_THRESHOLD {
             // Happiness recovered - remove decay component

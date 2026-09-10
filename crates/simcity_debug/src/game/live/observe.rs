@@ -289,7 +289,13 @@ fn utilities_json(world: &mut World) -> Value {
     ) {
         (Some(tile), Some(grid), Some(demand)) => json!({
             "tile": [tile.x, tile.y],
-            "blockers": growth_blockers(grid, &network, demand, tile),
+            "blockers": growth_blockers(
+                grid,
+                &network,
+                demand,
+                tile,
+                world.get_resource::<simcity_sim::game::city_fields::CityFields>(),
+            ),
         }),
         _ => Value::Null,
     };

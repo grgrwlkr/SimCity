@@ -7,6 +7,7 @@ use bevy::prelude::*;
 use rand::prelude::*;
 
 use crate::game::buildings::Building;
+use crate::game::city_fields::{CityField, CityFields};
 use crate::game::intersections::IntersectionIndex;
 use crate::game::map::{BuildingKind, MapGrid, TilePos};
 use crate::game::notifications::{NotificationKind, Notifications};
@@ -27,6 +28,32 @@ use super::components::{
     Emergency, EmergencyEntityIndex, EmergencyKind, EmergencyManager, EmergencyMarker,
 };
 
+/// Where an emergency of `kind` breaks out among zoned buildings, each with its fire hazard:
+/// fires are drawn to hazardous buildings, other emergencies strike anywhere.
+pub(crate) fn pick_emergency_site(
+    sites: &[(TilePos, f32)],
+    kind: EmergencyKind,
+    rng: &mut impl Rng,
+) -> Option<TilePos> {
+    if !matches!(kind, EmergencyKind::Fire) {
+        return sites.choose(rng).map(|(pos, _)| *pos);
+    }
+    // A floor under the weight keeps a safe building from being immune.
+    let weight = |hazard: f32| hazard.max(0.0) + 0.05;
+    let total: f32 = sites.iter().map(|(_, hazard)| weight(*hazard)).sum();
+    if sites.is_empty() {
+        return None;
+    }
+    let mut pick = rng.random_range(0.0..total);
+    for (pos, hazard) in sites {
+        if pick < weight(*hazard) {
+            return Some(*pos);
+        }
+        pick -= weight(*hazard);
+    }
+    sites.last().map(|(pos, _)| *pos)
+}
+
 /// GDD: Spawn emergencies every 6 game hours
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_emergencies(
@@ -38,6 +65,8 @@ pub(crate) fn spawn_emergencies(
     q_emergencies: Query<&Emergency>,
     q_buildings: Query<&Building>,
     mut sim_rng: ResMut<crate::game::sim::SimRng>,
+    grid: Res<MapGrid>,
+    fields: Option<Res<CityFields>>,
 ) {
     // Count game hours
     let hours_passed = hour_events.read().count() as u32;
@@ -67,7 +96,7 @@ pub(crate) fn spawn_emergencies(
         return;
     }
 
-    let buildings: Vec<TilePos> = q_buildings
+    let sites: Vec<(TilePos, f32)> = q_buildings
         .iter()
         .filter(|b| {
             matches!(
@@ -75,18 +104,34 @@ pub(crate) fn spawn_emergencies(
                 BuildingKind::Residential | BuildingKind::Commercial | BuildingKind::Industrial
             )
         })
-        .map(|b| b.anchor_pos)
+        .map(|b| {
+            let hazard = fields
+                .as_deref()
+                .and_then(|fields| {
+                    fields.footprint_mean(
+                        CityField::FireHazard,
+                        &grid,
+                        b.anchor_pos,
+                        b.footprint_width,
+                        b.footprint_length,
+                    )
+                })
+                .unwrap_or(CityField::FireHazard.neutral());
+            (b.anchor_pos, hazard)
+        })
         .collect();
 
-    if buildings.is_empty() {
+    if sites.is_empty() {
         return;
     }
 
-    let pos = *buildings.choose(&mut sim_rng.rng).unwrap();
     let kind = match sim_rng.rng.random_range(0..3) {
         0 => EmergencyKind::Fire,
         1 => EmergencyKind::Crime,
         _ => EmergencyKind::Medical,
+    };
+    let Some(pos) = pick_emergency_site(&sites, kind, &mut sim_rng.rng) else {
+        return;
     };
     let severity = sim_rng.rng.random_range(0.3..1.0);
 
@@ -844,5 +889,36 @@ pub(crate) fn cleanup_emergency_markers(
 ) {
     for e in &q {
         commands.entity(e).despawn();
+    }
+}
+
+#[cfg(test)]
+mod city_field_tests {
+    use super::*;
+
+    #[test]
+    fn city_fields_fire_hazard_sets_where_fires_break_out() {
+        let risky = TilePos { x: 1, y: 1 };
+        let safe = TilePos { x: 9, y: 9 };
+        let sites = [(risky, 0.9), (safe, 0.05)];
+        let mut rng = StdRng::seed_from_u64(7);
+        let fires = (0..1000)
+            .filter(|_| pick_emergency_site(&sites, EmergencyKind::Fire, &mut rng) == Some(risky))
+            .count();
+        assert!(
+            fires > 800,
+            "{fires} of 1000 fires at the hazardous building"
+        );
+        let crimes = (0..1000)
+            .filter(|_| pick_emergency_site(&sites, EmergencyKind::Crime, &mut rng) == Some(risky))
+            .count();
+        assert!(
+            (350..650).contains(&crimes),
+            "fire hazard does not draw crime: {crimes} of 1000"
+        );
+        assert_eq!(
+            pick_emergency_site(&[], EmergencyKind::Fire, &mut rng),
+            None
+        );
     }
 }

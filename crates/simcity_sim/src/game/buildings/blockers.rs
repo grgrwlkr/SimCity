@@ -3,6 +3,9 @@
 use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
 
+use crate::game::city_fields::{
+    CityField, CityFields, FIRE_HAZARD_LIMIT, HEALTH_FOR_LEVEL_THREE, attractiveness_to_grow,
+};
 use crate::game::demand::RciDemand;
 use crate::game::map::{BuildingKind, MapGrid, TilePos};
 use crate::game::notifications::{NotificationKind, Notifications};
@@ -21,6 +24,9 @@ pub enum GrowthBlocker {
     NoWater,
     NoDemand,
     TopLevel,
+    FireHazard,
+    PoorHealth,
+    Unattractive,
 }
 
 impl GrowthBlocker {
@@ -33,6 +39,9 @@ impl GrowthBlocker {
             GrowthBlocker::NoWater => "No water",
             GrowthBlocker::NoDemand => "No demand",
             GrowthBlocker::TopLevel => "Top level",
+            GrowthBlocker::FireHazard => "High fire hazard",
+            GrowthBlocker::PoorHealth => "Poor health",
+            GrowthBlocker::Unattractive => "Unattractive location",
         }
     }
 }
@@ -69,6 +78,7 @@ pub fn growth_blockers(
     network: &UtilityNetwork,
     demand: &RciDemand,
     tile: TilePos,
+    fields: Option<&CityFields>,
 ) -> Vec<GrowthBlocker> {
     let Some(kind) = grid
         .get(tile)
@@ -84,6 +94,14 @@ pub fn growth_blockers(
     if !block_has(grid, network, tile, UtilityKind::Power) {
         blockers.push(GrowthBlocker::NoPower);
     }
+    if let (Some(floor), Some(fields), Some(idx)) = (
+        attractiveness_to_grow(kind),
+        fields.filter(|fields| fields.covers(grid.len())),
+        grid.idx(tile),
+    ) && fields.get(CityField::Attractiveness, idx) < floor
+    {
+        blockers.push(GrowthBlocker::Unattractive);
+    }
     if zone_demand(demand, kind) <= 0.0 {
         blockers.push(GrowthBlocker::NoDemand);
     }
@@ -97,6 +115,7 @@ pub fn upgrade_blocker(
     grid: &MapGrid,
     network: &UtilityNetwork,
     demand: &RciDemand,
+    fields: Option<&CityFields>,
 ) -> Option<GrowthBlocker> {
     if !matches!(
         building.kind,
@@ -122,6 +141,26 @@ pub fn upgrade_blocker(
     if !supplied(UtilityKind::Water) {
         return Some(GrowthBlocker::NoWater);
     }
+    let mean = |field| {
+        fields.and_then(|fields| {
+            fields.footprint_mean(
+                field,
+                grid,
+                building.anchor_pos,
+                building.footprint_width,
+                building.footprint_length,
+            )
+        })
+    };
+    if mean(CityField::FireHazard).is_some_and(|hazard| hazard >= FIRE_HAZARD_LIMIT) {
+        return Some(GrowthBlocker::FireHazard);
+    }
+    if building.kind == BuildingKind::Residential
+        && building.level >= 2
+        && mean(CityField::Health).is_some_and(|health| health < HEALTH_FOR_LEVEL_THREE)
+    {
+        return Some(GrowthBlocker::PoorHealth);
+    }
     if zone_demand(demand, building.kind) <= 0.3 {
         return Some(GrowthBlocker::NoDemand);
     }
@@ -138,6 +177,7 @@ pub fn tile_diagnosis(
     network: &UtilityNetwork,
     demand: &RciDemand,
     tile: TilePos,
+    fields: Option<&CityFields>,
 ) -> Option<(String, String)> {
     let cell = grid.get(tile)?;
     let zone = match cell.zone {
@@ -146,17 +186,30 @@ pub fn tile_diagnosis(
         crate::game::map::ZoneKind::Industrial => "Industrial zone",
         crate::game::map::ZoneKind::None => return None,
     };
+    let field = |field| {
+        fields
+            .filter(|fields| fields.covers(grid.len()))
+            .zip(grid.idx(tile))
+            .map(|(fields, idx)| fields.get(field, idx))
+    };
     let reason = if cell.building.is_some() {
-        // A standing building: power keeps it occupied, water lets it rise.
+        // A standing building: power keeps it occupied, water lets it rise, fire hazard and poor
+        // health hold it back.
         if !block_has(grid, network, tile, UtilityKind::Power) {
             "No power: occupants are leaving".to_string()
         } else if !block_has(grid, network, tile, UtilityKind::Water) {
             "No water: cannot rise above level 1".to_string()
+        } else if field(CityField::FireHazard).is_some_and(|hazard| hazard >= FIRE_HAZARD_LIMIT) {
+            "High fire hazard: cannot rise".to_string()
+        } else if cell.building == Some(BuildingKind::Residential)
+            && field(CityField::Health).is_some_and(|health| health < HEALTH_FOR_LEVEL_THREE)
+        {
+            "Poor health: cannot reach level 3".to_string()
         } else {
             return None;
         }
     } else {
-        let blockers = growth_blockers(grid, network, demand, tile);
+        let blockers = growth_blockers(grid, network, demand, tile, fields);
         if blockers.is_empty() {
             return None;
         }
@@ -228,6 +281,8 @@ mod tests {
     use crate::game::buildings::{
         BuildingGrowthRng, BuildingPhase, grow_buildings, update_occupancy,
     };
+    use crate::game::city_fields::CityField;
+    use crate::game::economy::WealthClass;
     use crate::game::map::{DirtyTiles, MapConfig, ZoneDensity, ZoneKind};
     use crate::game::roads::{LaneType, RoadCell, RoadDir, RoadFlow, RoadKind};
     use crate::game::sim::City;
@@ -327,17 +382,17 @@ mod tests {
         let mut grid = block();
         let zoned = TilePos { x: 8, y: 4 };
         assert_eq!(
-            growth_blockers(&grid, &network(&grid), &demand(1.0), zoned),
+            growth_blockers(&grid, &network(&grid), &demand(1.0), zoned, None),
             vec![GrowthBlocker::NoPower]
         );
         assert_eq!(
-            growth_blockers(&grid, &network(&grid), &demand(0.0), zoned),
+            growth_blockers(&grid, &network(&grid), &demand(0.0), zoned, None),
             vec![GrowthBlocker::NoPower, GrowthBlocker::NoDemand]
         );
 
         station(&mut grid, BuildingKind::PowerPlant, 16, 3);
         assert_eq!(
-            growth_blockers(&grid, &network(&grid), &demand(1.0), zoned),
+            growth_blockers(&grid, &network(&grid), &demand(1.0), zoned, None),
             Vec::<GrowthBlocker>::new()
         );
 
@@ -347,7 +402,8 @@ mod tests {
                 &grid,
                 &network(&grid),
                 &demand(1.0),
-                TilePos { x: 5, y: 10 }
+                TilePos { x: 5, y: 10 },
+                None
             ),
             vec![GrowthBlocker::NoRoad]
         );
@@ -356,7 +412,8 @@ mod tests {
                 &grid,
                 &network(&grid),
                 &demand(1.0),
-                TilePos { x: 20, y: 10 }
+                TilePos { x: 20, y: 10 },
+                None
             ),
             vec![GrowthBlocker::NotZoned]
         );
@@ -443,14 +500,14 @@ mod tests {
         let mut grid = block();
         let zoned = TilePos { x: 8, y: 4 };
         assert_eq!(
-            tile_diagnosis(&grid, &network(&grid), &demand(1.0), zoned),
+            tile_diagnosis(&grid, &network(&grid), &demand(1.0), zoned, None),
             Some((
                 "Residential zone".to_string(),
                 "Won't grow: No power".to_string()
             ))
         );
         assert_eq!(
-            tile_diagnosis(&grid, &network(&grid), &demand(0.0), zoned),
+            tile_diagnosis(&grid, &network(&grid), &demand(0.0), zoned, None),
             Some((
                 "Residential zone".to_string(),
                 "Won't grow: No power, No demand".to_string()
@@ -461,7 +518,8 @@ mod tests {
                 &grid,
                 &network(&grid),
                 &demand(1.0),
-                TilePos { x: 20, y: 10 }
+                TilePos { x: 20, y: 10 },
+                None
             ),
             None,
             "an unzoned tile has nothing to explain"
@@ -472,7 +530,7 @@ mod tests {
         cell.building = Some(BuildingKind::Residential);
         grid.set(standing, cell);
         assert_eq!(
-            tile_diagnosis(&grid, &network(&grid), &demand(1.0), standing),
+            tile_diagnosis(&grid, &network(&grid), &demand(1.0), standing, None),
             Some((
                 "Residential zone".to_string(),
                 "No power: occupants are leaving".to_string()
@@ -481,11 +539,11 @@ mod tests {
 
         station(&mut grid, BuildingKind::PowerPlant, 16, 3);
         assert_eq!(
-            tile_diagnosis(&grid, &network(&grid), &demand(1.0), zoned),
+            tile_diagnosis(&grid, &network(&grid), &demand(1.0), zoned, None),
             None
         );
         assert_eq!(
-            tile_diagnosis(&grid, &network(&grid), &demand(1.0), standing),
+            tile_diagnosis(&grid, &network(&grid), &demand(1.0), standing, None),
             Some((
                 "Residential zone".to_string(),
                 "No water: cannot rise above level 1".to_string()
@@ -691,7 +749,8 @@ mod tests {
                 &BuildingProfile::default(),
                 &grid,
                 &dark,
-                &demand(0.5)
+                &demand(0.5),
+                None
             ),
             Some(GrowthBlocker::NoPower)
         );
@@ -703,7 +762,8 @@ mod tests {
                 &BuildingProfile::default(),
                 &grid,
                 &network(&grid),
-                &demand(0.5)
+                &demand(0.5),
+                None
             ),
             Some(GrowthBlocker::NoWater)
         );
@@ -716,7 +776,8 @@ mod tests {
                 &BuildingProfile::default(),
                 &grid,
                 &supplied,
-                &demand(0.5)
+                &demand(0.5),
+                None
             ),
             None
         );
@@ -726,7 +787,8 @@ mod tests {
                 &BuildingProfile::default(),
                 &grid,
                 &supplied,
-                &demand(0.1)
+                &demand(0.1),
+                None
             ),
             Some(GrowthBlocker::NoDemand)
         );
@@ -736,9 +798,198 @@ mod tests {
                 &BuildingProfile::default(),
                 &grid,
                 &supplied,
-                &demand(0.5)
+                &demand(0.5),
+                None
             ),
             Some(GrowthBlocker::TopLevel)
         );
+    }
+
+    fn fields_over(grid: &MapGrid, field: CityField, value: f32) -> CityFields {
+        let mut fields = CityFields::default();
+        fields.set_for_test(field, vec![value; grid.len()]);
+        fields
+    }
+
+    fn supplied_block() -> MapGrid {
+        let mut grid = block();
+        station(&mut grid, BuildingKind::PowerPlant, 16, 3);
+        station(&mut grid, BuildingKind::WaterPump, 20, 3);
+        grid
+    }
+
+    #[test]
+    fn city_fields_fire_hazard_holds_buildings_back() {
+        let grid = supplied_block();
+        let supplied = network(&grid);
+        let risky = fields_over(&grid, CityField::FireHazard, 0.8);
+        let safe = fields_over(&grid, CityField::FireHazard, 0.2);
+        let profile = BuildingProfile::default();
+        assert_eq!(
+            upgrade_blocker(
+                &house(1),
+                &profile,
+                &grid,
+                &supplied,
+                &demand(0.5),
+                Some(&risky)
+            ),
+            Some(GrowthBlocker::FireHazard)
+        );
+        assert_eq!(
+            upgrade_blocker(
+                &house(1),
+                &profile,
+                &grid,
+                &supplied,
+                &demand(0.5),
+                Some(&safe)
+            ),
+            None
+        );
+        assert_eq!(GrowthBlocker::FireHazard.reason(), "High fire hazard");
+
+        let mut grid = grid;
+        let standing = TilePos { x: 5, y: 3 };
+        let mut cell = grid.get(standing).expect("inside");
+        cell.building = Some(BuildingKind::Residential);
+        grid.set(standing, cell);
+        assert_eq!(
+            tile_diagnosis(&grid, &supplied, &demand(1.0), standing, Some(&risky)),
+            Some((
+                "Residential zone".to_string(),
+                "High fire hazard: cannot rise".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn city_fields_poor_health_keeps_homes_below_level_three() {
+        let mut grid = supplied_block();
+        let supplied = network(&grid);
+        let sick = fields_over(&grid, CityField::Health, 0.3);
+        let well = fields_over(&grid, CityField::Health, 0.8);
+        let tall = BuildingProfile {
+            density: ZoneDensity::High,
+            ..BuildingProfile::default()
+        };
+        assert_eq!(
+            upgrade_blocker(
+                &house(2),
+                &tall,
+                &grid,
+                &supplied,
+                &demand(0.5),
+                Some(&sick)
+            ),
+            Some(GrowthBlocker::PoorHealth)
+        );
+        assert_eq!(
+            upgrade_blocker(
+                &house(2),
+                &tall,
+                &grid,
+                &supplied,
+                &demand(0.5),
+                Some(&well)
+            ),
+            None
+        );
+        assert_eq!(
+            upgrade_blocker(
+                &house(1),
+                &BuildingProfile::default(),
+                &grid,
+                &supplied,
+                &demand(0.5),
+                Some(&sick)
+            ),
+            None,
+            "poor health does not stop a home's first step"
+        );
+        assert_eq!(GrowthBlocker::PoorHealth.reason(), "Poor health");
+
+        let standing = TilePos { x: 5, y: 3 };
+        let mut cell = grid.get(standing).expect("inside");
+        cell.building = Some(BuildingKind::Residential);
+        grid.set(standing, cell);
+        assert_eq!(
+            tile_diagnosis(&grid, &supplied, &demand(1.0), standing, Some(&sick)),
+            Some((
+                "Residential zone".to_string(),
+                "Poor health: cannot reach level 3".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn city_fields_unattractive_zone_does_not_grow_and_says_why() {
+        let lit = || {
+            let mut grid = block();
+            station(&mut grid, BuildingKind::PowerPlant, 16, 3);
+            grid
+        };
+        let grid = lit();
+        let zoned = TilePos { x: 8, y: 4 };
+        let bleak = fields_over(&grid, CityField::Attractiveness, 0.1);
+        let fair = fields_over(&grid, CityField::Attractiveness, 0.8);
+        assert_eq!(
+            growth_blockers(&grid, &network(&grid), &demand(1.0), zoned, Some(&bleak)),
+            vec![GrowthBlocker::Unattractive]
+        );
+        assert_eq!(
+            growth_blockers(&grid, &network(&grid), &demand(1.0), zoned, Some(&fair)),
+            Vec::<GrowthBlocker>::new()
+        );
+        assert_eq!(
+            GrowthBlocker::Unattractive.reason(),
+            "Unattractive location"
+        );
+
+        let mut shunned = growth_app(lit());
+        shunned.insert_resource(bleak);
+        assert_eq!(
+            grow_for_hours(&mut shunned, 12),
+            0,
+            "nobody builds where nobody wants to be"
+        );
+        let mut wanted = growth_app(lit());
+        wanted.insert_resource(fair);
+        assert!(
+            grow_for_hours(&mut wanted, 12) > 0,
+            "the same block, attractive, grows"
+        );
+    }
+
+    #[test]
+    fn city_fields_uneducated_neighbourhood_grows_no_high_class_jobs() {
+        for (education, class) in [(0.1, WealthClass::Middle), (0.9, WealthClass::High)] {
+            let mut grid = MapGrid::new(24, 12);
+            road_row(&mut grid, 2, 0..=23);
+            zone_rect(&mut grid, ZoneKind::Commercial, 4..=12, 3..=5);
+            station(&mut grid, BuildingKind::PowerPlant, 16, 3);
+            let fields = fields_over(&grid, CityField::Education, education);
+            let mut land_value = crate::game::land_value::LandValueIndex::default();
+            land_value.values = vec![0.9; grid.len()];
+            let mut app = growth_app(grid);
+            app.insert_resource(fields)
+                .insert_resource(land_value)
+                .insert_resource(RciDemand {
+                    residential: 0.0,
+                    commercial: 1.0,
+                    industrial: 0.0,
+                });
+            assert!(grow_for_hours(&mut app, 12) > 0, "commerce grows");
+            let world = app.world_mut();
+            let classes: Vec<WealthClass> = world
+                .query::<(&Building, &BuildingProfile)>()
+                .iter(world)
+                .map(|(_, profile)| profile.class)
+                .collect();
+            assert!(
+                classes.iter().all(|grown| *grown == class),
+                "education {education}: {classes:?}"
+            );
+        }
     }
 }
