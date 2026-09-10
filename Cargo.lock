@@ -5124,6 +5124,8 @@ name = "simcity_debug"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "serde",
+ "serde_json",
  "simcity_core",
  "simcity_sim",
 ]

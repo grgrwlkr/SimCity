@@ -1,0 +1,663 @@
+//! The offscreen eye: a second camera that renders into an image asset instead of the
+//! window, so a frame can be taken whether or not the window is on screen.
+//!
+//! Why not simply screenshot the window: macOS stops presenting a window that is hidden,
+//! minimised or fully occluded, and the capture then comes back black. The old workflow
+//! answered that by raising the window into the foreground before every shot — which is
+//! exactly the screen-stealing this module exists to end. An image render target never
+//! touches the swapchain, so it renders the same whether the window is frontmost, buried,
+//! or absent.
+//!
+//! `simcity/capture` is a *watching* BRP method: the handler is polled once per frame and
+//! answers `None` until the PNG is on disk, so a caller gets one blocking call and never
+//! writes a sleep loop.
+
+use std::collections::HashMap;
+use std::path::Path;
+
+use bevy::asset::RenderAssetUsages;
+use bevy::camera::{ImageRenderTarget, RenderTarget};
+use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::image::Image;
+use bevy::prelude::*;
+use bevy::remote::{BrpError, BrpResult, error_codes};
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
+use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
+use serde_json::{Value, json};
+use simcity_core::game::camera::MainCamera;
+
+use super::stats::FrameStats;
+
+/// Default size of the offscreen target — 720p is enough to judge a scene and small
+/// enough that a capture costs a few hundred kilobytes rather than five megabytes.
+const DEFAULT_SIZE: UVec2 = UVec2::new(1280, 720);
+/// Frames to let the render land before asking for the pixels. The eye camera is
+/// activated on the first call, and a freshly activated camera has nothing in its target
+/// until it has run through the render graph.
+const DEFAULT_SETTLE_FRAMES: u32 = 3;
+/// Give up rather than hold a BRP request open forever if a frame never arrives.
+const TIMEOUT_FRAMES: u32 = 900;
+
+// ---------------------------------------------------------------------------
+// Request
+// ---------------------------------------------------------------------------
+
+/// Where the pixels come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureSource {
+    /// The offscreen eye camera: the world as the main camera sees it, no egui on top,
+    /// and no dependence on the window being visible.
+    Offscreen,
+    /// The primary window, egui and all. Needs the window to actually be presenting,
+    /// so it is the wrong choice for a hidden instance — but the only way to see the UI.
+    Window,
+}
+
+impl CaptureSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Offscreen => "offscreen",
+            Self::Window => "window",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaptureRequest {
+    pub path: String,
+    /// Only meaningful for [`CaptureSource::Offscreen`]; the window dictates its own size.
+    pub size: Option<UVec2>,
+    pub source: CaptureSource,
+    pub settle_frames: u32,
+}
+
+impl CaptureRequest {
+    /// Parse the BRP params. Errors carry the reason a caller can act on, not a schema dump.
+    pub fn parse(params: Option<&Value>) -> Result<Self, String> {
+        let params = params.ok_or_else(|| {
+            "capture needs params carrying at least a `path` to write the PNG to".to_string()
+        })?;
+
+        let path = params
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "capture needs a `path` to write the PNG to".to_string())?;
+        if path.trim().is_empty() {
+            return Err("`path` is empty".to_string());
+        }
+
+        let size = match (
+            params.get("width").and_then(Value::as_u64),
+            params.get("height").and_then(Value::as_u64),
+        ) {
+            (None, None) => None,
+            (Some(0), _) | (_, Some(0)) => {
+                return Err("`width` and `height` must be above zero".to_string());
+            }
+            (Some(width), Some(height)) => Some(UVec2::new(width as u32, height as u32)),
+            (Some(_), None) => return Err("`width` was given without `height`".to_string()),
+            (None, Some(_)) => return Err("`height` was given without `width`".to_string()),
+        };
+
+        let source = match params.get("source").and_then(Value::as_str) {
+            None | Some("offscreen") => CaptureSource::Offscreen,
+            Some("window") => CaptureSource::Window,
+            Some(other) => {
+                return Err(format!(
+                    "unknown `source` {other:?} — expected \"offscreen\" or \"window\""
+                ));
+            }
+        };
+
+        let settle_frames = params
+            .get("settle_frames")
+            .and_then(Value::as_u64)
+            .map_or(DEFAULT_SETTLE_FRAMES, |frames| {
+                frames.min(u64::from(TIMEOUT_FRAMES)) as u32
+            });
+
+        Ok(Self {
+            path: path.to_string(),
+            size,
+            source,
+            settle_frames,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Job state machine
+// ---------------------------------------------------------------------------
+
+/// What the handler should do on this frame. Keeping it a value rather than doing the work
+/// inline is what makes the frame accounting testable without a rendering app.
+#[derive(Debug, PartialEq)]
+pub enum Step {
+    /// First frame of this request: size the target and switch the eye on.
+    Prepare,
+    /// Keep the eye pointed where the main camera points and let the render land.
+    Settle,
+    /// The target holds a rendered frame — ask for the pixels.
+    Shoot,
+    /// Pixels are on their way back from the GPU.
+    Wait,
+    /// PNG is written; hand the caller its answer and switch the eye off.
+    Done(CaptureOutcome),
+    /// The capture failed for a reason worth reporting verbatim.
+    Failed(String),
+    /// No frame ever arrived.
+    TimedOut,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaptureOutcome {
+    pub path: String,
+    pub stats: FrameStats,
+}
+
+#[derive(Debug, PartialEq)]
+enum Phase {
+    New,
+    Settling(u32),
+    Capturing,
+}
+
+struct CaptureJob {
+    phase: Phase,
+    frames: u32,
+    outcome: Option<Result<CaptureOutcome, String>>,
+}
+
+/// In-flight captures, keyed by destination path — two calls writing the same file are the
+/// same job, two calls writing different files do not disturb each other.
+#[derive(Resource, Default)]
+pub struct CaptureJobs(HashMap<String, CaptureJob>);
+
+impl CaptureJobs {
+    /// Advance the job for `request` by one frame and say what the handler should do.
+    pub fn advance(&mut self, request: &CaptureRequest) -> Step {
+        let job = self
+            .0
+            .entry(request.path.clone())
+            .or_insert_with(|| CaptureJob {
+                phase: Phase::New,
+                frames: 0,
+                outcome: None,
+            });
+
+        job.frames += 1;
+        if job.frames > TIMEOUT_FRAMES {
+            self.0.remove(&request.path);
+            return Step::TimedOut;
+        }
+
+        let step = match job.phase {
+            Phase::New => {
+                job.phase = Phase::Settling(request.settle_frames);
+                Step::Prepare
+            }
+            Phase::Settling(0) => {
+                job.phase = Phase::Capturing;
+                Step::Shoot
+            }
+            Phase::Settling(remaining) => {
+                job.phase = Phase::Settling(remaining - 1);
+                Step::Settle
+            }
+            Phase::Capturing => match job.outcome.take() {
+                None => Step::Wait,
+                Some(Ok(outcome)) => Step::Done(outcome),
+                Some(Err(reason)) => Step::Failed(reason),
+            },
+        };
+
+        if matches!(step, Step::Done(_) | Step::Failed(_)) {
+            self.0.remove(&request.path);
+        }
+        step
+    }
+
+    /// Called from the screenshot observer once the pixels are back.
+    pub fn set_outcome(&mut self, path: &str, outcome: Result<CaptureOutcome, String>) {
+        if let Some(job) = self.0.get_mut(path) {
+            job.outcome = Some(outcome);
+        }
+    }
+
+    #[cfg(test)]
+    fn is_tracking(&self, path: &str) -> bool {
+        self.0.contains_key(path)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The eye
+// ---------------------------------------------------------------------------
+
+/// Marks the eye camera so its queries never collide with the main camera's.
+#[derive(Component)]
+pub struct OffscreenEyeCamera;
+
+/// The offscreen camera and the image it renders into.
+#[derive(Resource)]
+pub struct OffscreenEye {
+    pub camera: Entity,
+    pub image: Handle<Image>,
+    pub size: UVec2,
+}
+
+/// Build the render-target image. `RENDER_WORLD` usage plus `COPY_SRC` is what lets the
+/// screenshot machinery read it back.
+fn new_target_image(size: UVec2) -> Image {
+    let mut image = Image::new_fill(
+        Extent3d {
+            width: size.x,
+            height: size.y,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        &[0, 0, 0, 255],
+        TextureFormat::Bgra8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING
+        | TextureUsages::COPY_SRC
+        | TextureUsages::COPY_DST
+        | TextureUsages::RENDER_ATTACHMENT;
+    image
+}
+
+/// Spawn the eye inactive: two cameras rendering the same world every frame would double
+/// the render cost for a capability used a few times a minute.
+pub fn spawn_eye(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+    let image = images.add(new_target_image(DEFAULT_SIZE));
+    let camera = commands
+        .spawn((
+            Camera3d::default(),
+            Camera {
+                order: -1,
+                is_active: false,
+                ..default()
+            },
+            RenderTarget::Image(ImageRenderTarget::from(image.clone())),
+            Projection::Orthographic(OrthographicProjection::default_3d()),
+            Tonemapping::None,
+            Transform::default(),
+            OffscreenEyeCamera,
+            Name::new("OffscreenEye"),
+        ))
+        .id();
+
+    commands.insert_resource(OffscreenEye {
+        camera,
+        image,
+        size: DEFAULT_SIZE,
+    });
+}
+
+/// What the eye should be doing. The BRP handler only writes here; the camera itself is
+/// touched by [`apply_eye_control`] in `PostUpdate`.
+///
+/// The indirection is not tidiness, it is the fix for a crash: remote handlers run in
+/// `RemoteLast`, after `PostUpdate`, so a camera switched on there is extracted for
+/// rendering before `build_directional_light_cascades` has ever seen it, and
+/// `prepare_lights` panics unwrapping the cascades that were never built for it.
+#[derive(Resource, Default)]
+pub struct EyeControl {
+    pub active: bool,
+    pub size: Option<UVec2>,
+}
+
+/// The pose the eye copies from. Spelled out as an alias because clippy rightly objects to
+/// a four-line query type sitting in a parameter list.
+type MainCameraView<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static Transform,
+        &'static Projection,
+        Option<&'static AmbientLight>,
+    ),
+    (With<MainCamera>, Without<OffscreenEyeCamera>),
+>;
+
+/// The eye itself, mutable.
+type EyeCameraView<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static mut Camera,
+        &'static mut Transform,
+        &'static mut Projection,
+    ),
+    With<OffscreenEyeCamera>,
+>;
+
+/// Apply [`EyeControl`] and keep the eye pointed where the main camera points.
+///
+/// Scheduled before transform propagation and the camera update, hence before cascades:
+/// activation, pose and projection all land in the same frame the renderer reads them.
+///
+/// Copying `AmbientLight` matters and is easy to miss: in this project it is a component
+/// on the camera entity rather than a resource, so an eye without its own copy renders the
+/// city lit by the sun alone and reads far darker than the window does.
+pub fn apply_eye_control(
+    control: Res<EyeControl>,
+    mut images: ResMut<Assets<Image>>,
+    mut eye: ResMut<OffscreenEye>,
+    main: MainCameraView,
+    mut eye_camera: EyeCameraView,
+    mut commands: Commands,
+) {
+    let Ok((entity, mut camera, mut transform, mut projection)) = eye_camera.single_mut() else {
+        return;
+    };
+
+    if let Some(size) = control.size
+        && size != eye.size
+        && let Some(mut image) = images.get_mut(&eye.image)
+    {
+        image.resize(Extent3d {
+            width: size.x,
+            height: size.y,
+            depth_or_array_layers: 1,
+        });
+        eye.size = size;
+    }
+
+    camera.is_active = control.active;
+    if !control.active {
+        return;
+    }
+
+    let Ok((main_transform, main_projection, ambient)) = main.single() else {
+        return;
+    };
+    *transform = *main_transform;
+    *projection = main_projection.clone();
+    match ambient {
+        Some(ambient) => {
+            commands.entity(entity).insert(ambient.clone());
+        }
+        None => {
+            commands.entity(entity).remove::<AmbientLight>();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
+/// `simcity/capture` — one call in, one PNG plus its statistics out.
+pub fn capture_handler(
+    In(params): In<Option<Value>>,
+    world: &mut World,
+) -> BrpResult<Option<Value>> {
+    let request = CaptureRequest::parse(params.as_ref()).map_err(invalid_params)?;
+
+    let step = world.resource_scope(|_world, mut jobs: Mut<CaptureJobs>| jobs.advance(&request));
+
+    match step {
+        Step::Prepare => {
+            if request.source == CaptureSource::Offscreen {
+                let mut control = world.resource_mut::<EyeControl>();
+                control.size = Some(request.size.unwrap_or(DEFAULT_SIZE));
+                control.active = true;
+            }
+            Ok(None)
+        }
+        Step::Settle => Ok(None),
+        Step::Shoot => {
+            shoot(world, &request);
+            Ok(None)
+        }
+        Step::Wait => Ok(None),
+        Step::Done(outcome) => {
+            world.resource_mut::<EyeControl>().active = false;
+            Ok(Some(json!({
+                "path": outcome.path,
+                "source": request.source.as_str(),
+                "stats": outcome.stats,
+                "looks_rendered": outcome.stats.looks_rendered(),
+            })))
+        }
+        Step::Failed(reason) => {
+            world.resource_mut::<EyeControl>().active = false;
+            Err(capture_error(reason))
+        }
+        Step::TimedOut => {
+            world.resource_mut::<EyeControl>().active = false;
+            Err(capture_error(format!(
+                "no frame arrived within {TIMEOUT_FRAMES} frames"
+            )))
+        }
+    }
+}
+
+/// Ask the renderer for the pixels and arrange for the answer to land back in [`CaptureJobs`].
+fn shoot(world: &mut World, request: &CaptureRequest) {
+    let screenshot = match request.source {
+        CaptureSource::Offscreen => {
+            let Some(eye) = world.get_resource::<OffscreenEye>() else {
+                world
+                    .resource_mut::<CaptureJobs>()
+                    .set_outcome(&request.path, Err("offscreen eye is not spawned".into()));
+                return;
+            };
+            Screenshot::image(eye.image.clone())
+        }
+        CaptureSource::Window => Screenshot::primary_window(),
+    };
+
+    let key = request.path.clone();
+    world.spawn(screenshot).observe(
+        move |captured: On<ScreenshotCaptured>, mut jobs: ResMut<CaptureJobs>| {
+            let outcome = write_png(&key, &captured.image);
+            jobs.set_outcome(&key, outcome);
+        },
+    );
+}
+
+/// Encode, measure and write in one pass, so the statistics describe exactly the bytes
+/// that reached the disk.
+fn write_png(path: &str, image: &Image) -> Result<CaptureOutcome, String> {
+    let dynamic = image
+        .clone()
+        .try_into_dynamic()
+        .map_err(|err| format!("captured frame is not convertible to an image: {err}"))?;
+    let rgb = dynamic.to_rgb8();
+    let (width, height) = rgb.dimensions();
+    let stats = FrameStats::from_rgb8(width, height, rgb.as_raw())
+        .ok_or_else(|| "captured frame buffer disagrees with its own dimensions".to_string())?;
+
+    if let Some(parent) = Path::new(path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("cannot create {}: {err}", parent.display()))?;
+    }
+    rgb.save(path)
+        .map_err(|err| format!("cannot write {path}: {err}"))?;
+
+    Ok(CaptureOutcome {
+        path: path.to_string(),
+        stats,
+    })
+}
+
+fn invalid_params(message: String) -> BrpError {
+    BrpError {
+        code: error_codes::INVALID_PARAMS,
+        message,
+        data: None,
+    }
+}
+
+fn capture_error(message: String) -> BrpError {
+    BrpError {
+        code: error_codes::INTERNAL_ERROR,
+        message,
+        data: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(path: &str) -> CaptureRequest {
+        CaptureRequest {
+            path: path.to_string(),
+            size: None,
+            source: CaptureSource::Offscreen,
+            settle_frames: 2,
+        }
+    }
+
+    fn stats() -> FrameStats {
+        FrameStats {
+            width: 4,
+            height: 4,
+            mean: 100.0,
+            std: 40.0,
+            min: 0,
+            max: 255,
+            nonblack_fraction: 0.9,
+        }
+    }
+
+    #[test]
+    fn parse_requires_a_path() {
+        let err = CaptureRequest::parse(Some(&json!({}))).unwrap_err();
+        assert!(
+            err.contains("path"),
+            "error should name the missing field: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_defaults_to_the_offscreen_eye() {
+        let parsed = CaptureRequest::parse(Some(&json!({ "path": "/tmp/a.png" }))).unwrap();
+        assert_eq!(parsed.source, CaptureSource::Offscreen);
+        assert_eq!(parsed.size, None);
+        assert_eq!(parsed.settle_frames, DEFAULT_SETTLE_FRAMES);
+    }
+
+    #[test]
+    fn parse_reads_size_and_source() {
+        let parsed = CaptureRequest::parse(Some(&json!({
+            "path": "/tmp/a.png",
+            "width": 640,
+            "height": 360,
+            "source": "window",
+        })))
+        .unwrap();
+        assert_eq!(parsed.size, Some(UVec2::new(640, 360)));
+        assert_eq!(parsed.source, CaptureSource::Window);
+    }
+
+    #[test]
+    fn parse_rejects_half_a_size() {
+        let err = CaptureRequest::parse(Some(&json!({ "path": "/tmp/a.png", "width": 640 })))
+            .unwrap_err();
+        assert!(
+            err.contains("height"),
+            "error should name what is missing: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_an_unknown_source() {
+        let err = CaptureRequest::parse(Some(
+            &json!({ "path": "/tmp/a.png", "source": "telepathy" }),
+        ))
+        .unwrap_err();
+        assert!(
+            err.contains("telepathy"),
+            "error should quote the bad value: {err}"
+        );
+    }
+
+    #[test]
+    fn a_capture_walks_prepare_settle_shoot_wait_done() {
+        let mut jobs = CaptureJobs::default();
+        let request = request("/tmp/shot.png");
+
+        assert_eq!(jobs.advance(&request), Step::Prepare);
+        assert_eq!(jobs.advance(&request), Step::Settle);
+        assert_eq!(jobs.advance(&request), Step::Settle);
+        assert_eq!(jobs.advance(&request), Step::Shoot);
+        assert_eq!(jobs.advance(&request), Step::Wait);
+
+        jobs.set_outcome(
+            "/tmp/shot.png",
+            Ok(CaptureOutcome {
+                path: "/tmp/shot.png".into(),
+                stats: stats(),
+            }),
+        );
+
+        match jobs.advance(&request) {
+            Step::Done(outcome) => assert_eq!(outcome.stats, stats()),
+            other => panic!("expected the capture to finish, got {other:?}"),
+        }
+        assert!(
+            !jobs.is_tracking("/tmp/shot.png"),
+            "a finished job is forgotten"
+        );
+    }
+
+    #[test]
+    fn a_failure_from_the_observer_reaches_the_caller() {
+        let mut jobs = CaptureJobs::default();
+        let request = CaptureRequest {
+            settle_frames: 0,
+            ..request("/tmp/bad.png")
+        };
+
+        assert_eq!(jobs.advance(&request), Step::Prepare);
+        assert_eq!(jobs.advance(&request), Step::Shoot);
+        jobs.set_outcome("/tmp/bad.png", Err("disk is full".into()));
+
+        assert_eq!(jobs.advance(&request), Step::Failed("disk is full".into()));
+        assert!(!jobs.is_tracking("/tmp/bad.png"));
+    }
+
+    #[test]
+    fn two_destinations_are_two_independent_jobs() {
+        let mut jobs = CaptureJobs::default();
+        let first = request("/tmp/one.png");
+        let second = request("/tmp/two.png");
+
+        assert_eq!(jobs.advance(&first), Step::Prepare);
+        assert_eq!(jobs.advance(&second), Step::Prepare);
+        assert_eq!(jobs.advance(&first), Step::Settle);
+        assert_eq!(jobs.advance(&second), Step::Settle);
+    }
+
+    #[test]
+    fn a_frame_that_never_arrives_times_out() {
+        let mut jobs = CaptureJobs::default();
+        let request = CaptureRequest {
+            settle_frames: 0,
+            ..request("/tmp/never.png")
+        };
+
+        let mut step = jobs.advance(&request);
+        let mut frames = 1;
+        while step != Step::TimedOut {
+            assert!(
+                frames <= TIMEOUT_FRAMES + 2,
+                "the job should have given up by now"
+            );
+            step = jobs.advance(&request);
+            frames += 1;
+        }
+        assert!(
+            !jobs.is_tracking("/tmp/never.png"),
+            "a timed-out job is forgotten"
+        );
+    }
+}
