@@ -79,7 +79,7 @@ simcity_app ─┬─> simcity_frontend ─┬─> simcity_debug ─┐
 
 ## TypeScript + Three.js порт (`packages/`)
 
-Программа переезда и её контракты: `docs/plans/2026-09-11-ts-threejs-migration-plan.md`, читать первой. План текущего этапа лежит рядом: `docs/plans/YYYY-MM-DD-web-phase-N-<name>.md`. Порт живёт в этом же репозитории, bun-монорепо в корне рядом с Rust-крейтами. Rust-код остаётся эталоном поведения и не правится; исключение — этап 1, пример `dump_trajectory`.
+Программа переезда и её контракты: `docs/plans/2026-09-11-ts-threejs-migration-plan.md`, читать первой. План текущего этапа лежит рядом: `docs/plans/YYYY-MM-DD-web-phase-N-<name>.md`. Порт живёт в этом же репозитории, bun-монорепо в корне рядом с Rust-крейтами. Rust-код остаётся эталоном поведения и не правится. Исключения: примеры-эталоны `examples/dump_*.rs` с общим `examples/common/mod.rs`, которые пишут фикстуры в `packages/sim/test/fixtures/`, и `pub` у `transport::lanelet::pathfinding::find_route`, иначе пример до него не дотянется.
 
 ```bash
 bun install

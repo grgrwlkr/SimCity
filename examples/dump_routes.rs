@@ -7,56 +7,22 @@
 //! Enum fields are written as the index of the variant in declaration order, which is the encoding
 //! of the TypeScript `MapGrid` layers (`RoadFlow::OneWay(dir)` is `1 + dir`, a building `1 + kind`).
 
-use std::fmt::Write as _;
+#[path = "common/mod.rs"]
+mod common;
 
-use bevy::ecs::message::Messages;
 use bevy::prelude::*;
-use simcity_sim::game::commands::GameCommand;
+use common::hex;
 use simcity_sim::game::intersections::IntersectionIndex;
 use simcity_sim::game::map::{MapGrid, TilePos};
 use simcity_sim::game::roads::RoadFlow;
-use simcity_sim::game::state::AppState;
 use simcity_sim::game::traffic::TrafficOccupancy;
 use simcity_sim::game::transport::{
     GraphVersion, PathCache, PathfindingConfig, PathfindingCtx, RegionGraph, RoadGraph,
     find_road_path_cached,
 };
-use simcity_sim::game::ui_state::{SimSpeed, UiState};
 
 const PAIR_SEED: u64 = 20_260_911;
 const PAIRS: usize = 200;
-
-fn headless_app() -> App {
-    let mut app = App::new();
-    app.add_plugins(MinimalPlugins)
-        .add_plugins(bevy::state::app::StatesPlugin)
-        .add_plugins(simcity_sim::game::SimPlugin)
-        .add_plugins(simcity_data::game::DataPlugin)
-        .init_resource::<ButtonInput<KeyCode>>()
-        .init_resource::<ButtonInput<MouseButton>>()
-        .insert_resource(Assets::<bevy::gizmos::GizmoAsset>::default())
-        .init_resource::<bevy_egui::EguiUserTextures>();
-    simcity_sim::game::render_primitives::init_for_test(&mut app);
-    app.world_mut().resource_mut::<UiState>().sim_speed = SimSpeed::Paused;
-    app
-}
-
-/// SplitMix64: picks the pairs. The pairs are written into the fixture, so only determinism matters.
-fn splitmix64(state: &mut u64) -> u64 {
-    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    let mut z = *state;
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
-
-fn hex(bytes: impl Iterator<Item = u8>) -> String {
-    let mut s = String::new();
-    for b in bytes {
-        write!(s, "{b:02x}").expect("writing to a String cannot fail");
-    }
-    s
-}
 
 fn grid_layers(grid: &MapGrid) -> String {
     let cells = || grid.cells.iter();
@@ -90,27 +56,10 @@ fn grid_layers(grid: &MapGrid) -> String {
 }
 
 fn main() {
-    let mut app = headless_app();
-    // Startup runs on the first update; then the same entry sequence the headless harness uses.
-    app.update();
-    app.world_mut()
-        .resource_mut::<NextState<AppState>>()
-        .set(AppState::InGame);
-    for _ in 0..3 {
-        app.update();
-    }
-    app.world_mut()
-        .resource_mut::<Messages<GameCommand>>()
-        .write(GameCommand::LoadTestCity);
-    for _ in 0..4 {
-        app.update();
-    }
+    let mut app = common::headless_app();
+    common::load_test_city(&mut app);
 
     let raw_grid = app.world().resource::<MapGrid>().clone();
-    assert!(
-        raw_grid.cells.iter().any(|c| c.road.is_some()),
-        "test city must be loaded"
-    );
     let graph_version = app.world().resource::<GraphVersion>().0;
     let light_keys: Vec<String> = {
         let index = app.world().resource::<IntersectionIndex>();
@@ -160,8 +109,8 @@ fn main() {
     let n = graph.road_indices.len() as u64;
     let mut routes = Vec::with_capacity(PAIRS);
     for _ in 0..PAIRS {
-        let start_idx = graph.road_indices[(splitmix64(&mut rng) % n) as usize];
-        let goal_idx = graph.road_indices[(splitmix64(&mut rng) % n) as usize];
+        let start_idx = graph.road_indices[(common::splitmix64(&mut rng) % n) as usize];
+        let goal_idx = graph.road_indices[(common::splitmix64(&mut rng) % n) as usize];
         let start = TilePos {
             x: (start_idx % w) as i32,
             y: (start_idx / w) as i32,
@@ -195,7 +144,10 @@ fn main() {
         "  \"laneTypeAfterHex\": \"{}\",",
         hex(grid.cells.iter().map(|c| c.road.lane_type as u8))
     );
-    println!("  \"roadEdgesHex\": \"{}\",", hex(graph.edges.iter().copied()));
+    println!(
+        "  \"roadEdgesHex\": \"{}\",",
+        hex(graph.edges.iter().copied())
+    );
     println!(
         "  \"regionEdgesHex\": \"{}\",",
         hex(regions.edges.iter().copied())

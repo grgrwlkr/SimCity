@@ -353,7 +353,7 @@ pub(crate) fn route_is_direction_correct(route: &[TilePos], grid: &MapGrid) -> b
 /// regression fails tests loudly; in release the route is dropped (returned EMPTY) so the caller
 /// falls back to the dir-strict road-A* path or holds the vehicle, rather than driving it onto the
 /// oncoming lane.
-pub(crate) fn find_route(
+pub fn find_route(
     lg: &LaneGraph,
     llg: &LaneletGraph,
     ctx: &LaneCostCtx<'_>,

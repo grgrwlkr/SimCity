@@ -1,49 +1,10 @@
 // Stage 1b gate: on the Rust test city, the TS turn-lane marks, road and region graphs and 200
 // road-A* paths equal what Rust computes (fixture from examples/dump_routes.rs).
 import { describe, expect, it } from 'vitest';
-import { runFixedTick } from '../../src/app';
-import { detectIntersections } from '../../src/intersections/index';
 import { TrafficOccupancy } from '../../src/traffic/occupancy';
 import { PathCache, findRoadPathCached, type PathfindingCtx } from '../../src/transport/pathfinding';
-import { createWorld, type World } from '../../src/world';
 import fixture from '../fixtures/road-routes.json';
-
-const LAYER_ORDER = [
-  'height',
-  'water',
-  'terrain',
-  'roadKind',
-  'roadDir',
-  'roadLane',
-  'roadFlow',
-  'laneType',
-  'zone',
-  'density',
-  'building',
-] as const;
-
-function hexToBytes(text: string): Uint8Array {
-  const out = new Uint8Array(text.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(text.slice(2 * i, 2 * i + 2), 16);
-  return out;
-}
-
-function hex(bytes: Uint8Array): string {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-function loadTestCity(): World {
-  const w = createWorld({ mapWidth: fixture.width, mapHeight: fixture.height });
-  const layers = w.grid.layers();
-  LAYER_ORDER.forEach((name, i) => layers[i]!.set(hexToBytes(fixture.rawGrid[name])));
-  w.appState = 'InGame';
-  w.graphVersion = fixture.graphVersion;
-  w.intersections.trafficLightKeys = new Set(fixture.trafficLightKeys);
-  // detect_intersections ran in Update before the fixed tick in Rust.
-  detectIntersections(w);
-  runFixedTick(w);
-  return w;
-}
+import { hex, loadTestCity } from '../testCity';
 
 describe('road A* parity with Rust on the test city', () => {
   const w = loadTestCity();
