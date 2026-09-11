@@ -12,8 +12,8 @@ export function runFixedTick(w: World): void {
 }
 
 /**
- * `CommandApply`: every system reads the whole frame's commands, in schedule order. Commands no
- * system reads are dropped with the frame, as unread Bevy messages are.
+ * `CommandApply`: every system reads the whole frame's commands, in schedule order. Commands and
+ * undo/redo requests no system reads are dropped with the frame, as unread Bevy messages are.
  */
 export function applyCommands(w: World): void {
   const commands = w.commands;
@@ -21,6 +21,7 @@ export function applyCommands(w: World): void {
   for (const system of COMMAND_APPLY) {
     if (system.runIn.includes(w.appState)) system.run(w, commands);
   }
+  w.undoRedo = [];
 }
 
 export function frame(w: World, fixedTicks: number): void {

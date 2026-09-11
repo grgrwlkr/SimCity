@@ -4,7 +4,7 @@
 import { simTick } from './city';
 import type { GameCommand } from './commands';
 import { beginTickEvents } from './events';
-import { applyMapSeed } from './map';
+import { applyGameCommandsToGrid } from './map/apply';
 import { resetGrowthRngOnNewMap, resetSimRngOnNewMap } from './seeding';
 import { ALL_STATES, IN_GAME, IN_GAME_OR_PAUSED, type AppState } from './state';
 import { SECOND_NS } from './timer';
@@ -39,8 +39,9 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
 
 /** `Update` / `GameSet::CommandApply`. */
 export const COMMAND_APPLY: readonly CommandSystemEntry[] = [
-  // apply_game_commands_to_grid: GenerateMap writes the map seed the re-seeds below read.
-  { name: 'applyMapSeed', run: applyMapSeed, runIn: IN_GAME_OR_PAUSED },
+  // apply_game_commands_to_grid: roads, zones, erase, GenerateMap and undo/redo. First, because
+  // GenerateMap writes the map seed the re-seeds below read.
+  { name: 'applyGameCommandsToGrid', run: applyGameCommandsToGrid, runIn: IN_GAME_OR_PAUSED },
   // reset_sim_rng_on_new_map: after applyMapSeed, reads mapSeed.
   { name: 'resetSimRngOnNewMap', run: resetSimRngOnNewMap, runIn: IN_GAME_OR_PAUSED },
   // reset_growth_rng_on_new_map: after applyMapSeed, reads mapSeed.

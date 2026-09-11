@@ -6,9 +6,8 @@ import type { GameCommand } from './commands';
 import type { TickEvents } from './events';
 import type { Notifications } from './notifications';
 import type { Timer } from './timer';
-import type { TileLayers, VehicleLayers, World } from './world';
+import type { VehicleLayers, World } from './world';
 
-const TWO_POW_32 = 0x1_0000_0000;
 const FNV_OFFSET_HI = 0xcbf2_9ce4;
 const FNV_OFFSET_LO = 0x8422_2325;
 
@@ -17,16 +16,20 @@ const f64Bytes = new Uint8Array(f64Scratch.buffer);
 const f32Scratch = new Float32Array(1);
 const f32Bits = new Uint32Array(f32Scratch.buffer);
 
-/** FNV-1a 64 on two 32-bit halves: prime 2^40 + 0x1b3, every partial product exact in a double. */
+/**
+ * FNV-1a 64 on two 32-bit halves. The prime is 2^40 + 0x1b3, so `(hi, lo) * prime` is
+ * `hi*0x1b3 + carry + lo<<8` over `lo*0x1b3`; the low product is split at 16 bits to stay in int range.
+ */
 export class Fnv64 {
   private hi = FNV_OFFSET_HI;
   private lo = FNV_OFFSET_LO;
 
   byte(value: number): void {
     const lo = (this.lo ^ (value & 0xff)) >>> 0;
-    const loMul = lo * 0x1b3;
-    this.hi = (this.hi * 0x1b3 + Math.floor(loMul / TWO_POW_32) + ((lo << 8) >>> 0)) >>> 0;
-    this.lo = loMul >>> 0;
+    const p = (lo & 0xffff) * 0x1b3;
+    const mid = (p >>> 16) + (lo >>> 16) * 0x1b3;
+    this.lo = (((mid & 0xffff) << 16) | (p & 0xffff)) >>> 0;
+    this.hi = (Math.imul(this.hi, 0x1b3) + (mid >>> 16) + (lo << 8)) >>> 0;
   }
 
   u32(value: number): void {
@@ -74,19 +77,37 @@ export class Fnv64 {
     }
   }
 
+  /** One 32-bit word folded in as a single FNV symbol. */
+  word(value: number): void {
+    const lo = (this.lo ^ value) >>> 0;
+    const p = (lo & 0xffff) * 0x1b3;
+    const mid = (p >>> 16) + (lo >>> 16) * 0x1b3;
+    this.lo = (((mid & 0xffff) << 16) | (p & 0xffff)) >>> 0;
+    this.hi = (Math.imul(this.hi, 0x1b3) + (mid >>> 16) + (lo << 8)) >>> 0;
+  }
+
+  /**
+   * A typed array: its byte length, then its little-endian 32-bit words as symbols, then the tail
+   * bytes. Words rather than bytes: the fingerprint runs every tick in the divergence probe, and
+   * the result only has to agree between engines, not with any external FNV implementation.
+   */
   bytes(view: ArrayBufferView): void {
-    const b = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
-    this.u32(b.length);
+    const len = view.byteLength;
+    this.u32(len);
+    const data = new DataView(view.buffer, view.byteOffset, len);
+    const words = len >>> 2;
     let hi = this.hi;
     let lo = this.lo;
-    for (let i = 0; i < b.length; i++) {
-      lo = (lo ^ b[i]!) >>> 0;
-      const loMul = lo * 0x1b3;
-      hi = (hi * 0x1b3 + Math.floor(loMul / TWO_POW_32) + ((lo << 8) >>> 0)) >>> 0;
-      lo = loMul >>> 0;
+    for (let w = 0; w < words; w++) {
+      lo = (lo ^ data.getUint32(w * 4, true)) >>> 0;
+      const p = (lo & 0xffff) * 0x1b3;
+      const mid = (p >>> 16) + (lo >>> 16) * 0x1b3;
+      hi = (Math.imul(hi, 0x1b3) + (mid >>> 16) + (lo << 8)) >>> 0;
+      lo = (((mid & 0xffff) << 16) | (p & 0xffff)) >>> 0;
     }
     this.hi = hi;
     this.lo = lo;
+    for (let i = words * 4; i < len; i++) this.byte(data.getUint8(i));
   }
 
   digest(): bigint {
@@ -98,7 +119,6 @@ export function toHex64(value: bigint): string {
   return value.toString(16).padStart(16, '0');
 }
 
-const TILE_LAYER_ORDER: readonly (keyof TileLayers)[] = ['kind', 'zone', 'road', 'landValue', 'pollution'];
 const VEHICLE_LAYER_ORDER: readonly (keyof VehicleLayers)[] = [
   'alive',
   'x',
@@ -215,9 +235,28 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
     },
   ],
   [
-    'tiles',
+    'map',
     (h, w) => {
-      for (const layer of TILE_LAYER_ORDER) h.bytes(w.tiles[layer]);
+      h.i32(w.grid.width);
+      h.i32(w.grid.height);
+      for (const layer of w.grid.layers()) h.bytes(layer);
+      for (const dirty of [w.dirty, w.roadDirty]) {
+        const marked = dirty.marked();
+        h.u32(marked.length);
+        for (const i of marked) h.u32(i);
+      }
+      h.int(w.mapEditVersion);
+      h.int(w.graphVersion);
+    },
+  ],
+  [
+    'history',
+    (h, w) => {
+      const { undo, redo } = w.history.stacks();
+      h.str(JSON.stringify(undo));
+      h.str(JSON.stringify(redo));
+      h.u32(w.undoRedo.length);
+      for (const redoRequest of w.undoRedo) h.bool(redoRequest);
     },
   ],
   [

@@ -3,28 +3,21 @@
 import { createSimClock, defaultCity, type City } from './city';
 import type { GameCommand } from './commands';
 import { emptyEvents, type TickEvents } from './events';
+import { DEFAULT_MAP_CONFIG, type MapConfig } from './map/coords';
+import { DirtyTiles } from './map/dirty';
+import { MapGrid } from './map/grid';
+import { COMMAND_HISTORY_LIMIT, CommandHistory } from './map/history';
 import { Notifications } from './notifications';
 import { DEFAULT_RNG_SEED, stdRngSeedFromU64, type StdRng } from './rng';
 import type { AppState, PendingState } from './state';
 import { SECOND_NS, Timer } from './timer';
 
-export const MAP_W = 128;
-export const MAP_H = 128;
-export const TILE_COUNT = MAP_W * MAP_H;
 export const VEHICLE_CAPACITY = 4096;
 
 /** `MapSeed(1)` inserted by `init_map_grid` at startup. */
 export const STARTUP_MAP_SEED = 1n;
 /** `BuildingUpgradeClock::default()`: a five-second repeating timer. */
 export const BUILDING_UPGRADE_PERIOD_NS = 5 * SECOND_NS;
-
-export interface TileLayers {
-  readonly kind: Uint8Array;
-  readonly zone: Uint8Array;
-  readonly road: Uint8Array;
-  readonly landValue: Float32Array;
-  readonly pollution: Float32Array;
-}
 
 export interface VehicleLayers {
   readonly alive: Uint8Array;
@@ -38,9 +31,19 @@ export interface VehicleLayers {
 }
 
 export interface World {
-  readonly w: typeof MAP_W;
-  readonly h: typeof MAP_H;
-  readonly tiles: TileLayers;
+  readonly mapConfig: MapConfig;
+  readonly grid: MapGrid;
+  /** Tiles whose content changed since the render side last drained them. */
+  readonly dirty: DirtyTiles;
+  /** Tiles whose road changed (lane markings). */
+  readonly roadDirty: DirtyTiles;
+  /** Bumps on any edit to the grid content. */
+  mapEditVersion: number;
+  /** Bumps when road topology changes; transport graphs rebuild on it. */
+  graphVersion: number;
+  readonly history: CommandHistory;
+  /** `UndoRedoRequested` messages for the next `CommandApply`, `true` for redo. */
+  undoRedo: boolean[];
   readonly vehicles: VehicleLayers;
   /** Fixed ticks run since the world was created. */
   tick: number;
@@ -60,17 +63,28 @@ export interface World {
   commands: GameCommand[];
 }
 
-export function createWorld(): World {
+export interface WorldOptions {
+  /** Map size in tiles; the game uses `MapConfig::default()`, tests use small maps. */
+  readonly mapWidth?: number;
+  readonly mapHeight?: number;
+}
+
+export function createWorld(options: WorldOptions = {}): World {
+  const mapConfig: MapConfig = {
+    ...DEFAULT_MAP_CONFIG,
+    width: options.mapWidth ?? DEFAULT_MAP_CONFIG.width,
+    height: options.mapHeight ?? DEFAULT_MAP_CONFIG.height,
+  };
+  const grid = new MapGrid(mapConfig.width, mapConfig.height);
   return {
-    w: MAP_W,
-    h: MAP_H,
-    tiles: {
-      kind: new Uint8Array(TILE_COUNT),
-      zone: new Uint8Array(TILE_COUNT),
-      road: new Uint8Array(TILE_COUNT),
-      landValue: new Float32Array(TILE_COUNT),
-      pollution: new Float32Array(TILE_COUNT),
-    },
+    mapConfig,
+    grid,
+    dirty: new DirtyTiles(grid.len()),
+    roadDirty: new DirtyTiles(grid.len()),
+    mapEditVersion: 0,
+    graphVersion: 0,
+    history: new CommandHistory(COMMAND_HISTORY_LIMIT),
+    undoRedo: [],
     vehicles: {
       alive: new Uint8Array(VEHICLE_CAPACITY),
       x: new Float32Array(VEHICLE_CAPACITY),

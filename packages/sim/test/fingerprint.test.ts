@@ -16,13 +16,29 @@ describe('Fnv64', () => {
     }
   });
 
-  it('bytesHashesLikeByteByByteAfterTheLengthPrefix', () => {
+  it('bytesHashesLittleEndianWordsThenTailBytesAfterTheLengthPrefix', () => {
     const data = new Uint8Array([0, 1, 2, 250, 255, 128, 7]);
     const a = new Fnv64();
     a.bytes(data);
     const b = new Fnv64();
     b.u32(data.length);
-    for (const v of data) b.byte(v);
+    b.word(0xfa020100);
+    for (const v of [255, 128, 7]) b.byte(v);
     expect(a.digest()).toBe(b.digest());
+  });
+
+  it('bytesSeesEveryByteOfAWordAlignedView', () => {
+    const base = new Uint8Array(64);
+    const digest = (bytes: Uint8Array) => {
+      const h = new Fnv64();
+      h.bytes(bytes);
+      return h.digest();
+    };
+    const before = digest(base);
+    for (const i of [0, 1, 2, 3, 61, 62, 63]) {
+      const changed = base.slice();
+      changed[i] = 1;
+      expect(digest(changed), `byte ${i}`).not.toBe(before);
+    }
   });
 });

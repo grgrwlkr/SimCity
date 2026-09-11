@@ -67,9 +67,34 @@ describe('determinism', () => {
       ['notifications', (w) => w.notifications.add('Fire emergency', 'Warning', 5)],
       ['notifications.day', (w) => w.notifications.setDay(9)],
       ['commands', (w) => void w.commands.push({ kind: 'LoadTestCity' })],
+      ['dirty', (w) => w.dirty.mark(0)],
+      ['roadDirty', (w) => w.roadDirty.mark(0)],
+      ['mapEditVersion', (w) => void (w.mapEditVersion += 1)],
+      ['graphVersion', (w) => void (w.graphVersion += 1)],
+      [
+        'history',
+        (w) =>
+          w.history.push({
+            kind: 'SetZone',
+            pos: { x: 0, y: 0 },
+            old: 'None',
+            new: 'Residential',
+            oldDensity: 'Medium',
+            newDensity: 'Medium',
+          }),
+      ],
+      ['undoRedo', (w) => void w.undoRedo.push(true)],
     ];
-    for (const [layer, values] of Object.entries(buildHeadlessGame().tiles)) {
-      mutations.push([`tiles.${layer}`, (w) => void (w.tiles[layer as keyof World['tiles']][values.length - 1] = 1)]);
+    // Every typed-array field of the grid, found by reflection so a new layer cannot slip past.
+    const gridLayers = Object.entries(buildHeadlessGame().grid).filter(
+      (entry): entry is [string, Uint8Array] => entry[1] instanceof Uint8Array,
+    );
+    expect(gridLayers.length).toBeGreaterThan(5);
+    for (const [layer, values] of gridLayers) {
+      mutations.push([
+        `grid.${layer}`,
+        (w) => void ((w.grid as unknown as Record<string, Uint8Array>)[layer]![values.length - 1]! ^= 1),
+      ]);
     }
     for (const [layer, values] of Object.entries(buildHeadlessGame().vehicles)) {
       mutations.push([`vehicles.${layer}`, (w) => void (w.vehicles[layer as keyof World['vehicles']][values.length - 1] = 1)]);
