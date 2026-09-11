@@ -6,7 +6,8 @@ import type { GameCommand } from './commands';
 import type { TickEvents } from './events';
 import type { Notifications } from './notifications';
 import type { Timer } from './timer';
-import type { VehicleLayers, World } from './world';
+import type { VehicleLayers } from './traffic/vehicles';
+import type { World } from './world';
 
 const FNV_OFFSET_HI = 0xcbf2_9ce4;
 const FNV_OFFSET_LO = 0x8422_2325;
@@ -119,16 +120,28 @@ export function toHex64(value: bigint): string {
   return value.toString(16).padStart(16, '0');
 }
 
-const VEHICLE_LAYER_ORDER: readonly (keyof VehicleLayers)[] = [
-  'alive',
-  'x',
-  'y',
-  'heading',
-  'lanelet',
-  'progress',
-  'state',
-  'kind',
-];
+/** Every typed-array layer by name, the iteration and free lists, and the object layers of live slots. */
+function hashVehicles(h: Fnv64, v: VehicleLayers): void {
+  h.u32(v.capacity);
+  h.str(stableJson(v.order));
+  h.str(stableJson(v.free));
+  const layers = Object.entries(v)
+    .filter((entry): entry is [string, ArrayBufferView] => ArrayBuffer.isView(entry[1]))
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  for (const [name, layer] of layers) {
+    h.str(name);
+    h.bytes(layer);
+  }
+  h.str(stableJson(v.order.map((slot) => [v.trafficState[slot], v.laneletPlan[slot]])));
+}
+
+function hashTraffic(h: Fnv64, w: World): void {
+  h.str(stableJson(w.pathPool.fingerprintState()));
+  h.int(w.vehicleSeq);
+  h.str(stableJson(w.trafficLights));
+  h.str(stableJson([[...w.leftTurnDemand.ns], [...w.leftTurnDemand.ew]]));
+  h.str(stableJson(w.reservations.fingerprintState()));
+}
 
 function hashTimer(h: Fnv64, t: Timer): void {
   h.int(t.durationNs);
@@ -337,12 +350,8 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
     },
   ],
   ['transport', hashTransport],
-  [
-    'vehicles',
-    (h, w) => {
-      for (const layer of VEHICLE_LAYER_ORDER) h.bytes(w.vehicles[layer]);
-    },
-  ],
+  ['traffic', hashTraffic],
+  ['vehicles', (h, w) => hashVehicles(h, w.vehicles)],
 ];
 
 export interface FingerprintSection {

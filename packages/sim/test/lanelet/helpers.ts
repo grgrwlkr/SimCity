@@ -9,7 +9,7 @@ import {
   type LaneletConflictMatrices,
 } from '../../src/transport/lanelet/build';
 import type { LaneletGraph } from '../../src/transport/lanelet/graph';
-import { defaultTrafficConfig } from '../../src/traffic/maneuver';
+import { defaultTrafficConfig } from '../../src/traffic/config';
 import { setRoad } from '../transport/helpers';
 
 export const t = (x: number, y: number): TilePos => ({ x, y });

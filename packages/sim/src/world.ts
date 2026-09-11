@@ -12,8 +12,12 @@ import { Notifications } from './notifications';
 import { DEFAULT_RNG_SEED, stdRngSeedFromU64, type StdRng } from './rng';
 import type { AppState, PendingState } from './state';
 import { SECOND_NS, Timer } from './timer';
-import { defaultTrafficConfig, type TrafficConfig } from './traffic/maneuver';
+import { defaultTrafficConfig, type TrafficConfig } from './traffic/config';
+import type { LeftTurnDemand, TrafficLight } from './traffic/lights';
 import { TrafficOccupancy } from './traffic/occupancy';
+import { PathPool } from './traffic/pathPool';
+import { IntersectionReservations } from './traffic/reservations';
+import { VEHICLE_CAPACITY, createVehicleLayers, type VehicleLayers } from './traffic/vehicles';
 import { LaneGraph } from './transport/laneGraph';
 import { LaneletConflictMatrices } from './transport/lanelet/build';
 import { LaneletGraph } from './transport/lanelet/graph';
@@ -21,23 +25,12 @@ import { PathCache, defaultPathfindingConfig, type PathfindingConfig } from './t
 import { RegionGraph } from './transport/regionGraph';
 import { RoadGraph } from './transport/roadGraph';
 
-export const VEHICLE_CAPACITY = 4096;
+export { VEHICLE_CAPACITY, type VehicleLayers } from './traffic/vehicles';
 
 /** `MapSeed(1)` inserted by `init_map_grid` at startup. */
 export const STARTUP_MAP_SEED = 1n;
 /** `BuildingUpgradeClock::default()`: a five-second repeating timer. */
 export const BUILDING_UPGRADE_PERIOD_NS = 5 * SECOND_NS;
-
-export interface VehicleLayers {
-  readonly alive: Uint8Array;
-  readonly x: Float32Array;
-  readonly y: Float32Array;
-  readonly heading: Float32Array;
-  readonly lanelet: Int32Array;
-  readonly progress: Float32Array;
-  readonly state: Uint8Array;
-  readonly kind: Uint8Array;
-}
 
 export interface World {
   readonly mapConfig: MapConfig;
@@ -66,6 +59,13 @@ export interface World {
   readonly intersections: IntersectionIndex;
   readonly trafficOccupancy: TrafficOccupancy;
   readonly vehicles: VehicleLayers;
+  readonly pathPool: PathPool;
+  /** `VehicleSeqGen`: the last sequence number handed out. */
+  vehicleSeq: number;
+  /** One per lit intersection cluster (the Rust `TrafficLight` entities). */
+  trafficLights: TrafficLight[];
+  readonly leftTurnDemand: LeftTurnDemand;
+  readonly reservations: IntersectionReservations;
   /** Fixed ticks run since the world was created. */
   tick: number;
   appState: AppState;
@@ -117,16 +117,12 @@ export function createWorld(options: WorldOptions = {}): World {
     pathfindingConfig: defaultPathfindingConfig(),
     intersections: new IntersectionIndex(),
     trafficOccupancy: new TrafficOccupancy(),
-    vehicles: {
-      alive: new Uint8Array(VEHICLE_CAPACITY),
-      x: new Float32Array(VEHICLE_CAPACITY),
-      y: new Float32Array(VEHICLE_CAPACITY),
-      heading: new Float32Array(VEHICLE_CAPACITY),
-      lanelet: new Int32Array(VEHICLE_CAPACITY),
-      progress: new Float32Array(VEHICLE_CAPACITY),
-      state: new Uint8Array(VEHICLE_CAPACITY),
-      kind: new Uint8Array(VEHICLE_CAPACITY),
-    },
+    vehicles: createVehicleLayers(VEHICLE_CAPACITY),
+    pathPool: new PathPool(),
+    vehicleSeq: 0,
+    trafficLights: [],
+    leftTurnDemand: { ns: new Set(), ew: new Set() },
+    reservations: new IntersectionReservations(),
     tick: 0,
     appState: 'MainMenu',
     nextState: null,

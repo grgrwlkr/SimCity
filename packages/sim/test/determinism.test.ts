@@ -6,6 +6,7 @@ import { fingerprint, fingerprintSections } from '../src/fingerprint';
 import { buildHeadlessGame, reseed } from '../src/headless';
 import { firstDivergence } from '../src/probe';
 import { requestState } from '../src/state';
+import { refSlot, spawnVehicle } from '../src/traffic/vehicles';
 import type { World } from '../src/world';
 
 /** ~12 game days, as in Rust. */
@@ -108,8 +109,29 @@ describe('determinism', () => {
       ]);
     }
     for (const [layer, values] of Object.entries(buildHeadlessGame().vehicles)) {
-      mutations.push([`vehicles.${layer}`, (w) => void (w.vehicles[layer as keyof World['vehicles']][values.length - 1] = 1)]);
+      if (!ArrayBuffer.isView(values)) continue;
+      mutations.push([
+        `vehicles.${layer}`,
+        (w) => void ((w.vehicles as unknown as Record<string, Uint8Array>)[layer]![(values as Uint8Array).length - 1] = 1),
+      ]);
     }
+    mutations.push(
+      ['vehicles.order', (w) => void spawnVehicle(w, { route: [{ x: 0, y: 0 }] })],
+      [
+        'vehicles.trafficState',
+        (w) => {
+          const slot = refSlot(w.vehicles, spawnVehicle(w, { route: [{ x: 0, y: 0 }] }));
+          const before = fingerprint(w);
+          w.vehicles.trafficState[slot] = { kind: 'Accelerating' };
+          expect(fingerprint(w), 'fingerprint is blind to a live vehicle traffic state').not.toBe(before);
+        },
+      ],
+      ['pathPool', (w) => void w.pathPool.intern([{ x: 1, y: 1 }])],
+      ['vehicleSeq', (w) => void (w.vehicleSeq += 1)],
+      ['trafficLights', (w) => void w.trafficLights.push({ intersectionId: 0, intersectionKey: 'k', pos: { x: 0, y: 0 }, phase: 'NorthSouthGreen', phaseTimer: 1, greenDuration: 10, yellowDuration: 3, allRedDuration: 4 })],
+      ['leftTurnDemand', (w) => void w.leftTurnDemand.ns.add(3)],
+      ['reservations', (w) => void w.reservations.ledgerMut(0).setInboxLanelet(1)],
+    );
 
     for (const [label, mutate] of mutations) {
       const w = buildHeadlessGame();

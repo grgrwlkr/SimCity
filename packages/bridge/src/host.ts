@@ -3,13 +3,18 @@
 import {
   bumpVersion,
   createWorld,
+  despawnVehicle,
   detectIntersections,
   fingerprint,
   parseRustCommand,
+  refSlot,
   requestState,
   rngProbeDigest,
+  spawnVehicle,
   step,
   toHex64,
+  vehicleRef,
+  worldToTile,
   type World,
 } from '@simcity/sim';
 import { FixedStepDriver } from './driver';
@@ -133,14 +138,15 @@ export class SimHost {
     if (vehicles.length > layers.alive.length) {
       throw new RangeError(`debugVehicles: ${vehicles.length} vehicles, capacity ${layers.alive.length}`);
     }
-    layers.alive.fill(0);
-    vehicles.forEach((v, slot) => {
-      layers.alive[slot] = 1;
+    const w = this.world;
+    for (const slot of [...layers.order]) despawnVehicle(w, vehicleRef(layers, slot));
+    for (const v of vehicles) {
+      const tile = worldToTile(w.mapConfig, v) ?? { x: 0, y: 0 };
+      const slot = refSlot(layers, spawnVehicle(w, { route: [tile], kind: v.kind }));
       layers.x[slot] = v.x;
       layers.y[slot] = v.y;
       layers.heading[slot] = v.heading;
-      layers.kind[slot] = v.kind;
-    });
+    }
     this.publish();
   }
 
