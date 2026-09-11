@@ -120,7 +120,13 @@ export function updateTrafficLights(w: World, dtNs: number): void {
   }
 }
 
-/** `TrafficLight::default()` for a cluster: all-red clearance 4 s, green 10 s, yellow 3 s. */
+/**
+ * Green of a new light. Rust keeps 10 s, which lets a two-lane approach clear only a few cars per
+ * cycle; the port doubles it (program amendment: improve while porting).
+ */
+export const DEFAULT_GREEN_SECS = 20;
+
+/** A new light for a cluster: all-red clearance 4 s, green `DEFAULT_GREEN_SECS`, yellow 3 s. */
 function newLight(id: number, key: string, pos: TilePos, phaseTimer: number): TrafficLight {
   return {
     intersectionId: id,
@@ -128,7 +134,7 @@ function newLight(id: number, key: string, pos: TilePos, phaseTimer: number): Tr
     pos,
     phase: 'NorthSouthGreen',
     phaseTimer,
-    greenDuration: 10,
+    greenDuration: DEFAULT_GREEN_SECS,
     yellowDuration: 3,
     allRedDuration: 4,
   };

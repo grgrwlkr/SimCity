@@ -47,6 +47,13 @@ test('menuStartsAGameAndTheClockRuns', async ({ page }, testInfo) => {
   await expect(page.getByTestId('start')).toBeVisible();
 });
 
+test('hudShowsTheFrameRate', async ({ page }) => {
+  await page.getByTestId('start').click();
+  const fps = page.getByTestId('fps');
+  await expect(fps).toHaveText(/^FPS \d+$/);
+  await expect.poll(async () => Number((await fps.textContent())?.replace('FPS ', ''))).toBeGreaterThan(0);
+});
+
 test('debugFlagReachesTheApi', async ({ page }) => {
   expect(await page.evaluate(() => window.__sim.debug)).toBe(false);
   await page.goto('/?debug=1');

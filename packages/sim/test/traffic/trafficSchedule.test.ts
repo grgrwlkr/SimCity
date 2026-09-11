@@ -72,4 +72,21 @@ describe('traffic schedule', () => {
     runFixedTick(w);
     expect(w.trafficLights[0]!.phaseTimer, 'lights count down on FixedUpdate').not.toBe(before);
   });
+
+  it('placedLightGreenLastsTwentySeconds', () => {
+    // Longer than Rust's 10 s: at 10 s a two-lane approach clears only a few cars per green.
+    const w = trafficWorld(5, 5, [
+      [t(2, 2), 'None'],
+      [t(1, 2), 'East'],
+      [t(3, 2), 'East'],
+      [t(2, 1), 'South'],
+      [t(2, 3), 'South'],
+    ]);
+    w.graphVersion += 1;
+    runUpdateGraph(w);
+    w.commands.push({ kind: 'PlaceTrafficLight', pos: t(2, 2) });
+    applyCommands(w);
+    runUpdateGraph(w);
+    expect(w.trafficLights[0]).toMatchObject({ greenDuration: 20, yellowDuration: 3, allRedDuration: 4 });
+  });
 });

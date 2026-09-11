@@ -67,7 +67,9 @@ function syncRender(snapshot: WorldSnapshot): void {
   });
 }
 
-const { setSnapshot } = useSimStore.getState();
+const { setSnapshot, setFps } = useSimStore.getState();
+// The HUD frame rate: twice a second is enough to read and costs no re-render per frame.
+void renderer.then((r) => setInterval(() => setFps(r.stats().fps), 500));
 client.onFrame((snapshot) => {
   setSnapshot(snapshot);
   syncRender(snapshot);

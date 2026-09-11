@@ -101,6 +101,14 @@ fn main() {
         },
     );
     app.update();
+    // The port's lights keep green for 20 s instead of Rust's 10 s: match it before the first tick.
+    {
+        let world = app.world_mut();
+        let mut lights = world.query::<&mut TrafficLight>();
+        for mut light in lights.iter_mut(world) {
+            light.green_duration = 20.0;
+        }
+    }
     // Graphs and lanelets build on this tick, before any vehicle exists.
     tick(&mut app);
 

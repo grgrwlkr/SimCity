@@ -39,6 +39,7 @@ function useStateHotkeys(appState: AppState | undefined, actions: HudActions): v
 
 export function Hud({ actions }: { actions: HudActions }) {
   const snapshot = useSimStore((s) => s.snapshot);
+  const fps = useSimStore((s) => s.fps);
   useStateHotkeys(snapshot?.appState, actions);
 
   if (snapshot === null) {
@@ -65,6 +66,11 @@ export function Hud({ actions }: { actions: HudActions }) {
       </span>
       <span>Казна {money.format(city.money)}</span>
       <span className="tick">тик {snapshot.tick}</span>
+      {fps !== null && (
+        <span className="tick" data-testid="fps">
+          FPS {fps}
+        </span>
+      )}
       {snapshot.appState === 'Paused' && <span className="paused">Пауза</span>}
       <nav aria-label="Скорость">
         {SPEEDS.map(([speed, label]) => (

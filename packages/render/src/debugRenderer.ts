@@ -4,6 +4,7 @@ import type { DebugOverlayReply, MapLayersReply, RenderFrameCopy, RenderReader, 
 import { tileToWorld, type LightPhase, type MapConfig, type TilePos } from '@simcity/sim';
 import * as THREE from 'three/webgpu';
 import { OrthoView } from './camera';
+import { FpsMeter } from './fpsMeter';
 import { interpolateHeading, interpolatePositions } from './interpolate';
 import { buildChunkGeometry, changedChunks, chunkGrid } from './mapChunks';
 import { LAMP_COLORS, VEHICLE_COLORS } from './palette';
@@ -16,6 +17,8 @@ const MANEUVER_COLORS: Record<string, number> = { Straight: 0x2fd67e, RightTurn:
 export interface RenderStats {
   readonly backend: 'WebGPU' | 'WebGL2';
   readonly frames: number;
+  /** Drawn frames per second over the last second, rounded. */
+  readonly fps: number;
   readonly chunks: number;
   readonly chunksRebuiltLast: number;
   /** The `mapEditVersion` of the map on screen; `null` before the first map. */
@@ -57,6 +60,7 @@ export class DebugRenderer {
   private latestArrivedMs = 0;
   private interpolated: { x: Float32Array; y: Float32Array } | null = null;
   private frames = 0;
+  private readonly fpsMeter = new FpsMeter();
   private chunksRebuiltLast = 0;
   private drawnMapEditVersion: number | null = null;
   private pendingMapEditVersion: number | null = null;
@@ -238,6 +242,7 @@ export class DebugRenderer {
     return {
       backend: this.backend,
       frames: this.frames,
+      fps: Math.round(this.fpsMeter.fps),
       chunks: this.chunkMeshes.size,
       chunksRebuiltLast: this.chunksRebuiltLast,
       mapEditVersion: this.drawnMapEditVersion,
@@ -249,7 +254,10 @@ export class DebugRenderer {
   }
 
   private draw(nowMs: number): void {
-    if (this.view.viewport.width === 0 || this.view.viewport.height === 0) return;
+    if (this.view.viewport.width === 0 || this.view.viewport.height === 0) {
+      this.fpsMeter.idle(nowMs);
+      return;
+    }
     this.updateVehicles(nowMs);
     const b = this.view.bounds();
     this.camera.left = b.left;
@@ -259,6 +267,7 @@ export class DebugRenderer {
     this.camera.updateProjectionMatrix();
     this.renderer.render(this.scene, this.camera);
     this.frames += 1;
+    this.fpsMeter.frame(nowMs);
     if (this.pendingMapEditVersion !== null) {
       this.drawnMapEditVersion = this.pendingMapEditVersion;
       this.pendingMapEditVersion = null;
