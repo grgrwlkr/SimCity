@@ -148,6 +148,7 @@ describe('determinism', () => {
       ['trafficIndex', (w) => void (w.trafficIndex.vehiclesOnRoads = 3)],
       ['trafficRoadCache', (w) => void (w.trafficRoadCache.mapEditVersion = 9)],
       ['routeProducerStats', (w) => void (w.routeProducerStats.guardRefusals += 1)],
+      ['laneletStallTracker', (w) => void w.laneletStallTracker.set(7, 3)],
     );
 
     for (const [label, mutate] of mutations) {

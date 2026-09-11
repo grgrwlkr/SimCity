@@ -65,6 +65,20 @@
 - Расписание: `updateTrafficLights` (SimStep::Traffic), затем TrafficStep::Flow `updateTrafficOccupancy → updateVehicleTrafficState` и TrafficStep::Movement `assignVehicleSeq → buildSpatialIndex → breakTileSwaps → moveVehicles → cleanupRightOnRedMarkers → cleanupIntersectionReservations`. Спавн, смена полос, арбитр и восстановление встают на свои места в 2b–2c.
 - `examples/dump_platoon.rs`: на сгенерированной карте без зон и зданий строится двухполосный коридор, в него ставятся 12 машин с разными скоростными профилями и стартовыми позициями, и игра гонит 400 тиков через `accumulate_overstep`. Пример пишет состояние машин на каждом тике.
 
+## 2b: арбитр лейнлетов
+
+Источник: `traffic/intersection/arbiter.rs`; тесты там же (18), в `tests/lanelet_arbiter.rs` (29) и `tests/intersection_reservations.rs` (2). Тесты реестра и `maneuver_kind` уже перенесены раньше.
+
+1. **Волна A — чистое ядро** (`traffic/arbiter.ts`): `candidatePriority`, `laneletReadiness`, `resolveLaneletFallback`, `resolveInboxLanelet`, `seedPedMasks`, `arbitrateGrantsInner`, `ArbiterIndexCache`, `orderedIntersectionIds`, `nudgeLaneletStallReroute`; `clusterHasOpenExit` — в `intersections/index.ts`. Покрывают 18 тестов `arbiter.rs`.
+2. **Волна B — система** `arbitrateLaneletReservations` и 31 интеграционный тест. В расписании она встаёт между `buildTrafficSpatialIndex` и `breakTileSwaps`; nudge — после `cleanupIntersectionReservations`, до портирования Recovery в 2c. `checkRingFreeTopology` идёт в `UPDATE_GRAPH`. Во входной гейт `moveVehicles` возвращается уступка пешеходам.
+3. **Ворота** — `examples/dump_signalized.rs`: крест со светофором; машины со всех подходов (прямо, направо, налево) подаются по фиксированному расписанию тиков в обеих реализациях; 1500 тиков; курсор, прогресс и скорость бит в бит.
+
+Решения:
+
+- **Пешеходы.** `World.pedestrianCrossings: {intersectionId, axisNs}[]` — до этапа 4 массив пуст, тесты заполняют его сами.
+- **Состояние и наблюдаемость.** `ApproachFairness` и `LaneletStallTracker` — состояние, входят в фингерпринт. `ArbiterTickStats` и `RingTopologyStatus` — наблюдаемость, в фингерпринт не входят. `ArbiterIndexCache` выводится из графа той же версии, поэтому тоже не входит.
+- **Тай-брейк.** Rust сортирует по `(seq, Entity::to_bits)`, порт — по `(seq, ref)`.
+
 ## Сделано / Отклонения / Замеры
 
 ### 2a (коммиты 0544244, 94b16db, b61b491 и коммит ворот)

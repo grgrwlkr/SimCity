@@ -73,6 +73,8 @@ export interface World {
   readonly trafficRoadCache: TrafficRoadCache;
   /** `RouteProducerStats`: which producer built routes (observability). */
   readonly routeProducerStats: { guardRefusals: number; swapBreakHandbuilt: number };
+  /** `LaneletStallTracker`: consecutive ticks a vehicle approached a box with an unresolved lanelet. */
+  readonly laneletStallTracker: Map<number, number>;
   /** Fixed ticks run since the world was created. */
   tick: number;
   appState: AppState;
@@ -134,6 +136,7 @@ export function createWorld(options: WorldOptions = {}): World {
     trafficIndex: emptyTrafficIndex(),
     trafficRoadCache: new TrafficRoadCache(),
     routeProducerStats: { guardRefusals: 0, swapBreakHandbuilt: 0 },
+    laneletStallTracker: new Map(),
     tick: 0,
     appState: 'MainMenu',
     nextState: null,

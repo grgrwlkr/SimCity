@@ -21,6 +21,7 @@ export * from './rng';
 export * from './schedule';
 export * from './state';
 export * from './timer';
+export * from './traffic/arbiter';
 export * from './traffic/config';
 export * from './traffic/constants';
 export * from './traffic/drive';

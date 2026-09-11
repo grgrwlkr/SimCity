@@ -167,6 +167,7 @@ function hashTraffic(h: Fnv64, w: World): void {
   h.u32(roads.roadTiles);
   h.bytes(roads.capacityPerTile);
   h.str(stableJson(w.routeProducerStats));
+  h.str(stableJson([...w.laneletStallTracker].sort(([a], [b]) => a - b)));
 }
 
 function hashTimer(h: Fnv64, t: Timer): void {

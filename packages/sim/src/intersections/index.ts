@@ -75,6 +75,27 @@ export class IntersectionIndex {
   }
 }
 
+/**
+ * Whether some cluster tile borders a real road tile outside the cluster: a drainable box. Clusters
+ * without one are a likely gridlock ring (advisory only).
+ */
+export function clusterHasOpenExit(cluster: IntersectionCluster, grid: MapGrid, index: IntersectionIndex): boolean {
+  for (const tile of cluster.tiles) {
+    for (const [dx, dy] of [
+      [-1, 0],
+      [1, 0],
+      [0, -1],
+      [0, 1],
+    ] as const) {
+      const n = { x: tile.x + dx, y: tile.y + dy };
+      const i = grid.idx(n);
+      if (i === undefined || grid.water[i] !== 0 || grid.roadKind[i] === 0 || grid.roadDir[i] === 0) continue;
+      if (index.intersectionIdAt(n) === undefined) return true;
+    }
+  }
+  return false;
+}
+
 export function buildIntersectionClusters(grid: MapGrid): {
   clusters: IntersectionCluster[];
   tileToIntersection: Map<number, number>;
