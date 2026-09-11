@@ -201,13 +201,14 @@ export class DebugRenderer {
         const origin = tileToWorld(cfg, { x: light.minX, y: light.minY });
         const ts = cfg.tileSize;
         const at = (tx: number, ty: number) => [origin.x + (tx - light.minX) * ts, origin.y + (ty - light.minY) * ts] as const;
-        // Eastbound arrives on the low row from the west, westbound on the high row from the east;
-        // northbound on the low column from the south, southbound on the high column from the north.
+        // Right-hand traffic: eastbound arrives on the low row from the west, westbound on the high row
+        // from the east; northbound on the high column from the south, southbound on the low column
+        // from the north. Each lamp stands on the kerb side of its approach.
         const spots: Array<[readonly [number, number], 'ns' | 'ew']> = [
           [at(light.minX - 0.5, light.minY - 1), 'ew'],
           [at(light.maxX + 0.5, light.maxY + 1), 'ew'],
-          [at(light.minX - 1, light.minY - 0.5), 'ns'],
-          [at(light.maxX + 1, light.maxY + 0.5), 'ns'],
+          [at(light.maxX + 1, light.minY - 0.5), 'ns'],
+          [at(light.minX - 1, light.maxY + 0.5), 'ns'],
         ];
         set = spots.map(([[x, y], axis]) => {
           const mesh = new THREE.Mesh(new THREE.CircleGeometry(ts * 0.32, 20), new THREE.MeshBasicMaterial({ color: 0xffffff }));

@@ -39,8 +39,8 @@ const FACTORS: [f32; 4] = [0.8, 1.0, 1.2, 0.9];
 const ENDS: [(TilePos, TilePos, usize); 4] = [
     (TilePos { x: LO, y: 40 }, TilePos { x: HI, y: 40 }, 1),
     (TilePos { x: HI, y: 41 }, TilePos { x: LO, y: 41 }, 0),
-    (TilePos { x: 40, y: LO }, TilePos { x: 40, y: HI }, 3),
-    (TilePos { x: 41, y: HI }, TilePos { x: 41, y: LO }, 2),
+    (TilePos { x: 41, y: LO }, TilePos { x: 41, y: HI }, 3),
+    (TilePos { x: 40, y: HI }, TilePos { x: 40, y: LO }, 2),
 ];
 
 fn tick(app: &mut App) {
@@ -83,8 +83,8 @@ fn main() {
             }
             set_road(&mut grid, TilePos { x: i, y: 40 }, RoadDir::East, 0);
             set_road(&mut grid, TilePos { x: i, y: 41 }, RoadDir::West, 1);
-            set_road(&mut grid, TilePos { x: 40, y: i }, RoadDir::North, 0);
-            set_road(&mut grid, TilePos { x: 41, y: i }, RoadDir::South, 1);
+            set_road(&mut grid, TilePos { x: 41, y: i }, RoadDir::North, 0);
+            set_road(&mut grid, TilePos { x: 40, y: i }, RoadDir::South, 1);
         }
         for (x, y) in [(40, 40), (41, 40), (40, 41), (41, 41)] {
             set_road(&mut grid, TilePos { x, y }, RoadDir::None, 0);

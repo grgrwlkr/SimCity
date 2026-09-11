@@ -12,7 +12,10 @@ import type { World } from '../world';
 export const SIGNALIZED_CROSS = { lo: 20, hi: 60, box: { x: 40, y: 40 }, spawnEvery: 50 } as const;
 const FACTORS = [0.8, 1.0, 1.2, 0.9].map(Math.fround);
 
-/** Rows 40 (East) and 41 (West), columns 40 (North) and 41 (South), a 2×2 box where they cross. */
+/**
+ * Right-hand traffic as the road tool paints it: rows 40 (East) and 41 (West), columns 41 (North)
+ * and 40 (South), a 2×2 box where they cross.
+ */
 export function buildSignalizedCross(grid: MapGrid, lo: number = SIGNALIZED_CROSS.lo, hi: number = SIGNALIZED_CROSS.hi): void {
   const road = (x: number, y: number, dir: RoadDir, lane: number) => {
     const cell = grid.get({ x, y });
@@ -23,8 +26,8 @@ export function buildSignalizedCross(grid: MapGrid, lo: number = SIGNALIZED_CROS
     if (i === 40 || i === 41) continue;
     road(i, 40, 'East', 0);
     road(i, 41, 'West', 1);
-    road(40, i, 'North', 0);
-    road(41, i, 'South', 1);
+    road(41, i, 'North', 0);
+    road(40, i, 'South', 1);
   }
   for (const [x, y] of [
     [40, 40],
@@ -44,8 +47,8 @@ export function signalizedCrossRoutes(w: World, lo: number = SIGNALIZED_CROSS.lo
   const ends: ReadonlyArray<readonly [entry: TilePos, exit: TilePos, opposite: number]> = [
     [{ x: lo, y: 40 }, { x: hi, y: 40 }, 1],
     [{ x: hi, y: 41 }, { x: lo, y: 41 }, 0],
-    [{ x: 40, y: lo }, { x: 40, y: hi }, 3],
-    [{ x: 41, y: hi }, { x: 41, y: lo }, 2],
+    [{ x: 41, y: lo }, { x: 41, y: hi }, 3],
+    [{ x: 40, y: hi }, { x: 40, y: lo }, 2],
   ];
   const ctx = { grid: w.grid, traffic: new TrafficOccupancy(), cfg: w.pathfindingConfig, jitterSeed: 0n };
   const laneAt = (tile: TilePos) => {
