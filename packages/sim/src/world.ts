@@ -24,6 +24,7 @@ import { LaneGraph } from './transport/laneGraph';
 import { LaneletConflictMatrices } from './transport/lanelet/build';
 import { LaneletGraph } from './transport/lanelet/graph';
 import { PathCache, defaultPathfindingConfig, type PathfindingConfig } from './transport/pathfinding';
+import type { TripRequested } from './events';
 import type { RouteInvalidation } from './traffic/reroute';
 import { emptyMotionStats, type VehicleMotionStats } from './traffic/stuck';
 import { RegionGraph } from './transport/regionGraph';
@@ -75,7 +76,16 @@ export interface World {
   readonly trafficIndex: TrafficIndex;
   readonly trafficRoadCache: TrafficRoadCache;
   /** `RouteProducerStats`: which producer built routes (observability). */
-  readonly routeProducerStats: { guardRefusals: number; swapBreakHandbuilt: number; stuckLanelet: number; stuckRoadFallback: number };
+  readonly routeProducerStats: {
+    guardRefusals: number;
+    swapBreakHandbuilt: number;
+    stuckLanelet: number;
+    stuckRoadFallback: number;
+    spawnLanelet: number;
+    spawnRoadFallback: number;
+  };
+  /** Car trips no tick could serve yet (plan budget, vehicle cap, jam), oldest first. */
+  readonly tripBacklog: TripRequested[];
   /** `VehicleMotionStats`, written by `trackVehicleMotion` (observability). */
   motionStats: VehicleMotionStats;
   /** `LaneletStallTracker`: consecutive ticks a vehicle approached a box with an unresolved lanelet. */
@@ -152,7 +162,8 @@ export function createWorld(options: WorldOptions = {}): World {
     spatialIndex: new TrafficSpatialIndex(),
     trafficIndex: emptyTrafficIndex(),
     trafficRoadCache: new TrafficRoadCache(),
-    routeProducerStats: { guardRefusals: 0, swapBreakHandbuilt: 0, stuckLanelet: 0, stuckRoadFallback: 0 },
+    routeProducerStats: { guardRefusals: 0, swapBreakHandbuilt: 0, stuckLanelet: 0, stuckRoadFallback: 0, spawnLanelet: 0, spawnRoadFallback: 0 },
+    tripBacklog: [],
     motionStats: emptyMotionStats(),
     laneletStallTracker: new Map(),
     approachFairness: new Map(),

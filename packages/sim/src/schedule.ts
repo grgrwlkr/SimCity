@@ -17,6 +17,7 @@ import { updateTrafficIndex, updateTrafficOccupancy } from './traffic/occupancy'
 import { invalidateRoutesOnGraphChange } from './traffic/reroute';
 import { cleanupIntersectionReservations } from './traffic/reservations';
 import { assignVehicleSeq } from './traffic/seq';
+import { spawnTripVehicles } from './traffic/spawn';
 import { initStuckTimers, resolveStuckVehicles, trackVehicleMotion, updateStuckTimers } from './traffic/stuck';
 import { buildTrafficSpatialIndex } from './traffic/spatialIndex';
 import { updateVehicleTrafficState } from './traffic/state';
@@ -72,6 +73,9 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'updateTrafficOccupancy', run: updateTrafficOccupancy, runIn: IN_GAME },
   // After updateTrafficOccupancy and the lights: approach, stop and release states.
   { name: 'updateVehicleTrafficState', run: updateVehicleTrafficState, runIn: IN_GAME },
+  // After updateVehicleTrafficState: this tick's trip requests and the backlog become vehicles; plans
+  // read the fresh occupancy.
+  { name: 'spawnTripVehicles', run: spawnTripVehicles, runIn: IN_GAME },
   // TrafficStep::Movement. Numbers vehicles that appeared since the last tick before any tie-break.
   { name: 'assignVehicleSeq', run: assignVehicleSeq, runIn: IN_GAME },
   // After assignVehicleSeq: per-tile vehicles by progress for the leaders below.

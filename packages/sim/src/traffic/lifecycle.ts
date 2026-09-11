@@ -8,6 +8,7 @@ import { despawnVehicle, vehicleRef } from './vehicles';
 function despawnAllVehicles(w: World): void {
   const v = w.vehicles;
   for (const slot of [...v.order]) despawnVehicle(w, vehicleRef(v, slot));
+  w.tripBacklog.length = 0;
 }
 
 function resetTrafficAggregates(w: World): void {

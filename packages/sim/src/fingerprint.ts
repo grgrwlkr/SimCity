@@ -168,6 +168,7 @@ function hashTraffic(h: Fnv64, w: World): void {
   h.bytes(roads.capacityPerTile);
   h.str(stableJson(w.routeProducerStats));
   h.str(stableJson(w.routeInvalidation));
+  h.str(stableJson(w.tripBacklog));
   h.str(stableJson([...w.laneletStallTracker].sort(([a], [b]) => a - b)));
   // Arbiter stats, the ring-topology advisory and the index cache are observability or derived.
   h.str(stableJson([...w.approachFairness].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))));
@@ -191,6 +192,7 @@ function hashEvents(h: Fnv64, e: TickEvents): void {
   }
   h.u32(e.dayAdvanced.length);
   for (const day of e.dayAdvanced) h.u32(day);
+  h.str(stableJson(e.tripRequested));
   h.u32(e.tripFinished.length);
   for (const { citizen, purpose } of e.tripFinished) {
     h.u32(citizen);
