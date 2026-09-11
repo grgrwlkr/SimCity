@@ -24,6 +24,7 @@ import { LaneGraph } from './transport/laneGraph';
 import { LaneletConflictMatrices } from './transport/lanelet/build';
 import { LaneletGraph } from './transport/lanelet/graph';
 import { PathCache, defaultPathfindingConfig, type PathfindingConfig } from './transport/pathfinding';
+import type { RouteInvalidation } from './traffic/reroute';
 import { RegionGraph } from './transport/regionGraph';
 import { RoadGraph } from './transport/roadGraph';
 
@@ -86,6 +87,8 @@ export interface World {
   readonly ringTopology: { clustersWithoutOpenExit: number; lastVersion: number };
   /** Active `PedestrianCrossing`s; pedestrians arrive with stage 4, until then only tests fill it. */
   readonly pedestrianCrossings: Array<{ readonly intersectionId: number; readonly axisNs: boolean }>;
+  /** `invalidate_routes_on_graph_change` locals: the graph version last seen and an unfinished sweep. */
+  readonly routeInvalidation: RouteInvalidation;
   /** Fixed ticks run since the world was created. */
   tick: number;
   appState: AppState;
@@ -153,6 +156,7 @@ export function createWorld(options: WorldOptions = {}): World {
     arbiterStats: emptyArbiterStats(),
     ringTopology: { clustersWithoutOpenExit: 0, lastVersion: 0 },
     pedestrianCrossings: [],
+    routeInvalidation: { lastSeen: null, sweepPending: false },
     tick: 0,
     appState: 'MainMenu',
     nextState: null,

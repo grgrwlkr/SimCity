@@ -167,6 +167,7 @@ function hashTraffic(h: Fnv64, w: World): void {
   h.u32(roads.roadTiles);
   h.bytes(roads.capacityPerTile);
   h.str(stableJson(w.routeProducerStats));
+  h.str(stableJson(w.routeInvalidation));
   h.str(stableJson([...w.laneletStallTracker].sort(([a], [b]) => a - b)));
   // Arbiter stats, the ring-topology advisory and the index cache are observability or derived.
   h.str(stableJson([...w.approachFairness].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))));

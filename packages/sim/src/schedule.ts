@@ -14,6 +14,7 @@ import { cleanupRightOnRedMarkers, moveVehicles } from './traffic/drive';
 import { clearVehicles } from './traffic/lifecycle';
 import { handleTrafficLightCommands, syncTrafficLights, updateTrafficLights } from './traffic/lights';
 import { updateTrafficIndex, updateTrafficOccupancy } from './traffic/occupancy';
+import { invalidateRoutesOnGraphChange } from './traffic/reroute';
 import { cleanupIntersectionReservations } from './traffic/reservations';
 import { assignVehicleSeq } from './traffic/seq';
 import { buildTrafficSpatialIndex } from './traffic/spatialIndex';
@@ -60,6 +61,8 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'buildLaneGraph', run: buildLaneGraph, runIn: ALL_STATES },
   // After buildLaneGraph: resolves approach and exit lanes by tile; reads the intersection clusters.
   { name: 'buildLaneletGraph', run: buildLaneletGraph, runIn: ALL_STATES },
+  // After buildLaneletGraph, in game: a graph version bump re-checks active routes against the new grid.
+  { name: 'invalidateRoutesOnGraphChange', run: invalidateRoutesOnGraphChange, runIn: IN_GAME },
   // SimStep::Tick — the game clock; writes HourAdvanced / DayAdvanced for every system after it.
   { name: 'simTick', run: simTick, runIn: IN_GAME },
   // SimStep::Traffic, before the vehicle states that read the phase.

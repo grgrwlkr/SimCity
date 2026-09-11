@@ -88,6 +88,16 @@
 - **Состояние и наблюдаемость.** `ApproachFairness` и `LaneletStallTracker` — состояние, входят в фингерпринт. `ArbiterTickStats` и `RingTopologyStatus` — наблюдаемость, в фингерпринт не входят. `ArbiterIndexCache` выводится из графа той же версии, поэтому тоже не входит.
 - **Тай-брейк.** Rust сортирует по `(seq, Entity::to_bits)`, порт — по `(seq, ref)`.
 
+## 2c: спавн, парковка, перепланирование, застревание, смена полос
+
+Источник: `traffic/spawn.rs`, `parking.rs`, `reroute_planner.rs`, `stuck.rs`, `indices.rs` (таймер движения, индекс владельцев), `lane_change.rs` и `lane_change/planning.rs`. Тесты: `reroute_planner.rs` (7), `stuck.rs` (4 из 5), `tests/vehicle_spawning.rs` (2), `tests/vehicle_parking.rs` (1). `wedged_enroute_service_vehicle_abandons_mission_and_returns_home` вместе с `recover_immortal_service_vehicles` уходит на этап служб.
+
+1. **Перепланировщик:** `planTilesLaneletFirst` (лейнлеты, затем road-A* под гардом направления), `applyRoute`, `invalidateRoutesOnGraphChange` в FixedUpdate после `buildLaneletGraph`.
+2. **Восстановление** (TrafficStep::Recovery): таймер движения → `updateStuckTimers` → `nudgeLaneletStallReroute` → `resolveStuckVehicles`.
+3. **Спавн и парковка:** `events.tripRequested` — вход поездок до этапа жителей; `spawnTripVehicles` с переиспользованием своей припаркованной машины, профилем водителя, дросселем по затору и лимитам; индекс владельцев; смещение припаркованных в рендере. Зданий в TS ещё нет, поэтому въезд ищется от тайла (`adjacentRoadTowards`); вариант по контуру здания подключится вместе со зданиями.
+4. **Смена полос:** `planLaneChanges`, кулдаун, обгон, пространственный индекс до смены полос. Как именно — решаю по замеру на кресте 4×4, где прямые стоят за ждущим левым.
+5. **Ворота:** тестовый город и синтетические поездки между случайными дорожными тайлами из `simRng`, 6000 тиков. Ни одной машины дольше 600 тиков в `WaitingForGreen`, ни одного маршрута против полосы, число машин во второй половине не растёт.
+
 ## Сделано / Отклонения / Замеры
 
 ### 2a (коммиты 0544244, 94b16db, b61b491 и коммит ворот)
