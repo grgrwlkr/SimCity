@@ -1,5 +1,5 @@
 // Worker ↔ main thread messages. Requests carry an id so `window.__sim` can await each reply.
-import type { AppState, City } from '@simcity/sim';
+import type { AppState, City, MapCell, TilePos } from '@simcity/sim';
 import type { SimSpeed } from './driver';
 
 export interface WorldSnapshot {
@@ -26,7 +26,11 @@ export type Request =
   | { readonly t: 'fingerprint' }
   | { readonly t: 'setState'; readonly state: AppState }
   | { readonly t: 'setSpeed'; readonly speed: SimSpeed }
-  | { readonly t: 'rngProbe'; readonly seed: string; readonly draws: number };
+  | { readonly t: 'rngProbe'; readonly seed: string; readonly draws: number }
+  /** `UndoRedoRequested`: not a `GameCommand` in Rust either. */
+  | { readonly t: 'undoRedo'; readonly redo: boolean }
+  /** One map cell, for debugging and e2e checks. */
+  | { readonly t: 'tile'; readonly pos: TilePos };
 
 export interface ReplyByRequest {
   readonly cmd: null;
@@ -36,6 +40,9 @@ export interface ReplyByRequest {
   readonly setState: null;
   readonly setSpeed: null;
   readonly rngProbe: string;
+  readonly undoRedo: null;
+  /** `null` outside the map. */
+  readonly tile: MapCell | null;
 }
 
 export type Reply = ReplyByRequest[keyof ReplyByRequest];

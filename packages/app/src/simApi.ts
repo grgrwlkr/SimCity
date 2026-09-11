@@ -6,7 +6,7 @@ import {
   type SimSpeed,
   type WorldSnapshot,
 } from '@simcity/bridge';
-import type { AppState } from '@simcity/sim';
+import type { AppState, MapCell } from '@simcity/sim';
 
 export interface RenderFrameSummary {
   readonly tick: number;
@@ -26,6 +26,10 @@ export interface SimApi {
   setState(state: AppState): Promise<null>;
   setSpeed(speed: SimSpeed): Promise<null>;
   rngProbe(seed: string, draws: number): Promise<string>;
+  /** Undo (`false`) or redo (`true`) the last map edit, applied with the next frame's commands. */
+  undoRedo(redo: boolean): Promise<null>;
+  /** One map cell; `null` outside the map. */
+  tile(x: number, y: number): Promise<MapCell | null>;
   /** The frame the main thread reads from the shared render buffer. */
   renderFrame(): Promise<RenderFrameSummary>;
 }
@@ -51,6 +55,8 @@ export function installSimApi(client: SimClient, debug: boolean): SimApi {
     setState: (state) => client.request({ t: 'setState', state }),
     setSpeed: (speed) => client.request({ t: 'setSpeed', speed }),
     rngProbe: (seed, draws) => client.request({ t: 'rngProbe', seed, draws }),
+    undoRedo: (redo) => client.request({ t: 'undoRedo', redo }),
+    tile: (x, y) => client.request({ t: 'tile', pos: { x, y } }),
     renderFrame: async () => {
       const { reader: r, frame } = await reader;
       r.readInto(frame);

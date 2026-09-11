@@ -24,6 +24,33 @@ describe('SimHost', () => {
     expect(host.handle({ t: 'snapshot' })).toMatchObject({ mapSeed: '99', appState: 'InGame', tick: 2 });
   });
 
+  it('undoRedoRequestsReachTheMapHistory', () => {
+    const host = new SimHost(16);
+    const pos = { x: 1, y: 1 };
+    const roadAt = () => host.handle({ t: 'tile', pos });
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'step', ticks: 1 });
+
+    host.handle({
+      t: 'cmd',
+      cmd: { SetRoad: { pos, road: { kind: 'TwoLane', dir: 'East', lane: 0, flow: 'TwoWay', lane_type: 'Regular' } } },
+    });
+    host.handle({ t: 'step', ticks: 1 });
+    expect(roadAt()).toMatchObject({ road: { kind: 'TwoLane' } });
+
+    host.handle({ t: 'undoRedo', redo: false });
+    host.handle({ t: 'step', ticks: 1 });
+    expect(roadAt()).toMatchObject({ road: { kind: 'None' } });
+
+    host.handle({ t: 'undoRedo', redo: true });
+    host.handle({ t: 'step', ticks: 1 });
+    expect(roadAt()).toMatchObject({ road: { kind: 'TwoLane' } });
+  });
+
+  it('tileOutsideTheMapIsNull', () => {
+    expect(new SimHost(16).handle({ t: 'tile', pos: { x: -1, y: 0 } })).toBeNull();
+  });
+
   it('rejectsACommandRustWouldReject', () => {
     const host = new SimHost(16);
     expect(() => host.handle({ t: 'cmd', cmd: { Teleport: {} } })).toThrow();

@@ -49,6 +49,11 @@ export class SimHost {
         return null;
       case 'rngProbe':
         return rngProbeDigest(BigInt(req.seed), req.draws);
+      case 'undoRedo':
+        this.world.undoRedo.push(req.redo);
+        return null;
+      case 'tile':
+        return this.world.grid.get(req.pos) ?? null;
     }
   }
 
