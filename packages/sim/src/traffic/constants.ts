@@ -44,6 +44,10 @@ export const IMMORTAL_RECOVER_SECS = 180;
 export const WEDGED_REROUTE_RETRY_SECS = 10;
 export const SWAP_DEADLOCK_DESPAWN_SECS = 3;
 export const MAX_UNSTUCK_PER_TICK = 8;
+/** A vehicle stopped this long counts as frozen in the motion stats, s. */
+export const VEHICLE_FROZEN_SECS = 30;
+/** Below this speed a vehicle's moving streak ends, world units / s. */
+export const VEHICLE_MOTION_SPEED_EPS = f32(0.05);
 export const SPAWN_THROTTLE_MAX_CONG = f32(0.95);
 export const SPAWN_THROTTLE_AVG_CONG = f32(0.85);
 export const LANE_CHANGE_COOLDOWN_SECS = f32(1.5);

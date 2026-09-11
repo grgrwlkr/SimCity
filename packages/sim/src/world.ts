@@ -25,6 +25,7 @@ import { LaneletConflictMatrices } from './transport/lanelet/build';
 import { LaneletGraph } from './transport/lanelet/graph';
 import { PathCache, defaultPathfindingConfig, type PathfindingConfig } from './transport/pathfinding';
 import type { RouteInvalidation } from './traffic/reroute';
+import { emptyMotionStats, type VehicleMotionStats } from './traffic/stuck';
 import { RegionGraph } from './transport/regionGraph';
 import { RoadGraph } from './transport/roadGraph';
 
@@ -74,7 +75,9 @@ export interface World {
   readonly trafficIndex: TrafficIndex;
   readonly trafficRoadCache: TrafficRoadCache;
   /** `RouteProducerStats`: which producer built routes (observability). */
-  readonly routeProducerStats: { guardRefusals: number; swapBreakHandbuilt: number };
+  readonly routeProducerStats: { guardRefusals: number; swapBreakHandbuilt: number; stuckLanelet: number; stuckRoadFallback: number };
+  /** `VehicleMotionStats`, written by `trackVehicleMotion` (observability). */
+  motionStats: VehicleMotionStats;
   /** `LaneletStallTracker`: consecutive ticks a vehicle approached a box with an unresolved lanelet. */
   readonly laneletStallTracker: Map<number, number>;
   /** `ApproachFairness`: ticks an approach `${intersection}|${entryDir}` had a candidate but no grant. */
@@ -149,7 +152,8 @@ export function createWorld(options: WorldOptions = {}): World {
     spatialIndex: new TrafficSpatialIndex(),
     trafficIndex: emptyTrafficIndex(),
     trafficRoadCache: new TrafficRoadCache(),
-    routeProducerStats: { guardRefusals: 0, swapBreakHandbuilt: 0 },
+    routeProducerStats: { guardRefusals: 0, swapBreakHandbuilt: 0, stuckLanelet: 0, stuckRoadFallback: 0 },
+    motionStats: emptyMotionStats(),
     laneletStallTracker: new Map(),
     approachFairness: new Map(),
     arbiterIndexCache: new ArbiterIndexCache(),

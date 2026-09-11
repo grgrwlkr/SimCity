@@ -99,6 +99,11 @@ export interface VehicleLayers {
   readonly stuckLastTileY: Int32Array;
   readonly stuckLastProgress: Float32Array;
   readonly swapDeadlocked: Uint8Array;
+  /** `VehicleMotionTimer`: seconds without moving past the anchor, the plain moving streak, the anchor. */
+  readonly stoppedSecs: Float32Array;
+  readonly movingSecs: Float32Array;
+  readonly anchorX: Float32Array;
+  readonly anchorY: Float32Array;
   readonly trafficState: VehicleTrafficState[];
   readonly laneletPlan: VehicleLaneletPlan[];
 }
@@ -146,6 +151,10 @@ export function createVehicleLayers(capacity: number): VehicleLayers {
     stuckLastTileY: i32(),
     stuckLastProgress: f32(),
     swapDeadlocked: u8(),
+    stoppedSecs: f32(),
+    movingSecs: f32(),
+    anchorX: f32(),
+    anchorY: f32(),
     trafficState: Array.from({ length: capacity }, () => FREE_FLOW),
     laneletPlan: Array.from({ length: capacity }, () => ({ entries: [], builtFor: 0 })),
   };
@@ -184,6 +193,8 @@ export interface VehicleSpec {
   readonly carOwner?: number;
   readonly parkedOffset?: number;
   readonly stuck?: { readonly secs: number; readonly lastTile: TilePos; readonly lastProgress: number };
+  /** Motion timer at spawn; the anchor is the spawn position. */
+  readonly motion?: { readonly stoppedSecs: number; readonly movingSecs?: number };
   readonly kind?: number;
 }
 
@@ -231,6 +242,10 @@ export function spawnVehicle(w: World, spec: VehicleSpec): number {
   v.stuckLastTileY[slot] = spec.stuck?.lastTile.y ?? 0;
   v.stuckLastProgress[slot] = f32(spec.stuck?.lastProgress ?? 0);
   v.swapDeadlocked[slot] = 0;
+  v.stoppedSecs[slot] = f32(spec.motion?.stoppedSecs ?? 0);
+  v.movingSecs[slot] = f32(spec.motion?.movingSecs ?? 0);
+  v.anchorX[slot] = world.x;
+  v.anchorY[slot] = world.y;
   setTrafficState(v, slot, spec.state ?? FREE_FLOW);
   v.laneletPlan[slot] = { entries: [], builtFor: 0 };
   return vehicleRef(v, slot);

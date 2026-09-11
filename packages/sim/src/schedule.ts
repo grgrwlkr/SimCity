@@ -17,6 +17,7 @@ import { updateTrafficIndex, updateTrafficOccupancy } from './traffic/occupancy'
 import { invalidateRoutesOnGraphChange } from './traffic/reroute';
 import { cleanupIntersectionReservations } from './traffic/reservations';
 import { assignVehicleSeq } from './traffic/seq';
+import { initStuckTimers, resolveStuckVehicles, trackVehicleMotion, updateStuckTimers } from './traffic/stuck';
 import { buildTrafficSpatialIndex } from './traffic/spatialIndex';
 import { updateVehicleTrafficState } from './traffic/state';
 import { breakTileSwaps } from './traffic/swapBreak';
@@ -85,9 +86,16 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'cleanupRightOnRedMarkers', run: cleanupRightOnRedMarkers, runIn: IN_GAME },
   // After cleanupRightOnRedMarkers (both only after moveVehicles in Rust): stale and exited holds.
   { name: 'cleanupIntersectionReservations', run: cleanupIntersectionReservations, runIn: IN_GAME },
-  // TrafficStep::Recovery: the mandatory-merge nudge reads the stall tracker the arbiter wrote. The
-  // stuck-timer systems around it arrive with stage 2c.
+  // TrafficStep::Recovery, first: vehicles spawned since the last tick get their stuck timer.
+  { name: 'initStuckTimers', run: initStuckTimers, runIn: IN_GAME },
+  // After moveVehicles: the no-progress and moving streaks from this tick's positions.
+  { name: 'trackVehicleMotion', run: trackVehicleMotion, runIn: IN_GAME },
+  // After trackVehicleMotion: the stuck timer reads the no-progress streak for its waiting cap.
+  { name: 'updateStuckTimers', run: updateStuckTimers, runIn: IN_GAME },
+  // After updateStuckTimers, so the bump survives: the mandatory-merge nudge reads the arbiter's stall tracker.
   { name: 'nudgeLaneletStallReroute', run: nudgeLaneletStallReroute, runIn: IN_GAME },
+  // Last: re-routes, or as the last resort removes, vehicles stuck past their thresholds.
+  { name: 'resolveStuckVehicles', run: resolveStuckVehicles, runIn: IN_GAME },
   // PostSimStep::TrafficIndex: the end-of-tick metrics RCI demand reads.
   { name: 'updateTrafficIndex', run: updateTrafficIndex, runIn: IN_GAME },
 ];
