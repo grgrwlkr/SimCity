@@ -5,7 +5,6 @@ import {
   VEHICLE_LENGTH_TILES,
   VEHICLE_WIDTH_TILES,
   tileToWorld,
-  type LightPhase,
   type MapConfig,
   type TilePos,
 } from '@simcity/sim';
@@ -13,6 +12,7 @@ import * as THREE from 'three/webgpu';
 import { OrthoView } from './camera';
 import { FpsMeter } from './fpsMeter';
 import { interpolateHeading, interpolatePositions } from './interpolate';
+import { lampSignal } from './lamps';
 import { buildChunkGeometry, changedChunks, chunkGrid } from './mapChunks';
 import { LAMP_COLORS, VEHICLE_COLORS } from './palette';
 
@@ -34,17 +34,30 @@ export interface RenderStats {
   readonly overlayLanelets: number;
   /** Traffic light lamps on screen, four per light. */
   readonly lights: number;
+  /** Green left arrows lit: two per light in a protected-left phase. */
+  readonly arrows: number;
   readonly hovered: TilePos | null;
 }
 
-/** Lamp colour of one axis in a phase. */
-function lampColor(phase: LightPhase, axis: 'ns' | 'ew'): readonly [number, number, number] {
-  const prefix = axis === 'ns' ? 'NorthSouth' : 'EastWest';
-  if (phase === `${prefix}Green`) return LAMP_COLORS.green;
-  if (phase === `${prefix}Yellow`) return LAMP_COLORS.yellow;
-  if (phase === `${prefix}LeftProtected`) return LAMP_COLORS.left;
-  return LAMP_COLORS.red;
+/** A turn arrow along +x, `size` world units long, centred on the origin. */
+function arrowGeometry(size: number): THREE.ShapeGeometry {
+  const half = size / 2;
+  const neck = size * 0.1;
+  const stem = size * 0.12;
+  const head = size * 0.3;
+  const shape = new THREE.Shape()
+    .moveTo(-half, -stem)
+    .lineTo(neck, -stem)
+    .lineTo(neck, -head)
+    .lineTo(half, 0)
+    .lineTo(neck, head)
+    .lineTo(neck, stem)
+    .lineTo(-half, stem)
+    .closePath();
+  return new THREE.ShapeGeometry(shape);
 }
+
+type Lamp = { readonly mesh: THREE.Mesh; readonly arrow: THREE.Mesh; readonly axis: 'ns' | 'ew' };
 
 export class DebugRenderer {
   readonly view: OrthoView;
@@ -55,7 +68,7 @@ export class DebugRenderer {
   private readonly chunkMeshes = new Map<number, THREE.Mesh>();
   private readonly overlay = new THREE.Group();
   /** Four lamps per light, keyed by the box bounds; the meshes stay and only their colours change. */
-  private readonly lamps = new Map<string, Array<{ mesh: THREE.Mesh; axis: 'ns' | 'ew' }>>();
+  private readonly lamps = new Map<string, Lamp[]>();
   private readonly lampGroup = new THREE.Group();
   private readonly chunkMaterial = new THREE.MeshBasicMaterial({ vertexColors: true });
   private vehicles: THREE.InstancedMesh | null = null;
@@ -207,8 +220,9 @@ export class DebugRenderer {
   }
 
   /**
-   * Lamps beside each box: at the mouth of every approach, the colour of that approach's axis.
-   * Needs the map (for world coordinates); lights of boxes that are gone are removed.
+   * Lamps beside each box: at the mouth of every approach, the main signal of that approach's axis and,
+   * in its protected-left phase, a green left arrow. Needs the map (for world coordinates); lights of
+   * boxes that are gone are removed.
    */
   setLights(lights: readonly TrafficLightView[]): void {
     if (this.map === null) return;
@@ -224,32 +238,45 @@ export class DebugRenderer {
         const at = (tx: number, ty: number) => [origin.x + (tx - light.minX) * ts, origin.y + (ty - light.minY) * ts] as const;
         // Right-hand traffic: eastbound arrives on the low row from the west, westbound on the high row
         // from the east; northbound on the high column from the south, southbound on the low column
-        // from the north. Each lamp stands on the kerb side of its approach.
-        const spots: Array<[readonly [number, number], 'ns' | 'ew']> = [
-          [at(light.minX - 0.5, light.minY - 1), 'ew'],
-          [at(light.maxX + 0.5, light.maxY + 1), 'ew'],
-          [at(light.maxX + 1, light.minY - 0.5), 'ns'],
-          [at(light.minX - 1, light.maxY + 0.5), 'ns'],
+        // from the north. Each lamp stands on the kerb side of its approach, `travel` being that
+        // approach's direction in tile axes.
+        const spots: Array<{ at: readonly [number, number]; axis: 'ns' | 'ew'; travel: readonly [number, number] }> = [
+          { at: at(light.minX - 0.5, light.minY - 1), axis: 'ew', travel: [1, 0] },
+          { at: at(light.maxX + 0.5, light.maxY + 1), axis: 'ew', travel: [-1, 0] },
+          { at: at(light.maxX + 1, light.minY - 0.5), axis: 'ns', travel: [0, 1] },
+          { at: at(light.minX - 1, light.maxY + 0.5), axis: 'ns', travel: [0, -1] },
         ];
-        set = spots.map(([[x, y], axis]) => {
+        const [gr, gg, gb] = LAMP_COLORS.green;
+        set = spots.map(({ at: [x, y], axis, travel: [dx, dy] }) => {
           const mesh = new THREE.Mesh(new THREE.CircleGeometry(ts * 0.32, 20), new THREE.MeshBasicMaterial({ color: 0xffffff }));
           mesh.position.set(x, y, 2);
-          this.lampGroup.add(mesh);
-          return { mesh, axis };
+          const arrowMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
+          arrowMaterial.color.setRGB(gr / 255, gg / 255, gb / 255);
+          const arrow = new THREE.Mesh(arrowGeometry(ts * 0.6), arrowMaterial);
+          // The extra section just upstream of the lamp, pointing to the driver's left: (dx, dy) turned a quarter left.
+          arrow.position.set(x - dx * ts * 0.75, y - dy * ts * 0.75, 2);
+          arrow.rotation.z = Math.atan2(dx, -dy);
+          arrow.visible = false;
+          this.lampGroup.add(mesh, arrow);
+          return { mesh, arrow, axis };
         });
         this.lamps.set(key, set);
       }
-      for (const { mesh, axis } of set) {
-        const [r, g, b] = lampColor(light.phase, axis);
+      for (const { mesh, arrow, axis } of set) {
+        const signal = lampSignal(light.phase, axis);
+        const [r, g, b] = LAMP_COLORS[signal.main];
         (mesh.material as THREE.MeshBasicMaterial).color.setRGB(r / 255, g / 255, b / 255);
+        arrow.visible = signal.leftArrow;
       }
     }
     for (const [key, set] of this.lamps) {
       if (seen.has(key)) continue;
-      for (const { mesh } of set) {
-        this.lampGroup.remove(mesh);
-        mesh.geometry.dispose();
-        (mesh.material as THREE.MeshBasicMaterial).dispose();
+      for (const { mesh, arrow } of set) {
+        for (const part of [mesh, arrow]) {
+          this.lampGroup.remove(part);
+          part.geometry.dispose();
+          (part.material as THREE.MeshBasicMaterial).dispose();
+        }
       }
       this.lamps.delete(key);
     }
@@ -265,7 +292,8 @@ export class DebugRenderer {
       mapEditVersion: this.drawnMapEditVersion,
       vehicles: this.vehicles?.count ?? 0,
       overlayLanelets: this.overlay.visible ? this.overlayLanelets : 0,
-      lights: this.lampGroup.children.length,
+      lights: [...this.lamps.values()].reduce((n, set) => n + set.length, 0),
+      arrows: [...this.lamps.values()].reduce((n, set) => n + set.filter((lamp) => lamp.arrow.visible).length, 0),
       hovered: this.hovered,
     };
   }

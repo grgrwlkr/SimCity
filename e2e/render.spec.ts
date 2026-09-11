@@ -186,6 +186,30 @@ test('signalizedScenarioShowsTrafficLive', async ({ page }, testInfo) => {
   await page.locator('#view').screenshot({ path: testInfo.outputPath('signalized.png') });
 });
 
+// ПДД 6.3: the protected left is a green arrow beside a red main signal, on both approaches of its axis.
+test('protectedLeftShowsAGreenArrow', async ({ page }, testInfo) => {
+  await page.goto('/?scenario=signalized');
+  await page.waitForFunction(() => typeof window.__sim !== 'undefined');
+  await page.evaluate(() => window.__sim.ready);
+  await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.lights)).toBe(4);
+
+  const phase = await page.evaluate(async () => {
+    await window.__sim.setSpeed('Paused');
+    for (let i = 0; i < 1200; i++) {
+      await window.__sim.step(10);
+      const current = (await window.__sim.snapshot()).lights[0]?.phase;
+      if (current?.endsWith('LeftProtected')) return current;
+    }
+    return null;
+  });
+  expect(phase, 'the scenario reaches a protected-left phase').not.toBeNull();
+  await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => ({ lamps: s.lights, arrows: s.arrows }))).toEqual({
+    lamps: 4,
+    arrows: 2,
+  });
+  await page.locator('#view').screenshot({ path: testInfo.outputPath('protected-left.png') });
+});
+
 test('fourLaneScenarioShowsTrafficLive', async ({ page }, testInfo) => {
   await page.goto('/?scenario=signalized4');
   await page.waitForFunction(() => typeof window.__sim !== 'undefined');
