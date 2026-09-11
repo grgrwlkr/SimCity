@@ -1,0 +1,11 @@
+{
+  "name": "@simcity/app",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@simcity/bridge": "workspace:*",
+    "@simcity/render": "workspace:*",
+    "@simcity/sim": "workspace:*",
+    "@simcity/ui": "workspace:*"
+  }
+}

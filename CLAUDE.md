@@ -76,3 +76,26 @@ simcity_app ─┬─> simcity_frontend ─┬─> simcity_debug ─┐
 - **Перед завершением задачи**: `cargo fmt --all` → `cargo clippy --all-targets --all-features -- -D warnings` → `cargo test --workspace`.
 - **Source of truth** (по убыванию): код + `assets/config/` → current-state docs в `docs/` (`architecture.md`, `gameplay.md`, `persistence.md`, `crate-workspace.md`, `debugging-and-observability.md`, `config-assets-scenarios.md`, `testing.md`) → deep-dive docs → `docs/archive/` (исторический контекст, не истина).
 - **README hotkeys актуальны по коду** — при изменении биндов синхронизировать `README.md`.
+
+## TypeScript + Three.js порт (`packages/`)
+
+Программа переезда и её контракты: `docs/plans/2026-09-11-ts-threejs-migration-plan.md`, читать первой. План текущего этапа лежит рядом: `docs/plans/YYYY-MM-DD-web-phase-N-<name>.md`. Порт живёт в этом же репозитории, bun-монорепо в корне рядом с Rust-крейтами. Rust-код остаётся эталоном поведения и не правится; исключение — этап 1, пример `dump_trajectory`.
+
+```bash
+bun install
+bun run typecheck   # tsc по каждому пакету: sim без DOM и Node, bridge с WebWorker
+bun run lint
+bun run test        # Vitest; `bun test` — другой раннер, не использовать
+bun run e2e         # Playwright, Chromium + WebKit
+bun run bench       # тик симуляции, p50/p99
+bun run dev         # Vite, http://localhost:5174, ?debug=1
+```
+
+Ворота этапа порта: `bun run typecheck && bun run lint && bun run test && bun run e2e`. Cargo-проверки выше относятся к Rust-части.
+
+- `packages/sim` — симуляция без DOM, часов и хоста. Время приходит как `dtNs`, случайность только из `StdRng`, это бит-в-бит порт `rand 0.10.1`. ESLint запрещает там `Math.random`, `Date`, float-функции `Math.*`, `TODO` и `any`.
+- `packages/bridge` — воркер, драйвер fixed-step 10 Гц, протокол, render-SAB с двойным буфером. `render`, `ui`, `app` — кадр, HUD на React + zustand, точка входа Vite.
+- Порядок систем — массив `FIXED_UPDATE` в `packages/sim/src/schedule.ts`. Новая система встаёт в конкретную позицию с комментарием, после чего она идёт и что читает.
+- Портированный Rust-тест сохраняет имя в camelCase и ссылку на исходный файл.
+- `tools/rand-vectors` — Rust-генератор эталона RNG со своим `[workspace]`; версии крейтов пинятся под корневой `Cargo.lock`.
+- `window.__sim` в DevTools и Playwright: `snapshot() step(n) fingerprint() cmd(json) setState(s) setSpeed(s) rngProbe(seed, n) renderFrame()`. Флаг `?debug=1` включает `__sim.debug`.

@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // No DOM, no Node: the simulation must compile and run without a browser or a host API.
+    "lib": ["ES2023"],
+    "types": []
+  },
+  "include": ["src"]
+}

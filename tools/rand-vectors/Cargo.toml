@@ -1,0 +1,12 @@
+[package]
+name = "rand-vectors"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Standalone: not part of any workspace.
+[workspace]
+
+[dependencies]
+# Must match the Rust SimCity repo's Cargo.lock exactly: the fixture is a bit-exact reference.
+rand = "=0.10.1"
