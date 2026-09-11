@@ -154,6 +154,19 @@ function hashTraffic(h: Fnv64, w: World): void {
   h.str(stableJson(w.trafficLights));
   h.str(stableJson([[...w.leftTurnDemand.ns], [...w.leftTurnDemand.ew]]));
   h.str(stableJson(w.reservations.fingerprintState()));
+  // The spatial index is not state: it is rebuilt from the vehicles before every use in a tick.
+  const occ = w.trafficOccupancy;
+  h.str(stableJson(occ.touched));
+  h.bytes(occ.emaScaled);
+  h.f32(occ.emaGlobal);
+  h.f32(occ.maxScaled);
+  h.str(stableJson(w.trafficIndex));
+  const roads = w.trafficRoadCache;
+  h.u32(roads.gridLen);
+  h.int(roads.mapEditVersion);
+  h.u32(roads.roadTiles);
+  h.bytes(roads.capacityPerTile);
+  h.str(stableJson(w.routeProducerStats));
 }
 
 function hashTimer(h: Fnv64, t: Timer): void {
@@ -173,6 +186,11 @@ function hashEvents(h: Fnv64, e: TickEvents): void {
   }
   h.u32(e.dayAdvanced.length);
   for (const day of e.dayAdvanced) h.u32(day);
+  h.u32(e.tripFinished.length);
+  for (const { citizen, purpose } of e.tripFinished) {
+    h.u32(citizen);
+    h.str(purpose);
+  }
 }
 
 function hashNotifications(h: Fnv64, n: Notifications): void {

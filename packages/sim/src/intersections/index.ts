@@ -52,6 +52,13 @@ export class IntersectionIndex {
     return this.clusters[id];
   }
 
+  /** `intersectionKeyString` of the cluster at `pos`. */
+  clusterKeyAt(pos: TilePos): string | undefined {
+    const id = this.intersectionIdAt(pos);
+    const cluster = id === undefined ? undefined : this.clusters[id];
+    return cluster === undefined ? undefined : intersectionKeyString(cluster.key);
+  }
+
   hasTrafficLightAt(pos: TilePos): boolean {
     const id = this.intersectionIdAt(pos);
     return id !== undefined && this.trafficLights.has(id);

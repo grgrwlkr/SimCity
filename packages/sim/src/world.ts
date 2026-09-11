@@ -14,9 +14,10 @@ import type { AppState, PendingState } from './state';
 import { SECOND_NS, Timer } from './timer';
 import { defaultTrafficConfig, type TrafficConfig } from './traffic/config';
 import type { LeftTurnDemand, TrafficLight } from './traffic/lights';
-import { TrafficOccupancy } from './traffic/occupancy';
+import { TrafficOccupancy, TrafficRoadCache, emptyTrafficIndex, type TrafficIndex } from './traffic/occupancy';
 import { PathPool } from './traffic/pathPool';
 import { IntersectionReservations } from './traffic/reservations';
+import { TrafficSpatialIndex } from './traffic/spatialIndex';
 import { VEHICLE_CAPACITY, createVehicleLayers, type VehicleLayers } from './traffic/vehicles';
 import { LaneGraph } from './transport/laneGraph';
 import { LaneletConflictMatrices } from './transport/lanelet/build';
@@ -66,6 +67,12 @@ export interface World {
   trafficLights: TrafficLight[];
   readonly leftTurnDemand: LeftTurnDemand;
   readonly reservations: IntersectionReservations;
+  /** Derived each tick before use: vehicles per tile by progress. */
+  readonly spatialIndex: TrafficSpatialIndex;
+  readonly trafficIndex: TrafficIndex;
+  readonly trafficRoadCache: TrafficRoadCache;
+  /** `RouteProducerStats`: which producer built routes (observability). */
+  readonly routeProducerStats: { guardRefusals: number; swapBreakHandbuilt: number };
   /** Fixed ticks run since the world was created. */
   tick: number;
   appState: AppState;
@@ -123,6 +130,10 @@ export function createWorld(options: WorldOptions = {}): World {
     trafficLights: [],
     leftTurnDemand: { ns: new Set(), ew: new Set() },
     reservations: new IntersectionReservations(),
+    spatialIndex: new TrafficSpatialIndex(),
+    trafficIndex: emptyTrafficIndex(),
+    trafficRoadCache: new TrafficRoadCache(),
+    routeProducerStats: { guardRefusals: 0, swapBreakHandbuilt: 0 },
     tick: 0,
     appState: 'MainMenu',
     nextState: null,

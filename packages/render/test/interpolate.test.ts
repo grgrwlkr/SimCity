@@ -24,6 +24,14 @@ describe('frame interpolation', () => {
     expect(Math.abs(Math.abs(mid) - Math.PI)).toBeLessThan(1e-9);
   });
 
+  // Ported from crates/simcity_sim/src/game/traffic/vehicle_render.rs: the drawn position is
+  // lerp(prev, curr) by how far the render clock is into the fixed step.
+  it('interpolatesPositionAtOverstepFraction', () => {
+    const out = new Float32Array(2);
+    interpolatePositions(new Float32Array([0, 0]), new Float32Array([40, 80]), 0.25, 2, out);
+    expect(Array.from(out)).toEqual([10, 20]);
+  });
+
   it('headingStaysWithinMinusPiToPi', () => {
     for (const t of [0, 0.3, 0.7, 1]) {
       const h = interpolateHeading(3, -3, t);

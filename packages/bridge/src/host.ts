@@ -139,7 +139,11 @@ export class SimHost {
       throw new RangeError(`debugVehicles: ${vehicles.length} vehicles, capacity ${layers.alive.length}`);
     }
     const w = this.world;
-    for (const slot of [...layers.order]) despawnVehicle(w, vehicleRef(layers, slot));
+    for (const slot of [...layers.order]) {
+      // Debug placement is not a Rust path: release, so repeated placements do not grow the pool.
+      w.pathPool.release(layers.pathHandle[slot]!);
+      despawnVehicle(w, vehicleRef(layers, slot));
+    }
     for (const v of vehicles) {
       const tile = worldToTile(w.mapConfig, v) ?? { x: 0, y: 0 };
       const slot = refSlot(layers, spawnVehicle(w, { route: [tile], kind: v.kind }));

@@ -241,7 +241,8 @@ export function despawnVehicle(w: World, ref: number): void {
   const v = w.vehicles;
   const slot = resolveVehicle(v, ref);
   if (slot === undefined) return;
-  w.pathPool.release(v.pathHandle[slot]!);
+  // Like `commands.entity(e).despawn()`: the path handle is not released. Rust keeps the pool entry's
+  // refcount on every despawn that does not release first, and the pool state follows it.
   v.pathHandle[slot] = PATH_INVALID;
   v.alive[slot] = 0;
   v.generation[slot] = v.generation[slot]! + 1;

@@ -43,6 +43,14 @@ export class LaneGraph {
   getLaneId(pos: TilePos, laneIdx: number): number | undefined {
     return this.tileLaneToId.get(laneKey(pos, laneIdx));
   }
+
+  /** The lane at `pos` if it travels `dir` (any lane for `None`): a direction guard in the lane-tile model. */
+  getRightmostLane(pos: TilePos, dir: RoadDir): number | undefined {
+    const id = this.posToId.get(tileKey(pos));
+    const lane = id === undefined ? undefined : this.lanes[id];
+    if (id === undefined || lane === undefined) return undefined;
+    return dir === 'None' || lane.dir === dir ? id : undefined;
+  }
 }
 
 export function buildLaneGraphInner(grid: MapGrid, version: number): LaneGraph {

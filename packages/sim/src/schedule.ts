@@ -9,6 +9,15 @@ import { applyGameCommandsToGrid } from './map/apply';
 import { resetGrowthRngOnNewMap, resetSimRngOnNewMap } from './seeding';
 import { ALL_STATES, IN_GAME, IN_GAME_OR_PAUSED, type AppState } from './state';
 import { SECOND_NS } from './timer';
+import { cleanupRightOnRedMarkers, moveVehicles } from './traffic/drive';
+import { clearVehicles } from './traffic/lifecycle';
+import { handleTrafficLightCommands, syncTrafficLights, updateTrafficLights } from './traffic/lights';
+import { updateTrafficIndex, updateTrafficOccupancy } from './traffic/occupancy';
+import { cleanupIntersectionReservations } from './traffic/reservations';
+import { assignVehicleSeq } from './traffic/seq';
+import { buildTrafficSpatialIndex } from './traffic/spatialIndex';
+import { updateVehicleTrafficState } from './traffic/state';
+import { breakTileSwaps } from './traffic/swapBreak';
 import { buildLaneGraph } from './transport/laneGraph';
 import { buildLaneletGraph } from './transport/lanelet/build';
 import { rebuildRegionGraph } from './transport/regionGraph';
@@ -52,6 +61,26 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'buildLaneletGraph', run: buildLaneletGraph, runIn: ALL_STATES },
   // SimStep::Tick — the game clock; writes HourAdvanced / DayAdvanced for every system after it.
   { name: 'simTick', run: simTick, runIn: IN_GAME },
+  // SimStep::Traffic, before the vehicle states that read the phase.
+  { name: 'updateTrafficLights', run: updateTrafficLights, runIn: IN_GAME },
+  // TrafficStep::Flow, first: last tick's positions, so routing and the capacity gate see fresh counts.
+  { name: 'updateTrafficOccupancy', run: updateTrafficOccupancy, runIn: IN_GAME },
+  // After updateTrafficOccupancy and the lights: approach, stop and release states.
+  { name: 'updateVehicleTrafficState', run: updateVehicleTrafficState, runIn: IN_GAME },
+  // TrafficStep::Movement. Numbers vehicles that appeared since the last tick before any tie-break.
+  { name: 'assignVehicleSeq', run: assignVehicleSeq, runIn: IN_GAME },
+  // After assignVehicleSeq: per-tile vehicles by progress for the leaders below.
+  { name: 'buildTrafficSpatialIndex', run: buildTrafficSpatialIndex, runIn: IN_GAME },
+  // After the spatial index (the arbiter slots in before it in 2b): reads tile occupants and seq.
+  { name: 'breakTileSwaps', run: breakTileSwaps, runIn: IN_GAME },
+  // After breakTileSwaps: reads the rewritten routes, reservations, occupancy and the spatial index.
+  { name: 'moveVehicles', run: moveVehicles, runIn: IN_GAME },
+  // After moveVehicles: drops right-on-red markers of vehicles that left the intersection.
+  { name: 'cleanupRightOnRedMarkers', run: cleanupRightOnRedMarkers, runIn: IN_GAME },
+  // After cleanupRightOnRedMarkers (both only after moveVehicles in Rust): stale and exited holds.
+  { name: 'cleanupIntersectionReservations', run: cleanupIntersectionReservations, runIn: IN_GAME },
+  // PostSimStep::TrafficIndex: the end-of-tick metrics RCI demand reads.
+  { name: 'updateTrafficIndex', run: updateTrafficIndex, runIn: IN_GAME },
 ];
 
 /** `Update` / `GameSet::CommandApply`. */
@@ -63,10 +92,16 @@ export const COMMAND_APPLY: readonly CommandSystemEntry[] = [
   { name: 'resetSimRngOnNewMap', run: resetSimRngOnNewMap, runIn: IN_GAME_OR_PAUSED },
   // reset_growth_rng_on_new_map: after applyGameCommandsToGrid, reads mapSeed.
   { name: 'resetGrowthRngOnNewMap', run: resetGrowthRngOnNewMap, runIn: IN_GAME_OR_PAUSED },
+  // handle_traffic_light_commands: reads the intersection index of the last GraphUpdate.
+  { name: 'handleTrafficLightCommands', run: handleTrafficLightCommands, runIn: IN_GAME_OR_PAUSED },
+  // clear_vehicles: GenerateMap drops all traffic.
+  { name: 'clearVehicles', run: clearVehicles, runIn: IN_GAME_OR_PAUSED },
 ];
 
 /** `Update` / `GameSet::GraphUpdate`: derived structures, after the frame's commands. */
 export const UPDATE_GRAPH: readonly SystemEntry[] = [
   // detect_intersections: reads the graph version CommandApply may have bumped.
   { name: 'detectIntersections', run: detectIntersections, runIn: IN_GAME_OR_PAUSED },
+  // sync_traffic_light_entities: after detectIntersections, reads the re-mapped light ids.
+  { name: 'syncTrafficLights', run: syncTrafficLights, runIn: IN_GAME_OR_PAUSED },
 ];

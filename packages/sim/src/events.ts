@@ -8,13 +8,20 @@ export interface HourAdvanced {
   readonly day: number;
 }
 
+/** `TripFinished`: written by traffic when a trip vehicle arrives, read by citizens. */
+export interface TripFinished {
+  readonly citizen: number;
+  readonly purpose: 'Work' | 'Shop' | 'ReturnHome';
+}
+
 export interface TickEvents {
   readonly hourAdvanced: HourAdvanced[];
   readonly dayAdvanced: number[];
+  readonly tripFinished: TripFinished[];
 }
 
 export function emptyEvents(): TickEvents {
-  return { hourAdvanced: [], dayAdvanced: [] };
+  return { hourAdvanced: [], dayAdvanced: [], tripFinished: [] };
 }
 
 export function beginTickEvents(w: World): void {

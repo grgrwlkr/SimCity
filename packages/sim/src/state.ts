@@ -1,6 +1,7 @@
 // Port of `AppState` (simcity_core::state) and the transition hooks the Rust plugins register on it.
 import { defaultCity } from './city';
 import { seedGrowthRngFromMap, seedSimRngFromMap } from './seeding';
+import { teardownTraffic } from './traffic/lifecycle';
 import type { World } from './world';
 
 export type AppState = 'MainMenu' | 'InGame' | 'Paused';
@@ -62,4 +63,6 @@ function enterMainMenu(w: World): void {
   w.buildingUpgradeClock.reset();
   // IntersectionsPlugin: reset_intersections.
   w.intersections.reset();
+  // TrafficPlugin: cleanup_traffic_entities, reset_traffic_aggregates, reset_intersection_reservations.
+  teardownTraffic(w);
 }
