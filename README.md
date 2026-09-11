@@ -27,6 +27,18 @@ cargo run --release --features profile_tracy_memory
 cargo run --release --features profile_chrome
 ```
 
+## TypeScript + Three.js порт (в работе)
+
+Игра переезжает в браузер и в Tauri: программа и контракты — в `docs/plans/2026-09-11-ts-threejs-migration-plan.md`, код — bun-монорепо `packages/` в корне. Готов этап 0: симуляция на фиксированном шаге в Web Worker, бит-в-бит порт RNG из Rust, отпечаток состояния одинаков в Chromium и WebKit.
+
+```bash
+bun install
+bun run dev        # http://localhost:5174, ?debug=1
+bun run typecheck && bun run lint && bun run test && bun run e2e
+```
+
+`SharedArrayBuffer` работает только на cross-origin isolated странице: хостинг обязан отдавать `Cross-Origin-Opener-Policy: same-origin` и `Cross-Origin-Embedder-Policy: require-corp` (dev-сервер Vite делает это сам, см. `packages/app/vite.config.ts`).
+
 ## Что уже реализовано
 
 - `128x128` карта с конфигом из `assets/config/map.ron`.

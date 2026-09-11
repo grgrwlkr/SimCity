@@ -32,7 +32,7 @@
 | `pause_round_trip_keeps_building_upgrade_clock` (sim.rs) | пауза не отматывает часы апгрейда зданий | `pauseRoundTripKeepsBuildingUpgradeClock` |
 | `same_seed_produces_identical_fingerprints_and_different_seed_diverges` (determinism.rs) | один сид + 2880 тиков дают равный отпечаток, другой сид даёт иной, а после тиков отпечаток ≠ t0 | `sameSeedProducesIdenticalFingerprintsAndDifferentSeedDiverges` (без карантина `money`) |
 | `composed_fixed_update_has_no_ambiguous_system_pairs` (determinism.rs) | порядок FixedUpdate полный | `scheduleIsTotalOrder` |
-| `probe_first_divergence_tick` (determinism.rs, ignored) | харнесс первого расходящегося тика | `firstDivergenceTick` + тест на нём |
+| `probe_first_divergence_tick` (determinism.rs, ignored) | харнесс первого расходящегося тика | `firstDivergence` + `probeFirstDivergenceTickFindsTheTickAndTheSection` |
 | `no_unseeded_rng_in_sim_sources` (no_thread_rng_guard.rs) | в прод-коде sim нет несидированной случайности | `noUnseededRngInSimSources` (+ ESLint) |
 
 Плюс сверх Rust: `stdRngMatchesRustVectors` (9 сидов × 800 вызовов 17 форм + 130 пинов границы блока) и e2e `fingerprintMatchesNodeInBothEngines`, `rngProbeMatchesNodeInBothEngines`.
@@ -40,7 +40,7 @@
 ## Файлы
 
 - `package.json` (workspaces, скрипты `typecheck lint test e2e bench dev`), `tsconfig.base.json`, `eslint.config.js`, `vitest.config.ts`, `playwright.config.ts`, `.github/workflows/web.yml`, раздел порта в `CLAUDE.md` и `README.md`
-- `packages/sim/src/`: `rng.ts`, `timer.ts`, `city.ts` (City, SimClock, `simTick`), `notifications.ts` (лента истории с датой), `state.ts` (AppState, переходы и хуки), `commands.ts` (+ `commandCodec.ts`), `world.ts`, `schedule.ts`, `app.ts` (SimApp: кадр = переход состояния → тики → CommandApply), `fingerprint.ts`, `probe.ts`, `index.ts`
+- `packages/sim/src/`: `rng.ts`, `timer.ts`, `city.ts` (City, SimClock, `simTick`), `notifications.ts` (лента истории с датой), `state.ts` (AppState, переходы и хуки), `commands.ts` (+ `commandCodec.ts`), `world.ts`, `schedule.ts`, `app.ts` (`frame`: переход состояния → тики → CommandApply; `step`), `events.ts`, `seeding.ts`, `map.ts`, `headless.ts`, `fingerprint.ts`, `probe.ts` (`firstDivergence`, `rngProbeDigest`), `index.ts`
 - `packages/sim/test/`: `rng.test.ts`, `sim.test.ts`, `determinism.test.ts`, `noUnseededRng.test.ts`, `schedule.test.ts`, `commandCodec.test.ts`, `timer.test.ts`
 - `packages/bridge/src/`: `protocol.ts`, `driver.ts` (FixedStepDriver, инъекция часов, `maxDeltaMs = 250`, множитель скорости), `renderBuffer.ts`, `worker.ts`, `client.ts`; тесты `driver.test.ts`, `renderBuffer.test.ts`
 - `packages/render/src/interpolate.ts` + тест; `packages/ui/src/{store.ts,Hud.tsx}`; `packages/app/{index.html,vite.config.ts,src/main.tsx,src/simApi.ts}`
@@ -53,13 +53,23 @@
 1. **Каркас.** Корневые конфиги, пакеты с `exports` на `src`, ESLint-правила sim: `no-restricted-properties` (`Math.random`, неразрешённые `Math.*`, `Date.now`, `performance.now`), `no-restricted-globals` (`window document self performance crypto`), `no-explicit-any`, `no-warning-comments` (TODO/FIXME), `no-restricted-imports` (`three react`). Проверка: `bun install`, `typecheck` и `lint` зелёные.
 2. **RNG.** `stdRngSeedFromU64(seed: bigint): StdRng` с `nextU32(): number`, `nextU64(): bigint`, `state()`. Сэмплеры с формой вызовов Rust: `rangeU32`, `rangeI32`, `rangeU8Inclusive`, `rangeU64Inclusive`, `rangeF32`, `rangeF64`, `randomBool`, `chooseIndex`, `shuffle`. f32 эмулируется через `Math.fround` после каждой операции. Тесты: `stdRngMatchesRustVectors` и два теста sim.rs про поток.
 3. **Timer, часы, лента.** `Timer` на целых наносекундах с семантикой Bevy (`timesFinishedThisTick`, repeating с остатком). `simTick(world, dtNs)` с `MAX_HOURS_PER_TICK = 24`. `Notifications.add/history/setDay`, `HISTORY_LINES = 30`, повтор в строке считается. Тест `advisorFeed…` + юниты таймера.
-4. **World, команды, состояния, расписание, SimApp.** `createWorld()` (128×128 SoA, ёмкость машин), `GameCommand` + кодек, `AppState` с хуками: `START_OF_GAME` сеет оба потока и сбрасывает часы апгрейда, `OnEnter(MainMenu)` сбрасывает City и часы. CommandApply: `GenerateMap` пишет `mapSeed` и пересеивает оба потока. `FIXED_UPDATE` из `simTick` и завершающего `clearTickEvents`. Тесты: пять оставшихся из sim.rs, `scheduleIsTotalOrder`, кодек на serde-JSON примерах.
+4. **World, команды, состояния, расписание, SimApp.** `createWorld()` (128×128 SoA, ёмкость машин), `GameCommand` + кодек, `AppState` с хуками: `START_OF_GAME` сеет оба потока и сбрасывает часы апгрейда, `OnEnter(MainMenu)` сбрасывает City и часы. CommandApply: `GenerateMap` пишет `mapSeed` и пересеивает оба потока. `FIXED_UPDATE` из `beginTickEvents` (первым: события, записанные вне тика, становятся событиями этого тика) и `simTick`. Тесты: пять оставшихся из sim.rs, `scheduleIsTotalOrder`, кодек на serde-JSON примерах.
 5. **Фингерпринт и детерминизм.** FNV-1a 64 на 32-битных половинах по фиксированному порядку: тик, состояние, сид, City, часы, состояния обоих RNG, байты всех typed arrays. `firstDivergenceTick`. Тесты determinism.rs и guard-тест.
-6. **Bridge.** Драйвер: тики только в InGame при скорости ≠ Paused, накопитель виртуального времени, кэп реального дельта 250 мс. Render-SAB: заголовок `Int32[activeIndex, tick, capacity]` плюс два буфера `[count, x, y, heading, kind]`, писатель пишет неактивный и переключает через `Atomics.store`. Воркер и клиент. Тесты драйвера и SAB.
+6. **Bridge.** Драйвер: тики только в InGame при скорости ≠ Paused, накопитель виртуального времени, кэп реального дельта 250 мс. Render-SAB: заголовок `Int32[sequence, capacity]` плюс два кадра `[tick, count, x, y, heading, kind]`. Писатель пишет неактивный кадр и публикует его увеличением `sequence` через `Atomics.store`; читатель повторяет копию, если `sequence` сдвинулся. `SimHost` (логика воркера без его глобалов), воркер и клиент. Тесты драйвера, SAB и host.
 7. **Render, UI, app.** `interpolate(prev, next, alpha, out)` с заворотом угла. HUD: меню «Новая игра», день и час, тик, скорость. Vite с заголовками COOP/COEP. `window.__sim`: `snapshot step fingerprint cmd setState setSpeed rngProbe`, `?debug=1` → `__sim.debug`.
 8. **E2E, bench, CI.** Playwright, проекты chromium и webkit: 10 000 тиков пустой карты, отпечаток равен вычисленному в Node. `rngProbe` равен Node. `bun run bench`: 3000 тиков, p50/p99. CI на `macos-latest`.
 9. **Закрытие.** Ворота: `bun run typecheck && bun run lint && bun run test && bun run e2e`. Правка раздела контрактов программы. Секции ниже.
 
 ## Сделано / Отклонения / Замеры
 
-Заполняется при закрытии этапа.
+**Сделано (2026-09-11).** Ворота этапа пройдены. После 10 000 тиков пустой карты отпечаток в Chromium 153 и WebKit 26.6 совпадает с Node, дайджест `rngProbe` на 100 000 вызовов тоже; e2e 8 из 8. Портированы все 12 тестов этапа из таблицы, к ним добавлено 39 своих: векторы RNG, таймер, кодек, расписание, покрытие отпечатка, драйвер, render-SAB, host, интерполяция. `bun run test` — 12 файлов, 51 тест; `typecheck` и `lint` чистые. Правила ESLint для sim проверены пробным файлом: пойманы все 10 нарушений из 10. Коммиты идут по одному на модуль, ветка `claude/ts-threejs-migration-af56b0`.
+
+**Отклонения сверх пунктов 1–7.**
+- Вместо `clearTickEvents` в конце тика стоит `beginTickEvents` в начале. События, записанные вне тика (вход в игру, CommandApply), видны ровно одному следующему тику. Читатели с курсором, как `MessageReader` в Bevy, понадобятся, когда событие начнёт читать система вне тика (этап 3).
+- Render-SAB публикуется номером последовательности, а не индексом активного буфера. При двух переключениях за время одной копии индекс вернулся бы к прежнему, и порванный кадр прошёл бы проверку.
+- `SimHost` вынесен из воркера, чтобы весь путь запроса гонялся в Vitest.
+- `buildHeadlessGame` входит в игру на пустой карте, тестового города ещё нет. Поэтому чувствительность отпечатка к сиду на этапе 0 держится на хэше состояния RNG, а не на поведении: ни одна система пока не тянет случайность.
+- По TDD: `noUnseededRngInSimSources` прошёл с первого прогона, потому что закрепляет уже чистое состояние; чувствительность доказывает `guardFlagsEveryBannedPattern`. Тесты `Fnv64` писались вместе с реализацией и сверяют её с внешними эталонными значениями.
+- CI — отдельный `.github/workflows/web.yml` рядом с Rust-`ci.yml`. Он срабатывает на push в `main` и на PR, на GitHub ещё не запускался.
+
+**Замеры.** `bun run bench` на пустой карте, 3000 тиков после 300 прогревочных: p50 0.0001 мс, p99 0.0015 мс, max 0.1157 мс. Это накладные расходы расписания на уровне разрешения таймера, а не нагрузка; первая содержательная цифра появится на тестовом городе. Vitest идёт 2.5 с, e2e 11.5 с.

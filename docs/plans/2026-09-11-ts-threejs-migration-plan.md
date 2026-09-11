@@ -32,45 +32,63 @@
 Эти интерфейсы фиксируются на этапе 0 и дальше меняются только через правку этого раздела.
 
 ```ts
-// packages/sim/src/rng.ts — единый seeded RNG, аналог SimRng / BuildingGrowthRng
-export interface Rng { nextU32(): number; nextF32(): number; fork(streamId: number): Rng }
-export function xoshiro128ss(seed: bigint): Rng;
+// packages/sim/src/rng.ts — бит-в-бит порт rand 0.10.1 StdRng (ChaCha12): и SimRng, и BuildingGrowthRng в Rust — это он
+export class StdRng { nextU32(): number; nextU64(): bigint; stateWords(): Uint32Array }
+export function stdRngSeedFromU64(seed: bigint): StdRng; // = StdRng::seed_from_u64
+// Сэмплеры в формах вызовов rand: rangeU32 rangeI32 rangeU8Inclusive rangeU64Inclusive rangeF32 rangeF64
+// randomBool chooseIndex shuffle. Эталон — packages/sim/test/fixtures/rand-0.10.1-vectors.json из tools/rand-vectors.
 
 // packages/sim/src/schedule.ts — порядок систем = порядок в массиве; аналог GameSet + SimStep
-export type System = (w: World, dt: TickDt) => void;
-export const FIXED_UPDATE: readonly System[]; // GraphUpdate → Sim → PostSim, внутри — саб-сеты по файлу
-export const TICK_HZ = 10;
+export type System = (w: World, dtNs: number) => void;
+export type CommandSystem = (w: World, commands: readonly GameCommand[]) => void;
+export interface SystemEntry { name: string; run: System; runIn: readonly AppState[] } // run_if как данные
+export const FIXED_UPDATE: readonly SystemEntry[];          // GraphUpdate → Sim → PostSim, внутри — саб-сеты по файлу
+export const COMMAND_APPLY: readonly CommandSystemEntry[];  // Update / GameSet::CommandApply
+export const TICK_HZ = 10;                                  // TICK_DT_NS = 100 000 000
 
-// packages/sim/src/commands.ts — единственный канал структурных правок мира
+// packages/sim/src/app.ts — кадр в порядке главного расписания Bevy
+export function frame(w: World, fixedTicks: number): void; // StateTransition → fixedTicks × FIXED_UPDATE → COMMAND_APPLY
+export function step(w: World, n: number): void;           // headless_sim::tick: n кадров по одному тику
+
+// packages/sim/src/commands.ts — единственный канал структурных правок мира, 1:1 с simcity_core::commands
 export type GameCommand =
-  | { kind: 'BuildRoad'; from: TileXY; to: TileXY; road: RoadKind }
-  | { kind: 'Erase'; at: TileXY }
-  | { kind: 'Zone'; rect: TileRect; zone: ZoneKind }
-  | { kind: 'PlaceService'; at: TileXY; service: ServiceKind }
   | { kind: 'GenerateMap'; seed: bigint }
-  | { kind: 'LoadTestCity' }
-  | { kind: 'Save'; slot: string }
-  | { kind: 'Load'; slot: string }
-  | { kind: 'Undo' } | { kind: 'Redo' }
-  | { kind: 'SetSpeed'; speed: SimSpeed };            // 11 вариантов, как в simcity_core::commands
+  | { kind: 'SetRoad'; pos: TilePos; road: RoadCell }
+  | { kind: 'SetZone'; pos: TilePos; zone: ZoneKind; density: ZoneDensity }
+  | { kind: 'PlaceBuilding'; pos: TilePos; building: BuildingKind }
+  | { kind: 'EraseTile'; pos: TilePos }
+  | { kind: 'DumpSaveContract' }
+  | { kind: 'SaveGame'; slot: number } | { kind: 'LoadGame'; slot: number }
+  | { kind: 'PlaceTrafficLight'; pos: TilePos } | { kind: 'RemoveTrafficLight'; pos: TilePos }
+  | { kind: 'LoadTestCity' };
+// commandCodec.ts: parseRustCommand(json) / toRustCommand(cmd) — serde-JSON Rust, этой формой пишутся fixtures/cmds.json.
+// Undo/Redo и скорость — не команды (в Rust это UndoRedoRequested и UiState.sim_speed), а сообщения протокола.
 
-// packages/sim/src/world.ts — SoA; емкости фиксированы при GenerateMap
+// packages/sim/src/world.ts — SoA; ёмкости фиксированы
 export interface World {
   readonly w: 128; readonly h: 128;
   tiles: { kind: Uint8Array; zone: Uint8Array; road: Uint8Array; landValue: Float32Array; pollution: Float32Array };
   vehicles: { alive: Uint8Array; x: Float32Array; y: Float32Array; heading: Float32Array;
               lanelet: Int32Array; progress: Float32Array; state: Uint8Array; kind: Uint8Array };
   // ... buildings, citizens, pedestrians — тем же паттерном, по одному Struct-of-Arrays на сущность
-  tick: number; rng: Rng;
+  tick: number; appState: AppState; nextState: PendingState | null; mapSeed: bigint;
+  city: City; clock: Timer; buildingUpgradeClock: Timer; notifications: Notifications;
+  simRng: StdRng; growthRng: StdRng; events: TickEvents; pendingEvents: TickEvents; commands: GameCommand[];
 }
 
 // packages/sim/src/fingerprint.ts — детерминизм; аналог simcity_data/determinism.rs
-export function fingerprint(w: World): bigint; // FNV-1a по всем массивам состояния в фиксированном порядке
+export function fingerprint(w: World): bigint;                       // FNV-1a 64 по секциям в фиксированном порядке
+export function fingerprintSections(w: World): FingerprintSection[]; // meta city clocks rng events notifications commands tiles vehicles
+// Новое поле состояния обязано попасть в секцию, иначе падает fingerprintCoversEveryStateField.
 
 // packages/bridge/src/protocol.ts — воркер ↔ главный поток
-export type ToWorker = { t: 'cmd'; cmd: GameCommand } | { t: 'step'; ticks: number } | { t: 'snapshot' };
-export type FromWorker = { t: 'ready'; render: SharedArrayBuffer } | { t: 'snapshot'; state: WorldSnapshot } | { t: 'fingerprint'; tick: number; fp: string };
-// render SAB: два буфера [count, x[], y[], heading[], kind[]] для машин/пешеходов/автобусов + индекс активного
+export interface ToWorker { id: number; req: Request } // cmd (serde-JSON) | step | snapshot | fingerprint | setState | setSpeed | rngProbe
+export type FromWorker =
+  | { t: 'ready'; render: SharedArrayBuffer } | { t: 'frame'; snapshot: WorldSnapshot }
+  | { t: 'reply'; id: number; value: Reply } | { t: 'error'; id: number; message: string };
+// render SAB: Int32[sequence, capacity] + два кадра [tick, count, x[], y[], heading[], kind[]], активный — sequence & 1.
+// Писатель заполняет неактивный кадр и увеличивает sequence; читатель копирует кадр и перечитывает, если sequence сдвинулся.
+// Слой машин — этап 0; пешеходы и автобусы добавляются слоями на этапах 2 и 4.
 ```
 
 ## Дифференциальный оракул (ворота каждого сим-этапа)

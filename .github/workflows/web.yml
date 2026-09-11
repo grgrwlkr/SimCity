@@ -1,0 +1,34 @@
+name: Web
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    name: typecheck + lint + test + e2e
+    # WebKit is the second engine of the determinism gate; macOS runs it natively.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      # Vitest and Playwright run on Node.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - run: bun install --frozen-lockfile
+      - run: bunx playwright install chromium webkit
+      - run: bun run typecheck
+      - run: bun run lint
+      - run: bun run test
+      - run: bun run e2e
