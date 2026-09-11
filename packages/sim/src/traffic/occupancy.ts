@@ -68,6 +68,8 @@ export class TrafficRoadCache {
   mapEditVersion = 0;
   capacityPerTile = new Uint16Array(0);
   roadTiles = 0;
+  /** Ascending indices of the tiles with capacity: the full-grid scans visit exactly these, in this order. */
+  roadIdx = new Uint32Array(0);
 
   ensureBuilt(w: World): void {
     const grid = w.grid;
@@ -77,15 +79,18 @@ export class TrafficRoadCache {
     this.mapEditVersion = w.mapEditVersion;
     this.capacityPerTile = new Uint16Array(len);
     this.roadTiles = 0;
+    const withCapacity: number[] = [];
     for (let i = 0; i < len; i++) {
       if (grid.water[i] !== 0 || grid.roadKind[i] === 0) continue;
       this.roadTiles += 1;
       this.capacityPerTile[i] = capacityPerLaneTile(ROAD_KINDS[grid.roadKind[i]!]!);
+      if (this.capacityPerTile[i]! > 0) withCapacity.push(i);
     }
+    this.roadIdx = Uint32Array.from(withCapacity);
   }
 }
 
-function writeIndex(w: World, tiles: Iterable<number>): void {
+function writeIndex(w: World, tiles: ArrayLike<number>): void {
   const occ = w.trafficOccupancy;
   const roads = w.trafficRoadCache;
   const idx = w.trafficIndex;
@@ -95,7 +100,8 @@ function writeIndex(w: World, tiles: Iterable<number>): void {
   let maxTile: number | null = null;
   let maxVehicles = 0;
   let maxCap = 0;
-  for (const ti of tiles) {
+  for (let k = 0; k < tiles.length; k++) {
+    const ti = tiles[k]!;
     const cap = roads.capacityPerTile[ti] ?? 0;
     if (cap <= 0) continue;
     const c = occ.perTickVehicles[ti]!;
@@ -175,5 +181,6 @@ export function updateTrafficOccupancy(w: World): void {
 export function updateTrafficIndex(w: World): void {
   w.trafficOccupancy.ensureLen(w.grid.len());
   w.trafficRoadCache.ensureBuilt(w);
-  writeIndex(w, { [Symbol.iterator]: function* () { for (let i = 0; i < w.grid.len(); i++) yield i; } });
+  // Rust scans every tile and skips those without capacity; the ascending road list is the same visit.
+  writeIndex(w, w.trafficRoadCache.roadIdx);
 }
