@@ -48,6 +48,7 @@
     "packages/ui": {
       "name": "@simcity/ui",
       "dependencies": {
+        "@simcity/bridge": "workspace:*",
         "@simcity/sim": "workspace:*",
       },
     },

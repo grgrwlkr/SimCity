@@ -6,6 +6,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@simcity/bridge": "workspace:*",
     "@simcity/sim": "workspace:*"
   }
 }
