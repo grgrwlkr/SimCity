@@ -180,6 +180,32 @@ test('pickingReportsTheTileUnderTheCursor', async ({ page }) => {
   expect(await page.evaluate((p) => window.__sim.pickTile(p.x, p.y), at)).toEqual({ x: 10, y: 20 });
 });
 
+// A page opened in a hidden pane or a collapsed layout starts with a 0×0 canvas: WebGPU rejects
+// zero-size textures, and the view must come to life once the canvas gets a size.
+test('drawingStartsOnceAZeroSizeCanvasGetsASize', async ({ page }) => {
+  const gpuErrors: string[] = [];
+  page.on('console', (m) => {
+    if (m.type() === 'error' && /GPU|WebGL|texture/i.test(m.text())) gpuErrors.push(m.text());
+  });
+  // Collapsed before the renderer exists (it waits for the worker). Not via page.route: a fulfilled
+  // response loses COOP/COEP in WebKit, and the page loses SharedArrayBuffer.
+  await page.addInitScript(() => {
+    document.addEventListener('DOMContentLoaded', () => {
+      const style = document.createElement('style');
+      style.id = 'collapsed';
+      style.textContent = '#view { width: 0 !important; height: 0 !important; }';
+      document.head.appendChild(style);
+    });
+  });
+  await openApp(page);
+  await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.chunks)).toBeGreaterThan(0);
+  expect((await page.evaluate(() => window.__sim.camera())).width, 'precondition: the renderer started on a 0×0 canvas').toBe(0);
+
+  await page.evaluate(() => document.getElementById('collapsed')!.remove());
+  await waitForDrawn(page);
+  expect(gpuErrors, 'no GPU validation errors from the zero-size start').toEqual([]);
+});
+
 test('overlaysOnlyWithDebugFlag', async ({ page }) => {
   await openApp(page);
   await loadTestCity(page);

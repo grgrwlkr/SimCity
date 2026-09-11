@@ -70,7 +70,9 @@ export class DebugRenderer {
     renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
     renderer.toneMapping = THREE.NoToneMapping;
     renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
+    // A collapsed canvas (hidden pane, layout not done) is 0×0, and WebGPU rejects zero-size textures:
+    // the drawing buffer keeps at least a pixel, and `draw` waits for a real size.
+    renderer.setSize(Math.max(canvas.clientWidth, 1), Math.max(canvas.clientHeight, 1), false);
     const r = new DebugRenderer(renderer, canvas);
     renderer.setAnimationLoop(() => r.draw(performance.now()));
     return r;
@@ -82,7 +84,7 @@ export class DebugRenderer {
 
   resize(width: number, height: number): void {
     this.view.viewport = { width, height };
-    this.renderer.setSize(width, height, false);
+    if (width > 0 && height > 0) this.renderer.setSize(width, height, false);
   }
 
   attachRenderBuffer(reader: RenderReader): void {
@@ -182,6 +184,7 @@ export class DebugRenderer {
   }
 
   private draw(nowMs: number): void {
+    if (this.view.viewport.width === 0 || this.view.viewport.height === 0) return;
     this.updateVehicles(nowMs);
     const b = this.view.bounds();
     this.camera.left = b.left;
