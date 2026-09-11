@@ -25,6 +25,20 @@ body {
   color: var(--fg);
 }
 
+/* The debug view fills the window behind the HUD. */
+#view {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  touch-action: none;
+}
+
+#root {
+  position: relative;
+}
+
 button {
   font: inherit;
   padding: 0.35rem 0.75rem;
@@ -42,6 +56,7 @@ button[aria-pressed='true'] {
 }
 
 .menu {
+  background: var(--bg);
   display: grid;
   place-items: center;
   align-content: center;
