@@ -25,6 +25,14 @@ export const VEHICLE_COLORS: ReadonlyArray<readonly [number, number, number]> = 
   [255, 225, 77],
 ];
 
+/** Traffic light lamp colours, sRGB: blue is the protected left arrow. */
+export const LAMP_COLORS: Readonly<Record<'green' | 'yellow' | 'red' | 'left', readonly [number, number, number]>> = {
+  green: [64, 214, 110],
+  yellow: [255, 196, 0],
+  red: [235, 64, 52],
+  left: [80, 160, 255],
+};
+
 /** `ZONE_KINDS` index -> class. */
 const ZONE_CLASSES: readonly TileClass[] = ['grass', 'residential', 'commercial', 'industrial'];
 

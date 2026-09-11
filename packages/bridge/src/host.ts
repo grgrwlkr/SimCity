@@ -10,6 +10,7 @@ import {
   refSlot,
   requestState,
   rngProbeDigest,
+  SignalizedCrossScenario,
   spawnVehicle,
   step,
   toHex64,
@@ -37,6 +38,7 @@ export class SimHost {
   private readonly driver: FixedStepDriver;
   private readonly writer: RenderWriter;
   private lastReported: string | null = null;
+  private scenario: SignalizedCrossScenario | null = null;
 
   constructor(renderCapacity: number) {
     this.world = createWorld();
@@ -55,7 +57,10 @@ export class SimHost {
         this.world.commands.push(parseRustCommand(req.cmd));
         return null;
       case 'step':
-        step(this.world, req.ticks);
+        for (let i = 0; i < req.ticks; i++) {
+          this.scenario?.advance(this.world);
+          step(this.world, 1);
+        }
         this.publish();
         return this.fingerprintReply();
       case 'snapshot':
@@ -85,11 +90,16 @@ export class SimHost {
         return null;
       case 'debugOverlay':
         return debugOverlayOf(this.world);
+      case 'scenario':
+        this.scenario = new SignalizedCrossScenario(this.world);
+        return null;
     }
   }
 
   /** One loop iteration at real time `nowMs`: the snapshot if tick, state, speed or the map changed since the last report. */
   update(nowMs: number): WorldSnapshot | null {
+    // A frame at ×1 runs at most a tick or two, so feeding the scenario once per frame keeps waves on time.
+    this.scenario?.advance(this.world);
     if (this.driver.update(nowMs) > 0) this.publish();
     const snapshot = this.snapshot();
     const key = `${snapshot.tick}|${snapshot.appState}|${snapshot.speed}|${snapshot.mapEditVersion}|${snapshot.graphVersion}`;
@@ -108,6 +118,16 @@ export class SimHost {
       city: { ...w.city },
       mapEditVersion: w.mapEditVersion,
       graphVersion: w.graphVersion,
+      lights: w.trafficLights.map((light) => {
+        const box = w.intersections.clusterById(light.intersectionId);
+        return {
+          minX: box?.aabbMin.x ?? light.pos.x,
+          minY: box?.aabbMin.y ?? light.pos.y,
+          maxX: box?.aabbMax.x ?? light.pos.x,
+          maxY: box?.aabbMax.y ?? light.pos.y,
+          phase: light.phase,
+        };
+      }),
     };
   }
 

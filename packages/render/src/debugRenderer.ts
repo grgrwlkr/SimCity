@@ -1,12 +1,12 @@
 // The stage 1½ debug renderer: map chunks, vehicles as cubes, overlays, a top-down orthographic
 // camera. Colours reach the screen exactly as written, so a screenshot can be read back per tile.
-import type { DebugOverlayReply, MapLayersReply, RenderFrameCopy, RenderReader } from '@simcity/bridge';
-import { tileToWorld, type MapConfig, type TilePos } from '@simcity/sim';
+import type { DebugOverlayReply, MapLayersReply, RenderFrameCopy, RenderReader, TrafficLightView } from '@simcity/bridge';
+import { tileToWorld, type LightPhase, type MapConfig, type TilePos } from '@simcity/sim';
 import * as THREE from 'three/webgpu';
 import { OrthoView } from './camera';
 import { interpolateHeading, interpolatePositions } from './interpolate';
 import { buildChunkGeometry, changedChunks, chunkGrid } from './mapChunks';
-import { VEHICLE_COLORS } from './palette';
+import { LAMP_COLORS, VEHICLE_COLORS } from './palette';
 
 /** A sim frame is 100 ms; drawn frames in between interpolate towards the newest one. */
 const SIM_FRAME_MS = 100;
@@ -22,7 +22,18 @@ export interface RenderStats {
   readonly mapEditVersion: number | null;
   readonly vehicles: number;
   readonly overlayLanelets: number;
+  /** Traffic light lamps on screen, four per light. */
+  readonly lights: number;
   readonly hovered: TilePos | null;
+}
+
+/** Lamp colour of one axis in a phase. */
+function lampColor(phase: LightPhase, axis: 'ns' | 'ew'): readonly [number, number, number] {
+  const prefix = axis === 'ns' ? 'NorthSouth' : 'EastWest';
+  if (phase === `${prefix}Green`) return LAMP_COLORS.green;
+  if (phase === `${prefix}Yellow`) return LAMP_COLORS.yellow;
+  if (phase === `${prefix}LeftProtected`) return LAMP_COLORS.left;
+  return LAMP_COLORS.red;
 }
 
 export class DebugRenderer {
@@ -33,6 +44,9 @@ export class DebugRenderer {
   private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 5000);
   private readonly chunkMeshes = new Map<number, THREE.Mesh>();
   private readonly overlay = new THREE.Group();
+  /** Four lamps per light, keyed by the box bounds; the meshes stay and only their colours change. */
+  private readonly lamps = new Map<string, Array<{ mesh: THREE.Mesh; axis: 'ns' | 'ew' }>>();
+  private readonly lampGroup = new THREE.Group();
   private readonly chunkMaterial = new THREE.MeshBasicMaterial({ vertexColors: true });
   private vehicles: THREE.InstancedMesh | null = null;
   private map: MapLayersReply | null = null;
@@ -60,6 +74,7 @@ export class DebugRenderer {
     this.camera.position.set(0, 0, 1000);
     this.overlay.visible = false;
     this.scene.add(this.overlay);
+    this.scene.add(this.lampGroup);
   }
 
   /** WebGPU where the browser has it, WebGL2 otherwise (three picks the backend). */
@@ -170,6 +185,54 @@ export class DebugRenderer {
     this.overlayLanelets = overlay.lanelets.length;
   }
 
+  /**
+   * Lamps beside each box: at the mouth of every approach, the colour of that approach's axis.
+   * Needs the map (for world coordinates); lights of boxes that are gone are removed.
+   */
+  setLights(lights: readonly TrafficLightView[]): void {
+    if (this.map === null) return;
+    const cfg: MapConfig = { width: this.map.width, height: this.map.height, tileSize: this.map.tileSize };
+    const seen = new Set<string>();
+    for (const light of lights) {
+      const key = `${light.minX},${light.minY},${light.maxX},${light.maxY}`;
+      seen.add(key);
+      let set = this.lamps.get(key);
+      if (set === undefined) {
+        const origin = tileToWorld(cfg, { x: light.minX, y: light.minY });
+        const ts = cfg.tileSize;
+        const at = (tx: number, ty: number) => [origin.x + (tx - light.minX) * ts, origin.y + (ty - light.minY) * ts] as const;
+        // Eastbound arrives on the low row from the west, westbound on the high row from the east;
+        // northbound on the low column from the south, southbound on the high column from the north.
+        const spots: Array<[readonly [number, number], 'ns' | 'ew']> = [
+          [at(light.minX - 0.5, light.minY - 1), 'ew'],
+          [at(light.maxX + 0.5, light.maxY + 1), 'ew'],
+          [at(light.minX - 1, light.minY - 0.5), 'ns'],
+          [at(light.maxX + 1, light.maxY + 0.5), 'ns'],
+        ];
+        set = spots.map(([[x, y], axis]) => {
+          const mesh = new THREE.Mesh(new THREE.CircleGeometry(ts * 0.32, 20), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+          mesh.position.set(x, y, 2);
+          this.lampGroup.add(mesh);
+          return { mesh, axis };
+        });
+        this.lamps.set(key, set);
+      }
+      for (const { mesh, axis } of set) {
+        const [r, g, b] = lampColor(light.phase, axis);
+        (mesh.material as THREE.MeshBasicMaterial).color.setRGB(r / 255, g / 255, b / 255);
+      }
+    }
+    for (const [key, set] of this.lamps) {
+      if (seen.has(key)) continue;
+      for (const { mesh } of set) {
+        this.lampGroup.remove(mesh);
+        mesh.geometry.dispose();
+        (mesh.material as THREE.MeshBasicMaterial).dispose();
+      }
+      this.lamps.delete(key);
+    }
+  }
+
   stats(): RenderStats {
     return {
       backend: this.backend,
@@ -179,6 +242,7 @@ export class DebugRenderer {
       mapEditVersion: this.drawnMapEditVersion,
       vehicles: this.vehicles?.count ?? 0,
       overlayLanelets: this.overlay.visible ? this.overlayLanelets : 0,
+      lights: this.lampGroup.children.length,
       hovered: this.hovered,
     };
   }

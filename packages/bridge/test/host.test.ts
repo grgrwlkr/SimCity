@@ -167,6 +167,21 @@ describe('SimHost', () => {
     });
   });
 
+  it('signalizedScenarioDrivesVehiclesAndReportsTheLight', () => {
+    const host = new SimHost(256);
+    const reader = new RenderReader(host.render);
+    const out = reader.allocate();
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'scenario', name: 'signalizedCross' });
+    host.handle({ t: 'step', ticks: 60 });
+
+    reader.readInto(out);
+    expect(out.count, 'two waves of four, at ticks 1 and 51').toBe(8);
+    const { lights, mapEditVersion } = host.handle({ t: 'snapshot' });
+    expect(mapEditVersion, 'the cross is on the map').toBeGreaterThan(0);
+    expect(lights).toEqual([{ minX: 40, minY: 40, maxX: 41, maxY: 41, phase: expect.any(String) }]);
+  });
+
   it('debugVehiclesArePublished', () => {
     const host = new SimHost(16);
     const reader = new RenderReader(host.render);

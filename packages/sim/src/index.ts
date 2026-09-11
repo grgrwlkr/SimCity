@@ -18,6 +18,7 @@ export * from './map/zonePlacement';
 export * from './notifications';
 export * from './probe';
 export * from './rng';
+export * from './scenarios/signalizedCross';
 export * from './schedule';
 export * from './state';
 export * from './timer';

@@ -1,6 +1,15 @@
 // Worker ↔ main thread messages. Requests carry an id so `window.__sim` can await each reply.
-import type { AppState, City, ManeuverKind, MapCell, MapGrid, TilePos } from '@simcity/sim';
+import type { AppState, City, LightPhase, ManeuverKind, MapCell, MapGrid, TilePos } from '@simcity/sim';
 import type { SimSpeed } from './driver';
+
+/** A traffic light by the tile bounds of its intersection box. */
+export interface TrafficLightView {
+  readonly minX: number;
+  readonly minY: number;
+  readonly maxX: number;
+  readonly maxY: number;
+  readonly phase: LightPhase;
+}
 
 export interface WorldSnapshot {
   readonly tick: number;
@@ -12,6 +21,7 @@ export interface WorldSnapshot {
   /** The render side refetches `mapLayers` when this moves. */
   readonly mapEditVersion: number;
   readonly graphVersion: number;
+  readonly lights: readonly TrafficLightView[];
 }
 
 /** Every per-tile layer of `MapGrid`, in its field order. */
@@ -93,7 +103,9 @@ export type Request =
   | { readonly t: 'loadGrid'; readonly layers: GridLayers }
   /** Replace the vehicle slots with these and publish a render frame. Changes the fingerprint. */
   | { readonly t: 'debugVehicles'; readonly vehicles: readonly DebugVehicle[] }
-  | { readonly t: 'debugOverlay' };
+  | { readonly t: 'debugOverlay' }
+  /** Build a scenario into the world; the host feeds it before every fixed tick from then on. */
+  | { readonly t: 'scenario'; readonly name: 'signalizedCross' };
 
 export interface ReplyByRequest {
   readonly cmd: null;
@@ -110,6 +122,7 @@ export interface ReplyByRequest {
   readonly loadGrid: null;
   readonly debugVehicles: null;
   readonly debugOverlay: DebugOverlayReply;
+  readonly scenario: null;
 }
 
 export type Reply = ReplyByRequest[keyof ReplyByRequest];

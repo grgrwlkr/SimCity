@@ -1,6 +1,6 @@
 import { RenderReader, SimClient, type WorldSnapshot } from '@simcity/bridge';
 import { DebugRenderer, installViewControls } from '@simcity/render';
-import type { MapConfig } from '@simcity/sim';
+import { SIGNALIZED_CROSS, tileToWorld, type MapConfig } from '@simcity/sim';
 import { Hud, useSimStore, type HudActions } from '@simcity/ui';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -11,7 +11,11 @@ if (!crossOriginIsolated) {
   throw new Error('SharedArrayBuffer needs a cross-origin isolated page: serve with COOP/COEP headers (README).');
 }
 
-const debug = new URLSearchParams(location.search).get('debug') === '1';
+const params = new URLSearchParams(location.search);
+const debug = params.get('debug') === '1';
+/** `?scenario=signalized`: the lit cross with traffic, the camera on its box. */
+const scenario = params.get('scenario') === 'signalized' ? 'signalizedCross' : null;
+let focusPending = scenario !== null;
 const canvas = document.getElementById('view');
 if (!(canvas instanceof HTMLCanvasElement)) throw new Error('canvas#view is missing from index.html');
 
@@ -41,8 +45,18 @@ function syncRender(snapshot: WorldSnapshot): void {
       mapConfig = { width: map.width, height: map.height, tileSize: map.tileSize };
       r.setMap(map);
       if (first) r.view.fitMap(mapConfig);
+      if (focusPending && map.mapEditVersion > 0) {
+        // The scenario's map is on screen: centre its box and show the whole cross.
+        const box = tileToWorld(mapConfig, SIGNALIZED_CROSS.box);
+        r.view.centerX = box.x + map.tileSize / 2;
+        r.view.centerY = box.y + map.tileSize / 2;
+        const span = (SIGNALIZED_CROSS.hi - SIGNALIZED_CROSS.lo + 6) * map.tileSize;
+        r.view.worldPerPixel = span / Math.max(Math.min(r.view.viewport.width, r.view.viewport.height), 1);
+        focusPending = false;
+      }
       shownMapEditVersion = map.mapEditVersion;
     }
+    r.setLights(snapshot.lights);
     if (debug && snapshot.graphVersion !== shownOverlayGraphVersion) {
       const overlay = await client.request({ t: 'debugOverlay' });
       if (overlay.laneletsBuiltFor === overlay.graphVersion) {
@@ -59,7 +73,13 @@ client.onFrame((snapshot) => {
   syncRender(snapshot);
 });
 void api.ready
-  .then(() => api.snapshot())
+  .then(async () => {
+    if (scenario !== null) {
+      await api.setState('InGame');
+      await api.scenario(scenario);
+    }
+    return api.snapshot();
+  })
   .then((snapshot) => {
     setSnapshot(snapshot);
     syncRender(snapshot);

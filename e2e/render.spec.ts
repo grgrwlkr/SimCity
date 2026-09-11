@@ -168,6 +168,24 @@ test('vehiclesDrawAsCubes', async ({ page }) => {
   expect(classes).toEqual(['vehicle0', 'vehicle1', 'vehicle2']);
 });
 
+test('signalizedScenarioShowsTrafficLive', async ({ page }, testInfo) => {
+  await page.goto('/?scenario=signalized');
+  await page.waitForFunction(() => typeof window.__sim !== 'undefined');
+  await page.evaluate(() => window.__sim.ready);
+
+  await expect
+    .poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => ({ driving: s.vehicles > 0, lamps: s.lights })))
+    .toEqual({ driving: true, lamps: 4 });
+  const cam = await page.evaluate(() => window.__sim.camera());
+  const box = tileToWorld(CFG, { x: 40, y: 40 });
+  expect(Math.abs(cam.centerX - (box.x + 8)) + Math.abs(cam.centerY - (box.y + 8)), 'the camera looks at the box').toBeLessThan(16);
+
+  // Real time at ×1: the frame keeps moving without any manual stepping.
+  const first = await page.evaluate(() => window.__sim.renderFrame());
+  await expect.poll(() => page.evaluate(() => window.__sim.renderFrame()).then((f) => f.tick)).toBeGreaterThan(first.tick + 5);
+  await page.locator('#view').screenshot({ path: testInfo.outputPath('signalized.png') });
+});
+
 test('pickingReportsTheTileUnderTheCursor', async ({ page }) => {
   await openApp(page);
   await waitForDrawn(page);
