@@ -79,7 +79,7 @@ simcity_app ─┬─> simcity_frontend ─┬─> simcity_debug ─┐
 
 ## TypeScript + Three.js порт (`packages/`)
 
-Программа переезда и её контракты: `docs/plans/2026-09-11-ts-threejs-migration-plan.md`, читать первой. План текущего этапа лежит рядом: `docs/plans/YYYY-MM-DD-web-phase-N-<name>.md`. Порт живёт в этом же репозитории, bun-монорепо в корне рядом с Rust-крейтами. Rust-код остаётся эталоном поведения и не правится. Исключения: примеры-эталоны `examples/dump_*.rs` с общим `examples/common/mod.rs`, которые пишут фикстуры в `packages/sim/test/fixtures/`, и `pub` у `transport::lanelet::pathfinding::find_route`, иначе пример до него не дотянется.
+Программа переезда и её контракты: `docs/plans/2026-09-11-ts-threejs-migration-plan.md`, читать первой. План текущего этапа лежит рядом: `docs/plans/YYYY-MM-DD-web-phase-N-<name>.md`. Порт живёт в этом же репозитории, bun-монорепо в корне рядом с Rust-крейтами. Rust-код — источник алгоритмов и тестов, но не эталон: всё, что можно улучшить при переносе, улучшаем обязательно. Это касается дефектов, платформенно-зависимого float и причуд Bevy. Фикстуры Rust служат регрессионными воротами, пока его поведение правильное; улучшение, расходящееся с фикстурой, перегенерирует или снимает её и записывается в план этапа. В самом Rust правятся только примеры-дампы `examples/dump_*.rs` с общим `examples/common/mod.rs`, которые пишут фикстуры в `packages/sim/test/fixtures/`, и `pub` у `transport::lanelet::pathfinding::find_route`, иначе пример до него не дотянется.
 
 ```bash
 bun install
