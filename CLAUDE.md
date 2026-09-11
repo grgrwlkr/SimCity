@@ -98,4 +98,5 @@ bun run dev         # Vite, http://localhost:5174, ?debug=1
 - Порядок систем — массив `FIXED_UPDATE` в `packages/sim/src/schedule.ts`. Новая система встаёт в конкретную позицию с комментарием, после чего она идёт и что читает.
 - Портированный Rust-тест сохраняет имя в camelCase и ссылку на исходный файл.
 - `tools/rand-vectors` — Rust-генератор эталона RNG со своим `[workspace]`; версии крейтов пинятся под корневой `Cargo.lock`.
-- `window.__sim` в DevTools и Playwright: `snapshot() step(n) fingerprint() cmd(json) setState(s) setSpeed(s) rngProbe(seed, n) renderFrame()`. Флаг `?debug=1` включает `__sim.debug`.
+- `window.__sim` в DevTools и Playwright: `snapshot() step(n) fingerprint() cmd(json) setState(s) setSpeed(s) rngProbe(seed, n) renderFrame()`, для рендера `loadGridHex(layers) debugVehicles(list) camera() setCamera(s) fitMap() pickTile(x, y) renderStats()`. Флаг `?debug=1` включает `__sim.debug` и оверлеи: сетку, боксы перекрёстков, лейнлеты.
+- Отладочный рендер (`packages/render/src/debugRenderer.ts`) выводит цвета без цветового менеджмента, поэтому класс тайла читается обратно со скриншота. Эталон раскладки Rust — `e2e/fixtures/rust-layout.json` из `bun tools/rust-layout.ts` против скрытой живой игры (skill `simcity-live`); инструмент стирает четыре тайла в игре, экземпляр потом гасить.
