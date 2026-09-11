@@ -1,7 +1,14 @@
 // The stage 1½ debug renderer: map chunks, vehicles as cubes, overlays, a top-down orthographic
 // camera. Colours reach the screen exactly as written, so a screenshot can be read back per tile.
 import type { DebugOverlayReply, MapLayersReply, RenderFrameCopy, RenderReader, TrafficLightView } from '@simcity/bridge';
-import { tileToWorld, type LightPhase, type MapConfig, type TilePos } from '@simcity/sim';
+import {
+  VEHICLE_LENGTH_TILES,
+  VEHICLE_WIDTH_TILES,
+  tileToWorld,
+  type LightPhase,
+  type MapConfig,
+  type TilePos,
+} from '@simcity/sim';
 import * as THREE from 'three/webgpu';
 import { OrthoView } from './camera';
 import { FpsMeter } from './fpsMeter';
@@ -286,9 +293,11 @@ export class DebugRenderer {
 
   private createVehicleMesh(tileSize: number): void {
     if (this.reader === null) return;
-    const size = tileSize * 0.6;
-    const geometry = new THREE.BoxGeometry(size, size * 0.5, size * 0.5);
-    geometry.translate(0, 0, size * 0.25);
+    // The cube is the car the simulation moves: the same length and width, so queues look like queues.
+    const length = tileSize * VEHICLE_LENGTH_TILES;
+    const width = tileSize * VEHICLE_WIDTH_TILES;
+    const geometry = new THREE.BoxGeometry(length, width, width);
+    geometry.translate(0, 0, width / 2);
     this.vehicles = new THREE.InstancedMesh(geometry, new THREE.MeshBasicMaterial({ color: 0xffffff }), this.reader.capacity);
     // Created up front: a material compiled before the first `setColorAt` would ignore instance colours.
     this.vehicles.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(this.reader.capacity * 3), 3);

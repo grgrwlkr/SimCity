@@ -9,10 +9,14 @@ export const TRAFFIC_LIGHT_DETECTION_DISTANCE = 8;
  * Rust looked one tile ahead, so followers ran up to a queue and were snapped to a stop.
  */
 export const LEADER_LOOKAHEAD_TILES = 8;
-/** Vehicle length along travel, tiles (movement uses the center point). */
-export const VEHICLE_VISUAL_LENGTH_TILES = f32(1.4);
-export const VEHICLE_VISUAL_WIDTH_TILES = f32(0.7);
-export const VEHICLE_HALF_LENGTH_TILES = f32(VEHICLE_VISUAL_LENGTH_TILES * 0.5);
+/**
+ * Vehicle length along travel, tiles (movement uses the centre point): 5 m at 10 m a tile. Rust used
+ * 1.4 tiles, so queues stood 16 m centre to centre with cars drawn 6 m long.
+ */
+export const VEHICLE_LENGTH_TILES = f32(0.5);
+/** Vehicle width, tiles (drawing only). */
+export const VEHICLE_WIDTH_TILES = f32(0.25);
+export const VEHICLE_HALF_LENGTH_TILES = f32(VEHICLE_LENGTH_TILES * 0.5);
 /** Bumper margin before the intersection boundary, tiles. */
 export const STOP_LINE_MARGIN_TILES = f32(0.05);
 /** `progress` runs between tile centers, so the tile boundary is at 0.5. */

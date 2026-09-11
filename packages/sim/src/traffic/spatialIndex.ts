@@ -3,7 +3,7 @@
 import type { TilePos } from '../commands';
 import type { MapGrid } from '../map/grid';
 import type { World } from '../world';
-import { VEHICLE_VISUAL_LENGTH_TILES } from './constants';
+import { VEHICLE_LENGTH_TILES } from './constants';
 import type { PathPool } from './pathPool';
 import { vehicleRef } from './vehicles';
 
@@ -85,7 +85,7 @@ export class TrafficSpatialIndex {
     }
 
     const tileSize = f32(Math.max(w.mapConfig.tileSize, f32(0.1)));
-    const vehicleLenWorld = f32(VEHICLE_VISUAL_LENGTH_TILES * tileSize);
+    const vehicleLenWorld = f32(VEHICLE_LENGTH_TILES * tileSize);
     for (const idx of this.touched) {
       const start = this.offsets[idx]!;
       const end = start + this.counts[idx]!;

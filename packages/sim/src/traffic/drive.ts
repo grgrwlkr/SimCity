@@ -18,7 +18,7 @@ import {
   STOP_LINE_OFFSET,
   STUCK_REROUTE_SECS,
   TILE_CENTER_TO_EDGE_TILES,
-  VEHICLE_VISUAL_LENGTH_TILES,
+  VEHICLE_LENGTH_TILES,
 } from './constants';
 import { dirBetweenAdjacent } from '../transport/lanelet/pathfinding';
 import { computeExitDirection, isIntersectionTile } from './state';
@@ -217,7 +217,7 @@ export function moveVehicles(w: World, dtNs: number): void {
     const nextLead = nextIdx === undefined ? undefined : spatial.tileMinProgressSpeed(nextIdx);
     if (nextLead !== undefined) {
       const gapTiles = f32(f32(1 - progress0) + nextLead[0]);
-      const gapWorld = Math.max(f32(f32(Math.max(gapTiles, 0) * tileSize) - f32(VEHICLE_VISUAL_LENGTH_TILES * tileSize)), 0);
+      const gapWorld = Math.max(f32(f32(Math.max(gapTiles, 0) * tileSize) - f32(VEHICLE_LENGTH_TILES * tileSize)), 0);
       leader = minLeader(leader, [gapWorld, nextLead[1]]);
     }
     // Nobody on this tile or the next: look further along the route for the car ahead, so a follower
@@ -237,7 +237,7 @@ export function moveVehicles(w: World, dtNs: number): void {
     }
     if (farLead !== undefined) {
       const gapTiles = f32(f32(farLead[0] - progress0) + farLead[1]);
-      const gapWorld = Math.max(f32(f32(gapTiles * tileSize) - f32(VEHICLE_VISUAL_LENGTH_TILES * tileSize)), 0);
+      const gapWorld = Math.max(f32(f32(gapTiles * tileSize) - f32(VEHICLE_LENGTH_TILES * tileSize)), 0);
       leader = minLeader(leader, [gapWorld, farLead[2]]);
     }
     const state = v.trafficState[slot]!;
@@ -351,7 +351,7 @@ export function moveVehicles(w: World, dtNs: number): void {
       }
     } else {
       let nextP = f32(prevP + desiredDprog);
-      const minGapTiles = Math.max(f32(f32(idm.s0 + f32(VEHICLE_VISUAL_LENGTH_TILES * tileSize)) / tileSize), 0);
+      const minGapTiles = Math.max(f32(f32(idm.s0 + f32(VEHICLE_LENGTH_TILES * tileSize)) / tileSize), 0);
       let leaderCap: number | undefined;
       const leadP = spatial.leaderSameTileProgress(ref);
       if (leadP !== undefined) leaderCap = f32(leadP - minGapTiles);

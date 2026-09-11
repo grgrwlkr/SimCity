@@ -1,7 +1,7 @@
 // Ported from crates/simcity_sim/src/game/traffic/tests/basic_behavior.rs and the `capacity_blocks_step`
 // tests of traffic/movement/drive.rs.
 import { describe, expect, it } from 'vitest';
-import { STUCK_REROUTE_SECS, VEHICLE_VISUAL_LENGTH_TILES } from '../../src/traffic/constants';
+import { STUCK_REROUTE_SECS, VEHICLE_LENGTH_TILES } from '../../src/traffic/constants';
 import { capacityBlocksStep, moveVehicles } from '../../src/traffic/drive';
 import { buildTrafficSpatialIndex } from '../../src/traffic/spatialIndex';
 import { breakTileSwaps } from '../../src/traffic/swapBreak';
@@ -75,7 +75,7 @@ describe('hard overlap clamp', () => {
     step(w);
     expect(w.vehicles.pathCursor[ego], 'ego left the tile; test setup invalid').toBe(0);
     const followerPos = w.vehicles.pathCursor[ego]! + w.vehicles.progress[ego]!;
-    const bound = Math.max(0.95 - VEHICLE_VISUAL_LENGTH_TILES, 0);
+    const bound = Math.max(0.95 - VEHICLE_LENGTH_TILES, 0);
     expect(followerPos, 'same-tile overlap').toBeLessThanOrEqual(bound + 1e-4);
   });
 
@@ -85,7 +85,7 @@ describe('hard overlap clamp', () => {
     const ego = refSlot(w.vehicles, vehicle(w, route4, 0, 0, 400, 400, 50, 1.35));
     step(w);
     const followerPos = w.vehicles.pathCursor[ego]! + w.vehicles.progress[ego]!;
-    const bound = 1.9 - VEHICLE_VISUAL_LENGTH_TILES;
+    const bound = 1.9 - VEHICLE_LENGTH_TILES;
     expect(followerPos, 'next-tile overlap').toBeLessThanOrEqual(bound + 1e-4);
     expect(followerPos, 'follower frozen; expected to advance to the safe bound ~0.5').toBeGreaterThan(0.3);
   });
