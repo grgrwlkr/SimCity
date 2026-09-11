@@ -380,10 +380,15 @@ describe('lanelet arbiter system', () => {
     expect(runArbiterOnce()).toEqual(a);
   });
 
-  it('conflictingVehiclesNeverBothInsideBoxEntrySerialized', () => {
+  it('conflictingVehiclesNeverShareABoxTile', () => {
+    // The ledger holds tiles: two crossing cars may both be in the box, never on or holding one tile.
     const w = crossWorld4x4();
     const east = spawnAtStopLine(w, EAST_4X4);
     const south = spawnAtStopLine(w, SOUTH_4X4);
+    const tileOf = (ref: number) => {
+      const slot = resolveVehicle(w.vehicles, ref);
+      return slot === undefined ? undefined : w.pathPool.getTile(w.vehicles.pathHandle[slot]!, w.vehicles.pathCursor[slot]!);
+    };
     let eastGranted = false;
     let southGranted = false;
     let anyInside = false;
@@ -392,11 +397,15 @@ describe('lanelet arbiter system', () => {
       const eastIn = isInsideBox(w, east);
       const southIn = isInsideBox(w, south);
       anyInside ||= eastIn || southIn;
-      expect(eastIn && southIn, `tick ${tick}: both inside the box`).toBe(false);
+      const [a, b] = [tileOf(east), tileOf(south)];
+      expect(eastIn && southIn && a!.x === b!.x && a!.y === b!.y, `tick ${tick}: both on one box tile`).toBe(false);
       eastGranted ||= reserved(w, east);
       southGranted ||= reserved(w, south);
       const ledger = w.reservations.ledger(0);
-      if (ledger !== undefined) expect(ledger.holds(east) && ledger.holds(south), `tick ${tick}: both hold`).toBe(false);
+      if (ledger !== undefined) {
+        const southTiles = new Set(ledger.heldTiles(south));
+        expect(ledger.heldTiles(east).filter((tile) => southTiles.has(tile)), `tick ${tick}: a tile held by both`).toEqual([]);
+      }
     }
     expect(anyInside).toBe(true);
     expect(eastGranted && southGranted).toBe(true);

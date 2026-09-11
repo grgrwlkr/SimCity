@@ -34,7 +34,7 @@ describe('traffic schedule', () => {
     const w = corridor();
     vehicle(w, route, 0, 0, 0, 60, 20, 1);
     for (let i = 0; i < 3; i++) runFixedTick(w);
-    w.reservations.ledgerMut(0).setInboxLanelet(1);
+    w.reservations.ledgerMut(0).setInboxTiles([1]);
 
     requestState(w, 'MainMenu');
     applyStateTransition(w);

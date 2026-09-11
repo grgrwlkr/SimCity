@@ -196,8 +196,8 @@ describe('lanelet arbiter core', () => {
     seedPedMasks([0], [[0, true]], m, res);
     const matrix = m.byIntersection.get(0)!;
     const ledger = res.ledgerMut(0);
-    expect(ledger.tryAdmit(1, 0, matrix.row(0)), 'lanelet crossing the active West crosswalk is blocked').toBe(false);
-    expect(ledger.tryAdmit(2, 1, matrix.row(1)), 'lanelet crossing the inactive North crosswalk admits').toBe(true);
+    expect(ledger.tryAdmit(1, 0, matrix), 'lanelet crossing the active West crosswalk is blocked').toBe(false);
+    expect(ledger.tryAdmit(2, 1, matrix), 'lanelet crossing the inactive North crosswalk admits').toBe(true);
   });
 
   it('clusterOpenExitTrueWithAdjacentRoadFalseWhenEnclosed', () => {
@@ -280,7 +280,7 @@ describe('lanelet arbiter core', () => {
       const n = seedPedMasks([0], crossings, m, res);
       const matrix = m.byIntersection.get(0)!;
       const ledger = res.ledgerMut(0);
-      return [n, !ledger.tryAdmit(1, 0, matrix.row(0)), !ledger.tryAdmit(2, 1, matrix.row(1))];
+      return [n, !ledger.tryAdmit(1, 0, matrix), !ledger.tryAdmit(2, 1, matrix)];
     };
     const a = blockResult([
       [0, true],

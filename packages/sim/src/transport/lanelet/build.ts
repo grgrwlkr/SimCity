@@ -21,7 +21,6 @@ const BFS_STEPS: ReadonlyArray<readonly [number, number]> = [
   [0, -1],
   [0, 1],
 ];
-const EMPTY_ROW = new Uint32Array(0);
 
 const samePos = (a: TilePos, b: TilePos) => a.x === b.x && a.y === b.y;
 
@@ -51,11 +50,6 @@ export class LaneletConflictMatrices {
   /** Crosswalk sides per intersection in emission order: index `i` is row `crosswalkBase() + i`. */
   crosswalkSides = new Map<number, RoadDir[]>();
   version = 0;
-
-  /** Conflict row of local lanelet `localIdx`; empty (never overlaps) when absent. */
-  rowFor(id: number, localIdx: number): Uint32Array {
-    return this.byIntersection.get(id)?.row(localIdx) ?? EMPTY_ROW;
-  }
 }
 
 /**

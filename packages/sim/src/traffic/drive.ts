@@ -132,6 +132,12 @@ function stepHeading(from: TilePos, to: TilePos): number | undefined {
   return undefined;
 }
 
+/** Takes the conflict-tile hold of `localIdx` for `ref`; an intersection without a matrix admits. */
+function admitToBox(w: World, id: number, ref: number, localIdx: number): boolean {
+  const matrix = w.laneletConflicts.byIntersection.get(id);
+  return matrix === undefined || w.reservations.ledgerMut(id).tryAdmit(ref, localIdx, matrix);
+}
+
 /** `move_vehicles` (TrafficStep::Movement). Despawns are applied after the loop, as Bevy commands are. */
 export function moveVehicles(w: World, dtNs: number): void {
   const dt = f32(dtNs / 1e9);
@@ -267,7 +273,7 @@ export function moveVehicles(w: World, dtNs: number): void {
             if (res.coarse) ok = true;
             else if (res.localIdx !== null) {
               if (atBoundary) {
-                ok = w.reservations.ledgerMut(id).tryAdmit(ref, res.localIdx, w.laneletConflicts.rowFor(id, res.localIdx));
+                ok = admitToBox(w, id, ref, res.localIdx);
               } else {
                 clampToBoxBoundary = true;
                 pendingAdmit = { id, localIdx: res.localIdx };
@@ -379,11 +385,7 @@ export function moveVehicles(w: World, dtNs: number): void {
     if (clampToBoxBoundary && !reversing) {
       const boundaryCap = Math.max(TILE_CENTER_TO_EDGE_TILES, prevP);
       if (v.progress[slot]! > boundaryCap) {
-        const admitted =
-          pendingAdmit !== undefined &&
-          w.reservations
-            .ledgerMut(pendingAdmit.id)
-            .tryAdmit(ref, pendingAdmit.localIdx, w.laneletConflicts.rowFor(pendingAdmit.id, pendingAdmit.localIdx));
+        const admitted = pendingAdmit !== undefined && admitToBox(w, pendingAdmit.id, ref, pendingAdmit.localIdx);
         if (!admitted) {
           v.progress[slot] = boundaryCap;
           const allowed = f32(f32(f32(v.progress[slot]! - prevP) * tileSize) / denom);

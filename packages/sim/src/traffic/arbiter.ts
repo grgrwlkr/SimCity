@@ -17,7 +17,7 @@ import { STUCK_REROUTE_SECS, TILE_CENTER_TO_EDGE_TILES } from './constants';
 import { isAllRed, isGreen, isLeftProtected, isYellow, type TrafficLight } from './lights';
 import { maneuverKind, type ManeuverKind } from './maneuver';
 import type { PathPool } from './pathPool';
-import { fixedElapsedSecs, grantMaskSet, type IntersectionReservations } from './reservations';
+import { emptyGrantMask, fixedElapsedSecs, grantMaskAdd, type IntersectionReservations } from './reservations';
 import { computeExitDirection, isIntersectionTile } from './state';
 import {
   laneletPlanIsCurrent,
@@ -328,7 +328,7 @@ export function arbitrateGrantsInner(
       }
     }
 
-    const grantMask: number[] = [];
+    const grant = emptyGrantMask();
     for (const cand of order) {
       if (!cand.ready) {
         counts.refused += 1;
@@ -343,10 +343,10 @@ export function arbitrateGrantsInner(
       if (reservations.isReservedBy(id, cand.vehicle) || ledger.holds(cand.vehicle)) continue;
       let ok: boolean;
       if (cand.coarse) {
-        ok = ledger.tryAdmitCoarse(cand.vehicle, grantMask);
+        ok = ledger.tryAdmitCoarse(cand.vehicle, grant);
       } else {
-        ok = ledger.grantEligible(matrix.row(cand.localIdx), grantMask);
-        if (ok) grantMaskSet(grantMask, cand.localIdx);
+        ok = ledger.grantEligible(cand.localIdx, matrix, grant);
+        if (ok) grantMaskAdd(grant, matrix, cand.localIdx);
       }
       if (!ok) {
         counts.refused += 1;
@@ -478,7 +478,10 @@ export function arbitrateLaneletReservations(w: World): void {
         inbox.push({ vehicle: ref, seq: v.seq[slot]!, intersection: id });
         const lid = resolveInboxLanelet(pool, grid, llg, lanes, cfg, handle, cursor, id);
         const local = lid === undefined ? undefined : cache.localIdx.get(id)?.get(lid);
-        if (local !== undefined) reservations.ledgerMut(id).setInboxLanelet(local);
+        // Only cars without a hold: a holder's own tiles are in the ledger and shrink as it drives on.
+        const matrix = matrices.byIntersection.get(id);
+        const ledger = reservations.ledgerMut(id);
+        if (local !== undefined && matrix !== undefined && !ledger.holds(ref)) ledger.setInboxTiles(matrix.tiles(local));
       }
       continue;
     }

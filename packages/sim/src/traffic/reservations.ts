@@ -1,8 +1,10 @@
-// Port of crates/simcity_sim/src/game/traffic/intersection/reservations.rs: per-vehicle intersection
-// reservations and the per-intersection lanelet ledger (bitsets of 32-bit words, like the conflict
-// matrix rows). Vehicles are vehicle references (see vehicles.ts).
+// Intersection reservations and the per-intersection ledger. The Rust ledger held whole lanelets until a
+// car left the box; this one holds tiles: a crossing car keeps the tiles under and ahead of it and gives
+// back each tile its rear has passed, so the next conflicting movement can follow it in. Vehicles are
+// vehicle references (see vehicles.ts).
 import type { World } from '../world';
-import { rowsOverlap } from '../transport/lanelet/conflict';
+import { rowsOverlap, type ConflictMatrix } from '../transport/lanelet/conflict';
+import { VEHICLE_HALF_LENGTH_TILES } from './constants';
 import type { ManeuverKind } from './maneuver';
 import { resolveVehicle } from './vehicles';
 
@@ -25,6 +27,11 @@ function setBit(mask: number[], bit: number): void {
   mask[word] = mask[word]! | (1 << (bit & 31));
 }
 
+function hasBit(mask: readonly number[], bit: number): boolean {
+  const word = mask[bit >>> 5];
+  return word !== undefined && ((word >>> (bit & 31)) & 1) === 1;
+}
+
 function popcount32(x: number): number {
   let v = x >>> 0;
   let n = 0;
@@ -35,23 +42,47 @@ function popcount32(x: number): number {
   return n;
 }
 
-/**
- * Which lanelets are held at one intersection. `activeMask` is the set of held local indices (not
- * an OR of their rows): a candidate is admissible iff its conflict row shares no bit with it.
- */
+interface Hold {
+  readonly vehicle: number;
+  readonly localIdx: number;
+  readonly tiles: readonly number[];
+  /** Tiles before this index are behind the car and released. */
+  from: number;
+}
+
+/** What this tick's grants already promised: the granted lanelets, as a list and as bits. */
+export interface GrantMask {
+  readonly granted: number[];
+  readonly lanelets: number[];
+}
+
+export function emptyGrantMask(): GrantMask {
+  return { granted: [], lanelets: [] };
+}
+
+export function grantMaskAdd(grant: GrantMask, _matrix: ConflictMatrix, localIdx: number): void {
+  grant.granted.push(localIdx);
+  setBit(grant.lanelets, localIdx);
+}
+
 export class IntersectionLedger {
-  private activeMask: number[] = [];
+  private holdList: Hold[] = [];
+  /** Tiles still held by some car (tile indices of the intersection). */
+  private occupied: number[] = [];
+  /** Lanelets whose holder still has tiles ahead: the side of a forced pair that blocks. */
+  private semanticHeld: number[] = [];
   private pedMask: number[] = [];
-  private inboxMask: number[] = [];
-  private holders: Array<readonly [vehicle: number, localIdx: number]> = [];
+  /** Tiles of in-box cars without a hold (a graph rebuild lost it), seeded per tick. */
+  private inboxTiles: number[] = [];
   private builtFor = 0;
   private coarseHeld: number | null = null;
 
   resetForVersion(version: number): void {
-    this.activeMask = [];
+    this.holdList = [];
+    this.occupied = [];
+    this.semanticHeld = [];
     this.pedMask = [];
-    this.inboxMask = [];
-    this.holders = [];
+    this.inboxTiles = [];
     this.coarseHeld = null;
     this.builtFor = version;
   }
@@ -65,90 +96,132 @@ export class IntersectionLedger {
   }
 
   clearInboxMask(): void {
-    this.inboxMask = [];
+    this.inboxTiles = [];
   }
 
-  setInboxLanelet(localIdx: number): void {
-    setBit(this.inboxMask, localIdx);
+  setInboxTiles(tiles: readonly number[]): void {
+    for (const tile of tiles) setBit(this.inboxTiles, tile);
   }
 
   builtForVersion(): number {
     return this.builtFor;
   }
 
-  /** Admit `localIdx` iff it conflicts with no holder, crosswalk, in-box vehicle or coarse holder. Idempotent. */
-  tryAdmit(vehicle: number, localIdx: number, row: ArrayLike<number>): boolean {
-    if (this.holders.some(([v]) => v === vehicle)) return true;
-    if (
-      this.coarseHeld !== null ||
-      rowsOverlap(row, this.activeMask) ||
-      rowsOverlap(row, this.pedMask) ||
-      rowsOverlap(row, this.inboxMask)
-    ) {
-      return false;
-    }
-    setBit(this.activeMask, localIdx);
-    this.holders.push([vehicle, localIdx]);
+  /** Admit `localIdx` iff its tiles are free, its crosswalks empty and no forced pair is held. Idempotent. */
+  tryAdmit(vehicle: number, localIdx: number, matrix: ConflictMatrix): boolean {
+    if (this.holdList.some((h) => h.vehicle === vehicle)) return true;
+    if (!this.admissible(localIdx, matrix, undefined)) return false;
+    this.holdList.push({ vehicle, localIdx, tiles: matrix.tiles(localIdx), from: 0 });
+    this.rebuild();
     return true;
   }
 
-  /** Grant-phase check without taking the box; `grantMask` holds the lanelets granted this tick. */
-  grantEligible(row: ArrayLike<number>, grantMask: ArrayLike<number>): boolean {
-    return !(
-      this.coarseHeld !== null ||
-      rowsOverlap(row, this.activeMask) ||
-      rowsOverlap(row, this.pedMask) ||
-      rowsOverlap(row, this.inboxMask) ||
-      rowsOverlap(row, grantMask)
-    );
+  /** The car's rear has passed the first `count` tiles of its path: they are free for others. */
+  passed(vehicle: number, count: number): void {
+    const hold = this.holdList.find((h) => h.vehicle === vehicle);
+    if (hold === undefined) return;
+    const next = Math.min(Math.max(count, hold.from), hold.tiles.length);
+    if (next === hold.from) return;
+    hold.from = next;
+    this.rebuild();
+  }
+
+  /** Grant-phase check without taking the box; `grant` holds what was granted this tick. */
+  grantEligible(localIdx: number, matrix: ConflictMatrix, grant: GrantMask): boolean {
+    return this.admissible(localIdx, matrix, grant);
+  }
+
+  /**
+   * Free tiles, empty crosswalks, no forced pair held. Cars on the same lanelet never block each other
+   * here: they follow one another through the box and car following keeps them apart.
+   */
+  private admissible(localIdx: number, matrix: ConflictMatrix, grant: GrantMask | undefined): boolean {
+    if (this.coarseHeld !== null) return false;
+    const mine: number[] = [];
+    for (const tile of matrix.tiles(localIdx)) {
+      if (hasBit(this.inboxTiles, tile)) return false;
+      setBit(mine, tile);
+    }
+    for (const hold of this.holdList) {
+      if (hold.localIdx === localIdx) continue;
+      for (let i = hold.from; i < hold.tiles.length; i++) if (hasBit(mine, hold.tiles[i]!)) return false;
+    }
+    if (grant !== undefined) {
+      for (const other of grant.granted) {
+        if (other === localIdx) continue;
+        for (const tile of matrix.tiles(other)) if (hasBit(mine, tile)) return false;
+      }
+    }
+    if (rowsOverlap(matrix.row(localIdx), this.pedMask)) return false;
+    const semantic = matrix.semanticRow(localIdx);
+    if (rowsOverlap(semantic, this.semanticHeld)) return false;
+    return grant === undefined || !rowsOverlap(semantic, grant.lanelets);
   }
 
   private boxIsClear(): boolean {
     const empty = (mask: number[]) => mask.every((w) => w === 0);
-    return this.coarseHeld === null && empty(this.activeMask) && empty(this.pedMask) && empty(this.inboxMask);
+    return this.coarseHeld === null && empty(this.occupied) && empty(this.pedMask) && empty(this.inboxTiles);
   }
 
   /** Whole-box admission for a vehicle without a resolvable lanelet: only into a clear box, with no precise grant this tick. */
-  tryAdmitCoarse(vehicle: number, grantMask: ArrayLike<number>): boolean {
+  tryAdmitCoarse(vehicle: number, grant: GrantMask): boolean {
     if (this.coarseHeld === vehicle) return true;
-    if (!this.boxIsClear() || Array.from(grantMask).some((w) => w !== 0)) return false;
+    if (!this.boxIsClear() || grant.granted.length > 0) return false;
     this.coarseHeld = vehicle;
     return true;
   }
 
-  /** Drops `vehicle` as a holder and rebuilds `activeMask` from the survivors. */
   release(vehicle: number): void {
     if (this.coarseHeld === vehicle) this.coarseHeld = null;
-    const before = this.holders.length;
-    this.holders = this.holders.filter(([v]) => v !== vehicle);
-    if (this.holders.length === before) return;
-    this.activeMask = [];
-    for (const [, idx] of this.holders) setBit(this.activeMask, idx);
+    const before = this.holdList.length;
+    this.holdList = this.holdList.filter((h) => h.vehicle !== vehicle);
+    if (this.holdList.length !== before) this.rebuild();
   }
 
-  getActiveMask(): readonly number[] {
-    return this.activeMask;
+  private rebuild(): void {
+    this.occupied = [];
+    this.semanticHeld = [];
+    for (const hold of this.holdList) {
+      if (hold.from >= hold.tiles.length) continue;
+      for (let i = hold.from; i < hold.tiles.length; i++) setBit(this.occupied, hold.tiles[i]!);
+      setBit(this.semanticHeld, hold.localIdx);
+    }
   }
 
   holderCount(): number {
-    return this.holders.length;
+    return this.holdList.length;
   }
 
   holds(vehicle: number): boolean {
-    return this.coarseHeld === vehicle || this.holders.some(([v]) => v === vehicle);
+    return this.coarseHeld === vehicle || this.holdList.some((h) => h.vehicle === vehicle);
   }
 
+  /** The hold of `vehicle`: its lanelet and how many of its tiles are already behind it. */
+  holdOf(vehicle: number): { readonly localIdx: number; readonly from: number } | undefined {
+    const hold = this.holdList.find((h) => h.vehicle === vehicle);
+    return hold === undefined ? undefined : { localIdx: hold.localIdx, from: hold.from };
+  }
+
+  /** The tiles `vehicle` still holds (not yet behind it). */
+  heldTiles(vehicle: number): readonly number[] {
+    const hold = this.holdList.find((h) => h.vehicle === vehicle);
+    return hold === undefined ? [] : hold.tiles.slice(hold.from);
+  }
+
+  /** Tiles currently held. */
   activePoints(): number {
-    return this.activeMask.reduce((n, w) => n + popcount32(w), 0);
+    return this.occupied.reduce((n, w) => n + popcount32(w), 0);
   }
 
   fingerprintState(): unknown {
-    return [this.activeMask, this.pedMask, this.inboxMask, this.holders, this.builtFor, this.coarseHeld];
+    return [
+      this.holdList.map((h) => [h.vehicle, h.localIdx, h.from]),
+      this.pedMask,
+      this.inboxTiles,
+      this.builtFor,
+      this.coarseHeld,
+    ];
   }
-}
-
-export function grantMaskSet(mask: number[], localIdx: number): void {
-  setBit(mask, localIdx);
 }
 
 export class IntersectionReservations {
@@ -212,9 +285,38 @@ const STALE_APPROACH_RELEASE_SECS = 1.5;
 /** How long any Approaching claim may wait for entry, s. */
 const APPROACH_TIMEOUT_SECS = 6;
 
-/** `Time<Fixed>::elapsed_secs_f64` inside the current fixed tick: ticks so far, this one included. */
+/** Fixed-step elapsed seconds inside the current tick: ticks so far, this one included. */
 export function fixedElapsedSecs(w: World): number {
   return ((w.tick + 1) * 100_000_000) / 1e9;
+}
+
+/**
+ * How many leading tiles of the held lanelet the car's rear has passed, read off its route: a tile
+ * counts once the rear is beyond its far edge. A path tile the route does not contain stops the count
+ * (the hold then lasts until the car leaves the box, as before).
+ */
+function tilesPassed(w: World, id: number, localIdx: number, slot: number): number {
+  const laneletId = w.laneletGraph.ofIntersection(id)[localIdx];
+  const lanelet = laneletId === undefined ? undefined : w.laneletGraph.get(laneletId);
+  if (lanelet === undefined) return 0;
+  const v = w.vehicles;
+  const handle = v.pathHandle[slot]!;
+  const cursor = v.pathCursor[slot]!;
+  const rear = cursor + v.progress[slot]! - VEHICLE_HALF_LENGTH_TILES;
+  const len = w.pathPool.len(handle);
+  let j = Math.max(cursor - lanelet.internalPath.length - 1, 0);
+  let passed = 0;
+  for (const tile of lanelet.internalPath) {
+    while (j < len) {
+      const at = w.pathPool.getTile(handle, j);
+      if (at !== undefined && at.x === tile.x && at.y === tile.y) break;
+      j += 1;
+    }
+    if (j >= len || rear < j + 0.5) break;
+    passed += 1;
+    j += 1;
+  }
+  return passed;
 }
 
 /** `cleanup_intersection_reservations` (TrafficStep::Movement, after moveVehicles). */
@@ -233,6 +335,15 @@ export function cleanupIntersectionReservations(w: World): void {
     });
     if (kept.length === 0) w.reservations.byIntersection.delete(id);
     else w.reservations.byIntersection.set(id, kept);
+    // Hand back the tiles each surviving holder has driven past.
+    const ledger = w.reservations.ledger(id);
+    if (ledger === undefined) continue;
+    for (const r of kept) {
+      const hold = ledger.holdOf(r.vehicle);
+      const slot = resolveVehicle(v, r.vehicle);
+      if (hold === undefined || slot === undefined) continue;
+      ledger.passed(r.vehicle, tilesPassed(w, id, hold.localIdx, slot));
+    }
   }
   releaseIntersectionHolds(w.reservations, dropped);
 

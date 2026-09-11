@@ -142,7 +142,7 @@ describe('determinism', () => {
       ['vehicleSeq', (w) => void (w.vehicleSeq += 1)],
       ['trafficLights', (w) => void w.trafficLights.push({ intersectionId: 0, intersectionKey: 'k', pos: { x: 0, y: 0 }, phase: 'NorthSouthGreen', phaseTimer: 1, greenDuration: 10, yellowDuration: 3, allRedDuration: 4 })],
       ['leftTurnDemand', (w) => void w.leftTurnDemand.ns.add(3)],
-      ['reservations', (w) => void w.reservations.ledgerMut(0).setInboxLanelet(1)],
+      ['reservations', (w) => void w.reservations.ledgerMut(0).setInboxTiles([1])],
       ['events.tripFinished', (w) => void w.events.tripFinished.push({ citizen: 1, purpose: 'Work' })],
       ['trafficOccupancy.ema', (w) => void (w.trafficOccupancy.emaGlobal = 0.5)],
       ['trafficIndex', (w) => void (w.trafficIndex.vehiclesOnRoads = 3)],
