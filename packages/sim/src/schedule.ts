@@ -9,6 +9,7 @@ import { applyGameCommandsToGrid } from './map/apply';
 import { resetGrowthRngOnNewMap, resetSimRngOnNewMap } from './seeding';
 import { ALL_STATES, IN_GAME, IN_GAME_OR_PAUSED, type AppState } from './state';
 import { SECOND_NS } from './timer';
+import { arbitrateLaneletReservations, checkRingFreeTopology, nudgeLaneletStallReroute } from './traffic/arbiter';
 import { cleanupRightOnRedMarkers, moveVehicles } from './traffic/drive';
 import { clearVehicles } from './traffic/lifecycle';
 import { handleTrafficLightCommands, syncTrafficLights, updateTrafficLights } from './traffic/lights';
@@ -71,7 +72,9 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'assignVehicleSeq', run: assignVehicleSeq, runIn: IN_GAME },
   // After assignVehicleSeq: per-tile vehicles by progress for the leaders below.
   { name: 'buildTrafficSpatialIndex', run: buildTrafficSpatialIndex, runIn: IN_GAME },
-  // After the spatial index (the arbiter slots in before it in 2b): reads tile occupants and seq.
+  // After the spatial index: the sole reservation producer; reads routes, lights, pedestrians, seq.
+  { name: 'arbitrateLaneletReservations', run: arbitrateLaneletReservations, runIn: IN_GAME },
+  // After the arbiter: reads tile occupants and seq.
   { name: 'breakTileSwaps', run: breakTileSwaps, runIn: IN_GAME },
   // After breakTileSwaps: reads the rewritten routes, reservations, occupancy and the spatial index.
   { name: 'moveVehicles', run: moveVehicles, runIn: IN_GAME },
@@ -79,6 +82,9 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'cleanupRightOnRedMarkers', run: cleanupRightOnRedMarkers, runIn: IN_GAME },
   // After cleanupRightOnRedMarkers (both only after moveVehicles in Rust): stale and exited holds.
   { name: 'cleanupIntersectionReservations', run: cleanupIntersectionReservations, runIn: IN_GAME },
+  // TrafficStep::Recovery: the mandatory-merge nudge reads the stall tracker the arbiter wrote. The
+  // stuck-timer systems around it arrive with stage 2c.
+  { name: 'nudgeLaneletStallReroute', run: nudgeLaneletStallReroute, runIn: IN_GAME },
   // PostSimStep::TrafficIndex: the end-of-tick metrics RCI demand reads.
   { name: 'updateTrafficIndex', run: updateTrafficIndex, runIn: IN_GAME },
 ];
@@ -104,4 +110,6 @@ export const UPDATE_GRAPH: readonly SystemEntry[] = [
   { name: 'detectIntersections', run: detectIntersections, runIn: IN_GAME_OR_PAUSED },
   // sync_traffic_light_entities: after detectIntersections, reads the re-mapped light ids.
   { name: 'syncTrafficLights', run: syncTrafficLights, runIn: IN_GAME_OR_PAUSED },
+  // check_ring_free_topology: after syncTrafficLights, counts clusters without an open-road exit.
+  { name: 'checkRingFreeTopology', run: checkRingFreeTopology, runIn: IN_GAME_OR_PAUSED },
 ];

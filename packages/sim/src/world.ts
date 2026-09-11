@@ -12,6 +12,7 @@ import { Notifications } from './notifications';
 import { DEFAULT_RNG_SEED, stdRngSeedFromU64, type StdRng } from './rng';
 import type { AppState, PendingState } from './state';
 import { SECOND_NS, Timer } from './timer';
+import { ArbiterIndexCache, emptyArbiterStats, type ArbiterTickStats } from './traffic/arbiter';
 import { defaultTrafficConfig, type TrafficConfig } from './traffic/config';
 import type { LeftTurnDemand, TrafficLight } from './traffic/lights';
 import { TrafficOccupancy, TrafficRoadCache, emptyTrafficIndex, type TrafficIndex } from './traffic/occupancy';
@@ -75,6 +76,16 @@ export interface World {
   readonly routeProducerStats: { guardRefusals: number; swapBreakHandbuilt: number };
   /** `LaneletStallTracker`: consecutive ticks a vehicle approached a box with an unresolved lanelet. */
   readonly laneletStallTracker: Map<number, number>;
+  /** `ApproachFairness`: ticks an approach `${intersection}|${entryDir}` had a candidate but no grant. */
+  readonly approachFairness: Map<string, number>;
+  /** Derived from the lanelet graph of the matrix version. */
+  readonly arbiterIndexCache: ArbiterIndexCache;
+  /** Per-tick arbiter observability. */
+  arbiterStats: ArbiterTickStats;
+  /** `RingTopologyStatus` (advisory) and the intersection version it was counted for. */
+  readonly ringTopology: { clustersWithoutOpenExit: number; lastVersion: number };
+  /** Active `PedestrianCrossing`s; pedestrians arrive with stage 4, until then only tests fill it. */
+  readonly pedestrianCrossings: Array<{ readonly intersectionId: number; readonly axisNs: boolean }>;
   /** Fixed ticks run since the world was created. */
   tick: number;
   appState: AppState;
@@ -137,6 +148,11 @@ export function createWorld(options: WorldOptions = {}): World {
     trafficRoadCache: new TrafficRoadCache(),
     routeProducerStats: { guardRefusals: 0, swapBreakHandbuilt: 0 },
     laneletStallTracker: new Map(),
+    approachFairness: new Map(),
+    arbiterIndexCache: new ArbiterIndexCache(),
+    arbiterStats: emptyArbiterStats(),
+    ringTopology: { clustersWithoutOpenExit: 0, lastVersion: 0 },
+    pedestrianCrossings: [],
     tick: 0,
     appState: 'MainMenu',
     nextState: null,

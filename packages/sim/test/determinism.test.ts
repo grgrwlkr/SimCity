@@ -149,6 +149,8 @@ describe('determinism', () => {
       ['trafficRoadCache', (w) => void (w.trafficRoadCache.mapEditVersion = 9)],
       ['routeProducerStats', (w) => void (w.routeProducerStats.guardRefusals += 1)],
       ['laneletStallTracker', (w) => void w.laneletStallTracker.set(7, 3)],
+      ['approachFairness', (w) => void w.approachFairness.set('0|North', 2)],
+      ['pedestrianCrossings', (w) => void w.pedestrianCrossings.push({ intersectionId: 0, axisNs: true })],
     );
 
     for (const [label, mutate] of mutations) {

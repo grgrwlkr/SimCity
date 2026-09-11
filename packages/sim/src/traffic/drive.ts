@@ -4,7 +4,7 @@
 import { ROAD_KINDS, type TilePos } from '../commands';
 import { tileToWorld, type MapConfig } from '../map/coords';
 import type { MapGrid } from '../map/grid';
-import { capacityPerLaneTile, roadSpeedLimit } from '../map/roads';
+import { capacityPerLaneTile, dirLeft, dirRight, roadSpeedLimit } from '../map/roads';
 import { powIntF32, sqrtF32 } from '../math';
 import type { World } from '../world';
 import type { TrafficConfig } from './config';
@@ -19,7 +19,8 @@ import {
   TILE_CENTER_TO_EDGE_TILES,
   VEHICLE_VISUAL_LENGTH_TILES,
 } from './constants';
-import { isIntersectionTile } from './state';
+import { dirBetweenAdjacent } from '../transport/lanelet/pathfinding';
+import { computeExitDirection, isIntersectionTile } from './state';
 import { FREE_FLOW, TRIP_PURPOSES, VEHICLE_ROLES, despawnVehicle, setTrafficState, vehicleRef } from './vehicles';
 
 const f32 = Math.fround;
@@ -144,6 +145,11 @@ export function moveVehicles(w: World, dtNs: number): void {
   const serviceRole = VEHICLE_ROLES.indexOf('service');
   const tripRole = VEHICLE_ROLES.indexOf('trip');
   const despawns: number[] = [];
+  // Pedestrians on each intersection's crossings: bit 0 walks N/S, bit 1 walks E/W.
+  const pedAxisMask = new Map<number, number>();
+  for (const p of w.pedestrianCrossings) {
+    pedAxisMask.set(p.intersectionId, (pedAxisMask.get(p.intersectionId) ?? 0) | (p.axisNs ? 1 : 2));
+  }
 
   for (const slot of [...v.order]) {
     if (v.parked[slot] === 1) continue;
@@ -246,7 +252,28 @@ export function moveVehicles(w: World, dtNs: number): void {
             } else ok = true;
           }
           if (!ok) blockedNext = true;
-          // Yielding to pedestrians on the crossing arrives with them in stage 4.
+          // Yield to pedestrians already crossing: any at an uncontrolled box; at a signalized one a
+          // left turn always, a right turn when a pedestrian is on the roadway it turns onto.
+          const mask = id === undefined ? 0 : (pedAxisMask.get(id) ?? 0);
+          if (!blockedNext && id !== undefined && mask !== 0) {
+            if (!w.intersections.trafficLights.has(id)) {
+              blockedNext = true;
+            } else {
+              const entryDir = dirBetweenAdjacent(currentTile, nextTile);
+              const exitDir = computeExitDirection(pool.remainingFrom(handle, cursor) ?? [], grid, nextTile);
+              if (entryDir !== 'None' && exitDir !== 'None') {
+                const right = cfg.driveOnRight ? dirRight(entryDir) : dirLeft(entryDir);
+                const left = cfg.driveOnRight ? dirLeft(entryDir) : dirRight(entryDir);
+                if (exitDir === left) {
+                  blockedNext = true;
+                } else if (exitDir === right) {
+                  const conflictsNs = exitDir === 'East' || exitDir === 'West';
+                  const conflictsEw = exitDir === 'North' || exitDir === 'South';
+                  if ((conflictsNs && (mask & 1) !== 0) || (conflictsEw && (mask & 2) !== 0)) blockedNext = true;
+                }
+              }
+            }
+          }
         }
       }
       if (nextIdx !== undefined && nextIdx < w.trafficOccupancy.perTickVehicles.length && grid.roadKind[nextIdx] !== 0) {
