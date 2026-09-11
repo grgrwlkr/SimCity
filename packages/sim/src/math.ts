@@ -10,9 +10,15 @@ export function sqrtF32(x: number): number {
   return Math.fround(Math.sqrt(x));
 }
 
-/** `x.powf(n)` for a whole `n >= 1`, as successive f32 products (engine-independent, unlike `Math.pow`). */
+/**
+ * `x.powf(n)` for a whole `n >= 1`. libm returns the power rounded once to f32; successive f32
+ * products round at every step and drift by an ULP (seen on the platoon gate). The products run in
+ * f64 instead — `x²` of an f32 is exact there — and round to f32 once at the end. Engine-independent,
+ * unlike `Math.pow`.
+ */
 export function powIntF32(x: number, n: number): number {
-  let r = Math.fround(x);
-  for (let i = 1; i < n; i++) r = Math.fround(r * x);
-  return r;
+  const base = Math.fround(x);
+  let r = base;
+  for (let i = 1; i < n; i++) r *= base;
+  return Math.fround(r);
 }
