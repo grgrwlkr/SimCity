@@ -31,6 +31,11 @@ export interface MapCell {
   readonly building: BuildingKind | null;
 }
 
+/** A number key for a tile position (Rust hashes `TilePos`); covers i32 coordinates within ±32767, off the map too. */
+export function tileKey(pos: TilePos): number {
+  return (pos.y + 32768) * 65536 + (pos.x + 32768);
+}
+
 export const GRASS_CODE = TILE_KINDS.indexOf('Grass');
 const MEDIUM_CODE = ZONE_DENSITIES.indexOf('Medium');
 

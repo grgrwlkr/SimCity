@@ -175,8 +175,65 @@ function hashNotifications(h: Fnv64, n: Notifications): void {
   }
 }
 
+/** JSON with bigints spelled out; JSON number formatting is fully specified, so engines agree. */
+function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) => (typeof v === 'bigint' ? `${v}n` : v));
+}
+
 function commandKey(cmd: GameCommand): string {
-  return JSON.stringify(cmd, (_key, value: unknown) => (typeof value === 'bigint' ? `${value}n` : value));
+  return stableJson(cmd);
+}
+
+function hashTransport(h: Fnv64, w: World): void {
+  const road = w.roadGraph;
+  h.int(road.version);
+  h.i32(road.width);
+  h.i32(road.height);
+  h.bytes(road.edges);
+  h.u32(road.roadIndices.length);
+  for (const i of road.roadIndices) h.u32(i);
+
+  const regions = w.regionGraph;
+  h.int(regions.version);
+  h.u32(regions.regionSize);
+  h.u32(regions.regionsW);
+  h.u32(regions.regionsH);
+  h.bytes(regions.edges);
+
+  const lanes = w.laneGraph;
+  h.int(lanes.builtFor ?? -1);
+  h.str(stableJson(lanes.builtDims));
+  h.str(stableJson(lanes.lanes));
+  h.u32(lanes.posToId.size);
+  for (const [key, id] of lanes.posToId) {
+    h.int(key);
+    h.u32(id);
+  }
+  h.u32(lanes.tileLaneToId.size);
+  for (const [key, id] of lanes.tileLaneToId) {
+    h.str(key);
+    h.u32(id);
+  }
+  h.int(w.turnLaneAutogenVersion);
+
+  h.int(w.pathCache.version);
+  h.str(stableJson([...w.pathCache.map]));
+  h.str(stableJson(w.pathCache.lru));
+  h.str(stableJson(w.pathfindingConfig));
+
+  const ix = w.intersections;
+  h.int(ix.version);
+  h.str(stableJson(ix.clusters));
+  h.u32(ix.tileToIntersection.size);
+  for (const [key, id] of ix.tileToIntersection) {
+    h.int(key);
+    h.u32(id);
+  }
+  h.str(stableJson([...ix.trafficLightKeys]));
+  h.str(stableJson([...ix.trafficLights]));
+  h.bool(ix.lightsDirty);
+
+  h.bytes(w.trafficOccupancy.perTickVehicles);
 }
 
 const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> = [
@@ -259,6 +316,7 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
       for (const redoRequest of w.undoRedo) h.bool(redoRequest);
     },
   ],
+  ['transport', hashTransport],
   [
     'vehicles',
     (h, w) => {

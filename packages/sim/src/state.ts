@@ -60,4 +60,6 @@ function enterMainMenu(w: World): void {
   w.clock.reset();
   // BuildingsPlugin: reset_building_upgrade_clock.
   w.buildingUpgradeClock.reset();
+  // IntersectionsPlugin: reset_intersections.
+  w.intersections.reset();
 }

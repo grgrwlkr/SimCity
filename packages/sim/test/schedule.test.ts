@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { frame, runFixedTick } from '../src/app';
-import { COMMAND_APPLY, FIXED_UPDATE, TICK_HZ } from '../src/schedule';
+import { COMMAND_APPLY, FIXED_UPDATE, TICK_HZ, UPDATE_GRAPH } from '../src/schedule';
 import { applyStateTransition, requestState } from '../src/state';
 import { createWorld } from '../src/world';
 
@@ -13,6 +13,7 @@ describe('schedule', () => {
     for (const [label, entries] of [
       ['FIXED_UPDATE', FIXED_UPDATE],
       ['COMMAND_APPLY', COMMAND_APPLY],
+      ['UPDATE_GRAPH', UPDATE_GRAPH],
     ] as const) {
       const names = entries.map((e) => e.name);
       const runs = entries.map((e) => e.run);

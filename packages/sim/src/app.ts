@@ -1,6 +1,6 @@
 // Driving the world one app update at a time, in the order of Bevy's main schedule:
 // StateTransition → FixedUpdate (as many ticks as the frame owes) → Update's CommandApply.
-import { COMMAND_APPLY, FIXED_UPDATE, TICK_DT_NS } from './schedule';
+import { COMMAND_APPLY, FIXED_UPDATE, TICK_DT_NS, UPDATE_GRAPH } from './schedule';
 import { applyStateTransition } from './state';
 import type { World } from './world';
 
@@ -24,10 +24,18 @@ export function applyCommands(w: World): void {
   w.undoRedo = [];
 }
 
+/** `Update` / `GameSet::GraphUpdate`. These systems read no frame time. */
+export function runUpdateGraph(w: World): void {
+  for (const system of UPDATE_GRAPH) {
+    if (system.runIn.includes(w.appState)) system.run(w, 0);
+  }
+}
+
 export function frame(w: World, fixedTicks: number): void {
   applyStateTransition(w);
   for (let i = 0; i < fixedTicks; i++) runFixedTick(w);
   applyCommands(w);
+  runUpdateGraph(w);
 }
 
 /** `headless_sim::tick`: `n` frames of one fixed tick each. */

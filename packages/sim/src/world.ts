@@ -3,6 +3,7 @@
 import { createSimClock, defaultCity, type City } from './city';
 import type { GameCommand } from './commands';
 import { emptyEvents, type TickEvents } from './events';
+import { IntersectionIndex } from './intersections/index';
 import { DEFAULT_MAP_CONFIG, type MapConfig } from './map/coords';
 import { DirtyTiles } from './map/dirty';
 import { MapGrid } from './map/grid';
@@ -11,6 +12,11 @@ import { Notifications } from './notifications';
 import { DEFAULT_RNG_SEED, stdRngSeedFromU64, type StdRng } from './rng';
 import type { AppState, PendingState } from './state';
 import { SECOND_NS, Timer } from './timer';
+import { TrafficOccupancy } from './traffic/occupancy';
+import { LaneGraph } from './transport/laneGraph';
+import { PathCache, defaultPathfindingConfig, type PathfindingConfig } from './transport/pathfinding';
+import { RegionGraph } from './transport/regionGraph';
+import { RoadGraph } from './transport/roadGraph';
 
 export const VEHICLE_CAPACITY = 4096;
 
@@ -44,6 +50,15 @@ export interface World {
   readonly history: CommandHistory;
   /** `UndoRedoRequested` messages for the next `CommandApply`, `true` for redo. */
   undoRedo: boolean[];
+  readonly roadGraph: RoadGraph;
+  readonly regionGraph: RegionGraph;
+  laneGraph: LaneGraph;
+  /** `TurnLaneAutogenState`: the graph version turn-lane marks were derived for. */
+  turnLaneAutogenVersion: number;
+  readonly pathCache: PathCache;
+  readonly pathfindingConfig: PathfindingConfig;
+  readonly intersections: IntersectionIndex;
+  readonly trafficOccupancy: TrafficOccupancy;
   readonly vehicles: VehicleLayers;
   /** Fixed ticks run since the world was created. */
   tick: number;
@@ -85,6 +100,14 @@ export function createWorld(options: WorldOptions = {}): World {
     graphVersion: 0,
     history: new CommandHistory(COMMAND_HISTORY_LIMIT),
     undoRedo: [],
+    roadGraph: new RoadGraph(),
+    regionGraph: new RegionGraph(),
+    laneGraph: new LaneGraph(),
+    turnLaneAutogenVersion: 0,
+    pathCache: new PathCache(),
+    pathfindingConfig: defaultPathfindingConfig(),
+    intersections: new IntersectionIndex(),
+    trafficOccupancy: new TrafficOccupancy(),
     vehicles: {
       alive: new Uint8Array(VEHICLE_CAPACITY),
       x: new Float32Array(VEHICLE_CAPACITY),

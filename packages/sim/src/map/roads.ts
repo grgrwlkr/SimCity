@@ -3,6 +3,58 @@ import type { RoadCell, RoadDir, RoadFlow, RoadKind } from '../commands';
 
 const LANES: Readonly<Record<RoadKind, number>> = { None: 0, TwoLane: 2, FourLane: 4, SixLane: 6 };
 const BUILD_COST: Readonly<Record<RoadKind, number>> = { None: 0, TwoLane: 10, FourLane: 30, SixLane: 60 };
+/** km/h, `f32`. */
+const SPEED_LIMIT: Readonly<Record<RoadKind, number>> = { None: 0, TwoLane: 40, FourLane: 60, SixLane: 80 };
+/** Vehicles per tile before congestion starts. */
+const CAPACITY: Readonly<Record<RoadKind, number>> = { None: 0, TwoLane: 4, FourLane: 8, SixLane: 14 };
+/** Routing preference, `f32`. */
+const DESIRABILITY: Readonly<Record<RoadKind, number>> = {
+  None: 0,
+  TwoLane: 1,
+  FourLane: Math.fround(1.3),
+  SixLane: Math.fround(1.6),
+};
+
+const LEFT: Readonly<Record<RoadDir, RoadDir>> = { None: 'None', East: 'North', North: 'West', West: 'South', South: 'East' };
+const RIGHT: Readonly<Record<RoadDir, RoadDir>> = { None: 'None', East: 'South', South: 'West', West: 'North', North: 'East' };
+
+export function roadSpeedLimit(kind: RoadKind): number {
+  return SPEED_LIMIT[kind];
+}
+
+/** `((capacity as f32) / lanes).round().max(1.0) as u16`. */
+export function capacityPerLaneTile(kind: RoadKind): number {
+  const perLane = Math.fround(CAPACITY[kind] / Math.fround(Math.max(LANES[kind], 1)));
+  return Math.max(Math.floor(perLane + 0.5), 1);
+}
+
+export function roadDesirability(kind: RoadKind): number {
+  return DESIRABILITY[kind];
+}
+
+export function dirLeft(dir: RoadDir): RoadDir {
+  return LEFT[dir];
+}
+
+export function dirRight(dir: RoadDir): RoadDir {
+  return RIGHT[dir];
+}
+
+/** Whether this lane is the rightmost (curb-side) lane for its travel direction. */
+export function isRightmostForDir(cell: RoadCell): boolean {
+  const lanes = LANES[cell.kind];
+  if (lanes === 0) return false;
+  const half = Math.floor(lanes / 2);
+  return cell.lane < half ? cell.lane === 0 : cell.lane === Math.max(lanes - 1, 0);
+}
+
+/** Whether this lane is the leftmost lane for its travel direction (closest to the centerline). */
+export function isLeftmostForDir(cell: RoadCell): boolean {
+  const lanes = LANES[cell.kind];
+  if (lanes === 0) return false;
+  const half = Math.floor(lanes / 2);
+  return cell.lane < half ? cell.lane === Math.max(half - 1, 0) : cell.lane === half;
+}
 
 export interface IVec2 {
   readonly x: number;

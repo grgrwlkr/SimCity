@@ -84,6 +84,14 @@ describe('determinism', () => {
           }),
       ],
       ['undoRedo', (w) => void w.undoRedo.push(true)],
+      ['roadGraph', (w) => void (w.roadGraph.version += 1)],
+      ['regionGraph', (w) => void (w.regionGraph.version += 1)],
+      ['laneGraph', (w) => void w.laneGraph.posToId.set(1, 1)],
+      ['turnLaneAutogenVersion', (w) => void (w.turnLaneAutogenVersion += 1)],
+      ['pathCache', (w) => void (w.pathCache.version += 1)],
+      ['pathfindingConfig', (w) => void (w.pathfindingConfig.turnPenalty += 1)],
+      ['intersections', (w) => void w.intersections.trafficLightKeys.add('0,0|0,0|1|0')],
+      ['trafficOccupancy', (w) => w.trafficOccupancy.ensureLen(4)],
     ];
     // Every typed-array field of the grid, found by reflection so a new layer cannot slip past.
     const gridLayers = Object.entries(buildHeadlessGame().grid).filter(
