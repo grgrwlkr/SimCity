@@ -108,7 +108,8 @@ export class RenderReader extends RenderBufferViews {
     return { tick: 0, count: 0, x: new Float32Array(n), y: new Float32Array(n), heading: new Float32Array(n), kind: new Uint8Array(n) };
   }
 
-  readInto(out: RenderFrameCopy): void {
+  /** Copies the active frame; returns the sequence it was published under, which moves with every publish. */
+  readInto(out: RenderFrameCopy): number {
     for (;;) {
       const sequence = Atomics.load(this.header, 0);
       const frame = this.frameFor(sequence);
@@ -119,7 +120,7 @@ export class RenderReader extends RenderBufferViews {
       out.y.set(frame.y.subarray(0, count));
       out.heading.set(frame.heading.subarray(0, count));
       out.kind.set(frame.kind.subarray(0, count));
-      if (Atomics.load(this.header, 0) === sequence) return;
+      if (Atomics.load(this.header, 0) === sequence) return sequence;
     }
   }
 }

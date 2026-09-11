@@ -1,6 +1,17 @@
-import { createWorld, fingerprint, requestState, rngProbeDigest, step, toHex64 } from '@simcity/sim';
+import {
+  ROAD_DIRS,
+  ROAD_KINDS,
+  createWorld,
+  fingerprint,
+  requestState,
+  rngProbeDigest,
+  step,
+  toHex64,
+} from '@simcity/sim';
 import { describe, expect, it } from 'vitest';
+import { loadTestCity } from '../../sim/test/testCity';
 import { SimHost } from '../src/host';
+import { GRID_LAYER_NAMES, type GridLayers } from '../src/protocol';
 import { RenderReader } from '../src/renderBuffer';
 
 describe('SimHost', () => {
@@ -81,4 +92,103 @@ describe('SimHost', () => {
     host.update(0);
     expect(host.update(16)).toBeNull();
   });
+
+  it('mapLayersReplyCopiesTheGrid', () => {
+    const host = new SimHost(16);
+    const pos = { x: 3, y: 4 };
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'step', ticks: 1 });
+    host.handle({
+      t: 'cmd',
+      cmd: { SetRoad: { pos, road: { kind: 'TwoLane', dir: 'East', lane: 0, flow: 'TwoWay', lane_type: 'Regular' } } },
+    });
+    host.handle({ t: 'step', ticks: 1 });
+
+    const reply = host.handle({ t: 'mapLayers' });
+    const i = pos.y * reply.width + pos.x;
+    expect(reply).toMatchObject({ width: 128, height: 128, tileSize: 16 });
+    expect(reply.mapEditVersion).toBeGreaterThan(0);
+    expect(reply.layers.roadKind[i]).toBe(ROAD_KINDS.indexOf('TwoLane'));
+    expect(reply.layers.roadDir[i]).toBe(ROAD_DIRS.indexOf('East'));
+
+    reply.layers.roadKind.fill(0);
+    expect(host.handle({ t: 'tile', pos }), 'the reply is a copy').toMatchObject({ road: { kind: 'TwoLane' } });
+  });
+
+  it('loadGridBumpsVersionsAndRebuildsGraphs', () => {
+    const host = new SimHost(16);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'step', ticks: 1 });
+    const before = host.handle({ t: 'snapshot' });
+
+    host.handle({ t: 'loadGrid', layers: testCityLayers() });
+    const after = host.handle({ t: 'snapshot' });
+    expect(after.graphVersion).toBeGreaterThan(before.graphVersion);
+    expect(after.mapEditVersion).toBeGreaterThan(before.mapEditVersion);
+
+    host.handle({ t: 'step', ticks: 1 });
+    const overlay = host.handle({ t: 'debugOverlay' });
+    expect(overlay.lanelets.length, 'the lanelets of the test city are built on the next tick').toBe(
+      loadTestCity().laneletGraph.lanelets.length,
+    );
+  });
+
+  it('loadGridRejectsTheWrongSize', () => {
+    const host = new SimHost(16);
+    const layers = testCityLayers();
+    expect(() => host.handle({ t: 'loadGrid', layers: { ...layers, roadKind: new Uint8Array(4) } })).toThrow();
+  });
+
+  it('updateReportsAMapEditWithoutATick', () => {
+    const host = new SimHost(16);
+    host.update(0);
+    host.handle({ t: 'loadGrid', layers: testCityLayers() });
+    expect(host.update(16)?.mapEditVersion).toBeGreaterThan(0);
+  });
+
+  it('debugOverlayListsClustersAndLanelets', () => {
+    const host = new SimHost(16);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'loadGrid', layers: testCityLayers() });
+    host.handle({ t: 'step', ticks: 1 });
+
+    const w = loadTestCity();
+    const overlay = host.handle({ t: 'debugOverlay' });
+    expect(overlay.clusters.length).toBe(w.intersections.clusters.length);
+    expect(overlay.clusters[0]!.tiles).toEqual(w.intersections.clusters[0]!.tiles.flatMap((p) => [p.x, p.y]));
+    const first = w.laneletGraph.lanelets[0]!;
+    expect(overlay.lanelets[0]).toEqual({
+      intersection: first.intersection,
+      maneuver: first.maneuver,
+      // Approach lane, the in-box tiles, exit lane: the line a lanelet overlay draws.
+      path: [w.laneGraph.getLane(first.entryLane)!.pos, ...first.internalPath, w.laneGraph.getLane(first.exitLane)!.pos].flatMap(
+        (p) => [p.x, p.y],
+      ),
+    });
+  });
+
+  it('debugVehiclesArePublished', () => {
+    const host = new SimHost(16);
+    const reader = new RenderReader(host.render);
+    const out = reader.allocate();
+    host.handle({
+      t: 'debugVehicles',
+      vehicles: [
+        { x: 10, y: -20, heading: 1.5, kind: 2 },
+        { x: -4, y: 8, heading: 0, kind: 0 },
+      ],
+    });
+    reader.readInto(out);
+    expect(out.count).toBe(2);
+    expect([out.x[0], out.y[0], out.x[1], out.y[1], out.kind[0]]).toEqual([10, -20, -4, 8, 2]);
+
+    host.handle({ t: 'debugVehicles', vehicles: [] });
+    reader.readInto(out);
+    expect(out.count, 'a new list replaces the old one').toBe(0);
+  });
 });
+
+function testCityLayers() {
+  const grid = loadTestCity().grid;
+  return Object.fromEntries(GRID_LAYER_NAMES.map((name) => [name, grid[name].slice()])) as GridLayers;
+}
