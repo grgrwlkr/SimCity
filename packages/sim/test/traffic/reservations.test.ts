@@ -53,6 +53,34 @@ describe('intersection ledger', () => {
     expect(ledger.tryAdmit(2, 1, m), 'a holder past all its tiles no longer blocks').toBe(true);
   });
 
+  it('aTurningCarWaitsInTheBoxUntilTheOncomingStreamIsGone', () => {
+    // Left turn a -> b -> c with a wait point after b; the oncoming straight runs c -> d (forced pair).
+    const [a, b, c, d] = [t(0, 0), t(1, 0), t(1, 1), t(0, 1)];
+    const m = ConflictMatrix.fromPaths([
+      [a, b, c],
+      [c, d],
+    ]);
+    m.addConflictPair(0, 1);
+    m.setWaitLen(0, 2);
+    const [turn, straight] = [1, 2];
+
+    const ledger = new IntersectionLedger();
+    expect(ledger.tryAdmit(straight, 1, m)).toBe(true);
+    expect(ledger.tryAdmit(turn, 0, m), 'the turn takes the tiles up to its wait point').toBe(true);
+    expect(ledger.committed(turn), 'but not the tile the straight is on').toBe(false);
+    expect(ledger.tryAdmit(turn, 0, m), 'still yielding while the straight holds c').toBe(true);
+    expect(ledger.committed(turn)).toBe(false);
+    ledger.passed(straight, 2);
+    ledger.tryAdmit(turn, 0, m);
+    expect(ledger.committed(turn), 'the oncoming car is through: the turn completes').toBe(true);
+
+    const fresh = new IntersectionLedger();
+    const approaching = [0b10];
+    expect(fresh.tryAdmit(turn, 0, m, approaching), 'an approaching oncoming car sends the turn to its wait point').toBe(true);
+    expect(fresh.committed(turn)).toBe(false);
+    expect(fresh.tryAdmit(straight, 1, m), 'a waiting turn does not block the oncoming straight').toBe(true);
+  });
+
   it('pedMaskBlocksCrossingLanelet', () => {
     const m = ConflictMatrix.fromPathsWithCrosswalks([[t(0, 0), t(1, 0)], [t(5, 5)]], [[t(1, 0), t(1, 1)]]);
     const ledger = new IntersectionLedger();

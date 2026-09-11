@@ -23,6 +23,8 @@ export class ConflictMatrix {
     private readonly semantic: Uint32Array[],
     /** Per path, its tiles as indices into this intersection's tile set, in travel order. */
     private readonly pathTiles: ReadonlyArray<readonly number[]>,
+    /** Per path, the leading tiles it may hold while it yields to its forced partners (0: no wait point). */
+    private readonly waits: number[],
     private readonly n: number,
     private readonly base: number,
     private readonly tileTotal: number,
@@ -68,7 +70,7 @@ export class ConflictMatrix {
         }
       }
     }
-    return new ConflictMatrix(rows, semantic, pathTiles, n, base, tileIndex.size);
+    return new ConflictMatrix(rows, semantic, pathTiles, new Array<number>(n).fill(0), n, base, tileIndex.size);
   }
 
   /** Force a conflict the geometry cannot express (ПДД 13.12: a left or U turn yields to the oncoming through). */
@@ -101,6 +103,15 @@ export class ConflictMatrix {
   /** The tiles of path `a` as tile indices, in travel order. */
   tiles(a: number): readonly number[] {
     return this.pathTiles[a] ?? NO_TILES;
+  }
+
+  /** Leading tiles of path `a` it may hold while it yields to its forced partners; 0 when it has no wait point. */
+  waitLen(a: number): number {
+    return this.waits[a] ?? 0;
+  }
+
+  setWaitLen(a: number, len: number): void {
+    if (a < this.n) this.waits[a] = len;
   }
 
   /** Distinct tiles over every path of the intersection. */

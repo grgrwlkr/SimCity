@@ -17,7 +17,13 @@ import { STUCK_REROUTE_SECS, TILE_CENTER_TO_EDGE_TILES } from './constants';
 import { isAllRed, isGreen, isLeftProtected, isYellow, type TrafficLight } from './lights';
 import { maneuverKind, type ManeuverKind } from './maneuver';
 import type { PathPool } from './pathPool';
-import { emptyGrantMask, fixedElapsedSecs, grantMaskAdd, type IntersectionReservations } from './reservations';
+import {
+  approachingLanelets,
+  emptyGrantMask,
+  fixedElapsedSecs,
+  grantMaskAdd,
+  type IntersectionReservations,
+} from './reservations';
 import { computeExitDirection, isIntersectionTile } from './state';
 import {
   laneletPlanIsCurrent,
@@ -345,8 +351,10 @@ export function arbitrateGrantsInner(
       if (cand.coarse) {
         ok = ledger.tryAdmitCoarse(cand.vehicle, grant);
       } else {
-        ok = ledger.grantEligible(cand.localIdx, matrix, grant);
-        if (ok) grantMaskAdd(grant, matrix, cand.localIdx);
+        // A turn facing an oncoming grant is still granted up to its wait point.
+        const kind = ledger.grantEligible(cand.localIdx, matrix, grant);
+        ok = kind !== undefined;
+        if (kind !== undefined) grantMaskAdd(grant, matrix, cand.localIdx, kind);
       }
       if (!ok) {
         counts.refused += 1;
@@ -482,6 +490,11 @@ export function arbitrateLaneletReservations(w: World): void {
         const matrix = matrices.byIntersection.get(id);
         const ledger = reservations.ledgerMut(id);
         if (local !== undefined && matrix !== undefined && !ledger.holds(ref)) ledger.setInboxTiles(matrix.tiles(local));
+        // A turn at its wait point finishes once no oncoming car holds the box or is about to enter it.
+        const hold = ledger.holdOf(ref);
+        if (hold !== undefined && !hold.committed && matrix !== undefined) {
+          ledger.tryAdmit(ref, hold.localIdx, matrix, approachingLanelets(reservations, id, ref));
+        }
       }
       continue;
     }

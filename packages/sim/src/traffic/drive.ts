@@ -15,12 +15,14 @@ import {
   LEADER_LOOKAHEAD_TILES,
   RIGHT_ON_RED_TURN_MAX_KMH,
   SERVICE_VEHICLE_SPEED_LIMIT_FACTOR,
+  STOP_LINE_MARGIN_TILES,
   STOP_LINE_OFFSET,
   STUCK_REROUTE_SECS,
   TILE_CENTER_TO_EDGE_TILES,
   VEHICLE_LENGTH_TILES,
 } from './constants';
 import { dirBetweenAdjacent } from '../transport/lanelet/pathfinding';
+import { approachingLanelets, waitPointPos } from './reservations';
 import { computeExitDirection, isIntersectionTile } from './state';
 import { FREE_FLOW, TRIP_PURPOSES, VEHICLE_ROLES, despawnVehicle, setTrafficState, vehicleRef } from './vehicles';
 
@@ -135,7 +137,16 @@ function stepHeading(from: TilePos, to: TilePos): number | undefined {
 /** Takes the conflict-tile hold of `localIdx` for `ref`; an intersection without a matrix admits. */
 function admitToBox(w: World, id: number, ref: number, localIdx: number): boolean {
   const matrix = w.laneletConflicts.byIntersection.get(id);
-  return matrix === undefined || w.reservations.ledgerMut(id).tryAdmit(ref, localIdx, matrix);
+  return matrix === undefined || w.reservations.ledgerMut(id).tryAdmit(ref, localIdx, matrix, approachingLanelets(w.reservations, id, ref));
+}
+
+/** The wait point of a turn that could only take its wait prefix right now, as a route position of its center. */
+function anticipatedWaitPoint(w: World, id: number, ref: number, localIdx: number, slot: number): number | undefined {
+  const matrix = w.laneletConflicts.byIntersection.get(id);
+  const ledger = w.reservations.ledger(id);
+  if (matrix === undefined || ledger === undefined || matrix.waitLen(localIdx) === 0) return undefined;
+  if (ledger.admission(ref, localIdx, matrix, approachingLanelets(w.reservations, id, ref)) !== 'wait') return undefined;
+  return waitPointPos(w, id, localIdx, slot);
 }
 
 /** `move_vehicles` (TrafficStep::Movement). Despawns are applied after the loop, as Bevy commands are. */
@@ -257,6 +268,8 @@ export function moveVehicles(w: World, dtNs: number): void {
     let clampToBoxBoundary = false;
     /** The hold to take if this tick's move reaches the box boundary. */
     let pendingAdmit: { readonly id: number; readonly localIdx: number } | undefined;
+    /** Route position where the center of a turn yielding inside the box stops. */
+    let waitPoint: number | undefined;
     if (nextTile !== undefined) {
       const nextIsIntersection = isIntersectionTile(grid, nextTile);
       if (nextIsIntersection && !currentIsIntersection) {
@@ -279,6 +292,8 @@ export function moveVehicles(w: World, dtNs: number): void {
                 pendingAdmit = { id, localIdx: res.localIdx };
                 ok = true;
               }
+              // A turn that will have to yield inside the box brakes for its wait point already.
+              if (ok) waitPoint = anticipatedWaitPoint(w, id, ref, res.localIdx, slot);
             } else ok = true;
           }
           if (!ok) blockedNext = true;
@@ -311,6 +326,16 @@ export function moveVehicles(w: World, dtNs: number): void {
         const occ = w.trafficOccupancy.perTickVehicles[nextIdx]!;
         if (capacityBlocksStep(currentIsIntersection, nextIsIntersection, occ, cap)) blockedNext = true;
       }
+    }
+
+    if (currentIsIntersection) {
+      const id = w.intersections.intersectionIdAt(currentTile);
+      const hold = id === undefined ? undefined : w.reservations.ledger(id)?.holdOf(ref);
+      if (id !== undefined && hold !== undefined && !hold.committed) waitPoint = waitPointPos(w, id, hold.localIdx, slot);
+    }
+    if (waitPoint !== undefined) {
+      const gapTiles = Math.max(f32(f32(waitPoint - STOP_LINE_MARGIN_TILES) - f32(cursor + progress0)), 0);
+      leader = minLeader(leader, [f32(f32(gapTiles * tileSize) + idm.s0), 0]);
     }
 
     if (blockedNext) {
@@ -390,6 +415,21 @@ export function moveVehicles(w: World, dtNs: number): void {
           v.progress[slot] = boundaryCap;
           const allowed = f32(f32(f32(v.progress[slot]! - prevP) * tileSize) / denom);
           v.speed[slot] = Math.min(v.speed[slot]!, Math.max(0, allowed));
+        }
+      }
+    }
+
+    // A turn holding only its wait prefix stops inside the box, its front at the end of the prefix.
+    if (!reversing) {
+      const boxTile = currentIsIntersection ? currentTile : nextTile;
+      const boxId = boxTile === undefined || !isIntersectionTile(grid, boxTile) ? undefined : w.intersections.intersectionIdAt(boxTile);
+      const hold = boxId === undefined ? undefined : w.reservations.ledger(boxId)?.holdOf(ref);
+      const limit = boxId === undefined || hold === undefined || hold.committed ? undefined : waitPointPos(w, boxId, hold.localIdx, slot);
+      if (limit !== undefined) {
+        const cap = Math.max(f32(limit - cursor), prevP);
+        if (v.progress[slot]! > cap) {
+          v.progress[slot] = cap;
+          v.speed[slot] = Math.min(v.speed[slot]!, Math.max(0, f32(f32(f32(cap - prevP) * tileSize) / denom)));
         }
       }
     }

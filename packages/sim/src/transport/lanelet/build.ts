@@ -339,16 +339,22 @@ export function buildLaneletGraphInner(
       crosswalks.map((c) => c.cells),
     );
     // ПДД 13.12: a left or U turn yields to the oncoming straight and right turn even when the
-    // compact trajectories share no tile.
+    // compact trajectories share no tile. It may still drive in up to the first tile an oncoming path
+    // uses and wait there for a gap.
     pending.forEach((a, i) => {
       if (a.maneuver !== 'LeftTurn' && a.maneuver !== 'UTurn') return;
       const dirA = lanes.getLane(a.entryLane)?.dir;
       if (dirA === undefined) return;
+      const oncoming = new Set<number>();
       pending.forEach((b, j) => {
         if (b.maneuver !== 'Straight' && b.maneuver !== 'RightTurn') return;
         const dirB = lanes.getLane(b.entryLane)?.dir;
-        if (dirB !== undefined && dirB === dirOpposite(dirA)) matrix.addConflictPair(i, j);
+        if (dirB === undefined || dirB !== dirOpposite(dirA)) return;
+        matrix.addConflictPair(i, j);
+        for (const tile of matrix.tiles(j)) oncoming.add(tile);
       });
+      const waitLen = matrix.tiles(i).findIndex((tile) => oncoming.has(tile));
+      if (waitLen > 0) matrix.setWaitLen(i, waitLen);
     });
     matrices.byIntersection.set(cluster.id, matrix);
     matrices.crosswalkSides.set(

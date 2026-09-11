@@ -6,7 +6,7 @@ import { capacityPerLaneTile } from '../../src/map/roads';
 import { arbitrateLaneletReservations } from '../../src/traffic/arbiter';
 import { STOP_LINE_OFFSET, TILE_CENTER_TO_EDGE_TILES } from '../../src/traffic/constants';
 import { moveVehicles } from '../../src/traffic/drive';
-import { cleanupIntersectionReservations } from '../../src/traffic/reservations';
+import { approachingLanelets, cleanupIntersectionReservations } from '../../src/traffic/reservations';
 import { buildTrafficSpatialIndex } from '../../src/traffic/spatialIndex';
 import { refSlot, resolveVehicle, type VehicleTrafficState } from '../../src/traffic/vehicles';
 import { buildLaneGraph } from '../../src/transport/laneGraph';
@@ -508,11 +508,17 @@ describe('lanelet arbiter system', () => {
   });
 
   it('crossingLeftYieldsToOncomingStraight', () => {
+    // Rust refused the left turn outright. Here it is granted up to its wait point and may not finish
+    // while the oncoming straight is on its way.
     const w = crossWorld();
     const oncoming = spawn(w, [t(5, 6), t(5, 5), t(5, 4), t(5, 3)]);
     const left = spawn(w, NORTH_LEFT);
     arbiterTick(w);
-    expect(reserved(w, oncoming) && reserved(w, left)).toBe(false);
     expect(reserved(w, oncoming)).toBe(true);
+    expect(reserved(w, left), 'the left turn is granted up to its wait point').toBe(true);
+    const localIdx = w.reservations.entryReservation(0, left)!.localIdx!;
+    const matrix = w.laneletConflicts.byIntersection.get(0)!;
+    const admission = w.reservations.ledgerMut(0).admission(left, localIdx, matrix, approachingLanelets(w.reservations, 0, left));
+    expect(admission, 'but may take only its wait prefix').toBe('wait');
   });
 });
