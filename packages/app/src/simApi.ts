@@ -57,7 +57,7 @@ export interface SimApi {
   pickTile(x: number, y: number): Promise<TilePos | null>;
   renderStats(): Promise<RenderStats>;
   /** Build a scenario into the running world (`?scenario=signalized` does this on load). */
-  scenario(name: 'signalizedCross'): Promise<null>;
+  scenario(name: 'signalizedCross' | 'signalizedCross4'): Promise<null>;
 }
 
 declare global {

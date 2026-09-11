@@ -1,6 +1,6 @@
 import { RenderReader, SimClient, type WorldSnapshot } from '@simcity/bridge';
 import { DebugRenderer, installViewControls } from '@simcity/render';
-import { SIGNALIZED_CROSS, tileToWorld, type MapConfig } from '@simcity/sim';
+import { CROSS_LAYOUT, SIGNALIZED_CROSS, crossBoxSize, tileToWorld, type CrossScenarioName, type MapConfig } from '@simcity/sim';
 import { Hud, useSimStore, type HudActions } from '@simcity/ui';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -13,8 +13,9 @@ if (!crossOriginIsolated) {
 
 const params = new URLSearchParams(location.search);
 const debug = params.get('debug') === '1';
-/** `?scenario=signalized`: the lit cross with traffic, the camera on its box. */
-const scenario = params.get('scenario') === 'signalized' ? 'signalizedCross' : null;
+/** `?scenario=signalized` (two lanes) or `?scenario=signalized4` (four): a lit cross with traffic, the camera on its box. */
+const SCENARIOS: Readonly<Record<string, CrossScenarioName>> = { signalized: 'signalizedCross', signalized4: 'signalizedCross4' };
+const scenario = SCENARIOS[params.get('scenario') ?? ''] ?? null;
 let focusPending = scenario !== null;
 const canvas = document.getElementById('view');
 if (!(canvas instanceof HTMLCanvasElement)) throw new Error('canvas#view is missing from index.html');
@@ -54,14 +55,16 @@ function syncRender(snapshot: WorldSnapshot): void {
     r.setLights(snapshot.lights);
     // The scenario's map is on screen: centre its box and show the whole cross, once the canvas has a
     // size (registered after the first fit, so it runs after it).
-    if (focusPending && mapConfig !== null && (shownMapEditVersion ?? 0) > 0) {
+    if (focusPending && scenario !== null && mapConfig !== null && (shownMapEditVersion ?? 0) > 0) {
       focusPending = false;
       const cfg = mapConfig;
+      // `tileToWorld` is a tile centre: the box centre lies (size − 1) / 2 tiles past its first tile.
+      const toCentre = ((crossBoxSize(CROSS_LAYOUT[scenario]) - 1) / 2) * cfg.tileSize;
       void r.whenSized().then(() => {
         const { width, height } = r.view.viewport;
         const box = tileToWorld(cfg, SIGNALIZED_CROSS.box);
-        r.view.centerX = box.x + cfg.tileSize / 2;
-        r.view.centerY = box.y + cfg.tileSize / 2;
+        r.view.centerX = box.x + toCentre;
+        r.view.centerY = box.y + toCentre;
         r.view.worldPerPixel = ((SIGNALIZED_CROSS.hi - SIGNALIZED_CROSS.lo + 6) * cfg.tileSize) / Math.min(width, height);
       });
     }

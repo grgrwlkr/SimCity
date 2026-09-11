@@ -81,6 +81,15 @@ describe('intersection ledger', () => {
     expect(fresh.tryAdmit(straight, 1, m), 'a waiting turn does not block the oncoming straight').toBe(true);
   });
 
+  it('anApproachingTurnDoesNotHoldUpTheOncomingStraight', () => {
+    // Only the turn yields: a straight entering while the oncoming turn is still on its way goes first.
+    const m = ConflictMatrix.fromPaths([[t(0, 0), t(1, 0)], [t(5, 5), t(6, 5)]]);
+    m.addConflictPair(0, 1);
+    const ledger = new IntersectionLedger();
+    expect(ledger.tryAdmit(2, 1, m, [0b01]), 'the straight takes its path').toBe(true);
+    expect(ledger.committed(2)).toBe(true);
+  });
+
   it('pedMaskBlocksCrossingLanelet', () => {
     const m = ConflictMatrix.fromPathsWithCrosswalks([[t(0, 0), t(1, 0)], [t(5, 5)]], [[t(1, 0), t(1, 1)]]);
     const ledger = new IntersectionLedger();

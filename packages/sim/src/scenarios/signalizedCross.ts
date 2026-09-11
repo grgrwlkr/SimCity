@@ -1,54 +1,117 @@
-// A lit two-lane cross fed with lanelet-routed waves: the live view (`?scenario=signalized`) and the
-// traffic-flow measurements of stage 2.
-import type { RoadDir, TilePos } from '../commands';
+// Lit crosses fed with lanelet-routed waves: the live views (`?scenario=signalized`, `?scenario=signalized4`)
+// and the traffic-flow measurements of stage 2.
+import type { RoadDir, RoadKind, TilePos } from '../commands';
 import { detectIntersections } from '../intersections/index';
 import { bumpVersion } from '../map/dirty';
 import { tileKey, type MapGrid } from '../map/grid';
+import { dirLeft, dirOpposite, isLeftmostForDir, isRightmostForDir } from '../map/roads';
 import { TrafficOccupancy } from '../traffic/occupancy';
 import { refSlot, spawnVehicle } from '../traffic/vehicles';
 import { findRoute, type Route } from '../transport/lanelet/pathfinding';
 import type { World } from '../world';
 
-export const SIGNALIZED_CROSS = { lo: 20, hi: 60, box: { x: 40, y: 40 }, spawnEvery: 50 } as const;
+export const SIGNALIZED_CROSS = { lo: 20, hi: 60, box: { x: 40, y: 40 } } as const;
 const FACTORS = [0.8, 1.0, 1.2, 0.9].map(Math.fround);
 
-/**
- * Right-hand traffic as the road tool paints it: rows 40 (East) and 41 (West), columns 41 (North)
- * and 40 (South), a 2×2 box where they cross.
- */
-export function buildSignalizedCross(grid: MapGrid, lo: number = SIGNALIZED_CROSS.lo, hi: number = SIGNALIZED_CROSS.hi): void {
+/** `twoLane`: one lane each way meeting in a 2×2 box; `fourLane`: two lanes each way, a 4×4 box. */
+export type CrossLayout = 'twoLane' | 'fourLane';
+export type CrossScenarioName = 'signalizedCross' | 'signalizedCross4';
+export const CROSS_LAYOUT: Readonly<Record<CrossScenarioName, CrossLayout>> = {
+  signalizedCross: 'twoLane',
+  signalizedCross4: 'fourLane',
+};
+
+/** Default ticks between waves per layout: the densest measured feed that still clears every car within 120 s. */
+export const CROSS_SPAWN_EVERY: Readonly<Record<CrossLayout, number>> = { twoLane: 100, fourLane: 80 };
+
+type Line = readonly [at: number, dir: RoadDir, lane: number];
+
+/** Right-hand traffic as the road tool paints it: the row of each east-west lane, the column of each north-south one. */
+const PAINT: Readonly<Record<CrossLayout, { readonly kind: RoadKind; readonly rows: readonly Line[]; readonly columns: readonly Line[] }>> = {
+  twoLane: {
+    kind: 'TwoLane',
+    rows: [
+      [40, 'East', 0],
+      [41, 'West', 1],
+    ],
+    columns: [
+      [41, 'North', 0],
+      [40, 'South', 1],
+    ],
+  },
+  fourLane: {
+    kind: 'FourLane',
+    rows: [
+      [40, 'East', 0],
+      [41, 'East', 1],
+      [42, 'West', 2],
+      [43, 'West', 3],
+    ],
+    columns: [
+      [43, 'North', 0],
+      [42, 'North', 1],
+      [40, 'South', 3],
+      [41, 'South', 2],
+    ],
+  },
+};
+
+/** Tiles along a side of the layout's box, which starts at `SIGNALIZED_CROSS.box`. */
+export function crossBoxSize(layout: CrossLayout): number {
+  return PAINT[layout].rows.length;
+}
+
+/** The layout's two roads from `lo` to `hi`, crossing in a box at `SIGNALIZED_CROSS.box`. */
+export function buildSignalizedCross(
+  grid: MapGrid,
+  layout: CrossLayout = 'twoLane',
+  lo: number = SIGNALIZED_CROSS.lo,
+  hi: number = SIGNALIZED_CROSS.hi,
+): void {
+  const { kind, rows, columns } = PAINT[layout];
   const road = (x: number, y: number, dir: RoadDir, lane: number) => {
     const cell = grid.get({ x, y });
     if (cell === undefined) return;
-    grid.set({ x, y }, { ...cell, water: false, road: { kind: 'TwoLane', dir, lane, flow: { kind: 'TwoWay' }, laneType: 'Regular' } });
+    grid.set({ x, y }, { ...cell, water: false, road: { kind, dir, lane, flow: { kind: 'TwoWay' }, laneType: 'Regular' } });
   };
+  const boxRows = new Set(rows.map(([y]) => y));
+  const boxColumns = new Set(columns.map(([x]) => x));
   for (let i = lo; i <= hi; i++) {
-    if (i === 40 || i === 41) continue;
-    road(i, 40, 'East', 0);
-    road(i, 41, 'West', 1);
-    road(41, i, 'North', 0);
-    road(40, i, 'South', 1);
+    if (!boxColumns.has(i)) for (const [y, dir, lane] of rows) road(i, y, dir, lane);
+    if (!boxRows.has(i)) for (const [x, dir, lane] of columns) road(x, i, dir, lane);
   }
-  for (const [x, y] of [
-    [40, 40],
-    [41, 40],
-    [40, 41],
-    [41, 41],
-  ] as const) {
-    road(x, y, 'None', 0);
-  }
+  for (const [y] of rows) for (const [x] of columns) road(x, y, 'None', 0);
+}
+
+const APPROACHES: readonly RoadDir[] = ['East', 'West', 'North', 'South'];
+
+interface LaneEnds {
+  readonly dir: RoadDir;
+  readonly entry: TilePos;
+  readonly exit: TilePos;
 }
 
 /**
- * Per approach (East, West, North, South entry) the routes to the three exits that are not a U-turn,
- * from the lanelet planner without jitter. Needs the lanelets of the current graph.
+ * Per approach (East, West, North, South entry) its routes onto the other three roads, from the lanelet
+ * planner without jitter (ПДД 8.5): straight on from every lane, a left turn from the lane by the
+ * centerline, a right turn from the curb lane, each onto the matching lane. Needs the current lanelets.
  */
-export function signalizedCrossRoutes(w: World, lo: number = SIGNALIZED_CROSS.lo, hi: number = SIGNALIZED_CROSS.hi): Route[][] {
-  const ends: ReadonlyArray<readonly [entry: TilePos, exit: TilePos, opposite: number]> = [
-    [{ x: lo, y: 40 }, { x: hi, y: 40 }, 1],
-    [{ x: hi, y: 41 }, { x: lo, y: 41 }, 0],
-    [{ x: 41, y: lo }, { x: 41, y: hi }, 3],
-    [{ x: 40, y: hi }, { x: 40, y: lo }, 2],
+export function signalizedCrossRoutes(
+  w: World,
+  layout: CrossLayout = 'twoLane',
+  lo: number = SIGNALIZED_CROSS.lo,
+  hi: number = SIGNALIZED_CROSS.hi,
+): Route[][] {
+  const { rows, columns } = PAINT[layout];
+  const lanes: LaneEnds[] = [
+    ...rows.map(([y, dir]) => {
+      const [from, to] = dir === 'East' ? [lo, hi] : [hi, lo];
+      return { dir, entry: { x: from, y }, exit: { x: to, y } };
+    }),
+    ...columns.map(([x, dir]) => {
+      const [from, to] = dir === 'North' ? [lo, hi] : [hi, lo];
+      return { dir, entry: { x, y: from }, exit: { x, y: to } };
+    }),
   ];
   const ctx = { grid: w.grid, traffic: new TrafficOccupancy(), cfg: w.pathfindingConfig, jitterSeed: 0n };
   const laneAt = (tile: TilePos) => {
@@ -56,16 +119,27 @@ export function signalizedCrossRoutes(w: World, lo: number = SIGNALIZED_CROSS.lo
     if (id === undefined) throw new Error(`signalized cross: no lane at (${tile.x},${tile.y})`);
     return id;
   };
-  return ends.map(([entry, , opposite]) =>
-    [0, 1, 2, 3].filter((g) => g !== opposite).map((g) => findRoute(w.laneGraph, w.laneletGraph, ctx, laneAt(entry), laneAt(ends[g]![1]))),
+  const lanesOf = (dir: RoadDir) => lanes.filter((l) => l.dir === dir);
+  const pick = (dir: RoadDir, test: typeof isLeftmostForDir) => {
+    const lane = lanesOf(dir).find((l) => test(w.grid.get(l.entry)!.road));
+    if (lane === undefined) throw new Error(`signalized cross: no such ${dir} lane`);
+    return lane;
+  };
+  const route = (from: LaneEnds, to: LaneEnds) => findRoute(w.laneGraph, w.laneletGraph, ctx, laneAt(from.entry), laneAt(to.exit));
+  return APPROACHES.map((dir) =>
+    APPROACHES.filter((exit) => exit !== dirOpposite(dir)).flatMap((exit) => {
+      if (exit === dir) return lanesOf(dir).map((lane) => route(lane, lane));
+      const test = exit === dirLeft(dir) ? isLeftmostForDir : isRightmostForDir;
+      return [route(pick(dir, test), pick(exit, test))];
+    }),
   );
 }
 
-/** One vehicle per approach, the maneuver rotating with the wave, each with its lanelet plan. */
+/** One vehicle per approach, the route rotating with the wave, each with its lanelet plan. */
 export function spawnSignalizedWave(w: World, routes: readonly Route[][], wave: number): number[] {
   const v = w.vehicles;
   return routes.map((set, s) => {
-    const route = set[(wave + s) % 3]!;
+    const route = set[(wave + s) % set.length]!;
     const ref = spawnVehicle(w, { route: route.tiles, speedFactor: FACTORS[(wave + s) % 4]! });
     v.laneletPlan[refSlot(v, ref)] = {
       entries: route.sidecar.map((e) => [e[0], e[1], e[2]] as const),
@@ -81,12 +155,15 @@ export class SignalizedCrossScenario {
   private routes: Route[][] | null = null;
   private nextWaveTick = 0;
   private wave = 0;
+  private readonly spawnEvery: number;
 
   constructor(
     w: World,
-    private readonly spawnEvery: number = SIGNALIZED_CROSS.spawnEvery,
+    spawnEvery?: number,
+    private readonly layout: CrossLayout = 'twoLane',
   ) {
-    buildSignalizedCross(w.grid);
+    this.spawnEvery = spawnEvery ?? CROSS_SPAWN_EVERY[layout];
+    buildSignalizedCross(w.grid, layout);
     // What CommandApply and GraphUpdate do after a map edit: the graphs rebuild on the next tick.
     w.graphVersion = bumpVersion(w.graphVersion);
     w.mapEditVersion = bumpVersion(w.mapEditVersion);
@@ -100,7 +177,7 @@ export class SignalizedCrossScenario {
   advance(w: World): void {
     if (this.routes === null) {
       if (!w.laneletGraph.isBuiltFor(w.graphVersion, w.grid)) return;
-      this.routes = signalizedCrossRoutes(w);
+      this.routes = signalizedCrossRoutes(w, this.layout);
       this.nextWaveTick = w.tick;
     }
     if (w.tick < this.nextWaveTick) return;

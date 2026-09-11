@@ -21,6 +21,8 @@ export class ConflictMatrix {
     private readonly rows: Uint32Array[],
     /** Forced pairs only: conflicts the tiles cannot express. */
     private readonly semantic: Uint32Array[],
+    /** The yielding side of each forced pair: row `a` holds the partners `a` gives way to. */
+    private readonly yields: Uint32Array[],
     /** Per path, its tiles as indices into this intersection's tile set, in travel order. */
     private readonly pathTiles: ReadonlyArray<readonly number[]>,
     /** Per path, the leading tiles it may hold while it yields to its forced partners (0: no wait point). */
@@ -47,6 +49,7 @@ export class ConflictMatrix {
     const words = Math.ceil(n / WORD_BITS);
     const rows = Array.from({ length: n }, () => new Uint32Array(words));
     const semantic = Array.from({ length: n }, () => new Uint32Array(words));
+    const yields = Array.from({ length: n }, () => new Uint32Array(words));
     const occupancy = new Map<number, number[]>();
     const tileIndex = new Map<number, number>();
     const pathTiles = paths.map((path, i) =>
@@ -70,16 +73,17 @@ export class ConflictMatrix {
         }
       }
     }
-    return new ConflictMatrix(rows, semantic, pathTiles, new Array<number>(n).fill(0), n, base, tileIndex.size);
+    return new ConflictMatrix(rows, semantic, yields, pathTiles, new Array<number>(n).fill(0), n, base, tileIndex.size);
   }
 
-  /** Force a conflict the geometry cannot express (ПДД 13.12: a left or U turn yields to the oncoming through). */
+  /** Force a conflict the geometry cannot express, `a` giving way to `b` (ПДД 13.12: a left or U turn yields to the oncoming through). */
   addConflictPair(a: number, b: number): void {
     if (a === b || a >= this.n || b >= this.n) return;
     setBit(this.rows[a]!, b);
     setBit(this.rows[b]!, a);
     setBit(this.semantic[a]!, b);
     setBit(this.semantic[b]!, a);
+    setBit(this.yields[a]!, b);
   }
 
   crosswalkBase(): number {
@@ -98,6 +102,11 @@ export class ConflictMatrix {
   /** The forced conflicts of `a`, as lanelet bits. */
   semanticRow(a: number): Uint32Array {
     return this.semantic[a] ?? EMPTY_ROW;
+  }
+
+  /** The forced partners `a` gives way to, as lanelet bits. */
+  yieldRow(a: number): Uint32Array {
+    return this.yields[a] ?? EMPTY_ROW;
   }
 
   /** The tiles of path `a` as tile indices, in travel order. */

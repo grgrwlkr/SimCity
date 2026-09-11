@@ -186,6 +186,22 @@ test('signalizedScenarioShowsTrafficLive', async ({ page }, testInfo) => {
   await page.locator('#view').screenshot({ path: testInfo.outputPath('signalized.png') });
 });
 
+test('fourLaneScenarioShowsTrafficLive', async ({ page }, testInfo) => {
+  await page.goto('/?scenario=signalized4');
+  await page.waitForFunction(() => typeof window.__sim !== 'undefined');
+  await page.evaluate(() => window.__sim.ready);
+
+  await expect
+    .poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => ({ driving: s.vehicles > 0, lamps: s.lights })))
+    .toEqual({ driving: true, lamps: 4 });
+  // The 4×4 box spans tiles 40..43: its centre lies 1.5 tiles (24 world units) past the centre of tile 40.
+  const box = tileToWorld(CFG, { x: 40, y: 40 });
+  await expect
+    .poll(() => page.evaluate(() => window.__sim.camera()))
+    .toMatchObject({ centerX: box.x + 24, centerY: box.y + 24 });
+  await page.locator('#view').screenshot({ path: testInfo.outputPath('signalized4.png') });
+});
+
 // A scenario opened in a hidden pane: the camera focus must wait for a real canvas size, or a 0×0
 // start divides the view span by one pixel and the cross ends up a dot.
 test('scenarioFocusWaitsForACanvasSize', async ({ page }) => {

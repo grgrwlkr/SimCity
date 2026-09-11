@@ -214,7 +214,10 @@ export class IntersectionLedger {
     return !rowsOverlap(matrix.row(localIdx), this.pedMask);
   }
 
-  /** No forced partner holds, is granted or approaches, and no earlier car on the lanelet still waits. */
+  /**
+   * No forced partner holds the box or is granted, none it gives way to is approaching, and no earlier
+   * car on the lanelet still waits.
+   */
   private mayComplete(
     vehicle: number | undefined,
     localIdx: number,
@@ -227,7 +230,7 @@ export class IntersectionLedger {
     if (earlier.some((h) => h.localIdx === localIdx && !isCommitted(h))) return false;
     if (grant !== undefined && grant.granted.some((g) => g.localIdx === localIdx && g.wait)) return false;
     const semantic = matrix.semanticRow(localIdx);
-    if (rowsOverlap(semantic, this.semanticHeld) || rowsOverlap(semantic, approaching)) return false;
+    if (rowsOverlap(semantic, this.semanticHeld) || rowsOverlap(matrix.yieldRow(localIdx), approaching)) return false;
     return grant === undefined || !rowsOverlap(semantic, grant.lanelets);
   }
 

@@ -3,6 +3,7 @@
 import {
   bumpVersion,
   createWorld,
+  CROSS_LAYOUT,
   despawnVehicle,
   detectIntersections,
   fingerprint,
@@ -91,7 +92,7 @@ export class SimHost {
       case 'debugOverlay':
         return debugOverlayOf(this.world);
       case 'scenario':
-        this.scenario = new SignalizedCrossScenario(this.world);
+        this.scenario = new SignalizedCrossScenario(this.world, undefined, CROSS_LAYOUT[req.name]);
         return null;
     }
   }
