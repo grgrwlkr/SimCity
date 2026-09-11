@@ -108,15 +108,27 @@ describe('determinism', () => {
         (w) => void ((w.grid as unknown as Record<string, Uint8Array>)[layer]![values.length - 1]! ^= 1),
       ]);
     }
+    // Every typed layer of a live vehicle, by reflection so a new layer cannot slip past. Dead slots
+    // are not state (a spawn overwrites them), except the slot generation.
     for (const [layer, values] of Object.entries(buildHeadlessGame().vehicles)) {
       if (!ArrayBuffer.isView(values)) continue;
       mutations.push([
         `vehicles.${layer}`,
-        (w) => void ((w.vehicles as unknown as Record<string, Uint8Array>)[layer]![(values as Uint8Array).length - 1] = 1),
+        (w) => {
+          const slot = refSlot(w.vehicles, spawnVehicle(w, { route: [{ x: 0, y: 0 }] }));
+          const layers = w.vehicles as unknown as Record<string, Uint8Array>;
+          const before = fingerprint(w);
+          layers[layer]![slot] = layers[layer]![slot]! + 3;
+          expect(fingerprint(w), `fingerprint is blind to live vehicles.${layer}`).not.toBe(before);
+        },
       ]);
     }
     mutations.push(
       ['vehicles.order', (w) => void spawnVehicle(w, { route: [{ x: 0, y: 0 }] })],
+      [
+        'vehicles.generation of a dead slot',
+        (w) => void (w.vehicles.generation[w.vehicles.capacity - 1] = 9),
+      ],
       [
         'vehicles.trafficState',
         (w) => {

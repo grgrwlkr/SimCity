@@ -120,17 +120,30 @@ export function toHex64(value: bigint): string {
   return value.toString(16).padStart(16, '0');
 }
 
-/** Every typed-array layer by name, the iteration and free lists, and the object layers of live slots. */
+/**
+ * The iteration and free lists, every slot's generation, and every layer of the live slots in
+ * iteration order. A dead slot's other fields cannot reach the future: `spawnVehicle` overwrites
+ * all of them.
+ */
 function hashVehicles(h: Fnv64, v: VehicleLayers): void {
   h.u32(v.capacity);
-  h.str(stableJson(v.order));
-  h.str(stableJson(v.free));
+  // Lists as words, not JSON: the free list alone is 4096 numbers on an empty map.
+  h.u32(v.order.length);
+  for (const slot of v.order) h.u32(slot);
+  h.u32(v.free.length);
+  for (const slot of v.free) h.u32(slot);
+  h.bytes(v.generation);
   const layers = Object.entries(v)
-    .filter((entry): entry is [string, ArrayBufferView] => ArrayBuffer.isView(entry[1]))
+    .filter((entry): entry is [string, ArrayBufferView] => ArrayBuffer.isView(entry[1]) && entry[0] !== 'generation')
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   for (const [name, layer] of layers) {
     h.str(name);
-    h.bytes(layer);
+    if (layer instanceof Float32Array) for (const slot of v.order) h.f32(layer[slot]!);
+    else if (layer instanceof Float64Array) for (const slot of v.order) h.f64(layer[slot]!);
+    else if (layer instanceof Int32Array) for (const slot of v.order) h.i32(layer[slot]!);
+    else if (layer instanceof Uint32Array) for (const slot of v.order) h.u32(layer[slot]!);
+    else if (layer instanceof Uint8Array) for (const slot of v.order) h.byte(layer[slot]!);
+    else throw new TypeError(`fingerprint: unhandled vehicle layer type for ${name}`);
   }
   h.str(stableJson(v.order.map((slot) => [v.trafficState[slot], v.laneletPlan[slot]])));
 }
