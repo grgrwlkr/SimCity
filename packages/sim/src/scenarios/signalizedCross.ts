@@ -1,5 +1,5 @@
-// A lit two-lane cross fed with lanelet-routed waves: the stage 2b gate scenario (examples/dump_signalized.rs)
-// and the live view (`?scenario=signalized`).
+// A lit two-lane cross fed with lanelet-routed waves: the live view (`?scenario=signalized`) and the
+// traffic-flow measurements of stage 2.
 import type { RoadDir, TilePos } from '../commands';
 import { detectIntersections } from '../intersections/index';
 import { bumpVersion } from '../map/dirty';

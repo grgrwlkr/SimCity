@@ -3,6 +3,12 @@ const f32 = Math.fround;
 
 /** Distance to detect traffic lights ahead, tiles. */
 export const TRAFFIC_LIGHT_DETECTION_DISTANCE = 8;
+/**
+ * How far along its route a vehicle looks for the car ahead, tiles. Stopping from the fastest driver
+ * profile at comfortable deceleration takes about five tiles, plus a car length and the minimum gap.
+ * Rust looked one tile ahead, so followers ran up to a queue and were snapped to a stop.
+ */
+export const LEADER_LOOKAHEAD_TILES = 8;
 /** Vehicle length along travel, tiles (movement uses the center point). */
 export const VEHICLE_VISUAL_LENGTH_TILES = f32(1.4);
 export const VEHICLE_VISUAL_WIDTH_TILES = f32(0.7);

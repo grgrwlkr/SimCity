@@ -12,6 +12,7 @@ import {
   DRIVER_PROFILE_FACTOR_MAX,
   DRIVER_PROFILE_FACTOR_MIN,
   DRIVER_PROFILE_MEDIUM_FACTOR,
+  LEADER_LOOKAHEAD_TILES,
   RIGHT_ON_RED_TURN_MAX_KMH,
   SERVICE_VEHICLE_SPEED_LIMIT_FACTOR,
   STOP_LINE_OFFSET,
@@ -219,6 +220,26 @@ export function moveVehicles(w: World, dtNs: number): void {
       const gapWorld = Math.max(f32(f32(Math.max(gapTiles, 0) * tileSize) - f32(VEHICLE_VISUAL_LENGTH_TILES * tileSize)), 0);
       leader = minLeader(leader, [gapWorld, nextLead[1]]);
     }
+    // Nobody on this tile or the next: look further along the route for the car ahead, so a follower
+    // brakes for a queue in time. The scan stops at the first vehicle and never looks into a box.
+    let farLead: readonly [offset: number, progress: number, speed: number] | undefined;
+    if (leader === undefined && nextLead === undefined && nextTile !== undefined && !isIntersectionTile(grid, nextTile)) {
+      for (let k = 2; k <= LEADER_LOOKAHEAD_TILES; k++) {
+        const ahead = pool.getTile(handle, cursor + k);
+        if (ahead === undefined || isIntersectionTile(grid, ahead)) break;
+        const aheadIdx = grid.idx(ahead);
+        const first = aheadIdx === undefined ? undefined : spatial.tileMinProgressSpeed(aheadIdx);
+        if (first !== undefined) {
+          farLead = [k, first[0], first[1]];
+          break;
+        }
+      }
+    }
+    if (farLead !== undefined) {
+      const gapTiles = f32(f32(farLead[0] - progress0) + farLead[1]);
+      const gapWorld = Math.max(f32(f32(gapTiles * tileSize) - f32(VEHICLE_VISUAL_LENGTH_TILES * tileSize)), 0);
+      leader = minLeader(leader, [gapWorld, farLead[2]]);
+    }
     const state = v.trafficState[slot]!;
     if (state.kind === 'Approaching') {
       // Shifted by s0 so the vehicle rests at the stop line, not s0 behind it.
@@ -228,6 +249,8 @@ export function moveVehicles(w: World, dtNs: number): void {
     let blockedNext = false;
     let blockedNextIsIntersection = false;
     let clampToBoxBoundary = false;
+    /** The hold to take if this tick's move reaches the box boundary. */
+    let pendingAdmit: { readonly id: number; readonly localIdx: number } | undefined;
     if (nextTile !== undefined) {
       const nextIsIntersection = isIntersectionTile(grid, nextTile);
       if (nextIsIntersection && !currentIsIntersection) {
@@ -247,6 +270,7 @@ export function moveVehicles(w: World, dtNs: number): void {
                 ok = w.reservations.ledgerMut(id).tryAdmit(ref, res.localIdx, w.laneletConflicts.rowFor(id, res.localIdx));
               } else {
                 clampToBoxBoundary = true;
+                pendingAdmit = { id, localIdx: res.localIdx };
                 ok = true;
               }
             } else ok = true;
@@ -335,6 +359,10 @@ export function moveVehicles(w: World, dtNs: number): void {
         const cap = f32(f32(1 + nextLead[0]) - minGapTiles);
         leaderCap = leaderCap === undefined ? cap : Math.min(leaderCap, cap);
       }
+      if (farLead !== undefined) {
+        const cap = f32(f32(farLead[0] + farLead[1]) - minGapTiles);
+        leaderCap = leaderCap === undefined ? cap : Math.min(leaderCap, cap);
+      }
       if (leaderCap !== undefined) {
         const maxP = Math.max(leaderCap, prevP);
         if (nextP > maxP) {
@@ -346,13 +374,21 @@ export function moveVehicles(w: World, dtNs: number): void {
       v.progress[slot] = nextP;
     }
 
-    // Boundary hard clamp: an eligible car without its conflict-tile hold must not cross into the box.
+    // Boundary: a car reaching the box this tick takes its conflict-tile hold now and keeps its speed.
+    // Only a refused hold stops it on the line (Rust took the hold a tick later, after stopping there).
     if (clampToBoxBoundary && !reversing) {
       const boundaryCap = Math.max(TILE_CENTER_TO_EDGE_TILES, prevP);
       if (v.progress[slot]! > boundaryCap) {
-        v.progress[slot] = boundaryCap;
-        const allowed = f32(f32(f32(v.progress[slot]! - prevP) * tileSize) / denom);
-        v.speed[slot] = Math.min(v.speed[slot]!, Math.max(0, allowed));
+        const admitted =
+          pendingAdmit !== undefined &&
+          w.reservations
+            .ledgerMut(pendingAdmit.id)
+            .tryAdmit(ref, pendingAdmit.localIdx, w.laneletConflicts.rowFor(pendingAdmit.id, pendingAdmit.localIdx));
+        if (!admitted) {
+          v.progress[slot] = boundaryCap;
+          const allowed = f32(f32(f32(v.progress[slot]! - prevP) * tileSize) / denom);
+          v.speed[slot] = Math.min(v.speed[slot]!, Math.max(0, allowed));
+        }
       }
     }
 
