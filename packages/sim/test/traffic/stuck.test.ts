@@ -86,6 +86,21 @@ describe('stuck recovery', () => {
     expect(w.vehicles.stuckSecs[refSlot(w.vehicles, refused!)], 'a wait past the cap accumulates').toBeGreaterThan(0);
   });
 
+  it('aStuckCarWithoutAnotherRouteRetriesOncePerWindow', () => {
+    // Rust re-planned such a car every tick, two whole-city searches each: 95 % of a busy tick.
+    const w = eastCorridor();
+    spawnVehicle(w, {
+      route: [t(0, 0), t(1, 0), t(2, 0), t(3, 0)],
+      stuck: { secs: STUCK_REROUTE_SECS + 1, lastTile: t(0, 0), lastProgress: 0 },
+    });
+    for (let i = 0; i < 100; i++) {
+      resolveStuckVehicles(w, DT);
+      w.tick += 1;
+    }
+    expect(w.routeProducerStats.stuckReplanAttempts, 'ten seconds of ticks, one window').toBeLessThanOrEqual(2);
+    expect(w.routeProducerStats.stuckReplanAttempts, 'but it does try').toBeGreaterThanOrEqual(1);
+  });
+
   it('carStoppedInCongestionIsNotDespawned', () => {
     // Queued behind a busy downstream with a valid route and not wedged: never removed.
     const w = eastCorridor();

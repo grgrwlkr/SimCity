@@ -81,6 +81,8 @@ export interface World {
     swapBreakHandbuilt: number;
     stuckLanelet: number;
     stuckRoadFallback: number;
+    /** Route searches recovery ran for stuck vehicles, successful or not. */
+    stuckReplanAttempts: number;
     spawnLanelet: number;
     spawnRoadFallback: number;
   };
@@ -162,7 +164,7 @@ export function createWorld(options: WorldOptions = {}): World {
     spatialIndex: new TrafficSpatialIndex(),
     trafficIndex: emptyTrafficIndex(),
     trafficRoadCache: new TrafficRoadCache(),
-    routeProducerStats: { guardRefusals: 0, swapBreakHandbuilt: 0, stuckLanelet: 0, stuckRoadFallback: 0, spawnLanelet: 0, spawnRoadFallback: 0 },
+    routeProducerStats: { guardRefusals: 0, swapBreakHandbuilt: 0, stuckLanelet: 0, stuckRoadFallback: 0, stuckReplanAttempts: 0, spawnLanelet: 0, spawnRoadFallback: 0 },
     tripBacklog: [],
     motionStats: emptyMotionStats(),
     laneletStallTracker: new Map(),

@@ -97,6 +97,21 @@ export function forEachSucc(
     }
   }
 
+  // A two-way road that ends: turn onto the adjacent oncoming lane of the same road, as the road graph
+  // does. Only where nothing continues ahead, so never across a road that goes on or into a box.
+  const ahead = ctx.grid.get({ x: lane.pos.x + d.x, y: lane.pos.y + d.y });
+  const here = ctx.grid.get(lane.pos);
+  if ((ahead === undefined || ahead.water || ahead.road.kind === 'None') && here !== undefined && here.road.flow.kind !== 'OneWay') {
+    for (const side of [dirLeft(lane.dir), dirRight(lane.dir)]) {
+      const sd = dirDelta(side);
+      const oppId = lg.posToId.get(tileKey({ x: lane.pos.x + sd.x, y: lane.pos.y + sd.y }));
+      if (oppId === undefined) continue;
+      const opp = lg.getLane(oppId);
+      if (opp === undefined || opp.dir !== dirOpposite(lane.dir) || ctx.grid.get(opp.pos)?.road.kind !== here.road.kind) continue;
+      f(oppId, satAddU32(laneEdgeCost(ctx, lg, oppId), f32ToU32(Math.fround(ctx.cfg.turnPenalty))));
+    }
+  }
+
   for (const llid of llg.laneletsFrom(idx)) {
     const ll = llg.get(llid);
     if (ll === undefined) continue;

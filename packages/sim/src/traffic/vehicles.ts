@@ -104,6 +104,8 @@ export interface VehicleLayers {
   readonly movingSecs: Float32Array;
   readonly anchorX: Float32Array;
   readonly anchorY: Float32Array;
+  /** The tick from which a stuck vehicle may search for another route again. */
+  readonly stuckRetryTick: Int32Array;
   readonly trafficState: VehicleTrafficState[];
   readonly laneletPlan: VehicleLaneletPlan[];
 }
@@ -155,6 +157,7 @@ export function createVehicleLayers(capacity: number): VehicleLayers {
     movingSecs: f32(),
     anchorX: f32(),
     anchorY: f32(),
+    stuckRetryTick: i32(),
     trafficState: Array.from({ length: capacity }, () => FREE_FLOW),
     laneletPlan: Array.from({ length: capacity }, () => ({ entries: [], builtFor: 0 })),
   };
@@ -246,6 +249,7 @@ export function spawnVehicle(w: World, spec: VehicleSpec): number {
   v.movingSecs[slot] = f32(spec.motion?.movingSecs ?? 0);
   v.anchorX[slot] = world.x;
   v.anchorY[slot] = world.y;
+  v.stuckRetryTick[slot] = 0;
   setTrafficState(v, slot, spec.state ?? FREE_FLOW);
   v.laneletPlan[slot] = { entries: [], builtFor: 0 };
   return vehicleRef(v, slot);

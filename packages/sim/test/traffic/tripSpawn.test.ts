@@ -81,15 +81,26 @@ describe('trip vehicles', () => {
     expect(v.speed[refSlot(v, car)]).toBe(0);
   });
 
-  it('carTripsWaitWhileTheNetworkIsJammed', () => {
+  it('oneJammedTileDoesNotStopTheCity', () => {
+    // Rust stopped every trip while any single tile was near capacity: one stuck car froze the city.
     const w = world([t(1, 0), t(1, 2)]);
     w.trafficIndex.maxCongestion = Math.fround(0.96);
+    w.trafficIndex.avgCongestion = Math.fround(0.1);
     w.events.tripRequested.push(carTrip(1));
 
     spawnTripVehicles(w);
-    expect(w.vehicles.order.length, 'no new car into a jam').toBe(0);
+    expect(w.vehicles.order.length).toBe(1);
+  });
 
-    w.trafficIndex.maxCongestion = 0;
+  it('carTripsWaitWhileTheNetworkIsJammed', () => {
+    const w = world([t(1, 0), t(1, 2)]);
+    w.trafficIndex.avgCongestion = Math.fround(0.9);
+    w.events.tripRequested.push(carTrip(1));
+
+    spawnTripVehicles(w);
+    expect(w.vehicles.order.length, 'no new car into a jammed city').toBe(0);
+
+    w.trafficIndex.avgCongestion = 0;
     w.events.tripRequested.length = 0;
     spawnTripVehicles(w);
     expect(w.vehicles.order.length, 'the trip leaves once the jam clears').toBe(1);

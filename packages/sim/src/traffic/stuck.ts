@@ -142,6 +142,7 @@ export function resolveStuckVehicles(w: World, dtNs: number): void {
   const pool = w.pathPool;
   const tripRole = VEHICLE_ROLES.indexOf('trip');
   const ctx = roadPathCtx(w);
+  const retryTicks = dtNs > 0 ? Math.round((WEDGED_REROUTE_RETRY_SECS * 1e9) / dtNs) : 0;
   let handled = 0;
   for (const slot of [...v.order]) {
     if (handled >= MAX_UNSTUCK_PER_TICK) break;
@@ -169,6 +170,14 @@ export function resolveStuckVehicles(w: World, dtNs: number): void {
 
     const current = pool.getTile(handle, cursor);
     if (current === undefined) continue;
+    // One search per vehicle per retry window: Rust searched again every tick for a car no route
+    // could free, two whole-city searches that took most of a busy tick.
+    if (w.tick < v.stuckRetryTick[slot]!) {
+      holdOrRemove(w, slot, cursor, wedged, motionDespawn, removable);
+      continue;
+    }
+    w.routeProducerStats.stuckReplanAttempts += 1;
+    handled += 1;
     const goal = pool.getTile(handle, Math.max(len - 1, 0)) ?? current;
     const lanelet = replanRouteWithLanelets(w, drawJitterSeed(w), current, goal, w.grid.get(current)?.road.dir ?? 'None');
     let road = findRoadPathCached(ctx, current, goal);
@@ -182,7 +191,12 @@ export function resolveStuckVehicles(w: World, dtNs: number): void {
     const rest = pool.remainingFrom(handle, cursor) ?? [];
     const roadChanged = road.length > 0 && !sameTiles(road, rest);
     const laneletChanged = lanelet !== undefined && !sameTiles(lanelet.tiles, rest);
-    if (roadChanged || laneletChanged) {
+    if (!roadChanged && !laneletChanged) {
+      v.stuckRetryTick[slot] = w.tick + retryTicks;
+      holdOrRemove(w, slot, cursor, wedged, motionDespawn, removable);
+      continue;
+    }
+    {
       pool.release(handle);
       const plan = v.laneletPlan[slot]!;
       if (lanelet !== undefined) {
@@ -203,19 +217,19 @@ export function resolveStuckVehicles(w: World, dtNs: number): void {
       v.stuckLastTileX[slot] = current.x;
       v.stuckLastTileY[slot] = current.y;
       v.stuckLastProgress[slot] = 0;
-      handled += 1;
-      continue;
-    }
-    // No other route: hold the timer below the reroute threshold and try again later. A wedged car
-    // falls through, or it would never reach the despawn horizon.
-    if (cursor > 0 && !wedged) {
-      v.stuckSecs[slot] = f32(STUCK_REROUTE_SECS * 0.8);
-      handled += 1;
-      continue;
-    }
-    if ((v.stuckSecs[slot]! >= STUCK_DESPAWN_SECS || motionDespawn) && removable) {
-      finishAndDespawn(w, slot);
-      handled += 1;
     }
   }
+}
+
+/**
+ * No other route: a car that has moved along its route holds the timer below the reroute threshold and
+ * tries again later; a wedged one is left to reach the despawn horizon, where a trip car is removed.
+ */
+function holdOrRemove(w: World, slot: number, cursor: number, wedged: boolean, motionDespawn: boolean, removable: boolean): void {
+  const v = w.vehicles;
+  if (cursor > 0 && !wedged) {
+    v.stuckSecs[slot] = f32(STUCK_REROUTE_SECS * 0.8);
+    return;
+  }
+  if ((v.stuckSecs[slot]! >= STUCK_DESPAWN_SECS || motionDespawn) && removable) finishAndDespawn(w, slot);
 }

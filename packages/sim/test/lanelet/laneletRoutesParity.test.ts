@@ -3,7 +3,7 @@
 // computes (fixture from examples/dump_lanelet_routes.rs; the grid comes from road-routes.json).
 import { describe, expect, it } from 'vitest';
 import { TrafficOccupancy } from '../../src/traffic/occupancy';
-import { findRoute } from '../../src/transport/lanelet/pathfinding';
+import { findRoute, routeIsDirectionCorrect } from '../../src/transport/lanelet/pathfinding';
 import fixture from '../fixtures/lanelet-routes.json';
 import { loadTestCity } from '../testCity';
 
@@ -65,20 +65,29 @@ describe('lanelet parity with Rust on the test city', () => {
     }
   });
 
-  it('findRouteMatchesRustOnTestCity', () => {
+  // Was a bit-for-bit match with Rust's `find_route`. The TS planner also turns around where a two-way
+  // road ends, as the road graph does, so it finds routes Rust had none for and shorter ones through
+  // such a turn. What stays pinned: every pair Rust routed is routed, and every route is drivable.
+  it('findRouteRoutesEveryRustPairLegallyOnTestCity', () => {
     const traffic = new TrafficOccupancy();
     let throughLanelets = 0;
     let routed = 0;
     fixture.routes.forEach((route, i) => {
+      const label = `pair ${i}: lane ${route.start} -> ${route.goal}, seed ${route.seed}`;
       const ctx = { grid: w.grid, traffic, cfg: w.pathfindingConfig, jitterSeed: BigInt(route.seed) };
       const { tiles, sidecar } = findRoute(w.laneGraph, w.laneletGraph, ctx, route.start, route.goal);
-      const actual = { tiles: tiles.flatMap((p) => [p.x, p.y]), sidecar: sidecar.flat() };
-      expect(actual, `pair ${i}: lane ${route.start} -> ${route.goal}, seed ${route.seed}`).toEqual({
-        tiles: route.tiles,
-        sidecar: route.sidecar,
+      if (route.tiles.length > 0) expect(tiles.length, `${label}: Rust routed it`).toBeGreaterThan(0);
+      if (tiles.length === 0) return;
+      tiles.slice(1).forEach((tile, k) => {
+        expect(Math.abs(tile.x - tiles[k]!.x) + Math.abs(tile.y - tiles[k]!.y), `${label}: step ${k} is one tile`).toBe(1);
       });
-      if (route.tiles.length > 2) routed++;
-      if (route.sidecar.length > 0) throughLanelets++;
+      expect(routeIsDirectionCorrect(tiles, w.grid), `${label}: never against a lane`).toBe(true);
+      for (const [offset, , laneletId] of sidecar) {
+        const path = w.laneletGraph.get(laneletId)!.internalPath;
+        expect(tiles.slice(offset, offset + path.length), `${label}: lanelet ${laneletId} at ${offset}`).toEqual(path);
+      }
+      if (tiles.length > 2) routed++;
+      if (sidecar.length > 0) throughLanelets++;
     });
     expect(routed, 'the fixture must exercise real routes').toBeGreaterThan(100);
     expect(throughLanelets, 'and routes through intersections').toBeGreaterThan(50);

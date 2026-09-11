@@ -14,7 +14,6 @@ import {
   DRIVER_PROFILE_MEDIUM_FACTOR,
   DRIVER_PROFILE_MEDIUM_SHARE,
   SPAWN_THROTTLE_AVG_CONG,
-  SPAWN_THROTTLE_MAX_CONG,
 } from './constants';
 import { idmParamsWorld, kmhToWorldSpeed } from './drive';
 import { applyRoute, planTilesLaneletFirst } from './reroute';
@@ -47,7 +46,9 @@ export function spawnTripVehicles(w: World): void {
   const cfg = w.trafficConfig;
   const v = w.vehicles;
   const idm = idmParamsWorld(w.mapConfig, cfg);
-  const jammed = w.trafficIndex.maxCongestion >= SPAWN_THROTTLE_MAX_CONG || w.trafficIndex.avgCongestion >= SPAWN_THROTTLE_AVG_CONG;
+  // The city as a whole: Rust also stopped on its single most congested tile, so one stuck car froze
+  // every trip in town.
+  const jammed = w.trafficIndex.avgCongestion >= SPAWN_THROTTLE_AVG_CONG;
   let active = 0;
   for (const slot of v.order) if (v.parked[slot] !== 1) active += 1;
   let planned = 0;
@@ -108,6 +109,7 @@ export function spawnTripVehicles(w: World): void {
       v.stuckLastProgress[own] = 0;
       v.stoppedSecs[own] = 0;
       v.movingSecs[own] = 0;
+      v.stuckRetryTick[own] = 0;
       v.anchorX[own] = at.x;
       v.anchorY[own] = at.y;
       setTrafficState(v, own, FREE_FLOW);
