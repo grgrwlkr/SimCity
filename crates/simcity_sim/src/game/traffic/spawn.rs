@@ -140,6 +140,9 @@ pub(super) fn spawn_trip_vehicles(
         } else {
             (Vec::new(), Vec::new())
         };
+        // Stamp the graph version the sidecar ids were minted under (0 for the empty fallback
+        // plan): the arbiter refuses to trust ids from another version.
+        let lanelet_plan_version = p.lanelet_graph.as_deref().map_or(0, |g| g.version);
 
         let used_road_fallback = lane_tiles.is_empty();
         let route = if lane_tiles.is_empty() {
@@ -238,6 +241,7 @@ pub(super) fn spawn_trip_vehicles(
                         },
                         VehicleLaneletPlan {
                             entries: lanelet_plan.clone(),
+                            built_for: lanelet_plan_version,
                         },
                     ));
                 planned += 1;
@@ -287,6 +291,7 @@ pub(super) fn spawn_trip_vehicles(
             },
             VehicleLaneletPlan {
                 entries: lanelet_plan,
+                built_for: lanelet_plan_version,
             },
         ));
         if msg.mode == TripMode::Car {
@@ -365,7 +370,11 @@ pub(super) fn clear_vehicles(
             occ.ema_global = 1.0;
             occ.max_scaled = 0.0;
             *idx = TrafficIndex::default();
-            reservations.by_intersection.clear();
+            // Full reset, not just by_intersection: the ledger's holders are only ever released
+            // through dropped by_intersection rows, so leaving them behind would keep despawned
+            // vehicles' active_mask bits refusing conflicting maneuvers until the next
+            // GraphVersion bump.
+            reservations.reset();
             car_owner_index.clear();
             *counts = TrafficVehicleCounts::default();
         }

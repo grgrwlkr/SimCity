@@ -112,7 +112,7 @@ pub fn building_decay_no_road_access(
     let _days_advanced = day_events.read().count();
     let current_day = city.day;
 
-    for (e, b, decay, sprite) in q.iter_mut() {
+    for (e, b, decay, tint) in q.iter_mut() {
         // Check if any tile in footprint has road access
         let has_access = any_footprint_tile(
             b.anchor_pos,
@@ -132,7 +132,7 @@ pub fn building_decay_no_road_access(
                     | crate::game::map::BuildingKind::PoliceStation
                     | crate::game::map::BuildingKind::Hospital
             ) {
-                set_tint(&mut commands, e, sprite, None);
+                set_tint(&mut commands, e, tint, None);
             }
             continue;
         }
@@ -170,7 +170,7 @@ pub fn building_decay_no_road_access(
                     | crate::game::map::BuildingKind::Hospital
             ) {
                 // Change color to red to indicate problem (GDD: visual marking for player)
-                set_tint(&mut commands, e, sprite, Some(Color::srgb(1.0, 0.3, 0.3)));
+                set_tint(&mut commands, e, tint, Some(Color::srgb(1.0, 0.3, 0.3)));
             }
 
             // Add decay component if not present
@@ -191,7 +191,7 @@ pub fn building_decay_no_road_access(
                 | crate::game::map::BuildingKind::Hospital
         ) {
             // Keep red color as warning (building will be demolished)
-            set_tint(&mut commands, e, sprite, Some(Color::srgb(1.0, 0.3, 0.3)));
+            set_tint(&mut commands, e, tint, Some(Color::srgb(1.0, 0.3, 0.3)));
         }
 
         // Demolish: remove from sim state and despawn entity.
@@ -277,7 +277,7 @@ pub fn building_decay_low_happiness(
     // Calculate target happiness based on economy config
     let _target_happiness = economy_cfg.happiness_target;
 
-    for (e, b, decay, sprite) in q.iter_mut() {
+    for (e, b, decay, tint) in q.iter_mut() {
         // Only residential and commercial buildings have happiness
         if !matches!(
             b.kind,
@@ -347,9 +347,9 @@ pub fn building_decay_low_happiness(
             // Happiness recovered - remove decay component
             if decay.is_some() {
                 commands.entity(e).remove::<LowHappinessDecay>();
-                // Restore normal sprite color
+                // Restore normal tint color
                 {
-                    set_tint(&mut commands, e, sprite, None);
+                    set_tint(&mut commands, e, tint, None);
                 }
             }
             continue;
@@ -367,7 +367,7 @@ pub fn building_decay_low_happiness(
         if days_with_low_happiness < LOW_HAPPINESS_GRACE_DAYS {
             {
                 // Yellow tint to indicate problems
-                set_tint(&mut commands, e, sprite, Some(Color::srgb(1.0, 0.8, 0.3)));
+                set_tint(&mut commands, e, tint, Some(Color::srgb(1.0, 0.8, 0.3)));
             }
 
             // Add decay component if not present
@@ -405,7 +405,7 @@ pub fn building_decay_economic(
     let _days_advanced = day_events.read().count();
     let current_day = city.day;
 
-    for (e, b, decay, sprite) in q.iter_mut() {
+    for (e, b, decay, tint) in q.iter_mut() {
         // Only commercial and industrial buildings have economic concerns
         if !matches!(
             b.kind,
@@ -436,7 +436,7 @@ pub fn building_decay_economic(
             if decay.is_some() {
                 commands.entity(e).remove::<EconomicDecay>();
                 {
-                    set_tint(&mut commands, e, sprite, None);
+                    set_tint(&mut commands, e, tint, None);
                 }
             }
             continue;
@@ -461,7 +461,7 @@ pub fn building_decay_economic(
 
             // Visual indicator: purple tint for economic trouble
             {
-                set_tint(&mut commands, e, sprite, Some(Color::srgb(0.8, 0.5, 1.0)));
+                set_tint(&mut commands, e, tint, Some(Color::srgb(0.8, 0.5, 1.0)));
             }
             continue;
         }

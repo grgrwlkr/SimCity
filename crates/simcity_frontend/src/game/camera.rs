@@ -91,10 +91,13 @@ fn spawn_camera(mut commands: Commands) {
             ..default()
         },
         Transform::from_xyz(200.0, -120.0, 160.0).looking_at(Vec3::ZERO, Vec3::Z),
-        // Default cascades end too close for an ortho camera 500 units out.
+        // Ortho camera rides a fixed 500-unit boom: all visible content sits at
+        // view-space depths ~[150, 850], so two cascades cover the whole band —
+        // half the shadow passes of the default four, with sharper near shadows.
         bevy::light::CascadeShadowConfigBuilder {
-            maximum_distance: 900.0,
-            first_cascade_far_bound: 500.0,
+            num_cascades: 2,
+            maximum_distance: 850.0,
+            first_cascade_far_bound: 650.0,
             ..default()
         }
         .build(),

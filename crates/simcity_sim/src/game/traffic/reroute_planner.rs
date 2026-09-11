@@ -95,6 +95,9 @@ pub(crate) enum RouteProducer {
 pub(crate) struct PlannedRoute {
     tiles: Vec<TilePos>,
     sidecar: Vec<(usize, IntersectionId, LaneletId)>,
+    /// Graph version the sidecar ids were minted under (0 for empty road-fallback sidecars).
+    /// Threaded into `VehicleLaneletPlan.built_for` so the arbiter can refuse stale ids.
+    built_for: u64,
     producer: RouteProducer,
 }
 
@@ -110,6 +113,7 @@ impl PlannedRoute {
             handle,
             VehicleLaneletPlan {
                 entries: self.sidecar,
+                built_for: self.built_for,
             },
         )
     }
@@ -123,6 +127,7 @@ impl PlannedRoute {
         Self {
             tiles,
             sidecar,
+            built_for: 0,
             producer,
         }
     }
@@ -178,6 +183,7 @@ pub(crate) fn plan_tiles_lanelet_first_inner(
         return Some(PlannedRoute {
             tiles,
             sidecar,
+            built_for: llg.version,
             producer: RouteProducer::Lanelet,
         });
     }
@@ -203,6 +209,7 @@ pub(crate) fn plan_tiles_lanelet_first_inner(
     Some(PlannedRoute {
         tiles,
         sidecar: Vec::new(),
+        built_for: 0,
         producer: RouteProducer::RoadFallback,
     })
 }
@@ -222,6 +229,7 @@ pub(crate) fn apply_route(
     vehicle.progress = 0.0;
     if let Some(p) = plan {
         p.entries = planned.sidecar;
+        p.built_for = planned.built_for;
     }
 }
 
@@ -282,6 +290,16 @@ pub(crate) fn invalidate_routes_on_graph_change(
             .iter()
             .all(|t| grid.get(*t).is_some_and(|c| !c.water && c.road.is_some()));
         if all_roads && route_direction_ok(rem, &grid) {
+            // Route tiles are still legal — but a lanelet sidecar minted before the rebuild
+            // holds RENUMBERED ids: the arbiter's version guard would ignore it (geometry
+            // fallback), yet nothing would ever rewrite it short of a stuck-reroute. Clear it
+            // here so the fallback is explicit and the next natural replan re-mints a fresh one.
+            if let Some(p) = plan.as_deref_mut()
+                && !p.entries.is_empty()
+                && p.built_for != gv.0
+            {
+                super::clear_lanelet_plan_on_reroute(plan.as_deref_mut());
+            }
             continue;
         }
         if replans >= budget {
@@ -312,6 +330,7 @@ pub(crate) fn invalidate_routes_on_graph_change(
                 v.path_handle = path_pool.intern(tiles);
                 if let Some(p) = plan.as_deref_mut() {
                     p.entries = sidecar;
+                    p.built_for = replan.lanelet_graph.version;
                 }
             }
             None => {
@@ -659,6 +678,7 @@ mod tests {
                 crate::game::intersections::IntersectionId(9),
                 LaneletId(9),
             )],
+            built_for: 0,
         };
         // fallback-план: сайдкар обязан ОЧИСТИТЬСЯ
         let planned = PlannedRoute::for_tests(

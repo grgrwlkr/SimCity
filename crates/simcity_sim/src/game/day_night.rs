@@ -36,18 +36,40 @@ impl Plugin for DayNightPlugin {
     }
 }
 
-/// Config for the night look. `max_night_alpha` keeps its historical name from
-/// the darkening-quad era (assets/config/day_night.ron): it still means "how
-/// dark the deepest night is" as a 0..1 factor.
+/// Tunables for the night look (`assets/config/day_night.ron`). Sun and ambient
+/// levels live in `render.ron` (`SunConfig`/`NightConfig`), not here. Defaults
+/// reproduce the original hardcoded look bit-for-bit; the glow multipliers are
+/// plain 1.0 scales on the night emissive strengths.
 #[derive(Resource, serde::Serialize, serde::Deserialize, Debug, Copy, Clone)]
 pub struct DayNightVisualConfig {
-    pub max_night_alpha: f32,
+    /// How dark the deepest night gets, 0..1 (1.0 = full-black night curve).
+    #[serde(default = "default_night_darkness")]
+    pub night_darkness: f32,
+    /// Multiplier on building-window night emissive.
+    #[serde(default = "default_glow")]
+    pub window_glow: f32,
+    /// Multiplier on road-marking night emissive.
+    #[serde(default = "default_glow")]
+    pub marking_glow: f32,
+    /// Multiplier on traffic-light pool night emissive.
+    #[serde(default = "default_glow")]
+    pub light_pool_glow: f32,
+}
+
+fn default_night_darkness() -> f32 {
+    0.55
+}
+fn default_glow() -> f32 {
+    1.0
 }
 
 impl Default for DayNightVisualConfig {
     fn default() -> Self {
         Self {
-            max_night_alpha: 0.55,
+            night_darkness: default_night_darkness(),
+            window_glow: default_glow(),
+            marking_glow: default_glow(),
+            light_pool_glow: default_glow(),
         }
     }
 }
@@ -109,7 +131,7 @@ fn drive_day_night_lighting(
     *last_hour = Some(hour);
 
     // 0 at noon, up to ~1 at midnight, scaled by the configured darkness.
-    let darkness = (night_factor(hour) * (visual.max_night_alpha / 0.55)).clamp(0.0, 1.0);
+    let darkness = (night_factor(hour) * (visual.night_darkness / 0.55)).clamp(0.0, 1.0);
     let day = 1.0 - darkness;
 
     let render_cfg = render_cfg.map(|c| *c).unwrap_or_default();
@@ -128,21 +150,24 @@ fn drive_day_night_lighting(
     // Windows: dark glass by day, warm interior light at night.
     let night = darkness;
     if let Some(mut m) = materials.get_mut(&glow.windows) {
+        let glow_scale = visual.window_glow;
         let glass = WINDOW_GLASS_DAY.to_srgba();
         m.base_color = Color::srgb(
-            glass.red + 0.55 * night,
-            glass.green + 0.40 * night,
-            glass.blue + 0.13 * night,
+            glass.red + 0.55 * night * glow_scale,
+            glass.green + 0.40 * night * glow_scale,
+            glass.blue + 0.13 * night * glow_scale,
         );
-        m.emissive = LinearRgba::rgb(2.6 * night, 1.7 * night, 0.55 * night);
+        m.emissive = LinearRgba::rgb(2.6 * night, 1.7 * night, 0.55 * night) * glow_scale;
     }
     // Markings keep the road readable in the dark.
     if let Some(mut m) = materials.get_mut(&glow.marking_center) {
-        m.emissive = LinearRgba::rgb(0.55 * night, 0.45 * night, 0.05 * night);
+        m.emissive =
+            LinearRgba::rgb(0.55 * night, 0.45 * night, 0.05 * night) * visual.marking_glow;
         m.base_color = MARKING_CENTER_COLOR;
     }
     if let Some(mut m) = materials.get_mut(&glow.marking_white) {
-        m.emissive = LinearRgba::rgb(0.35 * night, 0.35 * night, 0.38 * night);
+        m.emissive =
+            LinearRgba::rgb(0.35 * night, 0.35 * night, 0.38 * night) * visual.marking_glow;
         m.base_color = MARKING_WHITE_COLOR;
     }
     // Shop signs: a painted board by day, lit after dark. Strength is a knob
@@ -156,8 +181,9 @@ fn drive_day_night_lighting(
     }
     // Warm pools under traffic lights fade in after dusk.
     if let Some(mut m) = materials.get_mut(&glow.light_pool) {
-        m.base_color = Color::srgba(1.0, 0.85, 0.5, 0.35 * night);
-        m.emissive = LinearRgba::rgb(0.9 * night, 0.65 * night, 0.25 * night);
+        let pool = visual.light_pool_glow;
+        m.base_color = Color::srgba(1.0, 0.85, 0.5, (0.35 * night * pool).clamp(0.0, 1.0));
+        m.emissive = LinearRgba::rgb(0.9 * night, 0.65 * night, 0.25 * night) * pool;
     }
 }
 

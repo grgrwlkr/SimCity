@@ -545,8 +545,15 @@ pub fn move_vehicles(
         {
             let stop_before = 0.001;
             let max_p = if blocked_next_is_intersection {
-                // Clamp to the stop line within the approach tile.
-                (TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET).max(0.0)
+                // Hold at the box boundary, never snap backward. The geometric stop line
+                // (`TILE_CENTER_TO_EDGE_TILES - STOP_LINE_OFFSET`) is NEGATIVE (car half-length
+                // exceeds the center-to-edge distance), so clamping to it collapsed to 0.0 and
+                // teleported a boundary-held car (progress 0.5, see the hard clamp below) half a
+                // tile back on every refused `try_admit` — a 0.5-tile lurch that both jitters the
+                // queue and registers as "progress" for the stuck detector. Admission is
+                // boundary-gated (`at_boundary`), so the sanctioned wait position IS the boundary:
+                // floor at `max(0.5, prev_p)`, mirroring the hard clamp's strict floor.
+                TILE_CENTER_TO_EDGE_TILES.max(prev_p)
             } else {
                 1.0 - stop_before
             };

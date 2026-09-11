@@ -158,6 +158,7 @@ pub fn spawn_service_vehicle(
             VehicleTrafficState::FreeFlow,
             crate::game::traffic::VehicleLaneletPlan {
                 entries: Vec::new(),
+                built_for: 0,
             },
             ServiceVehicle {
                 kind,

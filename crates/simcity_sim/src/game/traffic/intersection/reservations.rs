@@ -308,11 +308,19 @@ impl IntersectionReservations {
             .find(|r| r.vehicle == vehicle)
             .map(|r| (r.local_idx, r.coarse))
     }
+
+    /// Drop ALL reservation state: per-vehicle rows and the ledger (holders, active_mask). The
+    /// ledger is only ever released through dropped `by_intersection` rows, so any bulk vehicle
+    /// removal (GenerateMap) must clear both halves or despawned vehicles' holds keep refusing
+    /// conflicting maneuvers until the next GraphVersion bump.
+    pub(crate) fn reset(&mut self) {
+        self.by_intersection.clear();
+        self.ledger.clear();
+    }
 }
 
 pub(crate) fn reset_intersection_reservations(mut reservations: ResMut<IntersectionReservations>) {
-    reservations.by_intersection.clear();
-    reservations.ledger.clear();
+    reservations.reset();
 }
 
 /// Speed below which an Approaching holder counts as "not moving into the box" for the

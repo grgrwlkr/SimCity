@@ -25,7 +25,7 @@ use super::generation::generate_map_into_grid;
 use super::input::CursorHighlight;
 use super::{DirtyTiles, InGameEntity, MapConfig, MapGrid, MapIndex, MapSeed, TileKind, TilePos};
 
-/// Chunk size for map tile sprite culling (performance).
+/// Chunk size for map tile culling (performance).
 const TILE_CHUNK_SIZE: i32 = 16;
 
 #[derive(Component, Debug, Copy, Clone)]

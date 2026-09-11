@@ -517,7 +517,7 @@ apply_commands (MapGrid updated)
 
 ### Рендеринг оверлеев
 
-Оверлеи рендерятся в `sync_dirty_tiles_to_render()` (map/mod.rs):
+Оверлеи рендерятся в `sync_dirty_tiles_to_render()` (map/render.rs):
 
 ```rust
 match ui.overlay {
@@ -540,63 +540,75 @@ match ui.overlay {
 
 ### CameraPlugin
 
+Псевдо-3D: мир в плоскости XY (Z = высота), камера — `Camera3d` + ортографическая проекция
+на орбитальном риге над точкой фокуса (`CameraRig { focus, yaw, pitch, zoom_target }`,
+бум 500 юнитов, `Tonemapping::None`).
+
 ```rust
 pub struct CameraPlugin;
 
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_camera)
-            .add_systems(Update, camera_keyboard_pan.in_set(GameSet::Input))
-            .add_systems(Update, camera_mouse_wheel_zoom.in_set(GameSet::Input));
+        app.add_systems(Startup, spawn_camera).add_systems(
+            Update,
+            (
+                camera_keyboard_pan,
+                camera_keyboard_rotate,
+                camera_keyboard_zoom_steps,
+                camera_mouse_rotate,
+                camera_mouse_wheel_zoom,
+                camera_smooth_zoom,
+                sync_camera_transform,
+            )
+                .chain()
+                .in_set(GameSet::Input)
+                .run_if(in_game_or_paused),
+        );
     }
 }
 ```
 
 ### Управление камерой
 
-| Действие          | Клавиши           | Параметры                   |
-| ----------------- | ----------------- | --------------------------- |
-| Pan (перемещение) | WASD / Arrow keys | 1500 units/sec              |
-| Zoom              | Mouse wheel       | factor 0.12, scale 0.25-6.0 |
+| Действие          | Ввод                     | Реализация                                     |
+| ----------------- | ------------------------ | ---------------------------------------------- |
+| Pan               | WASD / Arrow keys        | экранно-относительный пан, `camera_speed*3.5*zoom_target` |
+| Орбита            | Q / E                    | `rotate_speed` рад/с вокруг фокуса             |
+| Свободная орбита  | Ctrl + LMB drag          | yaw + кламп pitch (0.50..1.35)                 |
+| Zoom (плавный)    | Mouse wheel              | двигает `zoom_target`; easing через `zoom_ease` |
+| Zoom (шаг)        | PageUp / PageDown        | ×0.8 / ×1.25, clamp 0.05..6.0                  |
+
+Все параметры — живые ручки из `ui_settings` (F10): `camera_speed` (дефолт 200),
+`zoom_speed` (0.1), `zoom_ease` (5.0), `rotate_speed` (1.6).
 
 ### camera_keyboard_pan
 
-```rust
-fn camera_keyboard_pan(
-    time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
-    mut q_cam: Query<&mut Transform, With<MainCamera>>,
-) {
-    let mut dir = Vec2::ZERO;
-    
-    if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
-        dir.y += 1.0;
-    }
-    // ... S, A, D
-    
-    let speed = 1500.0;  // world units per second
-    let delta = dir.normalize() * speed * time.delta_secs();
-    
-    t.translation.x += delta.x;
-    t.translation.y += delta.y;
-}
-```
-
-### camera_mouse_wheel_zoom
+Пан экранный, не мировой: right/up камеры проецируются на плоскость земли, поэтому WASD
+интуитивен при любом yaw. Скорость масштабируется зумом — вблизи камера ползёт, издалека летит.
 
 ```rust
-fn camera_mouse_wheel_zoom(
-    mut mouse_wheel: MessageReader<MouseWheel>,
-    mut q_cam: Query<&mut Projection, With<MainCamera>>,
-) {
-    let zoom_speed = 0.12;
-    let factor = 1.0 - zoom_delta * zoom_speed;
-    
-    if let Projection::Orthographic(ortho) = proj.as_mut() {
-        ortho.scale = (ortho.scale * factor).clamp(0.25, 6.0);
-    }
-}
+// После сбора dir из клавиш:
+let right = tf.right().truncate().normalize_or_zero();
+let up = tf.up().truncate().normalize_or_zero();
+let speed = settings.camera_speed * 3.5 * rig.zoom_target.max(0.25);
+let delta = (right * dir.x + up * dir.y).normalize_or_zero() * speed * time.delta_secs();
+rig.focus += delta;
 ```
+
+### Zoom: wheel двигает цель, `camera_smooth_zoom` доводит
+
+Ввод колеса только двигает `zoom_target`; отдельная система каждый кадр экспоненциально
+доводит `ortho.scale` до цели — зум плавный при любой частоте ввода (тачпад-свайпы
+демпфируются меньшим базовым множителем).
+
+```rust
+// camera_mouse_wheel_zoom: zoom_target = (zoom_target * (1.0 - zoom_delta)).clamp(0.05, 6.0)
+// camera_smooth_zoom:
+let t = 1.0 - (-time.delta_secs() * settings.zoom_ease.max(0.5)).exp();
+ortho.scale += (rig.zoom_target - ortho.scale) * t;
+```
+
+`sync_camera_transform` пересобирает `Transform` камеры из рига после всех входов.
 
 ---
 

@@ -94,9 +94,16 @@ pub(super) fn autogen_turn_lanes_inner(grid: &mut MapGrid) {
 
     // Apply conservative heuristics:
     // - Only mark turn lanes when there are at least 2 approach lanes for the direction.
-    // - FourLane (2 lanes per dir): dedicate leftmost to LeftTurnOnly when available;
-    //   dedicate rightmost to RightTurnOnly only if there is no left+straight combination.
-    // - SixLane (3+ lanes per dir): leftmost=LeftTurnOnly, rightmost=RightTurnOnly, middle=StraightOnly.
+    // - Turn-ONLY dedication is reserved for MUST-TURN approaches (no straight exit). Wherever a
+    //   straight exit exists, every approach lane stays Regular: through traffic may use ALL
+    //   lanes (two-row flow through the box), and turns remain legal POSITIONALLY from the edge
+    //   lanes (ПДД 8.5 positional rules in `lane_allows_maneuver`: left/UTurn from the
+    //   centerline-adjacent lane, right from the curb-adjacent). Dedicating a turn lane whenever
+    //   the intersection merely HAS that exit funneled all through traffic into the single
+    //   remaining lane — single-file queues beside an empty turn lane.
+    // - Left-turn demand still gets its priority via the arbiter's `LeftTurnDemand` actuating the
+    //   protected-left phase; demand must not re-mark lanes (transient per-tick state vs
+    //   graph-change-driven markings would flap and storm reroutes).
     for ((id, entry_dir), lane_tiles) in approaches {
         let Some(exit_dirs) = exit_dirs_by_id.get(&id) else {
             continue;
@@ -122,48 +129,15 @@ pub(super) fn autogen_turn_lanes_inner(grid: &mut MapGrid) {
             let is_leftmost = cell.road.is_leftmost_for_dir();
             let is_rightmost = cell.road.is_rightmost_for_dir();
 
-            let next_type = if lanes_in_dir >= 3 {
-                if is_leftmost && has_left {
-                    LaneType::LeftTurnOnly
-                } else if is_rightmost && has_right {
-                    LaneType::RightTurnOnly
-                } else if has_straight {
-                    LaneType::StraightOnly
-                } else {
-                    LaneType::Regular
-                }
+            let next_type = if has_straight {
+                // Straight exit exists: keep every approach lane general (see doc above).
+                LaneType::Regular
+            } else if is_leftmost && has_left {
+                LaneType::LeftTurnOnly
+            } else if is_rightmost && has_right {
+                LaneType::RightTurnOnly
             } else {
-                // lanes_in_dir == 2
-                if !has_straight && has_left && has_right {
-                    if is_leftmost {
-                        LaneType::LeftTurnOnly
-                    } else if is_rightmost {
-                        LaneType::RightTurnOnly
-                    } else {
-                        LaneType::Regular
-                    }
-                } else if has_left && has_straight {
-                    if is_leftmost {
-                        LaneType::LeftTurnOnly
-                    } else if has_right {
-                        // Keep a general lane to allow straight+right.
-                        LaneType::Regular
-                    } else {
-                        LaneType::StraightOnly
-                    }
-                } else if has_right && has_straight && !has_left {
-                    if is_rightmost {
-                        LaneType::RightTurnOnly
-                    } else {
-                        LaneType::StraightOnly
-                    }
-                } else if has_left && !has_straight && !has_right && is_leftmost {
-                    LaneType::LeftTurnOnly
-                } else if has_right && !has_straight && !has_left && is_rightmost {
-                    LaneType::RightTurnOnly
-                } else {
-                    LaneType::Regular
-                }
+                LaneType::Regular
             };
 
             if cell.road.lane_type != next_type {
@@ -202,10 +176,11 @@ mod tests {
     ///   - lane=0  → rightmost for the northbound carriageway (`is_rightmost_for_dir()` = true)
     ///   - lane=1  → leftmost  for the northbound carriageway (`is_leftmost_for_dir()`  = true)
     ///
-    /// With exits {North (straight), West (left)} and lanes_in_dir==2, the code takes the
-    /// `has_left && has_straight` branch → leftmost becomes `LeftTurnOnly`.
+    /// With a straight exit present, NO lane may be dedicated: both stay `Regular` so through
+    /// traffic can use both lanes (two-row flow); the left turn remains legal positionally from
+    /// the centerline-adjacent (leftmost) lane per ПДД 8.5.
     #[test]
-    fn autogen_marks_left_lane_on_multi_lane_approach() {
+    fn autogen_keeps_lanes_regular_when_straight_exit_exists() {
         let mut grid = MapGrid::new(10, 10);
 
         // Cluster: two None-dir tiles
@@ -263,16 +238,70 @@ mod tests {
         let leftmost_cell = grid.get(leftmost).unwrap();
         assert_eq!(
             leftmost_cell.road.lane_type,
-            LaneType::LeftTurnOnly,
-            "leftmost northbound approach lane (lane=1) must become LeftTurnOnly"
+            LaneType::Regular,
+            "leftmost approach lane must stay Regular when a straight exit exists (turn dedication \
+             is reserved for must-turn approaches); through traffic needs both lanes"
         );
 
-        // Rightmost approach lane gets StraightOnly (has_left+has_straight but no has_right).
         let rightmost_cell = grid.get(rightmost).unwrap();
         assert_eq!(
             rightmost_cell.road.lane_type,
-            LaneType::StraightOnly,
-            "rightmost northbound approach lane (lane=0) must be StraightOnly (straight-only, no right exit)"
+            LaneType::Regular,
+            "rightmost approach lane must stay Regular (no StraightOnly dedication when a straight \
+             exit exists)"
+        );
+    }
+
+    /// MUST-TURN approach (T without a straight exit): dedication still applies — leftmost
+    /// becomes `LeftTurnOnly` so left-turning traffic keeps a dedicated lane.
+    #[test]
+    fn autogen_marks_left_lane_on_must_turn_approach() {
+        let mut grid = MapGrid::new(10, 10);
+
+        // Cluster: two None-dir tiles
+        set_road(
+            &mut grid,
+            TilePos { x: 4, y: 4 },
+            RoadKind::FourLane,
+            RoadDir::None,
+            0,
+        );
+        set_road(
+            &mut grid,
+            TilePos { x: 5, y: 4 },
+            RoadKind::FourLane,
+            RoadDir::None,
+            0,
+        );
+
+        // Two northbound approach tiles (no NORTH exit this time — the T forces a turn).
+        let leftmost = TilePos { x: 4, y: 3 };
+        let rightmost = TilePos { x: 5, y: 3 };
+        set_road(&mut grid, leftmost, RoadKind::FourLane, RoadDir::North, 1);
+        set_road(&mut grid, rightmost, RoadKind::FourLane, RoadDir::North, 0);
+
+        // Exit West (left turn for northbound) only.
+        set_road(
+            &mut grid,
+            TilePos { x: 3, y: 4 },
+            RoadKind::FourLane,
+            RoadDir::West,
+            0,
+        );
+
+        autogen_turn_lanes_inner(&mut grid);
+
+        let leftmost_cell = grid.get(leftmost).unwrap();
+        assert_eq!(
+            leftmost_cell.road.lane_type,
+            LaneType::LeftTurnOnly,
+            "on a must-turn approach the leftmost lane must become LeftTurnOnly"
+        );
+        let rightmost_cell = grid.get(rightmost).unwrap();
+        assert_eq!(
+            rightmost_cell.road.lane_type,
+            LaneType::Regular,
+            "no right exit to dedicate the rightmost lane for"
         );
     }
 

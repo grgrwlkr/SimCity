@@ -356,9 +356,11 @@ fn lane_entry_blocks_reverse_into_intersection() {
 
 /// Shared fixture: 2x2 FourLane intersection cluster in the center of a 5x5 grid with:
 /// - approaches from South (two North-bound lanes): (2,1)=rightmost, (3,1)=leftmost
-/// - exits to North (straight) and West (left)
+/// - exit to West (left) only — a MUST-TURN T: no straight (North) exit, no right exit
 ///
-/// `autogen_turn_lanes` marks (3,1) `LeftTurnOnly` and (2,1) `StraightOnly` on this layout.
+/// `autogen_turn_lanes` marks (3,1) `LeftTurnOnly` on this layout (dedication applies only to
+/// must-turn approaches; the straight-exit no-dedication contract is pinned in
+/// `turn_lanes::tests::autogen_keeps_lanes_regular_when_straight_exit_exists`).
 fn four_lane_turn_intersection_grid() -> MapGrid {
     let mut grid = MapGrid::new(5, 5);
 
@@ -398,22 +400,19 @@ fn four_lane_turn_intersection_grid() -> MapGrid {
         grid.set(pos, c);
     }
 
-    // Exits: straight North (dir North, behind is intersection), left West (dir West).
-    for (pos, dir) in [
-        (TilePos { x: 2, y: 4 }, RoadDir::North), // back=(2,3) is intersection
-        (TilePos { x: 1, y: 3 }, RoadDir::West),  // back=(2,3) is intersection
-    ] {
-        let mut c = grid.get(pos).unwrap_or_default();
-        c.water = false;
-        c.road = RoadCell {
-            kind: RoadKind::TwoLane,
-            dir,
-            lane: 0,
-            flow: RoadFlow::TwoWay,
-            lane_type: LaneType::Regular,
-        };
-        grid.set(pos, c);
-    }
+    // Exit: left West (dir West). NO straight North exit — must-turn T.
+    // (1,3): back=(2,3) is intersection.
+    let pos = TilePos { x: 1, y: 3 };
+    let mut c = grid.get(pos).unwrap_or_default();
+    c.water = false;
+    c.road = RoadCell {
+        kind: RoadKind::TwoLane,
+        dir: RoadDir::West,
+        lane: 0,
+        flow: RoadFlow::TwoWay,
+        lane_type: LaneType::Regular,
+    };
+    grid.set(pos, c);
 
     grid
 }
@@ -427,8 +426,9 @@ fn autogen_turn_lanes_four_lane_two_lanes_assigns_left_and_straight_only() {
     let right = grid.get(TilePos { x: 2, y: 1 }).unwrap().road.lane_type;
     let left = grid.get(TilePos { x: 3, y: 1 }).unwrap().road.lane_type;
 
+    // Must-turn T (left only): leftmost dedicated, rightmost general (no right exit to dedicate).
     assert_eq!(left, LaneType::LeftTurnOnly);
-    assert_eq!(right, LaneType::StraightOnly);
+    assert_eq!(right, LaneType::Regular);
 }
 
 /// Ordering pin (audit 2026-07-06, HIGH): `autogen_turn_lanes` mutates `MapGrid` lane-type marks
@@ -471,7 +471,7 @@ fn autogen_turn_lanes_feeds_road_graph_on_fixed_update() {
     assert_ne!(
         right_mask & (1 << 3),
         0,
-        "StraightOnly approach keeps its straight entry edge (sanity: graph is non-trivial)"
+        "general (Regular) approach keeps its straight entry edge (sanity: graph is non-trivial)"
     );
 }
 

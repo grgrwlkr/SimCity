@@ -12,6 +12,12 @@ use crate::game::transport::{LaneletId, PathHandle};
 #[derive(Component, Default)]
 pub struct VehicleLaneletPlan {
     pub entries: Vec<(usize, IntersectionId, LaneletId)>,
+    /// `LaneletGraph` version the entries' `LaneletId`s were minted under. LaneletIds are globally
+    /// renumbered on every graph rebuild, so a sidecar from another version either misses the
+    /// arbiter's index (silently dropping the vehicle from admission) or aliases a DIFFERENT
+    /// lanelet (wrong conflict row). 0 = no claim (empty plan). Checked by the arbiter before
+    /// trusting the sidecar; stale plans fall through to the geometry fallback.
+    pub built_for: u64,
 }
 
 impl VehicleLaneletPlan {
@@ -24,6 +30,12 @@ impl VehicleLaneletPlan {
             .iter()
             .find(|(off, _, _)| *off == cursor + 1)
             .map(|(_, i, l)| (*i, *l))
+    }
+
+    /// Whether the entries' lanelet ids belong to the current graph version. Empty plans are
+    /// never "current" (they carry no claim; the arbiter's fallback handles them as before).
+    pub fn is_current(&self, version: u64) -> bool {
+        !self.entries.is_empty() && self.built_for == version
     }
 }
 
@@ -359,6 +371,7 @@ mod tests {
                 (3, IntersectionId(7), LaneletId(2)),
                 (9, IntersectionId(8), LaneletId(5)),
             ],
+            built_for: 1,
         };
         // cursor+1 == 3 -> first entry.
         assert_eq!(
@@ -377,9 +390,28 @@ mod tests {
     }
 
     #[test]
+    fn is_current_requires_matching_version_and_entries() {
+        let plan = VehicleLaneletPlan {
+            entries: vec![(3, IntersectionId(7), LaneletId(2))],
+            built_for: 4,
+        };
+        assert!(plan.is_current(4), "same version + non-empty = current");
+        assert!(!plan.is_current(5), "other version = stale");
+        assert!(
+            !VehicleLaneletPlan {
+                entries: Vec::new(),
+                built_for: 4,
+            }
+            .is_current(4),
+            "empty plan never claims currency (fallback handles it)"
+        );
+    }
+
+    #[test]
     fn clear_lanelet_plan_on_reroute_clears_and_no_ops() {
         let mut plan = VehicleLaneletPlan {
             entries: vec![(3, IntersectionId(7), LaneletId(2))],
+            built_for: 1,
         };
         clear_lanelet_plan_on_reroute(Some(&mut plan));
         assert!(

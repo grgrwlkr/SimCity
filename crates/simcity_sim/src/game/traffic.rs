@@ -57,7 +57,7 @@ use spawn::{clear_vehicles, spawn_trip_vehicles};
 
 mod stuck;
 use stuck::{
-    init_stuck_timers, recover_stuck_returning_service_vehicles, resolve_stuck_vehicles,
+    init_stuck_timers, recover_immortal_service_vehicles, resolve_stuck_vehicles,
     update_stuck_timers,
 };
 
@@ -96,7 +96,7 @@ pub use parked_tile_index::ParkedVehicleTileIndex;
 /// Distance to detect traffic lights ahead (in tiles).
 const TRAFFIC_LIGHT_DETECTION_DISTANCE: f32 = 8.0;
 
-/// Vehicle sprite size in tile units (length).
+/// Vehicle mesh size in tile units (length).
 ///
 /// GDD requirement: vehicles are visually 2 tiles long, but must fit within a lane.
 /// IMPORTANT: Our movement uses the vehicle center point, and rendering uses `Transform` at that
@@ -147,8 +147,19 @@ const SERVICE_VEHICLE_SPEED_LIMIT_FACTOR: f32 = 1.50;
 /// After this many seconds without progressing, try to resolve a traffic jam (reroute).
 /// (v2 policy: avoid "cheat" behavior by default; only intervene after a long timeout.)
 pub(crate) const STUCK_REROUTE_SECS: f32 = 60.0;
+/// How long a `Stopped`/`WaitingForGreen` vehicle's StuckTimer keeps being reset as "legitimate
+/// waiting". The max signal cycle is ~34 s (2 axes x 17 s), up to ~42 s with actuated
+/// protected-left; past this cap a waiting vehicle is no longer plausibly served by any light
+/// cycle, so its timer must accumulate toward `STUCK_REROUTE_SECS` — an unconditional reset would
+/// keep a permanently wedged waiter invisible to every recovery keyed on StuckTimer.
+pub(crate) const WAITING_EXEMPT_CAP_SECS: f32 = 45.0;
 /// After this many seconds without progressing, despawn non-service trip vehicles as an emergency guardrail.
 const STUCK_DESPAWN_SECS: f32 = 180.0;
+/// Last-resort horizon for despawn-EXEMPT vehicles (buses, service). They never despawn (that would
+/// leak station counts / strand passengers), so a wedged one is otherwise an immortal intersection
+/// blocker. Keyed on the never-reset motion timer. At this horizon an EnRoute service vehicle
+/// force-abandons its mission and returns home; a wedged bus force-skips its target stop.
+pub(crate) const IMMORTAL_RECOVER_SECS: f32 = 180.0;
 /// Minimum spacing between reroute ATTEMPTS for a wedged vehicle (continuously stopped past
 /// `STUCK_REROUTE_SECS`). Un-throttled, a wedged car replans every tick — the churn itself pins it.
 pub(crate) const WEDGED_REROUTE_RETRY_SECS: f32 = 10.0;
@@ -172,8 +183,11 @@ const LANE_CHANGE_COOLDOWN_SECS: f32 = 1.5;
 const OVERTAKE_HOLD_SECS: f32 = 3.0;
 /// Guardrail: max number of lane-change reroutes per tick.
 const MAX_LANE_CHANGES_PER_TICK: usize = 24;
-/// Disable lane changes when an intersection is close ahead on the route.
-const LANE_CHANGE_INTERSECTION_LOOKAHEAD: usize = 6;
+/// Disable lane changes when an intersection is this close ahead on the route (tiles). Small
+/// enough to let a queued platoon fill the second lane up to the stop line, large enough to
+/// avoid last-instant merges: the lane-change planner re-validates through the lanelet planner,
+/// so an illegal (wrong-lane) approach change is refused by geometry anyway.
+const LANE_CHANGE_INTERSECTION_LOOKAHEAD: usize = 3;
 /// Trigger overtake if a slow leader is within this distance (in tiles, along-route approximation).
 const OVERTAKE_LOOKAHEAD_TILES: f32 = 2.0;
 /// Leader is considered "slow" if below this fraction of our desired speed.
@@ -458,7 +472,7 @@ impl Plugin for TrafficPlugin {
                         .after(update_stuck_timers)
                         .before(resolve_stuck_vehicles),
                     resolve_stuck_vehicles.after(update_stuck_timers),
-                    recover_stuck_returning_service_vehicles.after(update_stuck_timers),
+                    recover_immortal_service_vehicles.after(update_stuck_timers),
                 )
                     .chain()
                     .in_set(crate::game::TrafficStep::Recovery)

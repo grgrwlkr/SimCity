@@ -1,3 +1,8 @@
 (
-    max_night_alpha: 0.55,
+    // How dark the deepest night gets, 0..1 (1.0 = full-black night curve).
+    night_darkness: 0.55,
+    // Night emissive multipliers: building windows, road markings, traffic-light pools.
+    window_glow: 1.0,
+    marking_glow: 1.0,
+    light_pool_glow: 1.0,
 )

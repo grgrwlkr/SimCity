@@ -399,6 +399,172 @@ fn uturn_resolves_as_lanelet_not_coarse() {
     );
 }
 
+/// Stale-sidecar guard: the arbiter must NOT trust `VehicleLaneletPlan` entries minted under a
+/// different graph version. LaneletIds are renumbered on every rebuild, so a stale id either
+/// misses the index (historically: the vehicle silently dropped out of admission EVERY tick and
+/// waited at the box forever) or — worse — aliases a DIFFERENT lanelet of the same cluster,
+/// serializing the car on the wrong conflict row. Here a straight-through vehicle carries a
+/// stale sidecar claiming a LEFT-turn lanelet: the guard must ignore it and admit via the
+/// geometry fallback (straight). A CURRENT-version sidecar with the same claim IS honored (the
+/// sidecar is authoritative when fresh) — the contrast proves the version check is what
+/// separates the two.
+#[test]
+fn stale_sidecar_plan_is_ignored_in_favor_of_geometry_fallback() {
+    // Northbound straight through the 2x2 box: enter (4,4), exit (4,6).
+    let straight_route = vec![
+        TilePos { x: 4, y: 3 },
+        TilePos { x: 4, y: 4 },
+        TilePos { x: 4, y: 5 },
+        TilePos { x: 4, y: 6 },
+    ];
+
+    let (mut app, fixture_vehicle) = build_single_vehicle_arbiter_app(straight_route.clone());
+    // Drop the fixture's vehicle: the first update must only BUILD the lanelet graph (so we can
+    // mint an aliased left-turn id) without admitting anything or polluting the stats.
+    app.world_mut().despawn(fixture_vehicle);
+    app.update();
+
+    let (left_id, version) = {
+        let llg = app.world().resource::<LaneletGraph>();
+        let left = llg
+            .by_intersection
+            .get(&IntersectionId(0))
+            .expect("intersection 0 must have lanelets")
+            .iter()
+            .copied()
+            .find(|&lid| {
+                llg.get(lid)
+                    .is_some_and(|l| l.maneuver == ManeuverKind::LeftTurn)
+            })
+            .expect("intersection 0 must have a LEFT-turn lanelet to alias");
+        (left, llg.version)
+    };
+
+    // Stale sidecar: claims the LEFT lanelet at the upcoming seam, but from another version.
+    let stale_vehicle = {
+        let mut pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(&mut pool, straight_route, 0, 0.4, 0.0, 60.0, 20.0, 1.0)
+    };
+    let stale_vehicle = app
+        .world_mut()
+        .spawn((
+            stale_vehicle,
+            VehicleTrafficState::FreeFlow,
+            VehicleLaneletPlan {
+                entries: vec![(1, IntersectionId(0), left_id)],
+                built_for: version.wrapping_add(5),
+            },
+        ))
+        .id();
+    app.update();
+
+    {
+        let stats = app.world().resource::<ArbiterTickStats>();
+        assert!(
+            stats.admitted_straight >= 1,
+            "stale sidecar must be ignored: geometry fallback admits STRAIGHT; got straight={:?} left={:?}",
+            stats.admitted_straight,
+            stats.admitted_left
+        );
+        assert_eq!(
+            stats.admitted_left, 0,
+            "the stale LEFT claim must not reach the conflict model"
+        );
+        assert_eq!(
+            stats.coarse_admits, 0,
+            "geometry fallback resolves a precise lanelet (not coarse)"
+        );
+        assert_eq!(
+            stats.drop_stale_lanelet, 0,
+            "the version guard rejects the stale plan BEFORE resolution (no stale-lanelet drop)"
+        );
+        assert_eq!(
+            stats.drop_other_collection, 0,
+            "the vehicle must not be silently dropped from candidacy"
+        );
+    }
+    let res = app.world().resource::<IntersectionReservations>();
+    assert!(
+        res.is_reserved_by(IntersectionId(0), stale_vehicle),
+        "vehicle with a stale sidecar must still be granted a reservation"
+    );
+
+    // Contrast: the SAME wrong claim stamped with the CURRENT version IS honored (admitted as
+    // LEFT) — pinning that the guard, not the geometry, is the only thing standing between a
+    // fresh sidecar and the conflict model.
+    let east_route = vec![
+        TilePos { x: 3, y: 4 },
+        TilePos { x: 4, y: 4 },
+        TilePos { x: 5, y: 4 },
+        TilePos { x: 6, y: 4 },
+    ];
+    let fresh_vehicle = {
+        let mut pool = app
+            .world_mut()
+            .resource_mut::<crate::game::transport::PathPool>();
+        create_vehicle_with_route(&mut pool, east_route, 0, 0.4, 0.0, 60.0, 20.0, 1.0)
+    };
+    app.world_mut().spawn((
+        fresh_vehicle,
+        VehicleTrafficState::FreeFlow,
+        VehicleLaneletPlan {
+            entries: vec![(1, IntersectionId(0), left_id)],
+            built_for: version,
+        },
+    ));
+    app.update();
+    let stats = app.world().resource::<ArbiterTickStats>();
+    assert!(
+        stats.admitted_left >= 1,
+        "a CURRENT-version sidecar IS honored (even when it mislabels) — the freshness check is \
+         the guard; got left={:?}",
+        stats.admitted_left
+    );
+}
+
+/// FIX: a cluster marked signalized in `traffic_lights` but with no live `TrafficLight` entity
+/// (the deferred-entity-spawn desync window between command-apply and the sync system) must
+/// admit under UNSIGNALIZED yield rules — matching the state machine's FreeFlow treatment —
+/// instead of refusing forever while cars roll up to a forever-red.
+#[test]
+fn signalized_set_without_light_entity_admits_unsignalized() {
+    // Northbound straight through the 2x2 box.
+    let straight_route = vec![
+        TilePos { x: 4, y: 3 },
+        TilePos { x: 4, y: 4 },
+        TilePos { x: 4, y: 5 },
+        TilePos { x: 4, y: 6 },
+    ];
+
+    let (mut app, vehicle) = build_single_vehicle_arbiter_app(straight_route);
+    // Mark signalized, but never spawn a TrafficLight entity.
+    app.world_mut()
+        .resource_mut::<crate::game::intersections::IntersectionIndex>()
+        .traffic_lights
+        .insert(IntersectionId(0));
+    app.update();
+
+    let res = app.world().resource::<IntersectionReservations>();
+    assert!(
+        res.is_reserved_by(IntersectionId(0), vehicle),
+        "a signalized-set cluster with no light entity must admit (unsignalized rules), not \
+         freeze the approach at a forever-red"
+    );
+    let stats = app.world().resource::<ArbiterTickStats>();
+    assert!(
+        stats.admitted_straight >= 1,
+        "admitted via the unsignalized path; got straight={:?}",
+        stats.admitted_straight
+    );
+    assert!(
+        stats.missing_light_treated_unsignalized >= 1,
+        "the desync must be observable in the counter; got {:?}",
+        stats.missing_light_treated_unsignalized
+    );
+}
+
 /// Forcing fixture for the unresolved-TURN case: same cross grid, but the northbound approach lane
 /// adjacent to the box (4,3) is made `StraightOnly` BEFORE the lane/lanelet graph is built. With the
 /// lane policy now permitting left turns from a Regular lane, a left lanelet would normally build; a
