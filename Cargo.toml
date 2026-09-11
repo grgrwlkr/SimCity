@@ -50,6 +50,11 @@ simcity_sim = { path = "crates/simcity_sim" }
 # debugging via bevy_brp_mcp. Dev-only: same unauthenticated-HTTP concerns as RemotePlugin.
 bevy_brp_extras = { version = "0.22.5", optional = true }
 
+# The TypeScript port's reference dumps (`examples/dump_*.rs`) compose the headless game, whose
+# input systems need egui's texture registry as a resource.
+[dev-dependencies]
+bevy_egui = { workspace = true }
+
 [features]
 # Dev-only tooling: Bevy `dynamic_linking` for faster iteration PLUS the whole BRP/MCP
 # observability stack (remote HTTP server + custom methods in `main.rs`, and the per-frame
