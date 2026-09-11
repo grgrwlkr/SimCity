@@ -233,6 +233,26 @@ function hashTransport(h: Fnv64, w: World): void {
   h.str(stableJson([...ix.trafficLights]));
   h.bool(ix.lightsDirty);
 
+  const lanelets = w.laneletGraph;
+  h.int(lanelets.version);
+  h.int(lanelets.builtFor ?? -1);
+  h.str(stableJson(lanelets.builtDims));
+  h.str(stableJson(lanelets.lanelets));
+  h.str(stableJson([...lanelets.byIntersection]));
+  h.str(stableJson([...lanelets.byEntryLane]));
+
+  const conflicts = w.laneletConflicts;
+  h.int(conflicts.version);
+  h.u32(conflicts.byIntersection.size);
+  for (const [id, matrix] of conflicts.byIntersection) {
+    h.u32(id);
+    h.u32(matrix.len());
+    h.u32(matrix.crosswalkBase());
+    for (let i = 0; i < matrix.len(); i++) h.bytes(matrix.row(i));
+  }
+  h.str(stableJson([...conflicts.crosswalkSides]));
+  h.str(stableJson(w.trafficConfig));
+
   h.bytes(w.trafficOccupancy.perTickVehicles);
 }
 

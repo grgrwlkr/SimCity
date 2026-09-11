@@ -106,6 +106,43 @@
 - `World`: `roadGraph`, `regionGraph`, `laneGraph`, `turnLaneAutogenVersion`, `pathCache`, `pathfindingConfig`, `intersections`, `trafficOccupancy.perTickVehicles` (заполняет этап 2). `FIXED_UPDATE` после `beginTickEvents`: `autogenTurnLanes → rebuildRoadGraph → rebuildRegionGraph → buildLaneGraph` (GraphUpdate; лейнлеты добавит 1c).
 - `examples/dump_routes.rs` → `packages/sim/test/fixtures/road-routes.json`.
 
+## 1c: инварианты из Rust-тестов
+
+Кластеры перекрёстков переехали в 1b (без них не строился road-A*). В 1c 45 тестов: `lanelet/build.rs` 29, `lanelet/pathfinding.rs` 9, `lanelet/conflict.rs` 4, `lanelet/graph.rs` 1, `lane_pathfinding.rs` 1, `transport/tests.rs::lanelet_graph_empty_build_counts_as_built` 1. Два последних файла программа не считала отдельно.
+
+| Rust-тест | Инвариант |
+|---|---|
+| `crossing_paths_conflict_disjoint_dont_and_build_is_deterministic` | общий тайл — конфликт, симметрично, без диагонали; сборка детерминирована |
+| `vehicle_lanelet_conflicts_with_crossed_crosswalk` | переходы — строки после лейнлетов, пересечение с переходом — конфликт |
+| `rows_overlap_detects_shared_bits_and_tolerates_lengths` | пересечение строк по общим словам, длины могут различаться |
+| `multi_word_rows_when_n_exceeds_64` | строка растёт словами, конфликт через границу слова виден |
+| `empty_lanelet_graph_reports_unbuilt_and_no_lanelets` | пустой граф не построен, пустые выборки |
+| `lanelet_graph_empty_build_counts_as_built` | пустая сборка считается построенной, без смены версии не пересобирается |
+| `heuristic_tiles_is_scaled_manhattan` | эвристика = Манхэттен × 7 |
+| `centroid_router_*` (2), `arc_2x2_*` (4), `arc_3x3_all_maneuvers`, `arc_4x4_*` (4) | прямо — прямая, правый — Г у ближнего угла, левый — Г за центром, разворот — П за центром; пути точные |
+| `internal_path_is_strictly_4_adjacent_never_diagonal`, `turn_shape_left_arcs_around_center_ends_adjacent_to_south_exit`, `straight_routes_shortest_path_to_in_box_goal`, `parallel_through_lanes_take_disjoint_internal_paths` | путь 4-смежный, простой, внутри бокса, кончается на тайле, питающем выезд |
+| `entry_not_in_cluster_returns_none`, `entry_is_the_goal_returns_single_tile_path`, `degenerate_exit_feeder_outside_cluster_returns_none_not_oncoming_path` | вход вне бокса и питающий тайл вне бокса — нет пути; вход = цель — один тайл |
+| `mixed_width_square_4x4_does_not_spuriously_drop`, `mixed_width_nonsquare_boxes_never_emit_oncoming` | квадратный бокс не теряет манёвры, неквадратный либо даёт путь на попутный выезд, либо ничего |
+| `lane_type_gates_maneuvers`, `regular_lane_discipline_is_positional_on_multilane` | метка полосы ограничивает манёвр; обычная полоса: левый и разворот — от осевой, правый — от бордюра |
+| `build_lanelet_graph_flag_on_populates_graph`, `lanelets_sorted_by_entry_exit_lane_id`, `by_entry_lane_index_populated_and_ascending_by_exit`, `build_stores_crosswalk_sides_per_intersection` | сборка заполняет граф, индексы и матрицы; порядок `(entry, exit)`; стороны переходов W, E, S, N |
+| `matrix_does_not_over_report_parallel_or_opposite_straights` | параллельные и встречные прямые не конфликтуют, пересекающиеся — да |
+| `crosswalk_cells_one_per_approach_on_cluster_edge` | по переходу на сторону с дорогой, клетки на краю бокса, детерминированно |
+| `straight_lanelets_keep_their_lane_through_the_box` | прямой лейнлет выходит в ту же полосу |
+| `node_space_pack_unpack_roundtrips` | упаковка узлов: дороги, затем лейнлеты |
+| `successors_enter_only_legal_lanes_and_are_deterministic` | вперёд и вбок только в попутную полосу, ENTER = штраф поворота + путь × базовая цена, EXIT стоит 1 |
+| `combined_path_deterministic_takes_straight_corridor_and_spreads`, `congestion_pushes_combined_path_onto_parallel_corridor` | детерминизм по сиду, прямой коридор без джиттера, джиттер разводит маршруты, загрузка уводит на параллель |
+| `flatten_is_4_adjacent_and_sidecar_offsets_match`, `find_route_emits_sidecar_through_lanelet` | сплющенный маршрут 4-смежный, sidecar указывает на первый тайл лейнлета |
+| `route_direction_guard_*` (2), `find_route_rejects_lanelet_route_that_traverses_oncoming_lane` | шаг против полосы на выезде или въезде ловится, тайлы бокса освобождены; маршрут со встречкой отбрасывается |
+
+Плюс сверх Rust: `laneletRoutesMatchRustOnTestCity` — лейнлеты, матрицы конфликтов и `find_route` с sidecar на 200 парах полос против фикстуры `examples/dump_lanelet_routes.rs`. Сетка берётся из фикстуры 1b.
+
+## 1c: файлы и контракты
+
+- `packages/sim/src/traffic/maneuver.ts` (`ManeuverKind`, `maneuverKind`, `TrafficConfig { driveOnRight }`); `packages/sim/src/transport/`: `openSet.ts` (куча A* вынесена из `pathfinding.ts`), `lanePathfinding.ts`, `lanelet/conflict.ts`, `lanelet/graph.ts`, `lanelet/build.ts`, `lanelet/pathfinding.ts`.
+- `World`: `trafficConfig`, `laneletGraph`, `laneletConflicts`. `FIXED_UPDATE`: `buildLaneletGraph` после `buildLaneGraph`.
+- Отклонения. Строки матрицы — `Uint32Array` по 32 бита, а не `u64`: арбитр этапа 2 будет AND-ить их каждый тик, `BigInt` там дорог; тест на многословные строки переведён на границу 32 бит. Узлы A* — упакованные индексы, `CombinedNode` остаётся для тестов и результата. `findRoute` при встречке возвращает пустой маршрут, как Rust в release (в debug там `debug_assert`). `laneJitter` считает u64 через `BigInt`.
+- Rust-правка: `find_route` и модуль `lanelet::pathfinding` становятся `pub`, иначе пример не достаёт эталон. Поведение не меняется.
+
 ## Сделано / Отклонения / Замеры
 
 **1a (2026-09-11).** 17 тестов зелёные, ворота пройдены: `GenerateMap` совпадает с Rust байт-в-байт на сидах 1, 7, 42, 1000003 (`height` и `water`, 128×128). Отклонения: `examples/dump_map.rs` потребовал `bevy_egui` в `[dev-dependencies]` корневого пакета (одна строка в `Cargo.toml` и одна в `Cargo.lock`) — системы ввода headless-приложения требуют ресурс egui. Отпечаток мира стал хэшировать typed arrays 32-битными словами: с сеткой и машинами он стоил 9.5 мс на вызов под bun и не укладывался в 5-секундный таймаут пробы расхождения (600 тиков × 2 мира), после — 0.58 мс. Замер: полный Vitest 0.54 с, e2e 8.5 с.

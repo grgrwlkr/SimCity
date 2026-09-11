@@ -10,6 +10,7 @@ import { resetGrowthRngOnNewMap, resetSimRngOnNewMap } from './seeding';
 import { ALL_STATES, IN_GAME, IN_GAME_OR_PAUSED, type AppState } from './state';
 import { SECOND_NS } from './timer';
 import { buildLaneGraph } from './transport/laneGraph';
+import { buildLaneletGraph } from './transport/lanelet/build';
 import { rebuildRegionGraph } from './transport/regionGraph';
 import { rebuildRoadGraph } from './transport/roadGraph';
 import { autogenTurnLanes } from './transport/turnLanes';
@@ -45,8 +46,10 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'rebuildRoadGraph', run: rebuildRoadGraph, runIn: ALL_STATES },
   // After rebuildRoadGraph, keyed on the same graph version.
   { name: 'rebuildRegionGraph', run: rebuildRegionGraph, runIn: ALL_STATES },
-  // After rebuildRegionGraph; the lanelet graph joins after it.
+  // After rebuildRegionGraph, keyed on the same graph version.
   { name: 'buildLaneGraph', run: buildLaneGraph, runIn: ALL_STATES },
+  // After buildLaneGraph: resolves approach and exit lanes by tile; reads the intersection clusters.
+  { name: 'buildLaneletGraph', run: buildLaneletGraph, runIn: ALL_STATES },
   // SimStep::Tick — the game clock; writes HourAdvanced / DayAdvanced for every system after it.
   { name: 'simTick', run: simTick, runIn: IN_GAME },
 ];

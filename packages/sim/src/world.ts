@@ -12,8 +12,11 @@ import { Notifications } from './notifications';
 import { DEFAULT_RNG_SEED, stdRngSeedFromU64, type StdRng } from './rng';
 import type { AppState, PendingState } from './state';
 import { SECOND_NS, Timer } from './timer';
+import { defaultTrafficConfig, type TrafficConfig } from './traffic/maneuver';
 import { TrafficOccupancy } from './traffic/occupancy';
 import { LaneGraph } from './transport/laneGraph';
+import { LaneletConflictMatrices } from './transport/lanelet/build';
+import { LaneletGraph } from './transport/lanelet/graph';
 import { PathCache, defaultPathfindingConfig, type PathfindingConfig } from './transport/pathfinding';
 import { RegionGraph } from './transport/regionGraph';
 import { RoadGraph } from './transport/roadGraph';
@@ -53,6 +56,9 @@ export interface World {
   readonly roadGraph: RoadGraph;
   readonly regionGraph: RegionGraph;
   laneGraph: LaneGraph;
+  laneletGraph: LaneletGraph;
+  laneletConflicts: LaneletConflictMatrices;
+  readonly trafficConfig: TrafficConfig;
   /** `TurnLaneAutogenState`: the graph version turn-lane marks were derived for. */
   turnLaneAutogenVersion: number;
   readonly pathCache: PathCache;
@@ -103,6 +109,9 @@ export function createWorld(options: WorldOptions = {}): World {
     roadGraph: new RoadGraph(),
     regionGraph: new RegionGraph(),
     laneGraph: new LaneGraph(),
+    laneletGraph: new LaneletGraph(),
+    laneletConflicts: new LaneletConflictMatrices(),
+    trafficConfig: defaultTrafficConfig(),
     turnLaneAutogenVersion: 0,
     pathCache: new PathCache(),
     pathfindingConfig: defaultPathfindingConfig(),
