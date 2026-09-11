@@ -186,6 +186,32 @@ test('signalizedScenarioShowsTrafficLive', async ({ page }, testInfo) => {
   await page.locator('#view').screenshot({ path: testInfo.outputPath('signalized.png') });
 });
 
+// A scenario opened in a hidden pane: the camera focus must wait for a real canvas size, or a 0×0
+// start divides the view span by one pixel and the cross ends up a dot.
+test('scenarioFocusWaitsForACanvasSize', async ({ page }) => {
+  await page.addInitScript(() => {
+    document.addEventListener('DOMContentLoaded', () => {
+      const style = document.createElement('style');
+      style.id = 'collapsed';
+      style.textContent = '#view { width: 0 !important; height: 0 !important; }';
+      document.head.appendChild(style);
+    });
+  });
+  await page.goto('/?scenario=signalized');
+  await page.waitForFunction(() => typeof window.__sim !== 'undefined');
+  await page.evaluate(() => window.__sim.ready);
+  await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.lights)).toBe(4);
+
+  await page.evaluate(() => document.getElementById('collapsed')!.remove());
+  const box = tileToWorld(CFG, { x: 40, y: 40 });
+  await expect
+    .poll(() => page.evaluate(() => window.__sim.camera()))
+    .toMatchObject({ centerX: box.x + 8, centerY: box.y + 8 });
+  const cam = await page.evaluate(() => window.__sim.camera());
+  // The cross spans 46 tiles of 16 world units; on a 1100 px view that is well under 2 world units a pixel.
+  expect(cam.worldPerPixel, 'the whole cross fills the view').toBeLessThan(2);
+});
+
 test('pickingReportsTheTileUnderTheCursor', async ({ page }) => {
   await openApp(page);
   await waitForDrawn(page);
@@ -222,6 +248,10 @@ test('drawingStartsOnceAZeroSizeCanvasGetsASize', async ({ page }) => {
   await page.evaluate(() => document.getElementById('collapsed')!.remove());
   await waitForDrawn(page);
   expect(gpuErrors, 'no GPU validation errors from the zero-size start').toEqual([]);
+  // The first "whole map in view" waits for the size too: fitted on 0×0 it divides by one pixel.
+  await expect
+    .poll(() => page.evaluate(() => window.__sim.camera()).then((c) => c.worldPerPixel), 'the map fills the view')
+    .toBeLessThan((CFG.width * CFG.tileSize) / 1000);
 });
 
 test('overlaysOnlyWithDebugFlag', async ({ page }) => {

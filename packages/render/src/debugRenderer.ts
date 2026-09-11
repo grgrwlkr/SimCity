@@ -61,6 +61,7 @@ export class DebugRenderer {
   private interpolated: { x: Float32Array; y: Float32Array } | null = null;
   private frames = 0;
   private readonly fpsMeter = new FpsMeter();
+  private readonly sizedWaiters: Array<() => void> = [];
   private chunksRebuiltLast = 0;
   private drawnMapEditVersion: number | null = null;
   private pendingMapEditVersion: number | null = null;
@@ -103,7 +104,16 @@ export class DebugRenderer {
 
   resize(width: number, height: number): void {
     this.view.viewport = { width, height };
-    if (width > 0 && height > 0) this.renderer.setSize(width, height, false);
+    if (width > 0 && height > 0) {
+      this.renderer.setSize(width, height, false);
+      for (const resolve of this.sizedWaiters.splice(0)) resolve();
+    }
+  }
+
+  /** Resolves once the canvas has a real size (a page opened in a hidden pane starts at 0×0). */
+  whenSized(): Promise<void> {
+    if (this.view.viewport.width > 0 && this.view.viewport.height > 0) return Promise.resolve();
+    return new Promise((resolve) => this.sizedWaiters.push(resolve));
   }
 
   attachRenderBuffer(reader: RenderReader): void {

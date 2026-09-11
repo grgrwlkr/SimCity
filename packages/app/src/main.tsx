@@ -44,19 +44,27 @@ function syncRender(snapshot: WorldSnapshot): void {
       const first = mapConfig === null;
       mapConfig = { width: map.width, height: map.height, tileSize: map.tileSize };
       r.setMap(map);
-      if (first) r.view.fitMap(mapConfig);
-      if (focusPending && map.mapEditVersion > 0) {
-        // The scenario's map is on screen: centre its box and show the whole cross.
-        const box = tileToWorld(mapConfig, SIGNALIZED_CROSS.box);
-        r.view.centerX = box.x + map.tileSize / 2;
-        r.view.centerY = box.y + map.tileSize / 2;
-        const span = (SIGNALIZED_CROSS.hi - SIGNALIZED_CROSS.lo + 6) * map.tileSize;
-        r.view.worldPerPixel = span / Math.max(Math.min(r.view.viewport.width, r.view.viewport.height), 1);
-        focusPending = false;
+      if (first) {
+        // A page opened in a hidden pane starts with a 0×0 canvas: fit the map once it has a size.
+        const cfg = mapConfig;
+        void r.whenSized().then(() => r.view.fitMap(cfg));
       }
       shownMapEditVersion = map.mapEditVersion;
     }
     r.setLights(snapshot.lights);
+    // The scenario's map is on screen: centre its box and show the whole cross, once the canvas has a
+    // size (registered after the first fit, so it runs after it).
+    if (focusPending && mapConfig !== null && (shownMapEditVersion ?? 0) > 0) {
+      focusPending = false;
+      const cfg = mapConfig;
+      void r.whenSized().then(() => {
+        const { width, height } = r.view.viewport;
+        const box = tileToWorld(cfg, SIGNALIZED_CROSS.box);
+        r.view.centerX = box.x + cfg.tileSize / 2;
+        r.view.centerY = box.y + cfg.tileSize / 2;
+        r.view.worldPerPixel = ((SIGNALIZED_CROSS.hi - SIGNALIZED_CROSS.lo + 6) * cfg.tileSize) / Math.min(width, height);
+      });
+    }
     if (debug && snapshot.graphVersion !== shownOverlayGraphVersion) {
       const overlay = await client.request({ t: 'debugOverlay' });
       if (overlay.laneletsBuiltFor === overlay.graphVersion) {
