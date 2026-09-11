@@ -62,6 +62,50 @@
 - `packages/sim/test/map/`: `grid.test.ts` (генерация и паритет), `apply.test.ts`, `roadTool.test.ts`, `coords.test.ts`, `zonePlacement.test.ts`
 - Правки: `world.ts`, `schedule.ts`, `fingerprint.ts` (секция `map`, покрытие новых полей), `map.ts` удаляется (поглощён `apply.ts`), bridge `protocol.ts` + `host.ts` (`undoRedo`)
 
+## 1b: инварианты из Rust-тестов
+
+| Rust-тест (файл) | Инвариант |
+|---|---|
+| `road_path_smoke_test_on_simple_line` (map/tests.rs) | прямая двухполосная дорога: road-A* возвращает все 5 тайлов от старта до цели |
+| `one_way_stroke_across_an_intersection_keeps_the_crossing_drivable` (map/tests.rs) | one-way поверх перекрёстка оставляет бокс боксом, вертикальные рёбра бокса не меняются, горизонтальные все на восток |
+| `congestion_affects_route_choice_between_parallel_lanes` (transport/tests.rs) | загрузка на двух тайлах уводит маршрут на параллельную полосу |
+| `lane_type_left_turn_only_allows_only_left_entry_into_intersection` | LeftTurnOnly: в бокс только левый въезд |
+| `lane_type_right_turn_only_allows_only_right_entry_into_intersection` | RightTurnOnly: только правый |
+| `lane_type_straight_only_allows_only_straight_entry_into_intersection` | StraightOnly: только прямо |
+| `intersection_exit_requires_lane_dir_alignment` | выезд из бокса только на полосу по направлению движения |
+| `lane_entry_blocks_reverse_into_intersection` | въезд в бокс задним ходом запрещён |
+| `autogen_turn_lanes_four_lane_two_lanes_assigns_left_and_straight_only` | T без прямого выезда: левая полоса LeftTurnOnly, правая Regular |
+| `autogen_turn_lanes_feeds_road_graph_on_fixed_update` | в одном тике автоген полос идёт раньше графа, граф видит свежие метки |
+| `road_graph_before_autogen_bakes_stale_lane_marks` | обратный порядок запекает старые метки (негативный контроль пина выше) |
+| `lane_graph_skips_rebuild_for_unchanged_graph_version` | lane graph не перестраивается без смены версии и перестраивается после |
+| `lane_graph_empty_build_counts_as_built` | пустой lane graph тоже считается построенным |
+| `one_way_ignores_opposite_direction_lane_tiles` | на one-way тайл против потока не получает рёбер |
+| `one_way_allows_lane_change_between_same_direction_lanes` | смена полосы на one-way разрешена |
+| `adjacent_road_anchor_never_prefers_oncoming_lane` | якорь предпочитает перпендикулярную полосу встречной; неправильная половина one-way не якорь |
+| `in_box_edges_respect_reconstructed_axis_direction` | внутри бокса шаги против восстановленного направления оси обрезаны, по направлению остаются |
+| `road_astar_far_column_p_uturn_still_routes_and_avoids_oncoming_box_half` | разворот П проходит через северную колонну 5, без обхода по краю по колонне 4 |
+| `uturn_edge_added_at_two_way_dead_end` | в тупике двусторонней дороги есть ребро разворота на встречную полосу, в середине дороги его нет |
+| `no_uturn_edge_on_one_way_dead_end` | в тупике one-way ребра разворота нет |
+| `zone_density_building_entrance_is_found_along_the_whole_footprint` | вход ищется по всему периметру пятна, ближайший к цели; якорь у дороги сохраняет свой |
+| `autogen_keeps_lanes_regular_when_straight_exit_exists` (turn_lanes.rs) | при прямом выезде все полосы подхода Regular |
+| `autogen_marks_left_lane_on_must_turn_approach` | подход «только поворот»: левая LeftTurnOnly, правая Regular |
+| `autogen_single_lane_approach_stays_regular` | однополосный подход остаётся Regular |
+| `straight_through_box_is_clean` (route_oncoming_pins.rs) | прямой проезд бокса — не встречка |
+| `legal_uturn_through_center_passes` | разворот П через центр — не встречка |
+| `illegal_edge_hug_uturn_is_flagged` | разворот по краю бокса флагуется на шаге по южной колонне |
+| `real_lane_wrong_way_is_flagged` | движение против полосы флагуется |
+| `b_side_entering_real_lane_against_dir_is_flagged` | въезд на полосу против направления ловится проверкой второго тайла |
+| `one_sided_t_junction_column_still_constrains` | одной стороны оси достаточно для ограничения |
+| `disagreeing_sides_yield_no_constraint_known_false_negative` | несогласные стороны оси не ограничивают (задокументированный ложный отрицательный) |
+
+Плюс сверх Rust: `roadAStarMatchesRustOnTestCity` — 200 пар против фикстуры `examples/dump_routes.rs`. В фикстуре сетка тестового города до автогена, тайлы со светофорами, пары, сгенерированные в Rust, и маршрут Rust для каждой пары после одного `FixedUpdate`. TS прогоняет у себя автоген, дорожный и региональный графы.
+
+## 1b: файлы и контракты
+
+- `packages/sim/src/transport/`: `roadGraph.ts` (рёбра W/E/S/N, one-way, пруннинг в боксе, U-turn в тупике), `turnLanes.ts`, `regionGraph.ts`, `laneGraph.ts`, `pathfinding.ts` (конфиг, кэш TTL+LRU, стоимость ребра на f32 через `Math.fround`, A* с порядком кучи `(f, g, idx)`, региональный pre-pass), `anchors.ts`, `oncoming.ts` (оракул встречки); `packages/sim/src/intersections/clusters.ts` (кластеры и `IntersectionIndex` с набором светофоров — сами светофоры на этапе 2).
+- `World`: `roadGraph`, `regionGraph`, `laneGraph`, `turnLaneAutogenVersion`, `pathCache`, `pathfindingConfig`, `intersections`, `trafficOccupancy.perTickVehicles` (заполняет этап 2). `FIXED_UPDATE` после `beginTickEvents`: `autogenTurnLanes → rebuildRoadGraph → rebuildRegionGraph → buildLaneGraph` (GraphUpdate; лейнлеты добавит 1c).
+- `examples/dump_routes.rs` → `packages/sim/test/fixtures/road-routes.json`.
+
 ## Сделано / Отклонения / Замеры
 
-Заполняется при закрытии каждого под-этапа.
+**1a (2026-09-11).** 17 тестов зелёные, ворота пройдены: `GenerateMap` совпадает с Rust байт-в-байт на сидах 1, 7, 42, 1000003 (`height` и `water`, 128×128). Отклонения: `examples/dump_map.rs` потребовал `bevy_egui` в `[dev-dependencies]` корневого пакета (одна строка в `Cargo.toml` и одна в `Cargo.lock`) — системы ввода headless-приложения требуют ресурс egui. Отпечаток мира стал хэшировать typed arrays 32-битными словами: с сеткой и машинами он стоил 9.5 мс на вызов под bun и не укладывался в 5-секундный таймаут пробы расхождения (600 тиков × 2 мира), после — 0.58 мс. Замер: полный Vitest 0.54 с, e2e 8.5 с.
