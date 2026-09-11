@@ -16,6 +16,7 @@
 4. **Протокол получает `id` запроса** для корреляции промисов `__sim`, и сообщения `setState`/`setSpeed`/`rngProbe`.
 5. **TypeScript 6.0.3, а не `latest` 7.0.2:** `typescript-eslint 8.70.0` требует `typescript <6.1.0`.
 6. **Ворота запускают `bun run test` (Vitest), а не `bun test`:** `bun test` — отдельный раннер bun, не Vitest.
+7. **Порт живёт в SimCity, а не в отдельном `~/Develop/SimCityWeb`** (решение пользователя 2026-09-11, программа исправлена): монорепо в корне ворктри, отведённого от `main`. Первые шесть коммитов этапа сделаны в SimCityWeb и перенесены сюда cherry-pick'ом. `.gitignore` и `CLAUDE.md` дополнены блоками порта, а не заменены.
 
 ## Инварианты из Rust-тестов (шаг 1)
 
@@ -38,7 +39,7 @@
 
 ## Файлы
 
-- `package.json` (workspaces, скрипты `typecheck lint test e2e bench dev`), `tsconfig.base.json`, `eslint.config.js`, `vitest.config.ts`, `playwright.config.ts`, `.github/workflows/ci.yml`, `CLAUDE.md`, `README.md`
+- `package.json` (workspaces, скрипты `typecheck lint test e2e bench dev`), `tsconfig.base.json`, `eslint.config.js`, `vitest.config.ts`, `playwright.config.ts`, `.github/workflows/web.yml`, раздел порта в `CLAUDE.md` и `README.md`
 - `packages/sim/src/`: `rng.ts`, `timer.ts`, `city.ts` (City, SimClock, `simTick`), `notifications.ts` (лента истории с датой), `state.ts` (AppState, переходы и хуки), `commands.ts` (+ `commandCodec.ts`), `world.ts`, `schedule.ts`, `app.ts` (SimApp: кадр = переход состояния → тики → CommandApply), `fingerprint.ts`, `probe.ts`, `index.ts`
 - `packages/sim/test/`: `rng.test.ts`, `sim.test.ts`, `determinism.test.ts`, `noUnseededRng.test.ts`, `schedule.test.ts`, `commandCodec.test.ts`, `timer.test.ts`
 - `packages/bridge/src/`: `protocol.ts`, `driver.ts` (FixedStepDriver, инъекция часов, `maxDeltaMs = 250`, множитель скорости), `renderBuffer.ts`, `worker.ts`, `client.ts`; тесты `driver.test.ts`, `renderBuffer.test.ts`

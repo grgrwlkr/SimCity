@@ -8,7 +8,7 @@
 
 **Стек:** Vite + TypeScript strict, bun; Three.js (`WebGPURenderer`, откат на WebGL2); React + zustand; zod для конфигов и сейвов; Vitest; Playwright; Tauri 2.
 
-**Спецификация:** Rust-репозиторий `~/Develop/SimCity` (read-only): `docs/architecture.md` → «Intersection Traffic Invariants (STRICT)», `docs/gameplay.md`, `docs/persistence.md`, `assets/config/*.ron`, и прежде всего его тесты — они портируются первыми и становятся тестами порта.
+**Спецификация:** Rust-код этого же репозитория (`crates/`, `src/`, не правится): `docs/architecture.md` → «Intersection Traffic Invariants (STRICT)», `docs/gameplay.md`, `docs/persistence.md`, `assets/config/*.ron`, и прежде всего его тесты — они портируются первыми и становятся тестами порта.
 
 ## Решения, принятые до плана (2026-09-11, пользователь)
 
@@ -18,14 +18,14 @@
 
 ## Глобальные ограничения
 
-- Новый репозиторий `~/Develop/SimCityWeb`; Rust-репозиторий читается по абсолютному пути, не правится (исключение — этап 1, утилита дампа траекторий для оракула).
+- Порт живёт в репозитории SimCity: bun-монорепо в корне рядом с Rust-крейтами, каждый этап идёт в ворктри, отведённом от `main`, отдельного репозитория нет. Rust-код остаётся в дереве эталоном поведения и не правится (исключение — этап 1, утилита дампа траекторий для оракула).
 - Версии Three.js и React пинятся в `package.json` точно, апгрейд — только между этапами, отдельным коммитом.
 - Симуляция не использует `Math.random`, `Date.now`, `performance.now` и float-функции `Math.*` в решениях, влияющих на состояние; допустимы целочисленная арифметика, сравнения и заранее табулированные значения. Причина — фингерпринт-тест должен сходиться между движками JS.
 - `Map` вместо объектов-словарей там, где порядок обхода влияет на результат: `Map` упорядочен по вставке по спецификации.
 - Ни одна система симуляции не пишет в DOM, не трогает Three.js и не знает про кадры: воркер компилируется и тестируется без браузера.
 - Каждый портированный Rust-тест сохраняет имя (в snake_case → camelCase) и ссылку на исходный файл в комментарии; ослабление пина — только с обоснованием в коммите, почему новое поведение корректно.
 - Наблюдаемость с первого дня: `window.__sim` отдаёт снимок состояния, `?debug=1` включает оверлеи; всё, что раньше шло через BRP, доступно из DevTools и Playwright.
-- Проверка перед закрытием этапа: `bun run typecheck && bun run lint && bun test && bun run e2e`, все зелёные, плюс ворота этапа из таблицы ниже.
+- Проверка перед закрытием этапа: `bun run typecheck && bun run lint && bun run test && bun run e2e` (`bun test` — отдельный раннер bun, не Vitest), все зелёные, плюс ворота этапа из таблицы ниже.
 
 ## Контракты, общие для всех этапов
 
@@ -77,7 +77,7 @@ export type FromWorker = { t: 'ready'; render: SharedArrayBuffer } | { t: 'snaps
 
 Rust и TS гоняются на одном seed и одной последовательности команд; сравниваются не только фингерпринты, но и траектории: для каждого тика — отсортированный список `(vehicleSeq, laneletId, progressQuantized)`. Расхождение — это либо ошибка порта, либо задокументированное намеренное отличие, записанное в `docs/oracle-deviations.md` с причиной.
 
-- Rust-сторона: `cargo run --example dump_trajectory -- --seed 7 --ticks 3000 --commands fixtures/cmds.json > rust.jsonl` (пишется на этапе 1, единственная правка Rust-репозитория; использует `headless_sim` из `simcity_data`).
+- Rust-сторона: `cargo run --example dump_trajectory -- --seed 7 --ticks 3000 --commands fixtures/cmds.json > rust.jsonl` (пишется на этапе 1, единственная правка Rust-кода; использует `headless_sim` из `simcity_data`).
 - TS-сторона: `bun run oracle --seed 7 --ticks 3000 --commands fixtures/cmds.json > ts.jsonl`.
 - Сравнение: `bun run oracle:diff rust.jsonl ts.jsonl` — первый расходящийся тик, сущность и поле.
 
@@ -88,7 +88,7 @@ Rust и TS гоняются на одном seed и одной последов�
 | # | Этап | Источник в Rust (тесты → порт) | Результат в TS | Ворота |
 |---|---|---|---|---|
 | 0 | Скелет | `simcity_data/determinism.rs` (3), `no_thread_rng_guard.rs` (1), `sim.rs` (8) | монорепо `packages/{sim,bridge,render,ui,app}`, воркер, fixed-step, RNG, `fingerprint`, очередь команд, `__sim`, CI | фингерпринт одинаков в Chromium и WebKit на 10 000 тиков пустой карты |
-| 1 | Карта и граф | `map/tests.rs` (54), `map/data_map.rs` (11), `transport/tests.rs` (20), `lanelet/build.rs` (29), `lanelet/pathfinding.rs` (9), `lanelet/conflict.rs` (4), `turn_lanes.rs` (3), `route_oncoming_pins.rs` (8) | тайловая карта, дороги, `GenerateMap`, транспортный граф, лейнлеты, A*, версия графа | оракул: маршруты идентичны на 200 случайных пар; `dump_trajectory` в Rust-репо |
+| 1 | Карта и граф | `map/tests.rs` (54), `map/data_map.rs` (11), `transport/tests.rs` (20), `lanelet/build.rs` (29), `lanelet/pathfinding.rs` (9), `lanelet/conflict.rs` (4), `turn_lanes.rs` (3), `route_oncoming_pins.rs` (8) | тайловая карта, дороги, `GenerateMap`, транспортный граф, лейнлеты, A*, версия графа | оракул: маршруты идентичны на 200 случайных пар; `dump_trajectory` в `examples/` |
 | 1½ | Отладочный рендер | — | Three.js: карта чанками, машины кубиками, орто-камера, `?debug=1` | Playwright-скриншот тестового города совпадает по раскладке с Rust |
 | 2 | Трафик | `traffic/tests/*` (49), `arbiter.rs` (18), `reservations.rs` (4), `stuck.rs` (5), `reroute_planner.rs` (7), `drive.rs` (3), `intersections/lights.rs` (2), `components.rs` (3) | спавн, движение, арбитр, резервации, светофоры, застревание и восстановление, парковка, ПДД РФ (RTOR off, помеха справа) | оракул 3000 тиков: 0 расхождений состояний, ≤1 % квантованного прогресса; soak: 0 машин старше 600 тиков в `WaitingForGreen` |
 | 3 | Экономика и здания | `buildings/tests.rs` (21), `blockers.rs` (16), `economy.rs` (18), `demand.rs` (9), `employment.rs` (5), `land_value.rs` (3), `pollution.rs` (2), `city_fields.rs` (9), `utilities.rs` (8), `advisor.rs` (11), `milestones.rs` (2), `notifications.rs` (9), `citizens.rs` (2) | зоны, рост, апгрейды, бюджет, спрос, занятость, стоимость земли, загрязнение, советник | оракул на экономических полях: `money`, `population` совпадают по дням на 30 игровых дней |
@@ -134,7 +134,7 @@ Rust и TS гоняются на одном seed и одной последов�
 | Риск | Снятие |
 |---|---|
 | Расхождение семантики трафика при порте | оракул по траекториям с этапа 1; трафик портируется целиком в одной сессии; пины не ослабляются |
-| Потеря архитектуры между сессиями | контракты в этом файле; план этапа с секцией «Сделано / Отклонения»; `CLAUDE.md` нового репо ссылается сюда первой строкой |
+| Потеря архитектуры между сессиями | контракты в этом файле; план этапа с секцией «Сделано / Отклонения»; раздел порта в `CLAUDE.md` репозитория ссылается сюда первой строкой |
 | Float-недетерминизм между движками | целочисленная тайловая арифметика; фингерпринт в Chromium и WebKit в CI с этапа 0 |
 | Медленный тик на JS | замер каждый этап; профиль → отчёт → решение пользователя про WASM |
 | Смена API Three.js | точный пин; апгрейд между этапами отдельным коммитом с прогоном скриншотов |

@@ -18,6 +18,11 @@ export default defineConfig([
     'test-results/**',
     'playwright-report/**',
     'tools/rand-vectors/**',
+    // The Rust side of the repository and local tool state are not part of the port.
+    'target/**',
+    '.claude/**',
+    '.cursor/**',
+    '.zcode/**',
   ]),
   js.configs.recommended,
   tseslint.configs.recommended,
