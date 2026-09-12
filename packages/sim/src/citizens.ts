@@ -8,20 +8,33 @@
 //   day the whole city drove all the time;
 // - citizens are typed arrays with a queue of game minutes (stage 3½b): the planner looks only at citizens whose minute
 //   has come, and the counts by state, home and workplace are kept as they change, for a city of a million;
-// - every trip is by car until pedestrians arrive with stage 4.
+// - a citizen walks a short trip, a trip without a car, and one with nowhere to park in reach; the car of one who
+//   drives is a vehicle only while it drives, and otherwise holds a parking spot (stage 3½b). Rust drove every trip.
 import { isOperational, type Building } from './buildings/building';
 import { MINUTES_PER_DAY, gameMinute } from './city';
 import type { TilePos } from './commands';
 import type { TripMode } from './events';
+import {
+  CAR_DRIVING,
+  CAR_NONE,
+  CAR_OWNERSHIP,
+  CAR_PARKED,
+  CAR_STATUSES,
+  NO_PLACE,
+  findParking,
+  giveCar,
+  placeTile,
+  type CarStatus,
+} from './parking';
 import { randomBool, rangeU32 } from './rng';
 import { fixedElapsedSecs } from './traffic/reservations';
-import { TRIP_PURPOSES, despawnVehicle, vehicleRef, type TripPurpose } from './traffic/vehicles';
+import { TRIP_PURPOSES, type TripPurpose } from './traffic/vehicles';
 import { footprintEntrance } from './transport/anchors';
 import type { World } from './world';
 
 const f32 = Math.fround;
 
-/** A trip with no car on the road and none waiting for one is given up after this long, real seconds. */
+/** A trip with no car on the road, none waiting for one and no walk under way is given up after this long, real seconds. */
 export const CITIZEN_TRIP_TIMEOUT_SECS = 180;
 /** At most this many move into one building a tick. */
 const MAX_MOVING_IN_PER_TICK = 8;
@@ -54,6 +67,8 @@ const AT_SHOP = CITIZEN_STATES.indexOf('AtShop');
 const TO_WORK = CITIZEN_STATES.indexOf('ToWork');
 const TO_SHOP = CITIZEN_STATES.indexOf('ToShop');
 const TO_HOME = CITIZEN_STATES.indexOf('ToHome');
+const WALK = TRIP_MODES.indexOf('Walk');
+const CAR = TRIP_MODES.indexOf('Car');
 const NONE = -1;
 
 /** Bits of a citizen reference that name its slot: room for two million citizens. */
@@ -77,7 +92,11 @@ export interface CitizenSpec {
   readonly lastPlace: TilePos;
   /** The mode of the tour in progress, home to home. */
   readonly tourMode: TripMode | null;
-  /** The building tile the citizen's car is parked at. */
+  /** Whether the citizen has a car, and whether it stands or drives. `add` takes no spot for it: `giveCar` does. */
+  readonly carStatus: CarStatus;
+  /** The spot the car holds, or is driving to (`parking.ts` addresses). */
+  readonly carPlace: number;
+  /** The tile the car stands on, or will. */
   readonly carParkedAt: TilePos;
   /** The building the citizen works at. */
   readonly workplace: number | null;
@@ -124,13 +143,15 @@ export interface CitizenDay {
   readonly shiftMinutes?: number;
 }
 
-/** A citizen at home in `home`, with no job and no plans yet. */
+/** A citizen at home in `home`, with no job, no car and no plans yet. */
 export function newCitizen(home: Building, day: CitizenDay = {}): CitizenSpec {
   return {
     home: home.id,
     state: 'AtHome',
     lastPlace: home.anchor,
     tourMode: null,
+    carStatus: 'None',
+    carPlace: NO_PLACE,
     carParkedAt: home.anchor,
     workplace: null,
     workDeparture: day.workDeparture ?? 7 * 60,
@@ -242,8 +263,15 @@ export class Citizens {
   state = new Uint8Array(0);
   lastPlaceX = new Int32Array(0);
   lastPlaceY = new Int32Array(0);
+  /** Where the trip under way ends, on foot after the car parks. */
+  destX = new Int32Array(0);
+  destY = new Int32Array(0);
   /** `TRIP_MODES` index, -1 between tours. */
   tourMode = new Int8Array(0);
+  /** `CAR_STATUSES` index. */
+  carStatus = new Uint8Array(0);
+  /** A `parking.ts` address, 0 without a car. */
+  carPlace = new Int32Array(0);
   carX = new Int32Array(0);
   carY = new Int32Array(0);
   workDeparture = new Uint16Array(0);
@@ -262,8 +290,6 @@ export class Citizens {
   /** Citizens at home with no plan: the planner plans them on its next run. */
   unplanned: number[] = [];
   readonly queue = new MinuteQueue();
-  /** Citizens gone whose car may still stand somewhere. */
-  readonly departed = new Set<number>();
   private readonly stateCounts = new Int32Array(CITIZEN_STATES.length);
   private readonly residents = new Map<number, number>();
   private readonly workers = new Map<number, number>();
@@ -298,7 +324,11 @@ export class Citizens {
     this.state[slot] = CITIZEN_STATES.indexOf(spec.state);
     this.lastPlaceX[slot] = spec.lastPlace.x;
     this.lastPlaceY[slot] = spec.lastPlace.y;
+    this.destX[slot] = spec.lastPlace.x;
+    this.destY[slot] = spec.lastPlace.y;
     this.tourMode[slot] = spec.tourMode === null ? NONE : TRIP_MODES.indexOf(spec.tourMode);
+    this.carStatus[slot] = CAR_STATUSES.indexOf(spec.carStatus);
+    this.carPlace[slot] = spec.carPlace;
     this.carX[slot] = spec.carParkedAt.x;
     this.carY[slot] = spec.carParkedAt.y;
     this.workDeparture[slot] = spec.workDeparture;
@@ -318,7 +348,7 @@ export class Citizens {
     return ref;
   }
 
-  /** The citizen leaves the city; their car is left to `despawnOrphanedOwnedCars`. */
+  /** Takes the citizen out of the arrays; `removeCitizen` also frees their parking spot. */
   remove(ref: number): void {
     const slot = this.resolve(ref);
     if (slot === undefined) return;
@@ -329,7 +359,6 @@ export class Citizens {
     this.generation[slot] = (this.generation[slot]! + 1) % GENERATIONS;
     this.freeSlots.push(slot);
     this.count -= 1;
-    this.departed.add(ref);
   }
 
   setState(slot: number, state: number): void {
@@ -387,6 +416,8 @@ export class Citizens {
       state: CITIZEN_STATES[this.state[slot]!]!,
       lastPlace: { x: this.lastPlaceX[slot]!, y: this.lastPlaceY[slot]! },
       tourMode: mode === NONE ? null : TRIP_MODES[mode]!,
+      carStatus: CAR_STATUSES[this.carStatus[slot]!]!,
+      carPlace: this.carPlace[slot]!,
       carParkedAt: { x: this.carX[slot]!, y: this.carY[slot]! },
       workplace: this.workplace[slot] === NONE ? null : this.workplace[slot]!,
       workDeparture: this.workDeparture[slot]!,
@@ -409,7 +440,6 @@ export class Citizens {
     this.freeSlots.length = 0;
     this.unplanned = [];
     this.queue.clear();
-    this.departed.clear();
     this.stateCounts.fill(0);
     this.residents.clear();
     this.workers.clear();
@@ -433,7 +463,11 @@ export const LAYER_NAMES = [
   'state',
   'lastPlaceX',
   'lastPlaceY',
+  'destX',
+  'destY',
   'tourMode',
+  'carStatus',
+  'carPlace',
   'carX',
   'carY',
   'workDeparture',
@@ -446,7 +480,19 @@ export const LAYER_NAMES = [
 ] as const satisfies ReadonlyArray<keyof Citizens>;
 type LayerName = (typeof LAYER_NAMES)[number];
 
-/** `spawn_citizens_from_residential` (SimStep::Citizens): open homes fill up to their occupancy, eight a tick. */
+/** A citizen leaves the city, and the spot their car holds is freed. */
+export function removeCitizen(w: World, ref: number): void {
+  const c = w.citizens;
+  const slot = c.resolve(ref);
+  if (slot === undefined) return;
+  if (c.carStatus[slot] !== CAR_NONE) w.parking.release(c.carPlace[slot]!);
+  c.remove(ref);
+}
+
+/**
+ * `spawn_citizens_from_residential` (SimStep::Citizens): open homes fill up to their occupancy, eight a tick. A newcomer
+ * has a car by the class of the home, if the city has a spot for it.
+ */
 export function spawnCitizensFromResidential(w: World): void {
   const citizens = w.citizens;
   for (const b of w.buildings.all()) {
@@ -459,33 +505,76 @@ export function spawnCitizensFromResidential(w: World): void {
       const rng = w.simRng;
       const workDeparture = rangeU32(rng, WORK_DEPARTURE_WINDOW[0], WORK_DEPARTURE_WINDOW[1]);
       const shiftMinutes = rangeU32(rng, SHIFT_MINUTES[0], SHIFT_MINUTES[1] + 1);
-      citizens.add(newCitizen(b, { workDeparture, shiftMinutes }));
+      const ref = citizens.add(newCitizen(b, { workDeparture, shiftMinutes }));
+      if (randomBool(rng, CAR_OWNERSHIP[b.profile.class])) giveCar(w, ref);
     }
   }
 }
 
 /**
- * Where a trip to or from `b` leaves and parks: the footprint tile beside its road towards `towards`. Rust used the
+ * Where a trip to or from `b` leaves and arrives: the footprint tile beside its road towards `towards`. Rust used the
  * anchor, and the vehicle spawn dropped the trips of every building whose anchor corner faced away from its road.
  */
 function entrance(w: World, b: Building, towards: TilePos): TilePos {
   return footprintEntrance(w.grid, b.anchor, b.width, b.length, towards);
 }
 
-function depart(w: World, slot: number, from: TilePos, to: TilePos, purpose: TripPurpose, nowSecs: number): void {
+const tripMeters = (w: World, from: TilePos, to: TilePos) => (Math.abs(from.x - to.x) + Math.abs(from.y - to.y)) * w.trafficConfig.tileMeters;
+
+/** Whole game minutes a walk from `from` to `to` takes, rounded up. */
+function walkMinutes(w: World, from: TilePos, to: TilePos): number {
+  return Math.ceil((tripMeters(w, from, to) * 60) / (w.citizenConfig.walkKmh * 1000));
+}
+
+function setOut(w: World, slot: number, to: TilePos, purpose: TripPurpose, nowSecs: number): void {
   const c = w.citizens;
-  if (c.tourMode[slot] === NONE) c.tourMode[slot] = TRIP_MODES.indexOf('Car');
-  const mode = TRIP_MODES[c.tourMode[slot]!]!;
-  const carParkedAt = mode === 'Car' ? { x: c.carX[slot]!, y: c.carY[slot]! } : null;
-  w.events.tripRequested.push({ citizen: c.ref(slot), from, carParkedAt, to, purpose, mode });
   c.setState(slot, purpose === 'Work' ? TO_WORK : purpose === 'Shop' ? TO_SHOP : TO_HOME);
   if (purpose !== 'ReturnHome') {
     c.lastPlaceX[slot] = to.x;
     c.lastPlaceY[slot] = to.y;
   }
-  c.schedule(slot, null, null);
+  c.destX[slot] = to.x;
+  c.destY[slot] = to.y;
   c.tripDepartedAtSec[slot] = nowSecs;
   c.tripPurpose[slot] = TRIP_PURPOSES.indexOf(purpose);
+}
+
+/** On foot from `from` at game minute `minute`: the arrival waits in the queue. */
+function departOnFoot(w: World, slot: number, from: TilePos, to: TilePos, purpose: TripPurpose, minute: number, nowSecs: number): void {
+  const c = w.citizens;
+  w.events.tripRequested.push({ citizen: c.ref(slot), from, carParkedAt: null, to, purpose, mode: 'Walk' });
+  setOut(w, slot, to, purpose, nowSecs);
+  c.schedule(slot, minute + walkMinutes(w, from, to), purpose);
+}
+
+/** By car from its spot to `spot`, which it takes now; the one it leaves is free. The walk to `to` follows the arrival. */
+function departByCar(w: World, slot: number, to: TilePos, spot: number, purpose: TripPurpose, nowSecs: number): void {
+  const c = w.citizens;
+  const from = placeTile(w, c.carPlace[slot]!, to);
+  const parkAt = placeTile(w, spot, from);
+  w.parking.release(c.carPlace[slot]!);
+  w.parking.take(spot);
+  c.carStatus[slot] = CAR_DRIVING;
+  c.carPlace[slot] = spot;
+  c.carX[slot] = parkAt.x;
+  c.carY[slot] = parkAt.y;
+  w.events.tripRequested.push({ citizen: c.ref(slot), from, carParkedAt: from, to: parkAt, purpose, mode: 'Car', pocket: true });
+  setOut(w, slot, to, purpose, nowSecs);
+  c.schedule(slot, null, null);
+}
+
+/**
+ * The spot a tour from `from` to `to` drives to, or `NO_PLACE` to walk it: no car, a car beyond walking reach, a trip
+ * short enough to walk, or no spot within walking reach of `to` on a trip too short to drive to a spot farther away.
+ */
+function tourSpot(w: World, slot: number, from: TilePos, to: TilePos, destination: number): number {
+  const c = w.citizens;
+  const cfg = w.citizenConfig;
+  if (c.carStatus[slot] !== CAR_PARKED) return NO_PLACE;
+  const meters = tripMeters(w, from, to);
+  if (meters <= cfg.walkMaxMeters) return NO_PLACE;
+  if (tripMeters(w, from, { x: c.carX[slot]!, y: c.carY[slot]! }) > cfg.parkingWalkMeters) return NO_PLACE;
+  return findParking(w, to, destination, meters > cfg.farParkingTripMeters ? Infinity : cfg.parkingWalkMeters);
 }
 
 /**
@@ -533,10 +622,35 @@ function shopNear(w: World, home: Building, shops: readonly Building[]): Buildin
   return nearest[rangeU32(w.simRng, 0, nearest.length)];
 }
 
+/** The trip ends at game minute `minute`: at work or a shop until the stay is over, or at home with a day to plan. */
+function arrive(w: World, slot: number, purpose: TripPurpose, minute: number, nowSecs: number): void {
+  const c = w.citizens;
+  const commute = w.commuteStats;
+  const departedAt = c.tripDepartedAtSec[slot]!;
+  if (!Number.isNaN(departedAt)) {
+    const secs = f32(Math.max(nowSecs - departedAt, 0));
+    commute.avgCommuteSecs =
+      commute.samples === 0 ? secs : f32(f32(commute.avgCommuteSecs * f32(1 - COMMUTE_EMA_ALPHA)) + f32(secs * COMMUTE_EMA_ALPHA));
+    commute.samples += 1;
+  }
+  c.tripDepartedAtSec[slot] = NaN;
+  c.tripPurpose[slot] = NONE;
+  if (purpose === 'ReturnHome') {
+    c.setState(slot, AT_HOME);
+    c.tourMode[slot] = NONE;
+    c.schedule(slot, null, null);
+    c.unplanned.push(c.ref(slot));
+  } else {
+    c.setState(slot, purpose === 'Work' ? AT_WORK : AT_SHOP);
+    const stay = purpose === 'Work' ? c.shiftMinutes[slot]! : rangeU32(w.simRng, SHOP_VISIT_MINUTES[0], SHOP_VISIT_MINUTES[1] + 1);
+    c.schedule(slot, minute + stay, 'ReturnHome');
+  }
+}
+
 /**
  * `citizen_trip_planner` (SimStep::Citizens), once a game minute: citizens with no plan make one, then those whose
- * minute has come, minute by minute, act on it. A citizen at work or at a shop goes home when the stay is over; one at
- * home sets out, or thinks again when the job is lost or no shop is open.
+ * minute has come, minute by minute, act on it. A walk under way arrives; a citizen at work or at a shop goes home when
+ * the stay is over; one at home sets out, or thinks again when the job is lost or no shop is open.
  */
 export function citizenTripPlanner(w: World): void {
   const shopping = w.shoppingStats;
@@ -564,18 +678,26 @@ export function citizenTripPlanner(w: World): void {
       // A citizen re-planned or on the road since is no longer waiting for this minute.
       if (slot === undefined || c.nextAt[slot] !== minute) continue;
       woken += 1;
+      const purpose = c.nextPurpose[slot] === NONE ? null : TRIP_PURPOSES[c.nextPurpose[slot]!]!;
+      const state = c.state[slot];
+      if (state === TO_WORK || state === TO_SHOP || state === TO_HOME) {
+        arrive(w, slot, purpose ?? 'ReturnHome', minute, nowSecs);
+        continue;
+      }
       const home = w.buildings.get(c.home[slot]!);
       if (home === undefined) continue;
       const lastPlace = { x: c.lastPlaceX[slot]!, y: c.lastPlaceY[slot]! };
 
-      const state = c.state[slot];
       if (state === AT_WORK || state === AT_SHOP) {
-        depart(w, slot, lastPlace, entrance(w, home, lastPlace), 'ReturnHome', nowSecs);
+        const doorstep = entrance(w, home, lastPlace);
+        // Home the way the tour went; a car with nowhere to stand in the whole city stays put, and its citizen walks.
+        const spot = c.tourMode[slot] === CAR && c.carStatus[slot] === CAR_PARKED ? findParking(w, doorstep, home.id, Infinity) : NO_PLACE;
+        if (spot === NO_PLACE) departOnFoot(w, slot, lastPlace, doorstep, 'ReturnHome', minute, nowSecs);
+        else departByCar(w, slot, doorstep, spot, 'ReturnHome', nowSecs);
         continue;
       }
       if (state !== AT_HOME) continue;
 
-      const purpose = c.nextPurpose[slot] === NONE ? null : TRIP_PURPOSES[c.nextPurpose[slot]!]!;
       let destination: Building | undefined;
       if (purpose === 'Work' && c.workplace[slot] !== NONE) {
         destination = w.buildings.get(c.workplace[slot]!);
@@ -590,19 +712,21 @@ export function citizenTripPlanner(w: World): void {
         continue;
       }
       // Tours start at home, from the side of it on the road towards where they go.
-      c.tourMode[slot] = NONE;
-      const parked = entrance(w, home, destination.anchor);
-      c.carX[slot] = parked.x;
-      c.carY[slot] = parked.y;
-      depart(w, slot, parked, entrance(w, destination, home.anchor), purpose, nowSecs);
+      const from = entrance(w, home, destination.anchor);
+      const to = entrance(w, destination, home.anchor);
+      const spot = tourSpot(w, slot, from, to, destination.id);
+      c.tourMode[slot] = spot === NO_PLACE ? WALK : CAR;
+      if (spot === NO_PLACE) departOnFoot(w, slot, from, to, purpose, minute, nowSecs);
+      else departByCar(w, slot, to, spot, purpose, nowSecs);
     }
   }
   c.plannerWoken = woken;
 }
 
 /**
- * `handle_trip_finished`: arrivals of this tick, right after traffic wrote them. Only a citizen still on that leg
- * moves: one recovery sent home, or already on another leg, is not teleported by a late arrival.
+ * `handle_trip_finished`: cars of this tick's trips arrived, right after traffic wrote them. Only a citizen still on
+ * that leg moves: one recovery sent home, or already on another leg, is not teleported by a late arrival. The car
+ * stands at its spot; its citizen walks the rest.
  */
 export function handleTripFinished(w: World): void {
   const arrivals = w.events.tripFinished;
@@ -610,51 +734,28 @@ export function handleTripFinished(w: World): void {
   const c = w.citizens;
   const nowSecs = fixedElapsedSecs(w);
   const now = gameMinute(w);
-  const commute = w.commuteStats;
   for (const arrival of arrivals) {
     const slot = c.resolve(arrival.citizen);
     if (slot === undefined) continue;
     const expected = arrival.purpose === 'Work' ? TO_WORK : arrival.purpose === 'Shop' ? TO_SHOP : TO_HOME;
     if (c.state[slot] !== expected) continue;
-
-    const departedAt = c.tripDepartedAtSec[slot]!;
-    if (!Number.isNaN(departedAt)) {
-      const secs = f32(Math.max(nowSecs - departedAt, 0));
-      commute.avgCommuteSecs =
-        commute.samples === 0 ? secs : f32(f32(commute.avgCommuteSecs * f32(1 - COMMUTE_EMA_ALPHA)) + f32(secs * COMMUTE_EMA_ALPHA));
-      commute.samples += 1;
-    }
-    c.tripDepartedAtSec[slot] = NaN;
-    c.tripPurpose[slot] = NONE;
-
-    if (arrival.purpose === 'ReturnHome') {
-      c.setState(slot, AT_HOME);
-      c.tourMode[slot] = NONE;
-      c.schedule(slot, null, null);
-      c.unplanned.push(arrival.citizen);
-      const home = w.buildings.get(c.home[slot]!);
-      // Where the trip home parked: the side of home towards the place it came from.
-      if (home !== undefined) {
-        const parked = entrance(w, home, { x: c.lastPlaceX[slot]!, y: c.lastPlaceY[slot]! });
-        c.carX[slot] = parked.x;
-        c.carY[slot] = parked.y;
-      }
-    } else {
-      c.setState(slot, arrival.purpose === 'Work' ? AT_WORK : AT_SHOP);
-      const stay = arrival.purpose === 'Work' ? c.shiftMinutes[slot]! : rangeU32(w.simRng, SHOP_VISIT_MINUTES[0], SHOP_VISIT_MINUTES[1] + 1);
-      c.schedule(slot, now + stay, 'ReturnHome');
-      if (c.tourMode[slot] === TRIP_MODES.indexOf('Car')) {
-        c.carX[slot] = c.lastPlaceX[slot]!;
-        c.carY[slot] = c.lastPlaceY[slot]!;
+    if (c.carStatus[slot] === CAR_DRIVING) {
+      c.carStatus[slot] = CAR_PARKED;
+      const walk = walkMinutes(w, { x: c.carX[slot]!, y: c.carY[slot]! }, { x: c.destX[slot]!, y: c.destY[slot]! });
+      if (walk > 0) {
+        c.schedule(slot, now + walk, arrival.purpose);
+        continue;
       }
     }
+    arrive(w, slot, arrival.purpose, now, nowSecs);
   }
 }
 
 /**
  * `recover_stuck_trips` (SimStep::Citizens): a trip whose car never spawned yields no arrival, and a citizen in transit
- * makes no plans, so past the timeout such a citizen goes back home. A trip with its car on the road or waiting in the
- * backlog is not orphaned however long it takes; Rust sent those drivers home too.
+ * makes no plans, so past the timeout such a citizen goes back home, the car standing at the spot it was going to. A
+ * trip with its car on the road or waiting in the backlog, or a walk, is not orphaned however long it takes; Rust sent
+ * those drivers home too.
  */
 export function recoverStuckTrips(w: World): void {
   const now = fixedElapsedSecs(w);
@@ -662,7 +763,7 @@ export function recoverStuckTrips(w: World): void {
   const v = w.vehicles;
   let riding: Set<number> | undefined;
   for (let slot = 0; slot < c.highWater; slot++) {
-    if (c.alive[slot] !== 1) continue;
+    if (c.alive[slot] !== 1 || c.nextAt[slot] !== NONE) continue;
     const state = c.state[slot];
     if (state !== TO_WORK && state !== TO_SHOP && state !== TO_HOME) continue;
     const departedAt = c.tripDepartedAtSec[slot]!;
@@ -675,12 +776,7 @@ export function recoverStuckTrips(w: World): void {
     const ref = c.ref(slot);
     if (riding.has(ref)) continue;
     c.setState(slot, AT_HOME);
-    const home = w.buildings.get(c.home[slot]!);
-    if (home !== undefined) {
-      const parked = entrance(w, home, home.anchor);
-      c.carX[slot] = parked.x;
-      c.carY[slot] = parked.y;
-    }
+    if (c.carStatus[slot] === CAR_DRIVING) c.carStatus[slot] = CAR_PARKED;
     c.tourMode[slot] = NONE;
     c.schedule(slot, null, null);
     c.unplanned.push(ref);
@@ -709,25 +805,6 @@ export function cleanupHomelessCitizens(w: World): void {
   for (const [homeId, slots] of byHome) {
     slots.sort((a, b) => c.movedIn[a]! - c.movedIn[b]!);
     const refs = slots.slice(limits.get(homeId)!).map((slot) => c.ref(slot));
-    for (const ref of refs) c.remove(ref);
+    for (const ref of refs) removeCitizen(w, ref);
   }
-}
-
-/**
- * `despawn_orphaned_owned_cars` (PostSimStep::Citizens): the parked car of a citizen who left goes; one still on the
- * road finishes its leg and goes once it parks. Only cars of departed citizens are looked at, so the scenario cars
- * of the traffic gates, whose owners were never citizens, stay.
- */
-export function despawnOrphanedOwnedCars(w: World): void {
-  const departed = w.citizens.departed;
-  if (departed.size === 0) return;
-  const v = w.vehicles;
-  const driving = new Set<number>();
-  for (const slot of [...v.order]) {
-    const owner = v.carOwner[slot]!;
-    if (!departed.has(owner)) continue;
-    if (v.parked[slot] === 1) despawnVehicle(w, vehicleRef(v, slot));
-    else driving.add(owner);
-  }
-  for (const id of [...departed]) if (!driving.has(id)) departed.delete(id);
 }

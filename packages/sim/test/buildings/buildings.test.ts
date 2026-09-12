@@ -19,7 +19,6 @@ import { updateConstructionProgress } from '../../src/buildings/construction';
 import { buildingDecayEconomic } from '../../src/buildings/decay';
 import { upgradeBuildings } from '../../src/buildings/upgrade';
 import { calculateFillDays, calculatePressure, calculateTargetRatio, updateOccupancy } from '../../src/buildings/occupancy';
-import { calculateParkingSpots } from '../../src/buildings/spawn';
 import { emptyEvents } from '../../src/events';
 import { MapGrid } from '../../src/map/grid';
 import { MAX_ZONE_DEPTH, isFootprintWithinZoneDepth, isWithinZoneDepth } from '../../src/map/zonePlacement';
@@ -181,27 +180,6 @@ describe('occupancy', () => {
     w.events.dayAdvanced.push(1);
     updateOccupancy(w);
     expect(b.occupancyResidents, 'occupancy rises even when fill days exceed two').toBeGreaterThan(0);
-  });
-});
-
-describe('parking spots', () => {
-  it('calculateParkingSpotsSingleSpotAtCenter', () => {
-    expect(calculateParkingSpots(t(10, 10), 3, 3, 1)).toEqual([t(11, 11)]);
-  });
-
-  const inside = (spots: readonly { x: number; y: number }[], anchor: { x: number; y: number }, w: number, l: number) =>
-    spots.every((s) => s.x >= anchor.x && s.x < anchor.x + w && s.y >= anchor.y && s.y < anchor.y + l);
-
-  it('calculateParkingSpotsMultipleSpotsDistributed', () => {
-    const spots = calculateParkingSpots(t(10, 10), 6, 6, 4);
-    expect(spots).toHaveLength(4);
-    expect(inside(spots, t(10, 10), 6, 6)).toBe(true);
-  });
-
-  it('calculateParkingSpotsRespectsFootprintBounds', () => {
-    const spots = calculateParkingSpots(t(5, 5), 4, 4, 9);
-    expect(spots).toHaveLength(9);
-    expect(inside(spots, t(5, 5), 4, 4)).toBe(true);
   });
 });
 

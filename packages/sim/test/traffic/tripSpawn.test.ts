@@ -103,6 +103,29 @@ describe('trip vehicles', () => {
     expect(Math.abs(v.x[slot]! - at.x) <= half && Math.abs(v.y[slot]! - at.y) <= half, 'on the lot, off the road').toBe(true);
   });
 
+  // Stage 3½b: a citizen's car is a vehicle only while it drives; parked, it is in its citizen's pocket.
+  it('aPocketCarLeavesTheTrafficOnArrival', () => {
+    const w = createWorld({ mapWidth: 4, mapHeight: 3 });
+    w.appState = 'InGame';
+    for (let x = 0; x < 4; x++) setRoad(w.grid, t(x, 1), { dir: 'East' });
+    rebuildRoadGraphInner(w.grid, 1, w.roadGraph);
+    w.events.tripRequested.push({ citizen: 5, from: t(0, 0), carParkedAt: t(0, 0), to: t(3, 2), purpose: 'Work', mode: 'Car', pocket: true });
+    spawnTripVehicles(w);
+
+    const v = w.vehicles;
+    expect(v.order, 'the car drives out').toHaveLength(1);
+    expect(v.carOwner[v.order[0]!], 'as nobody’s parked car').toBe(-1);
+    let arrived = false;
+    for (let i = 0; i < 200 && v.order.length > 0; i++) {
+      w.events.tripFinished.length = 0;
+      buildTrafficSpatialIndex(w);
+      moveVehicles(w, DT);
+      arrived ||= w.events.tripFinished.some((trip) => trip.citizen === 5);
+    }
+    expect(arrived, 'the trip finishes').toBe(true);
+    expect(v.order, 'and the car leaves the traffic').toEqual([]);
+  });
+
   it('oneJammedTileDoesNotStopTheCity', () => {
     // Rust stopped every trip while any single tile was near capacity: one stuck car froze the city.
     const w = world([t(1, 0), t(1, 2)]);

@@ -3,6 +3,8 @@
 import type { World } from '../world';
 import { buildCity } from './cityGen';
 
+export const LIVING_CITY_WALK_MAX_METERS = 300;
+
 export interface CitizenTripStats {
   readonly citizens: number;
   readonly travelling: number;
@@ -17,6 +19,9 @@ export class LivingCityScenario {
 
   constructor(w: World) {
     buildCity(w);
+    // The generated city is 1.3 km across: past 300 m its citizens drive, so its roads carry traffic until the big map
+    // of stage 3½e, where the default kilometre holds.
+    w.citizenConfig.walkMaxMeters = LIVING_CITY_WALK_MAX_METERS;
   }
 
   /** Call before each fixed tick: the trips of the last tick are counted once, however often the host calls. */

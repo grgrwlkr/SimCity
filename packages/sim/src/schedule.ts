@@ -8,7 +8,7 @@ import { growBuildings } from './buildings/growth';
 import { updateOccupancy } from './buildings/occupancy';
 import { updateCityPopulation } from './buildings/population';
 import { upgradeBuildings } from './buildings/upgrade';
-import { citizenTripPlanner, cleanupHomelessCitizens, despawnOrphanedOwnedCars, handleTripFinished, recoverStuckTrips, spawnCitizensFromResidential } from './citizens';
+import { citizenTripPlanner, cleanupHomelessCitizens, handleTripFinished, recoverStuckTrips, spawnCitizensFromResidential } from './citizens';
 import { simTick } from './city';
 import type { GameCommand } from './commands';
 import { computeRciDemand } from './demand';
@@ -146,7 +146,6 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'handleTripFinished', run: handleTripFinished, runIn: IN_GAME },
   // PostSimStep::Citizens: residents a shrunken or vanished home no longer holds leave, then their parked cars go.
   { name: 'cleanupHomelessCitizens', run: cleanupHomelessCitizens, runIn: IN_GAME, everyGameNs: 60 * SECOND_NS },
-  { name: 'despawnOrphanedOwnedCars', run: despawnOrphanedOwnedCars, runIn: IN_GAME },
   // PostSimStep::TrafficIndex: the end-of-tick metrics RCI demand reads.
   { name: 'updateTrafficIndex', run: updateTrafficIndex, runIn: IN_GAME },
   // PostSimStep::Pollution: one chunk from the open factories of this tick; land value reads it below.

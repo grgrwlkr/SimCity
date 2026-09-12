@@ -36,6 +36,7 @@ export * from './map/roads';
 export * from './map/roadTool';
 export * from './map/zonePlacement';
 export * from './notifications';
+export * from './parking';
 export * from './probe';
 export * from './rng';
 export * from './scenarios/cityCommute';

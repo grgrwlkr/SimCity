@@ -61,7 +61,7 @@ export function spawnTripVehicles(w: World): void {
       break;
     }
     const trip = trips[i]!;
-    const own = v.order.find((slot) => v.parked[slot] === 1 && v.carOwner[slot] === trip.citizen);
+    const own = trip.pocket === true ? undefined : v.order.find((slot) => v.parked[slot] === 1 && v.carOwner[slot] === trip.citizen);
     // A capacity never throws: with every slot taken, a trip that needs a new car waits for one.
     if (own === undefined && v.free.length === 0) {
       w.tripBacklog.push(trip);
@@ -88,7 +88,8 @@ export function spawnTripVehicles(w: World): void {
         maxSpeed,
         maxAccel: idm.a,
         passenger: { citizen: trip.citizen, purpose: trip.purpose },
-        carOwner: trip.citizen,
+        // A pocket car is nobody's parked vehicle: it leaves the traffic on arrival.
+        ...(trip.pocket === true ? {} : { carOwner: trip.citizen }),
       });
       const slot = refSlot(v, ref);
       v.laneletPlan[slot] = { entries: [...route.sidecar], builtFor: route.builtFor };

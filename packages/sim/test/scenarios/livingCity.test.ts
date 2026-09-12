@@ -57,5 +57,7 @@ describe('living city', () => {
       expect(citizens.residentsOf(b.id), `residents of building ${b.id}`).toBe(views.filter((c) => c.home === b.id).length);
       expect(citizens.workersOf(b.id), `workers of building ${b.id}`).toBe(views.filter((c) => c.workplace === b.id).length);
     }
+    expect(w.parking.totalUsed(), 'every car of a citizen holds one spot').toBe(views.filter((c) => c.carStatus !== 'None').length);
+    expect(w.vehicles.order.filter((slot) => w.vehicles.parked[slot] === 1), 'and no vehicle slot while it stands').toEqual([]);
   }, 120_000);
 });

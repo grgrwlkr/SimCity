@@ -70,6 +70,7 @@ function enterMainMenu(w: World): void {
   w.serviceCoverage = new ServiceCoverageIndex();
   // CitizensPlugin: cleanup_citizens; the employment and trip stats of the game that ended go with them.
   w.citizens.clear();
+  w.parking.clear();
   w.employmentStats = emptyEmploymentStats();
   w.unreachablePairs = new EmploymentUnreachablePairCache();
   w.shoppingStats = emptyShoppingStats();

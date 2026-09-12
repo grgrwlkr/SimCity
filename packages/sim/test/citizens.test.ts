@@ -1,6 +1,6 @@
 // Port of the tests in crates/simcity_sim/src/game/citizens.rs, and of what they left untested: moving in, the day of
 // a citizen (TS: work in the morning, home after the shift, shopping in the evening near home, nobody out at night),
-// the cars of citizens who left, and the typed arrays and the minute queue of stage 3½b.
+// the typed arrays and the minute queue, and how a citizen gets there — on foot or by the car in their pocket (3½b).
 import { describe, expect, it } from 'vitest';
 import { newBuilding, type Building } from '../src/buildings/building';
 import {
@@ -9,7 +9,6 @@ import {
   citizenSlot,
   citizenTripPlanner,
   cleanupHomelessCitizens,
-  despawnOrphanedOwnedCars,
   handleTripFinished,
   newCitizen,
   recoverStuckTrips,
@@ -18,7 +17,8 @@ import {
 import type { TilePos } from '../src/commands';
 import { emptyEvents, type TripRequested } from '../src/events';
 import { MapGrid } from '../src/map/grid';
-import { refSlot, resolveVehicle, spawnVehicle } from '../src/traffic/vehicles';
+import { buildingPlace, giveCar, takeParking } from '../src/parking';
+import { spawnVehicle } from '../src/traffic/vehicles';
 import { adjacentRoadTowards } from '../src/transport/anchors';
 import type { World } from '../src/world';
 import { roadRow, t, worldOn } from './buildings/helpers';
@@ -26,6 +26,8 @@ import { roadRow, t, worldOn } from './buildings/helpers';
 function home(w: World, anchor = t(5, 5), occupancy = 5): Building {
   return w.buildings.add(newBuilding({ kind: 'Residential', anchor, capacityResidents: 8, occupancyResidents: occupancy, targetOccupancyResidents: occupancy }));
 }
+
+const shopAt = (w: World, x: number, y = 2, jobs = 5) => w.buildings.add(newBuilding({ kind: 'Commercial', anchor: t(x, y), capacityJobs: jobs }));
 
 const view = (w: World, ref: number) => w.citizens.view(ref)!;
 
@@ -44,7 +46,7 @@ function planAt(w: World, day: number, hour: number, minute = 0): TripRequested[
   return [...w.events.tripRequested];
 }
 
-/** A trip of `citizen` arriving at `day`, `hh:mm`. */
+/** A car trip of `citizen` arriving at `day`, `hh:mm`. */
 function arrive(w: World, citizen: number, purpose: 'Work' | 'Shop' | 'ReturnHome', day: number, hour: number, minute = 0): void {
   at(w, day, hour, minute);
   w.events = emptyEvents();
@@ -58,44 +60,58 @@ const inside = (b: Building, p: TilePos) => p.x >= b.anchor.x && p.x < b.anchor.
 function morningCrowd() {
   const w = worldOn(new MapGrid(32, 16));
   const house = home(w, t(2, 2));
-  const shop = w.buildings.add(newBuilding({ kind: 'Commercial', anchor: t(20, 2), capacityJobs: 5 }));
+  const shop = shopAt(w, 20);
   for (let i = 0; i < 1000; i++) w.citizens.add({ ...newCitizen(house, { workDeparture: 7 * 60 + (i % 100) }), workplace: shop.id });
   return w;
+}
+
+/** A town two kilometres long: a home at its west end, a worker leaving at seven for `workplace`. */
+function commuter(width: number, workplaceX: number, options: { car?: boolean; jobs?: number } = {}) {
+  const w = worldOn(new MapGrid(width, 16));
+  const house = home(w, t(2, 2));
+  const work = shopAt(w, workplaceX, 2, options.jobs ?? 5);
+  const worker = w.citizens.add({ ...newCitizen(house, { workDeparture: 7 * 60 }), workplace: work.id });
+  if (options.car === true) expect(giveCar(w, worker), 'the car parks at home').toBe(true);
+  return { w, house, work, worker };
 }
 
 describe('citizens', () => {
   it('recoverStuckTripsRevertsOrphanedButKeepsInProgressAndStable', () => {
     const w = worldOn(new MapGrid(16, 16));
     const house = home(w, t(1, 1));
-    const trip = { lastPlace: t(5, 5), tourMode: 'Car', carParkedAt: t(9, 9) } as const;
+    const shop = shopAt(w, 9, 9);
+    const trip = { lastPlace: t(5, 5), tourMode: 'Car', carStatus: 'Driving', carPlace: buildingPlace(shop.id) } as const;
+    takeParking(w, trip.carPlace);
     // Departed far past the timeout, at a clock near zero.
     const stuck = w.citizens.add({ ...newCitizen(house), ...trip, state: 'ToShop', tripDepartedAtSec: -(CITIZEN_TRIP_TIMEOUT_SECS + 50), tripPurpose: 'Shop' });
-    const fresh = w.citizens.add({ ...newCitizen(house), ...trip, state: 'ToWork', tripDepartedAtSec: -1, tripPurpose: 'Work' });
-    const stable = w.citizens.add({ ...newCitizen(house), ...trip, state: 'AtWork', tripDepartedAtSec: -(CITIZEN_TRIP_TIMEOUT_SECS + 50), tripPurpose: 'Work' });
+    const fresh = w.citizens.add({ ...newCitizen(house), state: 'ToWork', tripDepartedAtSec: -1, tripPurpose: 'Work' });
+    const stable = w.citizens.add({ ...newCitizen(house), state: 'AtWork', tripDepartedAtSec: -(CITIZEN_TRIP_TIMEOUT_SECS + 50), tripPurpose: 'Work' });
 
     recoverStuckTrips(w);
 
     expect(view(w, stuck).state, 'an orphaned citizen in transit goes back home').toBe('AtHome');
-    expect(view(w, stuck).carParkedAt, 'with the car at home').toEqual(house.anchor);
+    expect(view(w, stuck), 'the car stands where it was going').toMatchObject({ carStatus: 'Parked', carPlace: buildingPlace(shop.id) });
     expect(view(w, fresh).state, 'a trip within the timeout is left alone').toBe('ToWork');
     expect(view(w, stable).state, 'a citizen in a stable state is never touched').toBe('AtWork');
   });
 
-  // TS: only a citizen whose trip has no car on the road and no place in the backlog is orphaned; Rust took every trip
-  // past the timeout, and a long trip in a jam sent its driver home while the car drove on.
+  // TS: only a citizen whose trip has no car on the road, no place in the backlog and no walk under way is orphaned; Rust
+  // took every trip past the timeout, and a long trip in a jam sent its driver home while the car drove on.
   it('aCitizenWhoseCarIsStillOnTheRoadIsNotSentHome', () => {
     const w = worldOn(new MapGrid(16, 16));
     const house = home(w, t(1, 1));
     const departed = -(CITIZEN_TRIP_TIMEOUT_SECS + 50);
     const driving = w.citizens.add({ ...newCitizen(house), state: 'ToWork', tripDepartedAtSec: departed, tripPurpose: 'Work' });
     const waiting = w.citizens.add({ ...newCitizen(house), state: 'ToShop', tripDepartedAtSec: departed, tripPurpose: 'Shop' });
-    spawnVehicle(w, { route: [t(0, 0)], passenger: { citizen: driving, purpose: 'Work' }, carOwner: driving });
-    w.tripBacklog.push({ citizen: waiting, from: t(1, 1), carParkedAt: t(1, 1), to: t(9, 9), purpose: 'Shop', mode: 'Car' });
+    const walking = w.citizens.add({ ...newCitizen(house), state: 'ToShop', tripDepartedAtSec: departed, tripPurpose: 'Shop', nextAt: 900, nextPurpose: 'Shop' });
+    spawnVehicle(w, { route: [t(0, 0)], passenger: { citizen: driving, purpose: 'Work' } });
+    w.tripBacklog.push({ citizen: waiting, from: t(1, 1), carParkedAt: t(1, 1), to: t(9, 9), purpose: 'Shop', mode: 'Car', pocket: true });
 
     recoverStuckTrips(w);
 
     expect(view(w, driving).state, 'a long trip in a jam is still a trip').toBe('ToWork');
     expect(view(w, waiting).state, 'and so is one waiting for its car').toBe('ToShop');
+    expect(view(w, walking).state, 'and a long walk').toBe('ToShop');
   });
 
   it('cleanupSendsTheSurplusAwayTheLastToMoveInFirst', () => {
@@ -156,35 +172,70 @@ describe('citizens', () => {
     expect(new Set(departures).size, 'and not all at once').toBeGreaterThan(1);
   });
 
-  it('aWorkerLeavesInTheMorningAndComesHomeAfterTheShift', () => {
-    const w = worldOn(new MapGrid(32, 16));
-    const house = home(w, t(2, 2));
-    const shop = w.buildings.add(newBuilding({ kind: 'Commercial', anchor: t(20, 2), capacityJobs: 5 }));
-    const worker = w.citizens.add({ ...newCitizen(house, { workDeparture: 7 * 60 + 30, shiftMinutes: 8 * 60 }), workplace: shop.id });
+  it('aWorkerDrivesToWorkInTheMorningAndHomeAfterTheShift', () => {
+    const { w, house, work, worker } = commuter(200, 150, { car: true });
 
     expect(planAt(w, 1, 6), 'at six the worker is still at home').toEqual([]);
-    expect(planAt(w, 1, 7, 30), 'and leaves at half past seven').toEqual([
-      { citizen: worker, from: house.anchor, carParkedAt: house.anchor, to: shop.anchor, purpose: 'Work', mode: 'Car' },
+    expect(planAt(w, 1, 7), 'and drives the kilometre and a half at seven').toEqual([
+      { citizen: worker, from: house.anchor, carParkedAt: house.anchor, to: work.anchor, purpose: 'Work', mode: 'Car', pocket: true },
     ]);
-    expect(view(w, worker).state).toBe('ToWork');
+    expect(view(w, worker)).toMatchObject({ state: 'ToWork', carStatus: 'Driving', carPlace: buildingPlace(work.id) });
+    expect([w.parking.usedAt(buildingPlace(house.id)), w.parking.usedAt(buildingPlace(work.id))], 'the car left its spot at home and holds one at work').toEqual([0, 1]);
 
-    arrive(w, worker, 'Work', 1, 8, 10);
-    expect(view(w, worker).state).toBe('AtWork');
-    expect(view(w, worker).carParkedAt, 'the car stays where it was driven').toEqual(shop.anchor);
-    expect(planAt(w, 1, 16, 9), 'eight hours after arriving the shift is not over a minute early').toEqual([]);
-    expect(planAt(w, 1, 16, 10), 'and ends on the minute').toEqual([
-      { citizen: worker, from: shop.anchor, carParkedAt: shop.anchor, to: house.anchor, purpose: 'ReturnHome', mode: 'Car' },
+    arrive(w, worker, 'Work', 1, 7, 40);
+    expect(view(w, worker), 'parked at work').toMatchObject({ state: 'AtWork', carStatus: 'Parked', carParkedAt: work.anchor });
+    expect(planAt(w, 1, 15, 39), 'eight hours after arriving the shift is not over a minute early').toEqual([]);
+    expect(planAt(w, 1, 15, 40), 'and ends on the minute').toEqual([
+      { citizen: worker, from: work.anchor, carParkedAt: work.anchor, to: house.anchor, purpose: 'ReturnHome', mode: 'Car', pocket: true },
     ]);
 
-    arrive(w, worker, 'ReturnHome', 1, 16, 40);
-    expect(view(w, worker).state).toBe('AtHome');
-    expect(view(w, worker).carParkedAt).toEqual(house.anchor);
+    arrive(w, worker, 'ReturnHome', 1, 16, 20);
+    expect(view(w, worker)).toMatchObject({ state: 'AtHome', carStatus: 'Parked', carPlace: buildingPlace(house.id), carParkedAt: house.anchor });
+  });
+
+  it('aCitizenWithoutACarWalks', () => {
+    const { w, worker } = commuter(200, 150);
+    expect(planAt(w, 1, 7), 'a kilometre and a half on foot').toMatchObject([{ citizen: worker, mode: 'Walk', carParkedAt: null, purpose: 'Work' }]);
+  });
+
+  it('aShortTripIsWalked', () => {
+    const { w, house, worker } = commuter(32, 20, { car: true });
+    expect(planAt(w, 1, 7), 'two hundred metres are walked').toMatchObject([{ citizen: worker, mode: 'Walk', carParkedAt: null }]);
+    expect(view(w, worker), 'and the car stays at home').toMatchObject({ carStatus: 'Parked', carPlace: buildingPlace(house.id) });
+  });
+
+  it('aTripWithoutParkingInReachIsWalked', () => {
+    const w = worldOn(new MapGrid(400, 16));
+    const house = home(w, t(2, 2));
+    const nearShop = shopAt(w, 150, 2, 0);
+    const farShop = shopAt(w, 360, 2, 0);
+    // The only spots out of town: 800 m from the near shop, 1.3 km from the far one.
+    const lot = w.buildings.add(newBuilding({ kind: 'Industrial', anchor: t(230, 2), parkingGarage: 5 }));
+    const toNear = w.citizens.add({ ...newCitizen(house, { workDeparture: 7 * 60 }), workplace: nearShop.id });
+    const toFar = w.citizens.add({ ...newCitizen(house, { workDeparture: 7 * 60 }), workplace: farShop.id });
+    giveCar(w, toNear);
+    giveCar(w, toFar);
+
+    const trips = planAt(w, 1, 7);
+    expect(trips.find((trip) => trip.citizen === toNear), 'no spot within 400 m of a shop 1.5 km away: on foot').toMatchObject({ mode: 'Walk' });
+    expect(trips.find((trip) => trip.citizen === toFar), 'past three kilometres the car goes to the nearest spot farther away').toMatchObject({ mode: 'Car', pocket: true });
+    expect(view(w, toFar).carPlace).toBe(buildingPlace(lot.id));
+  });
+
+  it('aWalkArrivesAfterDistanceOverWalkingSpeed', () => {
+    const { w, worker } = commuter(32, 20);
+    planAt(w, 1, 7);
+    // 18 tiles, 180 m at 5 km/h: 2.16 minutes, arriving on the third.
+    expect(planAt(w, 1, 7, 2)).toEqual([]);
+    expect(view(w, worker).state, 'still walking after two minutes').toBe('ToWork');
+    planAt(w, 1, 7, 3);
+    expect(view(w, worker), 'at work on the third, the shift counted from then').toMatchObject({ state: 'AtWork', nextAt: 7 * 60 + 3 + 8 * 60 });
   });
 
   it('aWorkerAtHomeAtNightStaysHomeUntilTheirMorning', () => {
     const w = worldOn(new MapGrid(32, 16));
     const house = home(w, t(2, 2));
-    const shop = w.buildings.add(newBuilding({ kind: 'Commercial', anchor: t(20, 2), capacityJobs: 5 }));
+    const shop = shopAt(w, 20);
     w.citizens.add({ ...newCitizen(house, { workDeparture: 7 * 60 }), workplace: shop.id });
 
     const night: TripRequested[] = [];
@@ -214,6 +265,7 @@ describe('citizens', () => {
     expect(trips, 'the planner skipped from six to half past seven: thirty-one minutes of departures').toHaveLength(310);
     expect(departures, 'in the order of their minutes').toEqual([...departures].sort((a, b) => a - b));
     expect([departures[0], departures.at(-1)]).toEqual([7 * 60, 7 * 60 + 30]);
+    expect(view(w, trips[0]!.citizen).state, 'the walk that left at seven ended on the way').toBe('AtWork');
   });
 
   // TS: a shopper goes to one of the shops nearest home, and only in the evening after work; Rust sent them to any shop
@@ -222,7 +274,7 @@ describe('citizens', () => {
     const w = worldOn(new MapGrid(64, 16));
     const west = home(w, t(2, 2), 8);
     const east = home(w, t(50, 2), 8);
-    const shops = [8, 14, 20, 26, 32, 38, 44, 56].map((x) => w.buildings.add(newBuilding({ kind: 'Commercial', anchor: t(x, 8), capacityJobs: 5 })));
+    const shops = [8, 14, 20, 26, 32, 38, 44, 56].map((x) => shopAt(w, x, 8));
     const workers = Array.from({ length: 120 }, (_, i) => w.citizens.add({ ...newCitizen(i % 2 === 0 ? west : east), workplace: shops[0]!.id }));
 
     const trips: Array<readonly [minute: number, trip: TripRequested]> = [];
@@ -244,17 +296,18 @@ describe('citizens', () => {
   // TS: a trip starts and parks beside the road on the side the footprint has one; Rust used the anchor, so the trips
   // of every building whose anchor corner faced away from its road were dropped by the vehicle spawn.
   it('aCitizenWhoseHomeAnchorIsAwayFromTheRoadLeavesFromTheSideOnIt', () => {
-    const grid = new MapGrid(40, 30);
-    roadRow(grid, 19, 10, 39);
+    const grid = new MapGrid(160, 30);
+    roadRow(grid, 19, 10, 159);
     const w = worldOn(grid);
     // Rows 16..18 above the road: the anchor corner is two rows from it.
     const house = home(w, t(16, 16), 1);
-    const shop = w.buildings.add(newBuilding({ kind: 'Commercial', anchor: t(30, 20), capacityJobs: 5 }));
+    const shop = shopAt(w, 150, 20);
     const worker = w.citizens.add({ ...newCitizen(house, { workDeparture: 7 * 60 }), workplace: shop.id });
+    giveCar(w, worker);
 
     const trip = planAt(w, 1, 7)[0]!;
 
-    expect(trip.citizen).toBe(worker);
+    expect(trip).toMatchObject({ citizen: worker, mode: 'Car' });
     expect(inside(house, trip.from) && inside(house, trip.carParkedAt!), 'the trip leaves from the home').toBe(true);
     expect(adjacentRoadTowards(w.grid, trip.carParkedAt!, trip.to), 'from a tile beside the road').toBeDefined();
     expect(inside(shop, trip.to), 'to the workplace').toBe(true);
@@ -266,24 +319,5 @@ describe('citizens', () => {
     const worker = w.citizens.add(newCitizen(home(w)));
     arrive(w, worker, 'Work', 1, 9);
     expect(view(w, worker).state).toBe('AtHome');
-  });
-
-  it('theParkedCarOfACitizenWhoLeftIsRemovedAndOneOnTheRoadWhenItParks', () => {
-    const w = worldOn(new MapGrid(16, 16));
-    const house = home(w, t(5, 5), 2);
-    const [first, second] = [w.citizens.add(newCitizen(house)), w.citizens.add(newCitizen(house))];
-    const parked = spawnVehicle(w, { route: [t(0, 0)], carOwner: second });
-    w.vehicles.parked[refSlot(w.vehicles, parked)] = 1;
-    const driving = spawnVehicle(w, { route: [t(1, 0)], carOwner: first });
-
-    house.occupancyResidents = 0;
-    cleanupHomelessCitizens(w);
-    despawnOrphanedOwnedCars(w);
-    expect(resolveVehicle(w.vehicles, parked), 'a parked car of a citizen who left goes').toBeUndefined();
-    expect(resolveVehicle(w.vehicles, driving), 'a car on the road finishes its leg first').toBeDefined();
-
-    w.vehicles.parked[refSlot(w.vehicles, driving)] = 1;
-    despawnOrphanedOwnedCars(w);
-    expect(resolveVehicle(w.vehicles, driving), 'and goes once parked').toBeUndefined();
   });
 });

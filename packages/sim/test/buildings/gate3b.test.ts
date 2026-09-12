@@ -17,6 +17,8 @@ const DAYS = 30;
 describe('stage 3b gate', () => {
   it('aCityBuiltByCommandsBalancesItsBooksEmploysItsPeopleAndDrivesTheirTrips', () => {
     const w = createWorld({ gameHourNs: SECOND_NS });
+    // The town is half a kilometre long: past 150 m its citizens drive (stage 3½b walks anything under a kilometre).
+    w.citizenConfig.walkMaxMeters = 150;
     requestState(w, 'InGame');
     frame(w, 0);
 

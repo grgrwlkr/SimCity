@@ -19,6 +19,7 @@ import { DirtyTiles } from './map/dirty';
 import { MapGrid } from './map/grid';
 import { COMMAND_HISTORY_LIMIT, CommandHistory } from './map/history';
 import { Notifications } from './notifications';
+import { Parking, defaultCitizenConfig, type CitizenConfig } from './parking';
 import { DEFAULT_RNG_SEED, stdRngSeedFromU64, type StdRng } from './rng';
 import type { AppState, PendingState } from './state';
 import { Timer } from './timer';
@@ -168,8 +169,12 @@ export interface World {
   loans: Loans;
   /** `ServiceCoverageIndex`, derived from the stations, the map and the funding. */
   serviceCoverage: ServiceCoverageIndex;
-  /** The `Citizen` entities, in id order. */
+  /** The citizens, as typed arrays by slot. */
   readonly citizens: Citizens;
+  /** How citizens get about: walking reach, parking reach. */
+  readonly citizenConfig: CitizenConfig;
+  /** The spots the cars of citizens hold. */
+  readonly parking: Parking;
   employmentStats: EmploymentStats;
   unreachablePairs: EmploymentUnreachablePairCache;
   shoppingStats: ShoppingDemandStats;
@@ -261,6 +266,8 @@ export function createWorld(options: WorldOptions = {}): World {
     loans: new Loans(),
     serviceCoverage: new ServiceCoverageIndex(),
     citizens: new Citizens(),
+    citizenConfig: defaultCitizenConfig(),
+    parking: new Parking(grid.len()),
     employmentStats: emptyEmploymentStats(),
     unreachablePairs: new EmploymentUnreachablePairCache(),
     shoppingStats: emptyShoppingStats(),

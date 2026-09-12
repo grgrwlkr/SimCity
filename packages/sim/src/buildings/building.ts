@@ -37,8 +37,8 @@ export interface Building {
   occupancyJobs: number;
   targetOccupancyResidents: number;
   targetOccupancyJobs: number;
-  /** Parking spots inside the footprint (GDD 10.3.4). */
-  parkingSpots: TilePos[];
+  /** Spots of an underground or multi-storey garage on top of what the kind and capacity give (stage 3½b). */
+  parkingGarage: number;
   profile: BuildingProfile;
   /** `NoRoadAccessDecay`. */
   noRoadAccessDecay: { readonly accessLostDay: number } | null;
@@ -65,7 +65,7 @@ export function newBuilding(spec: BuildingSpec): Building {
     occupancyJobs: 0,
     targetOccupancyResidents: 0,
     targetOccupancyJobs: 0,
-    parkingSpots: [],
+    parkingGarage: 0,
     profile: DEFAULT_PROFILE,
     noRoadAccessDecay: null,
     lowHappinessDecay: null,
@@ -76,7 +76,7 @@ export function newBuilding(spec: BuildingSpec): Building {
 
 /** A copy that shares nothing mutable with `b`: phase, profile and decay markers are replaced, never changed in place. */
 export function cloneBuilding(b: Building): Building {
-  return { ...b, anchor: { ...b.anchor }, parkingSpots: b.parkingSpots.map((spot) => ({ ...spot })) };
+  return { ...b, anchor: { ...b.anchor } };
 }
 
 export function buildingArea(b: Building): number {
@@ -243,6 +243,8 @@ export function utilityCapacity(kind: BuildingKind): number | undefined {
 
 /** The buildings of a world, in spawn order. */
 export class Buildings {
+  /** Bumps whenever a building is added or removed: indexes over buildings rebuild on it. */
+  version = 0;
   private nextId = 1;
   private list: Building[] = [];
   /** Citizens look up their home and workplace every tick. */
@@ -252,6 +254,7 @@ export class Buildings {
   add(b: Building): Building {
     b.id = this.nextId;
     this.nextId += 1;
+    this.version += 1;
     this.list.push(b);
     this.byId.set(b.id, b);
     return b;
@@ -267,15 +270,17 @@ export class Buildings {
 
   remove(id: number): void {
     if (!this.byId.delete(id)) return;
+    this.version += 1;
     this.list = this.list.filter((b) => b.id !== id);
   }
 
   clear(): void {
+    this.version += 1;
     this.list = [];
     this.byId.clear();
   }
 
   fingerprintState(): unknown {
-    return [this.nextId, this.list];
+    return [this.nextId, this.version, this.list];
   }
 }

@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { step } from '../src/app';
 import { newBuilding } from '../src/buildings/building';
 import { newCitizen } from '../src/citizens';
+import { buildingPlace, streetPlace } from '../src/parking';
 import { fingerprint, fingerprintSections } from '../src/fingerprint';
 import { buildHeadlessGame, reseed } from '../src/headless';
 import { firstDivergence } from '../src/probe';
@@ -46,7 +47,8 @@ describe('determinism', () => {
       if (tick === 250) right.city.money += 1;
     });
     expect(found).toEqual({ tick: 250, sections: ['city'] });
-  });
+    // 2 400 ticks with a fingerprint each: 1.7 s alone, past the default 5 s under a parallel suite.
+  }, 60_000);
 
   it('fingerprintCoversEveryStateField', () => {
     const mutations: Array<readonly [string, (w: World) => void]> = [
@@ -167,6 +169,9 @@ describe('determinism', () => {
       ['pollution', (w) => void (w.pollution.currentChunk = 1)],
       ['landValue.currentChunk', (w) => void (w.landValue.currentChunk = 1)],
       ['citizens', (w) => void w.citizens.add(newCitizen(newBuilding({ kind: 'Residential', anchor: { x: 0, y: 0 } })))],
+      ['parking.buildings', (w) => void w.parking.take(buildingPlace(1))],
+      ['parking.streets', (w) => void w.parking.take(streetPlace(5))],
+      ['citizenConfig', (w) => void (w.citizenConfig.walkMaxMeters = 1)],
       ['employmentStats', (w) => void (w.employmentStats.employed += 1)],
       ['unreachablePairs', (w) => void w.unreachablePairs.beginTick(5, true, 600, 4096)],
       ['shoppingStats', (w) => void (w.shoppingStats.demandEvents += 1)],

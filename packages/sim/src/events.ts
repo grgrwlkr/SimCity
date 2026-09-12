@@ -26,6 +26,8 @@ export interface TripRequested {
   readonly to: TilePos;
   readonly purpose: TripFinished['purpose'];
   readonly mode: TripMode;
+  /** The car lives in its citizen's pocket: a vehicle only until it arrives (stage 3½b); scenario cars stay parked vehicles. */
+  readonly pocket?: true;
 }
 
 export interface TickEvents {

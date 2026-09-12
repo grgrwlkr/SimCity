@@ -225,11 +225,12 @@ describe('SimHost', () => {
     host.handle({ t: 'setState', state: 'InGame' });
     host.handle({ t: 'scenario', name: 'city' });
     host.handle({ t: 'setSpeed', speed: 'X10' });
-    // Fifteen seconds at ×10: fifteen hundred ticks, over a thousand even when the tick budget caps them.
+    // Fifteen seconds at ×10: up to fifteen hundred ticks. How many the tick budget lets through depends on how busy the
+    // machine is (983 under a parallel suite), so the check is only that frames run several ticks.
     for (let frame = 0; frame < 150; frame++) host.update(frame * 100);
 
     const { tick, traffic } = host.handle({ t: 'snapshot' });
-    expect(tick, 'several ticks a frame').toBeGreaterThan(1000);
+    expect(tick, 'several ticks a frame').toBeGreaterThan(2 * 150);
     expect(traffic.tripsDone!, 'commutes finish').toBeGreaterThan(0);
     expect(traffic.travelling, 'everyone on the road is driving or waiting to leave').toBe(traffic.driving + traffic.backlog);
   }, 120_000);

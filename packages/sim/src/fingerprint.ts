@@ -248,8 +248,14 @@ function hashCitizens(h: Fnv64, w: World): void {
     h.u32(refs.length);
     for (const ref of refs) h.i32(ref);
   }
-  h.u32(c.departed.size);
-  for (const ref of c.departed) h.i32(ref);
+  const taken = [...w.parking.buildings].sort(([a], [b]) => a - b);
+  h.u32(taken.length);
+  for (const [building, used] of taken) {
+    h.i32(building);
+    h.u32(used);
+  }
+  h.bytes(w.parking.streets);
+  h.str(stableJson(w.citizenConfig));
   h.str(stableJson(w.employmentStats));
   h.str(stableJson(w.unreachablePairs.fingerprintState()));
   h.str(stableJson(w.shoppingStats));
