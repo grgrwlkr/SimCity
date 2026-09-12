@@ -198,6 +198,18 @@ test('cityScenarioDrivesCommutersLive', async ({ page }, testInfo) => {
   await page.locator('#view').screenshot({ path: testInfo.outputPath('city.png') });
 });
 
+test('hudShowsCityStats', async ({ page }) => {
+  await page.goto('/?scenario=city');
+  await page.waitForFunction(() => typeof window.__sim !== 'undefined');
+  await page.evaluate(() => window.__sim.ready);
+
+  await expect(page.getByTestId('citizens')).toHaveText(/^Жители 2\s000$/, { timeout: 30_000 });
+  await expect
+    .poll(async () => Number((await page.getByTestId('driving').textContent())?.replace(/\D/g, '')), { timeout: 30_000 })
+    .toBeGreaterThan(0);
+  await expect(page.getByTestId('sim-tick')).toHaveText(/^сим \d+(,\d)? мс$/);
+});
+
 // ПДД 6.3: the protected left is a green arrow beside a red main signal, on both approaches of its axis.
 test('protectedLeftShowsAGreenArrow', async ({ page }, testInfo) => {
   await page.goto('/?scenario=signalized');

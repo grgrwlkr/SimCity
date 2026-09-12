@@ -16,6 +16,7 @@ import {
   SignalizedCrossScenario,
   spawnVehicle,
   step,
+  summarizeTraffic,
   toHex64,
   vehicleRef,
   worldToTile,
@@ -35,13 +36,24 @@ import {
 import { RenderWriter, createRenderBuffer } from './renderBuffer';
 import { debugOverlayOf, renderLayersOf } from './renderLayers';
 
+/** A scenario the host feeds before every tick; one with commuters also reports them. */
+interface HostScenario {
+  advance(w: World): void;
+  stats?(): { readonly citizens: number; readonly travelling: number; readonly requested: number; readonly arrived: number };
+}
+
+/** `?scenario=city`: commuters, their departures spread over five minutes, a stay of two to six. */
+const CITY_COMMUTE = { citizens: 2000, departureWindowTicks: 3000, stayTicks: [1200, 3600] } as const;
+
 export class SimHost {
   readonly render: SharedArrayBuffer;
   private readonly world: World;
   private readonly driver: FixedStepDriver;
   private readonly writer: RenderWriter;
   private lastReported: string | null = null;
-  private scenario: { advance(w: World): void } | null = null;
+  private scenario: HostScenario | null = null;
+  /** Recent average cost of a fixed tick, ms. */
+  private tickMs: number | null = null;
 
   constructor(renderCapacity: number) {
     this.world = createWorld();
@@ -62,7 +74,9 @@ export class SimHost {
       case 'step':
         for (let i = 0; i < req.ticks; i++) {
           this.scenario?.advance(this.world);
+          const started = performance.now();
           step(this.world, 1);
+          this.recordTickCost(performance.now() - started);
         }
         this.publish();
         return this.fingerprintReply();
@@ -96,7 +110,7 @@ export class SimHost {
       case 'scenario':
         if (req.name === 'city') {
           const plan = buildCity(this.world);
-          this.scenario = new CityCommuteScenario(this.world, { citizens: 400, homes: plan.homes, workplaces: plan.workplaces });
+          this.scenario = new CityCommuteScenario(this.world, { ...CITY_COMMUTE, homes: plan.homes, workplaces: plan.workplaces });
         } else {
           this.scenario = new SignalizedCrossScenario(this.world, undefined, CROSS_LAYOUT[req.name]);
         }
@@ -108,7 +122,12 @@ export class SimHost {
   update(nowMs: number): WorldSnapshot | null {
     // A frame at ×1 runs at most a tick or two, so feeding the scenario once per frame keeps waves on time.
     this.scenario?.advance(this.world);
-    if (this.driver.update(nowMs) > 0) this.publish();
+    const started = performance.now();
+    const ticks = this.driver.update(nowMs);
+    if (ticks > 0) {
+      this.recordTickCost((performance.now() - started) / ticks);
+      this.publish();
+    }
     const snapshot = this.snapshot();
     const key = `${snapshot.tick}|${snapshot.appState}|${snapshot.speed}|${snapshot.mapEditVersion}|${snapshot.graphVersion}`;
     if (key === this.lastReported) return null;
@@ -118,6 +137,7 @@ export class SimHost {
 
   snapshot(): WorldSnapshot {
     const w = this.world;
+    const stats = this.scenario?.stats?.();
     return {
       tick: w.tick,
       appState: w.appState,
@@ -136,7 +156,20 @@ export class SimHost {
           phase: light.phase,
         };
       }),
+      traffic: {
+        ...summarizeTraffic(w),
+        citizens: stats?.citizens ?? null,
+        travelling: stats?.travelling ?? null,
+        tripsStarted: stats?.requested ?? null,
+        tripsDone: stats?.arrived ?? null,
+        simTickMs: this.tickMs,
+      },
     };
+  }
+
+  /** Smooths the per-tick cost over roughly the last ten ticks. */
+  private recordTickCost(ms: number): void {
+    this.tickMs = this.tickMs === null ? ms : this.tickMs * 0.9 + ms * 0.1;
   }
 
   /**

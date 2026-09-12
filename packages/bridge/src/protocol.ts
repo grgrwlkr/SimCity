@@ -1,5 +1,5 @@
 // Worker ↔ main thread messages. Requests carry an id so `window.__sim` can await each reply.
-import type { AppState, City, LightPhase, ManeuverKind, MapCell, MapGrid, TilePos } from '@simcity/sim';
+import type { AppState, City, LightPhase, ManeuverKind, MapCell, MapGrid, TilePos, TrafficSummary } from '@simcity/sim';
 import type { SimSpeed } from './driver';
 
 /** A traffic light by the tile bounds of its intersection box. */
@@ -22,6 +22,18 @@ export interface WorldSnapshot {
   readonly mapEditVersion: number;
   readonly graphVersion: number;
   readonly lights: readonly TrafficLightView[];
+  readonly traffic: TrafficView;
+}
+
+/** The HUD's traffic line: the vehicles' summary, the running scenario's commuters and the tick cost. */
+export interface TrafficView extends TrafficSummary {
+  /** Commuters of the running scenario; the four are `null` without one. */
+  readonly citizens: number | null;
+  readonly travelling: number | null;
+  readonly tripsStarted: number | null;
+  readonly tripsDone: number | null;
+  /** Recent average cost of a fixed tick, ms; `null` before the first tick. */
+  readonly simTickMs: number | null;
 }
 
 /** Every per-tile layer of `MapGrid`, in its field order. */

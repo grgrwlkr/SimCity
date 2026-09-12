@@ -182,6 +182,19 @@ describe('SimHost', () => {
     expect(lights).toEqual([{ minX: 40, minY: 40, maxX: 41, maxY: 41, phase: expect.any(String) }]);
   });
 
+  it('snapshotReportsCitizensTrafficAndTickCost', () => {
+    const host = new SimHost(4096);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'scenario', name: 'city' });
+    host.handle({ t: 'step', ticks: 300 });
+
+    const { traffic } = host.handle({ t: 'snapshot' });
+    expect(traffic.citizens, 'the city has 2000 commuters').toBe(2000);
+    expect(traffic.driving + traffic.parked, 'and their cars').toBeGreaterThan(0);
+    expect(traffic.tripsStarted!, 'every driving car is a started trip').toBeGreaterThanOrEqual(traffic.driving);
+    expect(traffic.simTickMs!, 'the tick cost is measured').toBeGreaterThan(0);
+  }, 60_000);
+
   it('debugVehiclesArePublished', () => {
     const host = new SimHost(16);
     const reader = new RenderReader(host.render);

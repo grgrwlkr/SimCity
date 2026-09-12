@@ -12,6 +12,10 @@ export interface CityCommuteOptions {
   readonly homes?: readonly TilePos[];
   /** Lots to work on; without them, any lane tile. */
   readonly workplaces?: readonly TilePos[];
+  /** First departures spread over this many ticks. */
+  readonly departureWindowTicks?: number;
+  /** A stay lasts between these many ticks before the drive back. */
+  readonly stayTicks?: readonly [min: number, max: number];
 }
 
 interface Commuter {
@@ -22,21 +26,22 @@ interface Commuter {
   departAt: number;
 }
 
-/** The first trips leave within this many ticks, so the city fills up over a minute. */
-const FIRST_DEPARTURE_TICKS = 600;
-/** How long a commuter stays before driving back, ticks. */
-const STAY_MIN_TICKS = 200;
-const STAY_MAX_TICKS = 800;
+/** By default the first trips leave within a minute and a stay lasts 20–80 s. */
+const DEPARTURE_WINDOW_TICKS = 600;
+const STAY_TICKS: readonly [number, number] = [200, 800];
 
 export class CityCommuteScenario {
   requested = 0;
   arrived = 0;
   private readonly rng: StdRng;
   private readonly commuters: Commuter[];
+  private readonly stayTicks: readonly [number, number];
   private lastTick = -1;
 
   constructor(w: World, options: CityCommuteOptions = {}) {
     this.rng = stdRngSeedFromU64(options.seed ?? 7n);
+    this.stayTicks = options.stayTicks ?? STAY_TICKS;
+    const window = Math.max(options.departureWindowTicks ?? DEPARTURE_WINDOW_TICKS, 2);
     const lanes: TilePos[] = [];
     if (options.homes === undefined || options.workplaces === undefined) {
       for (let y = 0; y < w.grid.height; y++) {
@@ -54,8 +59,13 @@ export class CityCommuteScenario {
       work: workplaces[rangeU32(this.rng, 0, workplaces.length)]!,
       atWork: false,
       driving: false,
-      departAt: w.tick + rangeU32(this.rng, 1, FIRST_DEPARTURE_TICKS),
+      departAt: w.tick + rangeU32(this.rng, 1, window),
     }));
+  }
+
+  /** Commuters, how many are on the road, trips started and finished. */
+  stats(): { readonly citizens: number; readonly travelling: number; readonly requested: number; readonly arrived: number } {
+    return { citizens: this.commuters.length, travelling: this.requested - this.arrived, requested: this.requested, arrived: this.arrived };
   }
 
   /** Call before each fixed tick: arrivals of the last tick, then the trips that are due. */
@@ -68,7 +78,8 @@ export class CityCommuteScenario {
         if (c === undefined) continue;
         c.driving = false;
         c.atWork = !c.atWork;
-        c.departAt = w.tick + rangeU32(this.rng, STAY_MIN_TICKS, STAY_MAX_TICKS);
+        const [min, max] = this.stayTicks;
+        c.departAt = w.tick + (max > min ? rangeU32(this.rng, min, max) : min);
         this.arrived += 1;
       }
     }

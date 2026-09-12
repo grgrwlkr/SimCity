@@ -87,6 +87,15 @@ button[aria-pressed='true'] {
   font-variant-numeric: tabular-nums;
 }
 
+.hud-stats {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 1rem;
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
 .hud nav {
   display: flex;
   gap: 0.25rem;

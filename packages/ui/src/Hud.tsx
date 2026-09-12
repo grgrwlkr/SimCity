@@ -1,4 +1,4 @@
-import type { SimSpeed } from '@simcity/bridge';
+import type { SimSpeed, TrafficView } from '@simcity/bridge';
 import type { AppState } from '@simcity/sim';
 import { useEffect } from 'react';
 import { useSimStore } from './store';
@@ -16,6 +16,30 @@ const SPEEDS: ReadonlyArray<readonly [SimSpeed, string]> = [
 ];
 
 const money = new Intl.NumberFormat('ru-RU');
+const count = money;
+
+/** The traffic line under the HUD: commuters, cars, the lights, speed, load and the tick cost. */
+function TrafficStats({ traffic }: { traffic: TrafficView }) {
+  return (
+    <section className="hud-stats" aria-label="Статистика движения">
+      {traffic.citizens !== null && <span data-testid="citizens">Жители {count.format(traffic.citizens)}</span>}
+      {traffic.travelling !== null && <span>в пути {count.format(traffic.travelling)}</span>}
+      <span data-testid="driving">Едут {count.format(traffic.driving)}</span>
+      <span>на парковке {count.format(traffic.parked)}</span>
+      <span>ждут выезда {count.format(traffic.backlog)}</span>
+      <span>у светофоров {count.format(traffic.waitingAtLights)}</span>
+      <span>стоят больше минуты {count.format(traffic.stuckOverMinute)}</span>
+      <span>скорость {Math.round(traffic.avgSpeedKmh)} км/ч</span>
+      <span>загрузка дорог {Math.round(traffic.avgCongestionPct)} %</span>
+      {traffic.tripsStarted !== null && traffic.tripsDone !== null && (
+        <span>
+          поездки {count.format(traffic.tripsDone)} из {count.format(traffic.tripsStarted)}
+        </span>
+      )}
+      {traffic.simTickMs !== null && <span data-testid="sim-tick">сим {traffic.simTickMs.toFixed(1).replace('.', ',')} мс</span>}
+    </section>
+  );
+}
 
 /** `handle_state_hotkeys` (sim.rs): Escape to the menu, Enter starts from the menu, Space pauses and resumes. */
 function useStateHotkeys(appState: AppState | undefined, actions: HudActions): void {
@@ -87,6 +111,7 @@ export function Hud({ actions }: { actions: HudActions }) {
       <button type="button" onClick={() => actions.setState('MainMenu')}>
         В меню
       </button>
+      <TrafficStats traffic={snapshot.traffic} />
     </header>
   );
 }

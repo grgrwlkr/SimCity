@@ -27,6 +27,19 @@ describe('city commute scenario', () => {
     expect(wrongWay.length, 'no route against a lane').toBe(0);
   });
 
+  it('departuresSpreadOverTheWindow', () => {
+    // A thousand commuters leaving within one minute is a flood no road network takes.
+    const w = loadTestCity();
+    const scenario = new CityCommuteScenario(w, { citizens: 1000, departureWindowTicks: 2000, stayTicks: [5000, 5000] });
+    for (let i = 0; i < 1000; i++) {
+      scenario.advance(w);
+      step(w, 1);
+    }
+    expect(scenario.requested, 'about half have left half way through the window').toBeGreaterThan(400);
+    expect(scenario.requested).toBeLessThan(600);
+    expect(scenario.stats()).toEqual({ citizens: 1000, travelling: scenario.requested - scenario.arrived, requested: scenario.requested, arrived: scenario.arrived });
+  }, 60_000);
+
   it('anArrivalCountsOnceWhenTheHostAdvancesWithoutATick', () => {
     // The host feeds a scenario before every step tick and again once per frame.
     const w = loadTestCity();

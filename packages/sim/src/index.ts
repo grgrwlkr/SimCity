@@ -20,6 +20,7 @@ export * from './probe';
 export * from './rng';
 export * from './scenarios/cityCommute';
 export * from './scenarios/cityGen';
+export * from './traffic/stats';
 export * from './scenarios/signalizedCross';
 export * from './schedule';
 export * from './state';
