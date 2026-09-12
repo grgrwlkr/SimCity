@@ -1,6 +1,8 @@
 // Port of `AppState` (simcity_core::state) and the transition hooks the Rust plugins register on it.
+import { emptyCommuteStats, emptyShoppingStats } from './citizens';
 import { defaultCity } from './city';
 import { resetEconomyPolicy } from './economy/economy';
+import { EmploymentUnreachablePairCache, emptyEmploymentStats } from './employment';
 import { seedGrowthRngFromMap, seedSimRngFromMap } from './seeding';
 import { ServiceCoverageIndex } from './services/coverage';
 import { teardownTraffic } from './traffic/lifecycle';
@@ -66,6 +68,12 @@ function enterMainMenu(w: World): void {
   // Rates, funding and loans belong to the game that ended; Rust carried them into the next one.
   resetEconomyPolicy(w);
   w.serviceCoverage = new ServiceCoverageIndex();
+  // CitizensPlugin: cleanup_citizens; the employment and trip stats of the game that ended go with them.
+  w.citizens.clear();
+  w.employmentStats = emptyEmploymentStats();
+  w.unreachablePairs = new EmploymentUnreachablePairCache();
+  w.shoppingStats = emptyShoppingStats();
+  w.commuteStats = emptyCommuteStats();
   // BuildingsPlugin: cleanup_buildings, reset_building_upgrade_clock.
   w.buildings.clear();
   w.buildingUpgradeClock.reset();

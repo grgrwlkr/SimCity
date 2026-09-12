@@ -2,6 +2,8 @@
 // horizon and the pin stay as in Rust so the test city slots in when it exists.
 import { describe, expect, it } from 'vitest';
 import { step } from '../src/app';
+import { newBuilding } from '../src/buildings/building';
+import { newCitizen } from '../src/citizens';
 import { fingerprint, fingerprintSections } from '../src/fingerprint';
 import { buildHeadlessGame, reseed } from '../src/headless';
 import { firstDivergence } from '../src/probe';
@@ -160,6 +162,11 @@ describe('determinism', () => {
       ['serviceCoverage', (w) => void (w.serviceCoverage.fire = 0.5)],
       ['pollution', (w) => void (w.pollution.currentChunk = 1)],
       ['landValue.currentChunk', (w) => void (w.landValue.currentChunk = 1)],
+      ['citizens', (w) => void w.citizens.add(newCitizen(newBuilding({ kind: 'Residential', anchor: { x: 0, y: 0 } })))],
+      ['employmentStats', (w) => void (w.employmentStats.employed += 1)],
+      ['unreachablePairs', (w) => void w.unreachablePairs.beginTick(5, true, 600, 4096)],
+      ['shoppingStats', (w) => void (w.shoppingStats.demandEvents += 1)],
+      ['commuteStats', (w) => void (w.commuteStats.samples += 1)],
     );
 
     for (const [label, mutate] of mutations) {

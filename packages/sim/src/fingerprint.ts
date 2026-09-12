@@ -224,6 +224,15 @@ function hashEconomy(h: Fnv64, w: World): void {
   h.bytes(coverage.coverageMap);
 }
 
+/** Citizens, their departures, and the employment, shopping and commute state that feed demand. */
+function hashCitizens(h: Fnv64, w: World): void {
+  h.str(stableJson(w.citizens.fingerprintState()));
+  h.str(stableJson(w.employmentStats));
+  h.str(stableJson(w.unreachablePairs.fingerprintState()));
+  h.str(stableJson(w.shoppingStats));
+  h.str(stableJson(w.commuteStats));
+}
+
 function hashTimer(h: Fnv64, t: Timer): void {
   h.int(t.durationNs);
   h.str(t.mode);
@@ -441,6 +450,7 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
   ['vehicles', (h, w) => hashVehicles(h, w.vehicles)],
   ['buildings', hashBuildings],
   ['economy', hashEconomy],
+  ['citizens', hashCitizens],
 ];
 
 export interface FingerprintSection {

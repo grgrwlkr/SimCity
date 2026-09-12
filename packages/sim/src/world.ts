@@ -1,10 +1,12 @@
 // The simulation state: struct-of-arrays per entity kind, plus the resources the Rust sim keeps as
 // Bevy `Resource`s. Capacities are fixed; nothing here allocates per tick.
 import { Buildings } from './buildings/building';
+import { Citizens, emptyCommuteStats, emptyShoppingStats, type CommuteStats, type ShoppingDemandStats } from './citizens';
 import { createSimClock, defaultCity, type City } from './city';
 import { CityFields } from './cityFields';
 import { emptyDemand, type RciDemand } from './demand';
 import { BudgetLedger, ECONOMY_CONFIG, Loans, ServiceFunding, TaxRates, type EconomyConfig } from './economy/economy';
+import { EmploymentUnreachablePairCache, emptyEmploymentStats, type EmploymentStats } from './employment';
 import { LandValueIndex } from './landValue';
 import { PollutionIndex } from './pollution';
 import { ServiceCoverageIndex } from './services/coverage';
@@ -149,6 +151,12 @@ export interface World {
   loans: Loans;
   /** `ServiceCoverageIndex`, derived from the stations, the map and the funding. */
   serviceCoverage: ServiceCoverageIndex;
+  /** The `Citizen` entities, in id order. */
+  readonly citizens: Citizens;
+  employmentStats: EmploymentStats;
+  unreachablePairs: EmploymentUnreachablePairCache;
+  shoppingStats: ShoppingDemandStats;
+  commuteStats: CommuteStats;
 }
 
 export interface WorldOptions {
@@ -229,5 +237,10 @@ export function createWorld(options: WorldOptions = {}): World {
     serviceFunding: new ServiceFunding(),
     loans: new Loans(),
     serviceCoverage: new ServiceCoverageIndex(),
+    citizens: new Citizens(),
+    employmentStats: emptyEmploymentStats(),
+    unreachablePairs: new EmploymentUnreachablePairCache(),
+    shoppingStats: emptyShoppingStats(),
+    commuteStats: emptyCommuteStats(),
   };
 }

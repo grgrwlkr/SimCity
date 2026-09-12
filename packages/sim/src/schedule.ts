@@ -8,9 +8,11 @@ import { growBuildings } from './buildings/growth';
 import { updateOccupancy } from './buildings/occupancy';
 import { updateCityPopulation } from './buildings/population';
 import { upgradeBuildings } from './buildings/upgrade';
+import { citizenTripPlanner, cleanupHomelessCitizens, despawnOrphanedOwnedCars, handleTripFinished, recoverStuckTrips, spawnCitizensFromResidential } from './citizens';
 import { simTick } from './city';
 import type { GameCommand } from './commands';
 import { applyDailyEconomy } from './economy/economy';
+import { assignJobs, clearInvalidWorkplaces, computeEmploymentStats } from './employment';
 import { updateServiceCoverage } from './services/coverage';
 import { beginTickEvents } from './events';
 import { detectIntersections } from './intersections/index';
@@ -79,6 +81,15 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'invalidateRoutesOnGraphChange', run: invalidateRoutesOnGraphChange, runIn: IN_GAME },
   // SimStep::Tick — the game clock; writes HourAdvanced / DayAdvanced for every system after it.
   { name: 'simTick', run: simTick, runIn: IN_GAME },
+  // SimStep::Citizens, chained as in Rust: the open homes of the last tick fill up first, so the planner may send a
+  // new citizen out this tick; its trip requests are read by spawnTripVehicles later in this tick.
+  { name: 'spawnCitizensFromResidential', run: spawnCitizensFromResidential, runIn: IN_GAME },
+  { name: 'citizenTripPlanner', run: citizenTripPlanner, runIn: IN_GAME },
+  // After the planner: a trip requested this tick is never taken for an orphan.
+  { name: 'recoverStuckTrips', run: recoverStuckTrips, runIn: IN_GAME },
+  // SimStep::Employment: a job goes with its workplace before the unemployed are matched to open ones.
+  { name: 'clearInvalidWorkplaces', run: clearInvalidWorkplaces, runIn: IN_GAME },
+  { name: 'assignJobs', run: assignJobs, runIn: IN_GAME },
   // SimStep::Buildings, chained as in Rust: growth on this tick's hour, reading the demand, fields and utility
   // network of the last tick; it produces and levels the buildings the decay pipeline after it scans.
   { name: 'growBuildings', run: growBuildings, runIn: IN_GAME },
@@ -122,6 +133,12 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'nudgeLaneletStallReroute', run: nudgeLaneletStallReroute, runIn: IN_GAME },
   // Last: re-routes, or as the last resort removes, vehicles stuck past their thresholds.
   { name: 'resolveStuckVehicles', run: resolveStuckVehicles, runIn: IN_GAME },
+  // After traffic, which writes this tick's arrivals, removals included: citizens take them in the same tick (Rust read
+  // them on the next, a message living two frames).
+  { name: 'handleTripFinished', run: handleTripFinished, runIn: IN_GAME },
+  // PostSimStep::Citizens: residents a shrunken or vanished home no longer holds leave, then their parked cars go.
+  { name: 'cleanupHomelessCitizens', run: cleanupHomelessCitizens, runIn: IN_GAME },
+  { name: 'despawnOrphanedOwnedCars', run: despawnOrphanedOwnedCars, runIn: IN_GAME },
   // PostSimStep::TrafficIndex: the end-of-tick metrics RCI demand reads.
   { name: 'updateTrafficIndex', run: updateTrafficIndex, runIn: IN_GAME },
   // PostSimStep::Pollution: one chunk from the open factories of this tick; land value reads it below.
@@ -132,6 +149,8 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'updateUtilityNetwork', run: updateUtilityNetwork, runIn: IN_GAME },
   // PostSimStep::LandValue: one chunk from the pollution and coverage above, the traffic heat and the city fields.
   { name: 'computeLandValue', run: computeLandValue, runIn: IN_GAME },
+  // PostSimStep::EmploymentStats: after this tick's assignments and departures; demand reads the class gaps.
+  { name: 'computeEmploymentStats', run: computeEmploymentStats, runIn: IN_GAME },
   // PostSimStep::Economy, last of PostSim: the day's taxes from the occupancy of the day before, upkeep of what is
   // open, happiness from the coverage above.
   { name: 'applyDailyEconomy', run: applyDailyEconomy, runIn: IN_GAME },

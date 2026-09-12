@@ -242,17 +242,20 @@ export function utilityCapacity(kind: BuildingKind): number | undefined {
 export class Buildings {
   private nextId = 1;
   private list: Building[] = [];
+  /** Citizens look up their home and workplace every tick. */
+  private readonly byId = new Map<number, Building>();
 
   /** Adds `b` under a fresh id and returns it. */
   add(b: Building): Building {
     b.id = this.nextId;
     this.nextId += 1;
     this.list.push(b);
+    this.byId.set(b.id, b);
     return b;
   }
 
   get(id: number): Building | undefined {
-    return this.list.find((b) => b.id === id);
+    return this.byId.get(id);
   }
 
   all(): readonly Building[] {
@@ -260,11 +263,13 @@ export class Buildings {
   }
 
   remove(id: number): void {
+    if (!this.byId.delete(id)) return;
     this.list = this.list.filter((b) => b.id !== id);
   }
 
   clear(): void {
     this.list = [];
+    this.byId.clear();
   }
 
   fingerprintState(): unknown {
