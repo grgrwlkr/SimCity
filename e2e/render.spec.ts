@@ -230,7 +230,8 @@ test('hudShowsTheSpeedLadderAndTheRealRate', async ({ page }, testInfo) => {
   await expect(page.getByRole('navigation', { name: 'Скорость' }).getByRole('button')).toHaveText(['Стоп', '×1', '×3', '×10', '×60', '×360']);
   const x60 = page.getByRole('button', { name: '×60', exact: true });
   await x60.click();
-  await expect(x60).toHaveAttribute('aria-pressed', 'true');
+  // The pressed state comes back with the worker's next snapshot: under a full parallel run WebKit took past 5 s once.
+  await expect(x60).toHaveAttribute('aria-pressed', 'true', { timeout: 15_000 });
   await expect(page.getByTestId('real-rate')).toHaveText(/^×\d+(,\d)?$/);
   await expect(page.getByTestId('clock')).toHaveText(/^День \d+, \d{2}:\d{2}:\d{2}$/);
 

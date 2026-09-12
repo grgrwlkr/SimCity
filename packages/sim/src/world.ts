@@ -6,7 +6,7 @@ import { DEFAULT_GAME_HOUR_NS, createSimClock, defaultCity, type City } from './
 import { CityFields } from './cityFields';
 import { ClassDemand, emptyDemand, type RciDemand } from './demand';
 import { BudgetLedger, ECONOMY_CONFIG, Loans, ServiceFunding, TaxRates, type EconomyConfig } from './economy/economy';
-import { EmploymentUnreachablePairCache, emptyEmploymentStats, type EmploymentStats } from './employment';
+import { emptyEmploymentStats, type EmploymentStats } from './employment';
 import { LandValueIndex } from './landValue';
 import { PollutionIndex } from './pollution';
 import { ServiceCoverageIndex } from './services/coverage';
@@ -18,6 +18,8 @@ import { DEFAULT_MAP_CONFIG, type MapConfig } from './map/coords';
 import { DirtyTiles } from './map/dirty';
 import { MapGrid } from './map/grid';
 import { COMMAND_HISTORY_LIMIT, CommandHistory } from './map/history';
+import { DistrictTimes } from './meso/districts';
+import { MesoGraph } from './meso/graph';
 import { Notifications } from './notifications';
 import { Parking, defaultCitizenConfig, type CitizenConfig } from './parking';
 import { DEFAULT_RNG_SEED, stdRngSeedFromU64, type StdRng } from './rng';
@@ -73,6 +75,10 @@ export interface World {
   undoRedo: boolean[];
   readonly roadGraph: RoadGraph;
   readonly regionGraph: RegionGraph;
+  /** Carriageway links between boxes, for meso traffic and the district times. */
+  meso: MesoGraph;
+  /** Car travel times between districts of 16×16 tiles. */
+  readonly districtTimes: DistrictTimes;
   laneGraph: LaneGraph;
   laneletGraph: LaneletGraph;
   laneletConflicts: LaneletConflictMatrices;
@@ -176,7 +182,6 @@ export interface World {
   /** The spots the cars of citizens hold. */
   readonly parking: Parking;
   employmentStats: EmploymentStats;
-  unreachablePairs: EmploymentUnreachablePairCache;
   shoppingStats: ShoppingDemandStats;
   commuteStats: CommuteStats;
 }
@@ -207,6 +212,8 @@ export function createWorld(options: WorldOptions = {}): World {
     undoRedo: [],
     roadGraph: new RoadGraph(),
     regionGraph: new RegionGraph(),
+    meso: new MesoGraph(),
+    districtTimes: new DistrictTimes(),
     laneGraph: new LaneGraph(),
     laneletGraph: new LaneletGraph(),
     laneletConflicts: new LaneletConflictMatrices(),
@@ -269,7 +276,6 @@ export function createWorld(options: WorldOptions = {}): World {
     citizenConfig: defaultCitizenConfig(),
     parking: new Parking(grid.len()),
     employmentStats: emptyEmploymentStats(),
-    unreachablePairs: new EmploymentUnreachablePairCache(),
     shoppingStats: emptyShoppingStats(),
     commuteStats: emptyCommuteStats(),
   };

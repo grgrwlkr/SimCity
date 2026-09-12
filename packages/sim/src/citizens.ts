@@ -40,8 +40,10 @@ export const CITIZEN_TRIP_TIMEOUT_SECS = 180;
 const MAX_MOVING_IN_PER_TICK = 8;
 const COMMUTE_EMA_ALPHA = f32(0.15);
 
-/** Minutes of the day a citizen leaves for work in: 06:00 to 09:00. */
-export const WORK_DEPARTURE_WINDOW = [6 * 60, 9 * 60] as const;
+/** Minutes of the day a citizen starts work in: 06:00 to 09:00. They leave earlier by the trip. */
+export const WORK_START_WINDOW = [6 * 60, 9 * 60] as const;
+/** A car trip with no district times yet is measured as the crow flies at this speed, km/h. */
+const CROW_FLIES_KMH = 40;
 /** A shift, minutes: eight to nine hours. */
 export const SHIFT_MINUTES = [8 * 60, 9 * 60] as const;
 /** A worker shops between 17:00 and 20:00, a citizen without a job between 10:00 and 17:00. */
@@ -100,8 +102,8 @@ export interface CitizenSpec {
   readonly carParkedAt: TilePos;
   /** The building the citizen works at. */
   readonly workplace: number | null;
-  /** Minute of the day the citizen leaves for work. */
-  readonly workDeparture: number;
+  /** Minute of the day the citizen starts work; they leave earlier by the trip they expect. */
+  readonly workStart: number;
   /** Minutes the citizen stays at work. */
   readonly shiftMinutes: number;
   /** Game minute of the next move: setting out for `nextPurpose`, or thinking the day over when it is `null`. */
@@ -137,8 +139,8 @@ export const emptyShoppingStats = (): ShoppingDemandStats => ({ demandEvents: 0,
 export const emptyCommuteStats = (): CommuteStats => ({ avgCommuteSecs: 0, samples: 0 });
 
 export interface CitizenDay {
-  /** Minute of the day the citizen leaves for work; 07:00 when not given. */
-  readonly workDeparture?: number;
+  /** Minute of the day the citizen starts work; 07:00 when not given. */
+  readonly workStart?: number;
   /** Minutes at work; eight hours when not given. */
   readonly shiftMinutes?: number;
 }
@@ -154,7 +156,7 @@ export function newCitizen(home: Building, day: CitizenDay = {}): CitizenSpec {
     carPlace: NO_PLACE,
     carParkedAt: home.anchor,
     workplace: null,
-    workDeparture: day.workDeparture ?? 7 * 60,
+    workStart: day.workStart ?? 7 * 60,
     shiftMinutes: day.shiftMinutes ?? 8 * 60,
     nextAt: null,
     nextPurpose: null,
@@ -274,7 +276,7 @@ export class Citizens {
   carPlace = new Int32Array(0);
   carX = new Int32Array(0);
   carY = new Int32Array(0);
-  workDeparture = new Uint16Array(0);
+  workStart = new Uint16Array(0);
   shiftMinutes = new Uint16Array(0);
   /** A game minute, -1 for no plan. */
   nextAt = new Int32Array(0);
@@ -289,6 +291,8 @@ export class Citizens {
   readonly freeSlots: number[] = [];
   /** Citizens at home with no plan: the planner plans them on its next run. */
   unplanned: number[] = [];
+  /** Citizens without a job, oldest first: `assignJobs` works through them. */
+  jobSeekers: number[] = [];
   readonly queue = new MinuteQueue();
   private readonly stateCounts = new Int32Array(CITIZEN_STATES.length);
   private readonly residents = new Map<number, number>();
@@ -331,7 +335,7 @@ export class Citizens {
     this.carPlace[slot] = spec.carPlace;
     this.carX[slot] = spec.carParkedAt.x;
     this.carY[slot] = spec.carParkedAt.y;
-    this.workDeparture[slot] = spec.workDeparture;
+    this.workStart[slot] = spec.workStart;
     this.shiftMinutes[slot] = spec.shiftMinutes;
     this.nextAt[slot] = NONE;
     this.nextPurpose[slot] = NONE;
@@ -343,6 +347,7 @@ export class Citizens {
     countUp(this.residents, spec.home, 1);
     if (spec.workplace !== null) countUp(this.workers, spec.workplace, 1);
     const ref = this.ref(slot);
+    if (spec.workplace === null) this.jobSeekers.push(ref);
     if (spec.nextAt !== null) this.schedule(slot, spec.nextAt, spec.nextPurpose);
     else if (spec.state === 'AtHome') this.unplanned.push(ref);
     return ref;
@@ -371,6 +376,7 @@ export class Citizens {
     if (this.workplace[slot] !== NONE) countUp(this.workers, this.workplace[slot]!, -1);
     this.workplace[slot] = building ?? NONE;
     if (building !== null) countUp(this.workers, building, 1);
+    else this.jobSeekers.push(this.ref(slot));
   }
 
   /** Sets the next move and queues the citizen for its minute; `null` clears it without queueing. */
@@ -420,7 +426,7 @@ export class Citizens {
       carPlace: this.carPlace[slot]!,
       carParkedAt: { x: this.carX[slot]!, y: this.carY[slot]! },
       workplace: this.workplace[slot] === NONE ? null : this.workplace[slot]!,
-      workDeparture: this.workDeparture[slot]!,
+      workStart: this.workStart[slot]!,
       shiftMinutes: this.shiftMinutes[slot]!,
       nextAt: this.nextAt[slot] === NONE ? null : this.nextAt[slot]!,
       nextPurpose: purpose(this.nextPurpose[slot]!),
@@ -439,6 +445,7 @@ export class Citizens {
     this.plannerWoken = 0;
     this.freeSlots.length = 0;
     this.unplanned = [];
+    this.jobSeekers = [];
     this.queue.clear();
     this.stateCounts.fill(0);
     this.residents.clear();
@@ -470,7 +477,7 @@ export const LAYER_NAMES = [
   'carPlace',
   'carX',
   'carY',
-  'workDeparture',
+  'workStart',
   'shiftMinutes',
   'nextAt',
   'nextPurpose',
@@ -503,9 +510,9 @@ export function spawnCitizensFromResidential(w: World): void {
       // A capacity never throws: a city past two million waits for someone to leave.
       if (citizens.full) return;
       const rng = w.simRng;
-      const workDeparture = rangeU32(rng, WORK_DEPARTURE_WINDOW[0], WORK_DEPARTURE_WINDOW[1]);
+      const workStart = rangeU32(rng, WORK_START_WINDOW[0], WORK_START_WINDOW[1]);
       const shiftMinutes = rangeU32(rng, SHIFT_MINUTES[0], SHIFT_MINUTES[1] + 1);
-      const ref = citizens.add(newCitizen(b, { workDeparture, shiftMinutes }));
+      const ref = citizens.add(newCitizen(b, { workStart, shiftMinutes }));
       if (randomBool(rng, CAR_OWNERSHIP[b.profile.class])) giveCar(w, ref);
     }
   }
@@ -577,6 +584,24 @@ function tourSpot(w: World, slot: number, from: TilePos, to: TilePos, destinatio
   return findParking(w, to, destination, meters > cfg.farParkingTripMeters ? Infinity : cfg.parkingWalkMeters);
 }
 
+/** Whole minutes a trip from `from` to `to` is expected to take: by the district times for a driver, on foot otherwise. */
+function expectedTripMinutes(w: World, slot: number, from: TilePos, to: TilePos): number {
+  const meters = tripMeters(w, from, to);
+  if (w.citizens.carStatus[slot] === CAR_NONE || meters <= w.citizenConfig.walkMaxMeters) return walkMinutes(w, from, to);
+  const seconds = Math.max(w.districtTimes.between(from, to) ?? 0, meters / (CROW_FLIES_KMH / 3.6));
+  return Math.ceil(seconds / 60);
+}
+
+/** Minute of the day a worker leaves home to start work on time; the start itself without a home or a workplace. */
+function workDepartureMinute(w: World, slot: number): number {
+  const c = w.citizens;
+  const start = c.workStart[slot]!;
+  const home = w.buildings.get(c.home[slot]!);
+  const work = w.buildings.get(c.workplace[slot]!);
+  if (home === undefined || work === undefined) return start;
+  return Math.max(start - expectedTripMinutes(w, slot, entrance(w, home, work.anchor), entrance(w, work, home.anchor)), 0);
+}
+
 /**
  * The next move of a citizen at home: to work at their hour, shopping (decided once a day, when the shopping hours
  * have come), or thinking again when those hours open. A citizen planning at the very minute they leave for work
@@ -590,7 +615,7 @@ function planDay(w: World, slot: number, now: number, replan: boolean): void {
   const employed = c.workplace[slot] !== NONE;
   const [open, close] = employed ? EVENING_SHOPPING : DAYTIME_SHOPPING;
   const decidedToday = c.shoppingDecidedDay[slot] === w.city.day;
-  const departure = c.workDeparture[slot]!;
+  const departure = employed ? workDepartureMinute(w, slot) : 0;
 
   let shopAt: number | undefined;
   let thinkAt = dayStart + MINUTES_PER_DAY + open;

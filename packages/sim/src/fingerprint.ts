@@ -227,6 +227,25 @@ function hashEconomy(h: Fnv64, w: World): void {
 }
 
 /** Citizens, their departures, and the employment, shopping and commute state that feed demand. */
+function hashMeso(h: Fnv64, w: World): void {
+  const g = w.meso;
+  h.f64(g.builtFor ?? -1);
+  h.u32(g.width);
+  h.u32(g.height);
+  h.u32(g.linkCount);
+  for (const layer of [g.dir, g.lanes, g.length, g.speedKmh, g.startX, g.startY, g.endX, g.endY, g.tileLink, g.tileOffset, g.succStart, g.succLink, g.succBoxTiles, g.succCluster]) {
+    h.bytes(layer);
+  }
+  const d = w.districtTimes;
+  h.f64(d.graphVersion);
+  h.u32(d.count);
+  h.u32(d.cursor);
+  h.bytes(d.matrix);
+  h.bytes(d.rowBuiltFor);
+  h.bytes(d.secondsPerTile);
+  for (const entries of d.entries) h.bytes(entries);
+}
+
 function hashCitizens(h: Fnv64, w: World): void {
   // Layers as words up to the high-water mark, not JSON: a million citizens.
   const c = w.citizens;
@@ -257,7 +276,8 @@ function hashCitizens(h: Fnv64, w: World): void {
   h.bytes(w.parking.streets);
   h.str(stableJson(w.citizenConfig));
   h.str(stableJson(w.employmentStats));
-  h.str(stableJson(w.unreachablePairs.fingerprintState()));
+  h.u32(c.jobSeekers.length);
+  for (const ref of c.jobSeekers) h.i32(ref);
   h.str(stableJson(w.shoppingStats));
   h.str(stableJson(w.commuteStats));
 }
@@ -485,6 +505,7 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
   ['buildings', hashBuildings],
   ['economy', hashEconomy],
   ['citizens', hashCitizens],
+  ['meso', hashMeso],
 ];
 
 export interface FingerprintSection {

@@ -2,7 +2,7 @@
 import { emptyCommuteStats, emptyShoppingStats } from './citizens';
 import { defaultCity } from './city';
 import { resetEconomyPolicy } from './economy/economy';
-import { EmploymentUnreachablePairCache, emptyEmploymentStats } from './employment';
+import { emptyEmploymentStats } from './employment';
 import { seedGrowthRngFromMap, seedSimRngFromMap } from './seeding';
 import { ServiceCoverageIndex } from './services/coverage';
 import { teardownTraffic } from './traffic/lifecycle';
@@ -72,7 +72,6 @@ function enterMainMenu(w: World): void {
   w.citizens.clear();
   w.parking.clear();
   w.employmentStats = emptyEmploymentStats();
-  w.unreachablePairs = new EmploymentUnreachablePairCache();
   w.shoppingStats = emptyShoppingStats();
   w.commuteStats = emptyCommuteStats();
   // BuildingsPlugin: cleanup_buildings, reset_building_upgrade_clock.

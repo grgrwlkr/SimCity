@@ -1,13 +1,11 @@
-// Port of crates/simcity_sim/src/game/employment.rs: unemployed citizens take the nearest reachable job of their home's
-// class, a job goes with its workplace, and the stats demand reads. Only open workplaces hire; Rust hired at building
-// sites. The config is `assets/config/employment.ron` as a constant until the RON loader of stage 6.
+// Port of crates/simcity_sim/src/game/employment.rs: unemployed citizens take a job of their home's class, a job goes with
+// its workplace, and the stats demand reads. Only open workplaces hire; Rust hired at building sites. TS stage 3½b: a
+// queue of job seekers takes the job nearest by the district travel times, where Rust searched a road path for every
+// pair of home and job and kept a cache of the pairs no path joined.
 import { isOperational, type Building } from './buildings/building';
-import type { TilePos } from './commands';
 import type { WealthClass } from './economy/wealth';
-import { shuffle } from './rng';
-import { roadPathCtx } from './traffic/reroute';
+import { NO_TIME } from './meso/districts';
 import { adjacentRoadTowardsFootprint } from './transport/anchors';
-import { findRoadPathCached } from './transport/pathfinding';
 import type { World } from './world';
 
 const f32 = Math.fround;
@@ -15,28 +13,11 @@ const f32 = Math.fround;
 export interface EmploymentConfig {
   /** New assignments per tick. */
   readonly maxAssignmentsPerTick: number;
-  /** Workplaces a citizen weighs. */
-  readonly maxCandidatesPerCitizen: number;
-  /** Road path searches per tick. */
-  readonly maxPathfindAttemptsPerTick: number;
-  /** Unemployed citizens scanned per tick. */
-  readonly maxUnassignedScansPerTick: number;
-  /** Remember home and job road pairs no path joins, across ticks. */
-  readonly unreachablePairCacheEnabled: boolean;
-  readonly unreachablePairCacheCapacity: number;
-  /** Ticks an unreachable pair is remembered without being looked at. */
-  readonly unreachablePairCacheTtlTicks: number;
+  /** Job seekers looked at per tick. */
+  readonly maxSeekersPerTick: number;
 }
 
-export const EMPLOYMENT_CONFIG: EmploymentConfig = {
-  maxAssignmentsPerTick: 32,
-  maxCandidatesPerCitizen: 24,
-  maxPathfindAttemptsPerTick: 128,
-  maxUnassignedScansPerTick: 512,
-  unreachablePairCacheEnabled: true,
-  unreachablePairCacheCapacity: 4096,
-  unreachablePairCacheTtlTicks: 600,
-};
+export const EMPLOYMENT_CONFIG: EmploymentConfig = { maxAssignmentsPerTick: 32, maxSeekersPerTick: 512 };
 
 export type ByClass = Record<WealthClass, number>;
 const byClass = (): ByClass => ({ Low: 0, Middle: 0, High: 0 });
@@ -53,18 +34,10 @@ export interface EmploymentStats {
   jobsByClass: ByClass;
   /** Residents without a job, by the class of their home. */
   unemployedByClass: ByClass;
-  pathfindAttemptsLastTick: number;
-  pathfindFailuresLastTick: number;
-  skippedFailedPairsLastTick: number;
-  unassignedScannedLastTick: number;
+  /** Job seekers looked at on the last tick, and how many of them took a job. */
+  seekersScannedLastTick: number;
+  assignedLastTick: number;
   budgetHitLastTick: boolean;
-  unreachableCacheLookupsLastTick: number;
-  skippedUnreachableCacheLastTick: number;
-  unreachableCacheInsertsLastTick: number;
-  unreachableCacheEntries: number;
-  unreachableCacheTtlEvictionsLastTick: number;
-  unreachableCacheCapacityEvictionsLastTick: number;
-  unreachableCacheGraphClearedLastTick: boolean;
 }
 
 export function emptyEmploymentStats(): EmploymentStats {
@@ -77,18 +50,9 @@ export function emptyEmploymentStats(): EmploymentStats {
     workersByClass: byClass(),
     jobsByClass: byClass(),
     unemployedByClass: byClass(),
-    pathfindAttemptsLastTick: 0,
-    pathfindFailuresLastTick: 0,
-    skippedFailedPairsLastTick: 0,
-    unassignedScannedLastTick: 0,
+    seekersScannedLastTick: 0,
+    assignedLastTick: 0,
     budgetHitLastTick: false,
-    unreachableCacheLookupsLastTick: 0,
-    skippedUnreachableCacheLastTick: 0,
-    unreachableCacheInsertsLastTick: 0,
-    unreachableCacheEntries: 0,
-    unreachableCacheTtlEvictionsLastTick: 0,
-    unreachableCacheCapacityEvictionsLastTick: 0,
-    unreachableCacheGraphClearedLastTick: false,
   };
 }
 
@@ -97,233 +61,77 @@ export function classJobMatches(home: WealthClass, job: WealthClass): boolean {
   return home === job;
 }
 
-/** The directional key of a home road and a job road. */
-export function pairKey(homeRoad: TilePos, jobRoad: TilePos): string {
-  return `${homeRoad.x},${homeRoad.y}>${jobRoad.x},${jobRoad.y}`;
-}
-
-export interface CacheMaintenance {
-  graphCleared: boolean;
-  ttlEvictions: number;
-  capacityEvictions: number;
-}
-
-/** `EmploymentUnreachablePairCache`: home and job road pairs no path joins, remembered across ticks. */
-export class EmploymentUnreachablePairCache {
-  private graphVersion = 0;
-  private tick = 0;
-  /** Pair → the tick it was last looked at. */
-  private readonly lastSeen = new Map<string, number>();
-  /** An approximate LRU queue from `head` on: duplicates allowed, stale entries skipped when they reach the front. */
-  private lru: Array<readonly [string, number]> = [];
-  private head = 0;
-
-  beginTick(graphVersion: number, enabled: boolean, ttlTicks: number, capacity: number): CacheMaintenance {
-    this.tick += 1;
-    const maintenance: CacheMaintenance = { graphCleared: false, ttlEvictions: 0, capacityEvictions: 0 };
-    if (this.graphVersion !== graphVersion) {
-      this.clearAll();
-      this.graphVersion = graphVersion;
-      maintenance.graphCleared = true;
-    }
-    if (!enabled) {
-      this.clearAll();
-      return maintenance;
-    }
-    maintenance.ttlEvictions = this.purgeTtl(ttlTicks);
-    maintenance.capacityEvictions = this.enforceCapacity(capacity);
-    return maintenance;
-  }
-
-  containsUnreachable(key: string): boolean {
-    if (!this.lastSeen.has(key)) return false;
-    this.touch(key);
-    return true;
-  }
-
-  rememberUnreachable(key: string, capacity: number): { readonly inserted: boolean; readonly capacityEvictions: number } {
-    const known = this.lastSeen.has(key);
-    this.touch(key);
-    return known ? { inserted: false, capacityEvictions: 0 } : { inserted: true, capacityEvictions: this.enforceCapacity(capacity) };
-  }
-
-  len(): number {
-    return this.lastSeen.size;
-  }
-
-  fingerprintState(): unknown {
-    return [this.graphVersion, this.tick, [...this.lastSeen], this.lru.slice(this.head)];
-  }
-
-  private touch(key: string): void {
-    this.lastSeen.set(key, this.tick);
-    this.lru.push([key, this.tick]);
-  }
-
-  private clearAll(): void {
-    this.lastSeen.clear();
-    this.lru = [];
-    this.head = 0;
-  }
-
-  private purgeTtl(ttlTicks: number): number {
-    if (ttlTicks === 0) {
-      const removed = this.lastSeen.size;
-      this.clearAll();
-      return removed;
-    }
-    let removed = 0;
-    while (this.head < this.lru.length) {
-      const [key, touched] = this.lru[this.head]!;
-      if (this.tick - touched <= ttlTicks) break;
-      this.head += 1;
-      if (this.lastSeen.get(key) === touched) {
-        this.lastSeen.delete(key);
-        removed += 1;
-      }
-    }
-    this.compact();
-    return removed;
-  }
-
-  private enforceCapacity(capacity: number): number {
-    if (capacity === 0) {
-      const removed = this.lastSeen.size;
-      this.clearAll();
-      return removed;
-    }
-    let removed = 0;
-    while (this.lastSeen.size > capacity && this.head < this.lru.length) {
-      const [key, touched] = this.lru[this.head]!;
-      this.head += 1;
-      if (this.lastSeen.get(key) === touched) {
-        this.lastSeen.delete(key);
-        removed += 1;
-      }
-    }
-    // The queue drained without restoring capacity: evict in insertion order, which is deterministic.
-    for (const key of this.lastSeen.keys()) {
-      if (this.lastSeen.size <= capacity) break;
-      this.lastSeen.delete(key);
-      removed += 1;
-    }
-    this.compact();
-    return removed;
-  }
-
-  private compact(): void {
-    if (this.head > 1024 && this.head * 2 > this.lru.length) {
-      this.lru = this.lru.slice(this.head);
-      this.head = 0;
-    }
-  }
-}
-
 const isWorkplace = (b: Building) => b.kind === 'Commercial' || b.kind === 'Industrial';
 
+const besideRoad = (w: World, b: Building) => adjacentRoadTowardsFootprint(w.grid, b.anchor, b.width, b.length, b.anchor) !== undefined;
+
 /**
- * `assign_jobs` (SimStep::Employment): open jobs in a shuffled order; each unemployed citizen, within the per-tick
- * budgets, takes the candidate of their class with the shortest road path from home.
+ * `assign_jobs` (SimStep::Employment): within the per-tick budgets, each job seeker takes an open job of their home's
+ * class in the district nearest by travel time from home; a seeker with none in reach, or whose home district has no
+ * times yet, waits for a later tick. A home or a workplace off the road takes part in nothing.
  */
 export function assignJobs(w: World): void {
   const cfg = EMPLOYMENT_CONFIG;
   const stats = w.employmentStats;
-  const cache = w.unreachablePairs;
-  const cacheOn = cfg.unreachablePairCacheEnabled;
-  const capacity = cfg.unreachablePairCacheCapacity;
-  const maintenance = cache.beginTick(w.roadGraph.version, cacheOn, cfg.unreachablePairCacheTtlTicks, capacity);
-
   const citizens = w.citizens;
-  const jobs = w.buildings.all().filter((b) => isWorkplace(b) && isOperational(b) && b.capacityJobs > citizens.workersOf(b.id));
+  const times = w.districtTimes;
+  stats.seekersScannedLastTick = 0;
+  stats.assignedLastTick = 0;
+  stats.budgetHitLastTick = false;
+  if (citizens.jobSeekers.length === 0) return;
 
-  let assigned = 0;
-  let attempts = 0;
-  let failures = 0;
-  let skippedFailed = 0;
-  let scanned = 0;
-  let budgetHit = false;
-  let lookups = 0;
-  let skippedCached = 0;
-  let inserts = 0;
-  let capacityEvictions = maintenance.capacityEvictions;
-
-  if (jobs.length > 0) {
-    shuffle(w.simRng, jobs);
-    const candidates = Math.min(jobs.length, cfg.maxCandidatesPerCitizen);
-    // Pairs that failed this tick, so many citizens of one block do not repeat one failed search.
-    const failed = new Set<string>();
-    const ctx = roadPathCtx(w);
-    seekers: for (let slot = 0; slot < citizens.highWater; slot++) {
-      if (assigned >= cfg.maxAssignmentsPerTick) break;
-      if (citizens.alive[slot] !== 1 || citizens.workplace[slot] !== -1) continue;
-      scanned += 1;
-      if (cfg.maxUnassignedScansPerTick > 0 && scanned > cfg.maxUnassignedScansPerTick) {
-        budgetHit = true;
-        break;
-      }
-      const home = w.buildings.get(citizens.home[slot]!);
-      if (home === undefined) continue;
-
-      let best: { readonly job: Building; readonly steps: number } | undefined;
-      for (let i = 0; i < candidates; i++) {
-        const job = jobs[i]!;
-        if (citizens.workersOf(job.id) >= job.capacityJobs) continue;
-        if (!classJobMatches(home.profile.class, job.profile.class)) continue;
-        const homeRoad = adjacentRoadTowardsFootprint(w.grid, home.anchor, home.width, home.length, job.anchor);
-        if (homeRoad === undefined) continue;
-        const jobRoad = adjacentRoadTowardsFootprint(w.grid, job.anchor, job.width, job.length, home.anchor);
-        if (jobRoad === undefined) continue;
-
-        const key = pairKey(homeRoad, jobRoad);
-        if (failed.has(key)) {
-          skippedFailed += 1;
-          continue;
-        }
-        if (cacheOn) {
-          lookups += 1;
-          if (cache.containsUnreachable(key)) {
-            skippedCached += 1;
-            continue;
-          }
-        }
-        if (cfg.maxPathfindAttemptsPerTick > 0 && attempts >= cfg.maxPathfindAttemptsPerTick) {
-          budgetHit = true;
-          break seekers;
-        }
-        attempts += 1;
-
-        const path = findRoadPathCached(ctx, homeRoad, jobRoad);
-        if (path.length === 0) {
-          failures += 1;
-          failed.add(key);
-          if (cacheOn) {
-            const result = cache.rememberUnreachable(key, capacity);
-            if (result.inserted) inserts += 1;
-            capacityEvictions += result.capacityEvictions;
-          }
-          continue;
-        }
-        if (best === undefined || path.length < best.steps) best = { job, steps: path.length };
-      }
-
-      if (best === undefined) continue;
-      citizens.setWorkplace(slot, best.job.id);
-      assigned += 1;
-    }
+  // Open jobs by district, in building order.
+  const open = new Map<number, Building[]>();
+  for (const b of w.buildings.all()) {
+    if (!isWorkplace(b) || !isOperational(b) || b.capacityJobs <= citizens.workersOf(b.id) || !besideRoad(w, b)) continue;
+    const district = times.districtAt(b.anchor);
+    if (district === undefined) continue;
+    const jobs = open.get(district);
+    if (jobs === undefined) open.set(district, [b]);
+    else jobs.push(b);
   }
 
-  stats.pathfindAttemptsLastTick = attempts;
-  stats.pathfindFailuresLastTick = failures;
-  stats.skippedFailedPairsLastTick = skippedFailed;
-  stats.unassignedScannedLastTick = scanned;
-  stats.budgetHitLastTick = budgetHit;
-  stats.unreachableCacheLookupsLastTick = lookups;
-  stats.skippedUnreachableCacheLastTick = skippedCached;
-  stats.unreachableCacheInsertsLastTick = inserts;
-  stats.unreachableCacheEntries = cache.len();
-  stats.unreachableCacheTtlEvictionsLastTick = maintenance.ttlEvictions;
-  stats.unreachableCacheCapacityEvictionsLastTick = capacityEvictions;
-  stats.unreachableCacheGraphClearedLastTick = maintenance.graphCleared;
+  const seekers = citizens.jobSeekers;
+  citizens.jobSeekers = [];
+  const waiting: number[] = [];
+  let assigned = 0;
+  let scanned = 0;
+  for (let i = 0; i < seekers.length; i++) {
+    if (assigned >= cfg.maxAssignmentsPerTick || scanned >= cfg.maxSeekersPerTick) {
+      stats.budgetHitLastTick = true;
+      citizens.jobSeekers.push(...seekers.slice(i));
+      break;
+    }
+    const ref = seekers[i]!;
+    const slot = citizens.resolve(ref);
+    if (slot === undefined || citizens.workplace[slot] !== -1) continue;
+    scanned += 1;
+    const home = w.buildings.get(citizens.home[slot]!);
+    const from = home === undefined ? undefined : times.districtAt(home.anchor);
+    if (home === undefined || from === undefined || !times.rowReady(from) || !besideRoad(w, home)) {
+      waiting.push(ref);
+      continue;
+    }
+    let job: Building | undefined;
+    let best = NO_TIME;
+    for (const [district, jobs] of open) {
+      const seconds = times.seconds(from, district);
+      if (seconds >= best) continue;
+      const candidate = jobs.find((b) => classJobMatches(home.profile.class, b.profile.class) && citizens.workersOf(b.id) < b.capacityJobs);
+      if (candidate === undefined) continue;
+      job = candidate;
+      best = seconds;
+    }
+    if (job === undefined) {
+      waiting.push(ref);
+      continue;
+    }
+    citizens.setWorkplace(slot, job.id);
+    assigned += 1;
+  }
+  citizens.jobSeekers.push(...waiting);
+  stats.seekersScannedLastTick = scanned;
+  stats.assignedLastTick = assigned;
 }
 
 /** `clear_invalid_workplaces` (SimStep::Employment, before assignment): a job goes with its workplace. */

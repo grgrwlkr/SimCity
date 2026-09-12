@@ -35,6 +35,8 @@ export * from './map/history';
 export * from './map/roads';
 export * from './map/roadTool';
 export * from './map/zonePlacement';
+export * from './meso/districts';
+export * from './meso/graph';
 export * from './notifications';
 export * from './parking';
 export * from './probe';

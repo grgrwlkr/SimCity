@@ -6,8 +6,9 @@ import { newBuilding, type Building } from '../src/buildings/building';
 import { newCitizen } from '../src/citizens';
 import type { BuildingKind, RoadCell, TilePos } from '../src/commands';
 import type { WealthClass } from '../src/economy/wealth';
-import { EmploymentUnreachablePairCache, assignJobs, classJobMatches, clearInvalidWorkplaces, computeEmploymentStats, pairKey } from '../src/employment';
+import { assignJobs, classJobMatches, clearInvalidWorkplaces, computeEmploymentStats } from '../src/employment';
 import { MapGrid } from '../src/map/grid';
+import { roadSegmentCommands } from '../src/map/roadTool';
 import { requestState } from '../src/state';
 import { createWorld, type World } from '../src/world';
 import { t, worldOn } from './buildings/helpers';
@@ -18,7 +19,7 @@ function building(kind: BuildingKind, anchor: TilePos, jobs: number, wealth: Wea
 
 const workplace = (w: World, ref: number) => w.citizens.view(ref)!.workplace;
 
-const ROAD: RoadCell ={ kind: 'TwoLane', dir: 'East', lane: 0, flow: { kind: 'TwoWay' }, laneType: 'Regular' };
+const ROAD: RoadCell = { kind: 'TwoLane', dir: 'East', lane: 0, flow: { kind: 'TwoWay' }, laneType: 'Regular' };
 
 /** A 32×16 town with one road along y = 5, its graphs built. */
 function town(): World {
@@ -54,58 +55,6 @@ describe('employment stats', () => {
   });
 });
 
-describe('unreachable pair cache', () => {
-  it('unreachableCacheKeyIsDirectional', () => {
-    const cache = new EmploymentUnreachablePairCache();
-    const ab = pairKey(t(1, 1), t(2, 2));
-    cache.beginTick(1, true, 10, 32);
-    cache.rememberUnreachable(ab, 32);
-    expect(cache.containsUnreachable(ab)).toBe(true);
-    expect(cache.containsUnreachable(pairKey(t(2, 2), t(1, 1)))).toBe(false);
-  });
-
-  it('unreachableCacheExpiresAfterTtlTicks', () => {
-    const cache = new EmploymentUnreachablePairCache();
-    const key = pairKey(t(3, 3), t(4, 4));
-    cache.beginTick(1, true, 2, 32);
-    cache.rememberUnreachable(key, 32);
-    cache.beginTick(1, true, 2, 32);
-    cache.beginTick(1, true, 2, 32);
-    expect(cache.len()).toBe(1);
-    cache.beginTick(1, true, 2, 32);
-    expect(cache.len()).toBe(0);
-    expect(cache.containsUnreachable(key)).toBe(false);
-  });
-
-  it('unreachableCacheEnforcesCapacityWithLruTouch', () => {
-    const cache = new EmploymentUnreachablePairCache();
-    const a = pairKey(t(1, 1), t(1, 2));
-    const b = pairKey(t(2, 1), t(2, 2));
-    const c = pairKey(t(3, 1), t(3, 2));
-    cache.beginTick(1, true, 100, 2);
-    cache.rememberUnreachable(a, 2);
-    cache.rememberUnreachable(b, 2);
-    cache.beginTick(1, true, 100, 2);
-    expect(cache.containsUnreachable(a)).toBe(true);
-    cache.beginTick(1, true, 100, 2);
-    cache.rememberUnreachable(c, 2);
-
-    expect(cache.len()).toBe(2);
-    expect(cache.containsUnreachable(a)).toBe(true);
-    expect(cache.containsUnreachable(c)).toBe(true);
-    expect(cache.containsUnreachable(b)).toBe(false);
-  });
-
-  it('unreachableCacheClearsOnGraphVersionChange', () => {
-    const cache = new EmploymentUnreachablePairCache();
-    cache.beginTick(10, true, 100, 32);
-    cache.rememberUnreachable(pairKey(t(7, 7), t(8, 8)), 32);
-    expect(cache.len()).toBe(1);
-    expect(cache.beginTick(11, true, 100, 32).graphCleared).toBe(true);
-    expect(cache.len()).toBe(0);
-  });
-});
-
 describe('job assignment', () => {
   it('aWorkerTakesAJobOfTheClassOfTheirHomeThatTheRoadReaches', () => {
     const w = town();
@@ -122,6 +71,31 @@ describe('job assignment', () => {
     expect(workplace(w, first), 'the one middle-class job the road reaches').toBe(shop.id);
     expect(workplace(w, second), 'its one job is taken and the low-class shop is not for them').toBeNull();
     expect(w.citizens.workersOf(shop.id)).toBe(1);
+  });
+
+  // Stage 3½b: by the district travel times, not by the tiles of a path. The shop down the street is 110 tiles away at
+  // 40 km/h; the works on the arterial takes a longer road, most of it at 60 km/h, and is reached sooner.
+  it('aWorkerTakesTheJobNearestByTravelTime', () => {
+    const w = createWorld({ mapWidth: 128, mapHeight: 32 });
+    requestState(w, 'InGame');
+    frame(w, 0);
+    for (const [from, to, kind] of [
+      [{ x: 1, y: 8 }, { x: 126, y: 8 }, 'TwoLane'],
+      [{ x: 10, y: 7 }, { x: 10, y: 21 }, 'TwoLane'],
+      [{ x: 1, y: 20 }, { x: 126, y: 20 }, 'FourLane'],
+    ] as const) {
+      w.commands.push(...roadSegmentCommands(from, to, kind, w.trafficConfig.driveOnRight, false));
+    }
+    // The commands apply after the frame, the graphs on the next tick, sixteen rows of times over the four after it.
+    step(w, 8);
+    const home = w.buildings.add(building('Residential', t(4, 9), 0, 'Middle'));
+    w.buildings.add(building('Commercial', t(118, 9), 5, 'Middle'));
+    const works = w.buildings.add(building('Industrial', t(118, 22), 5, 'Middle'));
+    const worker = w.citizens.add(newCitizen(home));
+
+    assignJobs(w);
+
+    expect(workplace(w, worker)).toBe(works.id);
   });
 
   it('noOneWorksAtABuildingStillUnderConstruction', () => {

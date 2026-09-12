@@ -56,21 +56,21 @@ function arrive(w: World, citizen: number, purpose: 'Work' | 'Shop' | 'ReturnHom
 
 const inside = (b: Building, p: TilePos) => p.x >= b.anchor.x && p.x < b.anchor.x + b.width && p.y >= b.anchor.y && p.y < b.anchor.y + b.length;
 
-/** A home, a shop and a thousand of its workers leaving for work a minute apart in tens, 07:00 to 08:39. */
+/** A home, a shop and a thousand of its workers starting work a minute apart in tens, 07:00 to 08:39, three minutes' walk away. */
 function morningCrowd() {
   const w = worldOn(new MapGrid(32, 16));
   const house = home(w, t(2, 2));
   const shop = shopAt(w, 20);
-  for (let i = 0; i < 1000; i++) w.citizens.add({ ...newCitizen(house, { workDeparture: 7 * 60 + (i % 100) }), workplace: shop.id });
+  for (let i = 0; i < 1000; i++) w.citizens.add({ ...newCitizen(house, { workStart: 7 * 60 + (i % 100) }), workplace: shop.id });
   return w;
 }
 
-/** A town two kilometres long: a home at its west end, a worker leaving at seven for `workplace`. */
+/** A town two kilometres long: a home at its west end, a worker starting at seven at `workplace`. */
 function commuter(width: number, workplaceX: number, options: { car?: boolean; jobs?: number } = {}) {
   const w = worldOn(new MapGrid(width, 16));
   const house = home(w, t(2, 2));
   const work = shopAt(w, workplaceX, 2, options.jobs ?? 5);
-  const worker = w.citizens.add({ ...newCitizen(house, { workDeparture: 7 * 60 }), workplace: work.id });
+  const worker = w.citizens.add({ ...newCitizen(house, { workStart: 7 * 60 }), workplace: work.id });
   if (options.car === true) expect(giveCar(w, worker), 'the car parks at home').toBe(true);
   return { w, house, work, worker };
 }
@@ -167,16 +167,18 @@ describe('citizens', () => {
     spawnCitizensFromResidential(w);
     expect(w.citizens.residentsOf(house.id), 'the rest on the next, and no one into a building site').toBe(12);
     expect(w.citizens.count).toBe(12);
-    const departures = w.citizens.refs().map((ref) => view(w, ref).workDeparture);
-    expect(departures.every((m) => m >= 6 * 60 && m < 9 * 60), `everyone leaves for work between 06:00 and 09:00: ${departures.join(' ')}`).toBe(true);
-    expect(new Set(departures).size, 'and not all at once').toBeGreaterThan(1);
+    const starts = w.citizens.refs().map((ref) => view(w, ref).workStart);
+    expect(starts.every((m) => m >= 6 * 60 && m < 9 * 60), `everyone starts work between 06:00 and 09:00: ${starts.join(' ')}`).toBe(true);
+    expect(new Set(starts).size, 'and not all at once').toBeGreaterThan(1);
   });
 
   it('aWorkerDrivesToWorkInTheMorningAndHomeAfterTheShift', () => {
     const { w, house, work, worker } = commuter(200, 150, { car: true });
 
     expect(planAt(w, 1, 6), 'at six the worker is still at home').toEqual([]);
-    expect(planAt(w, 1, 7), 'and drives the kilometre and a half at seven').toEqual([
+    // 1.48 km at 40 km/h with no road network measured: 133 s, three minutes before seven.
+    expect(planAt(w, 1, 6, 56), 'not yet a minute early').toEqual([]);
+    expect(planAt(w, 1, 6, 57), 'and drives the kilometre and a half to start at seven').toEqual([
       { citizen: worker, from: house.anchor, carParkedAt: house.anchor, to: work.anchor, purpose: 'Work', mode: 'Car', pocket: true },
     ]);
     expect(view(w, worker)).toMatchObject({ state: 'ToWork', carStatus: 'Driving', carPlace: buildingPlace(work.id) });
@@ -195,12 +197,13 @@ describe('citizens', () => {
 
   it('aCitizenWithoutACarWalks', () => {
     const { w, worker } = commuter(200, 150);
-    expect(planAt(w, 1, 7), 'a kilometre and a half on foot').toMatchObject([{ citizen: worker, mode: 'Walk', carParkedAt: null, purpose: 'Work' }]);
+    // 1.48 km at 5 km/h: eighteen minutes before seven.
+    expect(planAt(w, 1, 6, 42), 'a kilometre and a half on foot').toMatchObject([{ citizen: worker, mode: 'Walk', carParkedAt: null, purpose: 'Work' }]);
   });
 
   it('aShortTripIsWalked', () => {
     const { w, house, worker } = commuter(32, 20, { car: true });
-    expect(planAt(w, 1, 7), 'two hundred metres are walked').toMatchObject([{ citizen: worker, mode: 'Walk', carParkedAt: null }]);
+    expect(planAt(w, 1, 6, 57), 'two hundred metres are walked').toMatchObject([{ citizen: worker, mode: 'Walk', carParkedAt: null }]);
     expect(view(w, worker), 'and the car stays at home').toMatchObject({ carStatus: 'Parked', carPlace: buildingPlace(house.id) });
   });
 
@@ -211,11 +214,12 @@ describe('citizens', () => {
     const farShop = shopAt(w, 360, 2, 0);
     // The only spots out of town: 800 m from the near shop, 1.3 km from the far one.
     const lot = w.buildings.add(newBuilding({ kind: 'Industrial', anchor: t(230, 2), parkingGarage: 5 }));
-    const toNear = w.citizens.add({ ...newCitizen(house, { workDeparture: 7 * 60 }), workplace: nearShop.id });
-    const toFar = w.citizens.add({ ...newCitizen(house, { workDeparture: 7 * 60 }), workplace: farShop.id });
+    const toNear = w.citizens.add({ ...newCitizen(house, { workStart: 7 * 60 }), workplace: nearShop.id });
+    const toFar = w.citizens.add({ ...newCitizen(house, { workStart: 7 * 60 }), workplace: farShop.id });
     giveCar(w, toNear);
     giveCar(w, toFar);
 
+    planAt(w, 1, 6);
     const trips = planAt(w, 1, 7);
     expect(trips.find((trip) => trip.citizen === toNear), 'no spot within 400 m of a shop 1.5 km away: on foot').toMatchObject({ mode: 'Walk' });
     expect(trips.find((trip) => trip.citizen === toFar), 'past three kilometres the car goes to the nearest spot farther away').toMatchObject({ mode: 'Car', pocket: true });
@@ -224,19 +228,31 @@ describe('citizens', () => {
 
   it('aWalkArrivesAfterDistanceOverWalkingSpeed', () => {
     const { w, worker } = commuter(32, 20);
-    planAt(w, 1, 7);
-    // 18 tiles, 180 m at 5 km/h: 2.16 minutes, arriving on the third.
-    expect(planAt(w, 1, 7, 2)).toEqual([]);
+    // 18 tiles, 180 m at 5 km/h: 2.16 minutes, so the walk leaves at 6:57 and arrives on the third.
+    planAt(w, 1, 6, 57);
+    expect(planAt(w, 1, 6, 59)).toEqual([]);
     expect(view(w, worker).state, 'still walking after two minutes').toBe('ToWork');
-    planAt(w, 1, 7, 3);
-    expect(view(w, worker), 'at work on the third, the shift counted from then').toMatchObject({ state: 'AtWork', nextAt: 7 * 60 + 3 + 8 * 60 });
+    planAt(w, 1, 7);
+    expect(view(w, worker), 'at work at seven, the shift counted from then').toMatchObject({ state: 'AtWork', nextAt: 7 * 60 + 8 * 60 });
+  });
+
+  it('aLongerCommuteLeavesEarlier', () => {
+    const w = worldOn(new MapGrid(96, 16));
+    const house = home(w, t(2, 2));
+    const toNear = w.citizens.add({ ...newCitizen(house, { workStart: 8 * 60 }), workplace: shopAt(w, 20).id });
+    const toFar = w.citizens.add({ ...newCitizen(house, { workStart: 8 * 60 }), workplace: shopAt(w, 80).id });
+    planAt(w, 1, 6);
+    // Both start at eight, on foot at 5 km/h: 780 m take ten minutes, 180 m three.
+    expect(planAt(w, 1, 7, 49)).toEqual([]);
+    expect(planAt(w, 1, 7, 50).map((trip) => trip.citizen)).toEqual([toFar]);
+    expect(planAt(w, 1, 7, 57).map((trip) => trip.citizen)).toEqual([toNear]);
   });
 
   it('aWorkerAtHomeAtNightStaysHomeUntilTheirMorning', () => {
     const w = worldOn(new MapGrid(32, 16));
     const house = home(w, t(2, 2));
     const shop = shopAt(w, 20);
-    w.citizens.add({ ...newCitizen(house, { workDeparture: 7 * 60 }), workplace: shop.id });
+    w.citizens.add({ ...newCitizen(house, { workStart: 7 * 60 }), workplace: shop.id });
 
     const night: TripRequested[] = [];
     for (let minute = 23 * 60; minute < (24 + 7) * 60; minute += 30) {
@@ -249,11 +265,12 @@ describe('citizens', () => {
   it('thePlannerWakesOnlyCitizensWhoseMinuteHasCome', () => {
     const w = morningCrowd();
     planAt(w, 1, 6);
+    planAt(w, 1, 6, 59);
 
-    expect(planAt(w, 1, 7), 'ten of a thousand leave at seven').toHaveLength(10);
-    expect(w.citizens.plannerWoken, 'and only they are looked at').toBe(10);
+    expect(planAt(w, 1, 7), 'ten of a thousand set out at seven').toHaveLength(10);
+    expect(w.citizens.plannerWoken, 'and the ten who set out three minutes ago arrive: only they are looked at').toBe(20);
     expect(planAt(w, 1, 7, 1)).toHaveLength(10);
-    expect(w.citizens.plannerWoken).toBe(10);
+    expect(w.citizens.plannerWoken).toBe(20);
   });
 
   it('missedMinutesAreCaughtUpInOrder', () => {
@@ -261,11 +278,11 @@ describe('citizens', () => {
     planAt(w, 1, 6);
 
     const trips = planAt(w, 1, 7, 30);
-    const departures = trips.map((trip) => view(w, trip.citizen).workDeparture);
-    expect(trips, 'the planner skipped from six to half past seven: thirty-one minutes of departures').toHaveLength(310);
-    expect(departures, 'in the order of their minutes').toEqual([...departures].sort((a, b) => a - b));
-    expect([departures[0], departures.at(-1)]).toEqual([7 * 60, 7 * 60 + 30]);
-    expect(view(w, trips[0]!.citizen).state, 'the walk that left at seven ended on the way').toBe('AtWork');
+    const starts = trips.map((trip) => view(w, trip.citizen).workStart);
+    expect(trips, 'the planner skipped from six to half past seven: the departures of 6:57 to 7:30').toHaveLength(340);
+    expect(starts, 'in the order of their minutes').toEqual([...starts].sort((a, b) => a - b));
+    expect([starts[0], starts.at(-1)]).toEqual([7 * 60, 7 * 60 + 33]);
+    expect(view(w, trips[0]!.citizen).state, 'the walk that left at 6:57 ended on the way').toBe('AtWork');
   });
 
   // TS: a shopper goes to one of the shops nearest home, and only in the evening after work; Rust sent them to any shop
@@ -302,10 +319,11 @@ describe('citizens', () => {
     // Rows 16..18 above the road: the anchor corner is two rows from it.
     const house = home(w, t(16, 16), 1);
     const shop = shopAt(w, 150, 20);
-    const worker = w.citizens.add({ ...newCitizen(house, { workDeparture: 7 * 60 }), workplace: shop.id });
+    const worker = w.citizens.add({ ...newCitizen(house, { workStart: 7 * 60 }), workplace: shop.id });
     giveCar(w, worker);
 
-    const trip = planAt(w, 1, 7)[0]!;
+    // 1.34 km by car, measured as the crow flies without a road network: three minutes before seven.
+    const trip = planAt(w, 1, 6, 57)[0]!;
 
     expect(trip).toMatchObject({ citizen: worker, mode: 'Car' });
     expect(inside(house, trip.from) && inside(house, trip.carParkedAt!), 'the trip leaves from the home').toBe(true);

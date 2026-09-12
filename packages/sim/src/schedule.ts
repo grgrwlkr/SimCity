@@ -19,6 +19,8 @@ import { beginTickEvents } from './events';
 import { detectIntersections } from './intersections/index';
 import { computeLandValue } from './landValue';
 import { applyGameCommandsToGrid } from './map/apply';
+import { updateDistrictTimes } from './meso/districts';
+import { rebuildMesoGraph } from './meso/graph';
 import { computePollution } from './pollution';
 import { resetGrowthRngOnNewMap, resetSimRngOnNewMap } from './seeding';
 import { ALL_STATES, IN_GAME, IN_GAME_OR_PAUSED, type AppState } from './state';
@@ -83,6 +85,10 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'buildLaneGraph', run: buildLaneGraph, runIn: ALL_STATES },
   // After buildLaneGraph: resolves approach and exit lanes by tile; reads the intersection clusters.
   { name: 'buildLaneletGraph', run: buildLaneletGraph, runIn: ALL_STATES },
+  // After buildLaneletGraph: the meso links and their joins, keyed on the same graph version; reads the clusters.
+  { name: 'rebuildMesoGraph', run: rebuildMesoGraph, runIn: ALL_STATES },
+  // After rebuildMesoGraph: a few rows of district travel times a tick, the old rows serving until rebuilt.
+  { name: 'updateDistrictTimes', run: updateDistrictTimes, runIn: ALL_STATES },
   // After buildLaneletGraph, in game: a graph version bump re-checks active routes against the new grid.
   { name: 'invalidateRoutesOnGraphChange', run: invalidateRoutesOnGraphChange, runIn: IN_GAME },
   // SimStep::Tick — the game clock; writes HourAdvanced / DayAdvanced for every system after it.
