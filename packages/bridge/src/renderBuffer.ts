@@ -8,13 +8,15 @@ import type { VehicleLayers } from '@simcity/sim';
 const HEADER_WORDS = 2;
 /** `[tick, count]` at the start of each frame. */
 const FRAME_HEADER_WORDS = 2;
+/** x, y, heading, slot, generation. */
+const WORD_LAYERS = 5;
 
 function align4(n: number): number {
   return (n + 3) & ~3;
 }
 
 export function frameByteLength(capacity: number): number {
-  return FRAME_HEADER_WORDS * 4 + capacity * 4 * 3 + align4(capacity);
+  return FRAME_HEADER_WORDS * 4 + capacity * 4 * WORD_LAYERS + align4(capacity);
 }
 
 export function frameByteRange(capacity: number, index: number): { offset: number; length: number } {
@@ -33,6 +35,8 @@ interface FrameViews {
   readonly x: Float32Array;
   readonly y: Float32Array;
   readonly heading: Float32Array;
+  readonly slot: Uint32Array;
+  readonly generation: Uint32Array;
   readonly kind: Uint8Array;
 }
 
@@ -46,8 +50,12 @@ function frameViews(sab: SharedArrayBuffer, capacity: number, index: number): Fr
   offset += capacity * 4;
   const heading = new Float32Array(sab, offset, capacity);
   offset += capacity * 4;
+  const slot = new Uint32Array(sab, offset, capacity);
+  offset += capacity * 4;
+  const generation = new Uint32Array(sab, offset, capacity);
+  offset += capacity * 4;
   const kind = new Uint8Array(sab, offset, capacity);
-  return { header, x, y, heading, kind };
+  return { header, x, y, heading, slot, generation, kind };
 }
 
 class RenderBufferViews {
@@ -87,6 +95,8 @@ export class RenderWriter extends RenderBufferViews {
       target.x[count] = vehicles.x[slot]!;
       target.y[count] = vehicles.y[slot]!;
       target.heading[count] = vehicles.heading[slot]!;
+      target.slot[count] = slot;
+      target.generation[count] = vehicles.generation[slot]!;
       target.kind[count] = vehicles.parked[slot] === 1 ? PARKED_VEHICLE_KIND : vehicles.kind[slot]!;
       count += 1;
     }
@@ -102,13 +112,30 @@ export interface RenderFrameCopy {
   readonly x: Float32Array;
   readonly y: Float32Array;
   readonly heading: Float32Array;
+  /** Which vehicle each packed index is: packed order shifts whenever one spawns or despawns. */
+  readonly slot: Uint32Array;
+  readonly generation: Uint32Array;
   readonly kind: Uint8Array;
 }
 
 export class RenderReader extends RenderBufferViews {
   allocate(): RenderFrameCopy {
     const n = this.capacity;
-    return { tick: 0, count: 0, x: new Float32Array(n), y: new Float32Array(n), heading: new Float32Array(n), kind: new Uint8Array(n) };
+    return {
+      tick: 0,
+      count: 0,
+      x: new Float32Array(n),
+      y: new Float32Array(n),
+      heading: new Float32Array(n),
+      slot: new Uint32Array(n),
+      generation: new Uint32Array(n),
+      kind: new Uint8Array(n),
+    };
+  }
+
+  /** The sequence of the newest publish, without copying anything: a reader checks it before `readInto`. */
+  sequence(): number {
+    return Atomics.load(this.header, 0);
   }
 
   /** Copies the active frame; returns the sequence it was published under, which moves with every publish. */
@@ -122,6 +149,8 @@ export class RenderReader extends RenderBufferViews {
       out.x.set(frame.x.subarray(0, count));
       out.y.set(frame.y.subarray(0, count));
       out.heading.set(frame.heading.subarray(0, count));
+      out.slot.set(frame.slot.subarray(0, count));
+      out.generation.set(frame.generation.subarray(0, count));
       out.kind.set(frame.kind.subarray(0, count));
       if (Atomics.load(this.header, 0) === sequence) return sequence;
     }

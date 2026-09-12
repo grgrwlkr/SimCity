@@ -11,13 +11,14 @@ import {
 import * as THREE from 'three/webgpu';
 import { OrthoView } from './camera';
 import { FpsMeter } from './fpsMeter';
-import { interpolateHeading, interpolatePositions } from './interpolate';
+import { interpolateHeading, interpolatePositions, pairVehicles } from './interpolate';
 import { lampSignal } from './lamps';
 import { buildChunkGeometry, changedChunks, chunkGrid } from './mapChunks';
 import { LAMP_COLORS, VEHICLE_COLORS } from './palette';
+import { PlaybackClock } from './playback';
 
-/** A sim frame is 100 ms; drawn frames in between interpolate towards the newest one. */
-const SIM_FRAME_MS = 100;
+/** Sim frames kept for playback: the display draws a gap or two behind the newest one. */
+const FRAME_HISTORY = 6;
 const BACKGROUND = 0x1b1d1a;
 const MANEUVER_COLORS: Record<string, number> = { Straight: 0x2fd67e, RightTurn: 0x3b8cff, LeftTurn: 0xff4d4d, UTurn: 0xc26bff };
 
@@ -36,6 +37,8 @@ export interface RenderStats {
   readonly lights: number;
   /** Green left arrows lit: two per light in a protected-left phase. */
   readonly arrows: number;
+  /** The sim tick the vehicles are drawn at, fractional between frames; `null` before the first frame. */
+  readonly playbackTick: number | null;
   readonly hovered: TilePos | null;
 }
 
@@ -74,11 +77,16 @@ export class DebugRenderer {
   private vehicles: THREE.InstancedMesh | null = null;
   private map: MapLayersReply | null = null;
   private reader: RenderReader | null = null;
-  /** The two newest sim frames and a spare buffer the next read goes into. */
-  private frameBuffers: { before: RenderFrameCopy; latest: RenderFrameCopy; spare: RenderFrameCopy } | null = null;
+  /** The newest sim frames, oldest first, and the copies the next reads go into. */
+  private readonly history: RenderFrameCopy[] = [];
+  private readonly spareFrames: RenderFrameCopy[] = [];
   private latestSequence = -1;
-  private latestArrivedMs = 0;
-  private interpolated: { x: Float32Array; y: Float32Array } | null = null;
+  private readonly clock = new PlaybackClock();
+  private playbackTick = NaN;
+  /** Per-vehicle scratch: pairing between the two frames drawn, drawn positions, the kind each instance is coloured as. */
+  private scratch: { bySlot: Int32Array; pairs: Int32Array; x: Float32Array; y: Float32Array; drawnKind: Uint8Array } | null = null;
+  private pairedFrom: RenderFrameCopy | null = null;
+  private pairedTo: RenderFrameCopy | null = null;
   private frames = 0;
   private readonly fpsMeter = new FpsMeter();
   private readonly sizedWaiters: Array<() => void> = [];
@@ -86,9 +94,6 @@ export class DebugRenderer {
   private drawnMapEditVersion: number | null = null;
   private pendingMapEditVersion: number | null = null;
   private overlayLanelets = 0;
-  private readonly matrix = new THREE.Matrix4();
-  private readonly quaternion = new THREE.Quaternion();
-  private readonly zAxis = new THREE.Vector3(0, 0, 1);
 
   private constructor(
     private readonly renderer: THREE.WebGPURenderer,
@@ -138,8 +143,15 @@ export class DebugRenderer {
 
   attachRenderBuffer(reader: RenderReader): void {
     this.reader = reader;
-    this.frameBuffers = { before: reader.allocate(), latest: reader.allocate(), spare: reader.allocate() };
-    this.interpolated = { x: new Float32Array(reader.capacity), y: new Float32Array(reader.capacity) };
+    for (let i = 0; i <= FRAME_HISTORY; i++) this.spareFrames.push(reader.allocate());
+    const n = reader.capacity;
+    this.scratch = {
+      bySlot: new Int32Array(n),
+      pairs: new Int32Array(n),
+      x: new Float32Array(n),
+      y: new Float32Array(n),
+      drawnKind: new Uint8Array(n).fill(255),
+    };
   }
 
   /** Rebuilds the chunks whose tiles changed since the last map. */
@@ -294,6 +306,7 @@ export class DebugRenderer {
       overlayLanelets: this.overlay.visible ? this.overlayLanelets : 0,
       lights: [...this.lamps.values()].reduce((n, set) => n + set.length, 0),
       arrows: [...this.lamps.values()].reduce((n, set) => n + set.filter((lamp) => lamp.arrow.visible).length, 0),
+      playbackTick: Number.isNaN(this.playbackTick) ? null : this.playbackTick,
       hovered: this.hovered,
     };
   }
@@ -334,34 +347,76 @@ export class DebugRenderer {
     this.scene.add(this.vehicles);
   }
 
-  /** Copies the newest sim frame when it moved and draws the cubes between the last two frames. */
+  /** Copies a sim frame when a new one was published, then draws the cubes at the playback clock's tick. */
   private updateVehicles(nowMs: number): void {
-    const { reader, vehicles, frameBuffers: fb, interpolated } = this;
-    if (reader === null || vehicles === null || fb === null || interpolated === null) return;
-    const sequence = reader.readInto(fb.spare);
-    if (sequence !== this.latestSequence) {
-      this.frameBuffers = { before: fb.latest, latest: fb.spare, spare: fb.before };
-      this.latestSequence = sequence;
-      this.latestArrivedMs = nowMs;
+    const { reader, vehicles, scratch, history } = this;
+    if (reader === null || vehicles === null || scratch === null || vehicles.instanceColor === null) return;
+    if (reader.sequence() !== this.latestSequence) {
+      const incoming = this.spareFrames.pop()!;
+      this.latestSequence = reader.readInto(incoming);
+      if (this.clock.arrive(incoming.tick, nowMs)) this.spareFrames.push(...history.splice(0));
+      else if (history.length === FRAME_HISTORY) this.spareFrames.push(history.shift()!);
+      history.push(incoming);
+      this.pairedFrom = null;
     }
-    const { before: from, latest: to } = this.frameBuffers!;
+    if (history.length === 0) return;
+
+    const tick = this.clock.advance(nowMs);
+    this.playbackTick = tick;
+    let i = history.length - 1;
+    while (i > 0 && history[i]!.tick > tick) i -= 1;
+    const from = history[i]!;
+    const to = history[Math.min(i + 1, history.length - 1)]!;
+    if (from !== this.pairedFrom || to !== this.pairedTo) {
+      pairVehicles(from, to, scratch.bySlot, scratch.pairs);
+      this.pairedFrom = from;
+      this.pairedTo = to;
+    }
+    const alpha = from === to ? 1 : Math.min(Math.max((tick - from.tick) / (to.tick - from.tick), 0), 1);
     const n = to.count;
-    // Slots line up only while the count holds; until vehicles carry ids (stage 2), a change snaps.
-    const alpha = from.count === n ? Math.min((nowMs - this.latestArrivedMs) / SIM_FRAME_MS, 1) : 1;
-    interpolatePositions(from.x, to.x, alpha, n, interpolated.x);
-    interpolatePositions(from.y, to.y, alpha, n, interpolated.y);
-    const color = new THREE.Color();
-    for (let i = 0; i < n; i++) {
-      const heading = from.count === n ? interpolateHeading(from.heading[i]!, to.heading[i]!, alpha) : to.heading[i]!;
-      this.quaternion.setFromAxisAngle(this.zAxis, heading);
-      this.matrix.compose(new THREE.Vector3(interpolated.x[i]!, interpolated.y[i]!, 1), this.quaternion, new THREE.Vector3(1, 1, 1));
-      vehicles.setMatrixAt(i, this.matrix);
-      const [r, g, b] = VEHICLE_COLORS[to.kind[i]! % VEHICLE_COLORS.length]!;
-      vehicles.setColorAt(i, color.setRGB(r / 255, g / 255, b / 255));
+    interpolatePositions(from.x, to.x, scratch.pairs, alpha, n, scratch.x);
+    interpolatePositions(from.y, to.y, scratch.pairs, alpha, n, scratch.y);
+
+    // Written straight into the instance buffers: a vector per car per frame was garbage at 60 Hz.
+    const matrices = vehicles.instanceMatrix.array as Float32Array;
+    const colors = vehicles.instanceColor.array as Float32Array;
+    let recoloured = false;
+    for (let k = 0; k < n; k++) {
+      const j = scratch.pairs[k]!;
+      const heading = j >= 0 ? interpolateHeading(from.heading[j]!, to.heading[k]!, alpha) : to.heading[k]!;
+      const cos = Math.cos(heading);
+      const sin = Math.sin(heading);
+      // Column-major: a turn about z, unit scale, lifted to z = 1 (what `Matrix4.compose` gave).
+      const o = k * 16;
+      matrices[o] = cos;
+      matrices[o + 1] = sin;
+      matrices[o + 2] = 0;
+      matrices[o + 3] = 0;
+      matrices[o + 4] = -sin;
+      matrices[o + 5] = cos;
+      matrices[o + 6] = 0;
+      matrices[o + 7] = 0;
+      matrices[o + 8] = 0;
+      matrices[o + 9] = 0;
+      matrices[o + 10] = 1;
+      matrices[o + 11] = 0;
+      matrices[o + 12] = scratch.x[k]!;
+      matrices[o + 13] = scratch.y[k]!;
+      matrices[o + 14] = 1;
+      matrices[o + 15] = 1;
+      const kind = to.kind[k]!;
+      if (scratch.drawnKind[k] !== kind) {
+        scratch.drawnKind[k] = kind;
+        const [r, g, b] = VEHICLE_COLORS[kind % VEHICLE_COLORS.length]!;
+        colors[k * 3] = r / 255;
+        colors[k * 3 + 1] = g / 255;
+        colors[k * 3 + 2] = b / 255;
+        recoloured = true;
+      }
     }
     vehicles.count = n;
     vehicles.instanceMatrix.needsUpdate = true;
-    if (vehicles.instanceColor !== null) vehicles.instanceColor.needsUpdate = true;
+    if (recoloured) vehicles.instanceColor.needsUpdate = true;
   }
 
   private removeMesh(mesh: THREE.Mesh): void {

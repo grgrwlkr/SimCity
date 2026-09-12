@@ -37,6 +37,24 @@ describe('render SharedArrayBuffer', () => {
     expect(Array.from(out.kind.subarray(0, 2))).toEqual([2, 2]);
   });
 
+  it('everyVehicleCarriesItsSlotAndGeneration', () => {
+    // Packed order shifts whenever a car spawns or despawns: the renderer pairs frames by identity instead.
+    const sab = createRenderBuffer(16);
+    const writer = new RenderWriter(sab);
+    const reader = new RenderReader(sab);
+    const out = reader.allocate();
+    const w = worldWithVehicles([3, 9]);
+    w.vehicles.generation[9] = 4;
+
+    const before = reader.sequence();
+    writer.publish(1, w.vehicles);
+    expect(reader.sequence()).not.toBe(before);
+    expect(reader.readInto(out)).toBe(reader.sequence());
+
+    expect(Array.from(out.slot.subarray(0, 2))).toEqual([3, 9]);
+    expect(Array.from(out.generation.subarray(0, 2))).toEqual([0, 4]);
+  });
+
   it('parkedVehiclesArePublishedAsParked', () => {
     // A parked car stands on its lane: drawn like a driving one, a parking lot reads as a jam.
     const sab = createRenderBuffer(16);
