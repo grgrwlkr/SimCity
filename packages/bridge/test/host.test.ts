@@ -215,7 +215,9 @@ describe('SimHost', () => {
     host.handle({ t: 'scenario', name: 'livingCity' });
     host.handle({ t: 'step', ticks: 20 });
     const { traffic } = host.handle({ t: 'snapshot' });
-    expect([traffic.citizens, traffic.tripsStarted], 'nobody lives there yet, and the HUD says so rather than nothing').toEqual([0, 0]);
+    // The city opens built and lived in (stage 3½b): its people are counted from the first frame, and at midnight nobody is out.
+    expect(traffic.citizens, 'the HUD counts the people who already live there').toBeGreaterThan(2000);
+    expect(traffic.tripsStarted, 'and nobody sets out at midnight').toBe(0);
   }, 60_000);
 
   it('aScenarioSeesEveryTickOfAFastFrame', () => {

@@ -2,8 +2,14 @@
 // work, shop and drive on their own; the scenario only counts their trips for the HUD.
 import type { World } from '../world';
 import { buildCity } from './cityGen';
+import { prebuildCity } from './prebuild';
 
 export const LIVING_CITY_WALK_MAX_METERS = 300;
+
+export interface LivingCityOptions {
+  /** Open with part of the land built and lived in (the default); `false` starts from bare zones. */
+  readonly prebuilt?: boolean;
+}
 
 export interface CitizenTripStats {
   readonly citizens: number;
@@ -17,11 +23,12 @@ export class LivingCityScenario {
   private arrived = 0;
   private lastTick = -1;
 
-  constructor(w: World) {
+  constructor(w: World, options: LivingCityOptions = {}) {
     buildCity(w);
     // The generated city is 1.3 km across: past 300 m its citizens drive, so its roads carry traffic until the big map
     // of stage 3½e, where the default kilometre holds.
     w.citizenConfig.walkMaxMeters = LIVING_CITY_WALK_MAX_METERS;
+    if (options.prebuilt ?? true) prebuildCity(w);
   }
 
   /** Call before each fixed tick: the trips of the last tick are counted once, however often the host calls. */

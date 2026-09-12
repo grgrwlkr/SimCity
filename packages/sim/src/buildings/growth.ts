@@ -29,7 +29,7 @@ const MAX_SPAWNS_PER_HOUR = 6;
 const MAX_PARALLEL_CONSTRUCTIONS = 15;
 const SEED_ATTEMPTS = 128;
 
-interface Footprint {
+export interface Footprint {
   readonly anchor: TilePos;
   readonly width: number;
   readonly length: number;
@@ -67,6 +67,7 @@ function tryFootprintAt(
   density: ZoneDensity,
   occupied: ReadonlySet<number>,
   existing: readonly Building[],
+  planned: boolean,
 ): Footprint | undefined {
   const grid = w.grid;
   const zone = buildingKindZone(kind);
@@ -83,9 +84,11 @@ function tryFootprintAt(
   // GDD 10.2.2: every tile within zone depth of a road, and at least one beside a road.
   if (!isFootprintWithinZoneDepth(anchor, width, length, grid, MAX_ZONE_DEPTH)) return undefined;
   if (!tiles.some((tile) => hasAdjacentRoad(grid, tile))) return undefined;
+  if (blockedBehind(w, tiles, existing)) return undefined;
+  // A planned city is laid out before its networks and fields are measured.
+  if (planned) return { anchor, width, length, tiles };
   // Nothing grows where the road carries no power.
   if (!w.utilityNetwork.footprintHas(grid, anchor, width, length, 'Power')) return undefined;
-  if (blockedBehind(w, tiles, existing)) return undefined;
 
   // Once the city fields are measured a zone grows where it is attractive enough on every tile; before
   // that, bare land value decides.
@@ -100,14 +103,18 @@ function tryFootprintAt(
   return { anchor, width, length, tiles };
 }
 
-/** Footprints by area, then length, then width, each tried with the seed at its four corners. */
-function findBestFootprint(
+/**
+ * Footprints by area, then length, then width, each tried with the seed at its four corners. A `planned` footprint
+ * keeps to the zone, the roads and the blocking rule but not to the power and attractiveness growth needs.
+ */
+export function findBestFootprint(
   w: World,
   seed: TilePos,
   kind: BuildingKind,
   density: ZoneDensity,
   occupied: ReadonlySet<number>,
   existing: readonly Building[],
+  planned = false,
 ): Footprint | undefined {
   const [shortest, longest] = footprintSides(density);
   const sizes: Array<readonly [number, number]> = [];
@@ -123,7 +130,7 @@ function findBestFootprint(
       [0, -(length - 1)],
       [-(width - 1), -(length - 1)],
     ] as const) {
-      const found = tryFootprintAt(w, { x: seed.x + ox, y: seed.y + oy }, width, length, kind, density, occupied, existing);
+      const found = tryFootprintAt(w, { x: seed.x + ox, y: seed.y + oy }, width, length, kind, density, occupied, existing, planned);
       if (found !== undefined) return found;
     }
   }

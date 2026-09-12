@@ -2,6 +2,7 @@
 // the scenario only counts their trips for the HUD.
 import { describe, expect, it } from 'vitest';
 import { frame, step } from '../../src/app';
+import { isOperational } from '../../src/buildings/building';
 import { CITIZEN_STATES } from '../../src/citizens';
 import type { BuildingKind } from '../../src/commands';
 import { LivingCityScenario } from '../../src/scenarios/livingCity';
@@ -25,6 +26,27 @@ describe('living city', () => {
     expect(w.city.money, 'a demonstration city costs the treasury nothing').toBe(25_000);
     expect(w.budget.current.isEmpty(), 'and the month starts with nothing on its lines').toBe(true);
   });
+
+  // At a real-time clock a house takes eight hours to build: the city opens built and lived in, with room left to grow.
+  it('theLivingCityOpensBuiltAndLivedIn', () => {
+    const { w } = livingCity();
+    const open = (kind: BuildingKind) => w.buildings.all().filter((b) => b.kind === kind && isOperational(b)).length;
+    expect([open('Residential'), open('Commercial'), open('Industrial')].every((n) => n > 20), 'homes, shops and works stand open').toBe(true);
+    const zoned = w.grid.zone.filter((zone) => zone !== 0).length;
+    const built = w.grid.zone.filter((zone, i) => zone !== 0 && w.grid.building[i] !== 0).length;
+    expect(built / zoned, 'with zoned land left to grow on').toBeLessThan(0.8);
+
+    const citizens = w.citizens;
+    expect(citizens.count, 'thousands live there from the start').toBeGreaterThan(2000);
+    const views = citizens.refs().map((ref) => citizens.view(ref)!);
+    expect(views.filter((c) => c.workplace !== null).length / views.length, 'most of them with a job').toBeGreaterThan(0.5);
+    expect(views.filter((c) => c.carStatus === 'Parked').length, 'their cars parked').toBeGreaterThan(0);
+    expect(w.city.money, 'at no cost to the treasury').toBe(25_000);
+
+    const moved = citizens.count;
+    for (let i = 0; i < 240; i++) step(w, 1);
+    expect(citizens.count, 'and a day later they still live there').toBeGreaterThan(0.8 * moved);
+  }, 120_000);
 
   it('itsCitizensMoveInAndDriveOnTheirOwn', () => {
     const { w, scenario } = livingCity();
