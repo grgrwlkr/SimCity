@@ -86,6 +86,35 @@ describe('stuck recovery', () => {
     expect(w.vehicles.stuckSecs[refSlot(w.vehicles, refused!)], 'a wait past the cap accumulates').toBeGreaterThan(0);
   });
 
+  it('aReroutedCarGetsItsWindowAndIsRemovedIfStillWedged', () => {
+    // Rust searched again every tick for a car wedged past the despawn horizon; with a fresh tie-break
+    // seed each search "found" a different route, the reroute put the car back at its tile start, and it
+    // never moved nor left.
+    const w = eastCorridor();
+    const car = spawnVehicle(w, {
+      route: [t(0, 0), t(3, 0)],
+      stuck: { secs: 0, lastTile: t(0, 0), lastProgress: 0 },
+      motion: { stoppedSecs: STUCK_DESPAWN_SECS + 1 },
+    });
+    resolveStuckVehicles(w, DT);
+    w.tick += 1;
+    expect(route(w, car).length, 'rerouted onto the escape').toBeGreaterThan(2);
+
+    for (let i = 1; i < 100; i++) {
+      resolveStuckVehicles(w, DT);
+      w.tick += 1;
+    }
+    expect(resolveVehicle(w.vehicles, car), 'the new route gets its window').toBeDefined();
+    expect(w.routeProducerStats.stuckReplanAttempts, 'without another search').toBe(1);
+
+    for (let i = 0; i < 5; i++) {
+      resolveStuckVehicles(w, DT);
+      w.tick += 1;
+    }
+    expect(resolveVehicle(w.vehicles, car), 'still wedged after it: removed, not rerouted again').toBeUndefined();
+    expect(w.routeProducerStats.stuckReplanAttempts).toBe(1);
+  });
+
   it('aStuckCarWithoutAnotherRouteRetriesOncePerWindow', () => {
     // Rust re-planned such a car every tick, two whole-city searches each: 95 % of a busy tick.
     const w = eastCorridor();

@@ -96,7 +96,6 @@ export function spawnTripVehicles(w: World): void {
       v.maxSpeed[own] = maxSpeed;
       v.speedFactor[own] = speedFactor;
       v.maxAccel[own] = idm.a;
-      v.isReversing[own] = 0;
       v.parked[own] = 0;
       v.parkedOffset[own] = 0;
       v.rightTurnOnRed[own] = -1;
@@ -110,6 +109,7 @@ export function spawnTripVehicles(w: World): void {
       v.stoppedSecs[own] = 0;
       v.movingSecs[own] = 0;
       v.stuckRetryTick[own] = 0;
+      v.stuckRerouted[own] = 0;
       v.anchorX[own] = at.x;
       v.anchorY[own] = at.y;
       setTrafficState(v, own, FREE_FLOW);

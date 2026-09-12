@@ -94,13 +94,23 @@ export function planTilesLaneletFirst(w: World, from: TilePos, to: TilePos): Pla
   return { tiles, sidecar: [], builtFor: 0, producer: 'RoadFallback' };
 }
 
-/** `apply_route`: the vehicle in `slot` starts `planned` from its first tile, with the matching lanelet plan. */
+const sameTile = (a: TilePos | undefined, b: TilePos | undefined) => a !== undefined && b !== undefined && a.x === b.x && a.y === b.y;
+
+/**
+ * `apply_route`: the vehicle in `slot` drives `planned` from its first tile, with the matching lanelet
+ * plan. A car that keeps its tile and its next tile stays where it is on the tile; Rust put every
+ * re-planned car back at its tile centre.
+ */
 export function applyRoute(w: World, slot: number, planned: PlannedRoute): void {
   const v = w.vehicles;
-  w.pathPool.release(v.pathHandle[slot]!);
+  const handle = v.pathHandle[slot]!;
+  const cursor = v.pathCursor[slot]!;
+  const staysPut =
+    sameTile(w.pathPool.getTile(handle, cursor), planned.tiles[0]) && sameTile(w.pathPool.getTile(handle, cursor + 1), planned.tiles[1]);
+  w.pathPool.release(handle);
   v.pathHandle[slot] = w.pathPool.intern(planned.tiles);
   v.pathCursor[slot] = 0;
-  v.progress[slot] = 0;
+  if (!staysPut) v.progress[slot] = 0;
   v.laneletPlan[slot] = { entries: [...planned.sidecar], builtFor: planned.builtFor };
 }
 

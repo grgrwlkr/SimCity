@@ -97,6 +97,20 @@ describe('reroute planner', () => {
     expect(w.vehicles.laneletPlan[slot], 'a lanelet route writes its sidecar').toEqual({ entries: [[1, 2, 4]], builtFor: 3 });
   });
 
+  it('aRerouteThatKeepsTheNextTileKeepsTheCarWhereItIs', () => {
+    // Rust restarted every re-planned car at its tile centre: a jump back of up to a tile, and a car at
+    // the stop line lost its place.
+    const w = createWorld({ mapWidth: 16, mapHeight: 16 });
+    const car = spawnVehicle(w, { route: [t(0, 0), t(1, 0), t(2, 0), t(3, 0)], cursor: 1, progress: 0.4 });
+    const slot = refSlot(w.vehicles, car);
+
+    applyRoute(w, slot, { tiles: [t(1, 0), t(2, 0), t(2, 1)], sidecar: [], builtFor: 0, producer: 'RoadFallback' });
+    expect(w.vehicles.progress[slot], 'same tile, same next tile').toBeCloseTo(0.4);
+
+    applyRoute(w, slot, { tiles: [t(1, 0), t(1, 1)], sidecar: [], builtFor: 0, producer: 'RoadFallback' });
+    expect(w.vehicles.progress[slot], 'a different next tile starts from the tile centre').toBe(0);
+  });
+
   it('aWestboundRouteIsRejectedOnceItsRoadIsMadeOneWayEast', () => {
     // The live symptom: a route planned before the road was made one-way still passed validation.
     const w = createWorld({ mapWidth: 40, mapHeight: 20 });

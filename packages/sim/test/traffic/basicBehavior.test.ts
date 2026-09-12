@@ -101,7 +101,10 @@ describe('hard overlap clamp', () => {
 });
 
 describe('special cases of moveVehicles', () => {
-  it('stuckReverseNeverBacksIntoIntersectionBox', () => {
+  it('aStuckCarAtABlockedBoxNeverBacksUp', () => {
+    // Was `stuckReverseNeverBacksIntoIntersectionBox`. Rust let a stuck car reverse within its tile: it
+    // freed nothing, since the car kept its tile and the way ahead stayed blocked, and at the tile start it
+    // rocked between reversing and creeping forward. A stuck car now waits; recovery re-routes or removes it.
     const w = trafficWorld(6, 1, [0, 1, 2, 3, 4, 5].map((x) => [t(x, 0), x === 1 || x === 3 ? 'None' : 'East'] as const));
     const ego = refSlot(
       w.vehicles,
@@ -109,14 +112,14 @@ describe('special cases of moveVehicles', () => {
         stuck: { secs: STUCK_REROUTE_SECS + 5, lastTile: t(2, 0), lastProgress: 0.3 },
       }),
     );
-    let reversed = false;
+    let last = 1 + w.vehicles.progress[ego]!;
     for (let i = 0; i < 300; i++) {
       buildTrafficSpatialIndex(w);
       moveVehicles(w, DT);
-      reversed ||= w.vehicles.isReversing[ego] === 1;
-      expect(w.vehicles.pathCursor[ego], 'stuck reverse backed the vehicle into the box tile (1,0)').toBeGreaterThanOrEqual(1);
+      const at = w.vehicles.pathCursor[ego]! + w.vehicles.progress[ego]!;
+      expect(at, `tick ${i}: the car moved back`).toBeGreaterThanOrEqual(last);
+      last = at;
     }
-    expect(reversed, 'test never engaged the reverse branch; setup is invalid').toBe(true);
   });
 
   it('busWithExhaustedPathIsNotDespawnedByMoveVehicles', () => {

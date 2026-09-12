@@ -15,8 +15,8 @@ import {
   WAITING_EXEMPT_CAP_SECS,
   WEDGED_REROUTE_RETRY_SECS,
 } from './constants';
-import { drawJitterSeed, replanRouteWithLanelets, roadPathCtx, routeDirectionOk } from './reroute';
-import { TRIP_PURPOSES, VEHICLE_ROLES, clearLaneletPlanOnReroute, despawnVehicle, vehicleRef } from './vehicles';
+import { applyRoute, drawJitterSeed, replanRouteWithLanelets, roadPathCtx, routeDirectionOk, type PlannedRoute } from './reroute';
+import { TRIP_PURPOSES, VEHICLE_ROLES, despawnVehicle, vehicleRef } from './vehicles';
 
 const f32 = Math.fround;
 
@@ -112,6 +112,8 @@ export function updateStuckTimers(w: World, dtNs: number): void {
     const waiting = kind === 'Stopped' || kind === 'WaitingForGreen';
     const legitimateWait = waiting && v.stoppedSecs[slot]! < WAITING_EXEMPT_CAP_SECS;
     v.stuckSecs[slot] = progressed || legitimateWait ? 0 : f32(v.stuckSecs[slot]! + dt);
+    // Moving again: a reroute that freed the car is behind it.
+    if (progressed) v.stuckRerouted[slot] = 0;
     v.stuckLastTileX[slot] = tile.x;
     v.stuckLastTileY[slot] = tile.y;
     v.stuckLastProgress[slot] = v.progress[slot]!;
@@ -173,9 +175,18 @@ export function resolveStuckVehicles(w: World, dtNs: number): void {
     // One search per vehicle per retry window: Rust searched again every tick for a car no route
     // could free, two whole-city searches that took most of a busy tick.
     if (w.tick < v.stuckRetryTick[slot]!) {
-      holdOrRemove(w, slot, cursor, wedged, motionDespawn, removable);
+      // A fresh route gets its whole window before anything else is tried.
+      if (v.stuckRerouted[slot] !== 1) holdOrRemove(w, slot, cursor, wedged, motionDespawn, removable);
       continue;
     }
+    // The last reroute did not free it. Rust re-planned such a car every tick: a new tie-break seed
+    // "found" a different route each time, and the reroute pinned it in place. A trip car is removed.
+    if (v.stuckRerouted[slot] === 1 && motionDespawn && removable) {
+      finishAndDespawn(w, slot);
+      handled += 1;
+      continue;
+    }
+    v.stuckRerouted[slot] = 0;
     w.routeProducerStats.stuckReplanAttempts += 1;
     handled += 1;
     const goal = pool.getTile(handle, Math.max(len - 1, 0)) ?? current;
@@ -196,28 +207,20 @@ export function resolveStuckVehicles(w: World, dtNs: number): void {
       holdOrRemove(w, slot, cursor, wedged, motionDespawn, removable);
       continue;
     }
-    {
-      pool.release(handle);
-      const plan = v.laneletPlan[slot]!;
-      if (lanelet !== undefined) {
-        w.routeProducerStats.stuckLanelet += 1;
-        v.pathHandle[slot] = pool.intern(lanelet.tiles);
-        plan.entries = lanelet.sidecar.map((e) => [e[0], e[1], e[2]] as const);
-        plan.builtFor = w.laneletGraph.version;
-      } else {
-        w.routeProducerStats.stuckRoadFallback += 1;
-        v.pathHandle[slot] = pool.intern(road);
-        clearLaneletPlanOnReroute(plan);
-      }
-      v.pathCursor[slot] = 0;
-      v.progress[slot] = 0;
-      v.speed[slot] = Math.min(v.speed[slot]!, f32(v.maxSpeed[slot]! * 0.5));
-      v.isReversing[slot] = 0;
-      v.stuckSecs[slot] = 0;
-      v.stuckLastTileX[slot] = current.x;
-      v.stuckLastTileY[slot] = current.y;
-      v.stuckLastProgress[slot] = 0;
-    }
+    if (lanelet !== undefined) w.routeProducerStats.stuckLanelet += 1;
+    else w.routeProducerStats.stuckRoadFallback += 1;
+    const planned: PlannedRoute =
+      lanelet !== undefined
+        ? { tiles: lanelet.tiles, sidecar: lanelet.sidecar.map((e) => [e[0], e[1], e[2]] as const), builtFor: w.laneletGraph.version, producer: 'Lanelet' }
+        : { tiles: road, sidecar: [], builtFor: 0, producer: 'RoadFallback' };
+    applyRoute(w, slot, planned);
+    v.speed[slot] = Math.min(v.speed[slot]!, f32(v.maxSpeed[slot]! * 0.5));
+    v.stuckSecs[slot] = 0;
+    v.stuckLastTileX[slot] = current.x;
+    v.stuckLastTileY[slot] = current.y;
+    v.stuckLastProgress[slot] = v.progress[slot]!;
+    v.stuckRetryTick[slot] = w.tick + retryTicks;
+    v.stuckRerouted[slot] = 1;
   }
 }
 

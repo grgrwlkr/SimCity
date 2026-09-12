@@ -5,7 +5,7 @@ import type { MapGrid } from '../map/grid';
 import { dirOpposite } from '../map/roads';
 import { isWrongWayOnOneWay } from './roadGraph';
 
-/** Best first: a lane matching the desired direction, then perpendicular or box tiles, then oncoming. */
+/** Best first: a lane matching the desired direction, then a perpendicular one, then oncoming. */
 const CORRECT_LANE = 0;
 const NON_OPPOSITE = 1;
 const ONCOMING = 2;
@@ -20,6 +20,9 @@ function desiredDir(from: TilePos, to: TilePos): RoadDir {
 function roadAnchorRank(grid: MapGrid, pos: TilePos, want: RoadDir): number | undefined {
   const cell = grid.get(pos);
   if (cell === undefined || cell.water || cell.road.kind === 'None') return undefined;
+  // Not a box tile (Rust ranked them with perpendicular lanes): a route ending inside a box has no exit
+  // lane, so the arbiter never takes the car and it waits at the box forever.
+  if (cell.road.dir === 'None') return undefined;
   // The wrong-way carriageway of a one-way road is not drivable.
   if (isWrongWayOnOneWay(cell.road)) return undefined;
   if (cell.road.dir === want) return CORRECT_LANE;

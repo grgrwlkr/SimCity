@@ -50,7 +50,7 @@ export function breakTileSwaps(w: World): void {
   const pool = w.pathPool;
   const intent = new Map<number, IntentRec>();
   for (const slot of v.order) {
-    if (v.parked[slot] === 1 || v.isReversing[slot] === 1) continue;
+    if (v.parked[slot] === 1) continue;
     const handle = v.pathHandle[slot]!;
     const cursor = v.pathCursor[slot]!;
     const cur = pool.getTile(handle, cursor);

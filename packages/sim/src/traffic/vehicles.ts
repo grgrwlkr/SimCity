@@ -78,7 +78,6 @@ export interface VehicleLayers {
   /** Spawn tile. */
   readonly tileX: Int32Array;
   readonly tileY: Int32Array;
-  readonly isReversing: Uint8Array;
   readonly seq: Float64Array;
   /** Spawned since the last `assignVehicleSeq` (`Added<Vehicle>`). */
   readonly seqPending: Uint8Array;
@@ -106,6 +105,8 @@ export interface VehicleLayers {
   readonly anchorY: Float32Array;
   /** The tick from which a stuck vehicle may search for another route again. */
   readonly stuckRetryTick: Int32Array;
+  /** Recovery re-routed the vehicle and it has not moved since. */
+  readonly stuckRerouted: Uint8Array;
   readonly trafficState: VehicleTrafficState[];
   readonly laneletPlan: VehicleLaneletPlan[];
 }
@@ -137,7 +138,6 @@ export function createVehicleLayers(capacity: number): VehicleLayers {
     pathCursor: i32(),
     tileX: i32(),
     tileY: i32(),
-    isReversing: u8(),
     seq: new Float64Array(capacity),
     seqPending: u8(),
     role: u8(),
@@ -158,6 +158,7 @@ export function createVehicleLayers(capacity: number): VehicleLayers {
     anchorX: f32(),
     anchorY: f32(),
     stuckRetryTick: i32(),
+    stuckRerouted: u8(),
     trafficState: Array.from({ length: capacity }, () => FREE_FLOW),
     laneletPlan: Array.from({ length: capacity }, () => ({ entries: [], builtFor: 0 })),
   };
@@ -229,7 +230,6 @@ export function spawnVehicle(w: World, spec: VehicleSpec): number {
   v.pathCursor[slot] = cursor;
   v.tileX[slot] = start.x;
   v.tileY[slot] = start.y;
-  v.isReversing[slot] = 0;
   v.seq[slot] = 0;
   v.seqPending[slot] = 1;
   v.role[slot] = VEHICLE_ROLES.indexOf(spec.role ?? 'trip');
@@ -250,6 +250,7 @@ export function spawnVehicle(w: World, spec: VehicleSpec): number {
   v.anchorX[slot] = world.x;
   v.anchorY[slot] = world.y;
   v.stuckRetryTick[slot] = 0;
+  v.stuckRerouted[slot] = 0;
   setTrafficState(v, slot, spec.state ?? FREE_FLOW);
   v.laneletPlan[slot] = { entries: [], builtFor: 0 };
   return vehicleRef(v, slot);

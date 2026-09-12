@@ -1,6 +1,6 @@
 // Port of crates/simcity_sim/src/game/traffic/movement/drive.rs and the IDM helpers of traffic.rs:
 // longitudinal dynamics (IDM, f32), virtual leaders at stop lines and blocked tiles, the deferred
-// box-entry reservation, the hard overlap clamp, in-tile reversing, arrival and parking.
+// box-entry reservation, the hard overlap clamp, arrival and parking.
 import { ROAD_KINDS, type TilePos } from '../commands';
 import { tileToWorld, type MapConfig } from '../map/coords';
 import type { MapGrid } from '../map/grid';
@@ -17,7 +17,6 @@ import {
   SERVICE_VEHICLE_SPEED_LIMIT_FACTOR,
   STOP_LINE_MARGIN_TILES,
   STOP_LINE_OFFSET,
-  STUCK_REROUTE_SECS,
   TILE_CENTER_TO_EDGE_TILES,
   VEHICLE_LENGTH_TILES,
 } from './constants';
@@ -27,7 +26,6 @@ import { computeExitDirection, isIntersectionTile } from './state';
 import { FREE_FLOW, TRIP_PURPOSES, VEHICLE_ROLES, despawnVehicle, setTrafficState, vehicleRef } from './vehicles';
 
 const f32 = Math.fround;
-const MAX_REVERSE_SPEED_KMH = 10;
 const HALF_PI = f32(Math.PI / 2);
 const PI = f32(Math.PI);
 
@@ -347,31 +345,20 @@ export function moveVehicles(w: World, dtNs: number): void {
       leader = minLeader(leader, [gapWorld, 0]);
     }
 
-    // Reversing only while stuck, only within the current tile (ПДД 8.12: never into a box).
-    const canReverse =
-      v.hasStuckTimer[slot] === 1 && v.stuckSecs[slot]! >= STUCK_REROUTE_SECS && blockedNext && cursor > 0;
-    if (canReverse) {
-      v.isReversing[slot] = 1;
-      v.speed[slot] = Math.min(kmhToWorldSpeed(map, cfg, MAX_REVERSE_SPEED_KMH), f32(v.speed[slot]! + f32(2 * dt)));
-    } else if (v.isReversing[slot] === 1) {
-      v.isReversing[slot] = 0;
-      v.speed[slot] = 0;
-    } else if (v0 > 0) {
+    // No reversing: Rust let a stuck car back up within its tile, which freed nothing and rocked the car
+    // at the tile start. A stuck car waits; recovery re-routes or removes it.
+    if (v0 > 0) {
       const accel = idmAccelWorld(v.speed[slot]!, v0, leader, idm);
       v.speed[slot] = Math.min(Math.max(f32(v.speed[slot]! + f32(accel * dt)), 0), v0);
     } else {
       v.speed[slot] = 0;
     }
 
-    const reversing = v.isReversing[slot] === 1;
-    const travel = f32(f32(v.speed[slot]! * dt) / tileSize);
-    const desiredDprog = reversing ? -travel : travel;
+    const desiredDprog = f32(f32(v.speed[slot]! * dt) / tileSize);
     const prevP = progress0;
     const denom = Math.max(dt, f32(1e-6));
 
-    if (reversing) {
-      v.progress[slot] = Math.max(f32(prevP + desiredDprog), 0);
-    } else if (nextTile !== undefined && blockedNext) {
+    if (nextTile !== undefined && blockedNext) {
       const maxP = blockedNextIsIntersection ? Math.max(TILE_CENTER_TO_EDGE_TILES, prevP) : f32(1 - f32(0.001));
       const desiredP = f32(prevP + desiredDprog);
       const nextP = Math.min(desiredP, maxP);
@@ -407,7 +394,7 @@ export function moveVehicles(w: World, dtNs: number): void {
 
     // Boundary: a car reaching the box this tick takes its conflict-tile hold now and keeps its speed.
     // Only a refused hold stops it on the line (Rust took the hold a tick later, after stopping there).
-    if (clampToBoxBoundary && !reversing) {
+    if (clampToBoxBoundary) {
       const boundaryCap = Math.max(TILE_CENTER_TO_EDGE_TILES, prevP);
       if (v.progress[slot]! > boundaryCap) {
         const admitted = pendingAdmit !== undefined && admitToBox(w, pendingAdmit.id, ref, pendingAdmit.localIdx);
@@ -420,17 +407,15 @@ export function moveVehicles(w: World, dtNs: number): void {
     }
 
     // A turn holding only its wait prefix stops inside the box, its front at the end of the prefix.
-    if (!reversing) {
-      const boxTile = currentIsIntersection ? currentTile : nextTile;
-      const boxId = boxTile === undefined || !isIntersectionTile(grid, boxTile) ? undefined : w.intersections.intersectionIdAt(boxTile);
-      const hold = boxId === undefined ? undefined : w.reservations.ledger(boxId)?.holdOf(ref);
-      const limit = boxId === undefined || hold === undefined || hold.committed ? undefined : waitPointPos(w, boxId, hold.localIdx, slot);
-      if (limit !== undefined) {
-        const cap = Math.max(f32(limit - cursor), prevP);
-        if (v.progress[slot]! > cap) {
-          v.progress[slot] = cap;
-          v.speed[slot] = Math.min(v.speed[slot]!, Math.max(0, f32(f32(f32(cap - prevP) * tileSize) / denom)));
-        }
+    const boxTile = currentIsIntersection ? currentTile : nextTile;
+    const boxId = boxTile === undefined || !isIntersectionTile(grid, boxTile) ? undefined : w.intersections.intersectionIdAt(boxTile);
+    const hold = boxId === undefined ? undefined : w.reservations.ledger(boxId)?.holdOf(ref);
+    const limit = boxId === undefined || hold === undefined || hold.committed ? undefined : waitPointPos(w, boxId, hold.localIdx, slot);
+    if (limit !== undefined) {
+      const cap = Math.max(f32(limit - cursor), prevP);
+      if (v.progress[slot]! > cap) {
+        v.progress[slot] = cap;
+        v.speed[slot] = Math.min(v.speed[slot]!, Math.max(0, f32(f32(f32(cap - prevP) * tileSize) / denom)));
       }
     }
 
