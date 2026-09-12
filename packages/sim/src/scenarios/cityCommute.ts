@@ -1,17 +1,17 @@
-// Stage 2c on a whole city (`?scenario=city`): commuters drive their own cars between a home and a work
-// lane tile, park there, and drive back after a while. The departures draw from the scenario's own
-// seed, so the simulation's generator sees only what the traffic systems draw.
+// Commuters on a city (`?scenario=city`): each drives their own car between a home and a workplace,
+// parks there, and drives back after a while. Departures draw from the scenario's own seed, so the
+// simulation's generator sees only what the traffic systems draw.
 import type { TilePos } from '../commands';
-import { detectIntersections } from '../intersections/index';
-import { bumpVersion } from '../map/dirty';
 import { rangeU32, stdRngSeedFromU64, type StdRng } from '../rng';
 import type { World } from '../world';
 
 export interface CityCommuteOptions {
   readonly citizens?: number;
   readonly seed?: bigint;
-  /** Cluster keys of the lit intersections, for a grid that was loaded without them. */
-  readonly trafficLightKeys?: readonly string[];
+  /** Lots to live on; without them, any lane tile. */
+  readonly homes?: readonly TilePos[];
+  /** Lots to work on; without them, any lane tile. */
+  readonly workplaces?: readonly TilePos[];
 }
 
 interface Commuter {
@@ -36,27 +36,22 @@ export class CityCommuteScenario {
   private lastTick = -1;
 
   constructor(w: World, options: CityCommuteOptions = {}) {
-    if (options.trafficLightKeys !== undefined) {
-      // Detection keeps a light only for a key it knows, so the keys go in before a fresh detection.
-      w.intersections.trafficLightKeys = new Set(options.trafficLightKeys);
-      w.graphVersion = bumpVersion(w.graphVersion);
-      w.dirty.markAll();
-      w.roadDirty.markAll();
-      detectIntersections(w);
-    }
     this.rng = stdRngSeedFromU64(options.seed ?? 7n);
     const lanes: TilePos[] = [];
-    for (let y = 0; y < w.grid.height; y++) {
-      for (let x = 0; x < w.grid.width; x++) {
-        const cell = w.grid.get({ x, y });
-        if (cell !== undefined && !cell.water && cell.road.kind !== 'None' && cell.road.dir !== 'None') lanes.push({ x, y });
+    if (options.homes === undefined || options.workplaces === undefined) {
+      for (let y = 0; y < w.grid.height; y++) {
+        for (let x = 0; x < w.grid.width; x++) {
+          const cell = w.grid.get({ x, y });
+          if (cell !== undefined && !cell.water && cell.road.kind !== 'None' && cell.road.dir !== 'None') lanes.push({ x, y });
+        }
       }
     }
-    const pick = () => lanes[rangeU32(this.rng, 0, lanes.length)]!;
-    const count = lanes.length === 0 ? 0 : (options.citizens ?? 300);
+    const homes = options.homes ?? lanes;
+    const workplaces = options.workplaces ?? lanes;
+    const count = homes.length === 0 || workplaces.length === 0 ? 0 : (options.citizens ?? 300);
     this.commuters = Array.from({ length: count }, () => ({
-      home: pick(),
-      work: pick(),
+      home: homes[rangeU32(this.rng, 0, homes.length)]!,
+      work: workplaces[rangeU32(this.rng, 0, workplaces.length)]!,
       atWork: false,
       driving: false,
       departAt: w.tick + rangeU32(this.rng, 1, FIRST_DEPARTURE_TICKS),

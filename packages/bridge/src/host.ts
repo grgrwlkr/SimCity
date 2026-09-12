@@ -1,6 +1,7 @@
 // The worker's world, driver and render buffer behind the message interface. Free of worker
 // globals, so the whole request path runs under Vitest.
 import {
+  buildCity,
   bumpVersion,
   CityCommuteScenario,
   createWorld,
@@ -93,9 +94,9 @@ export class SimHost {
       case 'debugOverlay':
         return debugOverlayOf(this.world);
       case 'scenario':
-        if (req.name === 'cityCommute') {
-          const keys = req.trafficLightKeys;
-          this.scenario = new CityCommuteScenario(this.world, keys === undefined ? {} : { trafficLightKeys: keys });
+        if (req.name === 'city') {
+          const plan = buildCity(this.world);
+          this.scenario = new CityCommuteScenario(this.world, { citizens: 400, homes: plan.homes, workplaces: plan.workplaces });
         } else {
           this.scenario = new SignalizedCrossScenario(this.world, undefined, CROSS_LAYOUT[req.name]);
         }

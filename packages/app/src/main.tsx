@@ -16,7 +16,7 @@ const debug = params.get('debug') === '1';
 /** `?scenario=signalized` (two lanes) or `?scenario=signalized4` (four): a lit cross with traffic, the camera on its box. */
 const SCENARIOS: Readonly<Record<string, CrossScenarioName>> = { signalized: 'signalizedCross', signalized4: 'signalizedCross4' };
 const scenario = SCENARIOS[params.get('scenario') ?? ''] ?? null;
-/** `?scenario=city`: commuters in their own cars on the test city, the whole map in view. */
+/** `?scenario=city`: commuters in their own cars on a generated city, the whole map in view. */
 const city = params.get('scenario') === 'city';
 let focusPending = scenario !== null;
 const canvas = document.getElementById('view');
@@ -93,12 +93,8 @@ void api.ready
       await api.setState('InGame');
       await api.scenario(scenario);
     } else if (city) {
-      // A chunk of its own: the fixture is half a megabyte and only this view needs it.
-      const { default: testCity } = await import('../../sim/test/fixtures/road-routes.json');
-      const { height, ...layers } = testCity.rawGrid;
       await api.setState('InGame');
-      await api.loadGridHex({ elevation: height, ...layers });
-      await api.scenario('cityCommute', testCity.trafficLightKeys);
+      await api.scenario('city');
     }
     return api.snapshot();
   })

@@ -107,6 +107,9 @@ export interface VehicleLayers {
   readonly stuckRetryTick: Int32Array;
   /** Recovery re-routed the vehicle and it has not moved since. */
   readonly stuckRerouted: Uint8Array;
+  /** The lot beside the road where an owned car parks on arrival; -1 to park where the route ends. */
+  readonly parkX: Int32Array;
+  readonly parkY: Int32Array;
   readonly trafficState: VehicleTrafficState[];
   readonly laneletPlan: VehicleLaneletPlan[];
 }
@@ -159,6 +162,8 @@ export function createVehicleLayers(capacity: number): VehicleLayers {
     anchorY: f32(),
     stuckRetryTick: i32(),
     stuckRerouted: u8(),
+    parkX: i32().fill(-1),
+    parkY: i32().fill(-1),
     trafficState: Array.from({ length: capacity }, () => FREE_FLOW),
     laneletPlan: Array.from({ length: capacity }, () => ({ entries: [], builtFor: 0 })),
   };
@@ -251,6 +256,8 @@ export function spawnVehicle(w: World, spec: VehicleSpec): number {
   v.anchorY[slot] = world.y;
   v.stuckRetryTick[slot] = 0;
   v.stuckRerouted[slot] = 0;
+  v.parkX[slot] = -1;
+  v.parkY[slot] = -1;
   setTrafficState(v, slot, spec.state ?? FREE_FLOW);
   v.laneletPlan[slot] = { entries: [], builtFor: 0 };
   return vehicleRef(v, slot);

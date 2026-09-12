@@ -441,6 +441,17 @@ export function moveVehicles(w: World, dtNs: number): void {
           v.speed[slot] = 0;
           v.parked[slot] = 1;
           v.parkedOffset[slot] = 1;
+          // Off the road, on the lot the trip was for: Rust left the car standing on its last lane tile.
+          if (v.parkX[slot]! >= 0) {
+            const lot = tileToWorld(map, { x: v.parkX[slot]!, y: v.parkY[slot]! });
+            // Cars on one lot stand side by side, in a 3×3 pattern by slot.
+            const k = slot % 9;
+            const step = f32(map.tileSize * 0.3);
+            v.x[slot] = f32(lot.x + f32(((k % 3) - 1) * step));
+            v.y[slot] = f32(lot.y + f32((((k / 3) | 0) - 1) * step));
+            v.prevX[slot] = v.x[slot]!;
+            v.prevY[slot] = v.y[slot]!;
+          }
           setTrafficState(v, slot, FREE_FLOW);
           v.passengerCitizen[slot] = -1;
           v.rightTurnOnRed[slot] = -1;

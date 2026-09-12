@@ -81,6 +81,28 @@ describe('trip vehicles', () => {
     expect(v.speed[refSlot(v, car)]).toBe(0);
   });
 
+  it('anOwnedCarParksOnTheLotItDroveTo', () => {
+    // Rust left a parked car standing on the last tile of its route: in the middle of a lane.
+    const w = createWorld({ mapWidth: 4, mapHeight: 3 });
+    w.appState = 'InGame';
+    for (let x = 0; x < 4; x++) setRoad(w.grid, t(x, 1), { dir: 'East' });
+    rebuildRoadGraphInner(w.grid, 1, w.roadGraph);
+    const lot = t(3, 2);
+    w.events.tripRequested.push({ citizen: 5, from: t(0, 0), carParkedAt: t(0, 0), to: lot, purpose: 'Work', mode: 'Car' });
+    spawnTripVehicles(w);
+
+    const v = w.vehicles;
+    const slot = v.order[0]!;
+    for (let i = 0; i < 200 && v.parked[slot] !== 1; i++) {
+      buildTrafficSpatialIndex(w);
+      moveVehicles(w, DT);
+    }
+    expect(v.parked[slot], 'arrived and parked').toBe(1);
+    const at = tileToWorld(w.mapConfig, lot);
+    const half = w.mapConfig.tileSize / 2;
+    expect(Math.abs(v.x[slot]! - at.x) <= half && Math.abs(v.y[slot]! - at.y) <= half, 'on the lot, off the road').toBe(true);
+  });
+
   it('oneJammedTileDoesNotStopTheCity', () => {
     // Rust stopped every trip while any single tile was near capacity: one stuck car froze the city.
     const w = world([t(1, 0), t(1, 2)]);

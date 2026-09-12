@@ -57,7 +57,7 @@ export interface SimApi {
   pickTile(x: number, y: number): Promise<TilePos | null>;
   renderStats(): Promise<RenderStats>;
   /** Build a scenario into the running world (`?scenario=signalized` does this on load). */
-  scenario(name: 'signalizedCross' | 'signalizedCross4' | 'cityCommute', trafficLightKeys?: readonly string[]): Promise<null>;
+  scenario(name: 'signalizedCross' | 'signalizedCross4' | 'city'): Promise<null>;
 }
 
 declare global {
@@ -131,8 +131,7 @@ export function installSimApi(
       return cfg === null ? null : (r.view.pickTile(cfg, x, y) ?? null);
     },
     renderStats: async () => (await renderer).stats(),
-    scenario: (name, trafficLightKeys) =>
-      client.request(trafficLightKeys === undefined ? { t: 'scenario', name } : { t: 'scenario', name, trafficLightKeys }),
+    scenario: (name) => client.request({ t: 'scenario', name }),
   };
   window.__sim = api;
   return api;

@@ -186,7 +186,7 @@ test('signalizedScenarioShowsTrafficLive', async ({ page }, testInfo) => {
   await page.locator('#view').screenshot({ path: testInfo.outputPath('signalized.png') });
 });
 
-// Stage 2c live: commuters drive their own cars across the test city and its six lit intersections.
+// Stage 2c live: commuters drive their own cars across the generated city and its nine lit crossings.
 test('cityScenarioDrivesCommutersLive', async ({ page }, testInfo) => {
   await page.goto('/?scenario=city');
   await page.waitForFunction(() => typeof window.__sim !== 'undefined');
@@ -194,7 +194,7 @@ test('cityScenarioDrivesCommutersLive', async ({ page }, testInfo) => {
 
   await expect
     .poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => ({ driving: s.vehicles > 20, lamps: s.lights })), { timeout: 30_000 })
-    .toEqual({ driving: true, lamps: 24 });
+    .toEqual({ driving: true, lamps: 36 });
   await page.locator('#view').screenshot({ path: testInfo.outputPath('city.png') });
 });
 

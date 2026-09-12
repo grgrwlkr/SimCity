@@ -72,6 +72,9 @@ export function spawnTripVehicles(w: World): void {
     // Driver behaviour belongs to the trip: a fresh profile every time, a reused car included.
     const speedFactor = sampleDriverSpeedFactor(w);
     const maxSpeed = sampleDriverMaxSpeed(w);
+    // A destination off the road is the lot the car parks on; one on the road, where the route ends.
+    const toCell = w.grid.get(trip.to);
+    const lot = toCell !== undefined && toCell.road.kind === 'None' && !toCell.water ? trip.to : undefined;
     const own = v.order.find((slot) => v.parked[slot] === 1 && v.carOwner[slot] === trip.citizen);
     if (own === undefined) {
       const ref = spawnVehicle(w, {
@@ -82,8 +85,13 @@ export function spawnTripVehicles(w: World): void {
         passenger: { citizen: trip.citizen, purpose: trip.purpose },
         carOwner: trip.citizen,
       });
-      v.laneletPlan[refSlot(v, ref)] = { entries: [...route.sidecar], builtFor: route.builtFor };
+      const slot = refSlot(v, ref);
+      v.laneletPlan[slot] = { entries: [...route.sidecar], builtFor: route.builtFor };
+      v.parkX[slot] = lot?.x ?? -1;
+      v.parkY[slot] = lot?.y ?? -1;
     } else {
+      v.parkX[own] = lot?.x ?? -1;
+      v.parkY[own] = lot?.y ?? -1;
       applyRoute(w, own, route);
       const at = tileToWorld(w.mapConfig, start);
       v.x[own] = at.x;
