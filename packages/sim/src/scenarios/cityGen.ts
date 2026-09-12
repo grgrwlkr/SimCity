@@ -1,10 +1,9 @@
-// A generated city for `?scenario=city`, built with the road and zone tools on a 128×128 map (north up).
-// Farmland lies south of the southern arterial; between it and a winding river is an industrial belt
-// of large lots. Across the river, bridged only by the three north–south arterials, the city proper:
-// a dense downtown grid around a six-lane boulevard, shops along the boulevard, long residential blocks
-// whose streets jog where districts meet, a park with a pond, and dead-end streets into the suburbs.
-// The nine arterial crossings are lit.
-import type { GameCommand, RoadKind, TilePos, ZoneDensity, ZoneKind } from '../commands';
+// A generated city for `?scenario=city` and `?scenario=living`, built with the road, zone and building tools on a 128×128
+// map (north up). Farmland lies south of the southern arterial; between it and a winding river is an industrial belt
+// of large lots. Across the river, bridged only by the three north–south arterials, the city proper: a dense downtown
+// grid around a six-lane boulevard, shops along the boulevard, long residential blocks whose streets jog where
+// districts meet, a park with a pond, and dead-end streets into the suburbs. The nine arterial crossings are lit.
+import type { BuildingKind, GameCommand, RoadKind, TilePos, ZoneDensity, ZoneKind } from '../commands';
 import { detectIntersections } from '../intersections/index';
 import { applyGameCommandsToGrid } from '../map/apply';
 import { roadSegmentCommands } from '../map/roadTool';
@@ -17,6 +16,14 @@ export interface CityPlan {
   readonly workplaces: readonly TilePos[];
   /** A tile of every lit crossing. */
   readonly lights: readonly TilePos[];
+}
+
+export interface CityOptions {
+  /**
+   * `false` lays roads, water and lights only: a traffic city nothing grows in, its lots where the zones would be.
+   * With zones (the default) come the power plants and water pumps they need to grow.
+   */
+  readonly zones?: boolean;
 }
 
 export const CITY_SIZE = 128;
@@ -62,6 +69,16 @@ const POND = { x: 94, y: 51, radiusSq: 10 } as const;
 /** The river's middle row; it winds a row either way, over 34..38 at rest. */
 const RIVER_Y = 36;
 
+/** A power plant and a water pump for the west, the centre and the east, each 3×3 beside a north–south arterial between two streets. */
+const STATIONS: ReadonlyArray<readonly [BuildingKind, number, number]> = [
+  ['PowerPlant', 23, 46],
+  ['PowerPlant', 58, 46],
+  ['PowerPlant', 100, 46],
+  ['WaterPump', 23, 86],
+  ['WaterPump', 58, 86],
+  ['WaterPump', 100, 86],
+];
+
 function riverShift(x: number): number {
   const t = x % 16;
   return t < 4 ? 0 : t < 8 ? 1 : t < 12 ? 0 : -1;
@@ -79,9 +96,10 @@ function zoneAt(x: number, y: number): readonly [ZoneKind, ZoneDensity] | undefi
 }
 
 /** Lays the city onto `w`'s blank 128×128 map; the lights are placed by the next frame's commands. */
-export function buildCity(w: World): CityPlan {
+export function buildCity(w: World, options: CityOptions = {}): CityPlan {
   const grid = w.grid;
   if (grid.width < CITY_SIZE || grid.height < CITY_SIZE) throw new RangeError(`buildCity needs a ${CITY_SIZE}×${CITY_SIZE} map`);
+  const zoned = options.zones ?? true;
   const setWater = (x: number, y: number) => {
     const cell = grid.get({ x, y });
     if (cell !== undefined) grid.set({ x, y }, { ...cell, water: true });
@@ -111,17 +129,20 @@ export function buildCity(w: World): CityPlan {
   lay({ x: 1, y: BOULEVARD_Y }, { x: 126, y: BOULEVARD_Y }, 'SixLane');
 
   const zones: GameCommand[] = [];
-  for (let y = 0; y < CITY_SIZE; y++) {
+  for (let y = 0; y < CITY_SIZE && zoned; y++) {
     for (let x = 0; x < CITY_SIZE; x++) {
       const zone = zoneAt(x, y);
       if (zone !== undefined) zones.push({ kind: 'SetZone', pos: { x, y }, zone: zone[0], density: zone[1] });
     }
   }
 
-  // A demonstration city costs the treasury nothing.
+  // A demonstration city costs the treasury nothing. Roads are built in debt, so the treasury is back before the
+  // stations are paid for, and back again after.
   const money = w.city.money;
   applyGameCommandsToGrid(w, roads);
   applyGameCommandsToGrid(w, zones);
+  w.city.money = money;
+  if (zoned) applyGameCommandsToGrid(w, STATIONS.map(([building, x, y]): GameCommand => ({ kind: 'PlaceBuilding', pos: { x, y }, building })));
   w.city.money = money;
   // The construction lines went through the ledger; the month starts over from the untouched treasury.
   w.budget.restart(money);
@@ -139,7 +160,9 @@ export function buildCity(w: World): CityPlan {
   const workplaces: TilePos[] = [];
   for (let y = 0; y < grid.height; y++) {
     for (let x = 0; x < grid.width; x++) {
-      const zone = grid.get({ x, y })!.zone;
+      const cell = grid.get({ x, y })!;
+      // Without zones, a lot is where the zone would be: dry land off the road.
+      const zone = zoned ? cell.zone : cell.water || cell.road.kind !== 'None' ? 'None' : (zoneAt(x, y)?.[0] ?? 'None');
       if (zone === 'None') continue;
       const besideLane = isLane({ x: x - 1, y }) || isLane({ x: x + 1, y }) || isLane({ x, y: y - 1 }) || isLane({ x, y: y + 1 });
       if (!besideLane) continue;

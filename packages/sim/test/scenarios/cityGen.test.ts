@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { frame, step } from '../../src/app';
 import type { TilePos } from '../../src/commands';
-import { buildCity } from '../../src/scenarios/cityGen';
+import { buildCity, type CityOptions } from '../../src/scenarios/cityGen';
 import { CityCommuteScenario } from '../../src/scenarios/cityCommute';
 import { requestState } from '../../src/state';
 import { planTilesLaneletFirst, routeDirectionOk } from '../../src/traffic/reroute';
@@ -13,11 +13,11 @@ import { adjacentRoadTowards } from '../../src/transport/anchors';
 import { createWorld, type World } from '../../src/world';
 import { rightHandOffenders } from './rightHand';
 
-function city() {
+function city(options: CityOptions = {}) {
   const w = createWorld();
   requestState(w, 'InGame');
   frame(w, 0);
-  const plan = buildCity(w);
+  const plan = buildCity(w, options);
   return { w, plan };
 }
 
@@ -78,6 +78,17 @@ describe('generated city', () => {
     }
   });
 
+  it('theTrafficCityHasNoZonesAndStillItsLotsBesideTheRoads', () => {
+    const { w, plan } = city({ zones: false });
+    expect(['Residential', 'Commercial', 'Industrial'].map((zone) => tilesOf(w, zone).length), 'nothing to grow on').toEqual([0, 0, 0]);
+    expect(w.buildings.all(), 'and no stations').toEqual([]);
+    expect(plan.homes.length).toBeGreaterThan(100);
+    expect(plan.workplaces.length).toBeGreaterThan(100);
+    for (const lot of [...plan.homes, ...plan.workplaces]) {
+      expect(adjacentRoadTowards(w.grid, lot, { x: 64, y: 64 }), `lot (${lot.x},${lot.y}) has a road beside it`).toBeDefined();
+    }
+  });
+
   it('everyCommuteHasALaneletRoute', () => {
     const { w, plan } = city();
     step(w, 1);
@@ -92,7 +103,8 @@ describe('generated city', () => {
   });
 
   it('commutersCrossTheCityWithoutJams', () => {
-    const { w, plan } = city();
+    // The traffic city: grown citizens would add their own trips and share the commuters' ids.
+    const { w, plan } = city({ zones: false });
     const scenario = new CityCommuteScenario(w, { citizens: 400, homes: plan.homes, workplaces: plan.workplaces });
     const waitingSince = new Map<number, number>();
     let longestWaitForGreen = 0;

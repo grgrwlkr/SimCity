@@ -208,6 +208,15 @@ describe('SimHost', () => {
     expect(traffic.simTickMs!, 'the tick cost is measured').toBeGreaterThan(0);
   }, 60_000);
 
+  it('theLivingCityReportsItsOwnCitizens', () => {
+    const host = new SimHost(4096);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'scenario', name: 'livingCity' });
+    host.handle({ t: 'step', ticks: 20 });
+    const { traffic } = host.handle({ t: 'snapshot' });
+    expect([traffic.citizens, traffic.tripsStarted], 'nobody lives there yet, and the HUD says so rather than nothing').toEqual([0, 0]);
+  }, 60_000);
+
   it('aScenarioSeesEveryTickOfAFastFrame', () => {
     // At ×3 a frame runs several ticks; a scenario fed once a frame missed the arrivals of all but the
     // last, and those commuters stayed "on the road" for good.

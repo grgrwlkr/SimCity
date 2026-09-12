@@ -9,6 +9,7 @@ import {
   despawnVehicle,
   detectIntersections,
   fingerprint,
+  LivingCityScenario,
   parseRustCommand,
   refSlot,
   requestState,
@@ -48,10 +49,12 @@ const CITY_COMMUTE = { citizens: 2000, departureWindowTicks: 3000, stayTicks: [1
 
 /** A builder for every scenario of the menu: a listed name without one fails the typecheck. */
 const SCENARIO_BUILDERS: Readonly<Record<ScenarioName, (w: World) => HostScenario>> = {
+  // Without zones: grown citizens would drive among the commuters and share their ids.
   city: (w) => {
-    const plan = buildCity(w);
+    const plan = buildCity(w, { zones: false });
     return new CityCommuteScenario(w, { ...CITY_COMMUTE, homes: plan.homes, workplaces: plan.workplaces });
   },
+  livingCity: (w) => new LivingCityScenario(w),
   signalizedCross: (w) => new SignalizedCrossScenario(w, undefined, CROSS_LAYOUT.signalizedCross),
   signalizedCross4: (w) => new SignalizedCrossScenario(w, undefined, CROSS_LAYOUT.signalizedCross4),
 };

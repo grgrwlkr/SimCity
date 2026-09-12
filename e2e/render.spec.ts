@@ -211,14 +211,27 @@ test('hudShowsCityStats', async ({ page }) => {
   await expect(page.getByTestId('sim-tick')).toHaveText(/^сим \d+(,\d)? мс$/);
 });
 
+// Stage 3b live: the living city grows from its zones; its HUD counts its own citizens from the first frame.
+test('livingCityShowsItsCitizens', async ({ page }) => {
+  await page.goto('/?scenario=living');
+  await page.waitForFunction(() => typeof window.__sim !== 'undefined');
+  await page.evaluate(() => window.__sim.ready);
+
+  await expect(page.getByTestId('citizens')).toHaveText(/^Жители \d/, { timeout: 30_000 });
+  await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.lights), { timeout: 30_000 }).toBe(36);
+});
+
 // The main menu lists every scenario the app knows, so nobody has to remember the links.
 test('mainMenuOffersEveryScenario', async ({ page }, testInfo) => {
   await page.goto('/?debug=1');
   await page.waitForFunction(() => typeof window.__sim !== 'undefined');
   const scenarios = page.getByRole('navigation', { name: 'Сценарии' });
   await expect(scenarios.getByRole('link')).toHaveCount(SCENARIOS.length);
+  // A link's name is its title and description; a name given as a string matches any link containing it, and
+  // «Город» is inside «Живой город».
+  const titled = (title: string) => new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`);
   for (const s of SCENARIOS) {
-    await expect(scenarios.getByRole('link', { name: s.title }), 'the debug flag survives the jump').toHaveAttribute(
+    await expect(scenarios.getByRole('link', { name: titled(s.title) }), 'the debug flag survives the jump').toHaveAttribute(
       'href',
       `?scenario=${s.query}&debug=1`,
     );
@@ -226,7 +239,7 @@ test('mainMenuOffersEveryScenario', async ({ page }, testInfo) => {
   await page.screenshot({ path: testInfo.outputPath('menu.png') });
 
   await page.goto('/');
-  await page.getByRole('navigation', { name: 'Сценарии' }).getByRole('link', { name: 'Город' }).click();
+  await page.getByRole('navigation', { name: 'Сценарии' }).getByRole('link', { name: titled('Город') }).click();
   await expect(page).toHaveURL(/\/\?scenario=city$/);
   await expect(page.getByTestId('citizens')).toHaveText(/^Жители 2\s000$/, { timeout: 30_000 });
 
