@@ -9,7 +9,7 @@ import {
   anyFootprintTile,
   buildingArea,
   buildingKindZone,
-  constructionDays,
+  constructionHours,
   footprintTiles,
   hasAdjacentRoad,
   isOperational,
@@ -96,7 +96,7 @@ export function buildingDecayLowHappiness(w: World): void {
       ratio = 0;
     } else {
       const area = buildingArea(b);
-      const openedDay = b.constructionStartDay + constructionDays(b.kind, b.level, area);
+      const openedDay = b.constructionStartDay + Math.ceil(constructionHours(b.kind, b.level, area) / 24);
       const expected = expectedOccupancy(target, b.level, area, zoneDemand(w.rciDemand, b.kind), Math.max(day - openedDay, 0));
       ratio = expected < 1 ? 1 : f32(occupancy / expected);
     }

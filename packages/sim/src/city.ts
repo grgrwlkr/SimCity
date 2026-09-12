@@ -10,6 +10,8 @@ export interface City {
   hour: number;
   /** Minutes into the current hour, 0..=59. */
   minute: number;
+  /** Seconds into the current minute, 0..=59. */
+  second: number;
   /** `i64` in Rust; kept inside the safe-integer range. */
   money: number;
   population: number;
@@ -24,6 +26,7 @@ export function defaultCity(): City {
     day: 1,
     hour: 0,
     minute: 0,
+    second: 0,
     money: 25_000,
     population: 0,
     happiness: Math.fround(0.65),
@@ -35,10 +38,11 @@ export function defaultCity(): City {
 export const MINUTES_PER_DAY = 24 * 60;
 
 /**
- * Length of a game hour at ×1: a real minute, six hundred fixed ticks. Rust had a second, and a car took more than a
- * game day to cross town, so no citizen's day could have a morning and an evening.
+ * Length of a game hour at ×1: a real hour, 36 000 fixed ticks, so a car at 40 km/h covers 40 km in it and a trip ends
+ * when it would in life. The speed ladder runs more ticks, never more game time a tick (TS stage 3½; Rust had a second
+ * an hour, and a car took more than a game day to cross town).
  */
-export const DEFAULT_GAME_HOUR_NS = 60 * SECOND_NS;
+export const DEFAULT_GAME_HOUR_NS = 3600 * SECOND_NS;
 /** At most one game day per tick, so a huge delta cannot turn into a catch-up storm. */
 export const MAX_HOURS_PER_TICK = 24;
 
@@ -57,8 +61,7 @@ export function simTick(w: World, dtNs: number): void {
   const clock = w.clock;
   clock.durationNs = w.gameHourNs;
   clock.setMode('Repeating');
-  // A tick carries more game time than its own when the worker cannot afford all the ticks a speed asks for.
-  clock.tick(Math.round(dtNs * w.clockScale));
+  clock.tick(dtNs);
 
   const city = w.city;
   const finished = clock.timesFinishedThisTick;
@@ -79,5 +82,8 @@ export function simTick(w: World, dtNs: number): void {
     // Past the clamp, drop the backlog instead of carrying it into the next tick.
     if (finished > MAX_HOURS_PER_TICK) clock.reset();
   }
-  city.minute = Math.floor((clock.elapsedNs * 60) / clock.durationNs);
+  // In integers: at a real-time hour, elapsed nanoseconds times 3 600 are past what a double holds exactly.
+  const secondsIntoHour = Number((BigInt(Math.round(clock.elapsedNs)) * 3600n) / BigInt(clock.durationNs));
+  city.minute = Math.floor(secondsIntoHour / 60);
+  city.second = secondsIntoHour % 60;
 }

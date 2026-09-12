@@ -65,7 +65,7 @@ function zonedBuilding(kind: BuildingKind, anchor: TilePos, residents: number, j
   });
 }
 
-const UNDER_CONSTRUCTION = { kind: 'UnderConstruction', daysRemaining: 2 } as const;
+const UNDER_CONSTRUCTION = { kind: 'UnderConstruction', hoursRemaining: 2 } as const;
 
 /** Service stations along a road on row 0, one every four tiles from x = 0. */
 function stationWorld(kinds: readonly BuildingKind[]): World {

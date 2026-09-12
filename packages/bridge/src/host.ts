@@ -11,6 +11,7 @@ import {
   fingerprint,
   LivingCityScenario,
   parseRustCommand,
+  recordSystemError,
   refSlot,
   requestState,
   rngProbeDigest,
@@ -86,8 +87,6 @@ export class SimHost {
         this.world.commands.push(parseRustCommand(req.cmd));
         return null;
       case 'step':
-        // Manual steps are plain ticks, whatever game time the running speed made them carry.
-        this.world.clockScale = 1;
         for (let i = 0; i < req.ticks; i++) {
           this.scenario?.advance(this.world);
           const started = performance.now();
@@ -126,21 +125,30 @@ export class SimHost {
       case 'scenario':
         this.scenario = SCENARIO_BUILDERS[req.name](this.world);
         return null;
+      case 'debugFailSystem':
+        this.world.debugFailSystem = req.system;
+        return null;
     }
   }
 
   /** One loop iteration at real time `nowMs`: the snapshot if tick, state, speed or the map changed since the last report. */
   update(nowMs: number): WorldSnapshot | null {
-    const started = performance.now();
-    // The scenario is fed before every tick: at ×3 a frame runs several, each with its own events.
-    this.driver.tickCostMs = this.tickMs;
-    const ticks = this.driver.update(nowMs, (w) => this.scenario?.advance(w));
-    if (ticks > 0) {
-      this.recordTickCost((performance.now() - started) / ticks);
-      this.publish();
+    try {
+      const started = performance.now();
+      // The scenario is fed before every tick: at ×3 a frame runs several, each with its own events.
+      this.driver.tickCostMs = this.tickMs;
+      const ticks = this.driver.update(nowMs, (w) => this.scenario?.advance(w));
+      if (ticks > 0) {
+        this.recordTickCost((performance.now() - started) / ticks);
+        this.publish();
+      }
+    } catch (error) {
+      // The worker must not die: the frame's error goes to the snapshot and the next frame runs.
+      recordSystemError(this.world, 'frame', error);
     }
     const snapshot = this.snapshot();
-    const key = `${snapshot.tick}|${snapshot.appState}|${snapshot.speed}|${snapshot.mapEditVersion}|${snapshot.graphVersion}`;
+    const failures = snapshot.errors.reduce((sum, e) => sum + e.count, 0);
+    const key = `${snapshot.tick}|${snapshot.appState}|${snapshot.speed}|${snapshot.mapEditVersion}|${snapshot.graphVersion}|${failures}`;
     if (key === this.lastReported) return null;
     this.lastReported = key;
     return snapshot;
@@ -153,7 +161,8 @@ export class SimHost {
       tick: w.tick,
       appState: w.appState,
       speed: this.driver.speed,
-      gameMinutesPerSecond: this.driver.gameMinutesPerSecond(),
+      realRate: this.driver.realRate(),
+      errors: [...w.systemErrors.values()].map((e) => ({ ...e })),
       mapSeed: w.mapSeed.toString(),
       city: { ...w.city },
       mapEditVersion: w.mapEditVersion,

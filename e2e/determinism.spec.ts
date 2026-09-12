@@ -37,14 +37,29 @@ test('rngProbeMatchesNodeInBothEngines', async ({ page }) => {
 test('menuStartsAGameAndTheClockRuns', async ({ page }, testInfo) => {
   await page.getByTestId('start').click();
   await expect(page.getByTestId('hud')).toBeVisible();
-  // One real second at ×1 is one game minute.
-  await expect(page.getByTestId('clock')).toHaveText(/^День 1, 00:0[1-9]$/, { timeout: 5_000 });
+  // ×1 is real time: a second or two after the start, the clock shows them.
+  await expect(page.getByTestId('clock')).toHaveText(/^День 1, 00:00:0[1-9]$/, { timeout: 5_000 });
   await page.screenshot({ path: testInfo.outputPath('hud.png') });
 
   await page.keyboard.press('Space');
   await expect(page.getByText('Пауза')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByTestId('start')).toBeVisible();
+});
+
+// Stage 3½a: the speed ladder runs the whole simulation faster, the HUD shows the rate the game really runs at, and a
+// failing system is reported while the world goes on.
+test('hudShowsTheSpeedLadderAndTheRealRate', async ({ page }) => {
+  await page.getByTestId('start').click();
+  const speeds = page.getByRole('navigation', { name: 'Скорость' });
+  await expect(speeds.getByRole('button')).toHaveText(['Стоп', '×1', '×3', '×10', '×60', '×360']);
+  await speeds.getByRole('button', { name: '×10', exact: true }).click();
+  await expect(page.getByTestId('real-rate')).toHaveText('×10');
+
+  await page.evaluate(() => window.__sim.failSystem('updateTrafficIndex'));
+  await expect(page.getByTestId('sim-errors')).toContainText('updateTrafficIndex');
+  const tick = await page.evaluate(() => window.__sim.snapshot().then((s) => s.tick));
+  await expect.poll(() => page.evaluate(() => window.__sim.snapshot().then((s) => s.tick)), 'the world goes on').toBeGreaterThan(tick);
 });
 
 test('hudShowsTheFrameRate', async ({ page }) => {

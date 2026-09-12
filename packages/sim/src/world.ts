@@ -21,7 +21,7 @@ import { COMMAND_HISTORY_LIMIT, CommandHistory } from './map/history';
 import { Notifications } from './notifications';
 import { DEFAULT_RNG_SEED, stdRngSeedFromU64, type StdRng } from './rng';
 import type { AppState, PendingState } from './state';
-import { SECOND_NS, Timer } from './timer';
+import { Timer } from './timer';
 import { ArbiterIndexCache, emptyArbiterStats, type ArbiterTickStats } from './traffic/arbiter';
 import { defaultTrafficConfig, type TrafficConfig } from './traffic/config';
 import type { LeftTurnDemand, TrafficLight } from './traffic/lights';
@@ -44,8 +44,17 @@ export { VEHICLE_CAPACITY, type VehicleLayers } from './traffic/vehicles';
 
 /** `MapSeed(1)` inserted by `init_map_grid` at startup. */
 export const STARTUP_MAP_SEED = 1n;
-/** `BuildingUpgradeClock::default()`: a five-second repeating timer. */
-export const BUILDING_UPGRADE_PERIOD_NS = 5 * SECOND_NS;
+/** `BuildingUpgradeClock`: every five game hours (Rust: five seconds of a clock of a second an hour). */
+export const BUILDING_UPGRADE_GAME_HOURS = 5;
+
+/** A system that threw: the world went on without it for those ticks. */
+export interface SystemError {
+  readonly system: string;
+  count: number;
+  readonly firstTick: number;
+  lastTick: number;
+  message: string;
+}
 
 export interface World {
   readonly mapConfig: MapConfig;
@@ -121,10 +130,12 @@ export interface World {
   nextState: PendingState | null;
   mapSeed: bigint;
   city: City;
-  /** Length of a game hour at ×1. */
+  /** Length of a game hour at ×1: a real hour, shorter only in tests that run days in a hurry. */
   readonly gameHourNs: number;
-  /** Game time a tick carries against its own length; above 1 only while the worker cannot afford a speed's ticks. */
-  clockScale: number;
+  /** Systems that threw, by name; the worker never dies of one. */
+  readonly systemErrors: Map<string, SystemError>;
+  /** A system made to throw on every tick, for resilience checks; `null` in play. */
+  debugFailSystem: string | null;
   readonly clock: Timer;
   readonly buildingUpgradeClock: Timer;
   readonly notifications: Notifications;
@@ -225,9 +236,10 @@ export function createWorld(options: WorldOptions = {}): World {
     mapSeed: STARTUP_MAP_SEED,
     city: defaultCity(),
     gameHourNs: options.gameHourNs ?? DEFAULT_GAME_HOUR_NS,
-    clockScale: 1,
+    systemErrors: new Map(),
+    debugFailSystem: null,
     clock: createSimClock(options.gameHourNs ?? DEFAULT_GAME_HOUR_NS),
-    buildingUpgradeClock: new Timer(BUILDING_UPGRADE_PERIOD_NS, 'Repeating'),
+    buildingUpgradeClock: new Timer(BUILDING_UPGRADE_GAME_HOURS * (options.gameHourNs ?? DEFAULT_GAME_HOUR_NS), 'Repeating'),
     notifications: new Notifications(),
     simRng: stdRngSeedFromU64(DEFAULT_RNG_SEED),
     growthRng: stdRngSeedFromU64(DEFAULT_RNG_SEED),

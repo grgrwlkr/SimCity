@@ -13,9 +13,18 @@ export interface HudActions {
 const SPEEDS: ReadonlyArray<readonly [SimSpeed, string]> = [
   ['Paused', 'Стоп'],
   ['X1', '×1'],
-  ['X2', '×2'],
   ['X3', '×3'],
+  ['X10', '×10'],
+  ['X60', '×60'],
+  ['X360', '×360'],
 ];
+
+/** The rate the game really runs at: whole from ten up, a tenth below. */
+function formatRate(rate: number): string {
+  return rate >= 10 ? String(Math.round(rate)) : String(Math.round(rate * 10) / 10).replace('.', ',');
+}
+
+const two = (value: number) => String(value).padStart(2, '0');
 
 const money = new Intl.NumberFormat('ru-RU');
 const count = money;
@@ -97,7 +106,7 @@ export function Hud({ actions }: { actions: HudActions }) {
   return (
     <header className="hud" data-testid="hud">
       <span data-testid="clock">
-        День {city.day}, {String(city.hour).padStart(2, '0')}:{String(city.minute).padStart(2, '0')}
+        День {city.day}, {two(city.hour)}:{two(city.minute)}:{two(city.second)}
       </span>
       <span>Казна {money.format(city.money)}</span>
       <span className="tick">тик {snapshot.tick}</span>
@@ -119,12 +128,17 @@ export function Hud({ actions }: { actions: HudActions }) {
           </button>
         ))}
       </nav>
-      <span className="tick" data-testid="game-rate">
-        {Math.round(snapshot.gameMinutesPerSecond)} мин/с
+      <span className="tick" data-testid="real-rate">
+        ×{formatRate(snapshot.realRate)}
       </span>
       <button type="button" onClick={() => actions.setState('MainMenu')}>
         В меню
       </button>
+      {snapshot.errors.length > 0 && (
+        <span className="paused" data-testid="sim-errors">
+          Сбой: {snapshot.errors.map((e) => `${e.system} ×${e.count}`).join(', ')} — {snapshot.errors.at(-1)!.message}
+        </span>
+      )}
       <TrafficStats traffic={snapshot.traffic} />
     </header>
   );

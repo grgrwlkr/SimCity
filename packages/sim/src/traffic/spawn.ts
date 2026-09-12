@@ -61,6 +61,12 @@ export function spawnTripVehicles(w: World): void {
       break;
     }
     const trip = trips[i]!;
+    const own = v.order.find((slot) => v.parked[slot] === 1 && v.carOwner[slot] === trip.citizen);
+    // A capacity never throws: with every slot taken, a trip that needs a new car waits for one.
+    if (own === undefined && v.free.length === 0) {
+      w.tripBacklog.push(trip);
+      continue;
+    }
     const start = adjacentRoadTowards(w.grid, trip.carParkedAt ?? trip.from, trip.to);
     const goal = adjacentRoadTowards(w.grid, trip.to, trip.from);
     if (start === undefined || goal === undefined) continue;
@@ -75,7 +81,6 @@ export function spawnTripVehicles(w: World): void {
     // A destination off the road is the lot the car parks on; one on the road, where the route ends.
     const toCell = w.grid.get(trip.to);
     const lot = toCell !== undefined && toCell.road.kind === 'None' && !toCell.water ? trip.to : undefined;
-    const own = v.order.find((slot) => v.parked[slot] === 1 && v.carOwner[slot] === trip.citizen);
     if (own === undefined) {
       const ref = spawnVehicle(w, {
         route: route.tiles,

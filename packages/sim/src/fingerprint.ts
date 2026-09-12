@@ -379,7 +379,8 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
       }
       h.u64(w.mapSeed);
       h.int(w.gameHourNs);
-      h.f64(w.clockScale);
+      h.str(stableJson([...w.systemErrors.values()]));
+      h.str(w.debugFailSystem ?? '');
     },
   ],
   [
@@ -388,6 +389,7 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
       h.int(city.day);
       h.int(city.hour);
       h.int(city.minute);
+      h.int(city.second);
       h.int(city.money);
       h.int(city.population);
       h.f32(city.happiness);

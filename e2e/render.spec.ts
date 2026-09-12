@@ -221,6 +221,26 @@ test('livingCityShowsItsCitizens', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.lights), { timeout: 30_000 }).toBe(36);
 });
 
+// Stage 3½a: the speed ladder, the rate the game really runs at, and a failing system reported while the world goes on.
+test('hudShowsTheSpeedLadderAndTheRealRate', async ({ page }, testInfo) => {
+  await page.goto('/?scenario=city');
+  await page.waitForFunction(() => typeof window.__sim !== 'undefined');
+  await page.evaluate(() => window.__sim.ready);
+
+  await expect(page.getByRole('navigation', { name: 'Скорость' }).getByRole('button')).toHaveText(['Стоп', '×1', '×3', '×10', '×60', '×360']);
+  const x60 = page.getByRole('button', { name: '×60', exact: true });
+  await x60.click();
+  await expect(x60).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('real-rate')).toHaveText(/^×\d+(,\d)?$/);
+  await expect(page.getByTestId('clock')).toHaveText(/^День \d+, \d{2}:\d{2}:\d{2}$/);
+
+  await page.evaluate(() => window.__sim.failSystem('computePollution'));
+  await expect(page.getByTestId('sim-errors')).toHaveText(/^Сбой: computePollution ×\d+ — debug failure of computePollution$/, { timeout: 15_000 });
+  const failedAt = await page.evaluate(() => window.__sim.snapshot()).then((s) => s.tick);
+  await expect.poll(() => page.evaluate(() => window.__sim.snapshot()).then((s) => s.tick), { timeout: 15_000 }).toBeGreaterThan(failedAt + 10);
+  await page.screenshot({ path: testInfo.outputPath('hud-speeds.png') });
+});
+
 // The main menu lists every scenario the app knows, so nobody has to remember the links.
 test('mainMenuOffersEveryScenario', async ({ page }, testInfo) => {
   await page.goto('/?debug=1');

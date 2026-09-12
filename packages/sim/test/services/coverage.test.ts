@@ -30,7 +30,7 @@ describe('service coverage', () => {
     const grid = new MapGrid(64, 64);
     roadRow(grid, 29, 28, 34);
     const w = worldOn(grid);
-    const station = w.buildings.add(newBuilding({ kind: 'FireStation', anchor: t(30, 30), phase: { kind: 'UnderConstruction', daysRemaining: 1 } }));
+    const station = w.buildings.add(newBuilding({ kind: 'FireStation', anchor: t(30, 30), phase: { kind: 'UnderConstruction', hoursRemaining: 1 } }));
 
     updateServiceCoverage(w);
     expect(coveredAt(w, 30, 30), 'a station being built covers nothing').toBe(false);

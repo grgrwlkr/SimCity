@@ -23,9 +23,13 @@ addEventListener('message', (event: MessageEvent<ToWorker>) => {
 });
 
 function loop(): void {
-  const snapshot = host.update(performance.now());
-  if (snapshot !== null) send({ t: 'frame', snapshot });
-  setTimeout(loop, LOOP_MS);
+  // The host logs a frame's error itself; whatever still escapes must not stop the loop.
+  try {
+    const snapshot = host.update(performance.now());
+    if (snapshot !== null) send({ t: 'frame', snapshot });
+  } finally {
+    setTimeout(loop, LOOP_MS);
+  }
 }
 
 send({ t: 'ready', render: host.render });

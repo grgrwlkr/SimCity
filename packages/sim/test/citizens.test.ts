@@ -108,7 +108,7 @@ describe('citizens', () => {
   it('citizensMoveIntoOpenHomesUpToTheirOccupancyEightATick', () => {
     const w = worldOn(new MapGrid(32, 16));
     const house = home(w, t(2, 2), 12);
-    w.buildings.add(newBuilding({ kind: 'Residential', anchor: t(10, 2), occupancyResidents: 5, phase: { kind: 'UnderConstruction', daysRemaining: 1 } }));
+    w.buildings.add(newBuilding({ kind: 'Residential', anchor: t(10, 2), occupancyResidents: 5, phase: { kind: 'UnderConstruction', hoursRemaining: 1 } }));
 
     spawnCitizensFromResidential(w);
     expect(w.citizens.all(), 'eight move in on the first tick').toHaveLength(8);

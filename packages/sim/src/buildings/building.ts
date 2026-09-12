@@ -9,7 +9,7 @@ import { sqrtF32 } from '../math';
 const f32 = Math.fround;
 const U16_MAX = 0xffff;
 
-export type BuildingPhase = { readonly kind: 'UnderConstruction'; readonly daysRemaining: number } | { readonly kind: 'Operational' };
+export type BuildingPhase = { readonly kind: 'UnderConstruction'; readonly hoursRemaining: number } | { readonly kind: 'Operational' };
 export const OPERATIONAL: BuildingPhase = { kind: 'Operational' };
 
 /** The density a building grew in and the wealth class of its people, fixed when it spawns. */
@@ -133,11 +133,14 @@ export function buildingKindFromZone(zone: ZoneKind): BuildingKind | undefined {
   return zone === 'None' ? undefined : zone;
 }
 
-/** Days to build (GDD 10.3.3.2): base(kind, level) × √(area / 9), rounded and held to 2..=3 for the fast-build target. */
-export function constructionDays(kind: BuildingKind, level: number, area: number): number {
-  const base = isZonedKind(kind) ? (level === 2 || level === 3 ? 3 : 2) : 3;
-  const days = Math.round(f32(base * sqrtF32(f32(area / 9))));
-  return Math.min(Math.max(days, 2), 3);
+/**
+ * Game hours to build (GDD 10.3.3.2): base(kind, level) × √(area / 9), rounded and held to 8..=24. TS stage 3½: hours on
+ * a real-time clock, a small house in eight; Rust built in two or three days on a clock of a second an hour.
+ */
+export function constructionHours(kind: BuildingKind, level: number, area: number): number {
+  const base = isZonedKind(kind) ? (level >= 2 ? 12 : 8) : 16;
+  const hours = Math.round(f32(base * sqrtF32(f32(area / 9))));
+  return Math.min(Math.max(hours, 8), 24);
 }
 
 function capacityResidents(kind: BuildingKind): number {

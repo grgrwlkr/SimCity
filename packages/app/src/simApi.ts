@@ -59,6 +59,8 @@ export interface SimApi {
   renderStats(): Promise<RenderStats>;
   /** Build a scenario into the running world (`?scenario=signalized` does this on load). */
   scenario(name: ScenarioName): Promise<null>;
+  /** Make a system throw on every call (`null` stops it): the HUD reports it and the world goes on. */
+  failSystem(system: string | null): Promise<null>;
 }
 
 declare global {
@@ -133,6 +135,7 @@ export function installSimApi(
     },
     renderStats: async () => (await renderer).stats(),
     scenario: (name) => client.request({ t: 'scenario', name }),
+    failSystem: (system) => client.request({ t: 'debugFailSystem', system }),
   };
   window.__sim = api;
   return api;

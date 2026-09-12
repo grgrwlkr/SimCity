@@ -1,5 +1,5 @@
 // Worker ↔ main thread messages. Requests carry an id so `window.__sim` can await each reply.
-import type { AppState, City, LightPhase, ManeuverKind, MapCell, MapGrid, TilePos, TrafficSummary } from '@simcity/sim';
+import type { AppState, City, LightPhase, ManeuverKind, MapCell, MapGrid, SystemError, TilePos, TrafficSummary } from '@simcity/sim';
 import type { SimSpeed } from './driver';
 import type { ScenarioName } from './scenarios';
 
@@ -16,8 +16,10 @@ export interface WorldSnapshot {
   readonly tick: number;
   readonly appState: AppState;
   readonly speed: SimSpeed;
-  /** Game minutes a real second carries at that speed. */
-  readonly gameMinutesPerSecond: number;
+  /** Game seconds a real second carries now: the speed, or less when the worker cannot afford its ticks. */
+  readonly realRate: number;
+  /** Systems that threw and how often; the world went on without them for those ticks. */
+  readonly errors: readonly SystemError[];
   /** `u64` as a decimal string: structured clone keeps bigint, JSON and Playwright do not. */
   readonly mapSeed: string;
   readonly city: City;
@@ -120,7 +122,9 @@ export type Request =
   | { readonly t: 'debugVehicles'; readonly vehicles: readonly DebugVehicle[] }
   | { readonly t: 'debugOverlay' }
   /** Build a scenario into the world; the host feeds it before every fixed tick from then on. */
-  | { readonly t: 'scenario'; readonly name: ScenarioName };
+  | { readonly t: 'scenario'; readonly name: ScenarioName }
+  /** Make a system throw on every call (`null` stops it): the worker's resilience from DevTools and Playwright. */
+  | { readonly t: 'debugFailSystem'; readonly system: string | null };
 
 export interface ReplyByRequest {
   readonly cmd: null;
@@ -138,6 +142,7 @@ export interface ReplyByRequest {
   readonly debugVehicles: null;
   readonly debugOverlay: DebugOverlayReply;
   readonly scenario: null;
+  readonly debugFailSystem: null;
 }
 
 export type Reply = ReplyByRequest[keyof ReplyByRequest];

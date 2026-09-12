@@ -1,6 +1,6 @@
 // Port of crates/simcity_sim/src/game/buildings/upgrade.rs: on the upgrade clock, a building nothing holds back rises a level by chance.
 import { rangeF64 } from '../rng';
-import type { World } from '../world';
+import { BUILDING_UPGRADE_GAME_HOURS, type World } from '../world';
 import { upgradeBlocker } from './blockers';
 import { buildingArea, profileCapacity } from './building';
 
@@ -12,6 +12,7 @@ const UPGRADE_CHANCE = 0.05;
 /** `upgrade_buildings` (SimStep::Buildings, after growth). */
 export function upgradeBuildings(w: World, dtNs: number): void {
   const clock = w.buildingUpgradeClock;
+  clock.durationNs = BUILDING_UPGRADE_GAME_HOURS * w.gameHourNs;
   clock.tick(dtNs);
   if (clock.timesFinishedThisTick === 0) return;
   for (const b of w.buildings.all()) {

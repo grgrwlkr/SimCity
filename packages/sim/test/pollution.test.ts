@@ -46,7 +46,7 @@ describe('pollution', () => {
   // TS: a factory still being built does not pollute; Rust counted every industrial record.
   it('aFactoryUnderConstructionDoesNotPollute', () => {
     const w = worldOn(new MapGrid(8, 8));
-    w.buildings.add(newBuilding({ kind: 'Industrial', anchor: t(4, 4), phase: { kind: 'UnderConstruction', daysRemaining: 2 } }));
+    w.buildings.add(newBuilding({ kind: 'Industrial', anchor: t(4, 4), phase: { kind: 'UnderConstruction', hoursRemaining: 2 } }));
     for (let i = 0; i < 4; i++) computePollution(w);
     expect(w.pollution.values.every((v) => v === 0)).toBe(true);
   });

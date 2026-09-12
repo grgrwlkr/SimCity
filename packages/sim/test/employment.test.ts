@@ -124,7 +124,7 @@ describe('job assignment', () => {
   it('noOneWorksAtABuildingStillUnderConstruction', () => {
     const w = town();
     const home = w.buildings.add(building('Residential', t(2, 6), 0, 'Middle'));
-    w.buildings.add({ ...building('Commercial', t(20, 6), 5, 'Middle'), phase: { kind: 'UnderConstruction', daysRemaining: 2 } });
+    w.buildings.add({ ...building('Commercial', t(20, 6), 5, 'Middle'), phase: { kind: 'UnderConstruction', hoursRemaining: 2 } });
     const worker = w.citizens.add(newCitizen(home));
     assignJobs(w);
     expect(worker.workplace).toBeNull();

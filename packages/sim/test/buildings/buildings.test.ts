@@ -10,12 +10,14 @@ import {
   utilityCapacity,
   capacityJobsForLevelArea,
   capacityResidentsForLevelArea,
-  constructionDays,
+  constructionHours,
   footprintTiles,
   isOperational,
   newBuilding,
 } from '../../src/buildings/building';
+import { updateConstructionProgress } from '../../src/buildings/construction';
 import { buildingDecayEconomic } from '../../src/buildings/decay';
+import { upgradeBuildings } from '../../src/buildings/upgrade';
 import { calculateFillDays, calculatePressure, calculateTargetRatio, updateOccupancy } from '../../src/buildings/occupancy';
 import { calculateParkingSpots } from '../../src/buildings/spawn';
 import { emptyEvents } from '../../src/events';
@@ -38,14 +40,38 @@ describe('building record', () => {
   });
 
   it('buildingIsOperationalReturnsCorrectPhase', () => {
-    expect(isOperational(newBuilding({ kind: 'Residential', anchor: t(0, 0), phase: { kind: 'UnderConstruction', daysRemaining: 5 } }))).toBe(false);
+    expect(isOperational(newBuilding({ kind: 'Residential', anchor: t(0, 0), phase: { kind: 'UnderConstruction', hoursRemaining: 5 } }))).toBe(false);
     expect(isOperational(newBuilding({ kind: 'Residential', anchor: t(0, 0) }))).toBe(true);
   });
 
-  it('buildingCalculateConstructionDaysScalesWithArea', () => {
-    expect(constructionDays('Residential', 1, 9)).toBe(2);
-    expect(constructionDays('Residential', 1, 36), '2 × √4 = 4, clamped to 3').toBe(3);
-    expect(constructionDays('Residential', 3, 9)).toBe(3);
+  // TS (stage 3½): construction is measured in game hours on a real-time clock; Rust took two or three days on a clock of
+  // a second an hour (building_calculate_construction_days_scales_with_area).
+  it('constructionTakesHours', () => {
+    expect(constructionHours('Residential', 1, 9), 'a small house').toBe(8);
+    expect(constructionHours('Residential', 1, 36), 'twice the side, twice the hours').toBe(16);
+    expect(constructionHours('Residential', 3, 9)).toBe(12);
+    expect(constructionHours('FireStation', 1, 9), 'a service building takes longer').toBe(16);
+    expect(constructionHours('Commercial', 3, 36), 'held to a day').toBe(24);
+  });
+
+  it('aBuildingOpensAfterItsHours', () => {
+    const w = worldOn(new MapGrid(8, 8));
+    const b = w.buildings.add(newBuilding({ kind: 'Residential', anchor: t(1, 1), phase: { kind: 'UnderConstruction', hoursRemaining: 2 } }));
+    w.events.hourAdvanced.push({ hour: 1, day: 1 });
+    updateConstructionProgress(w);
+    expect(b.phase, 'an hour left').toEqual({ kind: 'UnderConstruction', hoursRemaining: 1 });
+    w.events = emptyEvents();
+    w.events.hourAdvanced.push({ hour: 2, day: 1 });
+    updateConstructionProgress(w);
+    expect(isOperational(b)).toBe(true);
+  });
+
+  it('theUpgradeClockRunsInGameHours', () => {
+    const w = worldOn(new MapGrid(8, 8));
+    upgradeBuildings(w, 5 * w.gameHourNs - 1);
+    expect(w.buildingUpgradeClock.timesFinishedThisTick, 'not before five game hours').toBe(0);
+    upgradeBuildings(w, 1);
+    expect(w.buildingUpgradeClock.timesFinishedThisTick, 'on the fifth').toBe(1);
   });
 
   // From crates/simcity_sim/src/game/map/tests.rs (B4): the civic buildings carry a radius, a capacity and a price.

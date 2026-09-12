@@ -39,32 +39,27 @@ describe('sim_rng_tests', () => {
   });
 });
 
-// TS: a game hour is a real minute at ×1 (Rust: a second), so a car crosses town within an hour and a citizen's day
-// has a morning and an evening; a world may run a faster clock.
+// TS (stage 3½): a game second is a real second at ×1, so a car at 40 km/h covers 40 km in a real hour; the speed ladder
+// runs more ticks, never more game time a tick. A test world may run a faster clock.
 describe('game clock', () => {
   const TICK_NS = SECOND_NS / 10;
 
-  it('anHourIsARealMinuteAndTheMinuteShowsWithinIt', () => {
+  it('x1IsRealTime', () => {
     const w = createWorld();
-    expect(w.gameHourNs).toBe(60 * SECOND_NS);
+    expect(w.gameHourNs, 'a game hour is a real hour').toBe(3600 * SECOND_NS);
     for (let i = 0; i < 10; i++) simTick(w, TICK_NS);
-    expect([w.city.hour, w.city.minute], 'ten ticks are a game minute').toEqual([0, 1]);
+    expect([w.city.hour, w.city.minute, w.city.second], 'ten ticks are a game second').toEqual([0, 0, 1]);
     for (let i = 10; i < 600; i++) simTick(w, TICK_NS);
-    expect([w.city.hour, w.city.minute], 'six hundred ticks are an hour').toEqual([1, 0]);
+    expect([w.city.hour, w.city.minute, w.city.second], 'six hundred ticks are a minute').toEqual([0, 1, 0]);
+    for (let i = 600; i < 36_000; i++) simTick(w, TICK_NS);
+    expect([w.city.hour, w.city.minute, w.city.second], 'thirty-six thousand ticks are an hour').toEqual([1, 0, 0]);
     expect(w.events.hourAdvanced).toEqual([{ hour: 1, day: 1 }]);
-  });
-
-  it('aClockScaleAdvancesGameTimeFasterThanTheTick', () => {
-    const w = createWorld();
-    w.clockScale = 3;
-    for (let i = 0; i < 10; i++) simTick(w, TICK_NS);
-    expect([w.city.hour, w.city.minute], 'ten ticks at three times the clock are three game minutes').toEqual([0, 3]);
   });
 
   it('aWorldMayRunAFasterClock', () => {
     const w = createWorld({ gameHourNs: SECOND_NS });
     for (let i = 0; i < 10; i++) simTick(w, TICK_NS);
-    expect([w.city.hour, w.city.minute]).toEqual([1, 0]);
+    expect([w.city.hour, w.city.minute, w.city.second]).toEqual([1, 0, 0]);
   });
 });
 

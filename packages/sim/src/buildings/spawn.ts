@@ -2,7 +2,7 @@
 import type { BuildingKind, TilePos } from '../commands';
 import { sqrtF32 } from '../math';
 import type { World } from '../world';
-import { OPERATIONAL, constructionDays, densityLevels, newBuilding, profileCapacity, type Building, type BuildingProfile } from './building';
+import { OPERATIONAL, constructionHours, densityLevels, newBuilding, profileCapacity, type Building, type BuildingProfile } from './building';
 
 const f32 = Math.fround;
 
@@ -46,7 +46,7 @@ export function spawnBuilding(
       width,
       length,
       level,
-      phase: operational ? OPERATIONAL : { kind: 'UnderConstruction', daysRemaining: constructionDays(kind, level, area) },
+      phase: operational ? OPERATIONAL : { kind: 'UnderConstruction', hoursRemaining: constructionHours(kind, level, area) },
       constructionStartDay: w.city.day,
       capacityResidents,
       capacityJobs,

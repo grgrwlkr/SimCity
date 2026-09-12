@@ -52,6 +52,11 @@ export interface SystemEntry {
   readonly run: System;
   /** `run_if(in_state(...))` as data. */
   readonly runIn: readonly AppState[];
+  /**
+   * The system runs once per this much game time, on the tick that period completes; every tick when absent. It reads
+   * the clock rather than `dtNs`. A tick with nothing for it costs one check.
+   */
+  readonly everyGameNs?: number;
 }
 
 export interface CommandSystemEntry {
@@ -85,7 +90,8 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   // SimStep::Citizens, chained as in Rust: the open homes of the last tick fill up first, so the planner may send a
   // new citizen out this tick; its trip requests are read by spawnTripVehicles later in this tick.
   { name: 'spawnCitizensFromResidential', run: spawnCitizensFromResidential, runIn: IN_GAME },
-  { name: 'citizenTripPlanner', run: citizenTripPlanner, runIn: IN_GAME },
+  // Plans are made in game minutes: once a game minute, on the tick the minute turns (and so on the day's turn too).
+  { name: 'citizenTripPlanner', run: citizenTripPlanner, runIn: IN_GAME, everyGameNs: 60 * SECOND_NS },
   // After the planner: a trip requested this tick is never taken for an orphan.
   { name: 'recoverStuckTrips', run: recoverStuckTrips, runIn: IN_GAME },
   // SimStep::Employment: a job goes with its workplace before the unemployed are matched to open ones.

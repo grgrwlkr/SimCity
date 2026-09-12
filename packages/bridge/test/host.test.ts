@@ -83,10 +83,10 @@ describe('SimHost', () => {
     expect(host.update(0)?.appState, 'the frame that enters the game reports it').toBe('InGame');
     const snapshot = host.update(250);
 
-    // ×3 is thirty times ×1: a quarter of a second is seventy-five ticks.
-    expect(snapshot).toMatchObject({ tick: 75, speed: 'X3' });
+    // ×3 is three times real time: a quarter of a second is seven ticks, the half left over waits for the next frame.
+    expect(snapshot).toMatchObject({ tick: 7, speed: 'X3' });
     reader.readInto(out);
-    expect(out.tick).toBe(75);
+    expect(out.tick).toBe(7);
   });
 
   it('updateReportsNothingWhenNothingChanged', () => {
@@ -224,8 +224,8 @@ describe('SimHost', () => {
     const host = new SimHost(4096);
     host.handle({ t: 'setState', state: 'InGame' });
     host.handle({ t: 'scenario', name: 'city' });
-    host.handle({ t: 'setSpeed', speed: 'X3' });
-    // Fifteen seconds at ×3: over a thousand ticks even when the tick budget caps them.
+    host.handle({ t: 'setSpeed', speed: 'X10' });
+    // Fifteen seconds at ×10: fifteen hundred ticks, over a thousand even when the tick budget caps them.
     for (let frame = 0; frame < 150; frame++) host.update(frame * 100);
 
     const { tick, traffic } = host.handle({ t: 'snapshot' });
@@ -233,6 +233,34 @@ describe('SimHost', () => {
     expect(traffic.tripsDone!, 'commutes finish').toBeGreaterThan(0);
     expect(traffic.travelling, 'everyone on the road is driving or waiting to leave').toBe(traffic.driving + traffic.backlog);
   }, 120_000);
+
+  // TS (stage 3½): the worker must not die. A frame that throws is logged in the snapshot and the next frames run.
+  it('hostSurvivesAFrameError', () => {
+    const host = new SimHost(16);
+    host.handle({ t: 'setState', state: 'InGame' });
+    const internals = host as unknown as { driver: { update: (nowMs: number, beforeTick?: unknown) => number } };
+    const update = internals.driver.update.bind(internals.driver);
+    internals.driver.update = () => {
+      throw new Error('boom');
+    };
+    expect(() => host.update(0)).not.toThrow();
+    expect(host.handle({ t: 'snapshot' }).errors).toEqual([expect.objectContaining({ system: 'frame', message: 'boom', count: 1 })]);
+
+    internals.driver.update = update;
+    host.update(100);
+    host.update(200);
+    expect(host.handle({ t: 'snapshot' }).tick, 'the next frames run').toBeGreaterThan(0);
+  });
+
+  it('aFailingSystemShowsInTheSnapshotAndTheWorldGoesOn', () => {
+    const host = new SimHost(16);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'debugFailSystem', system: 'updateTrafficIndex' });
+    host.handle({ t: 'step', ticks: 3 });
+    const { tick, errors } = host.handle({ t: 'snapshot' });
+    expect(tick).toBe(3);
+    expect(errors).toEqual([expect.objectContaining({ system: 'updateTrafficIndex', count: 3 })]);
+  });
 
   it('debugVehiclesArePublished', () => {
     const host = new SimHost(16);
