@@ -63,9 +63,14 @@ export class CityCommuteScenario {
     }));
   }
 
-  /** Commuters, how many are on the road, trips started and finished. */
-  stats(): { readonly citizens: number; readonly travelling: number; readonly requested: number; readonly arrived: number } {
-    return { citizens: this.commuters.length, travelling: this.requested - this.arrived, requested: this.requested, arrived: this.arrived };
+  /**
+   * Commuters, how many are on the road, trips started and finished. The arrivals of the tick just run count already:
+   * the host reads the numbers after a frame's ticks and advances the scenario only before the next one.
+   */
+  stats(w: World): { readonly citizens: number; readonly travelling: number; readonly requested: number; readonly arrived: number } {
+    const pending = w.tick === this.lastTick ? 0 : w.events.tripFinished.filter(({ citizen }) => this.commuters[citizen] !== undefined).length;
+    const arrived = this.arrived + pending;
+    return { citizens: this.commuters.length, travelling: this.requested - arrived, requested: this.requested, arrived };
   }
 
   /** Call before each fixed tick: arrivals of the last tick, then the trips that are due. */

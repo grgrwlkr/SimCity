@@ -38,7 +38,24 @@ describe('city commute scenario', () => {
     }
     expect(scenario.requested, 'about half have left half way through the window').toBeGreaterThan(400);
     expect(scenario.requested).toBeLessThan(600);
-    expect(scenario.stats()).toEqual({ citizens: 1000, travelling: scenario.requested - scenario.arrived, requested: scenario.requested, arrived: scenario.arrived });
+    const stats = scenario.stats(w);
+    expect(stats.citizens).toBe(1000);
+    expect(stats.travelling).toBe(stats.requested - stats.arrived);
+  }, 60_000);
+
+  // The host snapshots after a frame's ticks and feeds the scenario only before the next one: the arrivals of the last
+  // tick belong in the numbers already, or the HUD shows them still on the road.
+  it('statsCountTheArrivalsOfTheTickJustRun', () => {
+    const w = loadTestCity({ zones: false });
+    const scenario = new CityCommuteScenario(w, { citizens: 300 });
+    let arrivals = 0;
+    for (let i = 0; i < 3000 && arrivals === 0; i++) {
+      scenario.advance(w);
+      step(w, 1);
+      arrivals = w.events.tripFinished.length;
+    }
+    expect(arrivals, 'the run saw a tick with arrivals').toBeGreaterThan(0);
+    expect(scenario.stats(w).arrived).toBe(scenario.arrived + arrivals);
   }, 60_000);
 
   it('anArrivalCountsOnceWhenTheHostAdvancesWithoutATick', () => {

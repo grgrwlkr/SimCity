@@ -41,7 +41,7 @@ import type { ScenarioName } from './scenarios';
 /** A scenario the host feeds before every tick; one with commuters also reports them. */
 interface HostScenario {
   advance(w: World): void;
-  stats?(): { readonly citizens: number; readonly travelling: number; readonly requested: number; readonly arrived: number };
+  stats?(w: World): { readonly citizens: number; readonly travelling: number; readonly requested: number; readonly arrived: number };
 }
 
 /** `?scenario=city`: commuters, their departures spread over five minutes, a stay of two to six. */
@@ -86,6 +86,8 @@ export class SimHost {
         this.world.commands.push(parseRustCommand(req.cmd));
         return null;
       case 'step':
+        // Manual steps are plain ticks, whatever game time the running speed made them carry.
+        this.world.clockScale = 1;
         for (let i = 0; i < req.ticks; i++) {
           this.scenario?.advance(this.world);
           const started = performance.now();
@@ -131,6 +133,7 @@ export class SimHost {
   update(nowMs: number): WorldSnapshot | null {
     const started = performance.now();
     // The scenario is fed before every tick: at ×3 a frame runs several, each with its own events.
+    this.driver.tickCostMs = this.tickMs;
     const ticks = this.driver.update(nowMs, (w) => this.scenario?.advance(w));
     if (ticks > 0) {
       this.recordTickCost((performance.now() - started) / ticks);
@@ -145,11 +148,12 @@ export class SimHost {
 
   snapshot(): WorldSnapshot {
     const w = this.world;
-    const stats = this.scenario?.stats?.();
+    const stats = this.scenario?.stats?.(w);
     return {
       tick: w.tick,
       appState: w.appState,
       speed: this.driver.speed,
+      gameMinutesPerSecond: this.driver.gameMinutesPerSecond(),
       mapSeed: w.mapSeed.toString(),
       city: { ...w.city },
       mapEditVersion: w.mapEditVersion,

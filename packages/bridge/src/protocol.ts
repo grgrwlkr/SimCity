@@ -16,6 +16,8 @@ export interface WorldSnapshot {
   readonly tick: number;
   readonly appState: AppState;
   readonly speed: SimSpeed;
+  /** Game minutes a real second carries at that speed. */
+  readonly gameMinutesPerSecond: number;
   /** `u64` as a decimal string: structured clone keeps bigint, JSON and Playwright do not. */
   readonly mapSeed: string;
   readonly city: City;

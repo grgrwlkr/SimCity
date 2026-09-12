@@ -57,7 +57,8 @@ export function simTick(w: World, dtNs: number): void {
   const clock = w.clock;
   clock.durationNs = w.gameHourNs;
   clock.setMode('Repeating');
-  clock.tick(dtNs);
+  // A tick carries more game time than its own when the worker cannot afford all the ticks a speed asks for.
+  clock.tick(Math.round(dtNs * w.clockScale));
 
   const city = w.city;
   const finished = clock.timesFinishedThisTick;

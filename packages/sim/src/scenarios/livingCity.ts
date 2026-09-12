@@ -11,13 +11,11 @@ export interface CitizenTripStats {
 }
 
 export class LivingCityScenario {
-  private readonly w: World;
   private requested = 0;
   private arrived = 0;
   private lastTick = -1;
 
   constructor(w: World) {
-    this.w = w;
     buildCity(w);
   }
 
@@ -29,9 +27,16 @@ export class LivingCityScenario {
     this.arrived += w.events.tripFinished.length;
   }
 
-  stats(): CitizenTripStats {
+  /** The trips of the tick just run count already: the host reads the numbers after a frame's ticks. */
+  stats(w: World): CitizenTripStats {
+    const fresh = w.tick !== this.lastTick;
     let travelling = 0;
-    for (const c of this.w.citizens.all()) if (c.state === 'ToWork' || c.state === 'ToShop' || c.state === 'ToHome') travelling += 1;
-    return { citizens: this.w.citizens.all().length, travelling, requested: this.requested, arrived: this.arrived };
+    for (const c of w.citizens.all()) if (c.state === 'ToWork' || c.state === 'ToShop' || c.state === 'ToHome') travelling += 1;
+    return {
+      citizens: w.citizens.all().length,
+      travelling,
+      requested: this.requested + (fresh ? w.events.tripRequested.length : 0),
+      arrived: this.arrived + (fresh ? w.events.tripFinished.length : 0),
+    };
   }
 }

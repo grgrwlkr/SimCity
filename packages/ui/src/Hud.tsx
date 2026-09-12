@@ -119,6 +119,9 @@ export function Hud({ actions }: { actions: HudActions }) {
           </button>
         ))}
       </nav>
+      <span className="tick" data-testid="game-rate">
+        {Math.round(snapshot.gameMinutesPerSecond)} мин/с
+      </span>
       <button type="button" onClick={() => actions.setState('MainMenu')}>
         В меню
       </button>

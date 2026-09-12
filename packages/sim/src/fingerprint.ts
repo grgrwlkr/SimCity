@@ -379,6 +379,7 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
       }
       h.u64(w.mapSeed);
       h.int(w.gameHourNs);
+      h.f64(w.clockScale);
     },
   ],
   [

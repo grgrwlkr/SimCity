@@ -30,10 +30,36 @@ describe('FixedStepDriver', () => {
     expect([w.city.hour, w.city.minute], 'one real second at x1 is one game minute').toEqual([0, 1]);
   });
 
-  it('x3RunsSixTimesFaster', () => {
-    const driver = new FixedStepDriver(inGame());
+  // TS: ×2 and ×3 are ten and thirty game minutes a real second (Rust: two and six times ×1), so the speed changes
+  // radically.
+  it('x2AndX3AreTenAndThirtyGameMinutesASecond', () => {
+    for (const [speed, ticks, minutes] of [
+      ['X1', 10, 1],
+      ['X2', 100, 10],
+      ['X3', 300, 30],
+    ] as const) {
+      const w = inGame();
+      const driver = new FixedStepDriver(w);
+      driver.speed = speed;
+      expect(run(driver, 0, 1_000, 10), `${speed}: ticks in a second`).toBe(ticks);
+      expect(w.city.hour * 60 + w.city.minute, `${speed}: game minutes in a second`).toBe(minutes);
+      expect(driver.gameMinutesPerSecond(), `${speed}: the rate the HUD shows`).toBe(minutes);
+    }
+  });
+
+  it('aTickTooDearForTheSpeedTradesTicksForClockTimeButKeepsTheGameRate', () => {
+    const w = inGame();
+    const driver = new FixedStepDriver(w);
     driver.speed = 'X3';
-    expect(run(driver, 0, 1_000, 250)).toBe(60);
+    // Ten milliseconds a tick: eighty ticks fill the worker's budget of a second.
+    driver.tickCostMs = 10;
+    expect(run(driver, 0, 1_000, 10), 'as many ticks as the budget affords').toBe(80);
+    expect(w.city.hour * 60 + w.city.minute, 'and still thirty game minutes').toBe(30);
+    expect(driver.gameMinutesPerSecond()).toBe(30);
+
+    driver.speed = 'X1';
+    run(driver, 1_010, 2_000, 10);
+    expect(w.clockScale, 'a speed the budget affords runs the clock at its own pace').toBe(1);
   });
 
   it('realDeltaIsCappedSoAStallIsNotReplayed', () => {

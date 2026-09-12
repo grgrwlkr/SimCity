@@ -31,13 +31,12 @@ describe('living city', () => {
       scenario.advance(w);
       step(w, 1);
     }
-    // The host feeds the scenario before a tick and again once a frame: the trips of the last tick count once.
-    scenario.advance(w);
-    const stats = scenario.stats();
+    // The host snapshots after the last tick of a frame: its trips count before the next advance, and only once after it.
+    const stats = scenario.stats(w);
     expect(stats.citizens, 'people moved in').toBeGreaterThan(0);
     expect(stats.requested, 'and set out').toBeGreaterThan(0);
     expect(stats.travelling).toBe(w.citizens.all().filter((c) => c.state === 'ToWork' || c.state === 'ToShop' || c.state === 'ToHome').length);
     scenario.advance(w);
-    expect(scenario.stats(), 'a second advance without a tick counts nothing').toEqual(stats);
+    expect(scenario.stats(w), 'an advance without a tick counts nothing twice').toEqual(stats);
   }, 120_000);
 });

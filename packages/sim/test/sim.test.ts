@@ -54,6 +54,13 @@ describe('game clock', () => {
     expect(w.events.hourAdvanced).toEqual([{ hour: 1, day: 1 }]);
   });
 
+  it('aClockScaleAdvancesGameTimeFasterThanTheTick', () => {
+    const w = createWorld();
+    w.clockScale = 3;
+    for (let i = 0; i < 10; i++) simTick(w, TICK_NS);
+    expect([w.city.hour, w.city.minute], 'ten ticks at three times the clock are three game minutes').toEqual([0, 3]);
+  });
+
   it('aWorldMayRunAFasterClock', () => {
     const w = createWorld({ gameHourNs: SECOND_NS });
     for (let i = 0; i < 10; i++) simTick(w, TICK_NS);

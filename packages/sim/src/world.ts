@@ -123,6 +123,8 @@ export interface World {
   city: City;
   /** Length of a game hour at ×1. */
   readonly gameHourNs: number;
+  /** Game time a tick carries against its own length; above 1 only while the worker cannot afford a speed's ticks. */
+  clockScale: number;
   readonly clock: Timer;
   readonly buildingUpgradeClock: Timer;
   readonly notifications: Notifications;
@@ -223,6 +225,7 @@ export function createWorld(options: WorldOptions = {}): World {
     mapSeed: STARTUP_MAP_SEED,
     city: defaultCity(),
     gameHourNs: options.gameHourNs ?? DEFAULT_GAME_HOUR_NS,
+    clockScale: 1,
     clock: createSimClock(options.gameHourNs ?? DEFAULT_GAME_HOUR_NS),
     buildingUpgradeClock: new Timer(BUILDING_UPGRADE_PERIOD_NS, 'Repeating'),
     notifications: new Notifications(),

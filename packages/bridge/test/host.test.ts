@@ -83,9 +83,10 @@ describe('SimHost', () => {
     expect(host.update(0)?.appState, 'the frame that enters the game reports it').toBe('InGame');
     const snapshot = host.update(250);
 
-    expect(snapshot).toMatchObject({ tick: 15, speed: 'X3' });
+    // ×3 is thirty times ×1: a quarter of a second is seventy-five ticks.
+    expect(snapshot).toMatchObject({ tick: 75, speed: 'X3' });
     reader.readInto(out);
-    expect(out.tick).toBe(15);
+    expect(out.tick).toBe(75);
   });
 
   it('updateReportsNothingWhenNothingChanged', () => {
@@ -224,7 +225,8 @@ describe('SimHost', () => {
     host.handle({ t: 'setState', state: 'InGame' });
     host.handle({ t: 'scenario', name: 'city' });
     host.handle({ t: 'setSpeed', speed: 'X3' });
-    for (let frame = 0; frame < 400; frame++) host.update(frame * 100);
+    // Fifteen seconds at ×3: over a thousand ticks even when the tick budget caps them.
+    for (let frame = 0; frame < 150; frame++) host.update(frame * 100);
 
     const { tick, traffic } = host.handle({ t: 'snapshot' });
     expect(tick, 'several ticks a frame').toBeGreaterThan(1000);
