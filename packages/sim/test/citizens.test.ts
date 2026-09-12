@@ -12,12 +12,14 @@ import {
   recoverStuckTrips,
   spawnCitizensFromResidential,
 } from '../src/citizens';
+import type { TilePos } from '../src/commands';
 import { emptyEvents } from '../src/events';
 import { MapGrid } from '../src/map/grid';
 import { SECOND_NS } from '../src/timer';
 import { refSlot, resolveVehicle, spawnVehicle } from '../src/traffic/vehicles';
+import { adjacentRoadTowards } from '../src/transport/anchors';
 import type { World } from '../src/world';
-import { t, worldOn } from './buildings/helpers';
+import { roadRow, t, worldOn } from './buildings/helpers';
 
 function home(w: World, anchor = t(5, 5), occupancy = 5): Building {
   return w.buildings.add(newBuilding({ kind: 'Residential', anchor, capacityResidents: 8, occupancyResidents: occupancy, targetOccupancyResidents: occupancy }));
@@ -99,6 +101,28 @@ describe('citizens', () => {
     handleTripFinished(w);
     expect(worker.state).toBe('AtHome');
     expect(worker.carParkedAt).toEqual(house.anchor);
+  });
+
+  // TS: a trip starts and parks beside the road on the side the footprint has one; Rust used the anchor, so the trips
+  // of every building whose anchor corner faced away from its road were dropped by the vehicle spawn.
+  it('aCitizenWhoseHomeAnchorIsAwayFromTheRoadLeavesFromTheSideOnIt', () => {
+    const grid = new MapGrid(40, 30);
+    roadRow(grid, 19, 10, 39);
+    const w = worldOn(grid);
+    // Rows 16..18 above the road: the anchor corner is two rows from it.
+    const house = home(w, t(16, 16), 1);
+    const shop = w.buildings.add(newBuilding({ kind: 'Commercial', anchor: t(30, 20), capacityJobs: 5 }));
+    const worker = w.citizens.add({ ...newCitizen(house), workplace: shop.id });
+
+    citizenTripPlanner(w, 2 * SECOND_NS);
+
+    const trip = w.events.tripRequested[0]!;
+    expect(trip.citizen).toBe(worker.id);
+    const inside = (b: Building, p: TilePos) => p.x >= b.anchor.x && p.x < b.anchor.x + b.width && p.y >= b.anchor.y && p.y < b.anchor.y + b.length;
+    expect(inside(house, trip.from) && inside(house, trip.carParkedAt!), 'the trip leaves from the home').toBe(true);
+    expect(adjacentRoadTowards(w.grid, trip.carParkedAt!, trip.to), 'from a tile beside the road').toBeDefined();
+    expect(inside(shop, trip.to), 'to the workplace').toBe(true);
+    expect(adjacentRoadTowards(w.grid, trip.to, trip.from), 'and parks beside the road there').toBeDefined();
   });
 
   it('aLateArrivalOfAnAbandonedTripChangesNothing', () => {

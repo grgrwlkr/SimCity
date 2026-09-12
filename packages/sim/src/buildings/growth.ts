@@ -158,8 +158,11 @@ export function growBuildings(w: World): void {
       w.dirty.mark(grid.idx(tile)!);
       occupied.add(tileKey(tile));
     }
-    // The class comes from the land; a workplace takes the high class only where the people around are educated for it.
-    const land = w.landValue.values.length === len ? wealthFromLandValue(w.landValue.get(grid.idx(footprint.anchor)!)) : 'Middle';
+    // The class comes from the land under the whole footprint (Rust read the anchor tile, so the side of the road a
+    // building's corner faced decided it); a workplace takes the high class only where the people around are educated.
+    let landSum = 0;
+    for (const tile of footprint.tiles) landSum = Math.fround(landSum + w.landValue.get(grid.idx(tile)!));
+    const land = w.landValue.values.length === len ? wealthFromLandValue(Math.fround(landSum / footprint.tiles.length)) : 'Middle';
     const wealth =
       kind === 'Commercial' || kind === 'Industrial'
         ? workplaceClass(land, w.cityFields.footprintMean('Education', grid, footprint.anchor, footprint.width, footprint.length))

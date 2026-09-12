@@ -291,6 +291,23 @@ describe('upgrade blockers', () => {
     expect(growForHours(wanted, 12), 'the same block, attractive, grows').toBeGreaterThan(0);
   });
 
+  // TS: the class comes from the land value over the whole footprint. Rust read the anchor tile alone, so of two equal
+  // buildings on one road the one whose anchor corner touched the road grew rich and the one across it did not.
+  it('zoneDensityClassComesFromTheLandOverTheFootprintNotItsAnchorCorner', () => {
+    const grid = new MapGrid(24, 12);
+    roadRow(grid, 2, 0, 23);
+    zoneRect(grid, 'Residential', 4, 12, 3, 5);
+    station(grid, 'PowerPlant', 16, 3);
+    const w = growthWorld(grid);
+    // Land value as its pass leaves it: the row beside the road dearer, the rows behind it middling.
+    const land = new Float32Array(grid.len()).fill(0.5);
+    for (let x = 0; x < grid.width; x++) land[grid.idx(t(x, 3))!] = Math.fround(0.7);
+    w.landValue.values = land;
+    expect(growForHours(w, 12), 'homes grow').toBeGreaterThan(0);
+    const classes = w.buildings.all().map((b) => b.profile.class);
+    expect(classes.every((c) => c === 'Middle'), `a home three rows deep off a road is middle class: ${classes.join(' ')}`).toBe(true);
+  });
+
   it('cityFieldsUneducatedNeighbourhoodGrowsNoHighClassJobs', () => {
     for (const [education, expected] of [
       [0.1, 'Middle'],

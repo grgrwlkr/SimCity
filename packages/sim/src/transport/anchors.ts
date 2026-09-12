@@ -87,3 +87,17 @@ export function adjacentRoadTowardsFootprint(
   }
   return best?.pos;
 }
+
+/**
+ * The tile of a `width` × `length` footprint a trip leaves from or parks on: the one beside its entrance road towards
+ * `target`, or the anchor when no road touches the footprint.
+ */
+export function footprintEntrance(grid: MapGrid, anchor: TilePos, width: number, length: number, target: TilePos): TilePos {
+  const road = adjacentRoadTowardsFootprint(grid, anchor, width, length, target);
+  if (road === undefined) return anchor;
+  // An edge neighbour clamped into the footprint is the tile it touches.
+  return {
+    x: Math.min(Math.max(road.x, anchor.x), anchor.x + Math.max(width, 1) - 1),
+    y: Math.min(Math.max(road.y, anchor.y), anchor.y + Math.max(length, 1) - 1),
+  };
+}

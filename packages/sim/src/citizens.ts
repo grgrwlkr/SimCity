@@ -9,6 +9,7 @@ import { chooseIndex, rangeF32 } from './rng';
 import { SECOND_NS, Timer, type TimerMode } from './timer';
 import { fixedElapsedSecs } from './traffic/reservations';
 import { despawnVehicle, vehicleRef, type TripPurpose } from './traffic/vehicles';
+import { footprintEntrance } from './transport/anchors';
 import type { World } from './world';
 
 const f32 = Math.fround;
@@ -154,6 +155,14 @@ export function spawnCitizensFromResidential(w: World): void {
   }
 }
 
+/**
+ * Where a trip to or from `b` leaves and parks: the footprint tile beside its road towards `towards`. Rust used the
+ * anchor, and the vehicle spawn dropped the trips of every building whose anchor corner faced away from its road.
+ */
+function entrance(w: World, b: Building, towards: TilePos): TilePos {
+  return footprintEntrance(w.grid, b.anchor, b.width, b.length, towards);
+}
+
 function depart(w: World, c: Citizen, from: TilePos, to: TilePos, purpose: TripPurpose, now: number): void {
   c.tourMode ??= 'Car';
   const mode = c.tourMode;
@@ -185,22 +194,25 @@ export function citizenTripPlanner(w: World, dtNs: number): void {
     if (home === undefined) continue;
 
     if (c.state === 'AtHome') {
-      // Tours start at home.
+      // Tours start at home, from the side of it on the road towards where they go.
       c.tourMode = null;
-      c.carParkedAt = home.anchor;
+      let destination: Building | undefined;
+      let purpose: TripPurpose = 'Work';
       if (c.shoppingNeed.timesFinishedThisTick > 0) {
         shopping.demandEvents += 1;
         const pick = chooseIndex(w.simRng, shops.length);
-        if (pick !== undefined) {
-          depart(w, c, home.anchor, shops[pick]!.anchor, 'Shop', now);
-          continue;
+        if (pick === undefined) {
+          shopping.unmetEvents += 1;
+        } else {
+          destination = shops[pick]!;
+          purpose = 'Shop';
         }
-        shopping.unmetEvents += 1;
       }
-      const work = c.workplace === null ? undefined : w.buildings.get(c.workplace);
-      if (work !== undefined) depart(w, c, home.anchor, work.anchor, 'Work', now);
+      if (destination === undefined && c.workplace !== null) destination = w.buildings.get(c.workplace);
+      c.carParkedAt = entrance(w, home, (destination ?? home).anchor);
+      if (destination !== undefined) depart(w, c, c.carParkedAt, entrance(w, destination, home.anchor), purpose, now);
     } else if (c.state === 'AtWork' || c.state === 'AtShop') {
-      if ((c.state === 'AtWork' ? c.workStay : c.shopStay).finished) depart(w, c, c.lastPlace, home.anchor, 'ReturnHome', now);
+      if ((c.state === 'AtWork' ? c.workStay : c.shopStay).finished) depart(w, c, c.lastPlace, entrance(w, home, c.lastPlace), 'ReturnHome', now);
     }
   }
 
@@ -235,7 +247,8 @@ export function handleTripFinished(w: World): void {
       c.state = 'AtHome';
       c.tourMode = null;
       const home = w.buildings.get(c.home);
-      if (home !== undefined) c.carParkedAt = home.anchor;
+      // Where the trip home parked: the side of home towards the place it came from.
+      if (home !== undefined) c.carParkedAt = entrance(w, home, c.lastPlace);
     } else {
       c.state = arrival.purpose === 'Work' ? 'AtWork' : 'AtShop';
       (arrival.purpose === 'Work' ? c.workStay : c.shopStay).reset();
@@ -256,7 +269,7 @@ export function recoverStuckTrips(w: World): void {
     if (c.tripDepartedAtSec === null || now - c.tripDepartedAtSec <= CITIZEN_TRIP_TIMEOUT_SECS) continue;
     c.state = 'AtHome';
     const home = w.buildings.get(c.home);
-    if (home !== undefined) c.carParkedAt = home.anchor;
+    if (home !== undefined) c.carParkedAt = entrance(w, home, home.anchor);
     c.tourMode = null;
     c.tripDepartedAtSec = null;
     c.tripPurpose = null;
