@@ -7,6 +7,7 @@ import {
   createWorld,
   CROSS_LAYOUT,
   despawnVehicle,
+  forEachCitizenCar,
   detectIntersections,
   fingerprint,
   LivingCityScenario,
@@ -20,6 +21,7 @@ import {
   step,
   summarizeTraffic,
   toHex64,
+  VEHICLE_CAPACITY,
   vehicleRef,
   worldToTile,
   type World,
@@ -35,9 +37,15 @@ import {
   type Request,
   type WorldSnapshot,
 } from './protocol';
-import { RenderWriter, createRenderBuffer } from './renderBuffer';
+import { PARKED_VEHICLE_KIND, RenderWriter, createRenderBuffer, extraCars, type RenderExtras } from './renderBuffer';
 import { debugOverlayOf, renderLayersOf } from './renderLayers';
 import type { ScenarioName } from './scenarios';
+
+/** Cars a frame holds: the micro vehicles, the driving cars of citizens and their parked ones. */
+export const RENDER_CAPACITY = 32_768;
+/** Render slot ids of the cars of citizens, after the micro vehicle slots: driving ones, then parked ones. */
+const DRIVING_ID_BASE = VEHICLE_CAPACITY;
+const PARKED_ID_BASE = 3 * VEHICLE_CAPACITY;
 
 /** A scenario the host feeds before every tick; one with commuters also reports them. */
 interface HostScenario {
@@ -65,6 +73,7 @@ export class SimHost {
   private readonly world: World;
   private readonly driver: FixedStepDriver;
   private readonly writer: RenderWriter;
+  private readonly extras: RenderExtras;
   private lastReported: string | null = null;
   private scenario: HostScenario | null = null;
   /** Recent average cost of a fixed tick, ms. */
@@ -75,6 +84,7 @@ export class SimHost {
     this.driver = new FixedStepDriver(this.world);
     this.render = createRenderBuffer(renderCapacity);
     this.writer = new RenderWriter(this.render);
+    this.extras = extraCars(renderCapacity);
   }
 
   handle<T extends Request['t']>(req: Extract<Request, { t: T }>): ReplyByRequest[T] {
@@ -241,6 +251,21 @@ export class SimHost {
   }
 
   private publish(): void {
-    this.writer.publish(this.world.tick, this.world.vehicles);
+    const extras = this.extras;
+    const capacity = extras.x.length;
+    extras.count = 0;
+    forEachCitizenCar(this.world, (parked, id, generation, x, y, heading) => {
+      const slot = (parked ? PARKED_ID_BASE : DRIVING_ID_BASE) + id;
+      if (extras.count >= capacity || slot >= capacity) return;
+      const i = extras.count;
+      extras.x[i] = x;
+      extras.y[i] = y;
+      extras.heading[i] = heading;
+      extras.slot[i] = slot;
+      extras.generation[i] = generation;
+      extras.kind[i] = parked ? PARKED_VEHICLE_KIND : 0;
+      extras.count += 1;
+    });
+    this.writer.publish(this.world.tick, this.world.vehicles, extras);
   }
 }

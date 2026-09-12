@@ -37,6 +37,7 @@ export * from './map/roadTool';
 export * from './map/zonePlacement';
 export * from './meso/districts';
 export * from './meso/graph';
+export * from './meso/render';
 export * from './meso/traffic';
 export * from './notifications';
 export * from './parking';

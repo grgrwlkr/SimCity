@@ -1,12 +1,11 @@
 // Worker entry: owns the world, runs the fixed-step loop, answers `window.__sim`.
-import { VEHICLE_CAPACITY } from '@simcity/sim';
-import { SimHost } from './host';
+import { RENDER_CAPACITY, SimHost } from './host';
 import type { FromWorker, ToWorker } from './protocol';
 
 /** Loop period; the driver turns whatever real time passed into fixed ticks. */
 const LOOP_MS = 16;
 
-const host = new SimHost(VEHICLE_CAPACITY);
+const host = new SimHost(RENDER_CAPACITY);
 
 function send(message: FromWorker): void {
   postMessage(message);

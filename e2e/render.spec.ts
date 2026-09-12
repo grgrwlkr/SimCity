@@ -219,6 +219,8 @@ test('livingCityShowsItsCitizens', async ({ page }) => {
 
   await expect(page.getByTestId('citizens')).toHaveText(/^Жители \d/, { timeout: 30_000 });
   await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.lights), { timeout: 30_000 }).toBe(36);
+  // Stage 3½d: the cars of its citizens are drawn, the parked ones from the start.
+  await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.vehicles), { timeout: 30_000 }).toBeGreaterThan(1000);
 });
 
 // Stage 3½a: the speed ladder, the rate the game really runs at, and a failing system reported while the world goes on.

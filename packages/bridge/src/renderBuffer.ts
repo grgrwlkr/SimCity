@@ -82,22 +82,56 @@ class RenderBufferViews {
 /** The kind a parked vehicle is published with, whatever its own kind: the renderer draws it apart from traffic. */
 export const PARKED_VEHICLE_KIND = 4;
 
+/** Cars published after the vehicles: the cars of citizens the sim hands over (stage 3½d), each under its own slot id. */
+export interface RenderExtras {
+  count: number;
+  readonly x: Float32Array;
+  readonly y: Float32Array;
+  readonly heading: Float32Array;
+  readonly slot: Uint32Array;
+  readonly generation: Uint32Array;
+  readonly kind: Uint8Array;
+}
+
+export function extraCars(capacity: number): RenderExtras {
+  return {
+    count: 0,
+    x: new Float32Array(capacity),
+    y: new Float32Array(capacity),
+    heading: new Float32Array(capacity),
+    slot: new Uint32Array(capacity),
+    generation: new Uint32Array(capacity),
+    kind: new Uint8Array(capacity),
+  };
+}
+
 export class RenderWriter extends RenderBufferViews {
-  /** Packs the live vehicles into the inactive frame, then makes it the active one. */
-  publish(tick: number, vehicles: VehicleLayers): void {
+  /**
+   * Packs the live vehicles and then `extras` into the inactive frame, then makes it the active one. What does not fit
+   * is left out: a busy city never stops the worker.
+   */
+  publish(tick: number, vehicles: VehicleLayers, extras?: RenderExtras): void {
     const sequence = Atomics.load(this.header, 0);
     const target = this.frameFor(sequence + 1);
     const { alive } = vehicles;
     let count = 0;
-    for (let slot = 0; slot < alive.length; slot++) {
+    for (let slot = 0; slot < alive.length && count < this.capacity; slot++) {
       if (alive[slot] === 0) continue;
-      if (count === this.capacity) throw new RangeError(`more than ${this.capacity} vehicles alive`);
       target.x[count] = vehicles.x[slot]!;
       target.y[count] = vehicles.y[slot]!;
       target.heading[count] = vehicles.heading[slot]!;
       target.slot[count] = slot;
       target.generation[count] = vehicles.generation[slot]!;
       target.kind[count] = vehicles.parked[slot] === 1 ? PARKED_VEHICLE_KIND : vehicles.kind[slot]!;
+      count += 1;
+    }
+    for (let i = 0; extras !== undefined && i < extras.count && count < this.capacity; i++) {
+      target.x[count] = extras.x[i]!;
+      target.y[count] = extras.y[i]!;
+      target.heading[count] = extras.heading[i]!;
+      target.slot[count] = extras.slot[i]!;
+      target.generation[count] = extras.generation[i]!;
+      target.kind[count] = extras.kind[i]!;
       count += 1;
     }
     target.header[0] = tick;

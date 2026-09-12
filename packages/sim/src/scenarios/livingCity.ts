@@ -5,6 +5,8 @@ import { buildCity } from './cityGen';
 import { prebuildCity } from './prebuild';
 
 export const LIVING_CITY_WALK_MAX_METERS = 300;
+/** The city opens at six in the morning: its rush hour starts at once. */
+export const LIVING_CITY_START_HOUR = 6;
 
 export interface LivingCityOptions {
   /** Open with part of the land built and lived in (the default); `false` starts from bare zones. */
@@ -29,6 +31,7 @@ export class LivingCityScenario {
     // of stage 3½e, where the default kilometre holds.
     w.citizenConfig.walkMaxMeters = LIVING_CITY_WALK_MAX_METERS;
     if (options.prebuilt ?? true) prebuildCity(w);
+    w.city.hour = LIVING_CITY_START_HOUR;
   }
 
   /** Call before each fixed tick: the trips of the last tick are counted once, however often the host calls. */

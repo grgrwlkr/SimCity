@@ -73,6 +73,10 @@ export class MesoTraffic {
   heldSince = new Float64Array(0);
   /** A red light held the car at the head at its last look. */
   atRed = new Uint8Array(0);
+  /** The tile along its link the car entered at: its start for the first link, 0 after. */
+  fromOffset = new Uint16Array(0);
+  /** Bumps every time the slot takes a new car, so a drawn car is not mistaken for the one before it. */
+  generation = new Uint32Array(0);
   /** The route as successor indices of the meso graph, and how far along it the car is. */
   routes: Int32Array[] = [];
   routeCursor = new Uint16Array(0);
@@ -124,7 +128,7 @@ export class MesoTraffic {
 
 function growCars(m: MesoTraffic): void {
   const capacity = Math.max(m.citizen.length * 2, INITIAL_CARS);
-  const grown = <T extends Int32Array | Uint8Array | Uint16Array | Float64Array>(layer: T, fill: number): T => {
+  const grown = <T extends Int32Array | Uint8Array | Uint16Array | Uint32Array | Float64Array>(layer: T, fill: number): T => {
     const next = new (layer.constructor as new (length: number) => T)(capacity);
     (next as Int32Array).set(layer as never);
     if (fill !== 0) next.fill(fill, layer.length);
@@ -141,6 +145,8 @@ function growCars(m: MesoTraffic): void {
   m.heldSince = grown(m.heldSince, NaN);
   m.atRed = grown(m.atRed, 0);
   m.routeCursor = grown(m.routeCursor, 0);
+  m.fromOffset = grown(m.fromOffset, 0);
+  m.generation = grown(m.generation, 0);
 }
 
 /** The car's trip is over: its citizen hears of it and the slot is free. */
@@ -302,6 +308,8 @@ function spawn(w: World, trip: TripRequested): 'spawned' | 'wait' | 'dropped' {
   m.routeCursor[car] = 0;
   m.heldSince[car] = NaN;
   m.atRed[car] = 0;
+  m.fromOffset[car] = startOffset;
+  m.generation[car]! += 1;
   const tiles = straight ? goalOffset - startOffset : g.length[startLink]! - startOffset;
   enqueue(m, car, startLink, m.nowSec, m.nowSec + tiles * secondsPerTile(w, startLink));
   return 'spawned';
@@ -358,6 +366,7 @@ function leave(w: World, link: number, now: number, lights: ReadonlyMap<number, 
   m.measuredCount[link]! += 1;
   m.heldSince[car] = NaN;
   m.routeCursor[car] = cursor + 1;
+  m.fromOffset[car] = 0;
   const entered = now + g.succBoxTiles[k]! * boxSeconds(w);
   const tiles = cursor + 1 >= route.length ? m.goalOffset[car]! : g.length[next]!;
   enqueue(m, car, next, entered, entered + tiles * secondsPerTile(w, next));

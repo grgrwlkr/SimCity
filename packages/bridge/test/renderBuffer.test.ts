@@ -1,6 +1,6 @@
 import { createWorld } from '@simcity/sim';
 import { describe, expect, it } from 'vitest';
-import { PARKED_VEHICLE_KIND, RenderReader, RenderWriter, createRenderBuffer, frameByteRange } from '../src/renderBuffer';
+import { PARKED_VEHICLE_KIND, RenderReader, RenderWriter, createRenderBuffer, extraCars, frameByteRange } from '../src/renderBuffer';
 
 function worldWithVehicles(slots: readonly number[]) {
   const w = createWorld();
@@ -90,8 +90,32 @@ describe('render SharedArrayBuffer', () => {
     expect(out.count).toBe(2);
   });
 
-  it('publishRejectsMoreVehiclesThanTheBufferHolds', () => {
-    const writer = new RenderWriter(createRenderBuffer(2));
-    expect(() => writer.publish(1, worldWithVehicles([0, 1, 2]).vehicles)).toThrow(RangeError);
+  // Stage 3½d: after the vehicles come the cars of citizens the sim hands over, each under its own id.
+  it('publishAddsTheCarsOfCitizensAfterTheVehicles', () => {
+    const sab = createRenderBuffer(16);
+    const extras = extraCars(2);
+    extras.count = 2;
+    extras.x.set([100, 200]);
+    extras.slot.set([4096, 12288]);
+    extras.kind.set([0, PARKED_VEHICLE_KIND]);
+    new RenderWriter(sab).publish(3, worldWithVehicles([1]).vehicles, extras);
+
+    const reader = new RenderReader(sab);
+    const out = reader.allocate();
+    reader.readInto(out);
+    expect(out.count).toBe(3);
+    expect(Array.from(out.x.subarray(1, 3))).toEqual([100, 200]);
+    expect(Array.from(out.slot.subarray(1, 3))).toEqual([4096, 12288]);
+    expect(Array.from(out.kind.subarray(1, 3))).toEqual([0, PARKED_VEHICLE_KIND]);
+  });
+
+  // The worker must not die of a busy city: what does not fit is left out of the frame.
+  it('publishLeavesOutWhatTheBufferCannotHold', () => {
+    const sab = createRenderBuffer(2);
+    expect(() => new RenderWriter(sab).publish(1, worldWithVehicles([0, 1, 2]).vehicles)).not.toThrow();
+    const reader = new RenderReader(sab);
+    const out = reader.allocate();
+    reader.readInto(out);
+    expect(out.count).toBe(2);
   });
 });
