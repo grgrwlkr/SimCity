@@ -188,6 +188,7 @@ function hashBuildings(h: Fnv64, w: World): void {
   h.f64(w.rciDemand.residential);
   h.f64(w.rciDemand.commercial);
   h.f64(w.rciDemand.industrial);
+  h.str(stableJson(w.classDemand.byClass));
   h.int(w.cityFields.version);
   for (const field of CITY_FIELDS) h.bytes(w.cityFields.values(field));
   h.int(w.landValue.version);

@@ -4,7 +4,7 @@ import { Buildings } from './buildings/building';
 import { Citizens, emptyCommuteStats, emptyShoppingStats, type CommuteStats, type ShoppingDemandStats } from './citizens';
 import { createSimClock, defaultCity, type City } from './city';
 import { CityFields } from './cityFields';
-import { emptyDemand, type RciDemand } from './demand';
+import { ClassDemand, emptyDemand, type RciDemand } from './demand';
 import { BudgetLedger, ECONOMY_CONFIG, Loans, ServiceFunding, TaxRates, type EconomyConfig } from './economy/economy';
 import { EmploymentUnreachablePairCache, emptyEmploymentStats, type EmploymentStats } from './employment';
 import { LandValueIndex } from './landValue';
@@ -134,8 +134,10 @@ export interface World {
   readonly buildings: Buildings;
   utilityNetwork: UtilityNetwork;
   readonly utilitySupply: UtilitySupply;
-  /** `RciDemand`; computed from stage 3b on. */
+  /** `RciDemand`, computed every tick. */
   rciDemand: RciDemand;
+  /** `ClassDemand`: the same per wealth class. */
+  readonly classDemand: ClassDemand;
   /** `CityFields`; computed from stage 3c on, unmeasured until then. */
   cityFields: CityFields;
   /** `LandValueIndex`, 64 tiles a tick. */
@@ -228,6 +230,7 @@ export function createWorld(options: WorldOptions = {}): World {
     utilityNetwork: new UtilityNetwork(),
     utilitySupply: new UtilitySupply(),
     rciDemand: emptyDemand(),
+    classDemand: new ClassDemand(),
     cityFields: new CityFields(),
     landValue: new LandValueIndex(),
     pollution: new PollutionIndex(),

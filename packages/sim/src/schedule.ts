@@ -11,6 +11,7 @@ import { upgradeBuildings } from './buildings/upgrade';
 import { citizenTripPlanner, cleanupHomelessCitizens, despawnOrphanedOwnedCars, handleTripFinished, recoverStuckTrips, spawnCitizensFromResidential } from './citizens';
 import { simTick } from './city';
 import type { GameCommand } from './commands';
+import { computeRciDemand } from './demand';
 import { applyDailyEconomy } from './economy/economy';
 import { assignJobs, clearInvalidWorkplaces, computeEmploymentStats } from './employment';
 import { updateServiceCoverage } from './services/coverage';
@@ -151,6 +152,9 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'computeLandValue', run: computeLandValue, runIn: IN_GAME },
   // PostSimStep::EmploymentStats: after this tick's assignments and departures; demand reads the class gaps.
   { name: 'computeEmploymentStats', run: computeEmploymentStats, runIn: IN_GAME },
+  // PostSimStep::Demand: the employment stats above, this tick's land value, traffic index and shopping; growth reads
+  // it on the next tick.
+  { name: 'computeRciDemand', run: computeRciDemand, runIn: IN_GAME },
   // PostSimStep::Economy, last of PostSim: the day's taxes from the occupancy of the day before, upkeep of what is
   // open, happiness from the coverage above.
   { name: 'applyDailyEconomy', run: applyDailyEconomy, runIn: IN_GAME },

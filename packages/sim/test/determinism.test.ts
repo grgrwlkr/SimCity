@@ -167,6 +167,7 @@ describe('determinism', () => {
       ['unreachablePairs', (w) => void w.unreachablePairs.beginTick(5, true, 600, 4096)],
       ['shoppingStats', (w) => void (w.shoppingStats.demandEvents += 1)],
       ['commuteStats', (w) => void (w.commuteStats.samples += 1)],
+      ['classDemand', (w) => void (w.classDemand.byClass.Commercial.Low = 0.5)],
     );
 
     for (const [label, mutate] of mutations) {

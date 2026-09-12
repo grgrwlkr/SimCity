@@ -8,7 +8,7 @@ import { loadTestCity } from '../testCity';
 
 describe('city commute scenario', () => {
   it('commutersDriveParkAndComeBack', () => {
-    const w = loadTestCity();
+    const w = loadTestCity({ zones: false });
     const scenario = new CityCommuteScenario(w, { citizens: 300 });
     for (let i = 0; i < 1500; i++) {
       scenario.advance(w);
@@ -30,7 +30,7 @@ describe('city commute scenario', () => {
 
   it('departuresSpreadOverTheWindow', () => {
     // A thousand commuters leaving within one minute is a flood no road network takes.
-    const w = loadTestCity();
+    const w = loadTestCity({ zones: false });
     const scenario = new CityCommuteScenario(w, { citizens: 1000, departureWindowTicks: 2000, stayTicks: [5000, 5000] });
     for (let i = 0; i < 1000; i++) {
       scenario.advance(w);
@@ -43,7 +43,7 @@ describe('city commute scenario', () => {
 
   it('anArrivalCountsOnceWhenTheHostAdvancesWithoutATick', () => {
     // The host feeds a scenario before every step tick and again once per frame.
-    const w = loadTestCity();
+    const w = loadTestCity({ zones: false });
     const scenario = new CityCommuteScenario(w, { citizens: 300 });
     let seen = 0;
     for (let i = 0; i < 1500 && seen === 0; i++) {

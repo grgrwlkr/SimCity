@@ -16,7 +16,8 @@ const WINDOW = 600;
 
 describe('stage 2c gate', () => {
   it('testCityCommuteDrivesWithoutJams', () => {
-    const w = loadTestCity();
+    // Without zones: from stage 3b the city would grow and its citizens would drive too.
+    const w = loadTestCity({ zones: false });
     const rng = stdRngSeedFromU64(7n);
     const roads: TilePos[] = [];
     for (let y = 0; y < w.grid.height; y++) {

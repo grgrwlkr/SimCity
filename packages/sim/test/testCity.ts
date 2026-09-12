@@ -29,10 +29,19 @@ export function hex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export function loadTestCity(): World {
+export interface TestCityOptions {
+  /**
+   * `false` drops the zones: nothing grows and no citizen moves in, so a traffic harness measures only the trips it
+   * requests itself (its commuter indices would otherwise collide with the ids of real citizens).
+   */
+  readonly zones?: boolean;
+}
+
+export function loadTestCity(options: TestCityOptions = {}): World {
   const w = createWorld({ mapWidth: fixture.width, mapHeight: fixture.height });
   const layers = w.grid.layers();
   LAYER_ORDER.forEach((name, i) => layers[i]!.set(hexToBytes(fixture.rawGrid[name])));
+  if (options.zones === false) layers[LAYER_ORDER.indexOf('zone')]!.fill(0);
   w.appState = 'InGame';
   w.graphVersion = fixture.graphVersion;
   w.intersections.trafficLightKeys = new Set(fixture.trafficLightKeys);
