@@ -60,7 +60,7 @@ function applySetRoad(w: World, pos: TilePos, road: RoadCell): void {
 
   w.history.push({ kind: 'SetRoad', pos, old: cell.road, new: newRoad });
   // Roads may be built in debt (road tooling UX).
-  w.city.money -= cost;
+  w.budget.post('Construction', -cost, w.city);
   w.grid.setAt(idx, { ...cell, road: newRoad, building: null });
   w.dirty.mark(idx);
   w.roadDirty.mark(idx);
@@ -120,7 +120,7 @@ function applyPlaceBuilding(w: World, pos: TilePos, kind: BuildingKind): void {
   if (w.city.money < cost) return;
 
   w.history.push({ kind: 'PlaceBuilding', pos, building: kind, oldZones: tiles.map((tile) => [tile, w.grid.get(tile)!.zone] as const) });
-  w.city.money -= cost;
+  w.budget.post('Construction', -cost, w.city);
   for (const tile of tiles) {
     const idx = w.grid.idx(tile)!;
     w.grid.setAt(idx, { ...w.grid.cellAt(idx), building: kind, zone: 'None' });

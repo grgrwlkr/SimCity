@@ -123,6 +123,8 @@ export function buildCity(w: World): CityPlan {
   applyGameCommandsToGrid(w, roads);
   applyGameCommandsToGrid(w, zones);
   w.city.money = money;
+  // The construction lines went through the ledger; the month starts over from the untouched treasury.
+  w.budget.restart(money);
   detectIntersections(w);
 
   const lights: TilePos[] = [];

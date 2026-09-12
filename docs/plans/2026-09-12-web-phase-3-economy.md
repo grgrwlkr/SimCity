@@ -90,6 +90,57 @@
 - `World`: `buildings`, `utilityNetwork`, `utilitySupply`, `rciDemand`, `cityFields`, `landValue`; все, кроме `rciDemand`, `cityFields` и `landValue`, — в фингерпринте.
 - Расписание по Rust: `SimStep::Buildings` после занятости и перед службами и трафиком, `PostSimStep::Utilities` после покрытия.
 
+## 3b: инварианты из Rust-тестов
+
+| Rust-тест (файл) | Инвариант |
+|---|---|
+| `budget_report_lines_sum_to_the_treasury_change` (economy.rs) | строки бюджета в сумме равны изменению казны |
+| `budget_report_a_month_closes_after_its_days_and_the_next_begins` | месяц закрывается на своём последнем дне в отчёт, следующий начинается пустым с казны на конец |
+| `budget_report_daily_economy_goes_through_the_ledger` | день экономики двигает деньги только строками: налог жильцов положителен, дороги отрицательны |
+| `maintenance_per_building_a_service_station_costs_its_upkeep_once_whatever_its_footprint` | станция службы платит своё содержание один раз, сколько бы тайлов ни занимала |
+| `maintenance_per_building_zoned_buildings_cost_the_city_nothing` | здания зон содержания не стоят; без людей, дорог и станций день пуст |
+| `maintenance_per_building_roads_cost_per_tile` | 250 тайлов дороги по 10 за сотню — 25 в день, округление один раз |
+| `maintenance_per_building_utility_stations_cost_their_upkeep_once_open` | электростанция, насос и свалка платят с открытия; строящаяся — нет |
+| `service_building_school_university_and_park_charge_their_upkeep_once_open` | школа 25, университет 60, парк 5 — с открытия |
+| `zone_density_tax_comes_from_the_class_a_building_was_built_with` | налог по классу, с которым здание построено, а не по земле сегодня |
+| `tax_rate_defaults_to_nine_percent_everywhere_and_is_capped_at_twenty` | ставка 9 % везде, потолок 20, ставки независимы |
+| `tax_rate_class_comes_from_the_land_value_under_the_building` | класс земли: 0.33 Low, 0.34 и 0.66 Middle, 0.67 High |
+| `tax_rate_residential_tax_follows_residents_class_and_rate` | налог жильцов = люди × доход класса × ставка класса / 100 |
+| `tax_rate_commercial_and_industrial_tax_follow_jobs` | налог торговли и промышленности — по рабочим местам и своей ставке |
+| `budget_report_funding_defaults_to_full_and_is_capped` | финансирование 100 %, потолок 150; радиус не растёт выше 100 % и не падает ниже половины |
+| `maintenance_per_building_service_upkeep_follows_its_funding` | содержание службы масштабируется финансированием |
+| `budget_report_monthly_payment_is_the_annuity` | платёж — аннуитет с округлением вверх: 10 000 → 889 |
+| `budget_report_a_loan_is_income_the_day_it_is_taken` | кредит — доход в день взятия; только размеры банка, не больше трёх |
+| `budget_report_loan_payments_close_every_month_until_repaid` | платежи в последний день месяца, выплаченный кредит уходит |
+| `maintenance_per_building_underfunded_station_covers_less` (services/coverage.rs) | при половинном финансировании край полного радиуса не покрыт без правки карты |
+| `budget_report_building_a_road_is_a_construction_line` (map/tests.rs) | стоимость дороги — строка «стройка» месяца |
+| `zone_density_class_demand_follows_each_class_job_gap` (demand.rs) | разрыв работ и работников класса двигает спрос: жильё туда, где работ больше |
+| `rci_demand_default_to_zero` | спрос по умолчанию ноль |
+| `commute_bonus_calculated_correctly`, `land_value_penalty_calculated_correctly`, `density_bonus_capped_correctly`, `pollution_saturation_capped_correctly` | в Rust это арифметика внутри теста; в TS формулы вынесены в функции, тест проверяет их |
+| `commercial_demand_bootstraps_from_population_with_zero_shops` | город с людьми и без магазинов хочет торговлю |
+| `tax_rate_demand_shift_is_neutral_at_the_default_rate` | сдвиг спроса ставкой: 9 % — 0, 20 % — −0.44, 0 % — +0.18 |
+| `tax_rate_raising_a_rate_lowers_that_zone_and_class_demand` | ставка класса роняет спрос зоны и сильнее всего своего класса, остальные не трогает |
+| `land_value_uses_per_tile_service_coverage` (land_value.rs) | покрытый службами тайл дороже непокрытого |
+| `city_fields_crime_lowers_land_value` | преступность дешевит землю |
+| `land_value_uses_local_traffic_heat_not_citywide_average` | местная пробка дешевит землю рядом |
+| `source_tile_never_reads_zero_after_first_full_pass` (pollution.rs) | после первого прохода тайл у завода не бывает нулём |
+| `pollution_clears_within_one_full_pass_after_source_removed` | без завода загрязнение уходит за один проход |
+| `zone_density_unemployment_is_counted_by_the_class_of_the_home` (employment.rs) | безработица по классу дома; богатый не берёт бедную работу |
+| `unreachable_cache_key_is_directional`, `…_expires_after_ttl_ticks`, `…_enforces_capacity_with_lru_touch`, `…_clears_on_graph_version_change` | кеш недостижимых пар направленный, стареет по TTL, вытесняет давно не тронутые, чистится со сменой графа |
+| `recover_stuck_trips_reverts_orphaned_but_keeps_in_progress_and_stable` (citizens.rs) | застрявший дольше 180 с в пути житель возвращается домой, остальные не трогаются |
+| `cleanup_despawns_over_capacity_citizens_highest_id_first` | лишние жильцы уходят со старших id |
+
+## 3b: файлы и решения
+
+- `packages/sim/src/economy/economy.ts`: конфиг, `TaxRates`, `ServiceFunding`, `Loans`, `BudgetLedger`, `applyDailyEconomy`. Стоимость дорог и зданий идёт строкой `Construction` через тот же журнал, иначе отчёт не сойдётся с казной.
+- `packages/sim/src/services/coverage.ts`: станции и покрытие. **Станция — работающее здание службы у дороги**, выводится из записей зданий. В Rust компонент вешался один раз и оставался, в том числе на стройке и после потери дороги. Машины служб — этап 4.
+- `pollution.ts`, `landValue.ts`, `demand.ts` (+ `ClassDemand`), `employment.ts`, `citizens.ts`.
+- **Дом и работа жителя — id здания, а не тайл якоря.** В Rust работник оставался при новом здании на том же якоре.
+- **Режим поездки всегда `Car`**: пешеходы — этап 4.
+- **Завершение поездки жители читают в том же тике**, сразу после трафика. События тика в TS не живут два цикла, как сообщения Bevy.
+- `CityCommuteScenario` остаётся нагрузкой для ворот трафика. `?scenario=city` строит город со станциями, и поездки там создают жители.
+- Расписание по Rust: `SimStep::Citizens` и `Employment` перед зданиями; `PostSimStep` Citizens → TrafficIndex → Pollution → Coverage → Utilities → LandValue → EmploymentStats → Demand → Economy.
+
 ## Сделано / Отклонения / Замеры
 
 ### 3a

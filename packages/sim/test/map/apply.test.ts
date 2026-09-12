@@ -276,3 +276,28 @@ describe('building placement and erase', () => {
     expect(w.buildings.all(), 'the grown building must be removed by the undo').toHaveLength(0);
   });
 });
+
+describe('budget', () => {
+  it('budgetReportBuildingARoadIsAConstructionLine', () => {
+    const w = commandApplyWorld(8, 8);
+    w.budget.restart(w.city.money);
+    const moneyBefore = w.city.money;
+    send(w, { kind: 'SetRoad', pos: { x: 1, y: 1 }, road: roadCell('TwoLane') });
+    update(w);
+
+    const spent = moneyBefore - w.city.money;
+    expect(spent, 'a road costs money').toBeGreaterThan(0);
+    expect(w.budget.current.get('Construction'), 'what the road cost is a construction line of the month').toBe(-spent);
+  });
+
+  it('placingABuildingIsAConstructionLine', () => {
+    const w = commandApplyWorld(16, 16);
+    for (let x = 2; x < 5; x++) send(w, { kind: 'SetRoad', pos: { x, y: 1 }, road: roadCell('TwoLane') });
+    update(w);
+    w.budget.restart(w.city.money);
+    send(w, { kind: 'PlaceBuilding', pos: { x: 2, y: 2 }, building: 'Hospital' });
+    update(w);
+    expect(w.budget.current.get('Construction')).toBe(-buildCost('Hospital'));
+    expect(w.budget.current.total()).toBe(w.city.money - w.budget.moneyStart);
+  });
+});

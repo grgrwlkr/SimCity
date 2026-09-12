@@ -1,6 +1,8 @@
 // Port of `AppState` (simcity_core::state) and the transition hooks the Rust plugins register on it.
 import { defaultCity } from './city';
+import { resetEconomyPolicy } from './economy/economy';
 import { seedGrowthRngFromMap, seedSimRngFromMap } from './seeding';
+import { ServiceCoverageIndex } from './services/coverage';
 import { teardownTraffic } from './traffic/lifecycle';
 import type { World } from './world';
 
@@ -52,6 +54,8 @@ function startOfGame(w: World): void {
   // BuildingsPlugin: seed_growth_rng_from_map, reset_building_upgrade_clock.
   seedGrowthRngFromMap(w);
   w.buildingUpgradeClock.reset();
+  // EconomyPlugin: restart_budget_ledger, from whatever the treasury holds.
+  w.budget.restart(w.city.money);
 }
 
 /** `OnEnter(MainMenu)`: teardown of the game that was running. */
@@ -59,6 +63,9 @@ function enterMainMenu(w: World): void {
   // SimPlugin: reset_city_for_new_game.
   w.city = defaultCity();
   w.clock.reset();
+  // Rates, funding and loans belong to the game that ended; Rust carried them into the next one.
+  resetEconomyPolicy(w);
+  w.serviceCoverage = new ServiceCoverageIndex();
   // BuildingsPlugin: cleanup_buildings, reset_building_upgrade_clock.
   w.buildings.clear();
   w.buildingUpgradeClock.reset();

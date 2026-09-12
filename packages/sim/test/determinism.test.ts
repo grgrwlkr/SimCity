@@ -151,6 +151,13 @@ describe('determinism', () => {
       ['laneletStallTracker', (w) => void w.laneletStallTracker.set(7, 3)],
       ['approachFairness', (w) => void w.approachFairness.set('0|North', 2)],
       ['pedestrianCrossings', (w) => void w.pedestrianCrossings.push({ intersectionId: 0, axisNs: true })],
+      ['economyConfig', (w) => void (w.economyConfig = { ...w.economyConfig, daysPerMonth: 3 })],
+      ['budget.current', (w) => w.budget.current.add('Construction', -1)],
+      ['budget.last', (w) => w.budget.endOfDay(1, w.city)],
+      ['taxRates', (w) => w.taxRates.set('Commercial', 'High', 3)],
+      ['serviceFunding', (w) => w.serviceFunding.set('Fire', 60)],
+      ['loans', (w) => void w.loans.active.push({ principal: 10_000, monthlyPayment: 889, monthsLeft: 12 })],
+      ['serviceCoverage', (w) => void (w.serviceCoverage.fire = 0.5)],
     );
 
     for (const [label, mutate] of mutations) {

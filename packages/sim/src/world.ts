@@ -4,7 +4,9 @@ import { Buildings } from './buildings/building';
 import { createSimClock, defaultCity, type City } from './city';
 import { CityFields } from './cityFields';
 import { emptyDemand, type RciDemand } from './demand';
+import { BudgetLedger, ECONOMY_CONFIG, Loans, ServiceFunding, TaxRates, type EconomyConfig } from './economy/economy';
 import { LandValueIndex } from './landValue';
+import { ServiceCoverageIndex } from './services/coverage';
 import { UtilityNetwork, UtilitySupply } from './utilities';
 import type { GameCommand } from './commands';
 import { emptyEvents, type TickEvents } from './events';
@@ -135,6 +137,15 @@ export interface World {
   cityFields: CityFields;
   /** `LandValueIndex`; computed from stage 3b on. */
   readonly landValue: LandValueIndex;
+  /** `EconomyConfig`: a constant until the RON loader; tests replace it whole. */
+  economyConfig: EconomyConfig;
+  /** `BudgetLedger`: every dollar in or out of the treasury is a line of it. */
+  readonly budget: BudgetLedger;
+  taxRates: TaxRates;
+  serviceFunding: ServiceFunding;
+  loans: Loans;
+  /** `ServiceCoverageIndex`, derived from the stations, the map and the funding. */
+  serviceCoverage: ServiceCoverageIndex;
 }
 
 export interface WorldOptions {
@@ -208,5 +219,11 @@ export function createWorld(options: WorldOptions = {}): World {
     rciDemand: emptyDemand(),
     cityFields: new CityFields(),
     landValue: new LandValueIndex(),
+    economyConfig: ECONOMY_CONFIG,
+    budget: new BudgetLedger(),
+    taxRates: new TaxRates(),
+    serviceFunding: new ServiceFunding(),
+    loans: new Loans(),
+    serviceCoverage: new ServiceCoverageIndex(),
   };
 }

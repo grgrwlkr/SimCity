@@ -194,6 +194,32 @@ function hashBuildings(h: Fnv64, w: World): void {
   h.bytes(w.landValue.values);
 }
 
+/** The economy config, the budget ledger, rates, funding, loans and the service coverage the economy reads. */
+function hashEconomy(h: Fnv64, w: World): void {
+  h.str(stableJson(w.economyConfig));
+  const budget = w.budget;
+  h.u32(budget.month);
+  h.u32(budget.daysElapsed);
+  h.int(budget.moneyStart);
+  h.str(stableJson(budget.current.entries()));
+  const last = budget.last;
+  h.str(stableJson(last === null ? null : [last.month, last.moneyStart, last.moneyEnd, last.lines.entries()]));
+  h.str(stableJson(w.taxRates.percent));
+  h.str(stableJson(w.serviceFunding.percent));
+  h.int(w.serviceFunding.version);
+  h.str(stableJson(w.loans.active));
+  const coverage = w.serviceCoverage;
+  h.int(coverage.version);
+  h.int(coverage.mapVersion);
+  h.int(coverage.fundingVersion);
+  h.str(coverage.stationsKey);
+  h.f32(coverage.fire);
+  h.f32(coverage.police);
+  h.f32(coverage.medical);
+  h.u32(coverage.buildingsTotal);
+  h.bytes(coverage.coverageMap);
+}
+
 function hashTimer(h: Fnv64, t: Timer): void {
   h.int(t.durationNs);
   h.str(t.mode);
@@ -410,6 +436,7 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
   ['traffic', hashTraffic],
   ['vehicles', (h, w) => hashVehicles(h, w.vehicles)],
   ['buildings', hashBuildings],
+  ['economy', hashEconomy],
 ];
 
 export interface FingerprintSection {

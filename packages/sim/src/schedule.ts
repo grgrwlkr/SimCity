@@ -10,6 +10,8 @@ import { updateCityPopulation } from './buildings/population';
 import { upgradeBuildings } from './buildings/upgrade';
 import { simTick } from './city';
 import type { GameCommand } from './commands';
+import { applyDailyEconomy } from './economy/economy';
+import { updateServiceCoverage } from './services/coverage';
 import { beginTickEvents } from './events';
 import { detectIntersections } from './intersections/index';
 import { applyGameCommandsToGrid } from './map/apply';
@@ -120,8 +122,13 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'resolveStuckVehicles', run: resolveStuckVehicles, runIn: IN_GAME },
   // PostSimStep::TrafficIndex: the end-of-tick metrics RCI demand reads.
   { name: 'updateTrafficIndex', run: updateTrafficIndex, runIn: IN_GAME },
+  // PostSimStep::Coverage: after this tick's map edits and buildings; land value and the daily economy read it.
+  { name: 'updateServiceCoverage', run: updateServiceCoverage, runIn: IN_GAME },
   // PostSimStep::Utilities: after this tick's buildings and map edits; growth reads it next tick.
   { name: 'updateUtilityNetwork', run: updateUtilityNetwork, runIn: IN_GAME },
+  // PostSimStep::Economy, last of PostSim: the day's taxes from the occupancy of the day before, upkeep of what is
+  // open, happiness from the coverage above.
+  { name: 'applyDailyEconomy', run: applyDailyEconomy, runIn: IN_GAME },
   // Rust runs the next four on Update, after the frame's fixed ticks: the day's construction, then occupancy
   // on the network just computed, then the population and the feed line that read the occupancy.
   { name: 'updateConstructionProgress', run: updateConstructionProgress, runIn: IN_GAME },
