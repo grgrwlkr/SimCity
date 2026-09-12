@@ -31,9 +31,13 @@ export function runUpdateGraph(w: World): void {
   }
 }
 
-export function frame(w: World, fixedTicks: number): void {
+/** One app update; `beforeTick` runs before each fixed tick (a scenario feeding the world). */
+export function frame(w: World, fixedTicks: number, beforeTick?: (w: World) => void): void {
   applyStateTransition(w);
-  for (let i = 0; i < fixedTicks; i++) runFixedTick(w);
+  for (let i = 0; i < fixedTicks; i++) {
+    beforeTick?.(w);
+    runFixedTick(w);
+  }
   applyCommands(w);
   runUpdateGraph(w);
 }

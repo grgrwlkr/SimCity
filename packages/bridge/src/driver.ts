@@ -25,7 +25,7 @@ export class FixedStepDriver {
   }
 
   /** One app update at real time `nowMs`. Returns the fixed ticks it ran. */
-  update(nowMs: number): number {
+  update(nowMs: number, beforeTick?: (w: World) => void): number {
     const realDeltaMs = this.lastMs === null ? 0 : Math.min(Math.max(nowMs - this.lastMs, 0), MAX_DELTA_MS);
     this.lastMs = nowMs;
 
@@ -36,7 +36,7 @@ export class FixedStepDriver {
     const ticks = Math.floor(this.overstepMs / TICK_DT_MS);
     this.overstepMs -= ticks * TICK_DT_MS;
 
-    frame(this.world, ticks);
+    frame(this.world, ticks, beforeTick);
     return ticks;
   }
 }

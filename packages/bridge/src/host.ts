@@ -120,10 +120,9 @@ export class SimHost {
 
   /** One loop iteration at real time `nowMs`: the snapshot if tick, state, speed or the map changed since the last report. */
   update(nowMs: number): WorldSnapshot | null {
-    // A frame at ×1 runs at most a tick or two, so feeding the scenario once per frame keeps waves on time.
-    this.scenario?.advance(this.world);
     const started = performance.now();
-    const ticks = this.driver.update(nowMs);
+    // The scenario is fed before every tick: at ×3 a frame runs several, each with its own events.
+    const ticks = this.driver.update(nowMs, (w) => this.scenario?.advance(w));
     if (ticks > 0) {
       this.recordTickCost((performance.now() - started) / ticks);
       this.publish();

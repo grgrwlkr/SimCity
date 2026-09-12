@@ -195,6 +195,21 @@ describe('SimHost', () => {
     expect(traffic.simTickMs!, 'the tick cost is measured').toBeGreaterThan(0);
   }, 60_000);
 
+  it('aScenarioSeesEveryTickOfAFastFrame', () => {
+    // At ×3 a frame runs several ticks; a scenario fed once a frame missed the arrivals of all but the
+    // last, and those commuters stayed "on the road" for good.
+    const host = new SimHost(4096);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'scenario', name: 'city' });
+    host.handle({ t: 'setSpeed', speed: 'X3' });
+    for (let frame = 0; frame < 400; frame++) host.update(frame * 100);
+
+    const { tick, traffic } = host.handle({ t: 'snapshot' });
+    expect(tick, 'several ticks a frame').toBeGreaterThan(1000);
+    expect(traffic.tripsDone!, 'commutes finish').toBeGreaterThan(0);
+    expect(traffic.travelling, 'everyone on the road is driving or waiting to leave').toBe(traffic.driving + traffic.backlog);
+  }, 120_000);
+
   it('debugVehiclesArePublished', () => {
     const host = new SimHost(16);
     const reader = new RenderReader(host.render);
