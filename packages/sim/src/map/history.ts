@@ -1,7 +1,7 @@
 // Port of crates/simcity_sim/src/game/command_history.rs. Entries capture the previous state so
 // undo restores it verbatim; they are applied in exact-restore mode, never replayed as commands.
-// Building placement and whole-building erase entries join with stage 3.
-import type { RoadCell, TilePos, ZoneDensity, ZoneKind } from '../commands';
+import type { Building } from '../buildings/building';
+import type { BuildingKind, RoadCell, TilePos, ZoneDensity, ZoneKind } from '../commands';
 
 export const COMMAND_HISTORY_LIMIT = 100;
 
@@ -15,7 +15,21 @@ export type UndoableCommand =
       readonly oldDensity: ZoneDensity;
       readonly newDensity: ZoneDensity;
     }
-  | { readonly kind: 'EraseTile'; readonly pos: TilePos; readonly oldRoad: RoadCell; readonly oldZone: ZoneKind };
+  | {
+      readonly kind: 'PlaceBuilding';
+      readonly pos: TilePos;
+      readonly building: BuildingKind;
+      /** The zones the placement cleared, per footprint tile. */
+      readonly oldZones: ReadonlyArray<readonly [TilePos, ZoneKind]>;
+    }
+  | {
+      readonly kind: 'EraseTile';
+      readonly pos: TilePos;
+      readonly oldRoad: RoadCell;
+      readonly oldZone: ZoneKind;
+      /** The whole building the erase removed, restored verbatim on undo. */
+      readonly oldBuilding: Building | null;
+    };
 
 export class CommandHistory {
   private readonly undoStack: UndoableCommand[] = [];

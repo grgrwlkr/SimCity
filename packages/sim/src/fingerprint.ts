@@ -2,6 +2,7 @@
 // the divergence probe and the cross-engine gate compare it: a field missing here is a field no
 // pin can see diverge (test `fingerprintCoversEveryStateField`). Typed arrays are hashed as their
 // little-endian bytes; every target this ships to is little-endian.
+import { CITY_FIELDS } from './cityFields';
 import type { GameCommand } from './commands';
 import type { TickEvents } from './events';
 import type { Notifications } from './notifications';
@@ -173,6 +174,24 @@ function hashTraffic(h: Fnv64, w: World): void {
   // Arbiter stats, the ring-topology advisory and the index cache are observability or derived.
   h.str(stableJson([...w.approachFairness].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))));
   h.str(stableJson(w.pedestrianCrossings));
+}
+
+/** Buildings, the utility network and the inputs growth reads: demand, city fields and land value. */
+function hashBuildings(h: Fnv64, w: World): void {
+  h.str(stableJson(w.buildings.fingerprintState()));
+  const network = w.utilityNetwork;
+  h.int(network.version);
+  h.int(network.mapVersion);
+  h.bytes(network.served);
+  h.int(w.utilitySupply.version);
+  h.str(stableJson(w.utilitySupply.components));
+  h.f64(w.rciDemand.residential);
+  h.f64(w.rciDemand.commercial);
+  h.f64(w.rciDemand.industrial);
+  h.int(w.cityFields.version);
+  for (const field of CITY_FIELDS) h.bytes(w.cityFields.values(field));
+  h.int(w.landValue.version);
+  h.bytes(w.landValue.values);
 }
 
 function hashTimer(h: Fnv64, t: Timer): void {
@@ -390,6 +409,7 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
   ['transport', hashTransport],
   ['traffic', hashTraffic],
   ['vehicles', (h, w) => hashVehicles(h, w.vehicles)],
+  ['buildings', hashBuildings],
 ];
 
 export interface FingerprintSection {

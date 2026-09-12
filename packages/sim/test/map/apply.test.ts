@@ -1,7 +1,8 @@
-// Ported from crates/simcity_sim/src/game/map/tests.rs: the command-apply and undo/redo pins that
-// need no buildings. Placement, erase-of-a-footprint and budget pins move to stage 3.
+// Ported from crates/simcity_sim/src/game/map/tests.rs: the command-apply and undo/redo pins, building
+// placement and whole-building erase. The milestone and budget pins arrive with stages 3b and 3c.
 import { describe, expect, it } from 'vitest';
 import { applyCommands } from '../../src/app';
+import { buildCost, newBuilding } from '../../src/buildings/building';
 import type { GameCommand, RoadCell, RoadKind, TilePos } from '../../src/commands';
 import type { MapGrid } from '../../src/map/grid';
 import { createWorld, type World } from '../../src/world';
@@ -164,5 +165,114 @@ describe('map command apply', () => {
     requestUndoRedo(w, false);
     update(w);
     expect([cellAt().zone, cellAt().density]).toEqual(['None', 'Medium']);
+  });
+});
+
+describe('building placement and erase', () => {
+  /** A road along y = 1 over x = 2..=4, the row a 3×3 at (2, 2) touches from below. */
+  function roadAbove(w: World): void {
+    for (let x = 2; x < 5; x++) send(w, { kind: 'SetRoad', pos: { x, y: 1 }, road: roadCell('TwoLane') });
+    update(w);
+  }
+
+  const footprintBuildings = (w: World) => {
+    const kinds = [];
+    for (let dx = 0; dx < 3; dx++) for (let dy = 0; dy < 3; dy++) kinds.push(w.grid.get({ x: 2 + dx, y: 2 + dy })!.building);
+    return kinds;
+  };
+
+  it('serviceBuildingASchoolIsPlacedBesideARoadAndPaidFor', () => {
+    const w = commandApplyWorld(16, 16);
+    roadAbove(w);
+    const moneyBefore = w.city.money;
+    send(w, { kind: 'PlaceBuilding', pos: { x: 2, y: 2 }, building: 'School' });
+    update(w);
+    expect(footprintBuildings(w).every((b) => b === 'School')).toBe(true);
+    expect(moneyBefore - w.city.money, 'a school costs its price').toBe(700);
+    expect(w.buildings.all()).toHaveLength(1);
+  });
+
+  /** B5: a 3×3 footprint beside a road places; the road-free interior needs no road of its own. */
+  it('placeBuildingWithAdjacentRoadSpawnsEntityAndOccupiesFootprint', () => {
+    const w = commandApplyWorld(16, 16);
+    roadAbove(w);
+    const moneyBefore = w.city.money;
+    send(w, { kind: 'PlaceBuilding', pos: { x: 2, y: 2 }, building: 'Hospital' });
+    update(w);
+    expect(footprintBuildings(w).every((b) => b === 'Hospital'), 'every footprint cell must be occupied').toBe(true);
+    expect(w.city.money).toBe(moneyBefore - buildCost('Hospital'));
+    expect(w.buildings.all(), 'PlaceBuilding must add the building').toHaveLength(1);
+  });
+
+  it('placeBuildingWithoutAnyRoadIsRejected', () => {
+    const w = commandApplyWorld(16, 16);
+    const moneyBefore = w.city.money;
+    send(w, { kind: 'PlaceBuilding', pos: { x: 5, y: 5 }, building: 'Hospital' });
+    update(w);
+    expect(w.grid.get({ x: 5, y: 5 })!.building).toBeNull();
+    expect(w.city.money).toBe(moneyBefore);
+    expect(w.buildings.all()).toHaveLength(0);
+  });
+
+  it('undoPlaceBuildingClearsFootprintAndRestoresZones', () => {
+    const w = commandApplyWorld(16, 16);
+    roadAbove(w);
+    send(w, { kind: 'SetZone', pos: { x: 2, y: 2 }, zone: 'Residential', density: 'Medium' });
+    update(w);
+    send(w, { kind: 'PlaceBuilding', pos: { x: 2, y: 2 }, building: 'Hospital' });
+    update(w);
+    expect(w.buildings.all()).toHaveLength(1);
+    expect(w.grid.get({ x: 2, y: 2 })!.zone, 'placement must clear the zone').toBe('None');
+
+    requestUndoRedo(w, false);
+    update(w);
+    expect(footprintBuildings(w).every((b) => b === null), 'undo must clear every footprint cell').toBe(true);
+    expect(w.grid.get({ x: 2, y: 2 })!.zone, 'undo must restore the zone cleared by placement').toBe('Residential');
+    expect(w.buildings.all(), 'undo must remove the building').toHaveLength(0);
+  });
+
+  /** B6: erasing any footprint cell removes the whole building, and undo brings all of it back. */
+  it('eraseOnFootprintCellRemovesWholeBuildingAndUndoRestoresIt', () => {
+    const w = commandApplyWorld(16, 16);
+    roadAbove(w);
+    send(w, { kind: 'PlaceBuilding', pos: { x: 2, y: 2 }, building: 'Hospital' });
+    update(w);
+    expect(w.buildings.all()).toHaveLength(1);
+
+    send(w, { kind: 'EraseTile', pos: { x: 4, y: 4 } });
+    update(w);
+    expect(footprintBuildings(w).every((b) => b === null), 'erasing one footprint cell must clear the whole building').toBe(true);
+    expect(w.buildings.all(), 'erasing a footprint cell must remove the building').toHaveLength(0);
+
+    requestUndoRedo(w, false);
+    update(w);
+    expect(footprintBuildings(w).every((b) => b === 'Hospital'), 'undo must restore every footprint cell').toBe(true);
+    expect(w.buildings.all(), 'undo must bring the building back').toHaveLength(1);
+
+    requestUndoRedo(w, true);
+    update(w);
+    expect(footprintBuildings(w).every((b) => b === null), 'redo erases it again').toBe(true);
+    expect(w.buildings.all()).toHaveLength(0);
+  });
+
+  /** Growth writes cells without history: undoing a zone under a building grown since whole-erases that building. */
+  it('undoSetZoneUnderGrownBuildingClearsWholeFootprint', () => {
+    const w = commandApplyWorld(8, 8);
+    const anchor = { x: 2, y: 2 };
+    send(w, { kind: 'SetRoad', pos: { x: 1, y: 2 }, road: roadCell('TwoLane') });
+    send(w, { kind: 'SetZone', pos: anchor, zone: 'Residential', density: 'Medium' });
+    update(w);
+    expect(w.grid.get(anchor)!.zone, 'test setup: SetZone must have been accepted').toBe('Residential');
+
+    const footprint = [anchor, { x: 3, y: 2 }, { x: 2, y: 3 }, { x: 3, y: 3 }];
+    for (const tile of footprint) w.grid.set(tile, { ...w.grid.get(tile)!, zone: 'Residential', building: 'Residential' });
+    w.buildings.add(newBuilding({ kind: 'Residential', anchor, width: 2, length: 2, capacityResidents: 8 }));
+
+    requestUndoRedo(w, false);
+    update(w);
+    for (const tile of footprint) {
+      expect(w.grid.get(tile)!.building, `undo over a grown building must clear its whole footprint, (${tile.x},${tile.y})`).toBeNull();
+    }
+    expect(w.buildings.all(), 'the grown building must be removed by the undo').toHaveLength(0);
   });
 });

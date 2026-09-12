@@ -1,6 +1,11 @@
 // The simulation state: struct-of-arrays per entity kind, plus the resources the Rust sim keeps as
 // Bevy `Resource`s. Capacities are fixed; nothing here allocates per tick.
+import { Buildings } from './buildings/building';
 import { createSimClock, defaultCity, type City } from './city';
+import { CityFields } from './cityFields';
+import { emptyDemand, type RciDemand } from './demand';
+import { LandValueIndex } from './landValue';
+import { UtilityNetwork, UtilitySupply } from './utilities';
 import type { GameCommand } from './commands';
 import { emptyEvents, type TickEvents } from './events';
 import { IntersectionIndex } from './intersections/index';
@@ -120,6 +125,16 @@ export interface World {
   pendingEvents: TickEvents;
   /** Commands queued for the next `CommandApply`. */
   commands: GameCommand[];
+  /** The `Building` entities, in spawn order. */
+  readonly buildings: Buildings;
+  utilityNetwork: UtilityNetwork;
+  readonly utilitySupply: UtilitySupply;
+  /** `RciDemand`; computed from stage 3b on. */
+  rciDemand: RciDemand;
+  /** `CityFields`; computed from stage 3c on, unmeasured until then. */
+  cityFields: CityFields;
+  /** `LandValueIndex`; computed from stage 3b on. */
+  readonly landValue: LandValueIndex;
 }
 
 export interface WorldOptions {
@@ -187,5 +202,11 @@ export function createWorld(options: WorldOptions = {}): World {
     events: emptyEvents(),
     pendingEvents: emptyEvents(),
     commands: [],
+    buildings: new Buildings(),
+    utilityNetwork: new UtilityNetwork(),
+    utilitySupply: new UtilitySupply(),
+    rciDemand: emptyDemand(),
+    cityFields: new CityFields(),
+    landValue: new LandValueIndex(),
   };
 }

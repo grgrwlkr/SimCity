@@ -1,6 +1,13 @@
 // Order of systems is data: the position in the array is the execution order (Rust: `GameSet`
 // chained with its `SimStep` / `TrafficStep` / `PostSimStep` sub-sets). A new system takes a
 // concrete position with a comment saying what it runs after and what it reads.
+import { reportBuildingsWithoutPower } from './buildings/blockers';
+import { updateConstructionProgress } from './buildings/construction';
+import { buildingDecayEconomic, buildingDecayLowHappiness, buildingDecayNoRoadAccess, despawnInvalidBuildings } from './buildings/decay';
+import { growBuildings } from './buildings/growth';
+import { updateOccupancy } from './buildings/occupancy';
+import { updateCityPopulation } from './buildings/population';
+import { upgradeBuildings } from './buildings/upgrade';
 import { simTick } from './city';
 import type { GameCommand } from './commands';
 import { beginTickEvents } from './events';
@@ -27,6 +34,7 @@ import { buildLaneletGraph } from './transport/lanelet/build';
 import { rebuildRegionGraph } from './transport/regionGraph';
 import { rebuildRoadGraph } from './transport/roadGraph';
 import { autogenTurnLanes } from './transport/turnLanes';
+import { updateUtilityNetwork } from './utilities';
 import type { World } from './world';
 
 export type System = (w: World, dtNs: number) => void;
@@ -67,6 +75,16 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'invalidateRoutesOnGraphChange', run: invalidateRoutesOnGraphChange, runIn: IN_GAME },
   // SimStep::Tick — the game clock; writes HourAdvanced / DayAdvanced for every system after it.
   { name: 'simTick', run: simTick, runIn: IN_GAME },
+  // SimStep::Buildings, chained as in Rust: growth on this tick's hour, reading the demand, fields and utility
+  // network of the last tick; it produces and levels the buildings the decay pipeline after it scans.
+  { name: 'growBuildings', run: growBuildings, runIn: IN_GAME },
+  // After growBuildings: the upgrade clock and the same blockers.
+  { name: 'upgradeBuildings', run: upgradeBuildings, runIn: IN_GAME },
+  { name: 'buildingDecayEconomic', run: buildingDecayEconomic, runIn: IN_GAME },
+  { name: 'buildingDecayLowHappiness', run: buildingDecayLowHappiness, runIn: IN_GAME },
+  // Before buildingDecayNoRoadAccess: records the grid no longer backs are removed before road access is scanned.
+  { name: 'despawnInvalidBuildings', run: despawnInvalidBuildings, runIn: IN_GAME },
+  { name: 'buildingDecayNoRoadAccess', run: buildingDecayNoRoadAccess, runIn: IN_GAME },
   // SimStep::Traffic, before the vehicle states that read the phase.
   { name: 'updateTrafficLights', run: updateTrafficLights, runIn: IN_GAME },
   // TrafficStep::Flow, first: last tick's positions, so routing and the capacity gate see fresh counts.
@@ -102,6 +120,14 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'resolveStuckVehicles', run: resolveStuckVehicles, runIn: IN_GAME },
   // PostSimStep::TrafficIndex: the end-of-tick metrics RCI demand reads.
   { name: 'updateTrafficIndex', run: updateTrafficIndex, runIn: IN_GAME },
+  // PostSimStep::Utilities: after this tick's buildings and map edits; growth reads it next tick.
+  { name: 'updateUtilityNetwork', run: updateUtilityNetwork, runIn: IN_GAME },
+  // Rust runs the next four on Update, after the frame's fixed ticks: the day's construction, then occupancy
+  // on the network just computed, then the population and the feed line that read the occupancy.
+  { name: 'updateConstructionProgress', run: updateConstructionProgress, runIn: IN_GAME },
+  { name: 'updateOccupancy', run: updateOccupancy, runIn: IN_GAME },
+  { name: 'updateCityPopulation', run: updateCityPopulation, runIn: IN_GAME },
+  { name: 'reportBuildingsWithoutPower', run: reportBuildingsWithoutPower, runIn: IN_GAME },
 ];
 
 /** `Update` / `GameSet::CommandApply`. */

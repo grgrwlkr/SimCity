@@ -1,3 +1,4 @@
+export * from './buildingLook';
 export * from './camera';
 export * from './controls';
 export * from './debugRenderer';

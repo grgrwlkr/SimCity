@@ -37,6 +37,16 @@ export function isWithinZoneDepth(tile: TilePos, grid: MapGrid, maxDepth: number
   return false;
 }
 
+/** Whether every tile of a footprint lies within zone depth of some road. */
+export function isFootprintWithinZoneDepth(anchor: TilePos, width: number, length: number, grid: MapGrid, maxDepth: number): boolean {
+  for (let dx = 0; dx < width; dx++) {
+    for (let dy = 0; dy < length; dy++) {
+      if (!isWithinZoneDepth({ x: anchor.x + dx, y: anchor.y + dy }, grid, maxDepth)) return false;
+    }
+  }
+  return true;
+}
+
 /** Land that is not road, water or building and lies within zone depth of a road. Existing zones may be overwritten. */
 export function canZoneTile(grid: MapGrid, pos: TilePos): boolean {
   const i = grid.idx(pos);

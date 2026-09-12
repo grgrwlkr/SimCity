@@ -25,7 +25,8 @@ describe('city commute scenario', () => {
     expect(driving.length, 'while others drive').toBeGreaterThan(50);
     const wrongWay = driving.filter((slot) => !routeDirectionOk(w.pathPool.remainingFrom(v.pathHandle[slot]!, v.pathCursor[slot]!) ?? [], w.grid));
     expect(wrongWay.length, 'no route against a lane').toBe(0);
-  });
+    // 1.6 s alone; the whole parallel suite pushed it past the 5 s default.
+  }, 60_000);
 
   it('departuresSpreadOverTheWindow', () => {
     // A thousand commuters leaving within one minute is a flood no road network takes.

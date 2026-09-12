@@ -59,7 +59,8 @@ function enterMainMenu(w: World): void {
   // SimPlugin: reset_city_for_new_game.
   w.city = defaultCity();
   w.clock.reset();
-  // BuildingsPlugin: reset_building_upgrade_clock.
+  // BuildingsPlugin: cleanup_buildings, reset_building_upgrade_clock.
+  w.buildings.clear();
   w.buildingUpgradeClock.reset();
   // IntersectionsPlugin: reset_intersections.
   w.intersections.reset();

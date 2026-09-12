@@ -1,9 +1,11 @@
 // Port of `apply_game_commands_to_grid` and `apply_history_entry` (crates/simcity_sim/src/game/map/
-// commands.rs) for roads, zones, erase and map generation. Building placement and the building
-// cases of erase and undo arrive with stage 3; traffic lights with stage 2; saves and the test city
-// with stage 6. Those commands are read by their own systems, as in Rust.
-import type { GameCommand, RoadCell, RoadDir, TilePos, ZoneDensity, ZoneKind } from '../commands';
+// commands.rs) for roads, zones, building placement, erase and map generation. Traffic lights are read
+// by their own system; saves and the test city arrive with stage 6.
+import { DEFAULT_PROFILE, buildCost, cloneBuilding, footprintTiles, type Building } from '../buildings/building';
+import { spawnBuilding } from '../buildings/spawn';
+import type { BuildingKind, GameCommand, RoadCell, RoadDir, TilePos, ZoneDensity, ZoneKind } from '../commands';
 import type { World } from '../world';
+import type { MapGrid } from './grid';
 import { bumpVersion } from './dirty';
 import { generateMapIntoGrid } from './generation';
 import type { UndoableCommand } from './history';
@@ -80,6 +82,89 @@ function applySetZone(w: World, pos: TilePos, zone: ZoneKind, density: ZoneDensi
   bumpMapEdit(w);
 }
 
+/** Manual (service) building footprint: the one size the placement check, the command and the record share. */
+export const MANUAL_BUILDING_FOOTPRINT = [3, 3] as const;
+
+/**
+ * `validate_building_placement`: every footprint tile exists and is free of water, road and building, and
+ * the footprint as a whole touches a road (its road-free interior cannot). The tiles, or `undefined`.
+ */
+export function validateBuildingPlacement(grid: MapGrid, anchor: TilePos, width: number, length: number): TilePos[] | undefined {
+  const tiles: TilePos[] = [];
+  for (let dx = 0; dx < width; dx++) {
+    for (let dy = 0; dy < length; dy++) {
+      const tile = { x: anchor.x + dx, y: anchor.y + dy };
+      const cell = grid.get(tile);
+      if (cell === undefined || cell.water || roadCellIsSome(cell.road) || cell.building !== null) return undefined;
+      tiles.push(tile);
+    }
+  }
+  const besideRoad = (tile: TilePos) =>
+    [
+      [-1, 0],
+      [1, 0],
+      [0, -1],
+      [0, 1],
+    ].some(([dx, dy]) => {
+      const cell = grid.get({ x: tile.x + dx!, y: tile.y + dy! });
+      return cell !== undefined && !cell.water && roadCellIsSome(cell.road);
+    });
+  return tiles.some(besideRoad) ? tiles : undefined;
+}
+
+function applyPlaceBuilding(w: World, pos: TilePos, kind: BuildingKind): void {
+  const [width, length] = MANUAL_BUILDING_FOOTPRINT;
+  const tiles = validateBuildingPlacement(w.grid, pos, width, length);
+  if (tiles === undefined) return;
+  const cost = buildCost(kind);
+  if (w.city.money < cost) return;
+
+  w.history.push({ kind: 'PlaceBuilding', pos, building: kind, oldZones: tiles.map((tile) => [tile, w.grid.get(tile)!.zone] as const) });
+  w.city.money -= cost;
+  for (const tile of tiles) {
+    const idx = w.grid.idx(tile)!;
+    w.grid.setAt(idx, { ...w.grid.cellAt(idx), building: kind, zone: 'None' });
+    w.dirty.mark(idx);
+  }
+  bumpMapEdit(w);
+  spawnBuilding(w, pos, width, length, kind, false, DEFAULT_PROFILE);
+}
+
+/** The building whose footprint contains `pos`. */
+function buildingContaining(w: World, pos: TilePos): Building | undefined {
+  return w.buildings.all().find((b) => pos.x >= b.anchor.x && pos.y >= b.anchor.y && pos.x < b.anchor.x + b.width && pos.y < b.anchor.y + b.length);
+}
+
+/** Clears the building layer of `b`'s footprint where it still shows `b`'s kind. */
+function eraseBuildingCells(w: World, b: Building): void {
+  for (const tile of footprintTiles(b)) {
+    const idx = w.grid.idx(tile);
+    if (idx === undefined || w.grid.cellAt(idx).building !== b.kind) continue;
+    w.grid.setAt(idx, { ...w.grid.cellAt(idx), building: null });
+    w.dirty.mark(idx);
+  }
+}
+
+/**
+ * Clears any building on `tile` before an exact restore writes over it. Growth writes cells without history,
+ * so a restore can land on a building that did not exist when the entry was recorded: its owner goes whole,
+ * an ownerless cell is cleared in place.
+ */
+function clearBuildingAt(w: World, tile: TilePos): void {
+  const idx = w.grid.idx(tile);
+  if (idx === undefined || w.grid.cellAt(idx).building === null) return;
+  const owner = buildingContaining(w, tile);
+  if (owner !== undefined) {
+    eraseBuildingCells(w, owner);
+    w.buildings.remove(owner.id);
+  }
+  const cell = w.grid.cellAt(idx);
+  if (cell.building !== null) {
+    w.grid.setAt(idx, { ...cell, building: null });
+    w.dirty.mark(idx);
+  }
+}
+
 function clearTile(w: World, idx: number): void {
   const cell = w.grid.cellAt(idx);
   const roadChanged = roadCellIsSome(cell.road);
@@ -100,7 +185,15 @@ function applyEraseTile(w: World, pos: TilePos): void {
   // Nothing to erase: a no-op entry would wipe the redo stack while drag-erasing empty land.
   if (!roadCellIsSome(cell.road) && cell.zone === 'None' && cell.building === null) return;
 
-  w.history.push({ kind: 'EraseTile', pos, oldRoad: cell.road, oldZone: cell.zone });
+  // Erasing any cell of a footprint removes the whole building; one cleared cell would orphan the rest.
+  let oldBuilding: Building | null = null;
+  const owner = cell.building === null ? undefined : buildingContaining(w, pos);
+  if (owner !== undefined) {
+    eraseBuildingCells(w, owner);
+    w.buildings.remove(owner.id);
+    oldBuilding = cloneBuilding(owner);
+  }
+  w.history.push({ kind: 'EraseTile', pos, oldRoad: cell.road, oldZone: cell.zone, oldBuilding });
   clearTile(w, idx);
 }
 
@@ -143,9 +236,11 @@ function restoreZoneCell(w: World, pos: TilePos, zone: ZoneKind, density: ZoneDe
 function applyHistoryEntry(w: World, entry: UndoableCommand, forward: boolean): void {
   switch (entry.kind) {
     case 'SetRoad':
+      clearBuildingAt(w, entry.pos);
       restoreRoadCell(w, entry.pos, forward ? entry.new : entry.old);
       break;
     case 'SetZone':
+      clearBuildingAt(w, entry.pos);
       restoreZoneCell(
         w,
         entry.pos,
@@ -153,8 +248,27 @@ function applyHistoryEntry(w: World, entry: UndoableCommand, forward: boolean): 
         forward ? entry.newDensity : entry.oldDensity,
       );
       break;
+    case 'PlaceBuilding': {
+      // Whole-erases whatever grew over these tiles since, so no outside cell survives as a phantom.
+      for (const [tile] of entry.oldZones) clearBuildingAt(w, tile);
+      for (const [tile, zone] of entry.oldZones) {
+        const idx = w.grid.idx(tile);
+        if (idx === undefined) continue;
+        w.grid.setAt(idx, { ...w.grid.cellAt(idx), building: forward ? entry.building : null, zone: forward ? 'None' : zone });
+        w.dirty.mark(idx);
+      }
+      bumpMapEdit(w);
+      if (forward) spawnBuilding(w, entry.pos, MANUAL_BUILDING_FOOTPRINT[0], MANUAL_BUILDING_FOOTPRINT[1], entry.building, false, DEFAULT_PROFILE);
+      break;
+    }
     case 'EraseTile': {
+      const old = entry.oldBuilding;
       if (forward) {
+        if (old !== null) {
+          eraseBuildingCells(w, old);
+          const owner = buildingContaining(w, entry.pos);
+          if (owner !== undefined) w.buildings.remove(owner.id);
+        }
         const idx = w.grid.idx(entry.pos);
         if (idx !== undefined) clearTile(w, idx);
       } else {
@@ -162,6 +276,19 @@ function applyHistoryEntry(w: World, entry: UndoableCommand, forward: boolean): 
         // Erasing clears the zone but leaves the tile density, so undo keeps it.
         const density = w.grid.get(entry.pos)?.density ?? 'Medium';
         restoreZoneCell(w, entry.pos, entry.oldZone, density);
+        if (old !== null) {
+          // A building may have grown over part of the old footprint since: whole-erase it first.
+          for (const tile of footprintTiles(old)) clearBuildingAt(w, tile);
+          for (const tile of footprintTiles(old)) {
+            const idx = w.grid.idx(tile);
+            if (idx === undefined) continue;
+            w.grid.setAt(idx, { ...w.grid.cellAt(idx), building: old.kind });
+            w.dirty.mark(idx);
+          }
+          bumpMapEdit(w);
+          // Verbatim, so level, phase and occupancy survive.
+          w.buildings.add(cloneBuilding(old));
+        }
       }
       break;
     }
@@ -185,6 +312,8 @@ export function applyGameCommandsToGrid(w: World, commands: readonly GameCommand
         applyGenerateMap(w, cmd.seed);
         break;
       case 'PlaceBuilding':
+        applyPlaceBuilding(w, cmd.pos, cmd.building);
+        break;
       case 'DumpSaveContract':
       case 'SaveGame':
       case 'LoadGame':
