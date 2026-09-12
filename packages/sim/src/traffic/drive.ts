@@ -21,7 +21,7 @@ import {
   VEHICLE_LENGTH_TILES,
 } from './constants';
 import { dirBetweenAdjacent } from '../transport/lanelet/pathfinding';
-import { approachingLanelets, waitPointPos } from './reservations';
+import { approachingLanelets, fixedElapsedSecs, waitPointPos } from './reservations';
 import { computeExitDirection, isIntersectionTile } from './state';
 import { FREE_FLOW, TRIP_PURPOSES, VEHICLE_ROLES, despawnVehicle, setTrafficState, vehicleRef } from './vehicles';
 
@@ -135,7 +135,10 @@ function stepHeading(from: TilePos, to: TilePos): number | undefined {
 /** Takes the conflict-tile hold of `localIdx` for `ref`; an intersection without a matrix admits. */
 function admitToBox(w: World, id: number, ref: number, localIdx: number): boolean {
   const matrix = w.laneletConflicts.byIntersection.get(id);
-  return matrix === undefined || w.reservations.ledgerMut(id).tryAdmit(ref, localIdx, matrix, approachingLanelets(w.reservations, id, ref));
+  return (
+    matrix === undefined ||
+    w.reservations.ledgerMut(id).tryAdmit(ref, localIdx, matrix, approachingLanelets(w.reservations, id, ref), fixedElapsedSecs(w))
+  );
 }
 
 /** The wait point of a turn that could only take its wait prefix right now, as a route position of its center. */

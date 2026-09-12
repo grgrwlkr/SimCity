@@ -9,11 +9,13 @@ import { tileKey } from '../map/grid';
 import { capacityPerLaneTile, dirLeft, dirRight, roadCellIsSome, roadLanes } from '../map/roads';
 import type { LaneGraph } from '../transport/laneGraph';
 import type { LaneletConflictMatrices } from '../transport/lanelet/build';
+import type { ConflictMatrix } from '../transport/lanelet/conflict';
 import type { LaneletGraph } from '../transport/lanelet/graph';
 import { dirBetweenAdjacent } from '../transport/lanelet/pathfinding';
 import type { World } from '../world';
 import type { TrafficConfig } from './config';
-import { STUCK_REROUTE_SECS, TILE_CENTER_TO_EDGE_TILES } from './constants';
+import { ARBITER_PATIENCE_SECS, EXIT_QUEUE_SPEED_KMH, STUCK_REROUTE_SECS, TILE_CENTER_TO_EDGE_TILES } from './constants';
+import { kmhToWorldSpeed } from './drive';
 import { isAllRed, isGreen, isLeftProtected, isYellow, type TrafficLight } from './lights';
 import { maneuverKind, type ManeuverKind } from './maneuver';
 import type { PathPool } from './pathPool';
@@ -22,6 +24,7 @@ import {
   emptyGrantMask,
   fixedElapsedSecs,
   grantMaskAdd,
+  type IntersectionLedger,
   type IntersectionReservations,
 } from './reservations';
 import { computeExitDirection, isIntersectionTile } from './state';
@@ -70,6 +73,8 @@ export interface ArbiterGrantCandidate {
   readonly isRightOnRed: boolean;
   readonly entryDir: RoadDir;
   readonly maneuver: ManeuverKind;
+  /** Ticks its approach has gone unserved. */
+  readonly waitTicks: number;
 }
 
 export interface ArbiterInboxVehicle {
@@ -282,6 +287,44 @@ function countAdmit(counts: ArbiterCounts, cand: ArbiterGrantCandidate): void {
 const bySeqThenRef = (a: { seq: number; vehicle: number }, b: { seq: number; vehicle: number }) =>
   a.seq - b.seq || a.vehicle - b.vehicle;
 
+/** The fixed step is 10 Hz (see `fixedElapsedSecs`). */
+const TICKS_PER_SEC = 10;
+
+/** A movement that has waited its patience out: a turn at its wait point or an unserved approach. */
+interface PatienceClaim {
+  readonly vehicle: number;
+  readonly localIdx: number;
+  readonly waitSecs: number;
+  readonly inBox: boolean;
+  readonly seq: number;
+}
+
+function patienceClaims(now: number, ledger: IntersectionLedger, order: readonly ArbiterGrantCandidate[]): PatienceClaim[] {
+  const claims: PatienceClaim[] = [];
+  for (const h of ledger.waitingHolds()) {
+    const waitSecs = now - h.since;
+    if (waitSecs >= ARBITER_PATIENCE_SECS) claims.push({ vehicle: h.vehicle, localIdx: h.localIdx, waitSecs, inBox: true, seq: 0 });
+  }
+  for (const c of order) {
+    const waitSecs = c.waitTicks / TICKS_PER_SEC;
+    if (c.ready && !c.coarse && waitSecs >= ARBITER_PATIENCE_SECS) {
+      claims.push({ vehicle: c.vehicle, localIdx: c.localIdx, waitSecs, inBox: false, seq: c.seq });
+    }
+  }
+  return claims;
+}
+
+/** Whether an older claim conflicting with `cand` holds its grant back; in-box turns go before approaches. */
+function yieldsToOlderClaim(cand: ArbiterGrantCandidate, claims: readonly PatienceClaim[], matrix: ConflictMatrix): boolean {
+  const candSecs = cand.waitTicks / TICKS_PER_SEC;
+  return claims.some((s) => {
+    if (s.vehicle === cand.vehicle) return false;
+    if (!cand.coarse && (s.localIdx === cand.localIdx || !matrix.conflicts(s.localIdx, cand.localIdx))) return false;
+    if (s.waitSecs !== candSecs) return s.waitSecs > candSecs;
+    return s.inBox || s.seq < cand.seq || (s.seq === cand.seq && s.vehicle < cand.vehicle);
+  });
+}
+
 /**
  * Grant core: safety-net Inside rows for in-box vehicles, then per intersection in ascending id the
  * ranked candidates are granted against the ledger. Ledgers must already be reset to the current
@@ -334,6 +377,9 @@ export function arbitrateGrantsInner(
       }
     }
 
+    // Patience: a turn waiting in the box or an approach unserved past ARBITER_PATIENCE_SECS stops younger
+    // conflicting movements from being granted, so the stream it waits on runs dry and the oldest goes first.
+    const claims = patienceClaims(now, ledger, order);
     const grant = emptyGrantMask();
     for (const cand of order) {
       if (!cand.ready) {
@@ -347,6 +393,11 @@ export function arbitrateGrantsInner(
         continue;
       }
       if (reservations.isReservedBy(id, cand.vehicle) || ledger.holds(cand.vehicle)) continue;
+      if (yieldsToOlderClaim(cand, claims, matrix)) {
+        counts.refused += 1;
+        counts.yieldRefusals += 1;
+        continue;
+      }
       let ok: boolean;
       if (cand.coarse) {
         ok = ledger.tryAdmitCoarse(cand.vehicle, grant);
@@ -582,6 +633,9 @@ export function arbitrateLaneletReservations(w: World): void {
       else w.leftTurnDemand.ew.add(id);
     }
 
+    // ПДД 13.2: not into the box while its exit is a standing queue the car would stop behind, across the crossing traffic.
+    const ready = readiness.ready && !exitQueueFull(w, id, ref, exitTile);
+
     const curCell = grid.get(cur);
     const entryLanes = curCell === undefined ? 0 : roadLanes(curCell.road.kind);
     const aging = w.approachFairness.get(`${id}|${entryDir}`) ?? 0;
@@ -598,10 +652,11 @@ export function arbitrateLaneletReservations(w: World): void {
       coarse,
       priority: candidatePriority(entryLanes, maneuver, aging),
       distToEntry: Math.min(Math.max(f32(TILE_CENTER_TO_EDGE_TILES - v.progress[slot]!), 0), 1),
-      ready: readiness.ready,
+      ready,
       isRightOnRed: readiness.isRightOnRed,
       entryDir,
       maneuver,
+      waitTicks: aging,
     });
   }
 
@@ -648,6 +703,28 @@ export function arbitrateLaneletReservations(w: World): void {
     dropOtherCollection: dropOther,
     missingLightTreatedUnsignalized: missingLight,
   };
+}
+
+/**
+ * The exit tile is taken up: the cars standing on it and the cars already let into box `id` towards it
+ * fill its capacity. Cars moving off the tile do not count, so a flowing exit never closes the box.
+ */
+function exitQueueFull(w: World, id: number, vehicle: number, exitTile: TilePos): boolean {
+  const exitIdx = w.grid.idx(exitTile);
+  const cell = w.grid.get(exitTile);
+  if (exitIdx === undefined || cell === undefined) return false;
+  const standingBelow = kmhToWorldSpeed(w.mapConfig, w.trafficConfig, EXIT_QUEUE_SPEED_KMH);
+  let taken = 0;
+  for (const e of w.spatialIndex.tileEntries(exitIdx) ?? []) if (e.speed < standingBelow) taken += 1;
+  const lanelets = w.laneletGraph.ofIntersection(id);
+  for (const r of w.reservations.byIntersection.get(id) ?? []) {
+    if (r.vehicle === vehicle || r.localIdx === null) continue;
+    const laneletId = lanelets[r.localIdx];
+    const lanelet = laneletId === undefined ? undefined : w.laneletGraph.get(laneletId);
+    const pos = lanelet === undefined ? undefined : w.laneGraph.getLane(lanelet.exitLane)?.pos;
+    if (pos !== undefined && sameTile(pos, exitTile)) taken += 1;
+  }
+  return taken >= capacityPerLaneTile(cell.road.kind);
 }
 
 /** `check_ring_free_topology` (Update / GraphUpdate): advisory count of clusters with no open-road exit, once per version. */

@@ -53,6 +53,8 @@ interface Hold {
   from: number;
   /** Tiles from this index on are not held: a turn at its wait point holds only its wait prefix. */
   limit: number;
+  /** Fixed-step seconds when the hold was taken: a waiting turn's patience runs from here. */
+  readonly since: number;
 }
 
 const isCommitted = (hold: Hold) => hold.limit === hold.tiles.length;
@@ -133,9 +135,9 @@ export class IntersectionLedger {
   /**
    * Admit `localIdx` in full, or up to its wait point while an oncoming car holds the box or is in
    * `approaching` (lanelet bits of granted cars not yet inside). Idempotent for a holder; a holder at
-   * its wait point takes the rest of its path as soon as it may.
+   * its wait point takes the rest of its path as soon as it may. `now` stamps a new hold.
    */
-  tryAdmit(vehicle: number, localIdx: number, matrix: ConflictMatrix, approaching: readonly number[] = []): boolean {
+  tryAdmit(vehicle: number, localIdx: number, matrix: ConflictMatrix, approaching: readonly number[] = [], now = 0): boolean {
     const hold = this.holdList.find((h) => h.vehicle === vehicle);
     if (hold !== undefined) {
       if (!isCommitted(hold) && this.admission(vehicle, hold.localIdx, matrix, approaching) === 'full') {
@@ -147,7 +149,7 @@ export class IntersectionLedger {
     const kind = this.admission(vehicle, localIdx, matrix, approaching);
     if (kind === undefined) return false;
     const tiles = matrix.tiles(localIdx);
-    this.holdList.push({ vehicle, localIdx, tiles, from: 0, limit: kind === 'full' ? tiles.length : matrix.waitLen(localIdx) });
+    this.holdList.push({ vehicle, localIdx, tiles, from: 0, limit: kind === 'full' ? tiles.length : matrix.waitLen(localIdx), since: now });
     this.rebuild();
     return true;
   }
@@ -292,6 +294,11 @@ export class IntersectionLedger {
     return hold === undefined ? undefined : { localIdx: hold.localIdx, from: hold.from, committed: isCommitted(hold) };
   }
 
+  /** The turns standing at their wait points, in admission order, with the time each took its hold. */
+  waitingHolds(): ReadonlyArray<{ readonly vehicle: number; readonly localIdx: number; readonly since: number }> {
+    return this.holdList.filter((h) => !isCommitted(h)).map((h) => ({ vehicle: h.vehicle, localIdx: h.localIdx, since: h.since }));
+  }
+
   /** The tiles `vehicle` holds now (not yet behind it). */
   heldTiles(vehicle: number): readonly number[] {
     const hold = this.holdList.find((h) => h.vehicle === vehicle);
@@ -305,7 +312,7 @@ export class IntersectionLedger {
 
   fingerprintState(): unknown {
     return [
-      this.holdList.map((h) => [h.vehicle, h.localIdx, h.from, h.limit]),
+      this.holdList.map((h) => [h.vehicle, h.localIdx, h.from, h.limit, h.since]),
       this.pedMask,
       this.inboxTiles,
       this.builtFor,

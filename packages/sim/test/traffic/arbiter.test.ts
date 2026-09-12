@@ -21,7 +21,7 @@ import {
   type ArbiterInboxVehicle,
 } from '../../src/traffic/arbiter';
 import { clusterHasOpenExit } from '../../src/intersections/index';
-import { STUCK_REROUTE_SECS } from '../../src/traffic/constants';
+import { ARBITER_PATIENCE_SECS, STUCK_REROUTE_SECS } from '../../src/traffic/constants';
 import type { LightPhase, TrafficLight } from '../../src/traffic/lights';
 import type { ManeuverKind } from '../../src/traffic/maneuver';
 import { IntersectionReservations } from '../../src/traffic/reservations';
@@ -54,6 +54,7 @@ function cand(vehicle: number, localIdx: number, priority: number, extra: Partia
     isRightOnRed: false,
     entryDir: 'East',
     maneuver: 'Straight',
+    waitTicks: 0,
     ...extra,
   };
 }
@@ -377,6 +378,48 @@ describe('lanelet arbiter core', () => {
     expect(turnServedTick).toBeDefined();
     expect(turnServedTick!).toBeGreaterThanOrEqual(32);
     expect(turnServedTick!).toBeLessThanOrEqual(40);
+  });
+
+  // The city at 2000 commuters jammed on boxes where a turn waited minutes at its wait point under an
+  // endless oncoming stream, its wait tiles closing the crossing approach behind it.
+  it('aTurnWaitingPastItsPatienceHoldsBackNewOncomingGrants', () => {
+    // Turn 0 drives a then c and waits after a; the oncoming straight 1 drives c; 0 gives way to 1.
+    const m = matrices([[t(0, 0), t(1, 0)], [t(1, 0)]]);
+    const matrix = m.byIntersection.get(0)!;
+    matrix.addConflictPair(0, 1);
+    matrix.setWaitLen(0, 1);
+    const oncomingGrantedAt = (now: number) => {
+      const res = new IntersectionReservations();
+      const ledger = res.ledgerMut(0);
+      expect(ledger.tryAdmit(7, 0, matrix, [0b10], 0), 'the turn drives in to its wait point').toBe(true);
+      expect(ledger.committed(7)).toBe(false);
+      arbitrateGrantsInner(now, [0], byId([cand(2, 1, 3)]), m, [], res);
+      return res.isReservedBy(0, 2);
+    };
+    expect(oncomingGrantedAt(ARBITER_PATIENCE_SECS - 1), 'a turn that has just stopped lets the oncoming car go').toBe(true);
+    expect(oncomingGrantedAt(ARBITER_PATIENCE_SECS), 'one that has waited its patience out holds new oncoming grants back').toBe(false);
+  });
+
+  // The same city: a crossing car waited minutes while cars of one lanelet followed each other through the box.
+  it('anApproachWaitingPastItsPatienceStopsTheConflictingStream', () => {
+    const m = matrices([[t(0, 0)], [t(0, 0)]]);
+    const matrix = m.byIntersection.get(0)!;
+    const patienceTicks = ARBITER_PATIENCE_SECS * 10;
+    const granted = (crossingWaitTicks: number) => {
+      const res = new IntersectionReservations();
+      expect(res.ledgerMut(0).tryAdmit(9, 1, matrix), 'a stream car is in the box').toBe(true);
+      arbitrateGrantsInner(
+        0,
+        [0],
+        byId([cand(1, 0, 3, { waitTicks: crossingWaitTicks, entryDir: 'North' }), cand(2, 1, 3, { entryDir: 'East' })]),
+        m,
+        [],
+        res,
+      );
+      return [res.isReservedBy(0, 1), res.isReservedBy(0, 2)];
+    };
+    expect(granted(patienceTicks - 1), 'the next stream car follows the one in the box').toEqual([false, true]);
+    expect(granted(patienceTicks), 'past its patience the crossing car stops the stream behind the box').toEqual([false, false]);
   });
 
   it('cacheLocalIdxMatchesRowOrderAndRebuildsOnVersion', () => {

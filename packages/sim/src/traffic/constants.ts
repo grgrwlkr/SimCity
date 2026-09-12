@@ -57,3 +57,10 @@ export const LANE_CHANGE_INTERSECTION_LOOKAHEAD = 3;
 export const OVERTAKE_LOOKAHEAD_TILES = 2;
 export const OVERTAKE_LEADER_SPEED_RATIO = f32(0.85);
 export const KEEP_RIGHT_SPEED_THRESHOLD = f32(0.98);
+/**
+ * How long a turn may stand at its wait point, or an approach go unserved, before younger conflicting
+ * movements stop getting grants, s. The city at 2000 commuters jammed on turns that waited minutes.
+ */
+export const ARBITER_PATIENCE_SECS = 8;
+/** A car on an exit tile slower than this stands in the exit queue (ПДД 13.2), km/h. */
+export const EXIT_QUEUE_SPEED_KMH = 5;
