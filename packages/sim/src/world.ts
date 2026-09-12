@@ -2,7 +2,7 @@
 // Bevy `Resource`s. Capacities are fixed; nothing here allocates per tick.
 import { Buildings } from './buildings/building';
 import { Citizens, emptyCommuteStats, emptyShoppingStats, type CommuteStats, type ShoppingDemandStats } from './citizens';
-import { createSimClock, defaultCity, type City } from './city';
+import { DEFAULT_GAME_HOUR_NS, createSimClock, defaultCity, type City } from './city';
 import { CityFields } from './cityFields';
 import { ClassDemand, emptyDemand, type RciDemand } from './demand';
 import { BudgetLedger, ECONOMY_CONFIG, Loans, ServiceFunding, TaxRates, type EconomyConfig } from './economy/economy';
@@ -121,6 +121,8 @@ export interface World {
   nextState: PendingState | null;
   mapSeed: bigint;
   city: City;
+  /** Length of a game hour at ×1. */
+  readonly gameHourNs: number;
   readonly clock: Timer;
   readonly buildingUpgradeClock: Timer;
   readonly notifications: Notifications;
@@ -165,6 +167,8 @@ export interface WorldOptions {
   /** Map size in tiles; the game uses `MapConfig::default()`, tests use small maps. */
   readonly mapWidth?: number;
   readonly mapHeight?: number;
+  /** A game hour at ×1; a real minute unless a test runs days in a hurry. */
+  readonly gameHourNs?: number;
 }
 
 export function createWorld(options: WorldOptions = {}): World {
@@ -218,7 +222,8 @@ export function createWorld(options: WorldOptions = {}): World {
     nextState: null,
     mapSeed: STARTUP_MAP_SEED,
     city: defaultCity(),
-    clock: createSimClock(),
+    gameHourNs: options.gameHourNs ?? DEFAULT_GAME_HOUR_NS,
+    clock: createSimClock(options.gameHourNs ?? DEFAULT_GAME_HOUR_NS),
     buildingUpgradeClock: new Timer(BUILDING_UPGRADE_PERIOD_NS, 'Repeating'),
     notifications: new Notifications(),
     simRng: stdRngSeedFromU64(DEFAULT_RNG_SEED),

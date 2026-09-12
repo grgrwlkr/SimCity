@@ -27,7 +27,7 @@ describe('FixedStepDriver', () => {
     const w = inGame();
     const driver = new FixedStepDriver(w);
     expect(run(driver, 0, 1_000, 10)).toBe(10);
-    expect(w.city.hour, 'one real second at x1 is one game hour').toBe(1);
+    expect([w.city.hour, w.city.minute], 'one real second at x1 is one game minute').toEqual([0, 1]);
   });
 
   it('x3RunsSixTimesFaster', () => {

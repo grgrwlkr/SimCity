@@ -7,15 +7,16 @@ import type { GameCommand, ZoneKind } from '../../src/commands';
 import type { BudgetReport } from '../../src/economy/economy';
 import { roadSegmentCommands } from '../../src/map/roadTool';
 import { requestState } from '../../src/state';
+import { SECOND_NS } from '../../src/timer';
 import { createWorld } from '../../src/world';
 
-/** Ten ticks a game hour. */
+/** Ten ticks a game hour: the books and the jobs are measured in days, and the game's real-minute hour would take an age. */
 const TICKS_PER_DAY = 240;
 const DAYS = 30;
 
 describe('stage 3b gate', () => {
   it('aCityBuiltByCommandsBalancesItsBooksEmploysItsPeopleAndDrivesTheirTrips', () => {
-    const w = createWorld();
+    const w = createWorld({ gameHourNs: SECOND_NS });
     requestState(w, 'InGame');
     frame(w, 0);
 

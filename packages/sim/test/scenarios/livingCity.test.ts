@@ -5,10 +5,12 @@ import { frame, step } from '../../src/app';
 import type { BuildingKind } from '../../src/commands';
 import { LivingCityScenario } from '../../src/scenarios/livingCity';
 import { requestState } from '../../src/state';
+import { SECOND_NS } from '../../src/timer';
 import { createWorld } from '../../src/world';
 
+/** On a ten-tick hour: the city takes days to grow. */
 function livingCity() {
-  const w = createWorld();
+  const w = createWorld({ gameHourNs: SECOND_NS });
   requestState(w, 'InGame');
   frame(w, 0);
   return { w, scenario: new LivingCityScenario(w) };

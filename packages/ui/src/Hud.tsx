@@ -97,7 +97,7 @@ export function Hud({ actions }: { actions: HudActions }) {
   return (
     <header className="hud" data-testid="hud">
       <span data-testid="clock">
-        День {city.day}, {String(city.hour).padStart(2, '0')}:00
+        День {city.day}, {String(city.hour).padStart(2, '0')}:{String(city.minute).padStart(2, '0')}
       </span>
       <span>Казна {money.format(city.money)}</span>
       <span className="tick">тик {snapshot.tick}</span>

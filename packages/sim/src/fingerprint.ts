@@ -378,6 +378,7 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
         h.bool(w.nextState.ifNeq);
       }
       h.u64(w.mapSeed);
+      h.int(w.gameHourNs);
     },
   ],
   [
@@ -385,6 +386,7 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
     (h, { city }) => {
       h.int(city.day);
       h.int(city.hour);
+      h.int(city.minute);
       h.int(city.money);
       h.int(city.population);
       h.f32(city.happiness);

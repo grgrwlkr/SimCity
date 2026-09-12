@@ -37,8 +37,8 @@ test('rngProbeMatchesNodeInBothEngines', async ({ page }) => {
 test('menuStartsAGameAndTheClockRuns', async ({ page }, testInfo) => {
   await page.getByTestId('start').click();
   await expect(page.getByTestId('hud')).toBeVisible();
-  // One real second at ×1 is one game hour.
-  await expect(page.getByTestId('clock')).toHaveText('День 1, 01:00', { timeout: 5_000 });
+  // One real second at ×1 is one game minute.
+  await expect(page.getByTestId('clock')).toHaveText(/^День 1, 00:0[1-9]$/, { timeout: 5_000 });
   await page.screenshot({ path: testInfo.outputPath('hud.png') });
 
   await page.keyboard.press('Space');

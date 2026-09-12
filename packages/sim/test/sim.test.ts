@@ -39,6 +39,28 @@ describe('sim_rng_tests', () => {
   });
 });
 
+// TS: a game hour is a real minute at ×1 (Rust: a second), so a car crosses town within an hour and a citizen's day
+// has a morning and an evening; a world may run a faster clock.
+describe('game clock', () => {
+  const TICK_NS = SECOND_NS / 10;
+
+  it('anHourIsARealMinuteAndTheMinuteShowsWithinIt', () => {
+    const w = createWorld();
+    expect(w.gameHourNs).toBe(60 * SECOND_NS);
+    for (let i = 0; i < 10; i++) simTick(w, TICK_NS);
+    expect([w.city.hour, w.city.minute], 'ten ticks are a game minute').toEqual([0, 1]);
+    for (let i = 10; i < 600; i++) simTick(w, TICK_NS);
+    expect([w.city.hour, w.city.minute], 'six hundred ticks are an hour').toEqual([1, 0]);
+    expect(w.events.hourAdvanced).toEqual([{ hour: 1, day: 1 }]);
+  });
+
+  it('aWorldMayRunAFasterClock', () => {
+    const w = createWorld({ gameHourNs: SECOND_NS });
+    for (let i = 0; i < 10; i++) simTick(w, TICK_NS);
+    expect([w.city.hour, w.city.minute]).toEqual([1, 0]);
+  });
+});
+
 /**
  * Pause must not be a new game. `Paused` exits `InGame`, so anything hung on entering `InGame`
  * would re-run on resume and hand the player a fresh treasury, a rewound calendar and a
@@ -96,7 +118,7 @@ describe('pause_preserves_game_tests', () => {
     w.city.day = 3;
     w.city.hour = 23;
 
-    simTick(w, SECOND_NS);
+    simTick(w, w.gameHourNs);
     expect(w.city.day, 'the clock crossed midnight').toBe(4);
 
     w.notifications.add('Fire emergency', 'Warning', 5);

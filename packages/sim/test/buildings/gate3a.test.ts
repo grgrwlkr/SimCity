@@ -6,15 +6,16 @@ import { frame, step } from '../../src/app';
 import { isOperational } from '../../src/buildings/building';
 import type { GameCommand, RoadCell, ZoneKind } from '../../src/commands';
 import { requestState } from '../../src/state';
+import { SECOND_NS } from '../../src/timer';
 import { createWorld } from '../../src/world';
 
 const ROAD: RoadCell = { kind: 'TwoLane', dir: 'East', lane: 0, flow: { kind: 'TwoWay' }, laneType: 'Regular' };
-/** Ten ticks a game hour. */
+/** Ten ticks a game hour: growth and economy are measured in days, and the game's real-minute hour would take an age. */
 const TICKS_PER_DAY = 240;
 
 describe('stage 3a gate', () => {
   it('aCityBuiltByCommandsGrowsEveryZoneAndTheUnpoweredBlockDoesNot', () => {
-    const w = createWorld();
+    const w = createWorld({ gameHourNs: SECOND_NS });
     requestState(w, 'InGame');
     frame(w, 0);
 

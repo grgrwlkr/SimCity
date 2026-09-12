@@ -56,6 +56,7 @@ describe('determinism', () => {
       ['mapSeed', (w) => void (w.mapSeed += 1n)],
       ['city.day', (w) => void (w.city.day += 1)],
       ['city.hour', (w) => void (w.city.hour += 1)],
+      ['city.minute', (w) => void (w.city.minute += 1)],
       ['city.money', (w) => void (w.city.money -= 1)],
       ['city.population', (w) => void (w.city.population += 1)],
       ['city.happiness', (w) => void (w.city.happiness = Math.fround(0.66))],

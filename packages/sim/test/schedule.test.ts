@@ -26,12 +26,12 @@ describe('schedule', () => {
   it('clockAdvancesOnlyInGame', () => {
     const w = createWorld();
     for (let i = 0; i < TICK_HZ; i++) runFixedTick(w);
-    expect(w.city.hour, 'the main menu has no running clock').toBe(0);
+    expect([w.city.hour, w.city.minute], 'the main menu has no running clock').toEqual([0, 0]);
 
     requestState(w, 'InGame');
     applyStateTransition(w);
     for (let i = 0; i < TICK_HZ; i++) runFixedTick(w);
-    expect(w.city.hour, 'ten fixed ticks are one game hour').toBe(1);
+    expect([w.city.hour, w.city.minute], 'ten fixed ticks are one game minute').toEqual([0, 1]);
     expect(w.tick).toBe(2 * TICK_HZ);
   });
 
