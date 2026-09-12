@@ -53,7 +53,8 @@ export function spawnTripVehicles(w: World): void {
   for (const slot of v.order) if (v.parked[slot] !== 1) active += 1;
   let planned = 0;
 
-  const trips: TripRequested[] = [...w.tripBacklog, ...w.events.tripRequested].filter((trip) => trip.mode === 'Car');
+  // The cars of citizens drive in meso traffic (stage 3½c); micro traffic serves the scenario cars.
+  const trips: TripRequested[] = [...w.tripBacklog, ...w.events.tripRequested].filter((trip) => trip.mode === 'Car' && trip.pocket !== true);
   w.tripBacklog.length = 0;
   for (let i = 0; i < trips.length; i++) {
     if (jammed || planned >= cfg.maxRoutePlansPerTick || active >= cfg.maxActiveVehicles) {
@@ -61,7 +62,7 @@ export function spawnTripVehicles(w: World): void {
       break;
     }
     const trip = trips[i]!;
-    const own = trip.pocket === true ? undefined : v.order.find((slot) => v.parked[slot] === 1 && v.carOwner[slot] === trip.citizen);
+    const own = v.order.find((slot) => v.parked[slot] === 1 && v.carOwner[slot] === trip.citizen);
     // A capacity never throws: with every slot taken, a trip that needs a new car waits for one.
     if (own === undefined && v.free.length === 0) {
       w.tripBacklog.push(trip);
@@ -88,8 +89,7 @@ export function spawnTripVehicles(w: World): void {
         maxSpeed,
         maxAccel: idm.a,
         passenger: { citizen: trip.citizen, purpose: trip.purpose },
-        // A pocket car is nobody's parked vehicle: it leaves the traffic on arrival.
-        ...(trip.pocket === true ? {} : { carOwner: trip.citizen }),
+        carOwner: trip.citizen,
       });
       const slot = refSlot(v, ref);
       v.laneletPlan[slot] = { entries: [...route.sidecar], builtFor: route.builtFor };

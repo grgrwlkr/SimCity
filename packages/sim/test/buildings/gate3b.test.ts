@@ -45,10 +45,8 @@ describe('stage 3b gate', () => {
       if (last !== null && reports.at(-1) !== last) reports.push(last);
       trips += w.events.tripRequested.length;
       arrivals += w.events.tripFinished.length;
-      const v = w.vehicles;
-      let carrying = 0;
-      for (const slot of v.order) if (v.parked[slot] !== 1 && w.citizens.resolve(v.passengerCitizen[slot]!) !== undefined) carrying += 1;
-      carsWithCitizens = Math.max(carsWithCitizens, carrying);
+      // Citizens drive in meso traffic (stage 3½c).
+      carsWithCitizens = Math.max(carsWithCitizens, w.mesoTraffic.carCount());
     }
 
     const summary = `population ${w.city.population}, citizens ${w.citizens.count}, employed ${w.employmentStats.employed}, trips ${trips}, arrivals ${arrivals}, money ${w.city.money}`;

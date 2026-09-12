@@ -797,6 +797,9 @@ export function recoverStuckTrips(w: World): void {
       riding = new Set<number>();
       for (const vehicle of v.order) if (v.parked[vehicle] !== 1 && v.passengerCitizen[vehicle] !== -1) riding.add(v.passengerCitizen[vehicle]!);
       for (const trip of w.tripBacklog) riding.add(trip.citizen);
+      const meso = w.mesoTraffic;
+      for (let car = 0; car < meso.highWater; car++) if (meso.link[car] !== -1) riding.add(meso.citizen[car]!);
+      for (const trip of meso.pending) riding.add(trip.citizen);
     }
     const ref = c.ref(slot);
     if (riding.has(ref)) continue;

@@ -21,6 +21,7 @@ import { computeLandValue } from './landValue';
 import { applyGameCommandsToGrid } from './map/apply';
 import { updateDistrictTimes } from './meso/districts';
 import { rebuildMesoGraph } from './meso/graph';
+import { runMesoTraffic } from './meso/traffic';
 import { computePollution } from './pollution';
 import { resetGrowthRngOnNewMap, resetSimRngOnNewMap } from './seeding';
 import { ALL_STATES, IN_GAME, IN_GAME_OR_PAUSED, type AppState } from './state';
@@ -123,6 +124,9 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   // After updateVehicleTrafficState: this tick's trip requests and the backlog become vehicles; plans
   // read the fresh occupancy.
   { name: 'spawnTripVehicles', run: spawnTripVehicles, runIn: IN_GAME },
+  // After spawnTripVehicles: the car trips of citizens join meso traffic and its queues move on; handleTripFinished reads
+  // its arrivals later in the tick.
+  { name: 'runMesoTraffic', run: runMesoTraffic, runIn: IN_GAME },
   // TrafficStep::Movement. Numbers vehicles that appeared since the last tick before any tie-break.
   { name: 'assignVehicleSeq', run: assignVehicleSeq, runIn: IN_GAME },
   // After assignVehicleSeq: per-tile vehicles by progress for the leaders below.

@@ -58,12 +58,21 @@ export class DistrictTimes {
 }
 
 /** A binary min-heap of links by a time. */
-class LinkHeap {
-  private readonly keys: number[] = [];
-  private readonly links: number[] = [];
+export class LinkHeap {
+  readonly keys: number[] = [];
+  readonly links: number[] = [];
 
   get size(): number {
     return this.keys.length;
+  }
+
+  peekKey(): number {
+    return this.keys[0] ?? Infinity;
+  }
+
+  clear(): void {
+    this.keys.length = 0;
+    this.links.length = 0;
   }
 
   push(key: number, link: number): void {

@@ -175,6 +175,7 @@ describe('determinism', () => {
       ['employmentStats', (w) => void (w.employmentStats.employed += 1)],
       ['meso', (w) => void (w.meso.builtFor = 99)],
       ['districtTimes', (w) => void (w.districtTimes.graphVersion = 7)],
+      ['mesoTraffic', (w) => void w.mesoTraffic.pending.push({ citizen: 1, from: { x: 0, y: 0 }, carParkedAt: null, to: { x: 1, y: 1 }, purpose: 'Work', mode: 'Car', pocket: true })],
       ['shoppingStats', (w) => void (w.shoppingStats.demandEvents += 1)],
       ['commuteStats', (w) => void (w.commuteStats.samples += 1)],
       ['classDemand', (w) => void (w.classDemand.byClass.Commercial.Low = 0.5)],

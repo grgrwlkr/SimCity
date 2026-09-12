@@ -244,6 +244,27 @@ function hashMeso(h: Fnv64, w: World): void {
   h.bytes(d.rowBuiltFor);
   h.bytes(d.secondsPerTile);
   for (const entries of d.entries) h.bytes(entries);
+
+  const m = w.mesoTraffic;
+  h.f64(m.nowSec);
+  h.str(stableJson(m.pending));
+  h.str(stableJson(m.stats));
+  h.u32(m.highWater);
+  h.u32(m.count);
+  for (const layer of [m.citizen, m.purpose, m.link, m.enterSec, m.readySec, m.goalLink, m.goalOffset, m.next, m.heldSince, m.atRed, m.routeCursor]) {
+    h.bytes(layer.subarray(0, m.highWater));
+  }
+  h.u32(m.freeSlots.length);
+  for (const slot of m.freeSlots) h.u32(slot);
+  for (let car = 0; car < m.highWater; car++) if (m.link[car] !== -1) h.bytes(m.routes[car]!);
+  h.f64(m.linksFor ?? -1);
+  for (const layer of [m.head, m.tail, m.onLink, m.tokens, m.tokensAt, m.exits, m.linkSeconds, m.measuredSum, m.measuredCount]) h.bytes(layer);
+  h.f64(m.nextCostUpdate);
+  h.u32(m.due.keys.length);
+  m.due.keys.forEach((key, i) => {
+    h.f64(key);
+    h.i32(m.due.links[i]!);
+  });
 }
 
 function hashCitizens(h: Fnv64, w: World): void {

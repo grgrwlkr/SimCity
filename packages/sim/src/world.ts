@@ -20,6 +20,7 @@ import { MapGrid } from './map/grid';
 import { COMMAND_HISTORY_LIMIT, CommandHistory } from './map/history';
 import { DistrictTimes } from './meso/districts';
 import { MesoGraph } from './meso/graph';
+import { MesoTraffic } from './meso/traffic';
 import { Notifications } from './notifications';
 import { Parking, defaultCitizenConfig, type CitizenConfig } from './parking';
 import { DEFAULT_RNG_SEED, stdRngSeedFromU64, type StdRng } from './rng';
@@ -79,6 +80,8 @@ export interface World {
   meso: MesoGraph;
   /** Car travel times between districts of 16×16 tiles. */
   readonly districtTimes: DistrictTimes;
+  /** The cars of citizens, queued on the meso links. */
+  mesoTraffic: MesoTraffic;
   laneGraph: LaneGraph;
   laneletGraph: LaneletGraph;
   laneletConflicts: LaneletConflictMatrices;
@@ -214,6 +217,7 @@ export function createWorld(options: WorldOptions = {}): World {
     regionGraph: new RegionGraph(),
     meso: new MesoGraph(),
     districtTimes: new DistrictTimes(),
+    mesoTraffic: new MesoTraffic(),
     laneGraph: new LaneGraph(),
     laneletGraph: new LaneletGraph(),
     laneletConflicts: new LaneletConflictMatrices(),

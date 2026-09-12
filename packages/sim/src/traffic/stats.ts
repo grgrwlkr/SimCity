@@ -1,4 +1,6 @@
-// A summary of the traffic for the HUD: counts and averages read off the vehicles, no state of its own.
+// A summary of the traffic for the HUD: counts and averages read off the micro vehicles and the meso cars, no state of
+// its own.
+import { linkStorage } from '../meso/traffic';
 import type { World } from '../world';
 import { STUCK_REROUTE_SECS } from './constants';
 
@@ -10,7 +12,7 @@ export interface TrafficSummary {
   /** Driving cars that have not moved on for a minute or more. */
   readonly stuckOverMinute: number;
   readonly avgSpeedKmh: number;
-  /** Car trips waiting for a tick that can serve them. */
+  /** Car trips waiting for a tick that can serve them, or for room on their first link. */
   readonly backlog: number;
   readonly avgCongestionPct: number;
 }
@@ -34,13 +36,32 @@ export function summarizeTraffic(w: World): TrafficSummary {
     speedSum += v.speed[slot]!;
   }
   const worldPerMeter = w.mapConfig.tileSize / w.trafficConfig.tileMeters;
+  const microKmh = (speedSum / worldPerMeter) * 3.6;
+
+  // A meso car drives at its link's limit until its time on the link is up, and stands after that.
+  const meso = w.mesoTraffic;
+  const g = w.meso;
+  let mesoKmh = 0;
+  for (let car = 0; car < meso.highWater; car++) {
+    const link = meso.link[car]!;
+    if (link >= 0 && meso.readySec[car]! > meso.nowSec) mesoKmh += g.speedKmh[link] ?? 0;
+  }
+  let load = 0;
+  let loaded = 0;
+  for (let link = 0; link < meso.onLink.length && link < g.linkCount; link++) {
+    if (meso.onLink[link] === 0) continue;
+    load += Math.min(meso.onLink[link]! / linkStorage(w, link), 1);
+    loaded += 1;
+  }
+  const mesoDriving = meso.carCount();
+  const total = driving + mesoDriving;
   return {
-    driving,
-    parked,
-    waitingAtLights,
-    stuckOverMinute,
-    avgSpeedKmh: driving === 0 ? 0 : (speedSum / driving / worldPerMeter) * 3.6,
-    backlog: w.tripBacklog.length,
-    avgCongestionPct: w.trafficIndex.avgCongestion * 100,
+    driving: total,
+    parked: parked + Math.max(w.parking.totalUsed() - mesoDriving, 0),
+    waitingAtLights: waitingAtLights + meso.waitingAtLights(),
+    stuckOverMinute: stuckOverMinute + meso.stuckOverMinute(),
+    avgSpeedKmh: total === 0 ? 0 : (microKmh + mesoKmh) / total,
+    backlog: w.tripBacklog.length + meso.pending.length,
+    avgCongestionPct: driving > 0 ? w.trafficIndex.avgCongestion * 100 : loaded > 0 ? (load / loaded) * 100 : 0,
   };
 }

@@ -3,6 +3,7 @@ import { emptyCommuteStats, emptyShoppingStats } from './citizens';
 import { defaultCity } from './city';
 import { resetEconomyPolicy } from './economy/economy';
 import { emptyEmploymentStats } from './employment';
+import { MesoTraffic } from './meso/traffic';
 import { seedGrowthRngFromMap, seedSimRngFromMap } from './seeding';
 import { ServiceCoverageIndex } from './services/coverage';
 import { teardownTraffic } from './traffic/lifecycle';
@@ -71,6 +72,7 @@ function enterMainMenu(w: World): void {
   // CitizensPlugin: cleanup_citizens; the employment and trip stats of the game that ended go with them.
   w.citizens.clear();
   w.parking.clear();
+  w.mesoTraffic = new MesoTraffic();
   w.employmentStats = emptyEmploymentStats();
   w.shoppingStats = emptyShoppingStats();
   w.commuteStats = emptyCommuteStats();
