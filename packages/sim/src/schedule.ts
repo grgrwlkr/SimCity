@@ -93,9 +93,10 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   // Plans are made in game minutes: once a game minute, on the tick the minute turns (and so on the day's turn too).
   { name: 'citizenTripPlanner', run: citizenTripPlanner, runIn: IN_GAME, everyGameNs: 60 * SECOND_NS },
   // After the planner: a trip requested this tick is never taken for an orphan.
-  { name: 'recoverStuckTrips', run: recoverStuckTrips, runIn: IN_GAME },
+  // Every citizen is looked at: once a game minute, against a timeout of minutes.
+  { name: 'recoverStuckTrips', run: recoverStuckTrips, runIn: IN_GAME, everyGameNs: 60 * SECOND_NS },
   // SimStep::Employment: a job goes with its workplace before the unemployed are matched to open ones.
-  { name: 'clearInvalidWorkplaces', run: clearInvalidWorkplaces, runIn: IN_GAME },
+  { name: 'clearInvalidWorkplaces', run: clearInvalidWorkplaces, runIn: IN_GAME, everyGameNs: 60 * SECOND_NS },
   { name: 'assignJobs', run: assignJobs, runIn: IN_GAME },
   // SimStep::Buildings, chained as in Rust: growth on this tick's hour, reading the demand, fields and utility
   // network of the last tick; it produces and levels the buildings the decay pipeline after it scans.
@@ -144,7 +145,7 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   // them on the next, a message living two frames).
   { name: 'handleTripFinished', run: handleTripFinished, runIn: IN_GAME },
   // PostSimStep::Citizens: residents a shrunken or vanished home no longer holds leave, then their parked cars go.
-  { name: 'cleanupHomelessCitizens', run: cleanupHomelessCitizens, runIn: IN_GAME },
+  { name: 'cleanupHomelessCitizens', run: cleanupHomelessCitizens, runIn: IN_GAME, everyGameNs: 60 * SECOND_NS },
   { name: 'despawnOrphanedOwnedCars', run: despawnOrphanedOwnedCars, runIn: IN_GAME },
   // PostSimStep::TrafficIndex: the end-of-tick metrics RCI demand reads.
   { name: 'updateTrafficIndex', run: updateTrafficIndex, runIn: IN_GAME },
@@ -157,7 +158,7 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   // PostSimStep::LandValue: one chunk from the pollution and coverage above, the traffic heat and the city fields.
   { name: 'computeLandValue', run: computeLandValue, runIn: IN_GAME },
   // PostSimStep::EmploymentStats: after this tick's assignments and departures; demand reads the class gaps.
-  { name: 'computeEmploymentStats', run: computeEmploymentStats, runIn: IN_GAME },
+  { name: 'computeEmploymentStats', run: computeEmploymentStats, runIn: IN_GAME, everyGameNs: 60 * SECOND_NS },
   // PostSimStep::Demand: the employment stats above, this tick's land value, traffic index and shopping; growth reads
   // it on the next tick.
   { name: 'computeRciDemand', run: computeRciDemand, runIn: IN_GAME },

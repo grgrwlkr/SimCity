@@ -30,11 +30,10 @@ export class LivingCityScenario {
   /** The trips of the tick just run count already: the host reads the numbers after a frame's ticks. */
   stats(w: World): CitizenTripStats {
     const fresh = w.tick !== this.lastTick;
-    let travelling = 0;
-    for (const c of w.citizens.all()) if (c.state === 'ToWork' || c.state === 'ToShop' || c.state === 'ToHome') travelling += 1;
+    const c = w.citizens;
     return {
-      citizens: w.citizens.all().length,
-      travelling,
+      citizens: c.count,
+      travelling: c.stateCount('ToWork') + c.stateCount('ToShop') + c.stateCount('ToHome'),
       requested: this.requested + (fresh ? w.events.tripRequested.length : 0),
       arrived: this.arrived + (fresh ? w.events.tripFinished.length : 0),
     };

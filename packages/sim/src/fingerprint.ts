@@ -8,6 +8,7 @@ import type { TickEvents } from './events';
 import type { Notifications } from './notifications';
 import type { Timer } from './timer';
 import type { VehicleLayers } from './traffic/vehicles';
+import { LAYER_NAMES as CITIZEN_LAYER_NAMES } from './citizens';
 import type { World } from './world';
 
 const FNV_OFFSET_HI = 0xcbf2_9ce4;
@@ -227,7 +228,28 @@ function hashEconomy(h: Fnv64, w: World): void {
 
 /** Citizens, their departures, and the employment, shopping and commute state that feed demand. */
 function hashCitizens(h: Fnv64, w: World): void {
-  h.str(stableJson(w.citizens.fingerprintState()));
+  // Layers as words up to the high-water mark, not JSON: a million citizens.
+  const c = w.citizens;
+  h.u32(c.highWater);
+  h.u32(c.count);
+  h.f64(c.moveIns);
+  for (const name of CITIZEN_LAYER_NAMES) {
+    h.str(name);
+    h.bytes(c[name].subarray(0, c.highWater));
+  }
+  h.u32(c.freeSlots.length);
+  for (const slot of c.freeSlots) h.u32(slot);
+  h.u32(c.unplanned.length);
+  for (const ref of c.unplanned) h.i32(ref);
+  const buckets = c.queue.entries();
+  h.u32(buckets.length);
+  for (const [minute, refs] of buckets) {
+    h.i32(minute);
+    h.u32(refs.length);
+    for (const ref of refs) h.i32(ref);
+  }
+  h.u32(c.departed.size);
+  for (const ref of c.departed) h.i32(ref);
   h.str(stableJson(w.employmentStats));
   h.str(stableJson(w.unreachablePairs.fingerprintState()));
   h.str(stableJson(w.shoppingStats));

@@ -233,9 +233,8 @@ export function assignJobs(w: World): void {
   const capacity = cfg.unreachablePairCacheCapacity;
   const maintenance = cache.beginTick(w.roadGraph.version, cacheOn, cfg.unreachablePairCacheTtlTicks, capacity);
 
-  const taken = new Map<number, number>();
-  for (const c of w.citizens.all()) if (c.workplace !== null) taken.set(c.workplace, (taken.get(c.workplace) ?? 0) + 1);
-  const jobs = w.buildings.all().filter((b) => isWorkplace(b) && isOperational(b) && b.capacityJobs > (taken.get(b.id) ?? 0));
+  const citizens = w.citizens;
+  const jobs = w.buildings.all().filter((b) => isWorkplace(b) && isOperational(b) && b.capacityJobs > citizens.workersOf(b.id));
 
   let assigned = 0;
   let attempts = 0;
@@ -254,21 +253,21 @@ export function assignJobs(w: World): void {
     // Pairs that failed this tick, so many citizens of one block do not repeat one failed search.
     const failed = new Set<string>();
     const ctx = roadPathCtx(w);
-    citizens: for (const c of w.citizens.all()) {
+    seekers: for (let slot = 0; slot < citizens.highWater; slot++) {
       if (assigned >= cfg.maxAssignmentsPerTick) break;
-      if (c.workplace !== null) continue;
+      if (citizens.alive[slot] !== 1 || citizens.workplace[slot] !== -1) continue;
       scanned += 1;
       if (cfg.maxUnassignedScansPerTick > 0 && scanned > cfg.maxUnassignedScansPerTick) {
         budgetHit = true;
         break;
       }
-      const home = w.buildings.get(c.home);
+      const home = w.buildings.get(citizens.home[slot]!);
       if (home === undefined) continue;
 
       let best: { readonly job: Building; readonly steps: number } | undefined;
       for (let i = 0; i < candidates; i++) {
         const job = jobs[i]!;
-        if ((taken.get(job.id) ?? 0) >= job.capacityJobs) continue;
+        if (citizens.workersOf(job.id) >= job.capacityJobs) continue;
         if (!classJobMatches(home.profile.class, job.profile.class)) continue;
         const homeRoad = adjacentRoadTowardsFootprint(w.grid, home.anchor, home.width, home.length, job.anchor);
         if (homeRoad === undefined) continue;
@@ -289,7 +288,7 @@ export function assignJobs(w: World): void {
         }
         if (cfg.maxPathfindAttemptsPerTick > 0 && attempts >= cfg.maxPathfindAttemptsPerTick) {
           budgetHit = true;
-          break citizens;
+          break seekers;
         }
         attempts += 1;
 
@@ -308,8 +307,7 @@ export function assignJobs(w: World): void {
       }
 
       if (best === undefined) continue;
-      c.workplace = best.job.id;
-      taken.set(best.job.id, (taken.get(best.job.id) ?? 0) + 1);
+      citizens.setWorkplace(slot, best.job.id);
       assigned += 1;
     }
   }
@@ -330,10 +328,11 @@ export function assignJobs(w: World): void {
 
 /** `clear_invalid_workplaces` (SimStep::Employment, before assignment): a job goes with its workplace. */
 export function clearInvalidWorkplaces(w: World): void {
-  for (const c of w.citizens.all()) {
-    if (c.workplace === null) continue;
-    const workplace = w.buildings.get(c.workplace);
-    if (workplace === undefined || !isWorkplace(workplace)) c.workplace = null;
+  const citizens = w.citizens;
+  for (let slot = 0; slot < citizens.highWater; slot++) {
+    if (citizens.alive[slot] !== 1 || citizens.workplace[slot] === -1) continue;
+    const workplace = w.buildings.get(citizens.workplace[slot]!);
+    if (workplace === undefined || !isWorkplace(workplace)) citizens.setWorkplace(slot, null);
   }
 }
 
@@ -349,16 +348,18 @@ export function computeEmploymentStats(w: World): void {
   let employedIndustrial = 0;
   const workersByClass = byClass();
   const unemployedByClass = byClass();
-  for (const c of w.citizens.all()) {
-    const wealth = w.buildings.get(c.home)?.profile.class ?? 'Middle';
+  const citizens = w.citizens;
+  for (let slot = 0; slot < citizens.highWater; slot++) {
+    if (citizens.alive[slot] !== 1) continue;
+    const wealth = w.buildings.get(citizens.home[slot]!)?.profile.class ?? 'Middle';
     workersByClass[wealth] += 1;
-    if (c.workplace === null) {
+    if (citizens.workplace[slot] === -1) {
       unemployed += 1;
       unemployedByClass[wealth] += 1;
       continue;
     }
     employed += 1;
-    const kind = w.buildings.get(c.workplace)?.kind;
+    const kind = w.buildings.get(citizens.workplace[slot]!)?.kind;
     if (kind === 'Commercial') employedCommercial += 1;
     else if (kind === 'Industrial') employedIndustrial += 1;
   }

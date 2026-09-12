@@ -45,11 +45,11 @@ describe('stage 3b gate', () => {
       arrivals += w.events.tripFinished.length;
       const v = w.vehicles;
       let carrying = 0;
-      for (const slot of v.order) if (v.parked[slot] !== 1 && w.citizens.get(v.passengerCitizen[slot]!) !== undefined) carrying += 1;
+      for (const slot of v.order) if (v.parked[slot] !== 1 && w.citizens.resolve(v.passengerCitizen[slot]!) !== undefined) carrying += 1;
       carsWithCitizens = Math.max(carsWithCitizens, carrying);
     }
 
-    const summary = `population ${w.city.population}, citizens ${w.citizens.all().length}, employed ${w.employmentStats.employed}, trips ${trips}, arrivals ${arrivals}, money ${w.city.money}`;
+    const summary = `population ${w.city.population}, citizens ${w.citizens.count}, employed ${w.employmentStats.employed}, trips ${trips}, arrivals ${arrivals}, money ${w.city.money}`;
     expect(reports.length, `three ten-day months: ${summary}`).toBe(3);
     for (const report of reports) {
       expect(report.lines.total(), `month ${report.month}: ${JSON.stringify(report.lines.entries())}`).toBe(report.moneyEnd - report.moneyStart);

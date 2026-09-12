@@ -16,7 +16,9 @@ function building(kind: BuildingKind, anchor: TilePos, jobs: number, wealth: Wea
   return newBuilding({ kind, anchor, capacityJobs: jobs, profile: { density: 'Medium', class: wealth } });
 }
 
-const ROAD: RoadCell = { kind: 'TwoLane', dir: 'East', lane: 0, flow: { kind: 'TwoWay' }, laneType: 'Regular' };
+const workplace = (w: World, ref: number) => w.citizens.view(ref)!.workplace;
+
+const ROAD: RoadCell ={ kind: 'TwoLane', dir: 'East', lane: 0, flow: { kind: 'TwoWay' }, laneType: 'Regular' };
 
 /** A 32×16 town with one road along y = 5, its graphs built. */
 function town(): World {
@@ -117,8 +119,9 @@ describe('job assignment', () => {
 
     assignJobs(w);
 
-    expect(first.workplace, 'the one middle-class job the road reaches').toBe(shop.id);
-    expect(second.workplace, 'its one job is taken and the low-class shop is not for them').toBeNull();
+    expect(workplace(w, first), 'the one middle-class job the road reaches').toBe(shop.id);
+    expect(workplace(w, second), 'its one job is taken and the low-class shop is not for them').toBeNull();
+    expect(w.citizens.workersOf(shop.id)).toBe(1);
   });
 
   it('noOneWorksAtABuildingStillUnderConstruction', () => {
@@ -127,7 +130,7 @@ describe('job assignment', () => {
     w.buildings.add({ ...building('Commercial', t(20, 6), 5, 'Middle'), phase: { kind: 'UnderConstruction', hoursRemaining: 2 } });
     const worker = w.citizens.add(newCitizen(home));
     assignJobs(w);
-    expect(worker.workplace).toBeNull();
+    expect(workplace(w, worker)).toBeNull();
   });
 
   it('aWorkerLosesTheJobWhenTheWorkplaceIsGone', () => {
@@ -137,10 +140,11 @@ describe('job assignment', () => {
     const worker = w.citizens.add({ ...newCitizen(home), workplace: shop.id });
 
     clearInvalidWorkplaces(w);
-    expect(worker.workplace, 'the workplace still stands').toBe(shop.id);
+    expect(workplace(w, worker), 'the workplace still stands').toBe(shop.id);
 
     w.buildings.remove(shop.id);
     clearInvalidWorkplaces(w);
-    expect(worker.workplace).toBeNull();
+    expect(workplace(w, worker)).toBeNull();
+    expect(w.citizens.workersOf(shop.id)).toBe(0);
   });
 });

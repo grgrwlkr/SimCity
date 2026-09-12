@@ -1,11 +1,12 @@
 // Port of the tests in crates/simcity_sim/src/game/citizens.rs, and of what they left untested: moving in, the day of
 // a citizen (TS: work in the morning, home after the shift, shopping in the evening near home, nobody out at night),
-// and the cars of citizens who left.
+// the cars of citizens who left, and the typed arrays and the minute queue of stage 3½b.
 import { describe, expect, it } from 'vitest';
 import { newBuilding, type Building } from '../src/buildings/building';
 import {
   CITIZEN_TRIP_TIMEOUT_SECS,
   NEAREST_SHOPS,
+  citizenSlot,
   citizenTripPlanner,
   cleanupHomelessCitizens,
   despawnOrphanedOwnedCars,
@@ -26,7 +27,7 @@ function home(w: World, anchor = t(5, 5), occupancy = 5): Building {
   return w.buildings.add(newBuilding({ kind: 'Residential', anchor, capacityResidents: 8, occupancyResidents: occupancy, targetOccupancyResidents: occupancy }));
 }
 
-const liveIds = (w: World) => w.citizens.all().map((c) => c.id);
+const view = (w: World, ref: number) => w.citizens.view(ref)!;
 
 /** Sets the clock to `day`, `hh:mm`. */
 function at(w: World, day: number, hour: number, minute = 0): void {
@@ -53,6 +54,15 @@ function arrive(w: World, citizen: number, purpose: 'Work' | 'Shop' | 'ReturnHom
 
 const inside = (b: Building, p: TilePos) => p.x >= b.anchor.x && p.x < b.anchor.x + b.width && p.y >= b.anchor.y && p.y < b.anchor.y + b.length;
 
+/** A home, a shop and a thousand of its workers leaving for work a minute apart in tens, 07:00 to 08:39. */
+function morningCrowd() {
+  const w = worldOn(new MapGrid(32, 16));
+  const house = home(w, t(2, 2));
+  const shop = w.buildings.add(newBuilding({ kind: 'Commercial', anchor: t(20, 2), capacityJobs: 5 }));
+  for (let i = 0; i < 1000; i++) w.citizens.add({ ...newCitizen(house, { workDeparture: 7 * 60 + (i % 100) }), workplace: shop.id });
+  return w;
+}
+
 describe('citizens', () => {
   it('recoverStuckTripsRevertsOrphanedButKeepsInProgressAndStable', () => {
     const w = worldOn(new MapGrid(16, 16));
@@ -65,10 +75,10 @@ describe('citizens', () => {
 
     recoverStuckTrips(w);
 
-    expect(stuck.state, 'an orphaned citizen in transit goes back home').toBe('AtHome');
-    expect(stuck.carParkedAt, 'with the car at home').toEqual(house.anchor);
-    expect(fresh.state, 'a trip within the timeout is left alone').toBe('ToWork');
-    expect(stable.state, 'a citizen in a stable state is never touched').toBe('AtWork');
+    expect(view(w, stuck).state, 'an orphaned citizen in transit goes back home').toBe('AtHome');
+    expect(view(w, stuck).carParkedAt, 'with the car at home').toEqual(house.anchor);
+    expect(view(w, fresh).state, 'a trip within the timeout is left alone').toBe('ToWork');
+    expect(view(w, stable).state, 'a citizen in a stable state is never touched').toBe('AtWork');
   });
 
   // TS: only a citizen whose trip has no car on the road and no place in the backlog is orphaned; Rust took every trip
@@ -79,30 +89,56 @@ describe('citizens', () => {
     const departed = -(CITIZEN_TRIP_TIMEOUT_SECS + 50);
     const driving = w.citizens.add({ ...newCitizen(house), state: 'ToWork', tripDepartedAtSec: departed, tripPurpose: 'Work' });
     const waiting = w.citizens.add({ ...newCitizen(house), state: 'ToShop', tripDepartedAtSec: departed, tripPurpose: 'Shop' });
-    spawnVehicle(w, { route: [t(0, 0)], passenger: { citizen: driving.id, purpose: 'Work' }, carOwner: driving.id });
-    w.tripBacklog.push({ citizen: waiting.id, from: t(1, 1), carParkedAt: t(1, 1), to: t(9, 9), purpose: 'Shop', mode: 'Car' });
+    spawnVehicle(w, { route: [t(0, 0)], passenger: { citizen: driving, purpose: 'Work' }, carOwner: driving });
+    w.tripBacklog.push({ citizen: waiting, from: t(1, 1), carParkedAt: t(1, 1), to: t(9, 9), purpose: 'Shop', mode: 'Car' });
 
     recoverStuckTrips(w);
 
-    expect(driving.state, 'a long trip in a jam is still a trip').toBe('ToWork');
-    expect(waiting.state, 'and so is one waiting for its car').toBe('ToShop');
+    expect(view(w, driving).state, 'a long trip in a jam is still a trip').toBe('ToWork');
+    expect(view(w, waiting).state, 'and so is one waiting for its car').toBe('ToShop');
   });
 
-  it('cleanupDespawnsOverCapacityCitizensHighestIdFirst', () => {
+  it('cleanupSendsTheSurplusAwayTheLastToMoveInFirst', () => {
     const w = worldOn(new MapGrid(16, 16));
     const house = home(w, t(5, 5), 5);
-    for (let i = 0; i < 5; i++) w.citizens.add(newCitizen(house));
+    const residents = Array.from({ length: 5 }, () => w.citizens.add(newCitizen(house)));
 
     cleanupHomelessCitizens(w);
-    expect(liveIds(w), 'no one leaves a building at its occupancy').toEqual([1, 2, 3, 4, 5]);
+    expect(w.citizens.refs(), 'no one leaves a building at its occupancy').toEqual(residents);
 
     house.occupancyResidents = 2;
     cleanupHomelessCitizens(w);
-    expect(liveIds(w), 'the surplus goes, highest ids first').toEqual([1, 2]);
+    expect(w.citizens.refs(), 'the surplus goes, the last to move in first').toEqual(residents.slice(0, 2));
+
+    // A newcomer takes a freed slot and is still the last to have moved in.
+    house.occupancyResidents = 3;
+    w.citizens.add(newCitizen(house));
+    house.occupancyResidents = 2;
+    cleanupHomelessCitizens(w);
+    expect(w.citizens.refs()).toEqual(residents.slice(0, 2));
 
     house.occupancyResidents = 0;
     cleanupHomelessCitizens(w);
-    expect(liveIds(w), 'an empty building keeps no residents').toEqual([]);
+    expect(w.citizens.refs(), 'an empty building keeps no residents').toEqual([]);
+    expect(w.citizens.residentsOf(house.id)).toBe(0);
+  });
+
+  it('aStaleCitizenRefResolvesToNothing', () => {
+    const w = worldOn(new MapGrid(16, 16));
+    const house = home(w, t(5, 5), 2);
+    const first = w.citizens.add(newCitizen(house));
+    const second = w.citizens.add(newCitizen(house));
+
+    w.citizens.remove(first);
+    expect(w.citizens.resolve(first), 'a citizen who left resolves to nothing').toBeUndefined();
+    expect(w.citizens.view(first)).toBeUndefined();
+
+    const newcomer = w.citizens.add(newCitizen(house));
+    expect(citizenSlot(newcomer), 'the newcomer takes the freed slot').toBe(citizenSlot(first));
+    expect(newcomer, 'under a new generation').not.toBe(first);
+    expect(w.citizens.resolve(first), 'and the old reference still resolves to nothing').toBeUndefined();
+    expect(w.citizens.refs(), 'citizens go in slot order').toEqual([newcomer, second]);
+    expect(w.citizens.count).toBe(2);
   });
 
   it('citizensMoveIntoOpenHomesUpToTheirOccupancyEightATick', () => {
@@ -111,11 +147,11 @@ describe('citizens', () => {
     w.buildings.add(newBuilding({ kind: 'Residential', anchor: t(10, 2), occupancyResidents: 5, phase: { kind: 'UnderConstruction', hoursRemaining: 1 } }));
 
     spawnCitizensFromResidential(w);
-    expect(w.citizens.all(), 'eight move in on the first tick').toHaveLength(8);
+    expect(w.citizens.count, 'eight move in on the first tick').toBe(8);
     spawnCitizensFromResidential(w);
-    expect(w.citizens.all().filter((c) => c.home === house.id), 'the rest on the next, and no one into a building site').toHaveLength(12);
-    expect(w.citizens.all()).toHaveLength(12);
-    const departures = w.citizens.all().map((c) => c.workDeparture);
+    expect(w.citizens.residentsOf(house.id), 'the rest on the next, and no one into a building site').toBe(12);
+    expect(w.citizens.count).toBe(12);
+    const departures = w.citizens.refs().map((ref) => view(w, ref).workDeparture);
     expect(departures.every((m) => m >= 6 * 60 && m < 9 * 60), `everyone leaves for work between 06:00 and 09:00: ${departures.join(' ')}`).toBe(true);
     expect(new Set(departures).size, 'and not all at once').toBeGreaterThan(1);
   });
@@ -128,21 +164,21 @@ describe('citizens', () => {
 
     expect(planAt(w, 1, 6), 'at six the worker is still at home').toEqual([]);
     expect(planAt(w, 1, 7, 30), 'and leaves at half past seven').toEqual([
-      { citizen: worker.id, from: house.anchor, carParkedAt: house.anchor, to: shop.anchor, purpose: 'Work', mode: 'Car' },
+      { citizen: worker, from: house.anchor, carParkedAt: house.anchor, to: shop.anchor, purpose: 'Work', mode: 'Car' },
     ]);
-    expect(worker.state).toBe('ToWork');
+    expect(view(w, worker).state).toBe('ToWork');
 
-    arrive(w, worker.id, 'Work', 1, 8, 10);
-    expect(worker.state).toBe('AtWork');
-    expect(worker.carParkedAt, 'the car stays where it was driven').toEqual(shop.anchor);
+    arrive(w, worker, 'Work', 1, 8, 10);
+    expect(view(w, worker).state).toBe('AtWork');
+    expect(view(w, worker).carParkedAt, 'the car stays where it was driven').toEqual(shop.anchor);
     expect(planAt(w, 1, 16, 9), 'eight hours after arriving the shift is not over a minute early').toEqual([]);
     expect(planAt(w, 1, 16, 10), 'and ends on the minute').toEqual([
-      { citizen: worker.id, from: shop.anchor, carParkedAt: shop.anchor, to: house.anchor, purpose: 'ReturnHome', mode: 'Car' },
+      { citizen: worker, from: shop.anchor, carParkedAt: shop.anchor, to: house.anchor, purpose: 'ReturnHome', mode: 'Car' },
     ]);
 
-    arrive(w, worker.id, 'ReturnHome', 1, 16, 40);
-    expect(worker.state).toBe('AtHome');
-    expect(worker.carParkedAt).toEqual(house.anchor);
+    arrive(w, worker, 'ReturnHome', 1, 16, 40);
+    expect(view(w, worker).state).toBe('AtHome');
+    expect(view(w, worker).carParkedAt).toEqual(house.anchor);
   });
 
   it('aWorkerAtHomeAtNightStaysHomeUntilTheirMorning', () => {
@@ -157,6 +193,27 @@ describe('citizens', () => {
     }
     expect(night, 'nobody sets out between eleven at night and seven').toEqual([]);
     expect(planAt(w, 2, 7).map((trip) => trip.purpose)).toEqual(['Work']);
+  });
+
+  it('thePlannerWakesOnlyCitizensWhoseMinuteHasCome', () => {
+    const w = morningCrowd();
+    planAt(w, 1, 6);
+
+    expect(planAt(w, 1, 7), 'ten of a thousand leave at seven').toHaveLength(10);
+    expect(w.citizens.plannerWoken, 'and only they are looked at').toBe(10);
+    expect(planAt(w, 1, 7, 1)).toHaveLength(10);
+    expect(w.citizens.plannerWoken).toBe(10);
+  });
+
+  it('missedMinutesAreCaughtUpInOrder', () => {
+    const w = morningCrowd();
+    planAt(w, 1, 6);
+
+    const trips = planAt(w, 1, 7, 30);
+    const departures = trips.map((trip) => view(w, trip.citizen).workDeparture);
+    expect(trips, 'the planner skipped from six to half past seven: thirty-one minutes of departures').toHaveLength(310);
+    expect(departures, 'in the order of their minutes').toEqual([...departures].sort((a, b) => a - b));
+    expect([departures[0], departures.at(-1)]).toEqual([7 * 60, 7 * 60 + 30]);
   });
 
   // TS: a shopper goes to one of the shops nearest home, and only in the evening after work; Rust sent them to any shop
@@ -178,7 +235,7 @@ describe('citizens', () => {
     expect(shopping.length, 'most do not').toBeLessThan(workers.length / 2);
     expect(shopping.every(([minute]) => minute >= 17 * 60 && minute < 20 * 60), 'between five and eight in the evening').toBe(true);
     for (const [, trip] of shopping) {
-      const from = w.citizens.get(trip.citizen)!.home === west.id ? west : east;
+      const from = view(w, trip.citizen).home === west.id ? west : east;
       const nearest = [...shops].sort((a, b) => Math.abs(a.anchor.x - from.anchor.x) - Math.abs(b.anchor.x - from.anchor.x)).slice(0, NEAREST_SHOPS);
       expect(nearest.some((shop) => inside(shop, trip.to)), `a shop near (${from.anchor.x},${from.anchor.y}), not (${trip.to.x},${trip.to.y})`).toBe(true);
     }
@@ -197,7 +254,7 @@ describe('citizens', () => {
 
     const trip = planAt(w, 1, 7)[0]!;
 
-    expect(trip.citizen).toBe(worker.id);
+    expect(trip.citizen).toBe(worker);
     expect(inside(house, trip.from) && inside(house, trip.carParkedAt!), 'the trip leaves from the home').toBe(true);
     expect(adjacentRoadTowards(w.grid, trip.carParkedAt!, trip.to), 'from a tile beside the road').toBeDefined();
     expect(inside(shop, trip.to), 'to the workplace').toBe(true);
@@ -207,17 +264,17 @@ describe('citizens', () => {
   it('aLateArrivalOfAnAbandonedTripChangesNothing', () => {
     const w = worldOn(new MapGrid(16, 16));
     const worker = w.citizens.add(newCitizen(home(w)));
-    arrive(w, worker.id, 'Work', 1, 9);
-    expect(worker.state).toBe('AtHome');
+    arrive(w, worker, 'Work', 1, 9);
+    expect(view(w, worker).state).toBe('AtHome');
   });
 
   it('theParkedCarOfACitizenWhoLeftIsRemovedAndOneOnTheRoadWhenItParks', () => {
     const w = worldOn(new MapGrid(16, 16));
     const house = home(w, t(5, 5), 2);
     const [first, second] = [w.citizens.add(newCitizen(house)), w.citizens.add(newCitizen(house))];
-    const parked = spawnVehicle(w, { route: [t(0, 0)], carOwner: second.id });
+    const parked = spawnVehicle(w, { route: [t(0, 0)], carOwner: second });
     w.vehicles.parked[refSlot(w.vehicles, parked)] = 1;
-    const driving = spawnVehicle(w, { route: [t(1, 0)], carOwner: first.id });
+    const driving = spawnVehicle(w, { route: [t(1, 0)], carOwner: first });
 
     house.occupancyResidents = 0;
     cleanupHomelessCitizens(w);
