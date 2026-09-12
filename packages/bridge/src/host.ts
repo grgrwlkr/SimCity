@@ -35,6 +35,7 @@ import {
 } from './protocol';
 import { RenderWriter, createRenderBuffer } from './renderBuffer';
 import { debugOverlayOf, renderLayersOf } from './renderLayers';
+import type { ScenarioName } from './scenarios';
 
 /** A scenario the host feeds before every tick; one with commuters also reports them. */
 interface HostScenario {
@@ -44,6 +45,16 @@ interface HostScenario {
 
 /** `?scenario=city`: commuters, their departures spread over five minutes, a stay of two to six. */
 const CITY_COMMUTE = { citizens: 2000, departureWindowTicks: 3000, stayTicks: [1200, 3600] } as const;
+
+/** A builder for every scenario of the menu: a listed name without one fails the typecheck. */
+const SCENARIO_BUILDERS: Readonly<Record<ScenarioName, (w: World) => HostScenario>> = {
+  city: (w) => {
+    const plan = buildCity(w);
+    return new CityCommuteScenario(w, { ...CITY_COMMUTE, homes: plan.homes, workplaces: plan.workplaces });
+  },
+  signalizedCross: (w) => new SignalizedCrossScenario(w, undefined, CROSS_LAYOUT.signalizedCross),
+  signalizedCross4: (w) => new SignalizedCrossScenario(w, undefined, CROSS_LAYOUT.signalizedCross4),
+};
 
 export class SimHost {
   readonly render: SharedArrayBuffer;
@@ -108,12 +119,7 @@ export class SimHost {
       case 'debugOverlay':
         return debugOverlayOf(this.world);
       case 'scenario':
-        if (req.name === 'city') {
-          const plan = buildCity(this.world);
-          this.scenario = new CityCommuteScenario(this.world, { ...CITY_COMMUTE, homes: plan.homes, workplaces: plan.workplaces });
-        } else {
-          this.scenario = new SignalizedCrossScenario(this.world, undefined, CROSS_LAYOUT[req.name]);
-        }
+        this.scenario = SCENARIO_BUILDERS[req.name](this.world);
         return null;
     }
   }

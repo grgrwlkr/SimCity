@@ -1,4 +1,4 @@
-import type { SimSpeed, TrafficView } from '@simcity/bridge';
+import { SCENARIOS, type Scenario, type SimSpeed, type TrafficView } from '@simcity/bridge';
 import type { AppState } from '@simcity/sim';
 import { useEffect } from 'react';
 import { useSimStore } from './store';
@@ -6,6 +6,8 @@ import { useSimStore } from './store';
 export interface HudActions {
   setState(state: AppState): void;
   setSpeed(speed: SimSpeed): void;
+  /** The link that opens a scenario: a fresh page, so nothing of the current world carries over. */
+  scenarioHref(scenario: Scenario): string;
 }
 
 const SPEEDS: ReadonlyArray<readonly [SimSpeed, string]> = [
@@ -78,6 +80,15 @@ export function Hud({ actions }: { actions: HudActions }) {
           Новая игра
         </button>
         <p className="hint">Enter — начать</p>
+        <nav className="scenarios" aria-label="Сценарии">
+          <h2>Сценарии</h2>
+          {SCENARIOS.map((scenario) => (
+            <a key={scenario.name} className="scenario" href={actions.scenarioHref(scenario)}>
+              <strong>{scenario.title}</strong>
+              <span>{scenario.description}</span>
+            </a>
+          ))}
+        </nav>
       </main>
     );
   }

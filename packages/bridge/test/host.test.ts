@@ -13,6 +13,7 @@ import { loadTestCity } from '../../sim/test/testCity';
 import { SimHost } from '../src/host';
 import { GRID_LAYER_NAMES, type GridLayers } from '../src/protocol';
 import { RenderReader } from '../src/renderBuffer';
+import { SCENARIOS } from '../src/scenarios';
 
 describe('SimHost', () => {
   it('stepRepliesWithTheFingerprintOfTheSameRunInProcess', () => {
@@ -181,6 +182,18 @@ describe('SimHost', () => {
     expect(mapEditVersion, 'the cross is on the map').toBeGreaterThan(0);
     expect(lights).toEqual([{ minX: 40, minY: 40, maxX: 41, maxY: 41, phase: expect.any(String) }]);
   });
+
+  it('everyScenarioOfTheMenuStartsInTheHost', () => {
+    for (const { name } of SCENARIOS) {
+      const host = new SimHost(4096);
+      host.handle({ t: 'setState', state: 'InGame' });
+      host.handle({ t: 'scenario', name });
+      host.handle({ t: 'step', ticks: 20 });
+      const { mapEditVersion, lights } = host.handle({ t: 'snapshot' });
+      expect(mapEditVersion, `${name} builds its map`).toBeGreaterThan(0);
+      expect(lights.length, `${name} lights its crossings`).toBeGreaterThan(0);
+    }
+  }, 60_000);
 
   it('snapshotReportsCitizensTrafficAndTickCost', () => {
     const host = new SimHost(4096);

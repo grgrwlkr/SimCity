@@ -1,6 +1,7 @@
 // Worker ↔ main thread messages. Requests carry an id so `window.__sim` can await each reply.
 import type { AppState, City, LightPhase, ManeuverKind, MapCell, MapGrid, TilePos, TrafficSummary } from '@simcity/sim';
 import type { SimSpeed } from './driver';
+import type { ScenarioName } from './scenarios';
 
 /** A traffic light by the tile bounds of its intersection box. */
 export interface TrafficLightView {
@@ -117,7 +118,7 @@ export type Request =
   | { readonly t: 'debugVehicles'; readonly vehicles: readonly DebugVehicle[] }
   | { readonly t: 'debugOverlay' }
   /** Build a scenario into the world; the host feeds it before every fixed tick from then on. */
-  | { readonly t: 'scenario'; readonly name: 'signalizedCross' | 'signalizedCross4' | 'city' };
+  | { readonly t: 'scenario'; readonly name: ScenarioName };
 
 export interface ReplyByRequest {
   readonly cmd: null;

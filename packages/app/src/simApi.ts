@@ -5,6 +5,7 @@ import {
   type FingerprintReply,
   type GridLayerName,
   type GridLayers,
+  type ScenarioName,
   type SimClient,
   type SimSpeed,
   type WorldSnapshot,
@@ -57,7 +58,7 @@ export interface SimApi {
   pickTile(x: number, y: number): Promise<TilePos | null>;
   renderStats(): Promise<RenderStats>;
   /** Build a scenario into the running world (`?scenario=signalized` does this on load). */
-  scenario(name: 'signalizedCross' | 'signalizedCross4' | 'city'): Promise<null>;
+  scenario(name: ScenarioName): Promise<null>;
 }
 
 declare global {

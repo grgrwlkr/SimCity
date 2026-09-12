@@ -3,6 +3,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { existsSync, readFileSync } from 'node:fs';
 import type { CameraState } from '../packages/app/src/simApi';
+import { SCENARIOS } from '../packages/bridge/src/scenarios';
 import { CLASS_COLORS, VEHICLE_COLORS, layoutClass, tileClass, type LayoutClass, type TileClass } from '../packages/render/src/palette';
 import { tileToWorld } from '../packages/sim/src/index';
 const readJson = <T,>(path: string): T => JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8')) as T;
@@ -208,6 +209,39 @@ test('hudShowsCityStats', async ({ page }) => {
     .poll(async () => Number((await page.getByTestId('driving').textContent())?.replace(/\D/g, '')), { timeout: 30_000 })
     .toBeGreaterThan(0);
   await expect(page.getByTestId('sim-tick')).toHaveText(/^сим \d+(,\d)? мс$/);
+});
+
+// The main menu lists every scenario the app knows, so nobody has to remember the links.
+test('mainMenuOffersEveryScenario', async ({ page }, testInfo) => {
+  await page.goto('/?debug=1');
+  await page.waitForFunction(() => typeof window.__sim !== 'undefined');
+  const scenarios = page.getByRole('navigation', { name: 'Сценарии' });
+  await expect(scenarios.getByRole('link')).toHaveCount(SCENARIOS.length);
+  for (const s of SCENARIOS) {
+    await expect(scenarios.getByRole('link', { name: s.title }), 'the debug flag survives the jump').toHaveAttribute(
+      'href',
+      `?scenario=${s.query}&debug=1`,
+    );
+  }
+  await page.screenshot({ path: testInfo.outputPath('menu.png') });
+
+  await page.goto('/');
+  await page.getByRole('navigation', { name: 'Сценарии' }).getByRole('link', { name: 'Город' }).click();
+  await expect(page).toHaveURL(/\/\?scenario=city$/);
+  await expect(page.getByTestId('citizens')).toHaveText(/^Жители 2\s000$/, { timeout: 30_000 });
+
+  await page.getByRole('button', { name: 'В меню' }).click();
+  await expect(page.getByRole('navigation', { name: 'Сценарии' }).getByRole('link')).toHaveCount(SCENARIOS.length);
+});
+
+// A scenario link opens in the same tab. WebKit revalidated the worker script, got a 304 without COEP
+// and refused the worker, so the second page hung on "Запуск симуляции…".
+test('aSecondPageInTheSameTabStartsTheSim', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('navigation', { name: 'Сценарии' })).toBeVisible();
+  await page.goto('/?scenario=signalized');
+  await page.waitForFunction(() => typeof window.__sim !== 'undefined');
+  await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.lights), { timeout: 15_000 }).toBe(4);
 });
 
 // ПДД 6.3: the protected left is a green arrow beside a red main signal, on both approaches of its axis.

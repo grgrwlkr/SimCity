@@ -1,6 +1,6 @@
-import { RenderReader, SimClient, type WorldSnapshot } from '@simcity/bridge';
+import { RenderReader, SimClient, scenarioByQuery, type WorldSnapshot } from '@simcity/bridge';
 import { DebugRenderer, installViewControls } from '@simcity/render';
-import { CROSS_LAYOUT, SIGNALIZED_CROSS, crossBoxSize, tileToWorld, type CrossScenarioName, type MapConfig } from '@simcity/sim';
+import { SIGNALIZED_CROSS, crossBoxSize, tileToWorld, type MapConfig } from '@simcity/sim';
 import { Hud, useSimStore, type HudActions } from '@simcity/ui';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -13,12 +13,9 @@ if (!crossOriginIsolated) {
 
 const params = new URLSearchParams(location.search);
 const debug = params.get('debug') === '1';
-/** `?scenario=signalized` (two lanes) or `?scenario=signalized4` (four): a lit cross with traffic, the camera on its box. */
-const SCENARIOS: Readonly<Record<string, CrossScenarioName>> = { signalized: 'signalizedCross', signalized4: 'signalizedCross4' };
-const scenario = SCENARIOS[params.get('scenario') ?? ''] ?? null;
-/** `?scenario=city`: commuters in their own cars on a generated city, the whole map in view. */
-const city = params.get('scenario') === 'city';
-let focusPending = scenario !== null;
+/** `?scenario=<query>`: a scenario of the main menu, built on load; a lit cross opens with the camera on its box. */
+const scenario = scenarioByQuery(params.get('scenario'));
+let focusPending = scenario?.cross !== undefined;
 const canvas = document.getElementById('view');
 if (!(canvas instanceof HTMLCanvasElement)) throw new Error('canvas#view is missing from index.html');
 
@@ -57,11 +54,12 @@ function syncRender(snapshot: WorldSnapshot): void {
     r.setLights(snapshot.lights);
     // The scenario's map is on screen: centre its box and show the whole cross, once the canvas has a
     // size (registered after the first fit, so it runs after it).
-    if (focusPending && scenario !== null && mapConfig !== null && (shownMapEditVersion ?? 0) > 0) {
+    const cross = scenario?.cross;
+    if (focusPending && cross !== undefined && mapConfig !== null && (shownMapEditVersion ?? 0) > 0) {
       focusPending = false;
       const cfg = mapConfig;
       // `tileToWorld` is a tile centre: the box centre lies (size − 1) / 2 tiles past its first tile.
-      const toCentre = ((crossBoxSize(CROSS_LAYOUT[scenario]) - 1) / 2) * cfg.tileSize;
+      const toCentre = ((crossBoxSize(cross) - 1) / 2) * cfg.tileSize;
       void r.whenSized().then(() => {
         const { width, height } = r.view.viewport;
         const box = tileToWorld(cfg, SIGNALIZED_CROSS.box);
@@ -89,12 +87,9 @@ client.onFrame((snapshot) => {
 });
 void api.ready
   .then(async () => {
-    if (scenario !== null) {
+    if (scenario !== undefined) {
       await api.setState('InGame');
-      await api.scenario(scenario);
-    } else if (city) {
-      await api.setState('InGame');
-      await api.scenario('city');
+      await api.scenario(scenario.name);
     }
     return api.snapshot();
   })
@@ -106,6 +101,11 @@ void api.ready
 const actions: HudActions = {
   setState: (state) => void api.setState(state),
   setSpeed: (speed) => void api.setSpeed(speed),
+  scenarioHref: (s) => {
+    const query = new URLSearchParams({ scenario: s.query });
+    if (debug) query.set('debug', '1');
+    return `?${query.toString()}`;
+  },
 };
 
 const root = document.getElementById('root');
