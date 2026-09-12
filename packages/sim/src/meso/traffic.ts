@@ -75,6 +75,8 @@ export class MesoTraffic {
   atRed = new Uint8Array(0);
   /** The tile along its link the car entered at: its start for the first link, 0 after. */
   fromOffset = new Uint16Array(0);
+  /** The link the car left for the one it is on; -1 on its first link. The renderer draws it across the box between. */
+  prevLink = new Int32Array(0);
   /** Bumps every time the slot takes a new car, so a drawn car is not mistaken for the one before it. */
   generation = new Uint32Array(0);
   /** The route as successor indices of the meso graph, and how far along it the car is. */
@@ -146,6 +148,7 @@ function growCars(m: MesoTraffic): void {
   m.atRed = grown(m.atRed, 0);
   m.routeCursor = grown(m.routeCursor, 0);
   m.fromOffset = grown(m.fromOffset, 0);
+  m.prevLink = grown(m.prevLink, -1);
   m.generation = grown(m.generation, 0);
 }
 
@@ -309,6 +312,7 @@ function spawn(w: World, trip: TripRequested): 'spawned' | 'wait' | 'dropped' {
   m.heldSince[car] = NaN;
   m.atRed[car] = 0;
   m.fromOffset[car] = startOffset;
+  m.prevLink[car] = -1;
   m.generation[car]! += 1;
   const tiles = straight ? goalOffset - startOffset : g.length[startLink]! - startOffset;
   enqueue(m, car, startLink, m.nowSec, m.nowSec + tiles * secondsPerTile(w, startLink));
@@ -367,6 +371,7 @@ function leave(w: World, link: number, now: number, lights: ReadonlyMap<number, 
   m.heldSince[car] = NaN;
   m.routeCursor[car] = cursor + 1;
   m.fromOffset[car] = 0;
+  m.prevLink[car] = link;
   const entered = now + g.succBoxTiles[k]! * boxSeconds(w);
   const tiles = cursor + 1 >= route.length ? m.goalOffset[car]! : g.length[next]!;
   enqueue(m, car, next, entered, entered + tiles * secondsPerTile(w, next));

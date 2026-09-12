@@ -251,7 +251,7 @@ function hashMeso(h: Fnv64, w: World): void {
   h.str(stableJson(m.stats));
   h.u32(m.highWater);
   h.u32(m.count);
-  for (const layer of [m.citizen, m.purpose, m.link, m.enterSec, m.readySec, m.goalLink, m.goalOffset, m.next, m.heldSince, m.atRed, m.routeCursor, m.fromOffset, m.generation]) {
+  for (const layer of [m.citizen, m.purpose, m.link, m.enterSec, m.readySec, m.goalLink, m.goalOffset, m.next, m.heldSince, m.atRed, m.routeCursor, m.fromOffset, m.prevLink, m.generation]) {
     h.bytes(layer.subarray(0, m.highWater));
   }
   h.u32(m.freeSlots.length);
