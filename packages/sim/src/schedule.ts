@@ -14,7 +14,9 @@ import { applyDailyEconomy } from './economy/economy';
 import { updateServiceCoverage } from './services/coverage';
 import { beginTickEvents } from './events';
 import { detectIntersections } from './intersections/index';
+import { computeLandValue } from './landValue';
 import { applyGameCommandsToGrid } from './map/apply';
+import { computePollution } from './pollution';
 import { resetGrowthRngOnNewMap, resetSimRngOnNewMap } from './seeding';
 import { ALL_STATES, IN_GAME, IN_GAME_OR_PAUSED, type AppState } from './state';
 import { SECOND_NS } from './timer';
@@ -122,10 +124,14 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'resolveStuckVehicles', run: resolveStuckVehicles, runIn: IN_GAME },
   // PostSimStep::TrafficIndex: the end-of-tick metrics RCI demand reads.
   { name: 'updateTrafficIndex', run: updateTrafficIndex, runIn: IN_GAME },
+  // PostSimStep::Pollution: one chunk from the open factories of this tick; land value reads it below.
+  { name: 'computePollution', run: computePollution, runIn: IN_GAME },
   // PostSimStep::Coverage: after this tick's map edits and buildings; land value and the daily economy read it.
   { name: 'updateServiceCoverage', run: updateServiceCoverage, runIn: IN_GAME },
   // PostSimStep::Utilities: after this tick's buildings and map edits; growth reads it next tick.
   { name: 'updateUtilityNetwork', run: updateUtilityNetwork, runIn: IN_GAME },
+  // PostSimStep::LandValue: one chunk from the pollution and coverage above, the traffic heat and the city fields.
+  { name: 'computeLandValue', run: computeLandValue, runIn: IN_GAME },
   // PostSimStep::Economy, last of PostSim: the day's taxes from the occupancy of the day before, upkeep of what is
   // open, happiness from the coverage above.
   { name: 'applyDailyEconomy', run: applyDailyEconomy, runIn: IN_GAME },

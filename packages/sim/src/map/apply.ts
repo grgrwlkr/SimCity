@@ -202,6 +202,10 @@ function applyGenerateMap(w: World, seed: bigint): void {
   generateMapIntoGrid(w.grid, w.mapSeed);
   // History was recorded against the old grid; restoring it would stamp stale cells into the new map.
   w.history.clear();
+  // Derived fields of the old city would feed growth and land value for a whole recompute pass.
+  w.pollution.resetValues();
+  w.landValue.resetValues();
+  w.cityFields.resetValues();
   w.dirty.markAll();
   w.roadDirty.markAll();
   bumpMapEdit(w);

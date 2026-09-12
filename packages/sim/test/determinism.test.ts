@@ -158,6 +158,8 @@ describe('determinism', () => {
       ['serviceFunding', (w) => w.serviceFunding.set('Fire', 60)],
       ['loans', (w) => void w.loans.active.push({ principal: 10_000, monthlyPayment: 889, monthsLeft: 12 })],
       ['serviceCoverage', (w) => void (w.serviceCoverage.fire = 0.5)],
+      ['pollution', (w) => void (w.pollution.currentChunk = 1)],
+      ['landValue.currentChunk', (w) => void (w.landValue.currentChunk = 1)],
     );
 
     for (const [label, mutate] of mutations) {

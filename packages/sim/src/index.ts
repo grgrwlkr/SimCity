@@ -14,6 +14,7 @@ export * from './demand';
 export * from './economy/economy';
 export * from './economy/wealth';
 export * from './landValue';
+export * from './pollution';
 export * from './services/coverage';
 export * from './services/stations';
 export * from './utilities';

@@ -6,6 +6,7 @@ import { CityFields } from './cityFields';
 import { emptyDemand, type RciDemand } from './demand';
 import { BudgetLedger, ECONOMY_CONFIG, Loans, ServiceFunding, TaxRates, type EconomyConfig } from './economy/economy';
 import { LandValueIndex } from './landValue';
+import { PollutionIndex } from './pollution';
 import { ServiceCoverageIndex } from './services/coverage';
 import { UtilityNetwork, UtilitySupply } from './utilities';
 import type { GameCommand } from './commands';
@@ -135,8 +136,10 @@ export interface World {
   rciDemand: RciDemand;
   /** `CityFields`; computed from stage 3c on, unmeasured until then. */
   cityFields: CityFields;
-  /** `LandValueIndex`; computed from stage 3b on. */
+  /** `LandValueIndex`, 64 tiles a tick. */
   readonly landValue: LandValueIndex;
+  /** `PollutionIndex`, 32 tiles a tick. */
+  readonly pollution: PollutionIndex;
   /** `EconomyConfig`: a constant until the RON loader; tests replace it whole. */
   economyConfig: EconomyConfig;
   /** `BudgetLedger`: every dollar in or out of the treasury is a line of it. */
@@ -219,6 +222,7 @@ export function createWorld(options: WorldOptions = {}): World {
     rciDemand: emptyDemand(),
     cityFields: new CityFields(),
     landValue: new LandValueIndex(),
+    pollution: new PollutionIndex(),
     economyConfig: ECONOMY_CONFIG,
     budget: new BudgetLedger(),
     taxRates: new TaxRates(),

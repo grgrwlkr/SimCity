@@ -39,6 +39,11 @@ export const HEALTH_FOR_LEVEL_THREE = 0.5;
 /** Mean education over a workplace's footprint it needs to take the high class. */
 export const EDUCATION_FOR_HIGH_JOBS = f32(0.45);
 
+/** The land value crime above what a district tolerates takes off a tile. */
+export function crimeLandValuePenalty(crime: number): number {
+  return f32(Math.max(f32(crime - CRIME_TOLERATED), 0) * CRIME_LAND_VALUE_WEIGHT);
+}
+
 export class CityFields {
   private readonly layers = new Map<CityField, Float32Array>(CITY_FIELDS.map((field) => [field, new Float32Array(0)]));
   /** Bumps once per published chunk. */

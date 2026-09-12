@@ -191,7 +191,11 @@ function hashBuildings(h: Fnv64, w: World): void {
   h.int(w.cityFields.version);
   for (const field of CITY_FIELDS) h.bytes(w.cityFields.values(field));
   h.int(w.landValue.version);
+  h.u32(w.landValue.currentChunk);
   h.bytes(w.landValue.values);
+  h.int(w.pollution.version);
+  h.u32(w.pollution.currentChunk);
+  h.bytes(w.pollution.values);
 }
 
 /** The economy config, the budget ledger, rates, funding, loans and the service coverage the economy reads. */
