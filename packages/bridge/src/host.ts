@@ -2,6 +2,7 @@
 // globals, so the whole request path runs under Vitest.
 import {
   bumpVersion,
+  CityCommuteScenario,
   createWorld,
   CROSS_LAYOUT,
   despawnVehicle,
@@ -39,7 +40,7 @@ export class SimHost {
   private readonly driver: FixedStepDriver;
   private readonly writer: RenderWriter;
   private lastReported: string | null = null;
-  private scenario: SignalizedCrossScenario | null = null;
+  private scenario: { advance(w: World): void } | null = null;
 
   constructor(renderCapacity: number) {
     this.world = createWorld();
@@ -92,7 +93,12 @@ export class SimHost {
       case 'debugOverlay':
         return debugOverlayOf(this.world);
       case 'scenario':
-        this.scenario = new SignalizedCrossScenario(this.world, undefined, CROSS_LAYOUT[req.name]);
+        if (req.name === 'cityCommute') {
+          const keys = req.trafficLightKeys;
+          this.scenario = new CityCommuteScenario(this.world, keys === undefined ? {} : { trafficLightKeys: keys });
+        } else {
+          this.scenario = new SignalizedCrossScenario(this.world, undefined, CROSS_LAYOUT[req.name]);
+        }
         return null;
     }
   }

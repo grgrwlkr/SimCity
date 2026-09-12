@@ -71,6 +71,9 @@ class RenderBufferViews {
   }
 }
 
+/** The kind a parked vehicle is published with, whatever its own kind: the renderer draws it apart from traffic. */
+export const PARKED_VEHICLE_KIND = 4;
+
 export class RenderWriter extends RenderBufferViews {
   /** Packs the live vehicles into the inactive frame, then makes it the active one. */
   publish(tick: number, vehicles: VehicleLayers): void {
@@ -84,7 +87,7 @@ export class RenderWriter extends RenderBufferViews {
       target.x[count] = vehicles.x[slot]!;
       target.y[count] = vehicles.y[slot]!;
       target.heading[count] = vehicles.heading[slot]!;
-      target.kind[count] = vehicles.kind[slot]!;
+      target.kind[count] = vehicles.parked[slot] === 1 ? PARKED_VEHICLE_KIND : vehicles.kind[slot]!;
       count += 1;
     }
     target.header[0] = tick;

@@ -1,6 +1,6 @@
 import { createWorld } from '@simcity/sim';
 import { describe, expect, it } from 'vitest';
-import { RenderReader, RenderWriter, createRenderBuffer, frameByteRange } from '../src/renderBuffer';
+import { PARKED_VEHICLE_KIND, RenderReader, RenderWriter, createRenderBuffer, frameByteRange } from '../src/renderBuffer';
 
 function worldWithVehicles(slots: readonly number[]) {
   const w = createWorld();
@@ -35,6 +35,21 @@ describe('render SharedArrayBuffer', () => {
     expect(Array.from(out.y.subarray(0, 2))).toEqual([4, 10]);
     expect(Array.from(out.heading.subarray(0, 2))).toEqual([Math.fround(0.2), Math.fround(0.5)]);
     expect(Array.from(out.kind.subarray(0, 2))).toEqual([2, 2]);
+  });
+
+  it('parkedVehiclesArePublishedAsParked', () => {
+    // A parked car stands on its lane: drawn like a driving one, a parking lot reads as a jam.
+    const sab = createRenderBuffer(16);
+    const writer = new RenderWriter(sab);
+    const reader = new RenderReader(sab);
+    const out = reader.allocate();
+    const w = worldWithVehicles([1, 2]);
+    w.vehicles.parked[2] = 1;
+
+    writer.publish(1, w.vehicles);
+    reader.readInto(out);
+
+    expect(Array.from(out.kind.subarray(0, 2))).toEqual([1, PARKED_VEHICLE_KIND]);
   });
 
   it('publishingWritesTheFrameTheReaderDoesNotHold', () => {

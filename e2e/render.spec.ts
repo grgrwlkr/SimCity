@@ -186,6 +186,18 @@ test('signalizedScenarioShowsTrafficLive', async ({ page }, testInfo) => {
   await page.locator('#view').screenshot({ path: testInfo.outputPath('signalized.png') });
 });
 
+// Stage 2c live: commuters drive their own cars across the test city and its six lit intersections.
+test('cityScenarioDrivesCommutersLive', async ({ page }, testInfo) => {
+  await page.goto('/?scenario=city');
+  await page.waitForFunction(() => typeof window.__sim !== 'undefined');
+  await page.evaluate(() => window.__sim.ready);
+
+  await expect
+    .poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => ({ driving: s.vehicles > 20, lamps: s.lights })), { timeout: 30_000 })
+    .toEqual({ driving: true, lamps: 24 });
+  await page.locator('#view').screenshot({ path: testInfo.outputPath('city.png') });
+});
+
 // ПДД 6.3: the protected left is a green arrow beside a red main signal, on both approaches of its axis.
 test('protectedLeftShowsAGreenArrow', async ({ page }, testInfo) => {
   await page.goto('/?scenario=signalized');

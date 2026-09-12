@@ -105,7 +105,12 @@ export type Request =
   | { readonly t: 'debugVehicles'; readonly vehicles: readonly DebugVehicle[] }
   | { readonly t: 'debugOverlay' }
   /** Build a scenario into the world; the host feeds it before every fixed tick from then on. */
-  | { readonly t: 'scenario'; readonly name: 'signalizedCross' | 'signalizedCross4' };
+  | {
+      readonly t: 'scenario';
+      readonly name: 'signalizedCross' | 'signalizedCross4' | 'cityCommute';
+      /** `cityCommute` on a grid loaded without its lights: the cluster keys of the lit intersections. */
+      readonly trafficLightKeys?: readonly string[];
+    };
 
 export interface ReplyByRequest {
   readonly cmd: null;
