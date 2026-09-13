@@ -284,6 +284,21 @@ describe('citizens', () => {
     expect(planAt(w, 2, 7).map((trip) => trip.purpose)).toEqual(['Work']);
   });
 
+  // At four in the morning the whole city planned its next day in one tick: 22 ms for five thousand, seconds for a million.
+  it('tomorrowIsPlannedAFewCitizensAMinuteOverTheSmallHours', () => {
+    const w = plainDays(worldOn(new MapGrid(32, 16)));
+    const house = w.buildings.add(newBuilding({ kind: 'Residential', anchor: t(2, 2), capacityResidents: 2000, occupancyResidents: 1200 }));
+    const refs = Array.from({ length: 1200 }, () => w.citizens.add(newCitizen(house)));
+    planAt(w, 1, 20);
+
+    const minutes = refs.map((ref) => view(w, ref).nextAt!);
+    const perMinute = new Map<number, number>();
+    for (const minute of minutes) perMinute.set(minute, (perMinute.get(minute) ?? 0) + 1);
+    expect(Math.min(...minutes), 'not before one in the morning').toBeGreaterThanOrEqual(24 * 60 + 60);
+    expect(Math.max(...minutes), 'and done before five').toBeLessThan(24 * 60 + 5 * 60);
+    expect(Math.max(...perMinute.values()), 'a handful a minute').toBeLessThanOrEqual(10);
+  });
+
   it('thePlannerWakesOnlyCitizensWhoseMinuteHasCome', () => {
     const w = morningCrowd();
     planAt(w, 1, 6);

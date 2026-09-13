@@ -59,8 +59,8 @@ const NEAREST_PLACES = 3;
 const FREE_MORNING_LEAVE = [9 * 60, 11 * 60 + 30] as const;
 const FREE_AFTERNOON_LEAVE = [14 * 60, 17 * 60] as const;
 const EVENING_OUTING_LEAVE = [19 * 60, 21 * 60] as const;
-/** A citizen with nothing more to do today plans tomorrow at four in the morning. */
-const DAY_PLAN_MINUTE = 4 * 60;
+/** A citizen with nothing more to do today plans tomorrow in the small hours, 01:00 to 05:00, by their slot: a few a minute. */
+const DAY_PLAN_WINDOW = [60, 5 * 60] as const;
 /** A tour more than this late when its citizen gets home is dropped rather than started. */
 const LATE_TOUR_MINUTES = 60;
 /** Stops an agenda holds, the ways home included. */
@@ -904,7 +904,7 @@ function skipTour(w: World, slot: number): void {
 /**
  * The next move of a citizen at home: today's agenda is planned when it is not yet, then the next tour of it leaves at
  * its minute — at once if it is late by less than `LATE_TOUR_MINUTES`, dropped if later. With no tour left the citizen
- * plans tomorrow at four in the morning. A re-plan never lands on `now`.
+ * plans tomorrow in the small hours, at a minute of their own. A re-plan never lands on `now`.
  */
 function planNext(w: World, slot: number, now: number, replan: boolean): void {
   const c = w.citizens;
@@ -928,7 +928,8 @@ function planNext(w: World, slot: number, now: number, replan: boolean): void {
     c.schedule(slot, Math.max(leave < 0 ? now : dayStart + leave, earliest), TRIP_PURPOSES[c.agendaPurpose[base + cursor]!]!);
     return;
   }
-  c.schedule(slot, Math.max(dayStart + MINUTES_PER_DAY + DAY_PLAN_MINUTE, earliest), null);
+  const planMinute = DAY_PLAN_WINDOW[0] + (slot % (DAY_PLAN_WINDOW[1] - DAY_PLAN_WINDOW[0]));
+  c.schedule(slot, Math.max(dayStart + MINUTES_PER_DAY + planMinute, earliest), null);
 }
 
 /** The trip ends at game minute `minute`: at a stop until its stay is over, or at home with the rest of the day to plan. */
