@@ -79,6 +79,12 @@ const STATIONS: ReadonlyArray<readonly [BuildingKind, number, number]> = [
   ['WaterPump', 100, 86],
 ];
 
+/** Somewhere to go besides work and the shops: a park by the pond, a café downtown. */
+const VENUES: ReadonlyArray<readonly [BuildingKind, number, number]> = [
+  ['Park', 88, 45],
+  ['Cafe', 41, 52],
+];
+
 function riverShift(x: number): number {
   const t = x % 16;
   return t < 4 ? 0 : t < 8 ? 1 : t < 12 ? 0 : -1;
@@ -142,7 +148,7 @@ export function buildCity(w: World, options: CityOptions = {}): CityPlan {
   applyGameCommandsToGrid(w, roads);
   applyGameCommandsToGrid(w, zones);
   w.city.money = money;
-  if (zoned) applyGameCommandsToGrid(w, STATIONS.map(([building, x, y]): GameCommand => ({ kind: 'PlaceBuilding', pos: { x, y }, building })));
+  if (zoned) applyGameCommandsToGrid(w, [...STATIONS, ...VENUES].map(([building, x, y]): GameCommand => ({ kind: 'PlaceBuilding', pos: { x, y }, building })));
   w.city.money = money;
   // The construction lines went through the ledger; the month starts over from the untouched treasury.
   w.budget.restart(money);

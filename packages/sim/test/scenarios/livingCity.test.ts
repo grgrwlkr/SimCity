@@ -48,6 +48,24 @@ describe('living city', () => {
     expect(citizens.count, 'and a day later they still live there').toBeGreaterThan(0.8 * moved);
   }, 120_000);
 
+  // Stage 3½: somewhere to go besides work and the shops, one of each for now.
+  it('theLivingCityHasAParkAndACafeItsPeopleGoTo', () => {
+    const { w, scenario } = livingCity();
+    const open = (kind: BuildingKind) => w.buildings.all().filter((b) => b.kind === kind && isOperational(b));
+    expect([open('Park').length, open('Cafe').length], 'a park and a café, open from the start').toEqual([1, 1]);
+
+    const purposes = new Map<string, number>();
+    for (let i = 0; i < 240; i++) {
+      scenario.advance(w);
+      step(w, 1);
+      for (const trip of w.events.tripRequested) purposes.set(trip.purpose, (purposes.get(trip.purpose) ?? 0) + 1);
+    }
+    expect(purposes.get('Park') ?? 0, `people go to the park: ${JSON.stringify([...purposes])}`).toBeGreaterThan(0);
+    expect(purposes.get('Cafe') ?? 0, 'and to the café').toBeGreaterThan(0);
+    const stats = scenario.stats(w);
+    expect(stats.arrived, `arrivals on foot count too: ${JSON.stringify(stats)}`).toBeGreaterThan(0.9 * (stats.requested - stats.travelling));
+  }, 120_000);
+
   it('itsCitizensMoveInAndDriveOnTheirOwn', () => {
     const { w, scenario } = livingCity();
     for (let i = 0; i < 10 * 240; i++) {
@@ -59,7 +77,7 @@ describe('living city', () => {
     expect(stats.citizens, 'people moved in').toBeGreaterThan(0);
     expect(stats.requested, 'and set out').toBeGreaterThan(0);
     const states = w.citizens.refs().map((ref) => w.citizens.view(ref)!.state);
-    expect(stats.travelling).toBe(states.filter((state) => state === 'ToWork' || state === 'ToShop' || state === 'ToHome').length);
+    expect(stats.travelling).toBe(states.filter((state) => state.startsWith('To')).length);
     scenario.advance(w);
     expect(scenario.stats(w), 'an advance without a tick counts nothing twice').toEqual(stats);
   }, 120_000);

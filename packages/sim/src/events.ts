@@ -12,7 +12,7 @@ export interface HourAdvanced {
 /** `TripFinished`: written by traffic when a trip vehicle arrives, read by citizens. */
 export interface TripFinished {
   readonly citizen: number;
-  readonly purpose: 'Work' | 'Shop' | 'ReturnHome';
+  readonly purpose: 'Work' | 'Shop' | 'ReturnHome' | 'Cafe' | 'Park';
 }
 
 export type TripMode = 'Walk' | 'Car';
@@ -35,10 +35,12 @@ export interface TickEvents {
   readonly dayAdvanced: number[];
   readonly tripRequested: TripRequested[];
   readonly tripFinished: TripFinished[];
+  /** Citizens whose walk ended this tick: a car trip ends with `tripFinished`, a walk with this. */
+  readonly walksFinished: number[];
 }
 
 export function emptyEvents(): TickEvents {
-  return { hourAdvanced: [], dayAdvanced: [], tripRequested: [], tripFinished: [] };
+  return { hourAdvanced: [], dayAdvanced: [], tripRequested: [], tripFinished: [], walksFinished: [] };
 }
 
 export function beginTickEvents(w: World): void {

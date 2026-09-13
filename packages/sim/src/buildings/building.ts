@@ -228,6 +228,7 @@ const BUILD_COSTS: Readonly<Record<BuildingKind, number>> = {
   School: 700,
   University: 2000,
   Park: 150,
+  Cafe: 120,
 };
 
 /** What placing a building costs the treasury. */

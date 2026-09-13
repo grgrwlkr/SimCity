@@ -2,10 +2,11 @@
 // of trips that never arrive. Where TS departs from Rust:
 // - home and workplace are building ids; in Rust they were anchor tiles, so a worker kept a job at whatever new
 //   building grew on the same anchor;
-// - a citizen keeps a day on the game clock: to work in the morning, home after the shift, shopping at a shop near home
-//   in the evening (by day without a job), nobody setting out at night. Rust decided on timers of real seconds, a
-//   decision every 1–3 s and shopping at any shop in town every 9–18 s, so with a car crossing town in more than a game
-//   day the whole city drove all the time;
+// - a citizen keeps a day on the game clock: an agenda of tours from home, each a chain of stops in any order — work,
+//   shops, a café, a park — closed by the way back. A worker may stop at a café on the way to work and at a shop or the
+//   park after it; a day off holds a tour or two. Rust decided on timers of real seconds, a decision every 1–3 s and
+//   shopping at any shop in town every 9–18 s, so with a car crossing town in more than a game day the whole city
+//   drove all the time;
 // - citizens are typed arrays with a queue of game minutes (stage 3½b): the planner looks only at citizens whose minute
 //   has come, and the counts by state, home and workplace are kept as they change, for a city of a million;
 // - a citizen walks a short trip, a trip without a car, and one with nowhere to park in reach; the car of one who
@@ -26,7 +27,7 @@ import {
   placeTile,
   type CarStatus,
 } from './parking';
-import { randomBool, rangeU32 } from './rng';
+import { randomBool, rangeU32, shuffle } from './rng';
 import { fixedElapsedSecs } from './traffic/reservations';
 import { TRIP_PURPOSES, type TripPurpose } from './traffic/vehicles';
 import { footprintEntrance } from './transport/anchors';
@@ -46,29 +47,48 @@ export const WORK_START_WINDOW = [6 * 60, 9 * 60] as const;
 const CROW_FLIES_KMH = 40;
 /** A shift, minutes: eight to nine hours. */
 export const SHIFT_MINUTES = [8 * 60, 9 * 60] as const;
-/** A worker shops between 17:00 and 20:00, a citizen without a job between 10:00 and 17:00. */
-export const EVENING_SHOPPING = [17 * 60, 20 * 60] as const;
-export const DAYTIME_SHOPPING = [10 * 60, 17 * 60] as const;
-/** The share of those evenings, or days, a citizen goes shopping. */
-export const EVENING_SHOPPING_CHANCE = 0.3;
-export const DAYTIME_SHOPPING_CHANCE = 0.5;
-/** A shopper sets out within this many minutes of deciding to. */
-const SHOPPING_DELAY_MINUTES = [10, 40] as const;
-/** A visit to a shop, minutes. */
-export const SHOP_VISIT_MINUTES = [30, 90] as const;
-/** A shopper goes to one of this many open shops nearest home. */
+/** Stays at the stops of a day, minutes. */
+export const SHOP_VISIT_MINUTES = [20, 60] as const;
+export const CAFE_VISIT_MINUTES = [20, 60] as const;
+export const CAFE_BEFORE_WORK_MINUTES = [10, 25] as const;
+export const PARK_VISIT_MINUTES = [30, 120] as const;
+/** A shopper goes to one of this many open shops nearest where they are; a café or a park, one of the nearest three. */
 export const NEAREST_SHOPS = 5;
+const NEAREST_PLACES = 3;
+/** When the tours of a day off and the evening outing leave home, minutes of the day. */
+const FREE_MORNING_LEAVE = [9 * 60, 11 * 60 + 30] as const;
+const FREE_AFTERNOON_LEAVE = [14 * 60, 17 * 60] as const;
+const EVENING_OUTING_LEAVE = [19 * 60, 21 * 60] as const;
+/** A citizen with nothing more to do today plans tomorrow at four in the morning. */
+const DAY_PLAN_MINUTE = 4 * 60;
+/** A tour more than this late when its citizen gets home is dropped rather than started. */
+const LATE_TOUR_MINUTES = 60;
+/** Stops an agenda holds, the ways home included. */
+export const AGENDA_STOPS = 8;
 
-export const CITIZEN_STATES = ['AtHome', 'ToWork', 'AtWork', 'ToShop', 'AtShop', 'ToHome'] as const;
+export const CITIZEN_STATES = ['AtHome', 'ToWork', 'AtWork', 'ToShop', 'AtShop', 'ToHome', 'ToCafe', 'AtCafe', 'ToPark', 'AtPark'] as const;
 export type CitizenState = (typeof CITIZEN_STATES)[number];
 const TRIP_MODES = ['Walk', 'Car'] as const satisfies readonly TripMode[];
 
 const AT_HOME = CITIZEN_STATES.indexOf('AtHome');
-const AT_WORK = CITIZEN_STATES.indexOf('AtWork');
-const AT_SHOP = CITIZEN_STATES.indexOf('AtShop');
-const TO_WORK = CITIZEN_STATES.indexOf('ToWork');
-const TO_SHOP = CITIZEN_STATES.indexOf('ToShop');
 const TO_HOME = CITIZEN_STATES.indexOf('ToHome');
+const TRAVEL_STATE: Readonly<Record<TripPurpose, number>> = {
+  Work: CITIZEN_STATES.indexOf('ToWork'),
+  Shop: CITIZEN_STATES.indexOf('ToShop'),
+  ReturnHome: TO_HOME,
+  Cafe: CITIZEN_STATES.indexOf('ToCafe'),
+  Park: CITIZEN_STATES.indexOf('ToPark'),
+};
+const STAY_STATE: Readonly<Record<TripPurpose, number>> = {
+  Work: CITIZEN_STATES.indexOf('AtWork'),
+  Shop: CITIZEN_STATES.indexOf('AtShop'),
+  ReturnHome: AT_HOME,
+  Cafe: CITIZEN_STATES.indexOf('AtCafe'),
+  Park: CITIZEN_STATES.indexOf('AtPark'),
+};
+const isTravelling = (state: number) => CITIZEN_STATES[state]!.startsWith('To');
+const isStaying = (state: number) => state !== AT_HOME && CITIZEN_STATES[state]!.startsWith('At');
+const RETURN_HOME = TRIP_PURPOSES.indexOf('ReturnHome');
 const WALK = TRIP_MODES.indexOf('Walk');
 const CAR = TRIP_MODES.indexOf('Car');
 const NONE = -1;
@@ -109,8 +129,8 @@ export interface CitizenSpec {
   /** Game minute of the next move: setting out for `nextPurpose`, or thinking the day over when it is `null`. */
   readonly nextAt: number | null;
   readonly nextPurpose: TripPurpose | null;
-  /** The last day the citizen decided whether to go shopping. */
-  readonly shoppingDecidedDay: number;
+  /** The day the agenda was planned for; 0 before the first. */
+  readonly agendaDay: number;
   /** Fixed-step seconds the trip in progress departed at. */
   readonly tripDepartedAtSec: number | null;
   readonly tripPurpose: TripPurpose | null;
@@ -120,8 +140,20 @@ export interface CitizenView extends CitizenSpec {
   readonly ref: number;
 }
 
+/** A stop of a day's agenda. `ReturnHome` closes a tour; the next stop, if any, starts another from home. */
+export interface AgendaStop {
+  readonly purpose: TripPurpose;
+  readonly building?: number;
+  /** For the first stop of a tour: the minute of the day it leaves home. */
+  readonly leaveAt?: number;
+  /** For a stop the tour is timed by (work): the minute of the day to arrive by. */
+  readonly arriveBy?: number;
+  /** Minutes at the stop. */
+  readonly stay?: number;
+}
+
 export interface ShoppingDemandStats {
-  /** Shopping trips wanted over the day so far. */
+  /** Shopping stops planned over the day so far. */
   demandEvents: number;
   /** Of them, the ones with no open shop. */
   unmetEvents: number;
@@ -160,7 +192,7 @@ export function newCitizen(home: Building, day: CitizenDay = {}): CitizenSpec {
     shiftMinutes: day.shiftMinutes ?? 8 * 60,
     nextAt: null,
     nextPurpose: null,
-    shoppingDecidedDay: 0,
+    agendaDay: 0,
     tripDepartedAtSec: null,
     tripPurpose: null,
   };
@@ -229,7 +261,7 @@ export class MinuteQueue {
   }
 }
 
-type Layer = Uint8Array | Int8Array | Uint16Array | Int32Array | Float64Array;
+type Layer = Uint8Array | Int8Array | Uint16Array | Int16Array | Int32Array | Float64Array;
 
 function grown<T extends Layer>(layer: T, capacity: number, fill: number): T {
   const next = new (layer.constructor as new (length: number) => T)(capacity);
@@ -270,6 +302,8 @@ export class Citizens {
   destY = new Int32Array(0);
   /** `TRIP_MODES` index, -1 between tours. */
   tourMode = new Int8Array(0);
+  /** The leg under way is walked, so its arrival counts as a walk. */
+  walking = new Uint8Array(0);
   /** `CAR_STATUSES` index. */
   carStatus = new Uint8Array(0);
   /** A `parking.ts` address, 0 without a car. */
@@ -282,10 +316,23 @@ export class Citizens {
   nextAt = new Int32Array(0);
   /** `TRIP_PURPOSES` index, -1 for thinking the day over. */
   nextPurpose = new Int8Array(0);
-  shoppingDecidedDay = new Int32Array(0);
+  agendaDay = new Int32Array(0);
+  agendaLength = new Uint8Array(0);
+  /** The stop being travelled to or stayed at, or the next tour's first stop at home. */
+  agendaCursor = new Uint8Array(0);
   /** NaN outside a trip. */
   tripDepartedAtSec = new Float64Array(0);
   tripPurpose = new Int8Array(0);
+
+  // The stops of each agenda, `AGENDA_STOPS` a citizen.
+  /** `TRIP_PURPOSES` index. */
+  agendaPurpose = new Int8Array(0);
+  agendaBuilding = new Int32Array(0);
+  agendaStay = new Uint16Array(0);
+  /** Minute of the day the tour leaves home, -1 when it does not start here or is timed by an arrival. */
+  agendaLeave = new Int16Array(0);
+  /** Minute of the day to arrive by, -1 for none. */
+  agendaArrive = new Int16Array(0);
 
   /** Free slots, reused last-in first-out. */
   readonly freeSlots: number[] = [];
@@ -331,6 +378,7 @@ export class Citizens {
     this.destX[slot] = spec.lastPlace.x;
     this.destY[slot] = spec.lastPlace.y;
     this.tourMode[slot] = spec.tourMode === null ? NONE : TRIP_MODES.indexOf(spec.tourMode);
+    this.walking[slot] = 0;
     this.carStatus[slot] = CAR_STATUSES.indexOf(spec.carStatus);
     this.carPlace[slot] = spec.carPlace;
     this.carX[slot] = spec.carParkedAt.x;
@@ -339,7 +387,9 @@ export class Citizens {
     this.shiftMinutes[slot] = spec.shiftMinutes;
     this.nextAt[slot] = NONE;
     this.nextPurpose[slot] = NONE;
-    this.shoppingDecidedDay[slot] = spec.shoppingDecidedDay;
+    this.agendaDay[slot] = spec.agendaDay;
+    this.agendaLength[slot] = 0;
+    this.agendaCursor[slot] = 0;
     this.tripDepartedAtSec[slot] = spec.tripDepartedAtSec ?? NaN;
     this.tripPurpose[slot] = spec.tripPurpose === null ? NONE : TRIP_PURPOSES.indexOf(spec.tripPurpose);
     this.count += 1;
@@ -386,6 +436,52 @@ export class Citizens {
     if (minute !== null) this.queue.push(minute, this.ref(slot));
   }
 
+  /** Replaces the agenda of `day` from its first stop; a citizen at home plans their next move by it. */
+  setAgenda(ref: number, day: number, stops: readonly AgendaStop[]): void {
+    const slot = this.resolve(ref);
+    if (slot === undefined) return;
+    this.writeAgenda(slot, day, stops);
+    if (this.state[slot] === AT_HOME) {
+      this.schedule(slot, null, null);
+      this.unplanned.push(ref);
+    }
+  }
+
+  /** @internal The planner's write: `stops` beyond `AGENDA_STOPS` are dropped. */
+  writeAgenda(slot: number, day: number, stops: readonly AgendaStop[]): void {
+    const base = slot * AGENDA_STOPS;
+    const length = Math.min(stops.length, AGENDA_STOPS);
+    for (let k = 0; k < length; k++) {
+      const stop = stops[k]!;
+      this.agendaPurpose[base + k] = TRIP_PURPOSES.indexOf(stop.purpose);
+      this.agendaBuilding[base + k] = stop.building ?? NONE;
+      this.agendaStay[base + k] = stop.stay ?? 0;
+      this.agendaLeave[base + k] = stop.leaveAt ?? NONE;
+      this.agendaArrive[base + k] = stop.arriveBy ?? NONE;
+    }
+    this.agendaDay[slot] = day;
+    this.agendaLength[slot] = length;
+    this.agendaCursor[slot] = 0;
+  }
+
+  /** The stops of the citizen's current agenda, from its first. */
+  agenda(ref: number): AgendaStop[] {
+    const slot = this.resolve(ref);
+    if (slot === undefined) return [];
+    const base = slot * AGENDA_STOPS;
+    return Array.from({ length: this.agendaLength[slot]! }, (_, k) => {
+      const purpose = TRIP_PURPOSES[this.agendaPurpose[base + k]!]!;
+      const [building, leaveAt, arriveBy] = [this.agendaBuilding[base + k]!, this.agendaLeave[base + k]!, this.agendaArrive[base + k]!];
+      return {
+        purpose,
+        ...(building === NONE ? {} : { building }),
+        ...(leaveAt === NONE ? {} : { leaveAt }),
+        ...(arriveBy === NONE ? {} : { arriveBy }),
+        ...(purpose === 'ReturnHome' ? {} : { stay: this.agendaStay[base + k]! }),
+      };
+    });
+  }
+
   stateCount(state: CitizenState): number {
     return this.stateCounts[CITIZEN_STATES.indexOf(state)]!;
   }
@@ -430,14 +526,14 @@ export class Citizens {
       shiftMinutes: this.shiftMinutes[slot]!,
       nextAt: this.nextAt[slot] === NONE ? null : this.nextAt[slot]!,
       nextPurpose: purpose(this.nextPurpose[slot]!),
-      shoppingDecidedDay: this.shoppingDecidedDay[slot]!,
+      agendaDay: this.agendaDay[slot]!,
       tripDepartedAtSec: Number.isNaN(this.tripDepartedAtSec[slot]) ? null : this.tripDepartedAtSec[slot]!,
       tripPurpose: purpose(this.tripPurpose[slot]!),
     };
   }
 
   clear(): void {
-    for (const name of LAYER_NAMES) this[name] = new (this[name].constructor as new (length: number) => never)(0);
+    for (const name of [...LAYER_NAMES, ...STOP_LAYER_NAMES]) this[name] = new (this[name].constructor as new (length: number) => never)(0);
     this.capacity = 0;
     this.highWater = 0;
     this.count = 0;
@@ -454,8 +550,19 @@ export class Citizens {
 
   private grow(): void {
     const capacity = Math.min(Math.max(this.capacity * 2, INITIAL_CAPACITY), SLOT_COUNT);
-    const fills: Partial<Record<LayerName, number>> = { workplace: NONE, tourMode: NONE, nextAt: NONE, nextPurpose: NONE, tripDepartedAtSec: NaN, tripPurpose: NONE };
+    const fills: Partial<Record<LayerName | StopLayerName, number>> = {
+      workplace: NONE,
+      tourMode: NONE,
+      nextAt: NONE,
+      nextPurpose: NONE,
+      tripDepartedAtSec: NaN,
+      tripPurpose: NONE,
+      agendaBuilding: NONE,
+      agendaLeave: NONE,
+      agendaArrive: NONE,
+    };
     for (const name of LAYER_NAMES) this[name] = grown(this[name] as Layer, capacity, fills[name] ?? 0) as never;
+    for (const name of STOP_LAYER_NAMES) this[name] = grown(this[name] as Layer, capacity * AGENDA_STOPS, fills[name] ?? 0) as never;
     this.capacity = capacity;
   }
 }
@@ -473,6 +580,7 @@ export const LAYER_NAMES = [
   'destX',
   'destY',
   'tourMode',
+  'walking',
   'carStatus',
   'carPlace',
   'carX',
@@ -481,11 +589,19 @@ export const LAYER_NAMES = [
   'shiftMinutes',
   'nextAt',
   'nextPurpose',
-  'shoppingDecidedDay',
+  'agendaDay',
+  'agendaLength',
+  'agendaCursor',
   'tripDepartedAtSec',
   'tripPurpose',
 ] as const satisfies ReadonlyArray<keyof Citizens>;
 type LayerName = (typeof LAYER_NAMES)[number];
+
+/** The agenda layers, `AGENDA_STOPS` entries a slot. */
+export const STOP_LAYER_NAMES = ['agendaPurpose', 'agendaBuilding', 'agendaStay', 'agendaLeave', 'agendaArrive'] as const satisfies ReadonlyArray<
+  keyof Citizens
+>;
+type StopLayerName = (typeof STOP_LAYER_NAMES)[number];
 
 /** A citizen leaves the city, and the spot their car holds is freed. */
 export function removeCitizen(w: World, ref: number): void {
@@ -535,7 +651,7 @@ function walkMinutes(w: World, from: TilePos, to: TilePos): number {
 
 function setOut(w: World, slot: number, to: TilePos, purpose: TripPurpose, nowSecs: number): void {
   const c = w.citizens;
-  c.setState(slot, purpose === 'Work' ? TO_WORK : purpose === 'Shop' ? TO_SHOP : TO_HOME);
+  c.setState(slot, TRAVEL_STATE[purpose]);
   if (purpose !== 'ReturnHome') {
     c.lastPlaceX[slot] = to.x;
     c.lastPlaceY[slot] = to.y;
@@ -551,6 +667,7 @@ function departOnFoot(w: World, slot: number, from: TilePos, to: TilePos, purpos
   const c = w.citizens;
   w.events.tripRequested.push({ citizen: c.ref(slot), from, carParkedAt: null, to, purpose, mode: 'Walk' });
   setOut(w, slot, to, purpose, nowSecs);
+  c.walking[slot] = 1;
   c.schedule(slot, minute + walkMinutes(w, from, to), purpose);
 }
 
@@ -567,6 +684,7 @@ function departByCar(w: World, slot: number, to: TilePos, spot: number, purpose:
   c.carY[slot] = parkAt.y;
   w.events.tripRequested.push({ citizen: c.ref(slot), from, carParkedAt: from, to: parkAt, purpose, mode: 'Car', pocket: true });
   setOut(w, slot, to, purpose, nowSecs);
+  c.walking[slot] = 0;
   c.schedule(slot, null, null);
 }
 
@@ -592,62 +710,181 @@ function expectedTripMinutes(w: World, slot: number, from: TilePos, to: TilePos)
   return Math.ceil(seconds / 60);
 }
 
-/** Minute of the day a worker leaves home to start work on time; the start itself without a home or a workplace. */
-function workDepartureMinute(w: World, slot: number): number {
-  const c = w.citizens;
-  const start = c.workStart[slot]!;
-  const home = w.buildings.get(c.home[slot]!);
-  const work = w.buildings.get(c.workplace[slot]!);
-  if (home === undefined || work === undefined) return start;
-  return Math.max(start - expectedTripMinutes(w, slot, entrance(w, home, work.anchor), entrance(w, work, home.anchor)), 0);
+type Venue = 'Shop' | 'Cafe' | 'Park';
+
+/** The open places of each kind, rebuilt when the buildings change or a game minute passes. */
+const venueCache = new WeakMap<World, { readonly key: string; readonly lists: Readonly<Record<Venue, Building[]>> }>();
+
+function venues(w: World): Readonly<Record<Venue, Building[]>> {
+  const key = `${w.buildings.version}|${gameMinute(w)}`;
+  const cached = venueCache.get(w);
+  if (cached?.key === key) return cached.lists;
+  const lists: Record<Venue, Building[]> = { Shop: [], Cafe: [], Park: [] };
+  for (const b of w.buildings.all()) {
+    if (!isOperational(b)) continue;
+    if (b.kind === 'Commercial') lists.Shop.push(b);
+    else if (b.kind === 'Cafe') lists.Cafe.push(b);
+    else if (b.kind === 'Park') lists.Park.push(b);
+  }
+  venueCache.set(w, { key, lists });
+  return lists;
 }
 
-/**
- * The next move of a citizen at home: to work at their hour, shopping (decided once a day, when the shopping hours
- * have come), or thinking again when those hours open. A citizen planning at the very minute they leave for work
- * leaves now; every other time is after `now`. A re-plan never lands on `now`, so a plan that cannot be carried out
- * waits a minute.
- */
-function planDay(w: World, slot: number, now: number, replan: boolean): void {
-  const c = w.citizens;
-  const minute = now % MINUTES_PER_DAY;
-  const dayStart = now - minute;
-  const employed = c.workplace[slot] !== NONE;
-  const [open, close] = employed ? EVENING_SHOPPING : DAYTIME_SHOPPING;
-  const decidedToday = c.shoppingDecidedDay[slot] === w.city.day;
-  const departure = employed ? workDepartureMinute(w, slot) : 0;
-
-  let shopAt: number | undefined;
-  let thinkAt = dayStart + MINUTES_PER_DAY + open;
-  if (!decidedToday && minute >= open && minute < close) {
-    c.shoppingDecidedDay[slot] = w.city.day;
-    if (randomBool(w.simRng, employed ? EVENING_SHOPPING_CHANCE : DAYTIME_SHOPPING_CHANCE)) {
-      shopAt = Math.min(now + rangeU32(w.simRng, SHOPPING_DELAY_MINUTES[0], SHOPPING_DELAY_MINUTES[1] + 1), dayStart + close);
-    }
-  } else if (!decidedToday && minute < open) {
-    thinkAt = dayStart + open;
-  }
-  const workAt = employed ? (minute <= departure ? dayStart : dayStart + MINUTES_PER_DAY) + departure : undefined;
-
-  const earliest = replan ? now + 1 : now;
-  if (shopAt !== undefined && (workAt === undefined || shopAt <= workAt)) {
-    c.schedule(slot, Math.max(shopAt, earliest), 'Shop');
-  } else if (workAt !== undefined && workAt <= thinkAt) {
-    c.schedule(slot, Math.max(workAt, earliest), 'Work');
-  } else {
-    c.schedule(slot, Math.max(thinkAt, earliest), null);
-  }
-}
-
-/** One of the `NEAREST_SHOPS` open shops nearest `home`. */
-function shopNear(w: World, home: Building, shops: readonly Building[]): Building | undefined {
-  if (shops.length === 0) return undefined;
-  const distance = (b: Building) => Math.abs(b.anchor.x - home.anchor.x) + Math.abs(b.anchor.y - home.anchor.y);
-  const nearest = [...shops].sort((a, b) => distance(a) - distance(b) || a.id - b.id).slice(0, NEAREST_SHOPS);
+/** One of the open places of `venue` nearest `near`: of the nearest five shops, or three cafés or parks. */
+function pickVenue(w: World, venue: Venue, near: TilePos): Building | undefined {
+  const list = venues(w)[venue];
+  if (list.length === 0) return undefined;
+  const distance = (b: Building) => Math.abs(b.anchor.x - near.x) + Math.abs(b.anchor.y - near.y);
+  const nearest = [...list].sort((a, b) => distance(a) - distance(b) || a.id - b.id).slice(0, venue === 'Shop' ? NEAREST_SHOPS : NEAREST_PLACES);
   return nearest[rangeU32(w.simRng, 0, nearest.length)];
 }
 
-/** The trip ends at game minute `minute`: at work or a shop until the stay is over, or at home with a day to plan. */
+const VISIT_MINUTES: Readonly<Record<Venue, readonly [number, number]>> = { Shop: SHOP_VISIT_MINUTES, Cafe: CAFE_VISIT_MINUTES, Park: PARK_VISIT_MINUTES };
+
+/** Adds a stop at a `venue` near `near` to `stops`; the place it went to, or `undefined` when there is none open. */
+function addVisit(w: World, stops: AgendaStop[], venue: Venue, near: TilePos, extra: Partial<AgendaStop> = {}): Building | undefined {
+  const shopping = w.shoppingStats;
+  if (venue === 'Shop') shopping.demandEvents += 1;
+  const place = pickVenue(w, venue, near);
+  if (place === undefined) {
+    if (venue === 'Shop') shopping.unmetEvents += 1;
+    return undefined;
+  }
+  const [min, max] = VISIT_MINUTES[venue];
+  stops.push({ purpose: venue, building: place.id, stay: rangeU32(w.simRng, min, max + 1), ...extra });
+  return place;
+}
+
+/** A tour of a day off, leaving home in `window`: one or two stops, then home. */
+function addFreeTour(w: World, stops: AgendaStop[], home: Building, window: readonly [number, number]): void {
+  const rng = w.simRng;
+  const leaveAt = rangeU32(rng, window[0], window[1] + 1);
+  const count = randomBool(rng, 0.35) ? 2 : 1;
+  const before = stops.length;
+  let near = home.anchor;
+  for (let i = 0; i < count; i++) {
+    const draw = rangeU32(rng, 0, 10);
+    const venue: Venue = draw < 5 ? 'Shop' : draw < 8 ? 'Park' : 'Cafe';
+    const place = addVisit(w, stops, venue, near, stops.length === before ? { leaveAt } : {});
+    if (place !== undefined) near = place.anchor;
+  }
+  if (stops.length > before) stops.push({ purpose: 'ReturnHome' });
+}
+
+/**
+ * Plans today's agenda of the citizen in `slot` by the chances of the city's config. A worker's day is work, a café on
+ * the way at times, a shop, the park or a café after it in any order, and now and then an evening out; a day off is a
+ * tour in the morning, one in the afternoon, both or none. Stops go to the open places nearest the stop before.
+ */
+export function planAgenda(w: World, slot: number): void {
+  const c = w.citizens;
+  const chances = w.citizenConfig.agenda;
+  const rng = w.simRng;
+  const stops: AgendaStop[] = [];
+  const home = w.buildings.get(c.home[slot]!);
+  const work = c.workplace[slot] === NONE ? undefined : w.buildings.get(c.workplace[slot]!);
+  if (home !== undefined && work !== undefined) {
+    if (randomBool(rng, chances.cafeBeforeWork)) {
+      const cafe = pickVenue(w, 'Cafe', home.anchor);
+      if (cafe !== undefined) stops.push({ purpose: 'Cafe', building: cafe.id, stay: rangeU32(rng, CAFE_BEFORE_WORK_MINUTES[0], CAFE_BEFORE_WORK_MINUTES[1] + 1) });
+    }
+    stops.push({ purpose: 'Work', building: work.id, arriveBy: c.workStart[slot]!, stay: c.shiftMinutes[slot]! });
+    const after: Venue[] = [];
+    if (randomBool(rng, chances.shopAfterWork)) after.push('Shop');
+    if (randomBool(rng, chances.parkAfterWork)) after.push('Park');
+    if (randomBool(rng, chances.cafeAfterWork)) after.push('Cafe');
+    shuffle(rng, after);
+    let near = work.anchor;
+    for (const venue of after) near = addVisit(w, stops, venue, near)?.anchor ?? near;
+    stops.push({ purpose: 'ReturnHome' });
+    if (randomBool(rng, chances.eveningOuting)) {
+      const leaveAt = rangeU32(rng, EVENING_OUTING_LEAVE[0], EVENING_OUTING_LEAVE[1] + 1);
+      if (addVisit(w, stops, randomBool(rng, 0.5) ? 'Park' : 'Cafe', home.anchor, { leaveAt }) !== undefined) stops.push({ purpose: 'ReturnHome' });
+    }
+  } else if (home !== undefined) {
+    if (randomBool(rng, chances.freeMorningTour)) addFreeTour(w, stops, home, FREE_MORNING_LEAVE);
+    if (randomBool(rng, chances.freeAfternoonTour)) addFreeTour(w, stops, home, FREE_AFTERNOON_LEAVE);
+  }
+  c.writeAgenda(slot, w.city.day, stops);
+}
+
+/** The building of the stop at `cursor`, open; the current workplace for work. */
+function stopBuilding(w: World, slot: number, cursor: number): Building | undefined {
+  const c = w.citizens;
+  const base = slot * AGENDA_STOPS;
+  const purpose = TRIP_PURPOSES[c.agendaPurpose[base + cursor]!];
+  const id = purpose === 'Work' ? c.workplace[slot]! : c.agendaBuilding[base + cursor]!;
+  const b = id === NONE ? undefined : w.buildings.get(id);
+  return b !== undefined && isOperational(b) ? b : undefined;
+}
+
+/**
+ * The minute of the day the tour whose first stop is `cursor` leaves home: its own time, or back from the arrival a stop
+ * of it is timed by, by the trips and the stays before that stop; -1 to leave at once.
+ */
+function tourLeaveMinute(w: World, slot: number, cursor: number): number {
+  const c = w.citizens;
+  const base = slot * AGENDA_STOPS;
+  if (c.agendaLeave[base + cursor]! >= 0) return c.agendaLeave[base + cursor]!;
+  let timed = -1;
+  for (let k = cursor; k < c.agendaLength[slot]! && c.agendaPurpose[base + k] !== RETURN_HOME; k++) {
+    if (c.agendaArrive[base + k]! >= 0) {
+      timed = k;
+      break;
+    }
+  }
+  if (timed < 0) return NONE;
+  const home = w.buildings.get(c.home[slot]!);
+  let minute = c.agendaArrive[base + timed]!;
+  for (let k = timed; k >= cursor; k--) {
+    const to = stopBuilding(w, slot, k);
+    const from = k === cursor ? home : stopBuilding(w, slot, k - 1);
+    if (to !== undefined && from !== undefined) minute -= expectedTripMinutes(w, slot, entrance(w, from, to.anchor), entrance(w, to, from.anchor));
+    if (k > cursor) minute -= c.agendaStay[base + k - 1]!;
+  }
+  return Math.max(minute, 0);
+}
+
+/** Moves the cursor past the way home that closes the tour at the cursor. */
+function skipTour(w: World, slot: number): void {
+  const c = w.citizens;
+  const base = slot * AGENDA_STOPS;
+  let k = c.agendaCursor[slot]!;
+  while (k < c.agendaLength[slot]! && c.agendaPurpose[base + k] !== RETURN_HOME) k++;
+  c.agendaCursor[slot] = Math.min(k + 1, AGENDA_STOPS);
+}
+
+/**
+ * The next move of a citizen at home: today's agenda is planned when it is not yet, then the next tour of it leaves at
+ * its minute — at once if it is late by less than `LATE_TOUR_MINUTES`, dropped if later. With no tour left the citizen
+ * plans tomorrow at four in the morning. A re-plan never lands on `now`.
+ */
+function planNext(w: World, slot: number, now: number, replan: boolean): void {
+  const c = w.citizens;
+  const minute = now % MINUTES_PER_DAY;
+  const dayStart = now - minute;
+  if (c.agendaDay[slot] !== w.city.day) planAgenda(w, slot);
+  const base = slot * AGENDA_STOPS;
+  const earliest = replan ? now + 1 : now;
+  for (let guard = 0; guard <= AGENDA_STOPS; guard++) {
+    const cursor: number = c.agendaCursor[slot]!;
+    if (cursor >= c.agendaLength[slot]!) break;
+    if (c.agendaPurpose[base + cursor] === RETURN_HOME) {
+      c.agendaCursor[slot] = cursor + 1;
+      continue;
+    }
+    const leave = tourLeaveMinute(w, slot, cursor);
+    if (leave >= 0 && leave + LATE_TOUR_MINUTES < minute) {
+      skipTour(w, slot);
+      continue;
+    }
+    c.schedule(slot, Math.max(leave < 0 ? now : dayStart + leave, earliest), TRIP_PURPOSES[c.agendaPurpose[base + cursor]!]!);
+    return;
+  }
+  c.schedule(slot, Math.max(dayStart + MINUTES_PER_DAY + DAY_PLAN_MINUTE, earliest), null);
+}
+
+/** The trip ends at game minute `minute`: at a stop until its stay is over, or at home with the rest of the day to plan. */
 function arrive(w: World, slot: number, purpose: TripPurpose, minute: number, nowSecs: number): void {
   const c = w.citizens;
   const commute = w.commuteStats;
@@ -658,24 +895,92 @@ function arrive(w: World, slot: number, purpose: TripPurpose, minute: number, no
       commute.samples === 0 ? secs : f32(f32(commute.avgCommuteSecs * f32(1 - COMMUTE_EMA_ALPHA)) + f32(secs * COMMUTE_EMA_ALPHA));
     commute.samples += 1;
   }
+  if (c.walking[slot] === 1) w.events.walksFinished.push(c.ref(slot));
+  c.walking[slot] = 0;
   c.tripDepartedAtSec[slot] = NaN;
   c.tripPurpose[slot] = NONE;
+  const base = slot * AGENDA_STOPS;
+  const cursor = c.agendaCursor[slot]!;
   if (purpose === 'ReturnHome') {
     c.setState(slot, AT_HOME);
     c.tourMode[slot] = NONE;
+    if (cursor < c.agendaLength[slot]! && c.agendaPurpose[base + cursor] === RETURN_HOME) c.agendaCursor[slot] = cursor + 1;
+    else skipTour(w, slot);
     c.schedule(slot, null, null);
     c.unplanned.push(c.ref(slot));
-  } else {
-    c.setState(slot, purpose === 'Work' ? AT_WORK : AT_SHOP);
-    const stay = purpose === 'Work' ? c.shiftMinutes[slot]! : rangeU32(w.simRng, SHOP_VISIT_MINUTES[0], SHOP_VISIT_MINUTES[1] + 1);
-    c.schedule(slot, minute + stay, 'ReturnHome');
+    return;
   }
+  c.setState(slot, STAY_STATE[purpose]);
+  const planned = cursor < c.agendaLength[slot]! && TRIP_PURPOSES[c.agendaPurpose[base + cursor]!] === purpose;
+  let stay = planned ? c.agendaStay[base + cursor]! : 0;
+  if (stay === 0) stay = purpose === 'Work' ? c.shiftMinutes[slot]! : rangeU32(w.simRng, SHOP_VISIT_MINUTES[0], SHOP_VISIT_MINUTES[1] + 1);
+  const next = planned && cursor + 1 < c.agendaLength[slot]! ? TRIP_PURPOSES[c.agendaPurpose[base + cursor + 1]!]! : 'ReturnHome';
+  c.schedule(slot, minute + stay, next);
+}
+
+/** Home from `lastPlace` the way the tour went; a car with nowhere to stand in the whole city stays put, and its citizen walks. */
+function goHome(w: World, slot: number, home: Building, lastPlace: TilePos, minute: number, nowSecs: number): void {
+  const c = w.citizens;
+  const doorstep = entrance(w, home, lastPlace);
+  const spot = c.tourMode[slot] === CAR && c.carStatus[slot] === CAR_PARKED ? findParking(w, doorstep, home.id, Infinity) : NO_PLACE;
+  if (spot === NO_PLACE) departOnFoot(w, slot, lastPlace, doorstep, 'ReturnHome', minute, nowSecs);
+  else departByCar(w, slot, doorstep, spot, 'ReturnHome', nowSecs);
+}
+
+/** A citizen at home sets out on the tour at the cursor, past any stop whose place is gone; with none left, plans again. */
+function startTour(w: World, slot: number, home: Building, now: number, minute: number, nowSecs: number): void {
+  const c = w.citizens;
+  const base = slot * AGENDA_STOPS;
+  for (let guard = 0; guard <= AGENDA_STOPS; guard++) {
+    const cursor: number = c.agendaCursor[slot]!;
+    if (cursor >= c.agendaLength[slot]! || c.agendaPurpose[base + cursor] === RETURN_HOME) break;
+    const destination = stopBuilding(w, slot, cursor);
+    if (destination === undefined) {
+      c.agendaCursor[slot] = cursor + 1;
+      continue;
+    }
+    // Tours start at home, from the side of it on the road towards where they go.
+    const purpose = TRIP_PURPOSES[c.agendaPurpose[base + cursor]!]!;
+    const from = entrance(w, home, destination.anchor);
+    const to = entrance(w, destination, home.anchor);
+    const spot = tourSpot(w, slot, from, to, destination.id);
+    c.tourMode[slot] = spot === NO_PLACE ? WALK : CAR;
+    if (spot === NO_PLACE) departOnFoot(w, slot, from, to, purpose, minute, nowSecs);
+    else departByCar(w, slot, to, spot, purpose, nowSecs);
+    return;
+  }
+  // Nothing left of the tour to go to.
+  skipTour(w, slot);
+  planNext(w, slot, now, true);
+}
+
+/** The stay is over: on to the next stop of the tour, past any whose place is gone, or home. A car tour keeps its car. */
+function leaveStop(w: World, slot: number, home: Building, lastPlace: TilePos, minute: number, nowSecs: number): void {
+  const c = w.citizens;
+  const base = slot * AGENDA_STOPS;
+  c.agendaCursor[slot] = c.agendaCursor[slot]! + 1;
+  for (let guard = 0; guard <= AGENDA_STOPS; guard++) {
+    const cursor: number = c.agendaCursor[slot]!;
+    if (cursor >= c.agendaLength[slot]! || c.agendaPurpose[base + cursor] === RETURN_HOME) break;
+    const destination = stopBuilding(w, slot, cursor);
+    if (destination === undefined) {
+      c.agendaCursor[slot] = cursor + 1;
+      continue;
+    }
+    const purpose = TRIP_PURPOSES[c.agendaPurpose[base + cursor]!]!;
+    const to = entrance(w, destination, lastPlace);
+    const spot = c.tourMode[slot] === CAR && c.carStatus[slot] === CAR_PARKED ? findParking(w, to, destination.id, Infinity) : NO_PLACE;
+    if (spot === NO_PLACE) departOnFoot(w, slot, lastPlace, to, purpose, minute, nowSecs);
+    else departByCar(w, slot, to, spot, purpose, nowSecs);
+    return;
+  }
+  goHome(w, slot, home, lastPlace, minute, nowSecs);
 }
 
 /**
  * `citizen_trip_planner` (SimStep::Citizens), once a game minute: citizens with no plan make one, then those whose
- * minute has come, minute by minute, act on it. A walk under way arrives; a citizen at work or at a shop goes home when
- * the stay is over; one at home sets out, or thinks again when the job is lost or no shop is open.
+ * minute has come, minute by minute, act on it. A walk under way arrives; a stay that is over goes on to the next stop
+ * or home; a citizen at home sets out on the next tour of the day, or plans the day when there is none.
  */
 export function citizenTripPlanner(w: World): void {
   const shopping = w.shoppingStats;
@@ -687,13 +992,12 @@ export function citizenTripPlanner(w: World): void {
   const c = w.citizens;
   const now = gameMinute(w);
   const nowSecs = fixedElapsedSecs(w);
-  let shops: Building[] | undefined;
 
   const unplanned = c.unplanned;
   c.unplanned = [];
   for (const ref of unplanned) {
     const slot = c.resolve(ref);
-    if (slot !== undefined && c.state[slot] === AT_HOME && c.nextAt[slot] === NONE) planDay(w, slot, now, false);
+    if (slot !== undefined && c.state[slot] === AT_HOME && c.nextAt[slot] === NONE) planNext(w, slot, now, false);
   }
 
   let woken = 0;
@@ -704,45 +1008,20 @@ export function citizenTripPlanner(w: World): void {
       if (slot === undefined || c.nextAt[slot] !== minute) continue;
       woken += 1;
       const purpose = c.nextPurpose[slot] === NONE ? null : TRIP_PURPOSES[c.nextPurpose[slot]!]!;
-      const state = c.state[slot];
-      if (state === TO_WORK || state === TO_SHOP || state === TO_HOME) {
+      const state = c.state[slot]!;
+      if (isTravelling(state)) {
         arrive(w, slot, purpose ?? 'ReturnHome', minute, nowSecs);
         continue;
       }
       const home = w.buildings.get(c.home[slot]!);
       if (home === undefined) continue;
-      const lastPlace = { x: c.lastPlaceX[slot]!, y: c.lastPlaceY[slot]! };
-
-      if (state === AT_WORK || state === AT_SHOP) {
-        const doorstep = entrance(w, home, lastPlace);
-        // Home the way the tour went; a car with nowhere to stand in the whole city stays put, and its citizen walks.
-        const spot = c.tourMode[slot] === CAR && c.carStatus[slot] === CAR_PARKED ? findParking(w, doorstep, home.id, Infinity) : NO_PLACE;
-        if (spot === NO_PLACE) departOnFoot(w, slot, lastPlace, doorstep, 'ReturnHome', minute, nowSecs);
-        else departByCar(w, slot, doorstep, spot, 'ReturnHome', nowSecs);
+      if (isStaying(state)) {
+        leaveStop(w, slot, home, { x: c.lastPlaceX[slot]!, y: c.lastPlaceY[slot]! }, minute, nowSecs);
         continue;
       }
       if (state !== AT_HOME) continue;
-
-      let destination: Building | undefined;
-      if (purpose === 'Work' && c.workplace[slot] !== NONE) {
-        destination = w.buildings.get(c.workplace[slot]!);
-      } else if (purpose === 'Shop') {
-        shopping.demandEvents += 1;
-        shops ??= w.buildings.all().filter((b) => b.kind === 'Commercial' && isOperational(b));
-        destination = shopNear(w, home, shops);
-        if (destination === undefined) shopping.unmetEvents += 1;
-      }
-      if (destination === undefined || purpose === null) {
-        planDay(w, slot, now, true);
-        continue;
-      }
-      // Tours start at home, from the side of it on the road towards where they go.
-      const from = entrance(w, home, destination.anchor);
-      const to = entrance(w, destination, home.anchor);
-      const spot = tourSpot(w, slot, from, to, destination.id);
-      c.tourMode[slot] = spot === NO_PLACE ? WALK : CAR;
-      if (spot === NO_PLACE) departOnFoot(w, slot, from, to, purpose, minute, nowSecs);
-      else departByCar(w, slot, to, spot, purpose, nowSecs);
+      if (purpose === null) planNext(w, slot, now, false);
+      else startTour(w, slot, home, now, minute, nowSecs);
     }
   }
   c.plannerWoken = woken;
@@ -761,9 +1040,7 @@ export function handleTripFinished(w: World): void {
   const now = gameMinute(w);
   for (const arrival of arrivals) {
     const slot = c.resolve(arrival.citizen);
-    if (slot === undefined) continue;
-    const expected = arrival.purpose === 'Work' ? TO_WORK : arrival.purpose === 'Shop' ? TO_SHOP : TO_HOME;
-    if (c.state[slot] !== expected) continue;
+    if (slot === undefined || c.state[slot] !== TRAVEL_STATE[arrival.purpose]) continue;
     if (c.carStatus[slot] === CAR_DRIVING) {
       c.carStatus[slot] = CAR_PARKED;
       const walk = walkMinutes(w, { x: c.carX[slot]!, y: c.carY[slot]! }, { x: c.destX[slot]!, y: c.destY[slot]! });
@@ -778,9 +1055,9 @@ export function handleTripFinished(w: World): void {
 
 /**
  * `recover_stuck_trips` (SimStep::Citizens): a trip whose car never spawned yields no arrival, and a citizen in transit
- * makes no plans, so past the timeout such a citizen goes back home, the car standing at the spot it was going to. A
- * trip with its car on the road or waiting in the backlog, or a walk, is not orphaned however long it takes; Rust sent
- * those drivers home too.
+ * makes no plans, so past the timeout such a citizen goes back home and drops the rest of the tour, the car standing at
+ * the spot it was going to. A trip with its car on the road or waiting in the backlog, or a walk, is not orphaned
+ * however long it takes; Rust sent those drivers home too.
  */
 export function recoverStuckTrips(w: World): void {
   const now = fixedElapsedSecs(w);
@@ -788,9 +1065,7 @@ export function recoverStuckTrips(w: World): void {
   const v = w.vehicles;
   let riding: Set<number> | undefined;
   for (let slot = 0; slot < c.highWater; slot++) {
-    if (c.alive[slot] !== 1 || c.nextAt[slot] !== NONE) continue;
-    const state = c.state[slot];
-    if (state !== TO_WORK && state !== TO_SHOP && state !== TO_HOME) continue;
+    if (c.alive[slot] !== 1 || c.nextAt[slot] !== NONE || !isTravelling(c.state[slot]!)) continue;
     const departedAt = c.tripDepartedAtSec[slot]!;
     if (Number.isNaN(departedAt) || now - departedAt <= CITIZEN_TRIP_TIMEOUT_SECS) continue;
     if (riding === undefined) {
@@ -806,6 +1081,8 @@ export function recoverStuckTrips(w: World): void {
     c.setState(slot, AT_HOME);
     if (c.carStatus[slot] === CAR_DRIVING) c.carStatus[slot] = CAR_PARKED;
     c.tourMode[slot] = NONE;
+    c.walking[slot] = 0;
+    skipTour(w, slot);
     c.schedule(slot, null, null);
     c.unplanned.push(ref);
     c.tripDepartedAtSec[slot] = NaN;

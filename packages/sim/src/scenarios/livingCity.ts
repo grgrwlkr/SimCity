@@ -39,7 +39,7 @@ export class LivingCityScenario {
     if (w.tick === this.lastTick) return;
     this.lastTick = w.tick;
     this.requested += w.events.tripRequested.length;
-    this.arrived += w.events.tripFinished.length;
+    this.arrived += w.events.tripFinished.length + w.events.walksFinished.length;
   }
 
   /** The trips of the tick just run count already: the host reads the numbers after a frame's ticks. */
@@ -48,9 +48,9 @@ export class LivingCityScenario {
     const c = w.citizens;
     return {
       citizens: c.count,
-      travelling: c.stateCount('ToWork') + c.stateCount('ToShop') + c.stateCount('ToHome'),
+      travelling: c.stateCount('ToWork') + c.stateCount('ToShop') + c.stateCount('ToHome') + c.stateCount('ToCafe') + c.stateCount('ToPark'),
       requested: this.requested + (fresh ? w.events.tripRequested.length : 0),
-      arrived: this.arrived + (fresh ? w.events.tripFinished.length : 0),
+      arrived: this.arrived + (fresh ? w.events.tripFinished.length + w.events.walksFinished.length : 0),
     };
   }
 }

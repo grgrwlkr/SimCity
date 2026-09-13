@@ -1,7 +1,7 @@
 // `?scenario=living` opens built and lived in: on a real-time clock a house takes eight hours to go up, and nobody wants
 // to wait a working day for the first commute. Part of the zoned land gets open buildings at full occupancy, their
 // citizens move in with jobs and cars, and the rest of the land is left to grow.
-import { buildingKindFromZone, densityLevels, footprintTiles, isOperational, profileCapacity, type Building } from '../buildings/building';
+import { OPERATIONAL, buildingKindFromZone, densityLevels, footprintTiles, isOperational, profileCapacity, type Building } from '../buildings/building';
 import { findBestFootprint } from '../buildings/growth';
 import { spawnBuilding } from '../buildings/spawn';
 import { spawnCitizensFromResidential } from '../citizens';
@@ -24,6 +24,8 @@ export interface PrebuildOptions {
 /** Builds on `share` of the zoned land, open and full, and moves the citizens in with the nearest jobs of their class. */
 export function prebuildCity(w: World, options: PrebuildOptions = {}): void {
   const grid = w.grid;
+  // The stations and places already laid out stand open in an established city.
+  for (const b of w.buildings.all()) b.phase = OPERATIONAL;
   const seeds: number[] = [];
   for (let idx = 0; idx < grid.len(); idx++) {
     const cell = grid.cellAt(idx);

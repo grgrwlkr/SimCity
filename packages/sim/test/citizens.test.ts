@@ -5,19 +5,19 @@ import { describe, expect, it } from 'vitest';
 import { newBuilding, type Building } from '../src/buildings/building';
 import {
   CITIZEN_TRIP_TIMEOUT_SECS,
-  NEAREST_SHOPS,
   citizenSlot,
   citizenTripPlanner,
   cleanupHomelessCitizens,
   handleTripFinished,
   newCitizen,
+  planAgenda,
   recoverStuckTrips,
   spawnCitizensFromResidential,
 } from '../src/citizens';
-import type { TilePos } from '../src/commands';
+import type { BuildingKind, TilePos } from '../src/commands';
 import { emptyEvents, type TripRequested } from '../src/events';
 import { MapGrid } from '../src/map/grid';
-import { buildingPlace, giveCar, takeParking } from '../src/parking';
+import { NO_OUTINGS, buildingPlace, giveCar, takeParking } from '../src/parking';
 import { spawnVehicle } from '../src/traffic/vehicles';
 import { adjacentRoadTowards } from '../src/transport/anchors';
 import type { World } from '../src/world';
@@ -28,6 +28,13 @@ function home(w: World, anchor = t(5, 5), occupancy = 5): Building {
 }
 
 const shopAt = (w: World, x: number, y = 2, jobs = 5) => w.buildings.add(newBuilding({ kind: 'Commercial', anchor: t(x, y), capacityJobs: jobs }));
+const placeAt = (w: World, kind: BuildingKind, x: number) => w.buildings.add(newBuilding({ kind, anchor: t(x, 2) }));
+
+/** Days of work and home only: the tests of the commute do not want a random café on the way. */
+function plainDays(w: World): World {
+  w.citizenConfig.agenda = NO_OUTINGS;
+  return w;
+}
 
 const view = (w: World, ref: number) => w.citizens.view(ref)!;
 
@@ -58,7 +65,7 @@ const inside = (b: Building, p: TilePos) => p.x >= b.anchor.x && p.x < b.anchor.
 
 /** A home, a shop and a thousand of its workers starting work a minute apart in tens, 07:00 to 08:39, three minutes' walk away. */
 function morningCrowd() {
-  const w = worldOn(new MapGrid(32, 16));
+  const w = plainDays(worldOn(new MapGrid(32, 16)));
   const house = home(w, t(2, 2));
   const shop = shopAt(w, 20);
   for (let i = 0; i < 1000; i++) w.citizens.add({ ...newCitizen(house, { workStart: 7 * 60 + (i % 100) }), workplace: shop.id });
@@ -67,7 +74,7 @@ function morningCrowd() {
 
 /** A town two kilometres long: a home at its west end, a worker starting at seven at `workplace`. */
 function commuter(width: number, workplaceX: number, options: { car?: boolean; jobs?: number } = {}) {
-  const w = worldOn(new MapGrid(width, 16));
+  const w = plainDays(worldOn(new MapGrid(width, 16)));
   const house = home(w, t(2, 2));
   const work = shopAt(w, workplaceX, 2, options.jobs ?? 5);
   const worker = w.citizens.add({ ...newCitizen(house, { workStart: 7 * 60 }), workplace: work.id });
@@ -77,7 +84,7 @@ function commuter(width: number, workplaceX: number, options: { car?: boolean; j
 
 describe('citizens', () => {
   it('recoverStuckTripsRevertsOrphanedButKeepsInProgressAndStable', () => {
-    const w = worldOn(new MapGrid(16, 16));
+    const w = plainDays(worldOn(new MapGrid(16, 16)));
     const house = home(w, t(1, 1));
     const shop = shopAt(w, 9, 9);
     const trip = { lastPlace: t(5, 5), tourMode: 'Car', carStatus: 'Driving', carPlace: buildingPlace(shop.id) } as const;
@@ -98,7 +105,7 @@ describe('citizens', () => {
   // TS: only a citizen whose trip has no car on the road, no place in the backlog and no walk under way is orphaned; Rust
   // took every trip past the timeout, and a long trip in a jam sent its driver home while the car drove on.
   it('aCitizenWhoseCarIsStillOnTheRoadIsNotSentHome', () => {
-    const w = worldOn(new MapGrid(16, 16));
+    const w = plainDays(worldOn(new MapGrid(16, 16)));
     const house = home(w, t(1, 1));
     const departed = -(CITIZEN_TRIP_TIMEOUT_SECS + 50);
     const driving = w.citizens.add({ ...newCitizen(house), state: 'ToWork', tripDepartedAtSec: departed, tripPurpose: 'Work' });
@@ -115,7 +122,7 @@ describe('citizens', () => {
   });
 
   it('cleanupSendsTheSurplusAwayTheLastToMoveInFirst', () => {
-    const w = worldOn(new MapGrid(16, 16));
+    const w = plainDays(worldOn(new MapGrid(16, 16)));
     const house = home(w, t(5, 5), 5);
     const residents = Array.from({ length: 5 }, () => w.citizens.add(newCitizen(house)));
 
@@ -140,7 +147,7 @@ describe('citizens', () => {
   });
 
   it('aStaleCitizenRefResolvesToNothing', () => {
-    const w = worldOn(new MapGrid(16, 16));
+    const w = plainDays(worldOn(new MapGrid(16, 16)));
     const house = home(w, t(5, 5), 2);
     const first = w.citizens.add(newCitizen(house));
     const second = w.citizens.add(newCitizen(house));
@@ -158,7 +165,7 @@ describe('citizens', () => {
   });
 
   it('citizensMoveIntoOpenHomesUpToTheirOccupancyEightATick', () => {
-    const w = worldOn(new MapGrid(32, 16));
+    const w = plainDays(worldOn(new MapGrid(32, 16)));
     const house = home(w, t(2, 2), 12);
     w.buildings.add(newBuilding({ kind: 'Residential', anchor: t(10, 2), occupancyResidents: 5, phase: { kind: 'UnderConstruction', hoursRemaining: 1 } }));
 
@@ -208,7 +215,7 @@ describe('citizens', () => {
   });
 
   it('aTripWithoutParkingInReachIsWalked', () => {
-    const w = worldOn(new MapGrid(400, 16));
+    const w = plainDays(worldOn(new MapGrid(400, 16)));
     const house = home(w, t(2, 2));
     const nearShop = shopAt(w, 150, 2, 0);
     const farShop = shopAt(w, 360, 2, 0);
@@ -237,7 +244,7 @@ describe('citizens', () => {
   });
 
   it('aLongerCommuteLeavesEarlier', () => {
-    const w = worldOn(new MapGrid(96, 16));
+    const w = plainDays(worldOn(new MapGrid(96, 16)));
     const house = home(w, t(2, 2));
     const toNear = w.citizens.add({ ...newCitizen(house, { workStart: 8 * 60 }), workplace: shopAt(w, 20).id });
     const toFar = w.citizens.add({ ...newCitizen(house, { workStart: 8 * 60 }), workplace: shopAt(w, 80).id });
@@ -249,7 +256,7 @@ describe('citizens', () => {
   });
 
   it('aWorkerAtHomeAtNightStaysHomeUntilTheirMorning', () => {
-    const w = worldOn(new MapGrid(32, 16));
+    const w = plainDays(worldOn(new MapGrid(32, 16)));
     const house = home(w, t(2, 2));
     const shop = shopAt(w, 20);
     w.citizens.add({ ...newCitizen(house, { workStart: 7 * 60 }), workplace: shop.id });
@@ -285,37 +292,12 @@ describe('citizens', () => {
     expect(view(w, trips[0]!.citizen).state, 'the walk that left at 6:57 ended on the way').toBe('AtWork');
   });
 
-  // TS: a shopper goes to one of the shops nearest home, and only in the evening after work; Rust sent them to any shop
-  // in town every nine to eighteen seconds.
-  it('workersShopInTheEveningAtAShopNearHome', () => {
-    const w = worldOn(new MapGrid(64, 16));
-    const west = home(w, t(2, 2), 8);
-    const east = home(w, t(50, 2), 8);
-    const shops = [8, 14, 20, 26, 32, 38, 44, 56].map((x) => shopAt(w, x, 8));
-    const workers = Array.from({ length: 120 }, (_, i) => w.citizens.add({ ...newCitizen(i % 2 === 0 ? west : east), workplace: shops[0]!.id }));
-
-    const trips: Array<readonly [minute: number, trip: TripRequested]> = [];
-    for (let minute = 12 * 60; minute < 21 * 60; minute += 5) {
-      for (const trip of planAt(w, 1, Math.floor(minute / 60), minute % 60)) trips.push([minute, trip]);
-    }
-
-    const shopping = trips.filter(([, trip]) => trip.purpose === 'Shop');
-    expect(shopping.length, 'some go shopping').toBeGreaterThan(10);
-    expect(shopping.length, 'most do not').toBeLessThan(workers.length / 2);
-    expect(shopping.every(([minute]) => minute >= 17 * 60 && minute < 20 * 60), 'between five and eight in the evening').toBe(true);
-    for (const [, trip] of shopping) {
-      const from = view(w, trip.citizen).home === west.id ? west : east;
-      const nearest = [...shops].sort((a, b) => Math.abs(a.anchor.x - from.anchor.x) - Math.abs(b.anchor.x - from.anchor.x)).slice(0, NEAREST_SHOPS);
-      expect(nearest.some((shop) => inside(shop, trip.to)), `a shop near (${from.anchor.x},${from.anchor.y}), not (${trip.to.x},${trip.to.y})`).toBe(true);
-    }
-  });
-
   // TS: a trip starts and parks beside the road on the side the footprint has one; Rust used the anchor, so the trips
   // of every building whose anchor corner faced away from its road were dropped by the vehicle spawn.
   it('aCitizenWhoseHomeAnchorIsAwayFromTheRoadLeavesFromTheSideOnIt', () => {
     const grid = new MapGrid(160, 30);
     roadRow(grid, 19, 10, 159);
-    const w = worldOn(grid);
+    const w = plainDays(worldOn(grid));
     // Rows 16..18 above the road: the anchor corner is two rows from it.
     const house = home(w, t(16, 16), 1);
     const shop = shopAt(w, 150, 20);
@@ -333,9 +315,95 @@ describe('citizens', () => {
   });
 
   it('aLateArrivalOfAnAbandonedTripChangesNothing', () => {
-    const w = worldOn(new MapGrid(16, 16));
+    const w = plainDays(worldOn(new MapGrid(16, 16)));
     const worker = w.citizens.add(newCitizen(home(w)));
     arrive(w, worker, 'Work', 1, 9);
     expect(view(w, worker).state).toBe('AtHome');
+  });
+  // Stage 3½: a day is an agenda of stops in any order, each tour from home closed by the way back.
+  it('anAgendaChainsItsStopsInOrderAndThenGoesHome', () => {
+    const w = worldOn(new MapGrid(64, 16));
+    const house = home(w, t(2, 2));
+    const [cafe, office, shop, park] = [placeAt(w, 'Cafe', 10), shopAt(w, 20), shopAt(w, 30), placeAt(w, 'Park', 40)];
+    const citizen = w.citizens.add({ ...newCitizen(house, { workStart: 9 * 60 }), workplace: office.id });
+    w.citizens.setAgenda(citizen, 1, [
+      { purpose: 'Cafe', building: cafe.id, stay: 20 },
+      { purpose: 'Work', building: office.id, arriveBy: 9 * 60, stay: 8 * 60 },
+      { purpose: 'Shop', building: shop.id, stay: 30 },
+      { purpose: 'Park', building: park.id, stay: 60 },
+      { purpose: 'ReturnHome' },
+    ]);
+
+    const trips: string[] = [];
+    let atWorkFrom: number | undefined;
+    for (let minute = 6 * 60; minute < 21 * 60; minute++) {
+      for (const trip of planAt(w, 1, Math.floor(minute / 60), minute % 60)) trips.push(trip.purpose);
+      if (view(w, citizen).state === 'AtWork') atWorkFrom ??= minute;
+    }
+    expect(trips, 'café, work, the shop, the park, home').toEqual(['Cafe', 'Work', 'Shop', 'Park', 'ReturnHome']);
+    // 80 m to the café, 20 minutes there, 100 m on: out at 8:37 to be at work by nine.
+    expect(atWorkFrom, 'at work by nine, not long before').toBe(9 * 60);
+    expect(view(w, citizen).state).toBe('AtHome');
+  });
+
+  it('someCitizensOnlyGoToTheParkAndBack', () => {
+    const w = worldOn(new MapGrid(64, 16));
+    const house = home(w, t(2, 2));
+    const park = placeAt(w, 'Park', 40);
+    const citizen = w.citizens.add(newCitizen(house));
+    w.citizens.setAgenda(citizen, 1, [{ purpose: 'Park', building: park.id, leaveAt: 10 * 60, stay: 90 }, { purpose: 'ReturnHome' }]);
+
+    const trips: Array<readonly [number, string]> = [];
+    for (let minute = 6 * 60; minute < 16 * 60; minute++) for (const trip of planAt(w, 1, Math.floor(minute / 60), minute % 60)) trips.push([minute, trip.purpose]);
+    // 380 m each way, five minutes on foot.
+    expect(trips).toEqual([
+      [10 * 60, 'Park'],
+      [10 * 60 + 5 + 90, 'ReturnHome'],
+    ]);
+  });
+
+  it('aDayCanHoldSeveralToursFromHome', () => {
+    const w = worldOn(new MapGrid(64, 16));
+    const house = home(w, t(2, 2));
+    const [shop, cafe] = [shopAt(w, 20), placeAt(w, 'Cafe', 30)];
+    const citizen = w.citizens.add(newCitizen(house));
+    w.citizens.setAgenda(citizen, 1, [
+      { purpose: 'Shop', building: shop.id, leaveAt: 10 * 60, stay: 30 },
+      { purpose: 'ReturnHome' },
+      { purpose: 'Cafe', building: cafe.id, leaveAt: 18 * 60, stay: 45 },
+      { purpose: 'ReturnHome' },
+    ]);
+    const trips: Array<readonly [number, string]> = [];
+    for (let minute = 6 * 60; minute < 22 * 60; minute++) for (const trip of planAt(w, 1, Math.floor(minute / 60), minute % 60)) trips.push([minute, trip.purpose]);
+    expect(trips.map(([, purpose]) => purpose)).toEqual(['Shop', 'ReturnHome', 'Cafe', 'ReturnHome']);
+    expect(trips[2]![0], 'the second tour leaves at six in the evening').toBe(18 * 60);
+  });
+
+  it('dayPlansFollowTheirChances', () => {
+    const w = worldOn(new MapGrid(64, 16));
+    const house = home(w, t(2, 2));
+    const office = shopAt(w, 20);
+    shopAt(w, 30);
+    placeAt(w, 'Cafe', 40);
+    placeAt(w, 'Park', 50);
+    const chances = w.citizenConfig.agenda;
+    const workers = Array.from({ length: 3000 }, () => w.citizens.add({ ...newCitizen(house, { workStart: 8 * 60 }), workplace: office.id }));
+    const free = Array.from({ length: 3000 }, () => w.citizens.add(newCitizen(house)));
+    at(w, 1, 4);
+    for (const ref of [...workers, ...free]) planAgenda(w, w.citizens.resolve(ref)!);
+
+    const agendas = (refs: number[]) => refs.map((ref) => w.citizens.agenda(ref));
+    for (const agenda of [...agendas(workers), ...agendas(free)]) {
+      if (agenda.length > 0) expect(agenda.at(-1)!.purpose, 'every tour ends at home').toBe('ReturnHome');
+      for (const stop of agenda) if (stop.leaveAt !== undefined) expect(stop.leaveAt >= 5 * 60 && stop.leaveAt <= 22 * 60, `nobody sets out at ${stop.leaveAt}`).toBe(true);
+    }
+    const share = (refs: number[], test: (agenda: ReturnType<typeof w.citizens.agenda>) => boolean) => agendas(refs).filter(test).length / refs.length;
+    expect(share(workers, (a) => a.filter((stop) => stop.purpose === 'Work').length === 1), 'every worker works once').toBe(1);
+    expect(Math.abs(share(workers, (a) => a[0]?.purpose === 'Cafe') - chances.cafeBeforeWork), 'a café on the way to work').toBeLessThan(0.03);
+    const firstTour = (a: ReturnType<typeof w.citizens.agenda>) => a.slice(0, a.findIndex((stop) => stop.purpose === 'ReturnHome'));
+    expect(Math.abs(share(workers, (a) => firstTour(a).some((stop) => stop.purpose === 'Park')) - chances.parkAfterWork), 'the park after work').toBeLessThan(0.03);
+    expect(Math.abs(share(free, (a) => a.length > 0) - (1 - (1 - chances.freeMorningTour) * (1 - chances.freeAfternoonTour))), 'a day off with an outing').toBeLessThan(0.03);
+    const purposes = new Set(agendas([...workers, ...free]).flat().map((stop) => stop.purpose));
+    expect([...purposes].sort()).toEqual(['Cafe', 'Park', 'ReturnHome', 'Shop', 'Work']);
   });
 });

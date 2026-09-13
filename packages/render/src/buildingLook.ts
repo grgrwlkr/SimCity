@@ -28,6 +28,8 @@ export function buildingHeight(kind: BuildingKind, level: number): number {
       return 20;
     case 'Park':
       return 2;
+    case 'Cafe':
+      return 8;
   }
 }
 
@@ -49,6 +51,7 @@ const KIND_COLORS: Readonly<Record<BuildingKind, Rgb>> = {
   School: [0.8, 0.58, 0.3],
   University: [0.55, 0.36, 0.62],
   Park: [0.3, 0.62, 0.28],
+  Cafe: [0.78, 0.36, 0.52],
 };
 
 export function buildingColor(kind: BuildingKind): Rgb {

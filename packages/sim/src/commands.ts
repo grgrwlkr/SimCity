@@ -49,6 +49,7 @@ export const BUILDING_KINDS = [
   'School',
   'University',
   'Park',
+  'Cafe',
 ] as const;
 export type BuildingKind = (typeof BUILDING_KINDS)[number];
 

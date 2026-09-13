@@ -31,9 +31,53 @@ export interface CitizenConfig {
   /** A trip past this long drives to the nearest spot farther away when none is in reach; a shorter one is walked. */
   farParkingTripMeters: number;
   walkKmh: number;
+  /** The chances of the stops a day's agenda holds besides work. */
+  agenda: AgendaChances;
 }
 
-export const defaultCitizenConfig = (): CitizenConfig => ({ walkMaxMeters: 1000, parkingWalkMeters: 400, farParkingTripMeters: 3000, walkKmh: 5 });
+/** The chances of the stops of a day, each drawn on its own. */
+export interface AgendaChances {
+  /** A worker stops at a café on the way to work. */
+  cafeBeforeWork: number;
+  /** After work, before home, in any order. */
+  shopAfterWork: number;
+  parkAfterWork: number;
+  cafeAfterWork: number;
+  /** A worker goes out again in the evening, to the park or a café. */
+  eveningOuting: number;
+  /** A citizen without work goes out in the morning, and in the afternoon. */
+  freeMorningTour: number;
+  freeAfternoonTour: number;
+}
+
+export const DEFAULT_AGENDA: AgendaChances = {
+  cafeBeforeWork: 0.15,
+  shopAfterWork: 0.3,
+  parkAfterWork: 0.15,
+  cafeAfterWork: 0.15,
+  eveningOuting: 0.2,
+  freeMorningTour: 0.6,
+  freeAfternoonTour: 0.5,
+};
+
+/** Work and home only. */
+export const NO_OUTINGS: AgendaChances = {
+  cafeBeforeWork: 0,
+  shopAfterWork: 0,
+  parkAfterWork: 0,
+  cafeAfterWork: 0,
+  eveningOuting: 0,
+  freeMorningTour: 0,
+  freeAfternoonTour: 0,
+};
+
+export const defaultCitizenConfig = (): CitizenConfig => ({
+  walkMaxMeters: 1000,
+  parkingWalkMeters: 400,
+  farParkingTripMeters: 3000,
+  walkKmh: 5,
+  agenda: { ...DEFAULT_AGENDA },
+});
 
 /** A spot is addressed by a number: a building by its id, from 1; a street lane tile by `-(tile index + 1)`; 0 is none. */
 export const NO_PLACE = 0;

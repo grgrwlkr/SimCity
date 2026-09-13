@@ -8,7 +8,7 @@ import type { TickEvents } from './events';
 import type { Notifications } from './notifications';
 import type { Timer } from './timer';
 import type { VehicleLayers } from './traffic/vehicles';
-import { LAYER_NAMES as CITIZEN_LAYER_NAMES } from './citizens';
+import { AGENDA_STOPS, LAYER_NAMES as CITIZEN_LAYER_NAMES, STOP_LAYER_NAMES } from './citizens';
 import type { World } from './world';
 
 const FNV_OFFSET_HI = 0xcbf2_9ce4;
@@ -277,6 +277,10 @@ function hashCitizens(h: Fnv64, w: World): void {
     h.str(name);
     h.bytes(c[name].subarray(0, c.highWater));
   }
+  for (const name of STOP_LAYER_NAMES) {
+    h.str(name);
+    h.bytes(c[name].subarray(0, c.highWater * AGENDA_STOPS));
+  }
   h.u32(c.freeSlots.length);
   for (const slot of c.freeSlots) h.u32(slot);
   h.u32(c.unplanned.length);
@@ -326,6 +330,8 @@ function hashEvents(h: Fnv64, e: TickEvents): void {
     h.u32(citizen);
     h.str(purpose);
   }
+  h.u32(e.walksFinished.length);
+  for (const citizen of e.walksFinished) h.u32(citizen);
 }
 
 function hashNotifications(h: Fnv64, n: Notifications): void {
