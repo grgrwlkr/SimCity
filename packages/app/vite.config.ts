@@ -23,9 +23,12 @@ const alwaysFullResponses: Plugin = {
   configurePreviewServer: (server) => void server.middlewares.use(stripConditionalRequest),
 };
 
+/** 5174, the port the e2e gate opens; a preview beside another dev server gets its own through `PORT`. */
+const port = Number(process.env.PORT ?? 5174);
+
 export default defineConfig({
   plugins: [alwaysFullResponses, react()],
-  server: { port: 5174, strictPort: true, headers: crossOriginIsolation },
-  preview: { port: 5174, strictPort: true, headers: crossOriginIsolation },
+  server: { port, strictPort: true, headers: crossOriginIsolation },
+  preview: { port, strictPort: true, headers: crossOriginIsolation },
   worker: { format: 'es' },
 });
