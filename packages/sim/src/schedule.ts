@@ -46,6 +46,7 @@ import { rebuildRegionGraph } from './transport/regionGraph';
 import { rebuildRoadGraph } from './transport/roadGraph';
 import { autogenTurnLanes } from './transport/turnLanes';
 import { updateUtilityNetwork } from './utilities';
+import { moveWalkers } from './walkers';
 import type { World } from './world';
 
 export type System = (w: World, dtNs: number) => void;
@@ -120,6 +121,8 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'buildingDecayNoRoadAccess', run: buildingDecayNoRoadAccess, runIn: IN_GAME },
   // SimStep::Traffic, before the vehicle states that read the phase.
   { name: 'updateTrafficLights', run: updateTrafficLights, runIn: IN_GAME },
+  // After updateTrafficLights: walkers wait at a crossing by this tick's lights; the planner of this tick set out the new ones.
+  { name: 'moveWalkers', run: moveWalkers, runIn: IN_GAME },
   // TrafficStep::Flow, first: last tick's positions, so routing and the capacity gate see fresh counts.
   { name: 'updateTrafficOccupancy', run: updateTrafficOccupancy, runIn: IN_GAME },
   // After updateTrafficOccupancy and the lights: approach, stop and release states.

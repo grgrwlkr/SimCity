@@ -12,7 +12,7 @@
 // - a citizen walks a short trip, a trip without a car, and one with nowhere to park in reach; the car of one who
 //   drives is a vehicle only while it drives, and otherwise holds a parking spot (stage 3½b). Rust drove every trip.
 import { isOperational, type Building } from './buildings/building';
-import { MINUTES_PER_DAY, gameMinute, gameSecond } from './city';
+import { MINUTES_PER_DAY, gameMinute } from './city';
 import type { TilePos } from './commands';
 import type { TripMode } from './events';
 import {
@@ -31,6 +31,7 @@ import { randomBool, rangeU32, shuffle } from './rng';
 import { fixedElapsedSecs } from './traffic/reservations';
 import { TRIP_PURPOSES, type TripPurpose } from './traffic/vehicles';
 import { footprintEntrance } from './transport/anchors';
+import { LIT_CROSSING_WAIT_SECS, walkMeasure } from './walkers';
 import type { World } from './world';
 
 const f32 = Math.fround;
@@ -269,7 +270,7 @@ export class MinuteQueue {
   }
 }
 
-type Layer = Uint8Array | Int8Array | Uint16Array | Int16Array | Int32Array | Float64Array;
+type Layer = Uint8Array | Int8Array | Uint16Array | Int16Array | Int32Array | Float32Array | Float64Array;
 
 function grown<T extends Layer>(layer: T, capacity: number, fill: number): T {
   const next = new (layer.constructor as new (length: number) => T)(capacity);
@@ -318,10 +319,10 @@ export class Citizens {
   walking = new Uint8Array(0);
   /** 1 while on foot: a walked leg, or the way from where the car stands to the door. `walkers.ts` draws them. */
   onFoot = new Uint8Array(0);
-  /** Where the walk under way started, and when, in game seconds since day 1. */
+  /** Where the walk under way started, and how far along its path the walker is, tiles. */
   walkFromX = new Int32Array(0);
   walkFromY = new Int32Array(0);
-  walkStartSec = new Float64Array(0);
+  walkProgress = new Float32Array(0);
   /** `CAR_STATUSES` index. */
   carStatus = new Uint8Array(0);
   /** A `parking.ts` address, 0 without a car. */
@@ -437,8 +438,8 @@ export class Citizens {
     this.count -= 1;
   }
 
-  /** Starts a walk from `from` at `startSec`, game seconds, or with `null` ends the one under way. */
-  setOnFoot(slot: number, from: TilePos | null, startSec = 0): void {
+  /** Starts a walk from `from`, or with `null` ends the one under way. */
+  setOnFoot(slot: number, from: TilePos | null): void {
     const was = this.onFoot[slot] === 1;
     if (from === null) {
       if (was) this.onFootCount -= 1;
@@ -449,7 +450,7 @@ export class Citizens {
     this.onFoot[slot] = 1;
     this.walkFromX[slot] = from.x;
     this.walkFromY[slot] = from.y;
-    this.walkStartSec[slot] = startSec;
+    this.walkProgress[slot] = 0;
   }
 
   setState(slot: number, state: number): void {
@@ -623,7 +624,7 @@ export const LAYER_NAMES = [
   'onFoot',
   'walkFromX',
   'walkFromY',
-  'walkStartSec',
+  'walkProgress',
   'carStatus',
   'carPlace',
   'carX',
@@ -689,9 +690,10 @@ function entrance(w: World, b: Building, towards: TilePos): TilePos {
 
 const tripMeters = (w: World, from: TilePos, to: TilePos) => (Math.abs(from.x - to.x) + Math.abs(from.y - to.y)) * w.trafficConfig.tileMeters;
 
-/** Whole game minutes a walk from `from` to `to` takes, rounded up. */
+/** Whole game minutes a walk from `from` to `to` takes along its path, rounded up, with a wait at every crossing with a light. */
 function walkMinutes(w: World, from: TilePos, to: TilePos): number {
-  return Math.ceil((tripMeters(w, from, to) * 60) / (w.citizenConfig.walkKmh * 1000));
+  const { meters, litCrossings } = walkMeasure(w, from, to);
+  return Math.ceil((meters * 60) / (w.citizenConfig.walkKmh * 1000) + (litCrossings * LIT_CROSSING_WAIT_SECS) / 60);
 }
 
 function setOut(w: World, slot: number, to: TilePos, purpose: TripPurpose, nowSecs: number): void {
@@ -713,7 +715,7 @@ function departOnFoot(w: World, slot: number, from: TilePos, to: TilePos, purpos
   w.events.tripRequested.push({ citizen: c.ref(slot), from, carParkedAt: null, to, purpose, mode: 'Walk' });
   setOut(w, slot, to, purpose, nowSecs);
   c.walking[slot] = 1;
-  c.setOnFoot(slot, from, minute * 60);
+  c.setOnFoot(slot, from);
   c.schedule(slot, minute + walkMinutes(w, from, to), purpose);
 }
 
@@ -1094,7 +1096,7 @@ export function handleTripFinished(w: World): void {
       c.carStatus[slot] = CAR_PARKED;
       const walk = walkMinutes(w, { x: c.carX[slot]!, y: c.carY[slot]! }, { x: c.destX[slot]!, y: c.destY[slot]! });
       if (walk > 0) {
-        c.setOnFoot(slot, { x: c.carX[slot]!, y: c.carY[slot]! }, gameSecond(w));
+        c.setOnFoot(slot, { x: c.carX[slot]!, y: c.carY[slot]! });
         c.schedule(slot, now + walk, arrival.purpose);
         continue;
       }
