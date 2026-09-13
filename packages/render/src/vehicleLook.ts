@@ -11,8 +11,19 @@ const TRUCK: Scale = [TRUCK_LENGTH_METERS / CAR_LENGTH_METERS, 1.1, 1.6];
 const PERSON_TILES = 0.12;
 const PEDESTRIAN: Scale = [PERSON_TILES / VEHICLE_LENGTH_TILES, PERSON_TILES / VEHICLE_WIDTH_TILES, 0.8];
 
+/** A pedestrian is never drawn narrower than this many pixels. */
+const MIN_PEDESTRIAN_PIXELS = 3;
+
 /** Length, width and height against the car cube. */
 export function vehicleScale(kind: number): Scale {
   if (kind === TRUCK_KIND || kind === PARKED_TRUCK_KIND) return TRUCK;
   return kind === PEDESTRIAN_KIND ? PEDESTRIAN : CAR;
+}
+
+/** The scale drawn at a zoom of `worldPerPixel`: a pedestrian grows to stay a few pixels wide, everything else keeps its size. */
+export function drawnScale(kind: number, tileSize: number, worldPerPixel: number): Scale {
+  const scale = vehicleScale(kind);
+  if (kind !== PEDESTRIAN_KIND) return scale;
+  const grow = Math.max((MIN_PEDESTRIAN_PIXELS * worldPerPixel) / (scale[1] * VEHICLE_WIDTH_TILES * tileSize), 1);
+  return [scale[0] * grow, scale[1] * grow, scale[2]];
 }

@@ -1,6 +1,6 @@
 // The stage 1½ debug renderer: map chunks, vehicles as cubes, overlays, a top-down orthographic
 // camera. Colours reach the screen exactly as written, so a screenshot can be read back per tile.
-import { RENDER_ID_SPACE, type DebugOverlayReply, type MapLayersReply, type RenderFrameCopy, type RenderReader, type TrafficLightView } from '@simcity/bridge';
+import { PEDESTRIAN_KIND, RENDER_ID_SPACE, type DebugOverlayReply, type MapLayersReply, type RenderFrameCopy, type RenderReader, type TrafficLightView } from '@simcity/bridge';
 import {
   VEHICLE_LENGTH_TILES,
   VEHICLE_WIDTH_TILES,
@@ -16,7 +16,7 @@ import { lampSignal } from './lamps';
 import { buildChunkGeometry, changedChunks, chunkGrid } from './mapChunks';
 import { LAMP_COLORS, VEHICLE_COLORS } from './palette';
 import { PlaybackClock } from './playback';
-import { vehicleScale } from './vehicleLook';
+import { drawnScale, vehicleScale } from './vehicleLook';
 
 /** Sim frames kept for playback: the display draws a gap or two behind the newest one. */
 const FRAME_HISTORY = 6;
@@ -76,6 +76,8 @@ export class DebugRenderer {
   private readonly lampGroup = new THREE.Group();
   private readonly chunkMaterial = new THREE.MeshBasicMaterial({ vertexColors: true });
   private vehicles: THREE.InstancedMesh | null = null;
+  /** The tile size the vehicle cube was made for. */
+  private vehicleTileSize = 1;
   private map: MapLayersReply | null = null;
   private reader: RenderReader | null = null;
   /** The newest sim frames, oldest first, and the copies the next reads go into. */
@@ -336,6 +338,7 @@ export class DebugRenderer {
   private createVehicleMesh(tileSize: number): void {
     if (this.reader === null) return;
     // The cube is the car the simulation moves: the same length and width, so queues look like queues.
+    this.vehicleTileSize = tileSize;
     const length = tileSize * VEHICLE_LENGTH_TILES;
     const width = tileSize * VEHICLE_WIDTH_TILES;
     const geometry = new THREE.BoxGeometry(length, width, width);
@@ -382,13 +385,14 @@ export class DebugRenderer {
     const matrices = vehicles.instanceMatrix.array as Float32Array;
     const colors = vehicles.instanceColor.array as Float32Array;
     let recoloured = false;
+    const pedestrian = drawnScale(PEDESTRIAN_KIND, this.vehicleTileSize, this.view.worldPerPixel);
     for (let k = 0; k < n; k++) {
       const j = scratch.pairs[k]!;
       const heading = j >= 0 ? interpolateHeading(from.heading[j]!, to.heading[k]!, alpha) : to.heading[k]!;
       const cos = Math.cos(heading);
       const sin = Math.sin(heading);
       const kind = to.kind[k]!;
-      const [length, width, height] = vehicleScale(kind);
+      const [length, width, height] = kind === PEDESTRIAN_KIND ? pedestrian : vehicleScale(kind);
       // Column-major: a turn about z, scaled to the kind, lifted to z = 1 (what `Matrix4.compose` gave).
       const o = k * 16;
       matrices[o] = cos * length;
