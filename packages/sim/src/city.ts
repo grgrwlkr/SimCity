@@ -56,6 +56,11 @@ export function gameMinute(w: World): number {
   return (w.city.day - 1) * MINUTES_PER_DAY + w.city.hour * 60 + w.city.minute;
 }
 
+/** Game seconds since day 1, 00:00:00. */
+export function gameSecond(w: World): number {
+  return gameMinute(w) * 60 + w.city.second;
+}
+
 /** `SimStep::Tick`: advances the hour and day, emits `HourAdvanced` / `DayAdvanced`, and keeps the minute. */
 export function simTick(w: World, dtNs: number): void {
   const clock = w.clock;

@@ -8,6 +8,8 @@ import {
   CROSS_LAYOUT,
   despawnVehicle,
   forEachCitizenCar,
+  forEachRegionalStanding,
+  forEachWalker,
   detectIntersections,
   fingerprint,
   LivingCityScenario,
@@ -37,15 +39,30 @@ import {
   type Request,
   type WorldSnapshot,
 } from './protocol';
-import { PARKED_VEHICLE_KIND, RenderWriter, createRenderBuffer, extraCars, type RenderExtras } from './renderBuffer';
+import {
+  PARKED_TRUCK_KIND,
+  PARKED_VEHICLE_KIND,
+  PEDESTRIAN_KIND,
+  RENDER_ID_SPACE,
+  RenderWriter,
+  TRUCK_KIND,
+  createRenderBuffer,
+  extraCars,
+  type RenderExtras,
+} from './renderBuffer';
 import { debugOverlayOf, renderLayersOf } from './renderLayers';
 import type { ScenarioName } from './scenarios';
 
-/** Cars a frame holds: the micro vehicles, the driving cars of citizens and their parked ones. */
+/** Vehicles a frame holds: the micro vehicles, meso traffic, parked cars, standing trucks and people on foot. */
 export const RENDER_CAPACITY = 32_768;
-/** Render slot ids of the cars of citizens, after the micro vehicle slots: driving ones, then parked ones. */
+/**
+ * Render ids after the micro vehicle slots, each source in a range of its own: the vehicles of meso traffic, the parked
+ * cars of citizens, citizens on foot, and the cars and trucks of the region standing at their buildings.
+ */
 const DRIVING_ID_BASE = VEHICLE_CAPACITY;
-const PARKED_ID_BASE = 3 * VEHICLE_CAPACITY;
+const PARKED_ID_BASE = 1 << 17;
+const WALKER_ID_BASE = 1 << 18;
+const STANDING_ID_BASE = 3 << 18;
 
 /** A scenario the host feeds before every tick; one with commuters also reports them. */
 interface HostScenario {
@@ -254,18 +271,27 @@ export class SimHost {
     const extras = this.extras;
     const capacity = extras.x.length;
     extras.count = 0;
-    forEachCitizenCar(this.world, (parked, id, generation, x, y, heading) => {
-      const slot = (parked ? PARKED_ID_BASE : DRIVING_ID_BASE) + id;
-      if (extras.count >= capacity || slot >= capacity) return;
+    /** Under `id` when it is below the range of the next source. */
+    const push = (id: number, limit: number, generation: number, x: number, y: number, heading: number, kind: number) => {
+      if (extras.count >= capacity || id >= limit) return;
       const i = extras.count;
       extras.x[i] = x;
       extras.y[i] = y;
       extras.heading[i] = heading;
-      extras.slot[i] = slot;
+      extras.slot[i] = id;
       extras.generation[i] = generation;
-      extras.kind[i] = parked ? PARKED_VEHICLE_KIND : 0;
+      extras.kind[i] = kind;
       extras.count += 1;
+    };
+    const w = this.world;
+    forEachCitizenCar(w, (parked, id, generation, x, y, heading, truck) => {
+      if (parked) push(PARKED_ID_BASE + id, WALKER_ID_BASE, generation, x, y, heading, PARKED_VEHICLE_KIND);
+      else push(DRIVING_ID_BASE + id, PARKED_ID_BASE, generation, x, y, heading, truck ? TRUCK_KIND : 0);
     });
-    this.writer.publish(this.world.tick, this.world.vehicles, extras);
+    forEachRegionalStanding(w, (slot, generation, x, y, heading, truck) =>
+      push(STANDING_ID_BASE + slot, RENDER_ID_SPACE, generation, x, y, heading, truck ? PARKED_TRUCK_KIND : PARKED_VEHICLE_KIND),
+    );
+    forEachWalker(w, (slot, generation, x, y, heading) => push(WALKER_ID_BASE + slot, STANDING_ID_BASE, generation, x, y, heading, PEDESTRIAN_KIND));
+    this.writer.publish(w.tick, w.vehicles, extras);
   }
 }

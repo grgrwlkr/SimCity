@@ -9,6 +9,7 @@ import type { Notifications } from './notifications';
 import type { Timer } from './timer';
 import type { VehicleLayers } from './traffic/vehicles';
 import { AGENDA_STOPS, LAYER_NAMES as CITIZEN_LAYER_NAMES, STOP_LAYER_NAMES } from './citizens';
+import { REGIONAL_LAYER_NAMES } from './regional';
 import type { World } from './world';
 
 const FNV_OFFSET_HI = 0xcbf2_9ce4;
@@ -251,14 +252,15 @@ function hashMeso(h: Fnv64, w: World): void {
   h.str(stableJson(m.stats));
   h.u32(m.highWater);
   h.u32(m.count);
-  for (const layer of [m.citizen, m.purpose, m.link, m.enterSec, m.readySec, m.goalLink, m.goalOffset, m.next, m.heldSince, m.atRed, m.routeCursor, m.fromOffset, m.prevLink, m.generation]) {
+  h.u32(m.trucks);
+  for (const layer of [m.citizen, m.vehicle, m.purpose, m.link, m.enterSec, m.readySec, m.goalLink, m.goalOffset, m.next, m.heldSince, m.atRed, m.routeCursor, m.fromOffset, m.prevLink, m.generation]) {
     h.bytes(layer.subarray(0, m.highWater));
   }
   h.u32(m.freeSlots.length);
   for (const slot of m.freeSlots) h.u32(slot);
   for (let car = 0; car < m.highWater; car++) if (m.link[car] !== -1) h.bytes(m.routes[car]!);
   h.f64(m.linksFor ?? -1);
-  for (const layer of [m.head, m.tail, m.onLink, m.tokens, m.tokensAt, m.exits, m.linkSeconds, m.measuredSum, m.measuredCount]) h.bytes(layer);
+  for (const layer of [m.head, m.tail, m.onLink, m.usedMeters, m.tokens, m.tokensAt, m.exits, m.linkSeconds, m.measuredSum, m.measuredCount]) h.bytes(layer);
   h.f64(m.nextCostUpdate);
   h.u32(m.due.keys.length);
   m.due.keys.forEach((key, i) => {
@@ -305,6 +307,29 @@ function hashCitizens(h: Fnv64, w: World): void {
   for (const ref of c.jobSeekers) h.i32(ref);
   h.str(stableJson(w.shoppingStats));
   h.str(stableJson(w.commuteStats));
+}
+
+function hashRegional(h: Fnv64, w: World): void {
+  const r = w.regional;
+  h.u32(r.highWater);
+  h.u32(r.count);
+  h.u32(r.drivingCount);
+  h.u32(r.plannedDay);
+  h.bytes(r.accumulators);
+  for (const name of REGIONAL_LAYER_NAMES) {
+    h.str(name);
+    h.bytes(r[name].subarray(0, r.highWater));
+  }
+  h.u32(r.freeSlots.length);
+  for (const slot of r.freeSlots) h.u32(slot);
+  const buckets = r.queue.entries();
+  h.u32(buckets.length);
+  for (const [minute, slots] of buckets) {
+    h.i32(minute);
+    h.u32(slots.length);
+    for (const slot of slots) h.u32(slot);
+  }
+  h.str(stableJson(w.regionalConfig));
 }
 
 function hashTimer(h: Fnv64, t: Timer): void {
@@ -532,6 +557,7 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
   ['buildings', hashBuildings],
   ['economy', hashEconomy],
   ['citizens', hashCitizens],
+  ['regional', hashRegional],
   ['meso', hashMeso],
 ];
 

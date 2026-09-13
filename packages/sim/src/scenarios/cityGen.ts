@@ -130,9 +130,10 @@ export function buildCity(w: World, options: CityOptions = {}): CityPlan {
     lay({ x: 22, y }, { x: 6, y }, 'TwoLane');
     lay({ x: 103, y }, { x: 121, y }, 'TwoLane');
   }
-  for (const x of ARTERIALS_X) lay({ x, y: 1 }, { x, y: 126 }, 'FourLane');
-  for (const y of ARTERIALS_Y) if (y !== BOULEVARD_Y) lay({ x: 1, y }, { x: 126, y }, 'FourLane');
-  lay({ x: 1, y: BOULEVARD_Y }, { x: 126, y: BOULEVARD_Y }, 'SixLane');
+  // The arterials and the boulevard run to the edges of the map: the region's traffic comes and goes over them.
+  for (const x of ARTERIALS_X) lay({ x, y: 0 }, { x, y: CITY_SIZE - 1 }, 'FourLane');
+  for (const y of ARTERIALS_Y) if (y !== BOULEVARD_Y) lay({ x: 0, y }, { x: CITY_SIZE - 1, y }, 'FourLane');
+  lay({ x: 0, y: BOULEVARD_Y }, { x: CITY_SIZE - 1, y: BOULEVARD_Y }, 'SixLane');
 
   const zones: GameCommand[] = [];
   for (let y = 0; y < CITY_SIZE && zoned; y++) {

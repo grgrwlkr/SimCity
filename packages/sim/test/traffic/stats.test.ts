@@ -31,6 +31,10 @@ describe('traffic summary', () => {
       avgSpeedKmh: 20,
       backlog: 1,
       avgCongestionPct: 25,
+      // Stage 3½: nobody on foot, no trucks and no region in a world of scenario vehicles.
+      trucks: 0,
+      pedestrians: 0,
+      regional: 0,
     });
   });
 

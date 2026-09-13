@@ -7,7 +7,7 @@ import type { TilePos } from '../../src/commands';
 import type { TripRequested } from '../../src/events';
 import { tileFToWorld } from '../../src/map/coords';
 import { forEachCitizenCar } from '../../src/meso/render';
-import { stepMesoTraffic } from '../../src/meso/traffic';
+import { CAR_LENGTH_METERS, CAR_SPACE_METERS, TRUCK_LENGTH_METERS, stepMesoTraffic } from '../../src/meso/traffic';
 import { giveCar } from '../../src/parking';
 import { TICK_DT_NS } from '../../src/schedule';
 import type { World } from '../../src/world';
@@ -112,6 +112,22 @@ describe('meso render', () => {
     expect(head!.x).toBeCloseTo(tileFToWorld(w.mapConfig, 14, 9).x, 0);
     expect(second!.x).toBeCloseTo(tileFToWorld(w.mapConfig, 13.25, 9).x, 0);
     expect([head!.y, second!.y]).toEqual([tileFToWorld(w.mapConfig, 14, 9).y, tileFToWorld(w.mapConfig, 14, 9).y]);
+  });
+
+  // A truck is 16.5 m long: behind a car its middle stands a car's room and the rest of its own length back.
+  it('aTruckQueuesItsLengthBehindTheCarAhead', () => {
+    const w = crossing();
+    const intersectionId = w.intersections.intersectionIdAt(t(15, 9))!;
+    w.trafficLights = [{ intersectionId, intersectionKey: 'test', pos: t(15, 9), phase: 'NorthSouthGreen', phaseTimer: 1e9, greenDuration: 20, yellowDuration: 3, allRedDuration: 4 }];
+    w.mesoTraffic.pending.push(trip(1, t(3, 9), t(25, 9)), { ...trip(-1, t(2, 9), t(25, 9)), purpose: 'Freight', vehicle: 'Truck' });
+    drive(w, 40);
+
+    const drawn: Array<{ x: number; truck: boolean }> = [];
+    forEachCitizenCar(w, (_parked, _id, _generation, x, _y, _heading, truck) => drawn.push({ x, truck }));
+    const [head, behind] = drawn.sort((a, b) => b.x - a.x);
+    expect([head!.truck, behind!.truck]).toEqual([false, true]);
+    const back = (CAR_SPACE_METERS + (TRUCK_LENGTH_METERS - CAR_LENGTH_METERS) / 2) / w.trafficConfig.tileMeters;
+    expect(Math.abs(behind!.x - tileFToWorld(w.mapConfig, 14 - back, 9).x), `truck at ${behind!.x}`).toBeLessThan(0.05 * w.mapConfig.tileSize);
   });
 
   it('aParkedCarIsDrawnWhereItStands', () => {

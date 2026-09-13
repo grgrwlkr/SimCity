@@ -36,6 +36,9 @@ function TrafficStats({ traffic }: { traffic: TrafficView }) {
       {traffic.citizens !== null && <span data-testid="citizens">Жители {count.format(traffic.citizens)}</span>}
       {traffic.travelling !== null && <span>в пути {count.format(traffic.travelling)}</span>}
       <span data-testid="driving">Едут {count.format(traffic.driving)}</span>
+      <span data-testid="trucks">фуры {count.format(traffic.trucks)}</span>
+      <span>из-за города {count.format(traffic.regional)}</span>
+      <span data-testid="pedestrians">пешком {count.format(traffic.pedestrians)}</span>
       <span>на парковке {count.format(traffic.parked)}</span>
       <span>ждут выезда {count.format(traffic.backlog)}</span>
       <span>у светофоров {count.format(traffic.waitingAtLights)}</span>

@@ -12,7 +12,7 @@
 // - a citizen walks a short trip, a trip without a car, and one with nowhere to park in reach; the car of one who
 //   drives is a vehicle only while it drives, and otherwise holds a parking spot (stage 3½b). Rust drove every trip.
 import { isOperational, type Building } from './buildings/building';
-import { MINUTES_PER_DAY, gameMinute } from './city';
+import { MINUTES_PER_DAY, gameMinute, gameSecond } from './city';
 import type { TilePos } from './commands';
 import type { TripMode } from './events';
 import {
@@ -70,6 +70,7 @@ export const CITIZEN_STATES = ['AtHome', 'ToWork', 'AtWork', 'ToShop', 'AtShop',
 export type CitizenState = (typeof CITIZEN_STATES)[number];
 const TRIP_MODES = ['Walk', 'Car'] as const satisfies readonly TripMode[];
 
+const NONE = -1;
 const AT_HOME = CITIZEN_STATES.indexOf('AtHome');
 const TO_HOME = CITIZEN_STATES.indexOf('ToHome');
 const TRAVEL_STATE: Readonly<Record<TripPurpose, number>> = {
@@ -78,6 +79,9 @@ const TRAVEL_STATE: Readonly<Record<TripPurpose, number>> = {
   ReturnHome: TO_HOME,
   Cafe: CITIZEN_STATES.indexOf('ToCafe'),
   Park: CITIZEN_STATES.indexOf('ToPark'),
+  // Trips of the region, never of a citizen.
+  Freight: NONE,
+  Through: NONE,
 };
 const STAY_STATE: Readonly<Record<TripPurpose, number>> = {
   Work: CITIZEN_STATES.indexOf('AtWork'),
@@ -85,13 +89,14 @@ const STAY_STATE: Readonly<Record<TripPurpose, number>> = {
   ReturnHome: AT_HOME,
   Cafe: CITIZEN_STATES.indexOf('AtCafe'),
   Park: CITIZEN_STATES.indexOf('AtPark'),
+  Freight: NONE,
+  Through: NONE,
 };
 const isTravelling = (state: number) => CITIZEN_STATES[state]!.startsWith('To');
 const isStaying = (state: number) => state !== AT_HOME && CITIZEN_STATES[state]!.startsWith('At');
 const RETURN_HOME = TRIP_PURPOSES.indexOf('ReturnHome');
 const WALK = TRIP_MODES.indexOf('Walk');
 const CAR = TRIP_MODES.indexOf('Car');
-const NONE = -1;
 
 /** Bits of a citizen reference that name its slot: room for two million citizens. */
 export const CITIZEN_SLOT_BITS = 21;
@@ -289,6 +294,8 @@ export class Citizens {
   moveIns = 0;
   /** Citizens the planner took off due minutes on its last run. */
   plannerWoken = 0;
+  /** Citizens on foot. */
+  onFootCount = 0;
 
   alive = new Uint8Array(0);
   generation = new Uint16Array(0);
@@ -309,6 +316,12 @@ export class Citizens {
   tourMode = new Int8Array(0);
   /** The leg under way is walked, so its arrival counts as a walk. */
   walking = new Uint8Array(0);
+  /** 1 while on foot: a walked leg, or the way from where the car stands to the door. `walkers.ts` draws them. */
+  onFoot = new Uint8Array(0);
+  /** Where the walk under way started, and when, in game seconds since day 1. */
+  walkFromX = new Int32Array(0);
+  walkFromY = new Int32Array(0);
+  walkStartSec = new Float64Array(0);
   /** `CAR_STATUSES` index. */
   carStatus = new Uint8Array(0);
   /** A `parking.ts` address, 0 without a car. */
@@ -385,6 +398,7 @@ export class Citizens {
     this.destY[slot] = spec.lastPlace.y;
     this.tourMode[slot] = spec.tourMode === null ? NONE : TRIP_MODES.indexOf(spec.tourMode);
     this.walking[slot] = 0;
+    this.onFoot[slot] = 0;
     this.carStatus[slot] = CAR_STATUSES.indexOf(spec.carStatus);
     this.carPlace[slot] = spec.carPlace;
     this.carX[slot] = spec.carParkedAt.x;
@@ -416,10 +430,26 @@ export class Citizens {
     this.stateCounts[this.state[slot]!]! -= 1;
     countUp(this.residents, this.home[slot]!, -1);
     if (this.workplace[slot] !== NONE) countUp(this.workers, this.workplace[slot]!, -1);
+    this.setOnFoot(slot, null);
     this.alive[slot] = 0;
     this.generation[slot] = (this.generation[slot]! + 1) % GENERATIONS;
     this.freeSlots.push(slot);
     this.count -= 1;
+  }
+
+  /** Starts a walk from `from` at `startSec`, game seconds, or with `null` ends the one under way. */
+  setOnFoot(slot: number, from: TilePos | null, startSec = 0): void {
+    const was = this.onFoot[slot] === 1;
+    if (from === null) {
+      if (was) this.onFootCount -= 1;
+      this.onFoot[slot] = 0;
+      return;
+    }
+    if (!was) this.onFootCount += 1;
+    this.onFoot[slot] = 1;
+    this.walkFromX[slot] = from.x;
+    this.walkFromY[slot] = from.y;
+    this.walkStartSec[slot] = startSec;
   }
 
   setState(slot: number, state: number): void {
@@ -546,6 +576,7 @@ export class Citizens {
     this.count = 0;
     this.moveIns = 0;
     this.plannerWoken = 0;
+    this.onFootCount = 0;
     this.freeSlots.length = 0;
     this.unplanned = [];
     this.jobSeekers = [];
@@ -589,6 +620,10 @@ export const LAYER_NAMES = [
   'destY',
   'tourMode',
   'walking',
+  'onFoot',
+  'walkFromX',
+  'walkFromY',
+  'walkStartSec',
   'carStatus',
   'carPlace',
   'carX',
@@ -678,6 +713,7 @@ function departOnFoot(w: World, slot: number, from: TilePos, to: TilePos, purpos
   w.events.tripRequested.push({ citizen: c.ref(slot), from, carParkedAt: null, to, purpose, mode: 'Walk' });
   setOut(w, slot, to, purpose, nowSecs);
   c.walking[slot] = 1;
+  c.setOnFoot(slot, from, minute * 60);
   c.schedule(slot, minute + walkMinutes(w, from, to), purpose);
 }
 
@@ -695,6 +731,7 @@ function departByCar(w: World, slot: number, to: TilePos, spot: number, purpose:
   w.events.tripRequested.push({ citizen: c.ref(slot), from, carParkedAt: from, to: parkAt, purpose, mode: 'Car', pocket: true });
   setOut(w, slot, to, purpose, nowSecs);
   c.walking[slot] = 0;
+  c.setOnFoot(slot, null);
   c.schedule(slot, null, null);
 }
 
@@ -907,6 +944,7 @@ function arrive(w: World, slot: number, purpose: TripPurpose, minute: number, no
   }
   if (c.walking[slot] === 1) w.events.walksFinished.push(c.ref(slot));
   c.walking[slot] = 0;
+  c.setOnFoot(slot, null);
   c.tripDepartedAtSec[slot] = NaN;
   c.tripPurpose[slot] = NONE;
   const base = slot * AGENDA_STOPS;
@@ -1055,6 +1093,7 @@ export function handleTripFinished(w: World): void {
       c.carStatus[slot] = CAR_PARKED;
       const walk = walkMinutes(w, { x: c.carX[slot]!, y: c.carY[slot]! }, { x: c.destX[slot]!, y: c.destY[slot]! });
       if (walk > 0) {
+        c.setOnFoot(slot, { x: c.carX[slot]!, y: c.carY[slot]! }, gameSecond(w));
         c.schedule(slot, now + walk, arrival.purpose);
         continue;
       }
@@ -1092,6 +1131,7 @@ export function recoverStuckTrips(w: World): void {
     if (c.carStatus[slot] === CAR_DRIVING) c.carStatus[slot] = CAR_PARKED;
     c.tourMode[slot] = NONE;
     c.walking[slot] = 0;
+    c.setOnFoot(slot, null);
     skipTour(w, slot);
     c.schedule(slot, null, null);
     c.unplanned.push(ref);

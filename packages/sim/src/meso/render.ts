@@ -8,7 +8,7 @@ import { CAR_PARKED } from '../parking';
 import type { World } from '../world';
 import { BOX_KMH } from './districts';
 import type { MesoGraph } from './graph';
-import { CAR_SPACE_METERS, type MesoTraffic } from './traffic';
+import { CAR_LENGTH_METERS, VEHICLE_TRUCK, vehicleLengthMeters, vehicleSpaceMeters, type MesoTraffic } from './traffic';
 
 const f32 = Math.fround;
 const PI = f32(Math.PI);
@@ -30,8 +30,8 @@ const DELTA_Y = [0, 0, 0, 1, -1] as const;
 type Dir = 0 | 1 | 2 | 3 | 4;
 const horizontal = (dir: number) => dir === EAST || dir === WEST;
 
-/** `id` is a meso car slot for a driving car and a citizen slot for a parked one; world coordinates. */
-export type CitizenCarVisitor = (parked: boolean, id: number, generation: number, x: number, y: number, heading: number) => void;
+/** `id` is a meso car slot for a driving vehicle and a citizen slot for a parked car; world coordinates. */
+export type CitizenCarVisitor = (parked: boolean, id: number, generation: number, x: number, y: number, heading: number, truck: boolean) => void;
 
 /** The lane a car takes on `link` before leaving for `next` (-1 at its goal): 0 is the kerb lane. */
 function laneOf(g: MesoGraph, car: number, link: number, next: number): number {
@@ -111,13 +111,16 @@ function boxPose(w: World, car: number, link: number, lane: number): readonly [x
   return alongPath(points, share);
 }
 
-/** Every car of a citizen: the driving ones queue by queue, then the parked ones in citizen order. */
+/**
+ * Every vehicle in meso traffic queue by queue, a truck its length back behind the vehicle ahead, then the parked cars of
+ * citizens in citizen order.
+ */
 export function forEachCitizenCar(w: World, visit: CitizenCarVisitor): void {
   const m = w.mesoTraffic;
   const g = w.meso;
   const cfg = w.mapConfig;
-  const room = CAR_SPACE_METERS / w.trafficConfig.tileMeters;
-  const ahead = new Int32Array(8);
+  const tileMeters = w.trafficConfig.tileMeters;
+  const ahead = new Float64Array(8);
 
   if (m.linksFor !== null && m.linksFor === g.builtFor) {
     for (let link = 0; link < m.head.length; link++) {
@@ -127,8 +130,9 @@ export function forEachCitizenCar(w: World, visit: CitizenCarVisitor): void {
       for (let car = m.head[link]!; car >= 0; car = m.next[car]!) {
         const lane = laneOf(g, car, link, nextLink(g, m, car));
         const inBox = boxPose(w, car, link, lane);
-        const behind = ahead[lane]! * room;
-        ahead[lane]! += 1;
+        const vehicle = m.vehicle[car]!;
+        const behind = (ahead[lane]! + (vehicleLengthMeters(vehicle) - CAR_LENGTH_METERS) / 2) / tileMeters;
+        ahead[lane]! += vehicleSpaceMeters(vehicle);
         let x: number;
         let y: number;
         let heading: number = HEADINGS[dir];
@@ -143,7 +147,7 @@ export function forEachCitizenCar(w: World, visit: CitizenCarVisitor): void {
           [x, y] = linkPoint(g, link, along, lane);
         }
         const at = tileFToWorld(cfg, x, y);
-        visit(false, car, m.generation[car]!, at.x, at.y, heading);
+        visit(false, car, m.generation[car]!, at.x, at.y, heading, vehicle === VEHICLE_TRUCK);
       }
     }
   }
@@ -152,6 +156,6 @@ export function forEachCitizenCar(w: World, visit: CitizenCarVisitor): void {
   for (let slot = 0; slot < c.highWater; slot++) {
     if (c.alive[slot] !== 1 || c.carStatus[slot] !== CAR_PARKED) continue;
     const at = tileFToWorld(cfg, c.carX[slot]!, c.carY[slot]!);
-    visit(true, slot, c.generation[slot]!, at.x, at.y, 0);
+    visit(true, slot, c.generation[slot]!, at.x, at.y, 0, false);
   }
 }

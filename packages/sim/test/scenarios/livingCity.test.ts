@@ -5,8 +5,10 @@ import { frame, step } from '../../src/app';
 import { isOperational } from '../../src/buildings/building';
 import { CITIZEN_STATES } from '../../src/citizens';
 import type { BuildingKind } from '../../src/commands';
+import { findGateways } from '../../src/regional';
 import { LivingCityScenario } from '../../src/scenarios/livingCity';
 import { requestState } from '../../src/state';
+import { summarizeTraffic } from '../../src/traffic/stats';
 import { SECOND_NS } from '../../src/timer';
 import { createWorld } from '../../src/world';
 
@@ -70,6 +72,32 @@ describe('living city', () => {
     expect(stats.arrived, `arrivals on foot count too: ${JSON.stringify(stats)}`).toBeGreaterThan(0.9 * (stats.requested - stats.travelling));
   }, 120_000);
 
+  // Stage 3½: the city is not alone. Commuters, visitors and through traffic come over the edges of the map, trucks carry
+  // goods; about 4 % of the vehicles in a city are large trucks.
+  it('theLivingCityTradesWithItsRegionOverTheEdgesOfTheMap', () => {
+    const { w, scenario } = livingCity();
+    let [cars, regional, trucks, walkersSeen] = [0, 0, 0, 0];
+    for (let i = 0; i < 240; i++) {
+      scenario.advance(w);
+      step(w, 1);
+      for (const trip of w.events.tripRequested) {
+        if (trip.mode !== 'Car') continue;
+        cars += 1;
+        if (trip.citizen < 0) regional += 1;
+        if (trip.vehicle === 'Truck') trucks += 1;
+      }
+      walkersSeen = Math.max(walkersSeen, summarizeTraffic(w).pedestrians);
+    }
+    expect([...w.systemErrors.keys()]).toEqual([]);
+    expect(findGateways(w), 'the arterials and the boulevard leave the map at both ends').toHaveLength(12);
+    expect(regional / cars, `trips of the region: ${regional} of ${cars} by car`).toBeGreaterThan(0.25);
+    expect(trucks / cars, `trucks: ${trucks} of ${cars}`).toBeGreaterThan(0.02);
+    expect(trucks / cars).toBeLessThan(0.08);
+    expect(walkersSeen, 'and people walk the streets').toBeGreaterThan(0);
+    const stats = scenario.stats(w);
+    expect(stats.arrived, `the HUD counts the citizens' own trips: ${JSON.stringify(stats)}`).toBeGreaterThan(0.9 * (stats.requested - stats.travelling));
+  }, 120_000);
+
   it('itsCitizensMoveInAndDriveOnTheirOwn', () => {
     const { w, scenario } = livingCity();
     for (let i = 0; i < 10 * 240; i++) {
@@ -101,7 +129,11 @@ describe('living city', () => {
       expect(citizens.residentsOf(b.id), `residents of building ${b.id}`).toBe(views.filter((c) => c.home === b.id).length);
       expect(citizens.workersOf(b.id), `workers of building ${b.id}`).toBe(views.filter((c) => c.workplace === b.id).length);
     }
-    expect(w.parking.totalUsed(), 'every car of a citizen holds one spot').toBe(views.filter((c) => c.carStatus !== 'None').length);
+    const r = w.regional;
+    const regionalSpots = Array.from({ length: r.highWater }, (_, slot) => slot).filter((slot) => r.alive[slot] === 1 && r.place[slot] !== 0).length;
+    expect(w.parking.totalUsed(), 'every car of a citizen holds one spot, and so does every car of the region at its building').toBe(
+      views.filter((c) => c.carStatus !== 'None').length + regionalSpots,
+    );
     expect(w.vehicles.order.filter((slot) => w.vehicles.parked[slot] === 1), 'and no vehicle slot while it stands').toEqual([]);
   }, 120_000);
 });

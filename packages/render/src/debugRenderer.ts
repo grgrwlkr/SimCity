@@ -1,6 +1,6 @@
 // The stage 1½ debug renderer: map chunks, vehicles as cubes, overlays, a top-down orthographic
 // camera. Colours reach the screen exactly as written, so a screenshot can be read back per tile.
-import type { DebugOverlayReply, MapLayersReply, RenderFrameCopy, RenderReader, TrafficLightView } from '@simcity/bridge';
+import { RENDER_ID_SPACE, type DebugOverlayReply, type MapLayersReply, type RenderFrameCopy, type RenderReader, type TrafficLightView } from '@simcity/bridge';
 import {
   VEHICLE_LENGTH_TILES,
   VEHICLE_WIDTH_TILES,
@@ -16,6 +16,7 @@ import { lampSignal } from './lamps';
 import { buildChunkGeometry, changedChunks, chunkGrid } from './mapChunks';
 import { LAMP_COLORS, VEHICLE_COLORS } from './palette';
 import { PlaybackClock } from './playback';
+import { vehicleScale } from './vehicleLook';
 
 /** Sim frames kept for playback: the display draws a gap or two behind the newest one. */
 const FRAME_HISTORY = 6;
@@ -146,7 +147,7 @@ export class DebugRenderer {
     for (let i = 0; i <= FRAME_HISTORY; i++) this.spareFrames.push(reader.allocate());
     const n = reader.capacity;
     this.scratch = {
-      bySlot: new Int32Array(n),
+      bySlot: new Int32Array(RENDER_ID_SPACE),
       pairs: new Int32Array(n),
       x: new Float32Array(n),
       y: new Float32Array(n),
@@ -386,25 +387,26 @@ export class DebugRenderer {
       const heading = j >= 0 ? interpolateHeading(from.heading[j]!, to.heading[k]!, alpha) : to.heading[k]!;
       const cos = Math.cos(heading);
       const sin = Math.sin(heading);
-      // Column-major: a turn about z, unit scale, lifted to z = 1 (what `Matrix4.compose` gave).
+      const kind = to.kind[k]!;
+      const [length, width, height] = vehicleScale(kind);
+      // Column-major: a turn about z, scaled to the kind, lifted to z = 1 (what `Matrix4.compose` gave).
       const o = k * 16;
-      matrices[o] = cos;
-      matrices[o + 1] = sin;
+      matrices[o] = cos * length;
+      matrices[o + 1] = sin * length;
       matrices[o + 2] = 0;
       matrices[o + 3] = 0;
-      matrices[o + 4] = -sin;
-      matrices[o + 5] = cos;
+      matrices[o + 4] = -sin * width;
+      matrices[o + 5] = cos * width;
       matrices[o + 6] = 0;
       matrices[o + 7] = 0;
       matrices[o + 8] = 0;
       matrices[o + 9] = 0;
-      matrices[o + 10] = 1;
+      matrices[o + 10] = height;
       matrices[o + 11] = 0;
       matrices[o + 12] = scratch.x[k]!;
       matrices[o + 13] = scratch.y[k]!;
       matrices[o + 14] = 1;
       matrices[o + 15] = 1;
-      const kind = to.kind[k]!;
       if (scratch.drawnKind[k] !== kind) {
         scratch.drawnKind[k] = kind;
         const [r, g, b] = VEHICLE_COLORS[kind % VEHICLE_COLORS.length]!;

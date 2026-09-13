@@ -25,6 +25,10 @@ export const VEHICLE_COLORS: ReadonlyArray<readonly [number, number, number]> = 
   [255, 225, 77],
   // Index 4, `PARKED_VEHICLE_KIND` of the bridge: a parked car, pale so it does not read as traffic.
   [214, 214, 222],
+  // 5, 6 and 7 of the bridge: a truck on the road, one standing at a door, a citizen on foot.
+  [40, 96, 230],
+  [150, 170, 220],
+  [0, 250, 170],
 ];
 
 /** Traffic light signal colours, sRGB; the protected-left arrow is green too. */

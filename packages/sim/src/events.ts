@@ -12,7 +12,7 @@ export interface HourAdvanced {
 /** `TripFinished`: written by traffic when a trip vehicle arrives, read by citizens. */
 export interface TripFinished {
   readonly citizen: number;
-  readonly purpose: 'Work' | 'Shop' | 'ReturnHome' | 'Cafe' | 'Park';
+  readonly purpose: 'Work' | 'Shop' | 'ReturnHome' | 'Cafe' | 'Park' | 'Freight' | 'Through';
 }
 
 export type TripMode = 'Walk' | 'Car';
@@ -28,6 +28,8 @@ export interface TripRequested {
   readonly mode: TripMode;
   /** The car lives in its citizen's pocket: a vehicle only until it arrives (stage 3½b); scenario cars stay parked vehicles. */
   readonly pocket?: true;
+  /** A truck of the region's freight (stage 3½); a car when absent. */
+  readonly vehicle?: 'Truck';
 }
 
 export interface TickEvents {

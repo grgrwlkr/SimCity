@@ -81,6 +81,12 @@ class RenderBufferViews {
 
 /** The kind a parked vehicle is published with, whatever its own kind: the renderer draws it apart from traffic. */
 export const PARKED_VEHICLE_KIND = 4;
+/** A truck of the region on the road, one standing at a door, and a citizen on foot (stage 3½). */
+export const TRUCK_KIND = 5;
+export const PARKED_TRUCK_KIND = 6;
+export const PEDESTRIAN_KIND = 7;
+/** Every id a frame may publish a vehicle under is below this: a reader pairs frames by an array this long. */
+export const RENDER_ID_SPACE = 1 << 20;
 
 /** Cars published after the vehicles: the cars of citizens the sim hands over (stage 3½d), each under its own slot id. */
 export interface RenderExtras {

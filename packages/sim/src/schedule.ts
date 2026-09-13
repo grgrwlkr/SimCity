@@ -22,6 +22,7 @@ import { applyGameCommandsToGrid } from './map/apply';
 import { updateDistrictTimes } from './meso/districts';
 import { rebuildMesoGraph } from './meso/graph';
 import { runMesoTraffic } from './meso/traffic';
+import { handleRegionalArrivals, planRegionalTrips } from './regional';
 import { computePollution } from './pollution';
 import { resetGrowthRngOnNewMap, resetSimRngOnNewMap } from './seeding';
 import { ALL_STATES, IN_GAME, IN_GAME_OR_PAUSED, type AppState } from './state';
@@ -99,6 +100,8 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'spawnCitizensFromResidential', run: spawnCitizensFromResidential, runIn: IN_GAME },
   // Plans are made in game minutes: once a game minute, on the tick the minute turns (and so on the day's turn too).
   { name: 'citizenTripPlanner', run: citizenTripPlanner, runIn: IN_GAME, everyGameNs: 60 * SECOND_NS },
+  // After the citizens' planner, on the same minute: the region's trips set out; traffic spawns them later in this tick.
+  { name: 'planRegionalTrips', run: planRegionalTrips, runIn: IN_GAME, everyGameNs: 60 * SECOND_NS },
   // After the planner: a trip requested this tick is never taken for an orphan.
   // Every citizen is looked at: once a game minute, against a timeout of minutes.
   { name: 'recoverStuckTrips', run: recoverStuckTrips, runIn: IN_GAME, everyGameNs: 60 * SECOND_NS },
@@ -154,6 +157,8 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   // After traffic, which writes this tick's arrivals, removals included: citizens take them in the same tick (Rust read
   // them on the next, a message living two frames).
   { name: 'handleTripFinished', run: handleTripFinished, runIn: IN_GAME },
+  // Beside handleTripFinished: the arrivals of the region's trips, which carry negative ids.
+  { name: 'handleRegionalArrivals', run: handleRegionalArrivals, runIn: IN_GAME },
   // PostSimStep::Citizens: residents a shrunken or vanished home no longer holds leave, then their parked cars go.
   { name: 'cleanupHomelessCitizens', run: cleanupHomelessCitizens, runIn: IN_GAME, everyGameNs: 60 * SECOND_NS },
   // PostSimStep::TrafficIndex: the end-of-tick metrics RCI demand reads.

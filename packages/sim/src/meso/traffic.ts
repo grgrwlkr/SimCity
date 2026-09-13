@@ -16,14 +16,30 @@ import { NO_LINK } from './graph';
 
 /** Cars a lane lets go a second: 1 800 an hour. */
 export const SATURATION_PER_LANE_SEC = 0.5;
-/** Room a queued car takes, metres. */
+/** A car's length and the room it takes queued, gap included, metres. */
+export const CAR_LENGTH_METERS = 5;
 export const CAR_SPACE_METERS = 7.5;
+/** An articulated truck, 16.5 m as the EU allows at most, and its room queued. */
+export const TRUCK_LENGTH_METERS = 16.5;
+export const TRUCK_SPACE_METERS = 19;
+/** A truck takes the flow of two cars. */
+export const TRUCK_PCE = 2;
+/** `MesoTraffic.vehicle` values. */
+export const VEHICLE_CAR = 0;
+export const VEHICLE_TRUCK = 1;
+const SPACE_METERS = [CAR_SPACE_METERS, TRUCK_SPACE_METERS] as const;
+const LENGTH_METERS = [CAR_LENGTH_METERS, TRUCK_LENGTH_METERS] as const;
+const PCE = [1, TRUCK_PCE] as const;
 /** A head held by a full link this long, game seconds, is pushed on. */
 export const FORCE_PUSH_SECS = 120;
 /** A car due this long and still queued counts as stuck, game seconds. */
 export const STUCK_SECS = 60;
 /** A held head looks again after this long, game seconds. */
 const RETRY_SECS = 1;
+/** A head waiting for flow looks again no sooner than this, game seconds: a wait of a rounding error would never pass. */
+const MIN_FLOW_WAIT_SECS = 0.01;
+/** Flow this close to a whole car counts as one. */
+const TOKEN_EPSILON = 1e-9;
 /** Link times move a share towards what the cars measured, once a game minute. */
 const COST_UPDATE_SECS = 60;
 const COST_EMA = 0.3;
@@ -39,11 +55,26 @@ export interface MesoStats {
   dropped: number;
 }
 
-/** Cars a link holds: its lanes over its length at `CAR_SPACE_METERS` a car, at least one. */
-export function linkStorage(w: World, link: number): number {
+/** Metres of queue a link holds: its lanes over its length. */
+export function linkRoomMeters(w: World, link: number): number {
   const g = w.meso;
-  return Math.max(Math.floor((g.length[link]! * g.lanes[link]! * w.trafficConfig.tileMeters) / CAR_SPACE_METERS), 1);
+  return g.length[link]! * g.lanes[link]! * w.trafficConfig.tileMeters;
 }
+
+/** Cars a link holds: its room at `CAR_SPACE_METERS` a car, at least one. */
+export function linkStorage(w: World, link: number): number {
+  return Math.max(Math.floor(linkRoomMeters(w, link) / CAR_SPACE_METERS), 1);
+}
+
+/** Room on `link` for a vehicle taking `space` metres: an empty link takes any one. */
+const fits = (w: World, link: number, space: number) => {
+  const used = w.mesoTraffic.usedMeters[link]!;
+  return used === 0 || used + space <= linkRoomMeters(w, link);
+};
+
+/** The room queued, the length and the flow of a vehicle kind. */
+export const vehicleSpaceMeters = (vehicle: number): number => SPACE_METERS[vehicle]!;
+export const vehicleLengthMeters = (vehicle: number): number => LENGTH_METERS[vehicle]!;
 
 const secondsPerTile = (w: World, link: number) => w.trafficConfig.tileMeters / (Math.max(w.meso.speedKmh[link]!, 1) / 3.6);
 const boxSeconds = (w: World) => w.trafficConfig.tileMeters / (BOX_KMH / 3.6);
@@ -57,8 +88,13 @@ export class MesoTraffic {
 
   highWater = 0;
   count = 0;
+  /** Trucks among the vehicles on the links. */
+  trucks = 0;
   readonly freeSlots: number[] = [];
+  /** The citizen of the trip; `-(agent + 1)` for a trip of the region. */
   citizen = new Int32Array(0);
+  /** `VEHICLE_CAR` or `VEHICLE_TRUCK`. */
+  vehicle = new Uint8Array(0);
   purpose = new Uint8Array(0);
   /** The link the car is queued on; -1 for a free slot. */
   link = new Int32Array(0);
@@ -88,6 +124,8 @@ export class MesoTraffic {
   head = new Int32Array(0);
   tail = new Int32Array(0);
   onLink = new Int32Array(0);
+  /** Metres of queue taken on each link. */
+  usedMeters = new Float64Array(0);
   tokens = new Float64Array(0);
   tokensAt = new Float64Array(0);
   /** Cars that left each link, ever. */
@@ -138,6 +176,7 @@ function growCars(m: MesoTraffic): void {
   };
   m.citizen = grown(m.citizen, 0);
   m.purpose = grown(m.purpose, 0);
+  m.vehicle = grown(m.vehicle, 0);
   m.link = grown(m.link, NO_LINK);
   m.enterSec = grown(m.enterSec, 0);
   m.readySec = grown(m.readySec, 0);
@@ -159,6 +198,7 @@ function finish(w: World, car: number): void {
   m.link[car] = NO_LINK;
   m.routes[car] = EMPTY_ROUTE;
   m.count -= 1;
+  if (m.vehicle[car] === VEHICLE_TRUCK) m.trucks -= 1;
   m.freeSlots.push(car);
 }
 
@@ -172,6 +212,7 @@ function resetLinks(w: World): void {
   m.head = new Int32Array(n).fill(-1);
   m.tail = new Int32Array(n).fill(-1);
   m.onLink = new Int32Array(n);
+  m.usedMeters = new Float64Array(n);
   m.tokens = Float64Array.from(g.lanes);
   m.tokensAt = new Float64Array(n).fill(m.nowSec);
   m.exits = new Uint32Array(n);
@@ -196,6 +237,7 @@ function enqueue(m: MesoTraffic, car: number, link: number, enterSec: number, re
   }
   m.tail[link] = car;
   m.onLink[link]! += 1;
+  m.usedMeters[link]! += SPACE_METERS[m.vehicle[car]!]!;
 }
 
 function dequeue(m: MesoTraffic, link: number): number {
@@ -204,6 +246,7 @@ function dequeue(m: MesoTraffic, link: number): number {
   if (m.head[link]! < 0) m.tail[link] = -1;
   m.next[car] = -1;
   m.onLink[link]! -= 1;
+  m.usedMeters[link] = Math.max(m.usedMeters[link]! - SPACE_METERS[m.vehicle[car]!]!, 0);
   return car;
 }
 
@@ -294,7 +337,8 @@ function spawn(w: World, trip: TripRequested): 'spawned' | 'wait' | 'dropped' {
     m.stats.dropped += 1;
     return 'dropped';
   }
-  if (m.onLink[startLink]! >= linkStorage(w, startLink)) return 'wait';
+  const vehicle = trip.vehicle === 'Truck' ? VEHICLE_TRUCK : VEHICLE_CAR;
+  if (!fits(w, startLink, SPACE_METERS[vehicle])) return 'wait';
 
   let car = m.freeSlots.pop();
   if (car === undefined) {
@@ -303,6 +347,8 @@ function spawn(w: World, trip: TripRequested): 'spawned' | 'wait' | 'dropped' {
     m.highWater += 1;
   }
   m.count += 1;
+  if (vehicle === VEHICLE_TRUCK) m.trucks += 1;
+  m.vehicle[car] = vehicle;
   m.citizen[car] = trip.citizen;
   m.purpose[car] = TRIP_PURPOSES.indexOf(trip.purpose);
   m.goalLink[car] = goalLink;
@@ -347,14 +393,15 @@ function leave(w: World, link: number, now: number, lights: ReadonlyMap<number, 
   m.atRed[car] = 0;
 
   const lanes = g.lanes[link]!;
-  const tokens = Math.min(lanes, m.tokens[link]! + (now - m.tokensAt[link]!) * lanes * SATURATION_PER_LANE_SEC);
+  // Heads of one link come due in the order of their times, so the flow only ever refills forward.
+  const tokens = Math.min(lanes, m.tokens[link]! + Math.max(now - m.tokensAt[link]!, 0) * lanes * SATURATION_PER_LANE_SEC);
   m.tokens[link] = tokens;
-  m.tokensAt[link] = now;
-  if (tokens < 1) {
-    m.due.push(now + (1 - tokens) / (lanes * SATURATION_PER_LANE_SEC), link);
+  m.tokensAt[link] = Math.max(now, m.tokensAt[link]!);
+  if (tokens < 1 - TOKEN_EPSILON) {
+    m.due.push(now + Math.max((1 - tokens) / (lanes * SATURATION_PER_LANE_SEC), MIN_FLOW_WAIT_SECS), link);
     return;
   }
-  if (m.onLink[next]! >= linkStorage(w, next)) {
+  if (!fits(w, next, SPACE_METERS[m.vehicle[car]!]!)) {
     if (Number.isNaN(m.heldSince[car]!)) m.heldSince[car] = now;
     if (now - m.heldSince[car]! < FORCE_PUSH_SECS) {
       m.due.push(now + RETRY_SECS, link);
@@ -363,7 +410,8 @@ function leave(w: World, link: number, now: number, lights: ReadonlyMap<number, 
     m.stats.forcedPushes += 1;
   }
 
-  m.tokens[link] = tokens - 1;
+  // A truck may leave on one token and takes two: the vehicles after it wait the longer.
+  m.tokens[link] = tokens - PCE[m.vehicle[car]!]!;
   dequeue(m, link);
   m.exits[link]! += 1;
   m.measuredSum[link]! += now - m.enterSec[car]!;
@@ -410,12 +458,14 @@ export function stepMesoTraffic(w: World, dtNs: number): void {
 
   let lights: Map<number, TrafficLight> | undefined;
   while (m.due.size > 0 && m.due.peekKey() <= now) {
-    const [, link] = m.due.pop();
+    const [at, link] = m.due.pop();
     const car = m.head[link]!;
     // A head not yet due keeps its own entry at its time.
     if (car < 0 || m.readySec[car]! > now) continue;
     lights ??= new Map(w.trafficLights.map((light) => [light.intersectionId, light]));
-    leave(w, link, now, lights);
+    // At the second it came due, not at the end of the tick: a tick of several game seconds lets as many through as its
+    // seconds in tenths. The lights stand as they are at the end of the tick.
+    leave(w, link, Math.max(at, m.readySec[car]!), lights);
   }
 
   if (now >= m.nextCostUpdate) updateLinkTimes(w);

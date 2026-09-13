@@ -4,13 +4,24 @@
 import { describe, expect, it } from 'vitest';
 import type { TilePos } from '../../src/commands';
 import type { TripRequested } from '../../src/events';
-import { FORCE_PUSH_SECS, SATURATION_PER_LANE_SEC, linkStorage, stepMesoTraffic } from '../../src/meso/traffic';
+import {
+  CAR_SPACE_METERS,
+  FORCE_PUSH_SECS,
+  SATURATION_PER_LANE_SEC,
+  TRUCK_PCE,
+  TRUCK_SPACE_METERS,
+  linkRoomMeters,
+  linkStorage,
+  stepMesoTraffic,
+} from '../../src/meso/traffic';
 import { TICK_DT_NS } from '../../src/schedule';
 import type { LightPhase } from '../../src/traffic/lights';
+import { summarizeTraffic } from '../../src/traffic/stats';
 import type { World } from '../../src/world';
 import { roadWorld, t } from './helpers';
 
 const trip = (citizen: number, from: TilePos, to: TilePos): TripRequested => ({ citizen, from, carParkedAt: from, to, purpose: 'Work', mode: 'Car', pocket: true });
+const truck = (id: number, from: TilePos, to: TilePos): TripRequested => ({ ...trip(-(id + 1), from, to), purpose: 'Freight', vehicle: 'Truck' });
 
 /** Runs meso traffic for `seconds` of game time, a tick at a time; the arrivals with the second each came on. */
 function drive(w: World, seconds: number): Array<readonly [citizen: number, at: number]> {
@@ -89,5 +100,44 @@ describe('meso traffic', () => {
     drive(w, 70);
     expect(m.stats.forcedPushes, 'a head held by a full link past the limit is pushed on').toBeGreaterThan(0);
     expect(m.carsOn(beyond), 'but nobody runs the red light').toBe(0);
+  });
+
+  // A tick of six game seconds lets through as many as the same seconds in tenths: the queues keep their own times.
+  it('flowDoesNotDependOnTheLengthOfATick', () => {
+    const passed = (tickNs: number, ticks: number) => {
+      const w = crossing();
+      for (let i = 0; i < 60; i++) w.mesoTraffic.pending.push(trip(i, t(2, 9), t(25, 9)));
+      const approach = w.meso.linkAt(t(2, 9));
+      for (let i = 0; i < ticks; i++) stepMesoTraffic(w, tickNs);
+      return w.mesoTraffic.exits[approach]!;
+    };
+    const fine = passed(TICK_DT_NS, 720);
+    const coarse = passed(60 * TICK_DT_NS, 12);
+    expect(fine).toBeGreaterThan(20);
+    // Within a tenth: new trips still join only at the start of a tick (it was a third of the flow before).
+    expect(Math.abs(coarse - fine), `72 s in tenths let ${fine} through, in six-second ticks ${coarse}`).toBeLessThanOrEqual(Math.ceil(fine / 10));
+  });
+
+  it('aTruckTakesTheRoomOfMoreThanTwoCars', () => {
+    const w = crossing();
+    hold(w, t(15, 9), 'NorthSouthGreen');
+    for (let i = 0; i < 20; i++) w.mesoTraffic.pending.push(truck(i, t(2, 9), t(25, 9)));
+    const approach = w.meso.linkAt(t(2, 9));
+    drive(w, 60);
+    expect(TRUCK_SPACE_METERS / CAR_SPACE_METERS, 'a truck and its gap against a car and its gap').toBeGreaterThan(2);
+    expect(w.mesoTraffic.carsOn(approach), 'the approach holds as many trucks as its length').toBe(Math.floor(linkRoomMeters(w, approach) / TRUCK_SPACE_METERS));
+    expect(summarizeTraffic(w).trucks, 'counted as trucks').toBe(w.mesoTraffic.carCount());
+  });
+
+  it('aTruckUsesTheFlowOfTwoCars', () => {
+    const w = crossing();
+    for (let i = 0; i < 60; i++) w.mesoTraffic.pending.push(truck(i, t(2, 9), t(25, 9)));
+    const approach = w.meso.linkAt(t(2, 9));
+    drive(w, 12);
+    const before = w.mesoTraffic.exits[approach]!;
+    drive(w, 60);
+    const passed = w.mesoTraffic.exits[approach]! - before;
+    expect(passed, 'fifteen trucks a minute a lane').toBeLessThanOrEqual(Math.floor((60 * SATURATION_PER_LANE_SEC) / TRUCK_PCE) + 1);
+    expect(passed, 'and it does let them go').toBeGreaterThan(8);
   });
 });

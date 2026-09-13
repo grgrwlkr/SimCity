@@ -23,6 +23,7 @@ import { MesoGraph } from './meso/graph';
 import { MesoTraffic } from './meso/traffic';
 import { Notifications } from './notifications';
 import { Parking, defaultCitizenConfig, type CitizenConfig } from './parking';
+import { RegionalTrips, defaultRegionalConfig, type RegionalConfig } from './regional';
 import { DEFAULT_RNG_SEED, stdRngSeedFromU64, type StdRng } from './rng';
 import type { AppState, PendingState } from './state';
 import { Timer } from './timer';
@@ -184,6 +185,10 @@ export interface World {
   readonly citizenConfig: CitizenConfig;
   /** The spots the cars of citizens hold. */
   readonly parking: Parking;
+  /** The commuters, visitors, through traffic and trucks of the region. */
+  readonly regional: RegionalTrips;
+  /** How much of each flow the region sends. */
+  readonly regionalConfig: RegionalConfig;
   employmentStats: EmploymentStats;
   shoppingStats: ShoppingDemandStats;
   commuteStats: CommuteStats;
@@ -279,6 +284,8 @@ export function createWorld(options: WorldOptions = {}): World {
     citizens: new Citizens(),
     citizenConfig: defaultCitizenConfig(),
     parking: new Parking(grid.len()),
+    regional: new RegionalTrips(),
+    regionalConfig: defaultRegionalConfig(),
     employmentStats: emptyEmploymentStats(),
     shoppingStats: emptyShoppingStats(),
     commuteStats: emptyCommuteStats(),

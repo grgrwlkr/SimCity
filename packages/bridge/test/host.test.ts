@@ -10,9 +10,9 @@ import {
 } from '@simcity/sim';
 import { describe, expect, it } from 'vitest';
 import { loadTestCity } from '../../sim/test/testCity';
-import { SimHost } from '../src/host';
+import { RENDER_CAPACITY, SimHost } from '../src/host';
 import { GRID_LAYER_NAMES, type GridLayers } from '../src/protocol';
-import { RenderReader } from '../src/renderBuffer';
+import { PARKED_TRUCK_KIND, PEDESTRIAN_KIND, RenderReader, TRUCK_KIND } from '../src/renderBuffer';
 import { SCENARIOS } from '../src/scenarios';
 
 describe('SimHost', () => {
@@ -220,6 +220,25 @@ describe('SimHost', () => {
     expect(traffic.citizens, 'the HUD counts the people who already live there').toBeGreaterThan(2000);
     expect(traffic.tripsStarted, 'and nobody has set out two seconds in').toBe(0);
   }, 60_000);
+
+  // Stage 3½: the frame carries the people on foot and the trucks, each under an id of its own.
+  it('theLivingCityPublishesItsPedestriansAndTrucks', () => {
+    const host = new SimHost(RENDER_CAPACITY);
+    const reader = new RenderReader(host.render);
+    const out = reader.allocate();
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'scenario', name: 'livingCity' });
+    const kinds = new Set<number>();
+    for (let minute = 0; minute < 30; minute++) {
+      host.handle({ t: 'step', ticks: 600 });
+      reader.readInto(out);
+      for (let i = 0; i < out.count; i++) kinds.add(out.kind[i]!);
+      const ids = new Set(Array.from(out.slot.subarray(0, out.count)));
+      expect(ids.size, `ids are unique at minute ${minute}`).toBe(out.count);
+    }
+    expect(kinds.has(PEDESTRIAN_KIND), `pedestrians among ${[...kinds].join(' ')}`).toBe(true);
+    expect(kinds.has(TRUCK_KIND) || kinds.has(PARKED_TRUCK_KIND), 'and trucks').toBe(true);
+  }, 120_000);
 
   it('aScenarioSeesEveryTickOfAFastFrame', () => {
     // At ×3 a frame runs several ticks; a scenario fed once a frame missed the arrivals of all but the
