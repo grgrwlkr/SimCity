@@ -5,6 +5,8 @@ import { buildCity } from './cityGen';
 import { prebuildCity } from './prebuild';
 
 export const LIVING_CITY_WALK_MAX_METERS = 300;
+/** About half of a population is employed; the rest are children, students, retirees and those out of work. */
+export const LIVING_CITY_LABOUR_SHARE = 0.5;
 /** The city opens at six in the morning: its rush hour starts at once. */
 export const LIVING_CITY_START_HOUR = 6;
 
@@ -30,6 +32,7 @@ export class LivingCityScenario {
     // The generated city is 1.3 km across: past 300 m its citizens drive, so its roads carry traffic until the big map
     // of stage 3½e, where the default kilometre holds.
     w.citizenConfig.walkMaxMeters = LIVING_CITY_WALK_MAX_METERS;
+    w.citizenConfig.labourShare = LIVING_CITY_LABOUR_SHARE;
     if (options.prebuilt ?? true) prebuildCity(w);
     w.city.hour = LIVING_CITY_START_HOUR;
   }

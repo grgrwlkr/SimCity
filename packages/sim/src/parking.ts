@@ -31,6 +31,8 @@ export interface CitizenConfig {
   /** A trip past this long drives to the nearest spot farther away when none is in reach; a shorter one is walked. */
   farParkingTripMeters: number;
   walkKmh: number;
+  /** Share of newcomers in the labour force, working or looking for work; the rest are children, students and retirees. */
+  labourShare: number;
   /** The chances of the stops a day's agenda holds besides work. */
   agenda: AgendaChances;
 }
@@ -76,6 +78,7 @@ export const defaultCitizenConfig = (): CitizenConfig => ({
   parkingWalkMeters: 400,
   farParkingTripMeters: 3000,
   walkKmh: 5,
+  labourShare: 1,
   agenda: { ...DEFAULT_AGENDA },
 });
 

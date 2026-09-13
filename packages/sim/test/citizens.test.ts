@@ -179,6 +179,21 @@ describe('citizens', () => {
     expect(new Set(starts).size, 'and not all at once').toBeGreaterThan(1);
   });
 
+  it('onlyTheLabourShareOfNewcomersWorksOrSeeksWork', () => {
+    const w = plainDays(worldOn(new MapGrid(32, 16)));
+    w.citizenConfig.labourShare = 0.5;
+    w.buildings.add(newBuilding({ kind: 'Residential', anchor: t(2, 2), capacityResidents: 4000, occupancyResidents: 4000, targetOccupancyResidents: 4000 }));
+    while (w.citizens.count < 4000) spawnCitizensFromResidential(w);
+
+    const refs = w.citizens.refs();
+    const workers = refs.filter((ref) => view(w, ref).worker);
+    expect(Math.abs(workers.length / refs.length - 0.5), `${workers.length} of ${refs.length} work`).toBeLessThan(0.03);
+    expect(w.citizens.jobSeekers, 'only they look for a job').toEqual(workers);
+    const outOfWork = refs.find((ref) => !view(w, ref).worker)!;
+    w.citizens.setWorkplace(citizenSlot(outOfWork), null);
+    expect(w.citizens.jobSeekers, 'and one out of the labour force never starts looking').toEqual(workers);
+  });
+
   it('aWorkerDrivesToWorkInTheMorningAndHomeAfterTheShift', () => {
     const { w, house, work, worker } = commuter(200, 150, { car: true });
 

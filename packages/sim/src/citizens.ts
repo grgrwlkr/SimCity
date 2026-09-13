@@ -122,6 +122,8 @@ export interface CitizenSpec {
   readonly carParkedAt: TilePos;
   /** The building the citizen works at. */
   readonly workplace: number | null;
+  /** In the labour force: works or looks for work. Children, students and retirees are not. */
+  readonly worker: boolean;
   /** Minute of the day the citizen starts work; they leave earlier by the trip they expect. */
   readonly workStart: number;
   /** Minutes the citizen stays at work. */
@@ -188,6 +190,7 @@ export function newCitizen(home: Building, day: CitizenDay = {}): CitizenSpec {
     carPlace: NO_PLACE,
     carParkedAt: home.anchor,
     workplace: null,
+    worker: true,
     workStart: day.workStart ?? 7 * 60,
     shiftMinutes: day.shiftMinutes ?? 8 * 60,
     nextAt: null,
@@ -293,6 +296,8 @@ export class Citizens {
   home = new Int32Array(0);
   /** A building id, -1 without a job. */
   workplace = new Int32Array(0);
+  /** 1 in the labour force. */
+  worker = new Uint8Array(0);
   /** `CITIZEN_STATES` index. */
   state = new Uint8Array(0);
   lastPlaceX = new Int32Array(0);
@@ -372,6 +377,7 @@ export class Citizens {
     this.movedIn[slot] = this.moveIns;
     this.home[slot] = spec.home;
     this.workplace[slot] = spec.workplace ?? NONE;
+    this.worker[slot] = spec.worker ? 1 : 0;
     this.state[slot] = CITIZEN_STATES.indexOf(spec.state);
     this.lastPlaceX[slot] = spec.lastPlace.x;
     this.lastPlaceY[slot] = spec.lastPlace.y;
@@ -397,7 +403,7 @@ export class Citizens {
     countUp(this.residents, spec.home, 1);
     if (spec.workplace !== null) countUp(this.workers, spec.workplace, 1);
     const ref = this.ref(slot);
-    if (spec.workplace === null) this.jobSeekers.push(ref);
+    if (spec.workplace === null && spec.worker) this.jobSeekers.push(ref);
     if (spec.nextAt !== null) this.schedule(slot, spec.nextAt, spec.nextPurpose);
     else if (spec.state === 'AtHome') this.unplanned.push(ref);
     return ref;
@@ -426,7 +432,7 @@ export class Citizens {
     if (this.workplace[slot] !== NONE) countUp(this.workers, this.workplace[slot]!, -1);
     this.workplace[slot] = building ?? NONE;
     if (building !== null) countUp(this.workers, building, 1);
-    else this.jobSeekers.push(this.ref(slot));
+    else if (this.worker[slot] === 1) this.jobSeekers.push(this.ref(slot));
   }
 
   /** Sets the next move and queues the citizen for its minute; `null` clears it without queueing. */
@@ -522,6 +528,7 @@ export class Citizens {
       carPlace: this.carPlace[slot]!,
       carParkedAt: { x: this.carX[slot]!, y: this.carY[slot]! },
       workplace: this.workplace[slot] === NONE ? null : this.workplace[slot]!,
+      worker: this.worker[slot] === 1,
       workStart: this.workStart[slot]!,
       shiftMinutes: this.shiftMinutes[slot]!,
       nextAt: this.nextAt[slot] === NONE ? null : this.nextAt[slot]!,
@@ -574,6 +581,7 @@ export const LAYER_NAMES = [
   'movedIn',
   'home',
   'workplace',
+  'worker',
   'state',
   'lastPlaceX',
   'lastPlaceY',
@@ -628,7 +636,9 @@ export function spawnCitizensFromResidential(w: World): void {
       const rng = w.simRng;
       const workStart = rangeU32(rng, WORK_START_WINDOW[0], WORK_START_WINDOW[1]);
       const shiftMinutes = rangeU32(rng, SHIFT_MINUTES[0], SHIFT_MINUTES[1] + 1);
-      const ref = citizens.add(newCitizen(b, { workStart, shiftMinutes }));
+      const labourShare = w.citizenConfig.labourShare;
+      const worker = labourShare >= 1 || randomBool(rng, labourShare);
+      const ref = citizens.add({ ...newCitizen(b, { workStart, shiftMinutes }), worker });
       if (randomBool(rng, CAR_OWNERSHIP[b.profile.class])) giveCar(w, ref);
     }
   }

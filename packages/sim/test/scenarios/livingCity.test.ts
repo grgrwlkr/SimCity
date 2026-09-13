@@ -39,7 +39,8 @@ describe('living city', () => {
     const citizens = w.citizens;
     expect(citizens.count, 'thousands live there from the start').toBeGreaterThan(2000);
     const views = citizens.refs().map((ref) => citizens.view(ref)!);
-    expect(views.filter((c) => c.workplace !== null).length / views.length, 'most of them with a job').toBeGreaterThan(0.5);
+    const labour = views.filter((c) => c.worker);
+    expect(labour.filter((c) => c.workplace !== null).length / labour.length, 'most who work with a job').toBeGreaterThan(0.5);
     expect(views.filter((c) => c.carStatus === 'Parked').length, 'their cars parked').toBeGreaterThan(0);
     expect(w.city.money, 'at no cost to the treasury').toBe(25_000);
 
@@ -53,6 +54,9 @@ describe('living city', () => {
     const { w, scenario } = livingCity();
     const open = (kind: BuildingKind) => w.buildings.all().filter((b) => b.kind === kind && isOperational(b));
     expect([open('Park').length, open('Cafe').length], 'a park and a café, open from the start').toEqual([1, 1]);
+    const refs = w.citizens.refs();
+    const outOfWork = refs.filter((ref) => w.citizens.view(ref)!.worker === false).length;
+    expect(outOfWork / refs.length, 'about half its people do not work: children, students, retirees').toBeGreaterThan(0.4);
 
     const purposes = new Map<string, number>();
     for (let i = 0; i < 240; i++) {

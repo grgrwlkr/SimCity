@@ -73,12 +73,12 @@ export function prebuildCity(w: World, options: PrebuildOptions = {}): void {
   assignNearestJobs(w);
 }
 
-/** Every citizen without a job takes the nearest open one of their home's class, as the crow flies. */
+/** Every citizen in the labour force without a job takes the nearest open one of their home's class, as the crow flies. */
 function assignNearestJobs(w: World): void {
   const c = w.citizens;
   let open = w.buildings.all().filter((b) => (b.kind === 'Commercial' || b.kind === 'Industrial') && isOperational(b) && b.capacityJobs > 0);
   for (let slot = 0; slot < c.highWater && open.length > 0; slot++) {
-    if (c.alive[slot] !== 1 || c.workplace[slot] !== -1) continue;
+    if (c.alive[slot] !== 1 || c.worker[slot] !== 1 || c.workplace[slot] !== -1) continue;
     const home = w.buildings.get(c.home[slot]!);
     if (home === undefined) continue;
     let best: Building | undefined;
