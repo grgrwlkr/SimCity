@@ -174,24 +174,24 @@ export function capacityJobsForLevelArea(kind: BuildingKind, level: number, area
   return scaleU16(capacityJobsForLevel(kind, level), f32(area / 9));
 }
 
-/** Shortest and longest footprint side a building of this density takes. */
+/** Shortest and longest footprint side a building of this density takes; a tower takes a whole lot between two roads. */
 export function footprintSides(density: ZoneDensity): readonly [number, number] {
-  return density === 'Low' ? [3, 4] : [3, 6];
+  return density === 'Low' ? [3, 4] : density === 'Tower' ? [6, 6] : [3, 6];
 }
 
 /** Lowest and highest level a building of this density reaches. */
 export function densityLevels(density: ZoneDensity): readonly [number, number] {
-  return density === 'Low' ? [1, 2] : density === 'Medium' ? [1, 3] : [2, 3];
+  return density === 'Low' ? [1, 2] : density === 'Medium' ? [1, 3] : density === 'High' ? [2, 3] : [3, 3];
 }
 
 /** Residents or jobs a building holds against one of the same size and level in `Medium`. */
 export function densityCapacityFactor(density: ZoneDensity): number {
-  return density === 'High' ? 2 : 1;
+  return density === 'High' ? 2 : density === 'Tower' ? 20 : 1;
 }
 
 /** Height against a building of the same level in `Medium`. */
 export function densityHeightFactor(density: ZoneDensity): number {
-  return density === 'Low' ? f32(0.8) : density === 'Medium' ? 1 : f32(1.6);
+  return density === 'Low' ? f32(0.8) : density === 'Medium' ? 1 : density === 'High' ? f32(1.6) : 8;
 }
 
 /** Residents and jobs a building of this kind, level, area and profile holds. */

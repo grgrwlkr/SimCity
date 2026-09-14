@@ -33,7 +33,8 @@ export interface RoadCell {
 export const ZONE_KINDS = ['None', 'Residential', 'Commercial', 'Industrial'] as const;
 export type ZoneKind = (typeof ZONE_KINDS)[number];
 
-export const ZONE_DENSITIES = ['Low', 'Medium', 'High'] as const;
+/** `Tower` is TS only (stage 3½e): a skyscraper of thousands on a whole lot. */
+export const ZONE_DENSITIES = ['Low', 'Medium', 'High', 'Tower'] as const;
 export type ZoneDensity = (typeof ZONE_DENSITIES)[number];
 
 export const BUILDING_KINDS = [
