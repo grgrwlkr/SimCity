@@ -67,8 +67,10 @@ function wrapUnit(t: number): number {
 }
 
 /**
- * Where a mesh UV samples: the shader of the scene does the same with `fract`. Rust scaled the cell by the repeat
- * count and so read the neighbouring cells; the patterns wrap, so repeating inside the cell is seamless.
+ * Where a mesh UV samples. Rust scaled the cell by the repeat count and so read the neighbouring cells; the patterns
+ * wrap, so repeating inside the cell is seamless. Three.js `Texture.offset` / `repeat` wrap the whole atlas, not a
+ * cell, so the scene needs a node of its own doing `offset + fract(uv * repeat) * scale`, and the half-texel inset
+ * does not keep the far mip levels from bleeding in the neighbours.
  */
 export function mapCellUv(transform: CellUv, u: number, v: number): [number, number] {
   return [
