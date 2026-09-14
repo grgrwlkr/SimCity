@@ -1,6 +1,7 @@
 // `?scenario=living`: the generated city with its zones and utility stations, left to grow. Its citizens move in,
 // work, shop and drive on their own; the scenario only counts their trips for the HUD.
 import type { RegionalConfig } from '../regional';
+import { seedDemoBusRoute } from '../transit/buses';
 import type { World } from '../world';
 import { buildCity } from './cityGen';
 import { prebuildCity } from './prebuild';
@@ -78,6 +79,7 @@ export class LivingCityScenario extends CitizenTripCounter {
     w.citizenConfig.labourShare = LIVING_CITY_LABOUR_SHARE;
     Object.assign(w.regionalConfig, LIVING_CITY_REGION);
     if (options.prebuilt ?? true) prebuildCity(w);
+    seedDemoBusRoute(w.grid, w.busRoutes);
     w.city.hour = LIVING_CITY_START_HOUR;
   }
 }

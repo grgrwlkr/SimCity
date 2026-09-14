@@ -29,6 +29,17 @@ describe('living city', () => {
     expect(w.budget.current.isEmpty(), 'and the month starts with nothing on its lines').toBe(true);
   });
 
+  // Stage 4: the city has its services and a bus, and they work from the start.
+  it('theLivingCityHasItsServicesAndABus', () => {
+    const { w } = livingCity();
+    const open = (kind: BuildingKind) => w.buildings.all().filter((b) => b.kind === kind && isOperational(b)).length;
+    expect([open('FireStation'), open('PoliceStation'), open('Hospital'), open('School')]).toEqual([2, 3, 1, 2]);
+    expect(w.busRoutes.routes, 'a bus route round the city').toHaveLength(1);
+    step(w, 20);
+    expect(w.fleet.services.length, 'fire engines, police cars and ambulances at their stations').toBe(2 * 3 + 3 * 4 + 2);
+    expect(w.fleet.buses, 'and the bus on its way').toHaveLength(1);
+  });
+
   // At a real-time clock a house takes eight hours to build: the city opens built and lived in, with room left to grow.
   it('theLivingCityOpensBuiltAndLivedIn', () => {
     const { w } = livingCity();

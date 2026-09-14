@@ -8,6 +8,7 @@
 // the buildings of a city this size.
 import { densityLevels, profileCapacity } from '../buildings/building';
 import { spawnBuilding } from '../buildings/spawn';
+import { seedDemoBusRoute } from '../transit/buses';
 import {
   BUILDING_KINDS,
   ZONE_DENSITIES,
@@ -43,6 +44,9 @@ const STATION_EVERY = 6;
 const POWER_OFFSET = 1;
 const WATER_OFFSET = 4;
 const PARK_SHARE = 0.04;
+/** Stage 4: a service lot in every third block of every third row of blocks, fire, police, hospital and school in turn. */
+const SERVICE_EVERY = 3;
+const SERVICE_KINDS = ['FireStation', 'PoliceStation', 'Hospital', 'School'] as const satisfies readonly BuildingKind[];
 
 /** The region of the metropolis: fewer commuters for its open jobs than the living city has, and more of everything else. */
 export const METROPOLIS_REGION: RegionalConfig = {
@@ -212,6 +216,9 @@ export function buildMetropolis(w: World, seed = 13n): MetropolisPlan {
       }
       const ring = Math.max(Math.abs((x0 + x1) / 2 - cx), Math.abs((y0 + y1) / 2 - cy)) / reach;
       const [west, south] = [Math.floor(width / 2), Math.floor(length / 2)];
+      // Every third block of every third row holds a service on its first lot, the four kinds in turn.
+      const service = i % SERVICE_EVERY === 0 && j % SERVICE_EVERY === 0 ? SERVICE_KINDS[(i / SERVICE_EVERY + j / SERVICE_EVERY) % SERVICE_KINDS.length] : undefined;
+      let first = true;
       for (const [lx, lw] of [
         [x0, west],
         [x0 + west, width - west],
@@ -221,7 +228,9 @@ export function buildMetropolis(w: World, seed = 13n): MetropolisPlan {
           [y0 + south, length - south],
         ] as const) {
           const lot = lotUse(ring, rangeU32(rng, 0, 1000) / 1000);
-          build(lot.kind, lot.density, lx, ly, lw, ll);
+          if (first && service !== undefined) build(service, 'Medium', lx, ly, lw, ll);
+          else build(lot.kind, lot.density, lx, ly, lw, ll);
+          first = false;
         }
       }
     }
@@ -245,6 +254,7 @@ export class MetropolisScenario extends CitizenTripCounter {
     w.citizenConfig.labourShare = LIVING_CITY_LABOUR_SHARE;
     Object.assign(w.regionalConfig, METROPOLIS_REGION);
     this.plan = buildMetropolis(w, seed);
+    seedDemoBusRoute(w.grid, w.busRoutes);
     w.city.hour = LIVING_CITY_START_HOUR;
   }
 }

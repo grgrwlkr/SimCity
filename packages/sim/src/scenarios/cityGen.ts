@@ -79,6 +79,22 @@ const STATIONS: ReadonlyArray<readonly [BuildingKind, number, number]> = [
   ['WaterPump', 100, 86],
 ];
 
+/**
+ * Stage 4: the services, 3×3 beside the arterials and the downtown streets — fire stations west and east, police for the
+ * west, the centre and the north-east, a hospital, schools downtown and in the east. Without police crime empties the
+ * homes, and an emergency without a station of its service fails.
+ */
+const SERVICES: ReadonlyArray<readonly [BuildingKind, number, number]> = [
+  ['FireStation', 23, 72],
+  ['FireStation', 99, 72],
+  ['PoliceStation', 28, 52],
+  ['PoliceStation', 65, 65],
+  ['PoliceStation', 107, 84],
+  ['Hospital', 65, 90],
+  ['School', 55, 52],
+  ['School', 99, 95],
+];
+
 /** Somewhere to go besides work and the shops: a park by the pond, a café downtown. */
 const VENUES: ReadonlyArray<readonly [BuildingKind, number, number]> = [
   ['Park', 88, 45],
@@ -149,7 +165,7 @@ export function buildCity(w: World, options: CityOptions = {}): CityPlan {
   applyGameCommandsToGrid(w, roads);
   applyGameCommandsToGrid(w, zones);
   w.city.money = money;
-  if (zoned) applyGameCommandsToGrid(w, [...STATIONS, ...VENUES].map(([building, x, y]): GameCommand => ({ kind: 'PlaceBuilding', pos: { x, y }, building })));
+  if (zoned) applyGameCommandsToGrid(w, [...STATIONS, ...VENUES, ...SERVICES].map(([building, x, y]): GameCommand => ({ kind: 'PlaceBuilding', pos: { x, y }, building })));
   w.city.money = money;
   // The construction lines went through the ledger; the month starts over from the untouched treasury.
   w.budget.restart(money);

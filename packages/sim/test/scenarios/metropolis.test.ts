@@ -78,7 +78,8 @@ describe('metropolis', () => {
     const low = w.buildings.all().filter((b) => b.profile.density === 'Low');
     expect([towers.length > 0, low.length > 0], 'towers and houses').toEqual([true, true]);
     expect(mean(towers.map(centreDistance)), 'the towers stand in the centre').toBeLessThan(mean(low.map(centreDistance)));
-    for (const kind of ['Industrial', 'Park', 'Cafe', 'PowerPlant', 'WaterPump'] as const) expect(ofKind(kind).length, kind).toBeGreaterThan(0);
+    for (const kind of ['Industrial', 'Park', 'Cafe', 'PowerPlant', 'WaterPump', 'FireStation', 'PoliceStation', 'Hospital', 'School'] as const) expect(ofKind(kind).length, kind).toBeGreaterThan(0);
+    expect(w.busRoutes.routes, 'and a bus route').toHaveLength(1);
     expect(w.buildings.all().every(isOperational), 'an established city').toBe(true);
     const edge = w.buildings.all().filter((b) => centreDistance(b) > SIZE / 2 - 6);
     expect(edge.map((b) => `${b.kind} at (${b.anchor.x},${b.anchor.y})`), 'fields at the edge').toEqual([]);
