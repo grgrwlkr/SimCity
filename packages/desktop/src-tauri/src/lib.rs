@@ -19,10 +19,20 @@ const PROBE_DONE_TITLE: &str = "probe:done";
 /// Runs on every page load while probing: first moves to the test city, then samples it.
 const FPS_PROBE_SCRIPT: &str = r#"(() => {
   const report = (line) => { document.title = 'probe:' + JSON.stringify(line); };
+  const simReady = async () => {
+    for (let i = 0; i < 100 && typeof window.__sim === 'undefined'; i++) await new Promise((r) => setTimeout(r, 20));
+    if (typeof window.__sim !== 'undefined') await window.__sim.ready;
+    return Math.round(performance.now());
+  };
   if (new URLSearchParams(location.search).get('scenario') !== 'city') {
-    location.search = '?scenario=city';
+    // The menu page first: its readiness is the startup time.
+    void simReady().then((pageMs) => {
+      report({ event: 'menuReady', pageMs, sim: typeof window.__sim !== 'undefined' });
+      setTimeout(() => { location.search = '?scenario=city'; }, 200);
+    });
     return;
   }
+  void simReady().then((pageMs) => report({ event: 'cityReady', pageMs }));
   const seconds = __SECONDS__;
   let second = 0;
   const sample = async () => {
@@ -98,6 +108,7 @@ fn serve_assets<R: tauri::Runtime>(app: &tauri::App<R>, server: tiny_http::Serve
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let launched = std::time::Instant::now();
     let probe_seconds = std::env::var(FPS_PROBE_ENV)
         .ok()
         .and_then(|v| v.parse::<u32>().ok());
@@ -149,11 +160,12 @@ pub fn run() {
                             eprintln!("fps probe: {err}");
                         }
                     })
-                    .on_document_title_changed(|webview, title| {
+                    .on_document_title_changed(move |webview, title| {
                         if title == PROBE_DONE_TITLE {
                             webview.app_handle().exit(0);
                         } else if let Some(line) = title.strip_prefix(PROBE_TITLE_PREFIX) {
-                            println!("{line}");
+                            let shell_ms = launched.elapsed().as_millis();
+                            println!("{{\"shellMs\":{shell_ms},\"probe\":{line}}}");
                         }
                     });
             }
