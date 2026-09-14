@@ -227,6 +227,8 @@ test('livingCityShowsItsCitizens', async ({ page }) => {
 // Stage 3½d gate: the living city in its morning rush at ×1, where every car, parked car and person in view is drawn, and at
 // ×60, where the roads show their load and a sample of the cars drives on them.
 test('livingCityAtX1AndX60', async ({ page }, testInfo) => {
+  // Nine thousand ticks in the browser and three screenshots, drawn on the processor in headless Chromium.
+  test.setTimeout(90_000);
   await page.goto('/?scenario=living');
   await page.waitForFunction(() => typeof window.__sim !== 'undefined');
   await page.evaluate(() => window.__sim.ready);
