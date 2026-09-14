@@ -30,8 +30,11 @@ const DELTA_Y = [0, 0, 0, 1, -1] as const;
 type Dir = 0 | 1 | 2 | 3 | 4;
 const horizontal = (dir: number) => dir === EAST || dir === WEST;
 
-/** `id` is a meso car slot for a driving vehicle and the tile index for parked cars; world coordinates. */
-export type CitizenCarVisitor = (parked: boolean, id: number, generation: number, x: number, y: number, heading: number, truck: boolean) => void;
+/**
+ * `id` is a meso car slot for a driving vehicle and the tile index for parked cars; world coordinates. `vehicle` is the
+ * `MesoTraffic.vehicle` class of a driving one (a bus or a service vehicle of the city besides cars and trucks).
+ */
+export type CitizenCarVisitor = (parked: boolean, id: number, generation: number, x: number, y: number, heading: number, truck: boolean, vehicle: number) => void;
 
 /** The lane a car takes on `link` before leaving for `next` (-1 at its goal): 0 is the kerb lane. */
 function laneOf(g: MesoGraph, car: number, link: number, next: number): number {
@@ -157,7 +160,7 @@ export function forEachCitizenCar(w: World, visit: CitizenCarVisitor, view?: Til
         }
         if (!inTileView(view, x, y)) continue;
         const at = tileFToWorld(cfg, x, y);
-        visit(false, car, m.generation[car]!, at.x, at.y, heading, vehicle === VEHICLE_TRUCK);
+        visit(false, car, m.generation[car]!, at.x, at.y, heading, vehicle === VEHICLE_TRUCK, vehicle);
       }
     }
   }
@@ -172,7 +175,7 @@ export function forEachCitizenCar(w: World, visit: CitizenCarVisitor, view?: Til
     for (let x = x0, tile = y * width + x0; x <= x1; x++, tile++) {
       if (parked[tile] === 0) continue;
       const at = tileFToWorld(cfg, x, y);
-      visit(true, tile, 0, at.x, at.y, 0, false);
+      visit(true, tile, 0, at.x, at.y, 0, false, 0);
     }
   }
 }

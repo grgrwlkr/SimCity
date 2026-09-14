@@ -12,7 +12,7 @@ import {
   type WorldSnapshot,
 } from '@simcity/bridge';
 import type { DebugRenderer, RenderStats } from '@simcity/render';
-import type { AppState, MapCell, MapConfig, TilePos } from '@simcity/sim';
+import type { AppState, EmergencyKind, MapCell, MapConfig, TilePos } from '@simcity/sim';
 
 export interface RenderFrameSummary {
   readonly tick: number;
@@ -62,6 +62,8 @@ export interface SimApi {
   scenario(name: ScenarioName, size?: number): Promise<null>;
   /** Make a system throw on every call (`null` stops it): the HUD reports it and the world goes on. */
   failSystem(system: string | null): Promise<null>;
+  /** An emergency of `kind` breaks out at the tile, with its notification, as one that broke out by itself (stage 4). */
+  debugEmergency(kind: EmergencyKind, x: number, y: number): Promise<null>;
   /** p50, p99 and the longest of the last ticks the worker ran, and how many since the reset. */
   tickStats(): Promise<TickStatsReply>;
   resetTickStats(): Promise<null>;
@@ -140,6 +142,7 @@ export function installSimApi(
     renderStats: async () => (await renderer).stats(),
     scenario: (name, size) => client.request(size === undefined ? { t: 'scenario', name } : { t: 'scenario', name, size }),
     failSystem: (system) => client.request({ t: 'debugFailSystem', system }),
+    debugEmergency: (kind, x, y) => client.request({ t: 'debugEmergency', kind, x, y }),
     tickStats: () => client.request({ t: 'tickStats' }),
     resetTickStats: () => client.request({ t: 'resetTickStats' }),
   };

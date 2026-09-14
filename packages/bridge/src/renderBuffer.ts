@@ -93,6 +93,11 @@ export const PARKED_VEHICLE_KIND = 4;
 export const TRUCK_KIND = 5;
 export const PARKED_TRUCK_KIND = 6;
 export const PEDESTRIAN_KIND = 7;
+/** A bus, a fire engine, a police car and an ambulance of the city (stage 4). */
+export const BUS_KIND = 8;
+export const FIRE_KIND = 9;
+export const POLICE_KIND = 10;
+export const AMBULANCE_KIND = 11;
 /** Every id a frame may publish a vehicle under is below this. */
 export const RENDER_ID_SPACE = 1 << 23;
 

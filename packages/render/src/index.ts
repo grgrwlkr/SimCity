@@ -17,3 +17,6 @@ export * from './renderSettings';
 export * from './vignette';
 export * from './overlayRepaint';
 export * from './toolPreview';
+export * from './serviceGlyphs';
+export * from './serviceVehicles';
+export * from './emergencyMarkers';

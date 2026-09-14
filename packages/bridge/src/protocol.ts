@@ -1,5 +1,5 @@
 // Worker ↔ main thread messages. Requests carry an id so `window.__sim` can await each reply.
-import type { AppState, City, LightPhase, ManeuverKind, MapCell, MapGrid, SystemError, TilePos, TrafficSummary } from '@simcity/sim';
+import type { AppState, City, EmergencyKind, LightPhase, ManeuverKind, MapCell, MapGrid, SystemError, TilePos, TrafficSummary } from '@simcity/sim';
 import type { SimSpeed } from './driver';
 import type { ScenarioName } from './scenarios';
 
@@ -28,6 +28,27 @@ export interface WorldSnapshot {
   readonly graphVersion: number;
   readonly lights: readonly TrafficLightView[];
   readonly traffic: TrafficView;
+  readonly services: ServicesView;
+}
+
+/** An emergency under way, at the anchor of the building it broke out at. */
+export interface EmergencyView {
+  readonly id: number;
+  readonly kind: EmergencyKind;
+  readonly x: number;
+  readonly y: number;
+}
+
+/** The HUD's services line and the emergency markers (stage 4). */
+export interface ServicesView {
+  readonly emergencies: readonly EmergencyView[];
+  /** Vehicles of the service stations, and those away from their station. */
+  readonly vehicles: number;
+  readonly vehiclesOut: number;
+  readonly buses: number;
+  /** Emergencies resolved in time and failed, since the game started. */
+  readonly resolved: number;
+  readonly failed: number;
 }
 
 /** The HUD's traffic line: the vehicles' summary, the running scenario's commuters and the tick cost. */
@@ -157,6 +178,8 @@ export type Request =
   /** What the camera sees (`null` for everything): the render frame holds only what lies in it, with a margin. */
   | { readonly t: 'setView'; readonly view: WorldView | null }
   | { readonly t: 'mesoLinks' }
+  /** An emergency of `kind` breaks out at the tile, as `spawnEmergencies` would start one: e2e and DevTools. */
+  | { readonly t: 'debugEmergency'; readonly kind: EmergencyKind; readonly x: number; readonly y: number }
   /** The cost of the last 4 096 ticks at most, since the last reset. */
   | { readonly t: 'tickStats' }
   | { readonly t: 'resetTickStats' };
@@ -180,6 +203,7 @@ export interface ReplyByRequest {
   readonly debugFailSystem: null;
   readonly setView: null;
   readonly mesoLinks: MesoLinksReply;
+  readonly debugEmergency: null;
   readonly tickStats: TickStatsReply;
   readonly resetTickStats: null;
 }

@@ -23,6 +23,7 @@ import {
   rngProbeDigest,
   SignalizedCrossScenario,
   spawnVehicle,
+  startEmergency,
   step,
   summarizeTraffic,
   toHex64,
@@ -48,9 +49,13 @@ import {
   type WorldView,
 } from './protocol';
 import {
+  AMBULANCE_KIND,
+  BUS_KIND,
+  FIRE_KIND,
   PARKED_TRUCK_KIND,
   PARKED_VEHICLE_KIND,
   PEDESTRIAN_KIND,
+  POLICE_KIND,
   RENDER_ID_SPACE,
   RenderWriter,
   TRUCK_KIND,
@@ -74,6 +79,8 @@ const DRIVING_ID_BASE = VEHICLE_CAPACITY;
 const PARKED_ID_BASE = 1 << 21;
 const WALKER_ID_BASE = 1 << 22;
 const STANDING_ID_BASE = (1 << 22) + (1 << 21);
+/** The render kind of each `MesoTraffic.vehicle` class: car, truck, bus, fire engine, police car, ambulance. */
+const MESO_KINDS = [0, TRUCK_KIND, BUS_KIND, FIRE_KIND, POLICE_KIND, AMBULANCE_KIND] as const;
 /** Ticks whose cost `tickStats` reads. */
 const TICK_SAMPLES = 4096;
 /** From this speed up a frame shows the load of the roads and a sample of the cars on them. */
@@ -191,6 +198,9 @@ export class SimHost {
         return null;
       case 'mesoLinks':
         return this.mesoLinks();
+      case 'debugEmergency':
+        startEmergency(this.world, req.kind, { x: req.x, y: req.y }, 0.5);
+        return null;
       case 'tickStats':
         return this.tickStats();
       case 'resetTickStats':
@@ -314,6 +324,14 @@ export class SimHost {
         tripsDone: stats?.arrived ?? null,
         simTickMs: this.tickMs,
       },
+      services: {
+        emergencies: w.emergencies.active.map((e) => ({ id: e.id, kind: e.kind, x: e.pos.x, y: e.pos.y })),
+        vehicles: w.fleet.services.length,
+        vehiclesOut: w.fleet.services.filter((v) => v.state !== 'AtStation').length,
+        buses: w.fleet.buses.length,
+        resolved: w.emergencies.stats.resolvedInTime,
+        failed: w.emergencies.stats.failedResponses,
+      },
     };
   }
 
@@ -405,8 +423,8 @@ export class SimHost {
     const tiles = view?.tiles;
     forEachCitizenCar(
       w,
-      (parked, id, generation, x, y, heading, truck) => {
-        if (!parked) push(DRIVING_ID_BASE + id, PARKED_ID_BASE, generation, x, y, heading, truck ? TRUCK_KIND : 0);
+      (parked, id, generation, x, y, heading, _truck, vehicle) => {
+        if (!parked) push(DRIVING_ID_BASE + id, PARKED_ID_BASE, generation, x, y, heading, (MESO_KINDS as readonly number[])[vehicle] ?? 0);
         else if (!fast) push(PARKED_ID_BASE + id, WALKER_ID_BASE, generation, x, y, heading, PARKED_VEHICLE_KIND);
       },
       tiles,

@@ -16,11 +16,30 @@ import { describe, expect, it } from 'vitest';
 import { loadTestCity } from '../../sim/test/testCity';
 import { RENDER_CAPACITY, SimHost } from '../src/host';
 import { GRID_LAYER_NAMES, type GridLayers } from '../src/protocol';
-import { PARKED_TRUCK_KIND, PARKED_VEHICLE_KIND, PEDESTRIAN_KIND, RenderReader, TRUCK_KIND } from '../src/renderBuffer';
+import { BUS_KIND, FIRE_KIND, PARKED_TRUCK_KIND, PARKED_VEHICLE_KIND, PEDESTRIAN_KIND, RenderReader, TRUCK_KIND } from '../src/renderBuffer';
 import { SAMPLE_CARS } from '../src/sample';
 import { SCENARIOS } from '../src/scenarios';
 
 describe('SimHost', () => {
+  // Stage 4: the HUD and the markers read the services from the snapshot; the frame draws the city's vehicles in their kinds.
+  it('snapshotCarriesTheServicesOfTheCity', () => {
+    const host = new SimHost(RENDER_CAPACITY);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'scenario', name: 'livingCity' });
+    host.handle({ t: 'debugEmergency', kind: 'Fire', x: 40, y: 26 });
+    expect(host.handle({ t: 'snapshot' }).services.emergencies).toEqual([{ id: 0, kind: 'Fire', x: 40, y: 26 }]);
+
+    host.handle({ t: 'step', ticks: 5 });
+    const services = host.handle({ t: 'snapshot' }).services;
+    expect(services).toMatchObject({ vehicles: 2 * 3 + 3 * 4 + 2, buses: 1 });
+    expect(services.vehiclesOut, 'a fire engine is on its way').toBeGreaterThan(0);
+    const reader = new RenderReader(host.render);
+    const frame = reader.allocate();
+    reader.readInto(frame);
+    const kinds = new Set(frame.kind.subarray(0, frame.count));
+    expect([kinds.has(FIRE_KIND), kinds.has(BUS_KIND)], 'drawn as a fire engine and a bus').toEqual([true, true]);
+  }, 60_000);
+
   it('stepRepliesWithTheFingerprintOfTheSameRunInProcess', () => {
     const host = new SimHost(16);
     host.handle({ t: 'setState', state: 'InGame' });

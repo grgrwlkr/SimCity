@@ -55,6 +55,7 @@ function syncRender(snapshot: WorldSnapshot): void {
       shownMapEditVersion = map.mapEditVersion;
     }
     r.setLights(snapshot.lights);
+    r.setEmergencies(snapshot.services.emergencies);
     // The scenario's map is on screen: centre its box and show the whole cross, once the canvas has a
     // size (registered after the first fit, so it runs after it).
     const cross = scenario?.cross;

@@ -224,6 +224,29 @@ test('livingCityShowsItsCitizens', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.vehicles), { timeout: 30_000 }).toBeGreaterThan(100);
 });
 
+// Stage 4 live: the living city's services and its bus. A fire breaks out at a house, its marker blinks over it, an engine
+// sets out from a station, and the HUD counts them.
+test('livingCityServesAnEmergencyAndRunsItsBus', async ({ page }, testInfo) => {
+  await page.goto('/?scenario=living');
+  await page.waitForFunction(() => typeof window.__sim !== 'undefined');
+  await page.evaluate(() => window.__sim.ready);
+  await expect(page.getByTestId('citizens')).toHaveText(/^Жители \d/, { timeout: 30_000 });
+  await page.evaluate(async () => {
+    await window.__sim.setSpeed('Paused');
+    await window.__sim.debugEmergency('Fire', 40, 26);
+    await window.__sim.step(50);
+  });
+  await expect(page.getByTestId('emergencies')).toHaveText('ЧС 1', { timeout: 15_000 });
+  await expect(page.getByTestId('buses')).toHaveText('автобусы 1');
+  const out = await page.evaluate(() => window.__sim.snapshot()).then((s) => s.services);
+  expect(out.vehiclesOut, 'an engine is on its way').toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.emergencyMarkers), { timeout: 15_000 }).toBe(1);
+  // Close to the fire, so the marker and the engine are told apart.
+  const fire = tileToWorld({ width: 128, height: 128, tileSize: 16 }, { x: 40, y: 26 });
+  await page.evaluate((at) => window.__sim.setCamera({ centerX: at.x, centerY: at.y, worldPerPixel: 0.6 }), fire);
+  await page.locator('#view').screenshot({ path: testInfo.outputPath('living-emergency.png') });
+});
+
 // Stage 3½d gate, in Chromium: the living city in its morning rush at ×1, where every car, parked car and person in view is drawn, and at
 // ×60, where the roads show their load and a sample of the cars drives on them.
 test('livingCityAtX1AndX60', async ({ page }, testInfo) => {

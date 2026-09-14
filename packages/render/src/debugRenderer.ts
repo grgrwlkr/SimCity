@@ -27,6 +27,8 @@ import { buildChunkGeometry, changedChunks, chunkGrid } from './mapChunks';
 import { LAMP_COLORS, VEHICLE_COLORS } from './palette';
 import { PlaybackClock } from './playback';
 import { drawnScale, vehicleScale } from './vehicleLook';
+import { EmergencyMarkers, type EmergencyView } from './emergencyMarkers';
+import { RenderPrimitives } from './renderPrimitives';
 
 /** Sim frames kept for playback: the display draws a gap or two behind the newest one. */
 const FRAME_HISTORY = 6;
@@ -36,6 +38,9 @@ const MANEUVER_COLORS: Record<string, number> = { Straight: 0x2fd67e, RightTurn:
 const VIEW_REPORT_MS = 100;
 /** Link loads are drawn between the map and the vehicles. */
 const LINK_Z = 0.5;
+/** Emergency markers float over the vehicles, a square of this share of a tile. */
+const MARKER_Z = 3;
+const MARKER_TILES = 0.4;
 
 export interface RenderStats {
   readonly backend: 'WebGPU' | 'WebGL2';
@@ -56,6 +61,8 @@ export interface RenderStats {
   readonly loadLinks: number;
   /** The sim tick the vehicles are drawn at, fractional between frames; `null` before the first frame. */
   readonly playbackTick: number | null;
+  /** Emergency markers on screen, one an emergency under way. */
+  readonly emergencyMarkers: number;
   readonly hovered: TilePos | null;
 }
 
@@ -123,6 +130,10 @@ export class DebugRenderer {
   private drawnMapEditVersion: number | null = null;
   private pendingMapEditVersion: number | null = null;
   private overlayLanelets = 0;
+  private readonly markers = new EmergencyMarkers(new RenderPrimitives());
+  private emergencies: readonly EmergencyView[] = [];
+  private markerMesh: THREE.InstancedMesh | null = null;
+  private lastDrawMs: number | null = null;
 
   private constructor(
     private readonly renderer: THREE.WebGPURenderer,
@@ -354,6 +365,11 @@ export class DebugRenderer {
     }
   }
 
+  /** The emergencies under way, from the snapshot: a blinking marker over each. */
+  setEmergencies(emergencies: readonly EmergencyView[]): void {
+    this.emergencies = emergencies;
+  }
+
   stats(): RenderStats {
     return {
       backend: this.backend,
@@ -368,6 +384,7 @@ export class DebugRenderer {
       arrows: [...this.lamps.values()].reduce((n, set) => n + set.filter((lamp) => lamp.arrow.visible).length, 0),
       loadLinks: this.linkMesh?.visible === true ? this.linkMesh.count : 0,
       playbackTick: Number.isNaN(this.playbackTick) ? null : this.playbackTick,
+      emergencyMarkers: this.markerMesh?.count ?? 0,
       hovered: this.hovered,
     };
   }
@@ -378,6 +395,7 @@ export class DebugRenderer {
       return;
     }
     this.updateVehicles(nowMs);
+    this.updateMarkers(nowMs);
     const b = this.view.bounds();
     this.reportView(b, nowMs);
     this.camera.left = b.left;
@@ -392,6 +410,45 @@ export class DebugRenderer {
       this.drawnMapEditVersion = this.pendingMapEditVersion;
       this.pendingMapEditVersion = null;
     }
+  }
+
+  /**
+   * The markers follow the emergencies and blink by the time since the last frame. A dim marker is its colour laid over
+   * the background at its alpha: the debug materials draw opaque.
+   */
+  private updateMarkers(nowMs: number): void {
+    const dt = this.lastDrawMs === null ? 0 : (nowMs - this.lastDrawMs) / 1000;
+    this.lastDrawMs = nowMs;
+    this.markers.sync(this.emergencies, dt);
+    const markers = this.markers.markers;
+    if (this.map === null || (markers.length === 0 && this.markerMesh === null)) return;
+    const cfg: MapConfig = { width: this.map.width, height: this.map.height, tileSize: this.map.tileSize };
+    let mesh = this.markerMesh;
+    if (mesh === null || mesh.instanceMatrix.count < markers.length) {
+      if (mesh !== null) {
+        this.scene.remove(mesh);
+        mesh.geometry.dispose();
+        mesh.dispose();
+      }
+      const capacity = Math.max(16, markers.length);
+      mesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(cfg.tileSize * MARKER_TILES, cfg.tileSize * MARKER_TILES), new THREE.MeshBasicMaterial({ color: 0xffffff }), capacity);
+      mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 3), 3);
+      mesh.frustumCulled = false;
+      this.scene.add(mesh);
+      this.markerMesh = mesh;
+    }
+    const background = new THREE.Color(BACKGROUND);
+    const matrix = new THREE.Matrix4();
+    markers.forEach((marker, k) => {
+      const at = tileToWorld(cfg, { x: marker.x, y: marker.y });
+      mesh.setMatrixAt(k, matrix.makeTranslation(at.x, at.y, MARKER_Z));
+      const [r, g, b, a] = marker.material.color;
+      const alpha = a! / 255;
+      mesh.instanceColor!.setXYZ(k, (r! / 255) * alpha + background.r * (1 - alpha), (g! / 255) * alpha + background.g * (1 - alpha), (b! / 255) * alpha + background.b * (1 - alpha));
+    });
+    mesh.count = markers.length;
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.instanceColor!.needsUpdate = true;
   }
 
   /** Tells the worker what the camera sees once it moved, no more often than `VIEW_REPORT_MS`. */

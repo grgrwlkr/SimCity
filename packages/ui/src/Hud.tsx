@@ -1,4 +1,4 @@
-import { SCENARIOS, type Scenario, type SimSpeed, type TrafficView } from '@simcity/bridge';
+import { SCENARIOS, type Scenario, type ServicesView, type SimSpeed, type TrafficView } from '@simcity/bridge';
 import type { AppState } from '@simcity/sim';
 import { useEffect } from 'react';
 import { useSimStore } from './store';
@@ -51,6 +51,22 @@ function TrafficStats({ traffic }: { traffic: TrafficView }) {
         </span>
       )}
       {traffic.simTickMs !== null && <span data-testid="sim-tick">сим {traffic.simTickMs.toFixed(1).replace('.', ',')} мс</span>}
+    </section>
+  );
+}
+
+/** The services line: emergencies under way, the service vehicles away from their stations, the buses (stage 4). */
+function ServicesStats({ services }: { services: ServicesView }) {
+  return (
+    <section className="hud-stats" aria-label="Службы">
+      <span data-testid="emergencies">ЧС {count.format(services.emergencies.length)}</span>
+      <span data-testid="vehicles-out">
+        на выезде {count.format(services.vehiclesOut)} из {count.format(services.vehicles)}
+      </span>
+      <span>
+        справились {count.format(services.resolved)}, не успели {count.format(services.failed)}
+      </span>
+      <span data-testid="buses">автобусы {count.format(services.buses)}</span>
     </section>
   );
 }
@@ -143,6 +159,7 @@ export function Hud({ actions }: { actions: HudActions }) {
         </span>
       )}
       <TrafficStats traffic={snapshot.traffic} />
+      <ServicesStats services={snapshot.services} />
     </header>
   );
 }

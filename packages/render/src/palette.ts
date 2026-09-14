@@ -29,6 +29,11 @@ export const VEHICLE_COLORS: ReadonlyArray<readonly [number, number, number]> = 
   [40, 96, 230],
   [150, 170, 220],
   [0, 250, 170],
+  // 8 to 11: a bus, a fire engine, a police car and an ambulance, in the colours of `serviceVehicles.ts`.
+  [230, 179, 51],
+  [230, 51, 26],
+  [26, 77, 230],
+  [26, 204, 51],
 ];
 
 /** Traffic light signal colours, sRGB; the protected-left arrow is green too. */
