@@ -91,7 +91,7 @@ bun run bench       # тик симуляции, p50/p99
 bun run dev         # Vite, http://localhost:5174, ?debug=1
 ```
 
-Ворота этапа порта: `bun run typecheck && bun run lint && bun run test && bun run e2e`. Cargo-проверки выше относятся к Rust-части.
+Ворота этапа порта: `bun run typecheck && bun run lint && bun run test && bun run e2e`. Из задач порта Rust не собирается, кроме Tauri-крейта и того, что нужно для упаковки. `cargo test` и `cargo clippy` по корневому Bevy-workspace из порта не запускаются, корневой `target/` в worktree порта — мусор, его удаляют.
 
 - `packages/sim` — симуляция без DOM, часов и хоста. Время приходит как `dtNs`, случайность только из `StdRng`, это бит-в-бит порт `rand 0.10.1`. ESLint запрещает там `Math.random`, `Date`, float-функции `Math.*`, `TODO` и `any`.
 - `packages/bridge` — воркер, драйвер fixed-step 10 Гц, протокол, render-SAB с двойным буфером. `render`, `ui`, `app` — кадр, HUD на React + zustand, точка входа Vite.
@@ -100,3 +100,11 @@ bun run dev         # Vite, http://localhost:5174, ?debug=1
 - `tools/rand-vectors` — Rust-генератор эталона RNG со своим `[workspace]`; версии крейтов пинятся под корневой `Cargo.lock`.
 - `window.__sim` в DevTools и Playwright: `snapshot() step(n) fingerprint() cmd(json) setState(s) setSpeed(s) rngProbe(seed, n) renderFrame()`, для рендера `loadGridHex(layers) debugVehicles(list) camera() setCamera(s) fitMap() pickTile(x, y) renderStats()`. Флаг `?debug=1` включает `__sim.debug` и оверлеи: сетку, боксы перекрёстков, лейнлеты.
 - Отладочный рендер (`packages/render/src/debugRenderer.ts`) выводит цвета без цветового менеджмента, поэтому класс тайла читается обратно со скриншота. Эталон раскладки Rust — `e2e/fixtures/rust-layout.json` из `bun tools/rust-layout.ts` против скрытой живой игры (skill `simcity-live`); инструмент стирает четыре тайла в игре, экземпляр потом гасить.
+
+### Desktop-оболочка (`packages/desktop`)
+
+- Tauri-крейт — `packages/desktop/src-tauri`, вне Bevy-workspace: в его `Cargo.toml` пустой `[workspace]`, у крейта свой `Cargo.lock` и свой `packages/desktop/src-tauri/target/`. `bevy_*` в его дереве нет.
+- `bun run desktop:dev` — окно Tauri над dev-сервером Vite на `PORT` (5174 по умолчанию). `bun run desktop:build` — `vite build packages/app` и `tauri build --bundles app`, результат — `packages/desktop/src-tauri/target/release/bundle/macos/SimCity.app`.
+- Собранное приложение отдаёт страницу с `http://127.0.0.1:45174` своим сервером (`serve_assets` в `lib.rs`): на `tauri://` WebKit не даёт cross-origin isolation, а без неё нет `SharedArrayBuffer`. Если порт занят, приложение выходит с кодом 1.
+- Prod-сборка Vite идёт без sourcemap: в `packages/app/dist` нет ни `.map`, ни `sourceMappingURL`. Ассеты сжаты внутри бинарника (фича `compression` у `tauri`).
+- `SIMCITY_FPS_PROBE=<секунды> …/SimCity.app/Contents/MacOS/simcity_desktop` открывает тестовый город и печатает строки JSON: время готовности и fps раз в секунду. Окно висит поверх остальных, без фокуса, клики проходят сквозь него; по окончании приложение закрывается само.
