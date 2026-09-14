@@ -22,6 +22,8 @@ export default defineConfig([
     'target/**',
     'packages/desktop/out/**',
     'packages/desktop/release/**',
+    'packages/desktop/test-results/**',
+    'packages/desktop/playwright-report/**',
     '.claude/**',
     '.cursor/**',
     '.zcode/**',

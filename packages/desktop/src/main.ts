@@ -10,6 +10,11 @@ const RENDERER_DIR = path.join(here, 'renderer');
 const APP_HOST = 'bundle';
 /** Set by `bun run desktop:dev`. */
 const devServerUrl = process.env.SIMCITY_DEV_SERVER_URL;
+/**
+ * `SIMCITY_TEST_WINDOW=1` (e2e and measurements): the app does not activate, the window never takes
+ * focus and lets clicks through, and it stays on top, because an occluded window stops drawing.
+ */
+const testWindow = process.env.SIMCITY_TEST_WINDOW === '1';
 
 const MIME: Readonly<Record<string, string>> = {
   '.html': 'text/html',
@@ -56,6 +61,8 @@ function createWindow(): void {
     width: 1280,
     height: 800,
     title: 'SimCity',
+    show: !testWindow,
+    ...(testWindow ? { focusable: false, alwaysOnTop: true } : {}),
     webPreferences: {
       preload: path.join(here, 'preload.cjs'),
       contextIsolation: true,
@@ -63,6 +70,10 @@ function createWindow(): void {
       nodeIntegration: false,
     },
   });
+  if (testWindow) {
+    window.setIgnoreMouseEvents(true);
+    window.once('ready-to-show', () => window.showInactive());
+  }
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event, url) => {
     if (!allowedOrigin(url)) event.preventDefault();
@@ -73,6 +84,7 @@ function createWindow(): void {
 app.on('window-all-closed', () => app.quit());
 
 void app.whenReady().then(() => {
+  if (testWindow && process.platform === 'darwin') app.setActivationPolicy('accessory');
   protocol.handle('app', serveRenderer);
   createWindow();
 });
