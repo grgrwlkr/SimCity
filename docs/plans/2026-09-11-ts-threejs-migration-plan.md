@@ -180,7 +180,7 @@ Rust и TS гоняются на одном seed и одной последов�
 | 3. Сим в WASM | JS-исходника сима нет, только декомпиляция в псевдо-C | прямого пути TS→WASM нет: AssemblyScript — это второй порт, а Rust-сим в WASM отменяет порт сима на TS |
 | 4. Сим на сервере, тонкий клиент | единственная настоящая защита | игра становится онлайн: сервер, сеть, латентность, хостинг |
 
-Замер ступени 1 на Electron-сборке `bun run desktop:build` (2026-09-15). Source maps в `packages/app/vite.config.ts` выключены явно (`build.sourcemap: false`); в `app.asar` нет ни одного `.map`, в выгруженных файлах нет `sourceMappingURL`. `app.asar` — 10 записей и 1 366 089 байт: `out/main.js`, `out/preload.cjs`, рендерер из четырёх файлов, `package.json`; `node_modules` в нём нет.
+Замер ступени 1 на Electron-сборке `bun run desktop:build` (2026-09-15). Source maps в `packages/app/vite.config.ts` выключены явно (`build.sourcemap: false`); в `app.asar` нет ни одного `.map`, в выгруженных файлах нет `sourceMappingURL`. `app.asar` — 10 записей и 1 366 235 байт: `out/main.js`, `out/preload.cjs`, рендерер из четырёх файлов, `package.json`; `node_modules` в нём нет.
 
 Что ступень 1 в текущей оболочке не закрывает:
 - Архив извлекается одной командой: `npx @electron/asar extract SimCity.app/Contents/Resources/app.asar simcity-assets` (вне репозитория: внутри порта npx падает на `asar: command not found`; там же работает `bunx @electron/asar extract`). Замер на живой сборке: обе команды дают одинаковые файлы, `index-*.js` байт в байт совпадает со сборкой. Раздача через loopback ушла вместе с Tauri: страница идёт по схеме `app://` и наружу ничего не слушает.

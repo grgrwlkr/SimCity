@@ -2,7 +2,7 @@
 
 > Программа: `docs/plans/2026-09-11-ts-threejs-migration-plan.md`, строка этапа 7. Эта часть закрывает десктоп-оболочку над `packages/app`, геймпад, релизный `.app` для macOS arm64, e2e оболочки и проверку ступени 1 защиты кода. Файловые сейвы и `.exe` сюда не входят.
 
-**Итог.** Оболочка — Electron 44.3.0 (Chromium 152). `bun run desktop:build` собирает `SimCity.app` (295 152 КиБ) за 3 с. В собранном приложении тестовый город идёт на 60 fps с окном без фокуса; это проверяет `bun run desktop:e2e`. Геймпад работает. Tauri опробован и отклонён (раздел «Отклонения»).
+**Итог.** Оболочка — Electron 44.3.0 (Chromium 152). `bun run desktop:build` собирает `SimCity.app` (295 152 КиБ) за 3 с. В собранном приложении тестовый город идёт на 60 fps без окна на экране (offscreen-рендер на GPU); это проверяет `bun run desktop:e2e`. Геймпад работает. Tauri опробован и отклонён (раздел «Отклонения»).
 
 ## Команды
 
@@ -17,7 +17,7 @@
 - **Версии:** `electron` 44.3.0, `electron-builder` 26.15.3 (реестр npm). Chromium 152.0.7977.78 и Node 24.20.0 сняты с бинарника (`ELECTRON_RUN_AS_NODE=1 … -p process.versions`). Цель Vite — `build.target: 'chrome152'`; `safari13` в конфиге не было, цель не задавалась.
 - **Изоляция без сервера.** В сборке страница идёт по привилегированной схеме `app://bundle` (`standard`, `secure`, `supportFetchAPI`, `corsEnabled`). `protocol.handle` отдаёт файлы из `out/renderer` в asar с COOP/COEP и явным `Content-Type`, выход за каталог получает 404. В dev окно грузит `SIMCITY_DEV_SERVER_URL`, заголовки ставит `vite.config.ts`.
 - **Безопасность окна:** `contextIsolation`, `sandbox`, без `nodeIntegration`. Preload отдаёт только `window.simcityDesktop` (платформа и версии). Новые окна запрещены, навигация — только в свой origin.
-- **Тестовое окно** (`SIMCITY_TEST_WINDOW=1`): `app.setActivationPolicy('accessory')` на macOS, `show: false` → `showInactive()`, `focusable: false`, `alwaysOnTop` (перекрытое окно перестаёт рисовать), `setIgnoreMouseEvents(true)`.
+- **Запуск без окна** (`SIMCITY_TEST_WINDOW=1`, требование пользователя: никаких окон поверх его окон и никакого фокуса). `app.dock.hide()`, `show: false`, `webPreferences.offscreen.useSharedTexture: true`, `backgroundThrottling: false`, `setFrameRate(60)`. Каждый кадр `paint` считается в `simcityPaintCount`, и его shared texture сразу освобождается.
 - **Бинарник Electron.** bun не запускает `install.js` пакета `electron`: ни `bun install`, ни `bun install --force`, ни `trustedDependencies` не вернули удалённый `dist` (замер). Скрипт `electron:install` зовёт его явно, повторный запуск ничего не делает.
 - **asar без `node_modules`.** С `files: ["out/**"]` electron-builder брал продакшн-зависимости корневого workspace, и `app.asar` весил 30 011 411 байт. С `"!node_modules/**"` осталось 10 записей: рендерер уже собран в бандл.
 - **Подписи нет** (`mac.sign: null`), иконка — стандартная Electron.
@@ -36,14 +36,14 @@
 ## Ступень 1 защиты: проверка на живой сборке
 
 - `build.sourcemap: false` в `packages/app/vite.config.ts` задан явно. Дефолт Vite 8 тот же, исходник `build.ts`.
-- `app.asar`: 10 записей, 1 366 089 байт — `out/main.js`, `out/preload.cjs`, `out/renderer/index.html` и три ассета, `package.json`. `.map` нет ни в asar, ни в `.app`, `sourceMappingURL` в выгруженных файлах нет.
+- `app.asar`: 10 записей, 1 366 235 байт — `out/main.js`, `out/preload.cjs`, `out/renderer/index.html` и три ассета, `package.json`. `.map` нет ни в asar, ни в `.app`, `sourceMappingURL` в выгруженных файлах нет.
 - Извлечение одной командой:
 
   ```sh
   npx @electron/asar extract SimCity.app/Contents/Resources/app.asar simcity-assets
   ```
 
-  Замер: из `/tmp` отработала за 2,4 с (npx взял `@electron/asar` 4.3.0). Внутри репозитория npx падает на `sh: asar: command not found`, там работает `bunx @electron/asar extract` (1,3 с). Обе выгрузки одинаковы, `index-*.js` байт в байт совпадает со сборкой. Выходят `index.html` (424 байта), `index-*.css` (1 882), `index-*.js` (1 083 617), `worker-*.js` (275 012), `main.js` (2 785), `preload.cjs` (236), `package.json` (257).
+  Замер: из `/tmp` отработала за 2,4 с (npx взял `@electron/asar` 4.3.0). Внутри репозитория npx падает на `sh: asar: command not found`, там работает `bunx @electron/asar extract` (1,3 с). Обе выгрузки одинаковы, `index-*.js` байт в байт совпадает со сборкой. Выходят `index.html` (424 байта), `index-*.css` (1 882), `index-*.js` (1 083 617), `worker-*.js` (275 012), `main.js` (2 785 — сборка до режима без окна, сейчас 2 931), `preload.cjs` (236), `package.json` (257).
 - ASAR integrity (фьюз `EnableEmbeddedAsarIntegrityValidation`) по документации Electron по умолчанию выключен и проверяет целостность, а не прячет код. Не включали.
 
 ## Зависимости и отложенное
@@ -71,13 +71,15 @@
 | Что | Число |
 |---|---|
 | `desktop:build` с пустыми `out/` и `release/` (zip Electron в кэше) | 3,09 с wall; прежние сборки 2,4–3,4 с |
-| `SimCity.app` | `du -sk` 295 152; `app.asar` 1 366 089 байт |
-| `desktop:e2e`, окно без фокуса | 2 из 2 за 15 с: `isFocused` → `[false]`, `app://bundle/index.html`, `crossOriginIsolated: true`, тики идут |
-| fps, `?scenario=city` (2000 жителей, ×1), окно без фокуса, 1280×768 CSS px, dpr 2 | 60 на всех 10 выборках после 2 с прогрева |
-| Собранное приложение, ручная проверка из Playwright | `__sim.ready` за 246–379 мс от начала навигации, 10 тиков в секунду, WebGPU, `window.require` и `window.process` — `undefined`, ошибок страницы нет |
+| `SimCity.app` | `du -sk` 295 152; `app.asar` 1 366 235 байт |
+| `desktop:e2e`, на экране ничего | 2 из 2 за 13,9 с: у окна `isVisible` и `isFocused` — `false`, Dock скрыт, `app://bundle/index.html`, `crossOriginIsolated: true`, тики идут |
+| fps, `?scenario=city` (2000 жителей, ×1), offscreen-рендер, WebGPU | страница — 60 на 10 из 10 выборок; скомпоновано GPU — 60–61 кадр в секунду на 10 из 10 |
+| Собранное приложение, ручная проверка из Playwright (видимое окно, до требования «без окон») | `__sim.ready` за 246–379 мс от начала навигации, 10 тиков в секунду, WebGPU, `window.require` и `window.process` — `undefined`, ошибок страницы нет |
 | dev-путь (Vite на 5210) | `crossOriginIsolated: true`, мост есть, `window.open` не открыл второго окна; после выхода Electron процессов и слушателя на 5210 не осталось |
+
+**Как мерили fps без окна.** Страница рендерится offscreen, но на GPU: кадр проходит всю компоновку Chromium и приходит в main как shared texture, не выводится только на дисплей. Поэтому считаются две вещи. «Страница» — это `renderStats().fps`, кадры rAF. «Скомпоновано» — события `paint` в секунду. Обе дали 60, как и прежние замеры с видимым окном (60 на 10 из 10), так что замер честный. Потолок — `setFrameRate(60)`, выше 60 такой замер не покажет.
 
 **Тесты (B/R/G).**
 - Геймпад: B — `bun run test` 520/520 до правок этапа. R — `gamepad.test.ts` падал на `Cannot find module '../src/gamepad'`. G — 14/14.
-- Оболочка: R — `startsWithoutFocusAndTheSimAnswers` падал на сборке без тестового окна (окно в фокусе), тест fps проходил. G — 2/2 после `SIMCITY_TEST_WINDOW`.
+- Оболочка: R — `startsWithoutFocusAndTheSimAnswers` падал на сборке без тестового окна (окно в фокусе). G — 2/2. Для режима без окна красный прогон не делался: старая сборка вывела бы окно на экран, а это пользователь запретил. G — 2/2, fps страницы и компоновки в строке замера.
 - Итоговые ворота: `typecheck` и `lint` — код 0, `test` — 534/534 в 87 файлах, `e2e` только в Chromium (`--project=chromium`, `E2E_PORT=5184`) — 24/24, `desktop:e2e` — 2/2.
