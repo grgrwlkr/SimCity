@@ -27,7 +27,11 @@ const FPS_PROBE_SCRIPT: &str = r#"(() => {
   if (new URLSearchParams(location.search).get('scenario') !== 'city') {
     // The menu page first: its readiness is the startup time.
     void simReady().then((pageMs) => {
-      report({ event: 'menuReady', pageMs, sim: typeof window.__sim !== 'undefined' });
+      const resources = performance.getEntriesByType('resource').map((r) => ({
+        name: r.name.split('/').pop(), startMs: Math.round(r.startTime), responseStartMs: Math.round(r.responseStart),
+        endMs: Math.round(r.responseEnd),
+      }));
+      report({ event: 'menuReady', pageMs, sim: typeof window.__sim !== 'undefined', resources });
       setTimeout(() => { location.search = '?scenario=city'; }, 200);
     });
     return;
@@ -67,12 +71,23 @@ const FPS_PROBE_SCRIPT: &str = r#"(() => {
 })();"#;
 
 /// Serves the embedded frontend from an already bound loopback socket, with the headers
-/// cross-origin isolation needs.
-fn serve_assets<R: tauri::Runtime>(app: &tauri::App<R>, server: tiny_http::Server) {
+/// cross-origin isolation needs. While probing, `trace` logs every request to stderr with the
+/// milliseconds since launch, so a stalled asset shows up on the server side too.
+fn serve_assets<R: tauri::Runtime>(
+    app: &tauri::App<R>,
+    server: tiny_http::Server,
+    trace: Option<std::time::Instant>,
+) {
     let assets = app.asset_resolver();
     std::thread::spawn(move || {
         for request in server.incoming_requests() {
             let path = request.url().split(['?', '#']).next().unwrap_or("/");
+            if let Some(launched) = trace {
+                eprintln!(
+                    "serve received {path} at {}ms",
+                    launched.elapsed().as_millis()
+                );
+            }
             let response = match assets.get(path.to_string()) {
                 Some(asset) => {
                     let mut response = tiny_http::Response::from_data(asset.bytes);
@@ -102,6 +117,9 @@ fn serve_assets<R: tauri::Runtime>(app: &tauri::App<R>, server: tiny_http::Serve
             };
             // A client that went away mid-response is not the server's problem.
             let _ = request.respond(response);
+            if let Some(launched) = trace {
+                eprintln!("serve responded at {}ms", launched.elapsed().as_millis());
+            }
         }
     });
 }
@@ -129,7 +147,7 @@ pub fn run() {
         .setup(move |app| {
             let url = match server {
                 Some(server) => {
-                    serve_assets(app, server);
+                    serve_assets(app, server, probe_seconds.map(|_| launched));
                     WebviewUrl::External(format!("http://127.0.0.1:{LOCALHOST_PORT}").parse()?)
                 }
                 None => WebviewUrl::App("index.html".into()),
