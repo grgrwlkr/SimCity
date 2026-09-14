@@ -102,8 +102,42 @@
 - переключение камеры между перспективой и орто по `projectionPlan` и управление зумом этой камеры;
 - эмиссия окон и вывесок и уровни света из `dayNight.ts` по часам мира;
 - слои данных на карте, которые перерисовываются по `overlayRepaint.ts`, и призрак инструмента с подписью из `toolPreview.ts`;
-- скриншотные ворота этапа: Chromium и WebKit, 4 ракурса × 2 времени суток.
+- скриншотные ворота этапа: Chromium и WebKit, 4 ракурса × 2 времени суток;
+- остальные сетки `render_primitives.rs` без тестов (светофор, дерево, фонарь, провод, вывеска, урна, маркиза, припаркованная машина, квадрат заданного размера) и высоты слоёв `layer::*`: портируются вместе со сценой, которая их ставит.
 
 `buildings/visual.rs` (6) из строки этапа в эту задачу не входит: высота и цвет здания уже портированы в `buildingLook.ts`.
 
 ## Сделано / Отклонения / Замеры
+
+**2026-09-14.** Все модули портированы, коммит на модуль. Тесты по файлам `packages/render/test`:
+
+| Модуль | Rust | Vitest |
+|---|---|---|
+| `atlas.ts` | 9 | 10 |
+| `renderPrimitives.ts` | 8 | 8 |
+| `dayNight.ts` | 7 | 8 |
+| `renderConfig.ts` | — | 3 |
+| `cameraProjection.ts` | 7 | 7 |
+| `renderSettings.ts` | 8 | 8 |
+| `vignette.ts` | 4 | 4 |
+| `overlayRepaint.ts` | 5 | 5 |
+| `toolPreview.ts` | 9 | 8 |
+
+Отклонения:
+- Атлас портирован раньше `render_primitives.rs`: ключ материала содержит `AtlasCell`.
+- `aRepeatedCellWrapsInsideItsCell` — новый тест. В Rust `uv_transform` умножал размер ячейки на число повторов, и квадрат на три тайла читал две соседние ячейки. Здесь повтор заворачивается внутри ячейки (`mapCellUv`); шейдер сцены делает то же через `fract`.
+- Параметры `render.ron`, `day_night.ron` и `props.ron` (`sign.night_emissive`) — константы в `renderConfig.ts`, как `defaultTrafficConfig`. Тесты `renderConfig.test.ts` читают сами файлы и падают, если значение разошлось или появился ключ без константы. Где файл расходится с дефолтами Rust-кода, взят файл: bloom выключен, ночные полы 0.30 / 1.0.
+- `lightingFollowsGameHour` и `aDataMapIsReadInDaylightWhateverTheHour` идут с ночными полами 0.10 / 0.45. Rust-тесты не вставляли `RenderConfig` и работали на дефолтах кода, а не на `render.ron`. С полом 0.30 из файла солнце в полночь — 30 % дня, пин «< 15 %» к нему не относится. Пороги не менялись.
+- `theLightMovesWithinAnHour` — новый тест: при времени 1:1 свет учитывает минуты и не прыгает раз в игровой час.
+- `theOrthographicSideFramesWhatThreeFrames` вместо проверки против Bevy: высоту кадра считают матрицы проекции `THREE.OrthographicCamera` и `THREE.PerspectiveCamera`. Перспективная камера проверена тоже, потому что Three.js принимает FOV в градусах.
+- `TonyMcMapface` → `NeutralToneMapping`: такой кривой в Three.js нет, а PBR Neutral подходит под описание в конфиге («нейтральная, мягче ACES»). Уровни SSAO → число сэмплов GTAO 4 / 8 / 16 / 32. Тест требует, чтобы уровни были разными и цена росла.
+- Настройки рендера и превью — значения, а не компоненты Bevy: `resolveRenderSettings` и `previewToolAt` (`refusal: string | null` вместо `Result`).
+- `milestone_locked_building_preview_says_when_it_unlocks` не портирован: в `packages/sim` нет вех. Замок добавится в `previewToolAt` вместе с ними.
+- `overlayRepaint.ts` помечает тайлы в `DirtyTiles` из `packages/sim`. Версия индекса ниже виденной считается новым индексом и перекрашивает всю карту; в Rust это давал `wrapping_sub`.
+- Найдено рядом, не правилось (`packages/sim` чужой): `CityFields.version` растёт только в `resetValues`, пересчёта полей порциями в порте нет, так что слои полей города пока нечем освежать.
+- Коммит `f26ffa6` объявил второй `Vec3`, и `tsc -p packages/render` падал до исправления `60649a5`.
+- Пины не ослаблялись, `docs/oracle-deviations.md` не менялся.
+
+Замеры:
+- B до правок: Vitest 86 файлов, 520 тестов, 26.5 с.
+- G: `bun run typecheck`, `bun run lint`, `bun run test` зелёные, 95 файлов, 581 тест, 41.0 с. e2e не гонялся: `packages/app` не тронут.
