@@ -1,5 +1,0 @@
-{
-  "build": {
-    "beforeBuildCommand": "bunx vite build ../app --config vite.obfuscated.config.ts --emptyOutDir"
-  }
-}

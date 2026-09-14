@@ -1,12 +1,35 @@
 {
   "name": "@simcity/desktop",
+  "productName": "SimCity",
+  "version": "0.1.0",
+  "description": "SimCity desktop shell: Electron over the Vite build of packages/app",
+  "author": "SimCity",
   "private": true,
   "type": "module",
+  "main": "out/main.js",
   "scripts": {
-    "tauri": "tauri"
+    "electron:install": "node node_modules/electron/install.js",
+    "build:main":"bun build src/main.ts --target=node --format=esm --external electron --outfile out/main.js && bun build src/preload.ts --target=node --format=cjs --external electron --outfile out/preload.cjs",
+    "build:renderer": "bunx vite build ../app --outDir ../desktop/out/renderer --emptyOutDir",
+    "build:renderer:obfuscated": "bunx vite build ../app --config vite.obfuscated.config.ts --outDir ../desktop/out/renderer --emptyOutDir",
+    "build": "bun run electron:install && bun run build:main && bun run build:renderer && electron-builder --mac --arm64",
+    "build:obfuscated": "bun run electron:install && bun run build:main && bun run build:renderer:obfuscated && electron-builder --mac --arm64"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "2.11.4",
+    "electron": "44.3.0",
+    "electron-builder": "26.15.3",
     "javascript-obfuscator": "5.7.0"
+  },
+  "build": {
+    "appId": "dev.simcity.desktop",
+    "productName": "SimCity",
+    "directories": { "output": "release" },
+    "files": ["out/**", "!node_modules/**"],
+    "asar": true,
+    "npmRebuild": false,
+    "mac": {
+      "target": [{ "target": "dir", "arch": ["arm64"] }],
+      "sign": null
+    }
   }
 }

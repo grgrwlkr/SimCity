@@ -30,5 +30,7 @@ export default defineConfig({
   plugins: [alwaysFullResponses, react()],
   server: { port, strictPort: true, headers: crossOriginIsolation },
   preview: { port, strictPort: true, headers: crossOriginIsolation },
+  // The one engine the game runs in: the Chromium of the desktop Electron (44.3.0 ships 152).
+  build: { target: 'chrome152' },
   worker: { format: 'es' },
 });

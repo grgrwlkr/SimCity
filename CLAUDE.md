@@ -91,9 +91,9 @@ bun run bench       # тик симуляции, p50/p99
 bun run dev         # Vite, http://localhost:5174, ?debug=1
 ```
 
-Ворота этапа порта: `bun run typecheck && bun run lint && bun run test && bun run e2e`. Из задач порта Rust не собирается, кроме Tauri-крейта и того, что нужно для упаковки. `cargo test` и `cargo clippy` по корневому Bevy-workspace из порта не запускаются, корневой `target/` в worktree порта — мусор, его удаляют.
+Ворота этапа порта: `bun run typecheck && bun run lint && bun run test && bun run e2e`. Из задач порта Rust не собирается вообще: `cargo build`, `cargo test` и `cargo clippy` из порта не запускаются, корневой `target/` в worktree порта — мусор, его удаляют.
 
-Проверки в WebKit/Safari не выполняются — решение пользователя 2026-09-14. Это сознательное отступление от глобального правила о двух движках, его не восстанавливать; отдельная проверка в Safari — только по явной просьбе. Собранный `.app` на macOS исполняется в WKWebView, поэтому проверка собранного приложения и есть проверка в WebKit, отдельный Safari-прогон не нужен.
+Проверки в WebKit/Safari не выполняются — решение пользователя 2026-09-14. Это сознательное отступление от глобального правила о двух движках, его не восстанавливать; отдельная проверка в Safari — только по явной просьбе. Десктоп-оболочка — Electron, тот же Chromium, так что отдельного Safari-прогона нет и для собранного приложения.
 
 - `packages/sim` — симуляция без DOM, часов и хоста. Время приходит как `dtNs`, случайность только из `StdRng`, это бит-в-бит порт `rand 0.10.1`. ESLint запрещает там `Math.random`, `Date`, float-функции `Math.*`, `TODO` и `any`.
 - `packages/bridge` — воркер, драйвер fixed-step 10 Гц, протокол, render-SAB с двойным буфером. `render`, `ui`, `app` — кадр, HUD на React + zustand, точка входа Vite.
@@ -105,8 +105,10 @@ bun run dev         # Vite, http://localhost:5174, ?debug=1
 
 ### Desktop-оболочка (`packages/desktop`)
 
-- Tauri-крейт — `packages/desktop/src-tauri`, вне Bevy-workspace: в его `Cargo.toml` пустой `[workspace]`, у крейта свой `Cargo.lock` и свой `packages/desktop/src-tauri/target/`. `bevy_*` в его дереве нет.
-- `bun run desktop:dev` — окно Tauri над dev-сервером Vite на `PORT` (5174 по умолчанию). `bun run desktop:build` — `vite build packages/app` и `tauri build --bundles app`, результат — `packages/desktop/src-tauri/target/release/bundle/macos/SimCity.app`.
-- Собранное приложение отдаёт страницу с `http://127.0.0.1:45174` своим сервером (`serve_assets` в `lib.rs`): на `tauri://` WebKit не даёт cross-origin isolation, а без неё нет `SharedArrayBuffer`. Если порт занят, приложение выходит с кодом 1.
-- Prod-сборка Vite идёт без sourcemap: в `packages/app/dist` нет ни `.map`, ни `sourceMappingURL`. Ассеты сжаты внутри бинарника (фича `compression` у `tauri`).
-- `SIMCITY_FPS_PROBE=<секунды> …/SimCity.app/Contents/MacOS/simcity_desktop` открывает тестовый город и печатает строки JSON: время готовности и fps раз в секунду. Окно висит поверх остальных, без фокуса, клики проходят сквозь него; по окончании приложение закрывается само.
+- Electron 44.3.0 (Chromium 152.0.7977.78, Node 24.20.0) и electron-builder 26.15.3, Rust в оболочке нет. electron-vite не используется: его 5.0.0 требует Vite ^5–^7, а у порта Vite 8.
+- `src/main.ts` — окно 1280×800. С `SIMCITY_DEV_SERVER_URL` оно грузит dev-сервер, без неё — схему `app://bundle`, которую `protocol.handle` отдаёт из `out/renderer` с COOP/COEP (`crossOriginIsolated: true`). Новые окна запрещены, навигация — только в свой origin. `src/preload.ts` работает при `contextIsolation`, `sandbox`, без `nodeIntegration` и отдаёт странице только `window.simcityDesktop` (платформа и версии).
+- `bun run desktop:dev` — Vite на `PORT` (5174 по умолчанию) и Electron над ним; с выходом Electron обёртка гасит и Vite. `bun run desktop:build` — `bun build` для main и preload в `packages/desktop/out`, `vite build packages/app` в `out/renderer`, `electron-builder --mac --arm64`. Результат — `packages/desktop/release/mac-arm64/SimCity.app`, рендерер в `app.asar`, без подписи.
+- Бинарник Electron качает `install.js` пакета `electron`; bun его сам не запускает (замер), поэтому оба скрипта сначала зовут `bun run --cwd packages/desktop electron:install`.
+- Цель Vite-сборки — `chrome152` в `packages/app/vite.config.ts`; при смене версии Electron поднимать вместе.
+- Prod-сборка без sourcemap: в `out/renderer` нет `.map` и `sourceMappingURL`. `app.asar` — 10 записей, `node_modules` в нём нет.
+- Собранное приложение проверяется из Playwright: `_electron.launch({ executablePath: …/SimCity.app/Contents/MacOS/SimCity })`, в окне тот же `window.__sim`.

@@ -28,3 +28,7 @@ dist/
 /test-results/
 /playwright-report/
 /tools/rand-vectors/target/
+
+# Electron shell (packages/desktop): bundled main/preload + renderer, and electron-builder output
+/packages/desktop/out/
+/packages/desktop/release/
