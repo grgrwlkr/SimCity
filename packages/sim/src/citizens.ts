@@ -27,6 +27,7 @@ import {
   placeTile,
   type CarStatus,
 } from './parking';
+import { NearestBuildings } from './nearest';
 import { randomBool, rangeU32, shuffle } from './rng';
 import { fixedElapsedSecs } from './traffic/reservations';
 import { TRIP_PURPOSES, type TripPurpose } from './traffic/vehicles';
@@ -815,12 +816,12 @@ function expectedTripMinutes(w: World, slot: number, from: TilePos, to: TilePos)
 type Venue = 'Shop' | 'Cafe' | 'Park';
 
 /** The open places of each kind, rebuilt when the buildings change or a game minute passes. */
-const venueCache = new WeakMap<World, { readonly key: string; readonly lists: Readonly<Record<Venue, Building[]>> }>();
+const venueCache = new WeakMap<World, { readonly key: string; readonly index: Readonly<Record<Venue, NearestBuildings>> }>();
 
-function venues(w: World): Readonly<Record<Venue, Building[]>> {
+function venues(w: World): Readonly<Record<Venue, NearestBuildings>> {
   const key = `${w.buildings.version}|${gameMinute(w)}`;
   const cached = venueCache.get(w);
-  if (cached?.key === key) return cached.lists;
+  if (cached?.key === key) return cached.index;
   const lists: Record<Venue, Building[]> = { Shop: [], Cafe: [], Park: [] };
   for (const b of w.buildings.all()) {
     if (!isOperational(b)) continue;
@@ -828,16 +829,16 @@ function venues(w: World): Readonly<Record<Venue, Building[]>> {
     else if (b.kind === 'Cafe') lists.Cafe.push(b);
     else if (b.kind === 'Park') lists.Park.push(b);
   }
-  venueCache.set(w, { key, lists });
-  return lists;
+  const [width, height] = [w.grid.width, w.grid.height];
+  const index = { Shop: new NearestBuildings(lists.Shop, width, height), Cafe: new NearestBuildings(lists.Cafe, width, height), Park: new NearestBuildings(lists.Park, width, height) };
+  venueCache.set(w, { key, index });
+  return index;
 }
 
 /** One of the open places of `venue` nearest `near`: of the nearest five shops, or three cafés or parks. */
 function pickVenue(w: World, venue: Venue, near: TilePos): Building | undefined {
-  const list = venues(w)[venue];
-  if (list.length === 0) return undefined;
-  const distance = (b: Building) => Math.abs(b.anchor.x - near.x) + Math.abs(b.anchor.y - near.y);
-  const nearest = [...list].sort((a, b) => distance(a) - distance(b) || a.id - b.id).slice(0, venue === 'Shop' ? NEAREST_SHOPS : NEAREST_PLACES);
+  const nearest = venues(w)[venue].nearest(near, venue === 'Shop' ? NEAREST_SHOPS : NEAREST_PLACES, () => true);
+  if (nearest.length === 0) return undefined;
   return nearest[rangeU32(w.simRng, 0, nearest.length)];
 }
 

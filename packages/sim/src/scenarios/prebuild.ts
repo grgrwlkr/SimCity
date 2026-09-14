@@ -4,11 +4,13 @@
 import { OPERATIONAL, buildingKindFromZone, densityLevels, footprintTiles, isOperational, profileCapacity, type Building } from '../buildings/building';
 import { findBestFootprint } from '../buildings/growth';
 import { spawnBuilding } from '../buildings/spawn';
-import { spawnCitizensFromResidential } from '../citizens';
+import { SHIFT_MINUTES, WORK_START_WINDOW, newCitizen, spawnCitizensFromResidential } from '../citizens';
 import { bumpVersion } from '../map/dirty';
 import { tileKey } from '../map/grid';
+import { NearestBuildings } from '../nearest';
 import { roadCellIsSome } from '../map/roads';
-import { shuffle, stdRngSeedFromU64 } from '../rng';
+import { CAR_OWNERSHIP, giveCar } from '../parking';
+import { randomBool, rangeU32, shuffle, stdRngSeedFromU64 } from '../rng';
 import { updateUtilityNetwork } from '../utilities';
 import type { World } from '../world';
 
@@ -73,26 +75,46 @@ export function prebuildCity(w: World, options: PrebuildOptions = {}): void {
   assignNearestJobs(w);
 }
 
-/** Every citizen in the labour force without a job takes the nearest open one of their home's class, as the crow flies. */
-function assignNearestJobs(w: World): void {
+/**
+ * Every open home fills to its occupancy, building by building, with the draws `spawnCitizensFromResidential` makes for a
+ * newcomer. The living city moves in eight a home a call, as growth does; a city of a million moves in whole buildings.
+ */
+export function moveInEveryHome(w: World): void {
   const c = w.citizens;
-  let open = w.buildings.all().filter((b) => (b.kind === 'Commercial' || b.kind === 'Industrial') && isOperational(b) && b.capacityJobs > 0);
-  for (let slot = 0; slot < c.highWater && open.length > 0; slot++) {
+  const rng = w.simRng;
+  const labourShare = w.citizenConfig.labourShare;
+  for (const b of w.buildings.all()) {
+    if (b.kind !== 'Residential' || !isOperational(b)) continue;
+    for (let moving = b.occupancyResidents - c.residentsOf(b.id); moving > 0 && !c.full; moving--) {
+      const workStart = rangeU32(rng, WORK_START_WINDOW[0], WORK_START_WINDOW[1]);
+      const shiftMinutes = rangeU32(rng, SHIFT_MINUTES[0], SHIFT_MINUTES[1] + 1);
+      const worker = labourShare >= 1 || randomBool(rng, labourShare);
+      const ref = c.add({ ...newCitizen(b, { workStart, shiftMinutes }), worker });
+      if (randomBool(rng, CAR_OWNERSHIP[b.profile.class])) giveCar(w, ref);
+    }
+  }
+}
+
+/**
+ * Every citizen in the labour force without a job, in slot order, takes the nearest open one of their home's class as the
+ * crow flies, the first building among equals.
+ */
+export function assignNearestJobs(w: World): void {
+  const c = w.citizens;
+  const jobs = w.buildings.all().filter((b) => (b.kind === 'Commercial' || b.kind === 'Industrial') && isOperational(b) && b.capacityJobs > 0);
+  let open = jobs.length;
+  const index = new NearestBuildings(jobs, w.grid.width, w.grid.height);
+  for (let slot = 0; slot < c.highWater && open > 0; slot++) {
     if (c.alive[slot] !== 1 || c.worker[slot] !== 1 || c.workplace[slot] !== -1) continue;
     const home = w.buildings.get(c.home[slot]!);
     if (home === undefined) continue;
-    let best: Building | undefined;
-    let bestDistance = Infinity;
-    for (const job of open) {
-      if (job.profile.class !== home.profile.class) continue;
-      const distance = Math.abs(job.anchor.x - home.anchor.x) + Math.abs(job.anchor.y - home.anchor.y);
-      if (distance < bestDistance) {
-        best = job;
-        bestDistance = distance;
-      }
-    }
+    const wealth = home.profile.class;
+    const best: Building | undefined = index.nearest(home.anchor, 1, (job) => job.profile.class === wealth)[0];
     if (best === undefined) continue;
     c.setWorkplace(slot, best.id);
-    if (c.workersOf(best.id) >= best.capacityJobs) open = open.filter((job) => job !== best);
+    if (c.workersOf(best.id) >= best.capacityJobs) {
+      index.remove(best);
+      open -= 1;
+    }
   }
 }

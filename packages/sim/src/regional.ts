@@ -10,6 +10,7 @@ import type { TilePos } from './commands';
 import type { TripRequested } from './events';
 import { inTileView, tileFToWorld, type TileView } from './map/coords';
 import { NO_LINK, type MesoGraph } from './meso/graph';
+import { NearestBuildings } from './nearest';
 import { NO_PLACE, findParking, placeTile } from './parking';
 import { randomBool, rangeU32 } from './rng';
 import type { TripPurpose } from './traffic/vehicles';
@@ -351,10 +352,10 @@ function planDay(w: World, gates: readonly Gateway[], dayStart: number, now: num
   }
   const works = openBuildings(w, 'Industrial');
   if (cfg.deliveriesPerShop > 0) {
+    const worksIndex = new NearestBuildings(works, w.grid.width, w.grid.height);
     for (const shop of openBuildings(w, 'Commercial')) {
       for (let i = drawCount(w, cfg.deliveriesPerShop); i > 0; i--) {
-        const distance = (b: Building) => Math.abs(b.anchor.x - shop.anchor.x) + Math.abs(b.anchor.y - shop.anchor.y);
-        const nearest = [...works].sort((a, b) => distance(a) - distance(b) || a.id - b.id).slice(0, NEAREST_WORKS);
+        const nearest = worksIndex.nearest(shop.anchor, NEAREST_WORKS, () => true);
         const origin = nearest.length > 0 ? nearest[rangeU32(w.simRng, 0, nearest.length)] : undefined;
         const gate = anyGate(w, gates);
         const from = origin?.anchor ?? gates[gate]!.inbound;
