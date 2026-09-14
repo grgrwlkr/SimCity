@@ -132,6 +132,7 @@
 - `theOrthographicSideFramesWhatThreeFrames` вместо проверки против Bevy: высоту кадра считают матрицы проекции `THREE.OrthographicCamera` и `THREE.PerspectiveCamera`. Перспективная камера проверена тоже, потому что Three.js принимает FOV в градусах.
 - `TonyMcMapface` → `NeutralToneMapping`: такой кривой в Three.js нет, а PBR Neutral подходит под описание в конфиге («нейтральная, мягче ACES»). Уровни SSAO → число сэмплов GTAO 4 / 8 / 16 / 32. Тест требует, чтобы уровни были разными и цена росла.
 - Настройки рендера и превью — значения, а не компоненты Bevy: `resolveRenderSettings` и `previewToolAt` (`refusal: string | null` вместо `Result`).
+- `previewToolAt` вне карты показывает цену любого размещаемого здания. Rust показывал её только для служб (`service_kind`: пожарная, полиция, больница), а у станций снабжения, школы, университета и парка цена пропадала, стоило курсору сойти с карты. Радиус вне карты тот же, что в Rust.
 - `milestone_locked_building_preview_says_when_it_unlocks` не портирован: в `packages/sim` нет вех. Замок добавится в `previewToolAt` вместе с ними.
 - `overlayRepaint.ts` помечает тайлы в `DirtyTiles` из `packages/sim`. Версия индекса ниже виденной считается новым индексом и перекрашивает всю карту; в Rust это давал `wrapping_sub`.
 - Найдено рядом, не правилось (`packages/sim` чужой): `CityFields.version` растёт только в `resetValues`, пересчёта полей порциями в порте нет, так что слои полей города пока нечем освежать.
