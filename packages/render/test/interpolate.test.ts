@@ -71,6 +71,13 @@ describe('pairing vehicles across frames', () => {
     expect(Array.from(out)).toEqual([0, -1]);
   });
 
+  // Stage 3½d: a million citizens walk under ids past 2²⁰; the scratch is a hash table, not an array over every id.
+  it('pairingWorksForIdsPastTheOldSpace', () => {
+    const out = new Int32Array(3);
+    pairVehicles(frame([1 << 22, 5, (1 << 21) + 7]), frame([(1 << 21) + 7, 1 << 22, 9]), new Int32Array(8), out);
+    expect(Array.from(out)).toEqual([2, 0, -1]);
+  });
+
   it('scratchLeftFromAnotherPairingIsNotTrusted', () => {
     const bySlot = new Int32Array(8);
     pairVehicles(frame([0, 1, 2, 7]), frame([7]), bySlot, new Int32Array(1));
