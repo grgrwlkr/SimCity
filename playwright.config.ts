@@ -10,7 +10,15 @@ export default defineConfig({
   use: { baseURL: `http://localhost:${port}` },
   // The stage gate: the same numbers in a Chromium and a WebKit engine.
   projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    // `E2E_GPU=1`: headless Chromium draws on the GPU through ANGLE Metal instead of SwiftShader on the processor, for the
+    // frame-rate measurements; the gate itself runs on the default.
+    {
+      name: 'chromium',
+      use: {
+        ...devices['Desktop Chrome'],
+        ...(process.env.E2E_GPU === '1' ? { launchOptions: { args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] } } : {}),
+      },
+    },
     { name: 'webkit', use: { ...devices['Desktop Safari'] } },
   ],
   webServer: {
