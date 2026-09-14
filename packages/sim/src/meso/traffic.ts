@@ -506,7 +506,16 @@ function updateLinkTimes(w: World): void {
   m.nextCostUpdate = m.nowSec + COST_UPDATE_SECS;
 }
 
-/** One tick of meso traffic: game time on, waiting trips join, due heads leave or arrive. */
+/** The trips waiting to leave join their first link where it has room, oldest first; the rest wait on. */
+function joinWaitingTrips(w: World): void {
+  const m = w.mesoTraffic;
+  if (m.pending.length === 0) return;
+  const waiting = m.pending;
+  m.pending = [];
+  for (const trip of waiting) if (spawn(w, trip) === 'wait') m.pending.push(trip);
+}
+
+/** One tick of meso traffic: game time on, waiting trips join, due heads leave or arrive, and the room they left is taken. */
 export function stepMesoTraffic(w: World, dtNs: number): void {
   const m = w.mesoTraffic;
   const g = w.meso;
@@ -516,13 +525,10 @@ export function stepMesoTraffic(w: World, dtNs: number): void {
   m.searchesThisTick = 0;
   const now = m.nowSec;
 
-  if (m.pending.length > 0) {
-    const waiting = m.pending;
-    m.pending = [];
-    for (const trip of waiting) if (spawn(w, trip) === 'wait') m.pending.push(trip);
-  }
+  joinWaitingTrips(w);
 
   let lights: Map<number, TrafficLight> | undefined;
+  let heads = 0;
   while (m.due.size > 0 && m.due.peekKey() <= now) {
     const [at, link] = m.due.pop();
     const car = m.head[link]!;
@@ -532,7 +538,10 @@ export function stepMesoTraffic(w: World, dtNs: number): void {
     // At the second it came due, not at the end of the tick: a tick of several game seconds lets as many through as its
     // seconds in tenths. The lights stand as they are at the end of the tick.
     leave(w, link, Math.max(at, m.readySec[car]!), lights);
+    heads += 1;
   }
+  // Room that freed up in this tick takes the trips that waited for it now, not at the start of the next tick.
+  if (heads > 0) joinWaitingTrips(w);
 
   if (now >= m.nextCostUpdate) updateLinkTimes(w);
 }

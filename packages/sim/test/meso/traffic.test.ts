@@ -15,6 +15,7 @@ import {
   stepMesoTraffic,
 } from '../../src/meso/traffic';
 import { TICK_DT_NS } from '../../src/schedule';
+import { SECOND_NS } from '../../src/timer';
 import type { LightPhase } from '../../src/traffic/lights';
 import { summarizeTraffic } from '../../src/traffic/stats';
 import type { World } from '../../src/world';
@@ -48,6 +49,20 @@ const crossing = () =>
   ]);
 
 describe('meso traffic', () => {
+  // Stage 3½e: a trip waiting for room on its first link joined only at the start of the next tick, however many game
+  // seconds a tick carried; now it joins in the tick the room frees up.
+  it('aWaitingTripJoinsInTheTickItsLinkFreesUp', () => {
+    const w = roadWorld(64, 16, [[t(1, 8), t(62, 8), 'TwoLane']]);
+    const m = w.mesoTraffic;
+    // The eastbound lane holds 62 tiles of 10 m, 82 cars of 7.5 m: the 83rd waits.
+    for (let i = 0; i < 83; i++) m.pending.push(trip(i, t(2, 7), t(60, 7)));
+    stepMesoTraffic(w, SECOND_NS);
+    expect([m.carCount(), m.pending.length], 'a full lane and one waiting').toEqual([82, 1]);
+    for (let tick = 0; tick < 30 && m.stats.arrived === 0; tick++) stepMesoTraffic(w, 6 * SECOND_NS);
+    expect(m.stats.arrived, 'the head got there').toBeGreaterThan(0);
+    expect(m.pending, 'and the trip behind joined in that tick').toEqual([]);
+  });
+
   // Stage 3½e: a minute of the metropolis's rush sent thousands of trips out at once, and their route searches took 0.7 s
   // of a single tick. A tick searches a budget of new routes; a trip without one waits a tick to leave.
   it('routeSearchesAreSpreadOverTicks', () => {
