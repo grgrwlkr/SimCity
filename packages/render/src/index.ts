@@ -14,3 +14,4 @@ export * from './dayNight';
 export * from './cameraProjection';
 export * from './renderSettings';
 export * from './vignette';
+export * from './overlayRepaint';
