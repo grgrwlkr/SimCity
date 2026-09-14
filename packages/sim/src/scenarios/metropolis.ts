@@ -240,6 +240,8 @@ export class MetropolisScenario extends CitizenTripCounter {
 
   constructor(w: World, seed?: bigint) {
     super();
+    // Meso drives the city: its 800 tiles of lane graph and lanelets would take 120 MB for no car.
+    w.microTraffic = false;
     w.citizenConfig.labourShare = LIVING_CITY_LABOUR_SHARE;
     Object.assign(w.regionalConfig, METROPOLIS_REGION);
     this.plan = buildMetropolis(w, seed);

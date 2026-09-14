@@ -74,6 +74,6 @@ export function buildLaneGraphInner(grid: MapGrid, version: number): LaneGraph {
 
 /** `build_lane_graph` (FixedUpdate / GraphUpdate): early-returns when built for the current version. */
 export function buildLaneGraph(w: World): void {
-  if (w.laneGraph.isBuiltFor(w.graphVersion, w.grid)) return;
+  if (!w.microTraffic || w.laneGraph.isBuiltFor(w.graphVersion, w.grid)) return;
   w.laneGraph = buildLaneGraphInner(w.grid, w.graphVersion);
 }
