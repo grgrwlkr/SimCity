@@ -86,7 +86,7 @@ bun install
 bun run typecheck   # tsc по каждому пакету: sim без DOM и Node, bridge с WebWorker
 bun run lint
 bun run test        # Vitest; `bun test` — другой раннер, не использовать
-bun run e2e         # Playwright, Chromium + WebKit
+bun run e2e         # Playwright, Chromium
 bun run bench       # тик симуляции, p50/p99
 bun run dev         # Vite, http://localhost:5174, ?debug=1
 ```
