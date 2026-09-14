@@ -17,6 +17,7 @@
 - **Версии:** `electron` 44.3.0, `electron-builder` 26.15.3 (реестр npm). Chromium 152.0.7977.78 и Node 24.20.0 сняты с бинарника (`ELECTRON_RUN_AS_NODE=1 … -p process.versions`). Цель Vite — `build.target: 'chrome152'`; `safari13` в конфиге не было, цель не задавалась.
 - **Изоляция без сервера.** В сборке страница идёт по привилегированной схеме `app://bundle` (`standard`, `secure`, `supportFetchAPI`, `corsEnabled`). `protocol.handle` отдаёт файлы из `out/renderer` в asar с COOP/COEP и явным `Content-Type`, выход за каталог получает 404. В dev окно грузит `SIMCITY_DEV_SERVER_URL`, заголовки ставит `vite.config.ts`.
 - **Безопасность окна:** `contextIsolation`, `sandbox`, без `nodeIntegration`. Preload отдаёт только `window.simcityDesktop` (платформа и версии). Новые окна запрещены, навигация — только в свой origin.
+- **`desktop:dev` не открывает окно над чужим сервером** (замечание ревью PR #8). До запуска Vite скрипт проверяет `127.0.0.1` и `::1`: если на порту кто-то принимает соединения, он выходит с кодом 1. Если Vite завершится раньше, чем ответит, скрипт выходит сразу. Проверено: HTTP-сервер на `127.0.0.1` и listener на `::1` — выход с кодом 1 за 0 с, без Vite и Electron. `app://` на битый `%xx` и отсутствующий файл отвечает 404 (тест `aMalformedAssetPathGets404`).
 - **Запуск без окна** (`SIMCITY_TEST_WINDOW=1`, требование пользователя: никаких окон поверх его окон и никакого фокуса). `app.dock.hide()`, `show: false`, `webPreferences.offscreen.useSharedTexture: true`, `backgroundThrottling: false`, `setFrameRate(60)`. Каждый кадр `paint` считается в `simcityPaintCount`, и его shared texture сразу освобождается.
 - **Бинарник Electron.** bun не запускает `install.js` пакета `electron`: ни `bun install`, ни `bun install --force`, ни `trustedDependencies` не вернули удалённый `dist` (замер). Скрипт `electron:install` зовёт его явно, повторный запуск ничего не делает.
 - **asar без `node_modules`.** С `files: ["out/**"]` electron-builder брал продакшн-зависимости корневого workspace, и `app.asar` весил 30 011 411 байт. С `"!node_modules/**"` осталось 10 записей: рендерер уже собран в бандл.
@@ -72,7 +73,7 @@
 |---|---|
 | `desktop:build` с пустыми `out/` и `release/` (zip Electron в кэше) | 3,09 с wall; прежние сборки 2,4–3,4 с |
 | `SimCity.app` | `du -sk` 295 152; `app.asar` 1 366 235 байт |
-| `desktop:e2e`, на экране ничего | 2 из 2 за 13,9 с: у окна `isVisible` и `isFocused` — `false`, Dock скрыт, `app://bundle/index.html`, `crossOriginIsolated: true`, тики идут |
+| `desktop:e2e`, на экране ничего | 3 из 3 за 16 с (плюс 404 на битый путь): у окна `isVisible` и `isFocused` — `false`, Dock скрыт, `app://bundle/index.html`, `crossOriginIsolated: true`, тики идут |
 | fps, `?scenario=city` (2000 жителей, ×1), offscreen-рендер, WebGPU | страница — 60 на 10 из 10 выборок; скомпоновано GPU — 60–61 кадр в секунду на 10 из 10 |
 | Собранное приложение, ручная проверка из Playwright (видимое окно, до требования «без окон») | `__sim.ready` за 246–379 мс от начала навигации, 10 тиков в секунду, WebGPU, `window.require` и `window.process` — `undefined`, ошибок страницы нет |
 | dev-путь (Vite на 5210) | `crossOriginIsolated: true`, мост есть, `window.open` не открыл второго окна; после выхода Electron процессов и слушателя на 5210 не осталось |
