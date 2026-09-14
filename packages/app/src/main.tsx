@@ -4,6 +4,7 @@ import { SIGNALIZED_CROSS, crossBoxSize, tileToWorld, type MapConfig } from '@si
 import { Hud, useSimStore, type HudActions } from '@simcity/ui';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import { installGamepad } from './gamepad';
 import { installSimApi } from './simApi';
 import './styles.css';
 
@@ -30,6 +31,14 @@ const renderer = client.ready.then(async (sab) => {
   return r;
 });
 const api = installSimApi(client, debug, renderer, () => mapConfig);
+installGamepad({
+  renderer,
+  api,
+  context: () => {
+    const snapshot = useSimStore.getState().snapshot;
+    return snapshot === null ? null : { appState: snapshot.appState, speed: snapshot.speed };
+  },
+});
 
 // Keeps the picture in step with the worker: the map when its edit version moves, the overlay
 // (debug only) once the lanelets are built for the current graph version. One sync at a time.
