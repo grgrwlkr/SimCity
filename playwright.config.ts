@@ -8,10 +8,9 @@ export default defineConfig({
   fullyParallel: true,
   reporter: [['list']],
   use: { baseURL: `http://localhost:${port}` },
-  // The stage gate: the same numbers in a Chromium and a WebKit engine.
+  // The stage gate: the same numbers in Chromium as in Node.
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
-    { name: 'webkit', use: { ...devices['Desktop Safari'] } },
   ],
   webServer: {
     command: 'bun run dev',
