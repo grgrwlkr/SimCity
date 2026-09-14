@@ -14,7 +14,8 @@
     "bench": "bun tools/bench.ts",
     "dev": "vite packages/app",
     "desktop:dev": "bun tools/desktop-dev.ts",
-    "desktop:build": "bun run --cwd packages/desktop tauri build --bundles app"
+    "desktop:build": "bun run --cwd packages/desktop tauri build --bundles app",
+    "desktop:build:obfuscated": "bun run --cwd packages/desktop tauri build --bundles app --config tauri.obfuscated.conf.json"
   },
   "dependencies": {
     "react": "19.2.8",
