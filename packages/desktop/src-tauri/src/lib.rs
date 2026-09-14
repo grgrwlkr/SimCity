@@ -5,7 +5,7 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// Loopback port the packaged app serves its page on. WebKit keeps a `tauri://` page out of
 /// cross-origin isolation even with COOP/COEP on every response, and the sim's `SharedArrayBuffer`
-/// needs it; an `http://localhost` origin with the same headers is isolated. Fixed, so the page's
+/// needs it; an `http://127.0.0.1` origin with the same headers is isolated. Fixed, so the page's
 /// origin (and anything stored under it) is the same on every launch.
 const LOCALHOST_PORT: u16 = 45174;
 
@@ -56,29 +56,72 @@ const FPS_PROBE_SCRIPT: &str = r#"(() => {
   void start();
 })();"#;
 
+/// Serves the embedded frontend from an already bound loopback socket, with the headers
+/// cross-origin isolation needs.
+fn serve_assets<R: tauri::Runtime>(app: &tauri::App<R>, server: tiny_http::Server) {
+    let assets = app.asset_resolver();
+    std::thread::spawn(move || {
+        for request in server.incoming_requests() {
+            let path = request.url().split(['?', '#']).next().unwrap_or("/");
+            let response = match assets.get(path.to_string()) {
+                Some(asset) => {
+                    let mut response = tiny_http::Response::from_data(asset.bytes);
+                    let headers = [
+                        ("Content-Type", Some(asset.mime_type)),
+                        ("Content-Security-Policy", asset.csp_header),
+                        ("Cache-Control", Some("no-cache".to_string())),
+                        (
+                            "Cross-Origin-Opener-Policy",
+                            Some("same-origin".to_string()),
+                        ),
+                        (
+                            "Cross-Origin-Embedder-Policy",
+                            Some("require-corp".to_string()),
+                        ),
+                    ];
+                    for (name, value) in headers {
+                        if let Some(value) = value
+                            && let Ok(header) = tiny_http::Header::from_bytes(name, value)
+                        {
+                            response.add_header(header);
+                        }
+                    }
+                    response.boxed()
+                }
+                None => tiny_http::Response::empty(404).boxed(),
+            };
+            // A client that went away mid-response is not the server's problem.
+            let _ = request.respond(response);
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let probe_seconds = std::env::var(FPS_PROBE_ENV)
         .ok()
         .and_then(|v| v.parse::<u32>().ok());
-    let mut builder = tauri::Builder::default();
-    if !tauri::is_dev() {
-        // `tauri dev` loads the Vite dev server, which sends the same headers itself.
-        builder = builder.plugin(
-            tauri_plugin_localhost::Builder::new(LOCALHOST_PORT)
-                .on_request(|_request, response| {
-                    response.add_header("Cross-Origin-Opener-Policy", "same-origin");
-                    response.add_header("Cross-Origin-Embedder-Policy", "require-corp");
-                })
-                .build(),
-        );
-    }
-    builder
+    // Bound before the app starts, so a port someone else holds stops the app instead of loading
+    // whatever answers there. `tauri dev` loads the Vite dev server, which sends the same headers.
+    let server = if tauri::is_dev() {
+        None
+    } else {
+        match tiny_http::Server::http(("127.0.0.1", LOCALHOST_PORT)) {
+            Ok(server) => Some(server),
+            Err(err) => {
+                eprintln!("cannot serve the game on 127.0.0.1:{LOCALHOST_PORT}: {err}");
+                std::process::exit(1);
+            }
+        }
+    };
+    tauri::Builder::default()
         .setup(move |app| {
-            let url = if tauri::is_dev() {
-                WebviewUrl::App("index.html".into())
-            } else {
-                WebviewUrl::External(format!("http://localhost:{LOCALHOST_PORT}").parse()?)
+            let url = match server {
+                Some(server) => {
+                    serve_assets(app, server);
+                    WebviewUrl::External(format!("http://127.0.0.1:{LOCALHOST_PORT}").parse()?)
+                }
+                None => WebviewUrl::App("index.html".into()),
             };
             #[cfg(target_os = "macos")]
             if probe_seconds.is_some() {
