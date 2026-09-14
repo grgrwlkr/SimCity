@@ -9,11 +9,16 @@ const APP = fileURLToPath(new URL('../release/mac-arm64/SimCity.app/Contents/Mac
 
 test.skip(!existsSync(APP), 'build the app first: bun run desktop:build');
 
+/** Each start-up step has a limit of its own, so a hang names the step instead of the test timeout. */
 async function launch(): Promise<{ app: ElectronApplication; page: Page }> {
-  const app = await electron.launch({ executablePath: APP, env: { ...process.env, SIMCITY_TEST_WINDOW: '1' } });
-  const page = await app.firstWindow();
-  await page.waitForFunction(() => typeof window.__sim !== 'undefined');
-  await page.evaluate(() => window.__sim.ready);
+  const app = await test.step('launch the app', () =>
+    electron.launch({ executablePath: APP, env: { ...process.env, SIMCITY_TEST_WINDOW: '1' }, timeout: 30_000 }),
+  );
+  const page = await test.step('first window', () => app.firstWindow({ timeout: 30_000 }));
+  await test.step('sim ready', async () => {
+    await page.waitForFunction(() => typeof window.__sim !== 'undefined', null, { timeout: 30_000 });
+    await page.waitForFunction(() => window.__sim.ready.then(() => true), null, { timeout: 30_000 });
+  });
   return { app, page };
 }
 
