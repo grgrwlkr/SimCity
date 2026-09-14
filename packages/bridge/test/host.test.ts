@@ -193,7 +193,8 @@ describe('SimHost', () => {
     for (const { name } of SCENARIOS) {
       const host = new SimHost(4096);
       host.handle({ t: 'setState', state: 'InGame' });
-      host.handle({ t: 'scenario', name });
+      // The metropolis on a small map of its own: the million is the gate's, not this check's.
+      host.handle(name === 'metropolis' ? { t: 'scenario', name, size: 160 } : { t: 'scenario', name });
       host.handle({ t: 'step', ticks: 20 });
       const { mapEditVersion, lights } = host.handle({ t: 'snapshot' });
       expect(mapEditVersion, `${name} builds its map`).toBeGreaterThan(0);

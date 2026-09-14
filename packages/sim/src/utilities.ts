@@ -119,126 +119,137 @@ export function computeServed(grid: MapGrid): Uint8Array {
   return computeSupply(grid, []).served;
 }
 
-/** Supply masks and balances for `grid` with `consumers` drawing on it. */
+/** Supply masks and balances for `grid` with `consumers` drawing on it. Every walk is over typed arrays by tile index. */
 export function computeSupply(grid: MapGrid, consumers: readonly Consumer[]): { served: Uint8Array; components: SupplyBalance[] } {
   const len = grid.len();
+  const width = grid.width;
+  const height = grid.height;
   const served = new Uint8Array(len);
   const components: SupplyBalance[] = [];
-  const width = grid.width;
-  const neighbours = (idx: number): number[] => {
+  const roadKind = grid.roadKind;
+  const building = grid.building;
+  // Neighbours in the order of the Rust port: west, east, south (y − 1), north (y + 1); -1 off the map.
+  const neighbour = (idx: number, n: number): number => {
     const x = idx % width;
-    const y = Math.trunc(idx / width);
-    const out: number[] = [];
-    for (const [dx, dy] of [
-      [-1, 0],
-      [1, 0],
-      [0, -1],
-      [0, 1],
-    ] as const) {
-      const next = grid.idx({ x: x + dx, y: y + dy });
-      if (next !== undefined) out.push(next);
-    }
-    return out;
+    if (n === 0) return x > 0 ? idx - 1 : -1;
+    if (n === 1) return x + 1 < width ? idx + 1 : -1;
+    if (n === 2) return idx >= width ? idx - width : -1;
+    return idx + width < width * height ? idx + width : -1;
   };
-  const isRoad = (idx: number) => grid.roadKind[idx] !== 0;
+  const distance = new Uint32Array(len);
+  const component = new Int32Array(len);
+  const queue = new Int32Array(len);
+  const load = new Float64Array(len);
+  const seen = new Uint8Array(len);
 
   for (const utility of UTILITY_KINDS) {
     const stationCode = 1 + BUILDING_KINDS.indexOf(STATIONS[utility]);
     const bit = utilityMask(utility);
     const capacity = utilityCapacity(STATIONS[utility]) ?? 0;
-    const isStation = (idx: number) => grid.building[idx] === stationCode;
 
     // Distance along the road from the nearest station for every road tile a station feeds; a station tile is served itself.
-    const distance = new Array<number>(len).fill(U32_MAX);
-    const queue: number[] = [];
+    distance.fill(U32_MAX);
+    let tail = 0;
     for (let idx = 0; idx < len; idx++) {
-      if (!isStation(idx)) continue;
+      if (building[idx] !== stationCode) continue;
       served[idx] = served[idx]! | bit;
-      for (const next of neighbours(idx)) {
-        if (isRoad(next) && distance[next] === U32_MAX) {
+      for (let n = 0; n < 4; n++) {
+        const next = neighbour(idx, n);
+        if (next >= 0 && roadKind[next] !== 0 && distance[next] === U32_MAX) {
           distance[next] = 0;
-          queue.push(next);
+          queue[tail++] = next;
         }
       }
     }
-    for (let head = 0; head < queue.length; head++) {
+    for (let head = 0; head < tail; head++) {
       const idx = queue[head]!;
-      for (const next of neighbours(idx)) {
-        if (isRoad(next) && distance[next] === U32_MAX) {
+      for (let n = 0; n < 4; n++) {
+        const next = neighbour(idx, n);
+        if (next >= 0 && roadKind[next] !== 0 && distance[next] === U32_MAX) {
           distance[next] = distance[idx]! + 1;
-          queue.push(next);
+          queue[tail++] = next;
         }
       }
     }
-    const reached = (idx: number) => distance[idx] !== U32_MAX;
 
-    // The road components the stations feed.
-    const component = new Int32Array(len).fill(-1);
-    const tilesOf: number[][] = [];
+    // The road components the stations feed, and their tiles.
+    component.fill(-1);
+    const tilesOf: Int32Array[] = [];
     for (let start = 0; start < len; start++) {
-      if (!reached(start) || component[start] !== -1) continue;
+      if (distance[start] === U32_MAX || component[start] !== -1) continue;
       const id = tilesOf.length;
       component[start] = id;
-      const tiles = [start];
-      for (let cursor = 0; cursor < tiles.length; cursor++) {
-        for (const next of neighbours(tiles[cursor]!)) {
-          if (reached(next) && component[next] === -1) {
+      let size = 0;
+      queue[size++] = start;
+      for (let cursor = 0; cursor < size; cursor++) {
+        const idx = queue[cursor]!;
+        for (let n = 0; n < 4; n++) {
+          const next = neighbour(idx, n);
+          if (next >= 0 && distance[next] !== U32_MAX && component[next] === -1) {
             component[next] = id;
-            tiles.push(next);
+            queue[size++] = next;
           }
         }
       }
-      tilesOf.push(tiles);
+      tilesOf.push(queue.slice(0, size));
     }
 
     // Each component's supply: every station block beside it.
-    const supply = new Array<number>(tilesOf.length).fill(0);
-    const seen = new Uint8Array(len);
+    const supply = new Float64Array(tilesOf.length);
+    seen.fill(0);
     for (let start = 0; start < len; start++) {
-      if (!isStation(start) || seen[start] === 1) continue;
+      if (building[start] !== stationCode || seen[start] === 1) continue;
       seen[start] = 1;
-      const block = [start];
+      let size = 0;
+      queue[size++] = start;
       const fed: number[] = [];
-      for (let cursor = 0; cursor < block.length; cursor++) {
-        for (const next of neighbours(block[cursor]!)) {
-          if (isStation(next)) {
+      for (let cursor = 0; cursor < size; cursor++) {
+        const idx = queue[cursor]!;
+        for (let n = 0; n < 4; n++) {
+          const next = neighbour(idx, n);
+          if (next < 0) continue;
+          if (building[next] === stationCode) {
             if (seen[next] === 0) {
               seen[next] = 1;
-              block.push(next);
+              queue[size++] = next;
             }
           } else if (component[next] !== -1 && !fed.includes(component[next]!)) {
             fed.push(component[next]!);
           }
         }
       }
-      const stations = Math.ceil(block.length / STATION_TILES);
+      const stations = Math.ceil(size / STATION_TILES);
       for (const id of fed) supply[id] = satAdd(supply[id]!, Math.min(stations * capacity, U32_MAX));
     }
 
     // Every building draws on the road tile it fronts nearest to a station.
-    const load = new Array<number>(len).fill(0);
+    load.fill(0);
     for (const c of consumers) {
-      let nearest: number | undefined;
+      let nearest = -1;
       for (let dy = 0; dy < c.length; dy++) {
         for (let dx = 0; dx < c.width; dx++) {
           const idx = grid.idx({ x: c.anchor.x + dx, y: c.anchor.y + dy });
           if (idx === undefined) continue;
-          for (const next of neighbours(idx)) {
-            if (!reached(next)) continue;
-            if (nearest === undefined || distance[next]! < distance[nearest]! || (distance[next] === distance[nearest] && next < nearest)) nearest = next;
+          for (let n = 0; n < 4; n++) {
+            const next = neighbour(idx, n);
+            if (next < 0 || distance[next] === U32_MAX) continue;
+            if (nearest < 0 || distance[next]! < distance[nearest]! || (distance[next] === distance[nearest] && next < nearest)) nearest = next;
           }
         }
       }
-      if (nearest !== undefined) load[nearest] = satAdd(load[nearest]!, c.units);
+      if (nearest >= 0) load[nearest] = satAdd(load[nearest]!, c.units);
     }
 
     // Nearest road tiles first, until the component's supply is used up.
     const suppliedRoad = new Uint8Array(len);
     tilesOf.forEach((tiles, id) => {
-      tiles.sort((a, b) => distance[a]! - distance[b]! || a - b);
-      const demand = tiles.reduce((total, idx) => satAdd(total, load[idx]!), 0);
+      // By distance, then index: one number each, sorted as numbers.
+      const keys = Float64Array.from(tiles, (idx) => distance[idx]! * len + idx).sort();
+      let demand = 0;
+      for (const idx of tiles) demand = satAdd(demand, load[idx]!);
       let used = 0;
-      for (const idx of tiles) {
+      for (const key of keys) {
+        const idx = key % len;
         const withTile = satAdd(used, load[idx]!);
         if (withTile > supply[id]!) break;
         used = withTile;
@@ -252,7 +263,10 @@ export function computeSupply(grid: MapGrid, consumers: readonly Consumer[]): { 
     for (let idx = 0; idx < len; idx++) {
       if (suppliedRoad[idx] === 0) continue;
       served[idx] = served[idx]! | bit;
-      for (const next of neighbours(idx)) if (!isRoad(next)) served[next] = served[next]! | bit;
+      for (let n = 0; n < 4; n++) {
+        const next = neighbour(idx, n);
+        if (next >= 0 && roadKind[next] === 0) served[next] = served[next]! | bit;
+      }
     }
   }
   return { served, components };

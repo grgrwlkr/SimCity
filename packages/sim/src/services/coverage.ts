@@ -1,6 +1,7 @@
 // `ServiceCoverageIndex` of crates/simcity_sim/src/game/services/coverage.rs: the tiles each service reaches, a
 // Manhattan diamond of its funded radius around every station, and the share of zoned building tiles covered.
 import { serviceRadius } from '../buildings/building';
+import { BUILDING_KINDS } from '../commands';
 import type { World } from '../world';
 import { serviceBuildingKind, serviceStations, type ServiceKind } from './stations';
 
@@ -48,10 +49,13 @@ export function updateServiceCoverage(w: World): void {
   const len = grid.len();
   if (out.mapVersion === w.mapEditVersion && out.coverageMap.length === len && out.fundingVersion === w.serviceFunding.version && out.stationsKey === key) return;
 
+  // The map of who reaches where hangs on the stations, their funding and the size of the map; a map edit alone only
+  // changes which tiles hold buildings to count.
+  const reachUnchanged = out.coverageMap.length === len && out.fundingVersion === w.serviceFunding.version && out.stationsKey === key;
   if (out.coverageMap.length !== len) out.coverageMap = new Uint8Array(len);
-  else out.coverageMap.fill(0);
+  else if (!reachUnchanged) out.coverageMap.fill(0);
 
-  for (const station of stations) {
+  for (const station of reachUnchanged ? [] : stations) {
     const radius = w.serviceFunding.scaledRadius(station.kind, serviceRadius(serviceBuildingKind(station.kind)) ?? 0);
     if (radius <= 0) continue;
     const mask = MASKS[station.kind];
@@ -68,9 +72,10 @@ export function updateServiceCoverage(w: World): void {
   let fire = 0;
   let police = 0;
   let medical = 0;
+  const zoned = [1 + BUILDING_KINDS.indexOf('Residential'), 1 + BUILDING_KINDS.indexOf('Commercial'), 1 + BUILDING_KINDS.indexOf('Industrial')];
   for (let idx = 0; idx < len; idx++) {
-    const building = grid.cellAt(idx).building;
-    if (building !== 'Residential' && building !== 'Commercial' && building !== 'Industrial') continue;
+    const code = grid.building[idx]!;
+    if (code !== zoned[0] && code !== zoned[1] && code !== zoned[2]) continue;
     total += 1;
     const mask = out.coverageMap[idx]!;
     if ((mask & MASK_FIRE) !== 0) fire += 1;
