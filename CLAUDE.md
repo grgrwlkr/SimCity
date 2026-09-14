@@ -2,30 +2,84 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-SimCity — градостроительный симулятор на **Rust + Bevy 0.19** (`bevy_egui 0.40`) с упором на ECS, детальную транспортную модель и наблюдаемость через MCP/BRP. Toolchain пинится: `rust-toolchain.toml` → `1.96.0`, edition `2024`.
+SimCity — градостроительный симулятор. Основная кодовая база — порт на **TypeScript + Three.js** в `packages/`: bun-монорепо в корне репозитория. Симуляция идёт в Web Worker на фиксированном шаге 10 Гц, рендер Three.js и HUD на React в главном потоке. Rust + Bevy в `crates/` и `src/` — legacy-справка: источник алгоритмов и тестов для порта, в работе над портом не собирается и не запускается (раздел в конце файла).
 
-## Commands
+## TypeScript + Three.js порт
+
+Программа переезда и её контракты — `docs/plans/2026-09-11-ts-threejs-migration-plan.md`, читать первой. План этапа лежит рядом: `docs/plans/YYYY-MM-DD-web-phase-N-<name>.md`, в конце каждого — «Сделано / Отклонения / Замеры». Rust-реализация — пример, а не эталон: очевидные косяки и места, где в TS можно лучше, делаются лучше. Тесты пишутся так, как удобно TS-версии; совпадение с Rust бит в бит не цель.
 
 ```bash
-cargo run                                                  # запуск (auto-старт в InGame + test city)
-cargo run --features dev                                   # dev: bevy/dynamic_linking, быстрая итерация
-cargo fmt --all
-cargo clippy --all-targets --all-features -- -D warnings   # verification floor: warnings = ошибки
-cargo test --workspace                                     # весь workspace (bare `cargo test` тоже: default-members в Cargo.toml)
-cargo test -p simcity_sim                                  # тесты одного крейта
-cargo test -p simcity_sim traffic::tests::traffic_lights   # один модуль/тест по пути
+bun install
+bun run typecheck   # tsc по каждому пакету: sim без DOM и Node, bridge с WebWorker, плюс tsconfig.test.json
+bun run lint        # ESLint по всему дереву
+bun run test        # Vitest; `bun test` — другой раннер, не использовать
+bun run e2e         # Playwright, только Chromium; поднимает `bun run dev` на 5174 (или E2E_PORT)
+bun run bench       # tools/bench.ts: тик p50/p99/max; `bun run bench small` или `bun run bench metropolis [size] [ticks]`
+bun run dev         # Vite, http://localhost:5174, ?debug=1, ?scenario=<query>
+bun tools/metropolis-day.ts [size] [hourSeconds] [hours]   # сутки часов пик на мегаполисе с порогами 3½
 ```
 
-Профилирование (официальные tracing-бэкенды Bevy):
-```bash
-cargo run --release --features profile_tracy          # Tracy (рекомендуется)
-cargo run --release --features profile_tracy_memory   # Tracy + память
-cargo run --release --features profile_chrome         # Chrome trace
-```
+Ворота этапа: `bun run typecheck && bun run lint && bun run test && bun run e2e`, плюс ворота из строки этапа в программе.
 
-## Workspace Architecture
+### Правила порта
 
-Cargo workspace: бинарь `simcity_app` (бинарник `simcity`, `src/main.rs`) + 5 библиотечных крейтов в `crates/`. Зависимости строго однонаправленны (`docs/crate-workspace.md` — источник истины):
+- **Никакого cargo.** Rust в работе над портом не компилируется вообще, в том числе ради фикстур. `target/` в корне после cargo — мусор. Фикстуры `packages/sim/test/fixtures/*.json` и `e2e/fixtures/rust-layout.json` заморожены; их генераторы `tools/rand-vectors` (Rust) и `tools/rust-layout.ts` (против живой Rust-игры) не запускаются.
+- **Проверки только в Chromium.** WebKit и Safari не проверяются: решение пользователя 2026-09-14. Отдельный прогон в Safari — только по явной просьбе.
+- WASM не предлагается до профиля с недостачей и не пишется без «да» пользователя на конкретный участок.
+- В `packages/sim` ESLint запрещает `Math.random`, `Date`, `performance`, `window`, таймеры, float-функции `Math.*` (`sin`, `sqrt`, `pow`…), импорт `three`/`react`/`zustand`, `TODO`/`FIXME`, `unimplemented` и `any`: состояние сходится между движками JS.
+- Портированный Rust-тест сохраняет имя в camelCase и ссылку на исходный файл. Изменение ожидаемого значения пина — отдельный коммит с обоснованием и запись в `docs/oracle-deviations.md`.
+- Node-работа через bun; node/npm только там, где bun не может, с причиной.
+
+### Пакеты
+
+- `packages/sim` (`@simcity/sim`) — вся симуляция: без DOM, часов и хоста. Время приходит как `dtNs`, случайность только из `StdRng` (`rng.ts`, бит-в-бит порт `rand 0.10.1`). Мир — `World` в `world.ts`: слои тайлов, машины, жители и регион в типизированных массивах плюс ресурсы.
+- `packages/bridge` — воркер (`worker.ts`), `SimHost` (`host.ts`: обработка запросов, сборка кадра), `FixedStepDriver` (`driver.ts`), протокол (`protocol.ts`), render-SAB с двойным буфером (`renderBuffer.ts`), список сценариев меню (`scenarios.ts`).
+- `packages/render` — `debugRenderer.ts` на `THREE.WebGPURenderer` (в headless Chromium Playwright рисует через WebGL2), камера, чанки карты, интерполяция через `PlaybackClock`, загрузка участков; чистая математика этапа 5 без сцены: `atlas`, `renderPrimitives`, `dayNight`, `cameraProjection`, `renderSettings`, `vignette`, `overlayRepaint`, `toolPreview`, константы `render.ron` и `day_night.ron` в `renderConfig.ts`.
+- `packages/ui` — HUD на React (`Hud.tsx`) и zustand-стор снимка (`store.ts`).
+- `packages/app` — точка входа Vite (`main.tsx`), `window.__sim` (`simApi.ts`). Dev-сервер отдаёт COOP/COEP: без них нет `SharedArrayBuffer`.
+- `tools/` — `bench.ts`, `metropolis-day.ts`. `e2e/` — Playwright-спеки.
+
+### Модель симуляции
+
+**Время.** Тик — 0,1 игровой секунды (`TICK_DT_NS`). На ×1 игровая секунда равна реальной, игровой час — 3 600 с (`DEFAULT_GAME_HOUR_NS`); тесты, которые гоняют сутки, задают `gameHourNs` короче. Лестница скоростей `Paused / X1 / X3 / X10 / X60 / X360` меняет только число тиков в кадре. Драйвер тратит на тики не больше 0,8 реального времени (`TICK_BUDGET_SHARE`) и не копит долг дольше 250 мс (`MAX_DELTA_MS`): не успевая, игра честно идёт медленнее, снимок несёт `realRate`.
+
+**Расписание.** Порядок систем — массив `FIXED_UPDATE` в `packages/sim/src/schedule.ts`, плюс `COMMAND_APPLY` и `UPDATE_GRAPH`; `frame`/`step` в `app.ts`. Новая система встаёт в конкретную позицию с комментарием, после чего идёт и что читает. `everyGameNs` задаёт частоту в игровом времени (раз в секунду, минуту): система идёт на тике, где период завершился. Каждая система вызывается под `try/catch`: ошибка пишется в `w.systemErrors`, мир идёт дальше, HUD показывает сбой; `__sim.failSystem(name)` проверяет это вживую.
+
+**Команды.** Структурные правки мира — только `GameCommand` (`commands.ts`, serde-JSON форма через `commandCodec.ts`), применяются в `COMMAND_APPLY`. Undo/redo и скорость — сообщения протокола, не команды.
+
+**Детерминизм.** `fingerprint.ts` — FNV-1a 64 по секциям в фиксированном порядке, типизированные массивы хэшируются байтами. Новое поле состояния обязано попасть в секцию, иначе падает `fingerprintCoversEveryStateField` (`packages/sim/test/determinism.test.ts`). `Map` вместо объектов там, где порядок обхода влияет на результат.
+
+**Жители** (`citizens.ts`) — растущие типизированные массивы по слотам. Ссылка на жителя — слот + поколение × 2²¹ (`CITIZEN_SLOT_BITS`, поколение 10 бит); устаревшая ссылка не разрешается. Очередь действий `MinuteQueue` — корзины по игровым минутам: планировщик раз в минуту будит только тех, чья минута пришла. День — распорядок выходов из дома с цепочкой остановок (работа, магазин, кафе, парк). Счётчики по состояниям и домам ведутся при каждом изменении.
+
+**Машина в кармане и парковки** (`parking.ts`). Статус машины `None / Parked / Driving`, доля машин по классу дома `CAR_OWNERSHIP` (0,3 / 0,55 / 0,75). Стоящая машина — занятое место в здании или на тайле улицы, а не агент трафика. Житель идёт пешком без машины, на пути не длиннее `walkMaxMeters` (1 000 м по умолчанию) или без парковки у цели.
+
+**Трафик на двух уровнях.**
+- Мезо (`meso/`) ведёт все поездки жителей и региона на машине. `MesoGraph` — направленные участки проезжей части между боксами перекрёстков, перестраивается по `graphVersion`. `MesoTraffic` — очереди FIFO на участках: выезд, когда время пришло, есть пропускная способность (0,5 машины в секунду на полосу), светофор пропускает и на следующем участке есть место (7,5 м на машину, фура 19 м и за две); голову, которую держит полный участок дольше 120 с, проталкивают. Маршруты — A* по временам участков. Матрица времён между районами 16×16 тайлов — `meso/districts.ts`, по ней подбирается работа.
+- Микро-трафик этапа 2 (`traffic/`, `transport/lanelet/`: лейнлеты, арбитр, резервации, светофоры, ПДД РФ) ведёт машины сценариев `city` и перекрёстков. Флаг `w.microTraffic`: мегаполис его выключает, граф полос и лейнлеты не строятся.
+
+**Пешеходы** (`walkers.ts`) идут по тротуарам вдоль бордюра и переходят дорогу через бокс перекрёстка, у светофора ждут своего зелёного. Шагают раз в игровую секунду (`WALKER_STEP_NS`), рендер доводит их внутри секунды.
+
+**Регион** (`regional.ts`): через магистрали на краю карты приезжают работники на места, не занятые жителями, гости в магазины, кафе и парки, транзит и фуры. Агент региона живёт в своих массивах, пока в пути; в мезо его id — `-(slot + 1)`.
+
+**Сценарии.** Меню — `SCENARIOS` в `packages/bridge/src/scenarios.ts`, сборщик на каждое имя — `SCENARIO_BUILDERS` в `host.ts`: `city` (2 000 жителей, микро-трафик), `livingCity` («Живой город» растёт из зон), `metropolis` (около миллиона жителей на карте 800×800, открывается заселённым), `signalizedCross` и `signalizedCross4`. Сценарий со своим размером карты создаёт мир этого размера.
+
+**Кадр.** Хост пишет в render-SAB только видимую область с запасом (`setView`). На ×60 и выше — выборка до 2 000 едущих машин (`SAMPLE_CARS`) и загрузка каждого участка байтом, без стоящих машин и пешеходов.
+
+### Наблюдаемость
+
+`window.__sim` в DevTools и Playwright: `snapshot() step(n) fingerprint() cmd(json) setState(s) setSpeed(s) rngProbe(seed, n) undoRedo(redo) tile(x, y) renderFrame() loadGridHex(layers) debugVehicles(list) camera() setCamera(s) fitMap() pickTile(x, y) renderStats() scenario(name, size?) failSystem(name) tickStats() resetTickStats()`. `?debug=1` включает `__sim.debug` и оверлеи: сетку, боксы перекрёстков, лейнлеты. `?scenario=<query>` открывает сценарий. Отладочный рендер выводит цвета без цветового менеджмента, поэтому класс тайла читается обратно со скриншота.
+
+### Проверки и замеры
+
+- e2e — проекты `chromium` и `metropolis-chromium` (мегаполис идёт после остальных). Фингерпринт в браузере сверяется с Node. `E2E_GPU=1` рисует через ANGLE Metal вместо SwiftShader — для замеров FPS; `E2E_PERF=1` включает замеры `@perf`, по умолчанию они пропущены.
+- `bun run bench` пишет JSON: пустая карта и тестовый город на 3 000 тиках, «Живой город» плюс 100 000 жителей (подбор работы, планировщик), мегаполис с разбивкой по системам. Числа идут в план этапа.
+- Игровое окно на экран не выводится: e2e headless.
+
+## Rust + Bevy (legacy-справка)
+
+Не собирается и не запускается в работе над портом. Читается как источник алгоритмов и тестов: этап порта открывает Rust-тесты своей строки программы и выписывает из них инварианты.
+
+Стек: Rust + Bevy 0.19 (`bevy_egui 0.40`), `rust-toolchain.toml` → `1.96.0`, edition `2024`. Cargo workspace: бинарь `simcity_app` (`src/main.rs`) и крейты в `crates/`, зависимости однонаправленны (`docs/crate-workspace.md`):
 
 ```
 simcity_app ─┬─> simcity_frontend ─┬─> simcity_debug ─┐
@@ -34,69 +88,23 @@ simcity_app ─┬─> simcity_frontend ─┬─> simcity_debug ─┐
              └─> (все крейты напрямую)
 ```
 
-- **`simcity_core`** (~800 строк) — стабильные контракты: `commands` (`GameCommand`), `state` (`AppState`), `sets` (`GameSet`), `roads`, `ids`, `trips`, `sim_events`, `ui_state`, map-модель, `MainCamera`, версия transport-графа. Здесь нет логики — только типы/данные. **Не держит тестов** (всё тестируется через `simcity_sim`).
-- **`simcity_sim`** (~32k строк, ядро) — вся симуляция: `buildings`, `citizens`, `economy`, `employment`, `demand`, `land_value`, `pollution`, `intersections`, `traffic`, `transport` (pathfinding), `pedestrians`, `public_transport`, `services`, `emergencies`, `zone_placement`, `day_night` (visual-only overlay), `map`, `sim`. Тяжёлые подсистемы — `traffic/` и `transport/`.
-- **`simcity_data`** — `config_loader`, `persistence` (+ `persistence_contract`, формат `SaveGameV3`), `scenarios`, генерация test city.
-- **`simcity_debug`** — `mcp_status` (BRP/MCP), `debug_world` (ECS-снапшоты для живого дебага).
-- **`simcity_frontend`** — `camera`, `ui` (egui: top bar, toolbar, sidebar, building popup, debug dump window), `audio_sfx`, `ui_settings`, input→command. Footgun: в egui 0.40/0.34 top-level `Panel::show(ctx)` deprecated без не-deprecated замены → panel-функции (`top_bar`/`toolbar`/`right_sidebar`) помечены `#[allow(deprecated)]`.
+- `simcity_core` — контракты без логики: `commands` (`GameCommand`), `state` (`AppState`), `sets` (`GameSet`), `roads`, `ids`, `trips`, `sim_events`, `ui_state`, модель карты.
+- `simcity_sim` — вся симуляция: `buildings`, `citizens`, `economy`, `employment`, `demand`, `land_value`, `pollution`, `intersections`, `traffic`, `transport`, `pedestrians`, `public_transport`, `services`, `emergencies`, `civic_coverage`, `zone_placement`, `day_night`, `map`, `sim`.
+- `simcity_data` — `config_loader`, `persistence` (`SaveGameV3`), `scenarios`, тестовый город, детерминизм и oncoming-оракул (`route_oncoming_pins.rs`).
+- `simcity_debug` — `mcp_status` (BRP/MCP), `debug_world`.
+- `simcity_frontend` — камера, egui-UI, звук, input → command.
 
-**Composition root** — `src/game/mod.rs`: тонкий шим. Делает `pub use simcity_*::game::{...}` (поэтому старые пути вида `game::map`, `game::sim` ещё работают) и собирает `GamePlugin` из `SimPlugin → DataPlugin → DebugPlugin → FrontendPlugin`. Каждый крейт экспонирует один корневой `Plugin`, который добавляет вложенные плагины подсистем.
-
-> Не дробить `simcity_sim` дальше: `map`, `intersections`, `traffic`, `pedestrians`, `services` всё ещё делят hot-path данные. Условия для следующего сплита перечислены в `docs/crate-workspace.md`.
-
-## Core Patterns (читать перед правками)
-
-**Command pattern для структурных изменений.** UI/input не мутируют мир напрямую — они пишут `GameCommand` (message) в наборе `Input`; применяются в `CommandApply` (например `handle_load_test_city` в `simcity_data`, обработчики в `simcity_sim`). Это единый канал для build/erase/zone/place/save/load. Undo/redo — через `command_history`. Новый вид правки мира = новый вариант `GameCommand` + обработчик в `CommandApply`.
-
-**Глобальный порядок систем — `GameSet`.** Чейнится в `SimPlugin::build` через `configure_sets`. Реальный рантайм-порядок на `Update`:
-`Input → CommandApply → GraphUpdate → Sim → PostSim → RenderSync → Ui`
-На `FixedUpdate` чейнятся `GraphUpdate → Sim → PostSim` (графы пересобираются ДО сим-консьюмеров; запинено тестом `graph_rebuild_runs_before_sim_consumer_on_fixed_update`). Любая новая система должна явно встать в нужный `GameSet`.
-
-**Детерминированный fixed-step.** Симуляция идёт на `FixedUpdate` при 10 Гц (`Time::<Fixed>::from_seconds(1.0/10.0)`), отделённая от рендера/UI на `Update`. Внутри `Sim`/`PostSim` системы чейнятся по саб-сетам (`SimStep`/`TrafficStep`/`PostSimStep` в `crates/simcity_sim/src/game/mod.rs`) — ноль неупорядоченных конфликтующих пар запинено тестами `fixed_update_has_no_ambiguous_system_pairs` (sim) и `composed_fixed_update_has_no_ambiguous_system_pairs` (sim+data), детерминизм — фингерпринт-тестом в `simcity_data/determinism.rs`. Новая FixedUpdate-система ОБЯЗАНА встать в свой саб-сет, иначе пин упадёт.
-
-**Config-driven tuning.** Числовые параметры подсистем вынесены в `assets/config/*.ron` (`traffic.ron`, `pedestrians.ron`, `economy.ron`, `employment.ron`, `pathfinding.ron`, `map.ron`, `day_night.ron`) и грузятся в рантайме через `config_loader`. Сценарии — `assets/scenarios/scenarios.ron`. При добавлении нового RON **обязателен parse-тест** (см. `config_loader`), он же гоняет `SaveGameV3` roundtrip.
-
-**Перекрёстки — строгие инварианты.** Любые правки трафика/перекрёстков обязаны соблюдать `docs/architecture.md` → «Intersection Traffic Invariants (STRICT)»: прямоугольные Г/П-траектории внутри бокса (никаких дуговых обходов центра), единый направленный гард на всех производителях маршрутов, семантические конфликты (левый уступает встречному) поверх тайловых, верификация через `TrafficViolationAudit`/Path-оверлей. Тесты-пины из того раздела не ослаблять.
-
-**ECS-дисциплина (из `.cursor/rules/my-rules.mdc`).** Данные — только в компонентах, логика — только в системах. Межмодульная связь — через messages/events, а не прямой доступ. Много мелких систем вместо одной большой (внешний параллелизм Bevy). `par_iter` при десятках тысяч сущностей. Избегать `.unwrap()`/`.expect()` в продакшен-пути.
-
-## Tests
-
-Тесты **co-located** рядом с кодом (нет корневого `tests/`). Почти всё в `simcity_sim` (49 файлов с тестами по workspace): `map/tests.rs`, `buildings/tests.rs`, `emergencies/tests.rs`, `transport/tests.rs`, `pedestrians/tests_{graph,signalized,uncontrolled}.rs`, и крупный набор `traffic/tests/*.rs` (basic_behavior, intersection_reservations, lanelet_arbiter, pedestrians, traffic_lights, vehicle_parking, vehicle_spawning). Plus persistence/config parse-тесты, determinism/soak-пины и router-независимый oncoming-оракул (`route_oncoming_pins.rs`) в `simcity_data`, mirror-тесты в `simcity_debug`. Текущий прогон (`cargo test --workspace`): `simcity_sim` 225 + `simcity_data` 20 (+2 ignored diagnostic-харнесса: soak-таблица и determinism-проба) + `simcity_debug` 2 = 247 тестов.
-
-Упавший тест ≠ всегда баг кода: возможно изменилось ожидаемое поведение. Правь тест только с обоснованием, почему новое поведение корректно.
-
-## Debugging / Observability
-
-**BRP/MCP — только под фичей `dev`** (запуск: `cargo run --features dev`). Под `dev` игра поднимает `RemotePlugin` + `RemoteHttpPlugin` (Bevy BRP, `127.0.0.1:15702`) и кастомные методы `bevy_debugger/screenshot` / `bevy_debugger/debug_dump` (регистрация: `with_method_main` — в 0.19 `with_method` стал приватным). В release remote-стека нет: он даёт неаутентифицированный мутирующий доступ к миру и запись файла по произвольному пути (`screenshot.path` → `save_to_disk`) по HTTP. Аналогично ~16 полносканирующих snapshot-систем `DebugWorldPlugin` регистрируются только под `dev` (в release — лёгкий `update_debug_snapshot` без world-scan). Для дебага живого состояния используется MCP-сервер `bevy_brp_mcp` (зарегистрирован в Claude Code как `bevy-brp`; версия крейта трекает minor Bevy — линия `0.20.x` под Bevy 0.19) — читать/мутировать сущности/компоненты/ресурсы и звать кастомные методы в работающей игре (`cargo run --features dev`), а не только из кода/логов. Любой новый функционал должен быть наблюдаем через MCP (экспорт состояния/метрик — под `dev`). In-app дамп работает во ВСЕХ билдах: при закрытии окна и на выходе из `InGame`/`MainMenu` печатается/копируется полный RON debug dump (`F8` — окно дампа, `F9` — копировать). Перед запуском новой копии игры — гасить уже запущенный экземпляр.
+Устройство, которое порт унаследовал в другой форме:
+- Команды: UI пишет `GameCommand` в `Input`, мир меняется в `CommandApply`; undo/redo через `command_history`.
+- Порядок: `Input → CommandApply → GraphUpdate → Sim → PostSim → RenderSync → Ui` на `Update`; `GraphUpdate → Sim → PostSim` на `FixedUpdate` 10 Гц с саб-сетами `SimStep` / `TrafficStep` / `PostSimStep`.
+- Параметры — `assets/config/*.ron` (`traffic`, `pedestrians`, `economy`, `employment`, `pathfinding`, `map`, `day_night`, `render`, `props`), сценарии — `assets/scenarios/scenarios.ron`.
+- Перекрёстки: `docs/architecture.md` → «Intersection Traffic Invariants (STRICT)» — Г/П-траектории в боксе, единый направленный гард маршрутов, левый уступает встречному.
+- Тесты co-located рядом с кодом, основная масса в `simcity_sim` (`map/tests.rs`, `traffic/tests/*.rs`, `pedestrians/tests_*.rs`, `emergencies/tests.rs` …).
+- Наблюдаемость: BRP/MCP только под фичей `dev` (`bevy_brp_mcp` как `bevy-brp`, `127.0.0.1:15702`), in-app RON debug dump (`F8`/`F9`).
+- Источник истины Rust-части: код и `assets/config/` → `docs/` (`architecture.md`, `gameplay.md`, `persistence.md`, `crate-workspace.md`, `debugging-and-observability.md`, `config-assets-scenarios.md`, `testing.md`) → deep-dive docs → `docs/archive/`.
 
 ## Conventions
 
-- **Git**: не коммитить/пушить без явной просьбы. Сообщения коммитов — английский, Conventional Commits (`feat:`, `fix:`, `refactor:`, `chore:`).
-- **Перед завершением задачи**: `cargo fmt --all` → `cargo clippy --all-targets --all-features -- -D warnings` → `cargo test --workspace`.
-- **Source of truth** (по убыванию): код + `assets/config/` → current-state docs в `docs/` (`architecture.md`, `gameplay.md`, `persistence.md`, `crate-workspace.md`, `debugging-and-observability.md`, `config-assets-scenarios.md`, `testing.md`) → deep-dive docs → `docs/archive/` (исторический контекст, не истина).
-- **README hotkeys актуальны по коду** — при изменении биндов синхронизировать `README.md`.
-
-## TypeScript + Three.js порт (`packages/`)
-
-Программа переезда и её контракты: `docs/plans/2026-09-11-ts-threejs-migration-plan.md`, читать первой. План текущего этапа лежит рядом: `docs/plans/YYYY-MM-DD-web-phase-N-<name>.md`. Порт живёт в этом же репозитории, bun-монорепо в корне рядом с Rust-крейтами. Rust-реализация — пример, а не эталон: смотреть на неё можно, но очевидные косяки и места, где в TS можно сделать лучше, делаются лучше. Тесты пишутся так, как удобно TS-версии, совпадение с Rust бит в бит больше не цель. Новых Rust-примеров и фикстур не заводим. Примеры `examples/dump_*.rs` и тесты сверки с их фикстурами остались от этапов 1–2b; как только правка их ломает, они заменяются TS-тестами поведения.
-
-```bash
-bun install
-bun run typecheck   # tsc по каждому пакету: sim без DOM и Node, bridge с WebWorker
-bun run lint
-bun run test        # Vitest; `bun test` — другой раннер, не использовать
-bun run e2e         # Playwright, Chromium + WebKit
-bun run bench       # тик симуляции, p50/p99
-bun run dev         # Vite, http://localhost:5174, ?debug=1
-```
-
-Ворота этапа порта: `bun run typecheck && bun run lint && bun run test && bun run e2e`. Cargo-проверки выше относятся к Rust-части.
-
-- `packages/sim` — симуляция без DOM, часов и хоста. Время приходит как `dtNs`, случайность только из `StdRng`, это бит-в-бит порт `rand 0.10.1`. ESLint запрещает там `Math.random`, `Date`, float-функции `Math.*`, `TODO` и `any`.
-- `packages/bridge` — воркер, драйвер fixed-step 10 Гц, протокол, render-SAB с двойным буфером. `render`, `ui`, `app` — кадр, HUD на React + zustand, точка входа Vite.
-- Порядок систем — массив `FIXED_UPDATE` в `packages/sim/src/schedule.ts`. Новая система встаёт в конкретную позицию с комментарием, после чего она идёт и что читает.
-- Портированный Rust-тест сохраняет имя в camelCase и ссылку на исходный файл.
-- `tools/rand-vectors` — Rust-генератор эталона RNG со своим `[workspace]`; версии крейтов пинятся под корневой `Cargo.lock`.
-- `window.__sim` в DevTools и Playwright: `snapshot() step(n) fingerprint() cmd(json) setState(s) setSpeed(s) rngProbe(seed, n) renderFrame()`, для рендера `loadGridHex(layers) debugVehicles(list) camera() setCamera(s) fitMap() pickTile(x, y) renderStats()`. Флаг `?debug=1` включает `__sim.debug` и оверлеи: сетку, боксы перекрёстков, лейнлеты.
-- Отладочный рендер (`packages/render/src/debugRenderer.ts`) выводит цвета без цветового менеджмента, поэтому класс тайла читается обратно со скриншота. Эталон раскладки Rust — `e2e/fixtures/rust-layout.json` из `bun tools/rust-layout.ts` против скрытой живой игры (skill `simcity-live`); инструмент стирает четыре тайла в игре, экземпляр потом гасить.
+- **Git**: не коммитить и не пушить без явной просьбы. Сообщения коммитов — английский, Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`), коммит на модуль.
+- Планы и спеки — по-русски, идентификаторы и пути английские.
+- README hotkeys актуальны по коду — при изменении биндов синхронизировать `README.md`.
