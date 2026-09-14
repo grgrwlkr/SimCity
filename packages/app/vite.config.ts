@@ -31,6 +31,7 @@ export default defineConfig({
   server: { port, strictPort: true, headers: crossOriginIsolation },
   preview: { port, strictPort: true, headers: crossOriginIsolation },
   // The one engine the game runs in: the Chromium of the desktop Electron (44.3.0 ships 152).
-  build: { target: 'chrome152' },
+  // No source maps in a production build (Vite's default, pinned: the shipped app must not carry them).
+  build: { target: 'chrome152', sourcemap: false },
   worker: { format: 'es' },
 });
