@@ -1,0 +1,27 @@
+[package]
+name = "simcity_desktop"
+version = "0.1.0"
+description = "SimCity desktop shell: a Tauri window over the Vite build of packages/app"
+edition = "2024"
+publish = false
+
+# Standalone, like `tools/rand-vectors`: the root workspace is the Bevy game, and Tauri's dependency
+# tree must not join its feature unification, its lockfile or `cargo clippy --all-features`.
+[workspace]
+
+[lib]
+name = "simcity_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+tauri = { version = "2.11.5", features = [] }
+tauri-plugin-localhost = "2.3.2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

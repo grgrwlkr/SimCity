@@ -20,6 +20,8 @@ export default defineConfig([
     'tools/rand-vectors/**',
     // The Rust side of the repository and local tool state are not part of the port.
     'target/**',
+    'packages/desktop/src-tauri/target/**',
+    'packages/desktop/src-tauri/gen/**',
     '.claude/**',
     '.cursor/**',
     '.zcode/**',
