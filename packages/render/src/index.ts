@@ -7,3 +7,4 @@ export * from './mapChunks';
 export * from './palette';
 export * from './picking';
 export * from './atlas';
+export * from './renderPrimitives';
