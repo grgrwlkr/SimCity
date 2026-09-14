@@ -8,7 +8,7 @@ import type { TripRequested } from '../../src/events';
 import { tileFToWorld } from '../../src/map/coords';
 import { forEachCitizenCar } from '../../src/meso/render';
 import { CAR_LENGTH_METERS, CAR_SPACE_METERS, TRUCK_LENGTH_METERS, stepMesoTraffic } from '../../src/meso/traffic';
-import { giveCar } from '../../src/parking';
+import { CAR_DRIVING, giveCar } from '../../src/parking';
 import { TICK_DT_NS } from '../../src/schedule';
 import type { World } from '../../src/world';
 import { roadWorld, t } from './helpers';
@@ -138,6 +138,25 @@ describe('meso render', () => {
 
     const at = tileFToWorld(w.mapConfig, 5, 11);
     expect(poses(w)).toEqual([{ parked: true, x: at.x, y: at.y, heading: 0 }]);
+  });
+
+  // Stage 3½d: the cars of one building stand on its entrance tile, one over another; one cube draws them all.
+  it('parkedCarsAreDrawnOncePerTile', () => {
+    const w = roadWorld(64, 16, [[t(1, 8), t(62, 8), 'TwoLane']]);
+    const house = w.buildings.add(newBuilding({ kind: 'Residential', anchor: t(5, 11), capacityResidents: 8 }));
+    const [first, second] = [w.citizens.add(newCitizen(house)), w.citizens.add(newCitizen(house))];
+    expect([giveCar(w, first), giveCar(w, second)]).toEqual([true, true]);
+    const parked = () => poses(w).filter((pose) => pose.parked).length;
+    expect(parked(), 'two cars on one tile').toBe(1);
+
+    const drive = (ref: number) => {
+      const slot = w.citizens.resolve(ref)!;
+      w.citizens.setCar(slot, CAR_DRIVING, w.citizens.carPlace[slot]!, 40, 7);
+    };
+    drive(first);
+    expect(parked(), 'one of them left').toBe(1);
+    drive(second);
+    expect(parked(), 'both left').toBe(0);
   });
   // A car used to stand at the end of one link through the box time and appear at the start of the next, three tiles on.
   it('aCarCrossesTheBoxWithoutAJump', () => {

@@ -135,5 +135,9 @@ describe('living city', () => {
       views.filter((c) => c.carStatus !== 'None').length + regionalSpots,
     );
     expect(w.vehicles.order.filter((slot) => w.vehicles.parked[slot] === 1), 'and no vehicle slot while it stands').toEqual([]);
+    // Stage 3½d: the cars standing on each tile, kept as cars park and leave, for the renderer.
+    const standing = new Uint16Array(w.grid.len());
+    for (const c of views) if (c.carStatus === 'Parked') standing[c.carParkedAt.y * w.grid.width + c.carParkedAt.x]! += 1;
+    expect(Array.from(citizens.parkedCounts()), 'parked cars by tile').toEqual(Array.from(standing));
   }, 120_000);
 });

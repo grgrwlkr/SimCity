@@ -4,7 +4,7 @@
 // `moveWalkers`. A road with no box within reach of the goal is crossed where it must be, at a price no detour pays.
 import { DEFAULT_GAME_HOUR_NS } from './city';
 import type { TilePos } from './commands';
-import { tileFToWorld } from './map/coords';
+import { inTileView, tileFToWorld, type TileView } from './map/coords';
 import type { MapGrid } from './map/grid';
 import { LinkHeap } from './meso/districts';
 import { isGreen, type TrafficLight } from './traffic/lights';
@@ -194,8 +194,7 @@ export function moveWalkers(w: World, dtNs: number): void {
   const seconds = (dtNs / 1e9) * (DEFAULT_GAME_HOUR_NS / w.gameHourNs);
   const pace = w.citizenConfig.walkKmh / 3.6 / w.trafficConfig.tileMeters;
   let lights: Map<number, TrafficLight> | undefined;
-  for (let slot = 0; slot < c.highWater; slot++) {
-    if (c.alive[slot] !== 1 || c.onFoot[slot] !== 1) continue;
+  for (const slot of c.walkers()) {
     const { along, gate, eastWest } = walkPath(w, { x: c.walkFromX[slot]!, y: c.walkFromY[slot]! }, { x: c.destX[slot]!, y: c.destY[slot]! });
     const total = along[along.length - 1]!;
     let progress = c.walkProgress[slot]!;
@@ -233,14 +232,13 @@ function poseAt(path: WalkPath, progress: number): readonly [x: number, y: numbe
   return [ax + dx * t, ay + dy * t, heading];
 }
 
-/** Every citizen on foot, in slot order. */
-export function forEachWalker(w: World, visit: WalkerVisitor): void {
+/** Every citizen on foot, in no particular order; with a `view`, only those in it. */
+export function forEachWalker(w: World, visit: WalkerVisitor, view?: TileView): void {
   const c = w.citizens;
-  if (c.onFootCount === 0) return;
-  for (let slot = 0; slot < c.highWater; slot++) {
-    if (c.alive[slot] !== 1 || c.onFoot[slot] !== 1) continue;
+  for (const slot of c.walkers()) {
     const path = walkPath(w, { x: c.walkFromX[slot]!, y: c.walkFromY[slot]! }, { x: c.destX[slot]!, y: c.destY[slot]! });
     const [x, y, heading] = poseAt(path, c.walkProgress[slot]!);
+    if (!inTileView(view, x, y)) continue;
     const at = tileFToWorld(w.mapConfig, x, y);
     visit(slot, c.generation[slot]!, at.x, at.y, heading);
   }

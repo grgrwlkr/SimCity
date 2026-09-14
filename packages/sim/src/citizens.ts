@@ -297,6 +297,8 @@ export class Citizens {
   plannerWoken = 0;
   /** Citizens on foot. */
   onFootCount = 0;
+  readonly mapWidth: number;
+  readonly mapHeight: number;
 
   alive = new Uint8Array(0);
   generation = new Uint16Array(0);
@@ -353,6 +355,12 @@ export class Citizens {
   /** Minute of the day to arrive by, -1 for none. */
   agendaArrive = new Int16Array(0);
 
+  /** Derived, not state: the slots on foot in no particular order, and where each is in that list (-1 when not on foot). */
+  private readonly walkerList: number[] = [];
+  private walkerIndex = new Int32Array(0);
+  /** Derived, not state: the cars standing on each tile of the map. */
+  private parked: Uint16Array;
+
   /** Free slots, reused last-in first-out. */
   readonly freeSlots: number[] = [];
   /** Citizens at home with no plan: the planner plans them on its next run. */
@@ -363,6 +371,12 @@ export class Citizens {
   private readonly stateCounts = new Int32Array(CITIZEN_STATES.length);
   private readonly residents = new Map<number, number>();
   private readonly workers = new Map<number, number>();
+
+  constructor(mapWidth = 0, mapHeight = 0) {
+    this.mapWidth = mapWidth;
+    this.mapHeight = mapHeight;
+    this.parked = new Uint16Array(mapWidth * mapHeight);
+  }
 
   get full(): boolean {
     return this.freeSlots.length === 0 && this.highWater === SLOT_COUNT;
@@ -400,10 +414,8 @@ export class Citizens {
     this.tourMode[slot] = spec.tourMode === null ? NONE : TRIP_MODES.indexOf(spec.tourMode);
     this.walking[slot] = 0;
     this.onFoot[slot] = 0;
-    this.carStatus[slot] = CAR_STATUSES.indexOf(spec.carStatus);
-    this.carPlace[slot] = spec.carPlace;
-    this.carX[slot] = spec.carParkedAt.x;
-    this.carY[slot] = spec.carParkedAt.y;
+    this.carStatus[slot] = CAR_NONE;
+    this.setCar(slot, CAR_STATUSES.indexOf(spec.carStatus), spec.carPlace, spec.carParkedAt.x, spec.carParkedAt.y);
     this.workStart[slot] = spec.workStart;
     this.shiftMinutes[slot] = spec.shiftMinutes;
     this.nextAt[slot] = NONE;
@@ -432,6 +444,7 @@ export class Citizens {
     countUp(this.residents, this.home[slot]!, -1);
     if (this.workplace[slot] !== NONE) countUp(this.workers, this.workplace[slot]!, -1);
     this.setOnFoot(slot, null);
+    this.setCar(slot, CAR_NONE, this.carPlace[slot]!, this.carX[slot]!, this.carY[slot]!);
     this.alive[slot] = 0;
     this.generation[slot] = (this.generation[slot]! + 1) % GENERATIONS;
     this.freeSlots.push(slot);
@@ -442,15 +455,54 @@ export class Citizens {
   setOnFoot(slot: number, from: TilePos | null): void {
     const was = this.onFoot[slot] === 1;
     if (from === null) {
-      if (was) this.onFootCount -= 1;
+      if (was) {
+        this.onFootCount -= 1;
+        const at = this.walkerIndex[slot]!;
+        const last = this.walkerList.pop()!;
+        if (last !== slot) {
+          this.walkerList[at] = last;
+          this.walkerIndex[last] = at;
+        }
+        this.walkerIndex[slot] = NONE;
+      }
       this.onFoot[slot] = 0;
       return;
     }
-    if (!was) this.onFootCount += 1;
+    if (!was) {
+      this.onFootCount += 1;
+      this.walkerIndex[slot] = this.walkerList.length;
+      this.walkerList.push(slot);
+    }
     this.onFoot[slot] = 1;
     this.walkFromX[slot] = from.x;
     this.walkFromY[slot] = from.y;
     this.walkProgress[slot] = 0;
+  }
+
+  /** The slots of the citizens on foot, in no particular order. */
+  walkers(): readonly number[] {
+    return this.walkerList;
+  }
+
+  /** Sets the car of `slot`: its status, the spot it holds and the tile it stands on, or drives to. */
+  setCar(slot: number, status: number, place: number, x: number, y: number): void {
+    if (this.carStatus[slot] === CAR_PARKED) this.countParked(this.carX[slot]!, this.carY[slot]!, -1);
+    this.carStatus[slot] = status;
+    this.carPlace[slot] = place;
+    this.carX[slot] = x;
+    this.carY[slot] = y;
+    if (status === CAR_PARKED) this.countParked(x, y, 1);
+  }
+
+  /** Cars standing on each tile, row by row. */
+  parkedCounts(): Uint16Array {
+    return this.parked;
+  }
+
+  private countParked(x: number, y: number, by: number): void {
+    if (x < 0 || y < 0 || x >= this.mapWidth || y >= this.mapHeight) return;
+    const tile = y * this.mapWidth + x;
+    this.parked[tile] = this.parked[tile]! + by;
   }
 
   setState(slot: number, state: number): void {
@@ -578,6 +630,9 @@ export class Citizens {
     this.moveIns = 0;
     this.plannerWoken = 0;
     this.onFootCount = 0;
+    this.walkerList.length = 0;
+    this.walkerIndex = new Int32Array(0);
+    this.parked.fill(0);
     this.freeSlots.length = 0;
     this.unplanned = [];
     this.jobSeekers = [];
@@ -602,6 +657,7 @@ export class Citizens {
     };
     for (const name of LAYER_NAMES) this[name] = grown(this[name] as Layer, capacity, fills[name] ?? 0) as never;
     for (const name of STOP_LAYER_NAMES) this[name] = grown(this[name] as Layer, capacity * AGENDA_STOPS, fills[name] ?? 0) as never;
+    this.walkerIndex = grown(this.walkerIndex, capacity, NONE);
     this.capacity = capacity;
   }
 }
@@ -726,10 +782,7 @@ function departByCar(w: World, slot: number, to: TilePos, spot: number, purpose:
   const parkAt = placeTile(w, spot, from);
   w.parking.release(c.carPlace[slot]!);
   w.parking.take(spot);
-  c.carStatus[slot] = CAR_DRIVING;
-  c.carPlace[slot] = spot;
-  c.carX[slot] = parkAt.x;
-  c.carY[slot] = parkAt.y;
+  c.setCar(slot, CAR_DRIVING, spot, parkAt.x, parkAt.y);
   w.events.tripRequested.push({ citizen: c.ref(slot), from, carParkedAt: from, to: parkAt, purpose, mode: 'Car', pocket: true });
   setOut(w, slot, to, purpose, nowSecs);
   c.walking[slot] = 0;
@@ -1093,7 +1146,7 @@ export function handleTripFinished(w: World): void {
     const slot = c.resolve(arrival.citizen);
     if (slot === undefined || c.state[slot] !== TRAVEL_STATE[arrival.purpose]) continue;
     if (c.carStatus[slot] === CAR_DRIVING) {
-      c.carStatus[slot] = CAR_PARKED;
+      c.setCar(slot, CAR_PARKED, c.carPlace[slot]!, c.carX[slot]!, c.carY[slot]!);
       const walk = walkMinutes(w, { x: c.carX[slot]!, y: c.carY[slot]! }, { x: c.destX[slot]!, y: c.destY[slot]! });
       if (walk > 0) {
         c.setOnFoot(slot, { x: c.carX[slot]!, y: c.carY[slot]! });
@@ -1131,7 +1184,7 @@ export function recoverStuckTrips(w: World): void {
     const ref = c.ref(slot);
     if (riding.has(ref)) continue;
     c.setState(slot, AT_HOME);
-    if (c.carStatus[slot] === CAR_DRIVING) c.carStatus[slot] = CAR_PARKED;
+    if (c.carStatus[slot] === CAR_DRIVING) c.setCar(slot, CAR_PARKED, c.carPlace[slot]!, c.carX[slot]!, c.carY[slot]!);
     c.tourMode[slot] = NONE;
     c.walking[slot] = 0;
     c.setOnFoot(slot, null);

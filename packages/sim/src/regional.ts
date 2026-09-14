@@ -8,7 +8,7 @@ import { MINUTES_PER_DAY, gameMinute } from './city';
 import { MinuteQueue } from './citizens';
 import type { TilePos } from './commands';
 import type { TripRequested } from './events';
-import { tileFToWorld } from './map/coords';
+import { inTileView, tileFToWorld, type TileView } from './map/coords';
 import { NO_LINK, type MesoGraph } from './meso/graph';
 import { NO_PLACE, findParking, placeTile } from './parking';
 import { randomBool, rangeU32 } from './rng';
@@ -558,13 +558,14 @@ export function handleRegionalArrivals(w: World): void {
 /** `id` is a regional agent slot; world coordinates. */
 export type RegionalStandingVisitor = (slot: number, generation: number, x: number, y: number, heading: number, truck: boolean) => void;
 
-/** The cars of the region parked at their buildings and the trucks standing at the doors they unload at. */
-export function forEachRegionalStanding(w: World, visit: RegionalStandingVisitor): void {
+/** The cars of the region parked at their buildings and the trucks standing at the doors they unload at; with a `view`, those in it. */
+export function forEachRegionalStanding(w: World, visit: RegionalStandingVisitor, view?: TileView): void {
   const r = w.regional;
   for (let slot = 0; slot < r.highWater; slot++) {
     if (r.alive[slot] !== 1 || r.state[slot] !== STAYING) continue;
     const truck = isTruck(r.kind[slot]!);
     if (!truck && r.place[slot] === 0) continue;
+    if (!inTileView(view, r.standX[slot]!, r.standY[slot]!)) continue;
     const at = tileFToWorld(w.mapConfig, r.standX[slot]!, r.standY[slot]!);
     visit(slot, r.generation[slot]!, at.x, at.y, 0, truck);
   }

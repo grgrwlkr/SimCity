@@ -281,7 +281,7 @@ export function createWorld(options: WorldOptions = {}): World {
     serviceFunding: new ServiceFunding(),
     loans: new Loans(),
     serviceCoverage: new ServiceCoverageIndex(),
-    citizens: new Citizens(),
+    citizens: new Citizens(mapConfig.width, mapConfig.height),
     citizenConfig: defaultCitizenConfig(),
     parking: new Parking(grid.len()),
     regional: new RegionalTrips(),

@@ -278,10 +278,7 @@ export function giveCar(w: World, ref: number): boolean {
   const place = findParking(w, home.anchor, home.id, Infinity);
   if (place === NO_PLACE) return false;
   w.parking.take(place);
-  c.carStatus[slot] = CAR_PARKED;
-  c.carPlace[slot] = place;
   const tile = placeTile(w, place, home.anchor);
-  c.carX[slot] = tile.x;
-  c.carY[slot] = tile.y;
+  c.setCar(slot, CAR_PARKED, place, tile.x, tile.y);
   return true;
 }
