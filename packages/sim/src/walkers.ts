@@ -26,8 +26,14 @@ const HALF_PI = f32(Math.PI / 2);
 
 /** How far a walker keeps from a tile's middle towards its kerb, tiles. */
 const KERB_OFFSET = 0.4;
-/** A step across a road away from any box, along the middle of a wide one or along a road without a pavement costs this many tiles of walking. */
+/** A step across a road away from any box or along the middle of a wide one costs this many tiles of walking. */
 const OFF_CROSSING_COST = 200;
+/**
+ * A step along a road the pedestrian graph gives no pavement, a six-lane one, costs this much more: a street beside it is
+ * taken when the detour is short. As dear as a crossing away from a box it sent the searches of the metropolis round its
+ * boulevards to their limit, three times the cost of every walk (measured 2026-09-15).
+ */
+const NO_PAVEMENT_COST = 1;
 /** A search that looks at more tiles than this gives up, and the walker goes straight. */
 const MAX_EXPANDED = 20_000;
 /** What a crossing with a light is expected to add to a walk, seconds: about a quarter of a signal cycle. */
@@ -91,15 +97,15 @@ function kerbSide(grid: MapGrid, x: number, y: number): readonly [number, number
 
 /**
  * The extra cost of a step from road tile `i` to road tile `j` along `dx`, `dy`: nothing on a pavement or through a box,
- * `OFF_CROSSING_COST` for stepping from one lane across to another or onto a tile the pedestrian graph gives no pavement
- * but the goal.
+ * `OFF_CROSSING_COST` for stepping from one lane across to another, `NO_PAVEMENT_COST` onto a tile the pedestrian graph
+ * gives no pavement but the goal.
  */
 function stepPenalty(grid: MapGrid, graph: PedestrianGraph, i: number, j: number, dx: number, goal: number): number {
   if (isBox(grid, i) || isBox(grid, j)) return 0;
   const along = (tile: number) => runsEastWest(grid, tile) === (dx !== 0);
   if (!along(i) || !along(j)) return OFF_CROSSING_COST;
   if (j === goal) return 0;
-  return graph.walk[j] === WALK_NONE ? OFF_CROSSING_COST : 0;
+  return graph.walk[j] === WALK_NONE ? NO_PAVEMENT_COST : 0;
 }
 
 /** Tile indices from `start` to `goal` over road tiles, by the pavements and the boxes but those of `avoid`; `null` without a way. */
@@ -352,6 +358,7 @@ function uncontrolledCrossingClear(w: World, id: number, crossSecs: number): boo
 export function moveWalkers(w: World, dtNs: number): void {
   const c = w.citizens;
   if (c.onFootCount === 0) {
+    if (w.pedestrianCrossings.length > 0) w.pedestrianCrossingsVersion += 1;
     w.pedestrianCrossings.length = 0;
     return;
   }
@@ -417,6 +424,7 @@ export function moveWalkers(w: World, dtNs: number): void {
 
   const crossing = new Set<number>();
   for (const slot of c.walkers()) if (c.walkCrossing[slot]! >= 0) crossing.add(c.walkCrossing[slot]!);
+  w.pedestrianCrossingsVersion += 1;
   w.pedestrianCrossings.length = 0;
   for (const code of [...crossing].sort((a, b) => a - b)) w.pedestrianCrossings.push({ intersectionId: code >> 1, axisNs: (code & 1) === 1 });
 }

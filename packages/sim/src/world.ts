@@ -137,6 +137,8 @@ export interface World {
   readonly ringTopology: { clustersWithoutOpenExit: number; lastVersion: number };
   /** Active `PedestrianCrossing`s: the walkers on a box, by intersection and axis, rebuilt by `moveWalkers`. */
   readonly pedestrianCrossings: Array<{ readonly intersectionId: number; readonly axisNs: boolean }>;
+  /** Bumps whenever `moveWalkers` rebuilds the crossings, so their readers need not look at every one each tick. */
+  pedestrianCrossingsVersion: number;
   /** Where walkers may walk, keyed on the graph version. */
   pedestrianGraph: PedestrianGraph;
   readonly pedestrianConfig: PedestrianConfig;
@@ -272,6 +274,7 @@ export function createWorld(options: WorldOptions = {}): World {
     arbiterStats: emptyArbiterStats(),
     ringTopology: { clustersWithoutOpenExit: 0, lastVersion: 0 },
     pedestrianCrossings: [],
+    pedestrianCrossingsVersion: 0,
     pedestrianGraph: new PedestrianGraph(),
     pedestrianConfig: defaultPedestrianConfig(),
     routeInvalidation: { lastSeen: null, sweepPending: false },

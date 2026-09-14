@@ -69,14 +69,17 @@ export function updateCivicCoverage(w: World): void {
   const key = civic.map((b) => `${b.kind}@${b.anchor.x},${b.anchor.y}`).join('|');
   if (w.events.dayAdvanced.length === 0 && out.mapVersion === w.mapEditVersion && out.sourcesKey === key && out.covers(len)) return;
 
-  // Residents by the tile their home's footprint is centred on.
-  const residentsAt = new Map<number, number>();
+  // Residents by the tile their home's footprint is centred on; a source sums its diamond of them, not every home.
+  const residentsAt = new Float64Array(len);
+  // A footprint by the edge can be centred off the map: those few are looked at one by one.
+  const offMap: Array<readonly [x: number, y: number, residents: number]> = [];
   for (const b of w.buildings.all()) {
     if (b.kind !== 'Residential' || !isOperational(b) || b.occupancyResidents <= 0) continue;
     const [cx, cy] = [b.anchor.x + Math.floor(b.width / 2), b.anchor.y + Math.floor(b.length / 2)];
-    residentsAt.set(cy * grid.width + cx, (residentsAt.get(cy * grid.width + cx) ?? 0) + b.occupancyResidents);
+    const idx = grid.idx({ x: cx, y: cy });
+    if (idx !== undefined) residentsAt[idx]! += b.occupancyResidents;
+    else offMap.push([cx, cy, b.occupancyResidents]);
   }
-  const homes = [...residentsAt];
 
   const sources: CivicSource[] = [];
   for (const b of civic) {
@@ -84,10 +87,13 @@ export function updateCivicCoverage(w: World): void {
     const radius = serviceRadius(b.kind) ?? 0;
     const capacity = serviceCapacity(b.kind) ?? 0;
     let residents = 0;
-    for (const [tile, count] of homes) {
-      const [x, y] = [tile % grid.width, Math.floor(tile / grid.width)];
-      if (Math.abs(x - b.anchor.x) + Math.abs(y - b.anchor.y) <= radius) residents += count;
+    for (let dy = -radius; dy <= radius; dy++) {
+      const y = b.anchor.y + dy;
+      if (y < 0 || y >= grid.height) continue;
+      const maxDx = radius - Math.abs(dy);
+      for (let x = Math.max(b.anchor.x - maxDx, 0); x <= Math.min(b.anchor.x + maxDx, grid.width - 1); x++) residents += residentsAt[y * grid.width + x]!;
     }
+    for (const [x, y, count] of offMap) if (Math.abs(x - b.anchor.x) + Math.abs(y - b.anchor.y) <= radius) residents += count;
     sources.push({ kind, anchor: { ...b.anchor }, capacity, residents, strength: civicStrength(capacity, residents) });
   }
   // The published list does not depend on the order buildings were added in.

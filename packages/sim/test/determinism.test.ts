@@ -160,6 +160,7 @@ describe('determinism', () => {
       ['approachFairness', (w) => void w.approachFairness.set('0|North', 2)],
       ['pedestrianCrossings', (w) => void w.pedestrianCrossings.push({ intersectionId: 0, axisNs: true })],
       ['pedestrianGraph', (w) => void (w.pedestrianGraph.builtFor = 3)],
+      ['pedestrianCrossingsVersion', (w) => void (w.pedestrianCrossingsVersion += 1)],
       ['pedestrianConfig', (w) => void (w.pedestrianConfig.waitRerouteSecs = 1)],
       ['mesoTraffic.boxBusyUntil', (w) => void w.mesoTraffic.boxBusyUntil.set(2, 5)],
       ['economyConfig', (w) => void (w.economyConfig = { ...w.economyConfig, daysPerMonth: 3 })],

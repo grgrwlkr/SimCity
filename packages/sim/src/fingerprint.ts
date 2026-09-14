@@ -176,6 +176,7 @@ function hashTraffic(h: Fnv64, w: World): void {
   // Arbiter stats, the ring-topology advisory and the index cache are observability or derived.
   h.str(stableJson([...w.approachFairness].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))));
   h.str(stableJson(w.pedestrianCrossings));
+  h.u32(w.pedestrianCrossingsVersion);
   const walk = w.pedestrianGraph;
   h.f64(walk.builtFor ?? -1);
   h.u32(walk.width);

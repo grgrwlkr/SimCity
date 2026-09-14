@@ -500,7 +500,8 @@ export function arbitrateLaneletReservations(w: World): void {
   }
   const pedBlocked = seedPedMasks(
     ordered,
-    w.pedestrianCrossings.map((c) => [c.intersectionId, c.axisNs] as const),
+    // No lanelet conflicts, no crosswalk for a walker to hold: a city driven by meso alone skips its thousands of crossings.
+    matrices.byIntersection.size === 0 ? [] : w.pedestrianCrossings.map((c) => [c.intersectionId, c.axisNs] as const),
     matrices,
     reservations,
   );

@@ -546,6 +546,18 @@ function updateLinkTimes(w: World): void {
   m.nextCostUpdate = m.nowSec + COST_UPDATE_SECS;
 }
 
+/** Derived, not state: the intersections walkers are on, for the crossings of a version and length. */
+const crossingCache = new WeakMap<World, { readonly version: number; readonly length: number; readonly clusters: ReadonlySet<number> }>();
+
+/** The intersections walkers are on, built again only when the walkers moved: thousands of crossings in a metropolis. */
+function crossingClusters(w: World): ReadonlySet<number> {
+  const cached = crossingCache.get(w);
+  if (cached !== undefined && cached.version === w.pedestrianCrossingsVersion && cached.length === w.pedestrianCrossings.length) return cached.clusters;
+  const clusters = new Set(w.pedestrianCrossings.map((crossing) => crossing.intersectionId));
+  crossingCache.set(w, { version: w.pedestrianCrossingsVersion, length: w.pedestrianCrossings.length, clusters });
+  return clusters;
+}
+
 /** The trips waiting to leave join their first link where it has room, oldest first; the rest wait on. */
 function joinWaitingTrips(w: World): void {
   const m = w.mesoTraffic;
@@ -568,7 +580,7 @@ export function stepMesoTraffic(w: World, dtNs: number): void {
   joinWaitingTrips(w);
 
   let lights: Map<number, TrafficLight> | undefined;
-  let crossings: Set<number> | undefined;
+  let crossings: ReadonlySet<number> | undefined;
   let heads = 0;
   while (m.due.size > 0 && m.due.peekKey() <= now) {
     const [at, link] = m.due.pop();
@@ -576,7 +588,7 @@ export function stepMesoTraffic(w: World, dtNs: number): void {
     // A head not yet due keeps its own entry at its time.
     if (car < 0 || m.readySec[car]! > now) continue;
     lights ??= new Map(w.trafficLights.map((light) => [light.intersectionId, light]));
-    crossings ??= new Set(w.pedestrianCrossings.map((crossing) => crossing.intersectionId));
+    crossings ??= crossingClusters(w);
     // At the second it came due, not at the end of the tick: a tick of several game seconds lets as many through as its
     // seconds in tenths. The lights and the walkers stand as they are at the end of the tick.
     leave(w, link, Math.max(at, m.readySec[car]!), lights, crossings);
