@@ -57,7 +57,11 @@ bun tools/metropolis-day.ts [size] [hourSeconds] [hours]   # сутки часо
 - Мезо (`meso/`) ведёт все поездки жителей и региона на машине. `MesoGraph` — направленные участки проезжей части между боксами перекрёстков, перестраивается по `graphVersion`. `MesoTraffic` — очереди FIFO на участках: выезд, когда время пришло, есть пропускная способность (0,5 машины в секунду на полосу), светофор пропускает и на следующем участке есть место (7,5 м на машину, фура 19 м и за две); голову, которую держит полный участок дольше 120 с, проталкивают. Маршруты — A* по временам участков. Матрица времён между районами 16×16 тайлов — `meso/districts.ts`, по ней подбирается работа.
 - Микро-трафик этапа 2 (`traffic/`, `transport/lanelet/`: лейнлеты, арбитр, резервации, светофоры, ПДД РФ) ведёт машины сценариев `city` и перекрёстков. Флаг `w.microTraffic`: мегаполис его выключает, граф полос и лейнлеты не строятся.
 
-**Пешеходы** (`walkers.ts`) идут по тротуарам вдоль бордюра и переходят дорогу через бокс перекрёстка, у светофора ждут своего зелёного. Шагают раз в игровую секунду (`WALKER_STEP_NS`), рендер доводит их внутри секунды.
+**Пешеходы** (`walkers.ts`, граф — `pedestrians/graph.ts`) идут по тротуарам вдоль бордюра и переходят дорогу через бокс перекрёстка; у шестиполосной дороги тротуара нет. У светофора ждут своего зелёного; на нерегулируемом переходе не шагают под машину у въезда или в боксе и через минуту ожидания ищут обход. Пешеходы на боксе публикуются в `w.pedestrianCrossings`: микро-машины их пропускают, мезо-голова ждёт не дольше `PEDESTRIAN_YIELD_MAX_SECS`. Шагают раз в игровую секунду (`WALKER_STEP_NS`), рендер доводит их внутри секунды.
+
+**Службы, ЧС, автобусы** (`services/vehicles.ts`, `emergencies.ts`, `transit/buses.ts`, `fleet.ts`). Станция — открытое здание службы у дороги с `vehicleCapacity` машинами. ЧС возникает раз в игровой час по шансу от населения, диспетчер шлёт машину ближайшей по матрице районов станции, на месте ЧС разрешается за игровые часы; не успели к сроку — счастье падает. Автобус петляет по остановкам маршрута с дежурством. Машины служб и автобусы — поездки мезо с id `-(2³⁰ + id + 1)`, ставятся прямо в `mesoTraffic.pending`; сорванная поездка приходит событием `tripDropped`.
+
+**Поля города** (`cityFields.ts`, `cityFieldsCompute.ts`, покрытие школ и парков — `civicCoverage.ts`) пересчитываются по 64 тайла за тик и читаются ростом, упадком и стоимостью земли.
 
 **Регион** (`regional.ts`): через магистрали на краю карты приезжают работники на места, не занятые жителями, гости в магазины, кафе и парки, транзит и фуры. Агент региона живёт в своих массивах, пока в пути; в мезо его id — `-(slot + 1)`.
 
@@ -67,7 +71,7 @@ bun tools/metropolis-day.ts [size] [hourSeconds] [hours]   # сутки часо
 
 ### Наблюдаемость
 
-`window.__sim` в DevTools и Playwright: `snapshot() step(n) fingerprint() cmd(json) setState(s) setSpeed(s) rngProbe(seed, n) undoRedo(redo) tile(x, y) renderFrame() loadGridHex(layers) debugVehicles(list) camera() setCamera(s) fitMap() pickTile(x, y) renderStats() scenario(name, size?) failSystem(name) tickStats() resetTickStats()`. `?debug=1` включает `__sim.debug` и оверлеи: сетку, боксы перекрёстков, лейнлеты. `?scenario=<query>` открывает сценарий. Отладочный рендер выводит цвета без цветового менеджмента, поэтому класс тайла читается обратно со скриншота.
+`window.__sim` в DevTools и Playwright: `snapshot() step(n) fingerprint() cmd(json) setState(s) setSpeed(s) rngProbe(seed, n) undoRedo(redo) tile(x, y) renderFrame() loadGridHex(layers) debugVehicles(list) camera() setCamera(s) fitMap() pickTile(x, y) renderStats() scenario(name, size?) failSystem(name) debugEmergency(kind, x, y) tickStats() resetTickStats()`. Снимок несёт `services`: ЧС под метки, машины служб на выезде, автобусы. `?debug=1` включает `__sim.debug` и оверлеи: сетку, боксы перекрёстков, лейнлеты. `?scenario=<query>` открывает сценарий. Отладочный рендер выводит цвета без цветового менеджмента, поэтому класс тайла читается обратно со скриншота.
 
 ### Проверки и замеры
 
@@ -91,7 +95,7 @@ simcity_app ─┬─> simcity_frontend ─┬─> simcity_debug ─┐
 - `simcity_core` — контракты без логики: `commands` (`GameCommand`), `state` (`AppState`), `sets` (`GameSet`), `roads`, `ids`, `trips`, `sim_events`, `ui_state`, модель карты.
 - `simcity_sim` — вся симуляция: `buildings`, `citizens`, `economy`, `employment`, `demand`, `land_value`, `pollution`, `intersections`, `traffic`, `transport`, `pedestrians`, `public_transport`, `services`, `emergencies`, `civic_coverage`, `zone_placement`, `day_night`, `map`, `sim`.
 - `simcity_data` — `config_loader`, `persistence` (`SaveGameV3`), `scenarios`, тестовый город, детерминизм и oncoming-оракул (`route_oncoming_pins.rs`).
-- `simcity_debug` — `mcp_status` (BRP/MCP), `debug_world`.
+- `simcity_debug` — `mcp_status`, `debug_world`.
 - `simcity_frontend` — камера, egui-UI, звук, input → command.
 
 Устройство, которое порт унаследовал в другой форме:
@@ -100,7 +104,7 @@ simcity_app ─┬─> simcity_frontend ─┬─> simcity_debug ─┐
 - Параметры — `assets/config/*.ron` (`traffic`, `pedestrians`, `economy`, `employment`, `pathfinding`, `map`, `day_night`, `render`, `props`), сценарии — `assets/scenarios/scenarios.ron`.
 - Перекрёстки: `docs/architecture.md` → «Intersection Traffic Invariants (STRICT)» — Г/П-траектории в боксе, единый направленный гард маршрутов, левый уступает встречному.
 - Тесты co-located рядом с кодом, основная масса в `simcity_sim` (`map/tests.rs`, `traffic/tests/*.rs`, `pedestrians/tests_*.rs`, `emergencies/tests.rs` …).
-- Наблюдаемость: BRP/MCP только под фичей `dev` (`bevy_brp_mcp` как `bevy-brp`, `127.0.0.1:15702`), in-app RON debug dump (`F8`/`F9`).
+- Наблюдаемость: BRP-дебаг живой игры был у Rust-версии; в порте его заменяют `window.__sim` и Playwright.
 - Источник истины Rust-части: код и `assets/config/` → `docs/` (`architecture.md`, `gameplay.md`, `persistence.md`, `crate-workspace.md`, `debugging-and-observability.md`, `config-assets-scenarios.md`, `testing.md`) → deep-dive docs → `docs/archive/`.
 
 ## Conventions
