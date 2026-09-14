@@ -6,7 +6,8 @@
 
 /** Tone mapping curve of the camera. */
 export type TonemappingCurve = 'None' | 'AcesFitted' | 'TonyMcMapface';
-export type SsaoQuality = 'Low' | 'Medium' | 'High' | 'Ultra';
+export const SSAO_QUALITIES = ['Low', 'Medium', 'High', 'Ultra'] as const;
+export type SsaoQuality = (typeof SSAO_QUALITIES)[number];
 /** SSAO cannot run with MSAA, so an enabled SSAO turns `Msaa4` into `Fxaa`. */
 export type AntiAliasing = 'None' | 'Msaa4' | 'Fxaa';
 

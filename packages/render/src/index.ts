@@ -12,3 +12,4 @@ export * from './renderConfig';
 export * from './overlays';
 export * from './dayNight';
 export * from './cameraProjection';
+export * from './renderSettings';
