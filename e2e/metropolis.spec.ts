@@ -1,6 +1,7 @@
 // Stage 3½e gate: the metropolis of a million in Chromium and WebKit. The fingerprint and the failing system run with the
-// suite; the measurements carry `@perf` and run alone (`E2E_PERF=1 bunx playwright test e2e/metropolis.spec.ts --workers=1`),
-// since a parallel suite takes the processor they measure.
+// suite, in projects of their own after the rest; the measurements carry `@perf` and run alone
+// (`E2E_PERF=1 bunx playwright test e2e/metropolis.spec.ts --no-deps --workers=1`), since a parallel suite takes the
+// processor they measure.
 import { expect, test, type Page } from '@playwright/test';
 import type {} from '../packages/app/src/simApi';
 import { MetropolisScenario, createWorld, fingerprint, frame, requestState, step, toHex64 } from '../packages/sim/src/index';
@@ -105,7 +106,7 @@ test.describe('@perf metropolis measurements', () => {
     console.log(JSON.stringify(measured));
     await testInfo.attach('measured.json', { body: JSON.stringify(measured, null, 2), contentType: 'application/json' });
     expect(measured.errors).toEqual([]);
-    if (testInfo.project.name === 'chromium') {
+    if (testInfo.project.name === 'metropolis-chromium') {
       expect(x10, 'the metropolis holds ×10 in Chromium').toBeGreaterThanOrEqual(9.5);
       expect(x360, 'and runs at least ×60 when asked for ×360').toBeGreaterThanOrEqual(60);
     }
