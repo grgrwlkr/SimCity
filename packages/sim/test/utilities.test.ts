@@ -1,6 +1,7 @@
 // Port of the tests in crates/simcity_sim/src/game/utilities.rs: power, water and garbage collection
 // along roads, station capacity, and when the network is recomputed.
 import { describe, expect, it } from 'vitest';
+import { emptyEvents } from '../src/events';
 import { newBuilding } from '../src/buildings/building';
 import { MapGrid } from '../src/map/grid';
 import {
@@ -132,6 +133,29 @@ describe('utility network', () => {
     expect(w.utilitySupply.totals('Power').demand).toBe(7000);
     expect(w.utilitySupply.totals('Power').supplied).toBe(3000);
     expect(w.utilityNetwork.tileHas(far, 'Power'), 'the grown house is past what the plant supplies').toBe(false);
+  });
+
+  // Stage 3½e: a city of ten thousand buildings recomputed its whole network every day, changed or not.
+  it('utilityNetworkRecomputesWhenItsConsumersChange', () => {
+    const grid = new MapGrid(80, 10);
+    station(grid, 'PowerPlant', 1, 1);
+    roadRow(grid, 4, 0, 79);
+    const w = worldOn(grid);
+    w.mapEditVersion = 1;
+    const growing = w.buildings.add(home(25, 1000));
+    updateUtilityNetwork(w);
+    const first = w.utilityNetwork.version;
+
+    w.events.dayAdvanced.push(2);
+    updateUtilityNetwork(w);
+    expect(w.utilityNetwork.version, 'a day with nothing changed').toBe(first);
+
+    growing.capacityResidents = 2000;
+    w.events = emptyEvents();
+    w.events.dayAdvanced.push(3);
+    updateUtilityNetwork(w);
+    expect(w.utilityNetwork.version, 'a day after a building grew').toBeGreaterThan(first);
+    expect(w.utilitySupply.totals('Power').demand).toBe(2000);
   });
 
   it('utilityNetworkRecomputesAfterAMapEditAndOnlyThen', () => {

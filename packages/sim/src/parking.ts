@@ -116,6 +116,8 @@ export class Parking {
   readonly buildings = new Map<number, number>();
   /** Spots taken by street tile index. */
   readonly streets: Uint8Array;
+  /** All spots taken, kept as they are taken and freed. */
+  private used = 0;
   private indexKey = '';
   private bucketsW = 0;
   private bucketsH = 0;
@@ -131,18 +133,17 @@ export class Parking {
   }
 
   totalUsed(): number {
-    let used = 0;
-    for (const n of this.buildings.values()) used += n;
-    for (const n of this.streets) used += n;
-    return used;
+    return this.used;
   }
 
   take(place: number): void {
+    this.used += 1;
     if (isStreet(place)) this.streets[streetTile(place)] = this.usedAt(place) + 1;
     else this.buildings.set(place, this.usedAt(place) + 1);
   }
 
   release(place: number): void {
+    if (this.usedAt(place) > 0) this.used -= 1;
     const left = Math.max(this.usedAt(place) - 1, 0);
     if (isStreet(place)) this.streets[streetTile(place)] = left;
     else if (left === 0) this.buildings.delete(place);
@@ -152,6 +153,7 @@ export class Parking {
   clear(): void {
     this.buildings.clear();
     this.streets.fill(0);
+    this.used = 0;
     this.indexKey = '';
   }
 

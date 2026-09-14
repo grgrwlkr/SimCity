@@ -43,6 +43,7 @@ export * from './nearest';
 export * from './notifications';
 export * from './parking';
 export * from './probe';
+export * from './rates';
 export * from './regional';
 export * from './rng';
 export * from './scenarios/cityCommute';

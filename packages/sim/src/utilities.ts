@@ -34,6 +34,8 @@ export class UtilityNetwork {
   version = 0;
   /** The map edit the network was last computed for. */
   mapVersion = 0;
+  /** What its consumers drew when it was last computed: footprints and units, folded into a number. */
+  consumersSignature = 0;
   /** Bitmask per tile, one bit per utility. */
   served: Uint8Array = new Uint8Array(0);
 
@@ -256,18 +258,27 @@ export function computeSupply(grid: MapGrid, consumers: readonly Consumer[]): { 
   return { served, components };
 }
 
-/** `update_utility_network` (PostSimStep::Utilities): recomputes after a map edit or when a day has passed. */
+/**
+ * `update_utility_network` (PostSimStep::Utilities): recomputes after a map edit, and on a new day when what its consumers
+ * draw has changed since (stage 3½e: Rust and 3½c recomputed every day, a city of ten thousand buildings or not).
+ */
 export function updateUtilityNetwork(w: World): void {
   const network = w.utilityNetwork;
   const newDay = w.events.dayAdvanced.length > 0;
-  if (!newDay && network.version > 0 && network.mapVersion === w.mapEditVersion && network.served.length === w.grid.len()) return;
+  const current = network.version > 0 && network.mapVersion === w.mapEditVersion && network.served.length === w.grid.len();
+  if (current && !newDay) return;
   const consumers: Consumer[] = [];
+  let signature = 0;
   for (const b of w.buildings.all()) {
     if (!isOperational(b) || !isZonedKind(b.kind)) continue;
-    consumers.push({ anchor: b.anchor, width: b.width, length: b.length, units: b.capacityResidents + b.capacityJobs });
+    const units = b.capacityResidents + b.capacityJobs;
+    consumers.push({ anchor: b.anchor, width: b.width, length: b.length, units });
+    for (const value of [b.id, b.anchor.x, b.anchor.y, b.width, b.length, units]) signature = (Math.imul(signature, 31) + value) | 0;
   }
+  if (current && signature === network.consumersSignature) return;
   const { served, components } = computeSupply(w.grid, consumers);
   network.served = served;
+  network.consumersSignature = signature;
   network.mapVersion = w.mapEditVersion;
   network.version += 1;
   w.utilitySupply.components = components;

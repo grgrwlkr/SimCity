@@ -52,6 +52,24 @@ describe('schedule', () => {
     expect(FIXED_UPDATE.find((s) => s.name === 'citizenTripPlanner')?.everyGameNs, 'citizens plan once a game minute').toBe(60 * SECOND_NS);
   });
 
+  // Stage 3½e: what is judged in days runs once a game minute, walkers once a game second; a periodic system is handed
+  // the game time of its period.
+  it('slowJudgementsRunOnceAGameMinute', () => {
+    const every = (name: string) => FIXED_UPDATE.find((s) => s.name === name)?.everyGameNs;
+    for (const name of ['buildingDecayEconomic', 'buildingDecayLowHappiness', 'buildingDecayNoRoadAccess', 'computeRciDemand']) {
+      expect(every(name), name).toBe(60 * SECOND_NS);
+    }
+    expect(every('moveWalkers'), 'walkers step a second at a time').toBe(SECOND_NS);
+
+    const handed: number[] = [];
+    const secondly = { name: 'secondly', run: (_w: unknown, dtNs: number) => void handed.push(dtNs), runIn: IN_GAME, everyGameNs: SECOND_NS };
+    const w = createWorld();
+    requestState(w, 'InGame');
+    applyStateTransition(w);
+    for (let i = 0; i < 20; i++) runFixedTick(w, [secondly]);
+    expect(handed, 'twice in two seconds, a second each').toEqual([SECOND_NS, SECOND_NS]);
+  });
+
   // TS (stage 3½): the worker must not die; a system that throws is logged and skipped, and the tick goes on.
   it('aThrowingSystemDoesNotStopTheWorld', () => {
     const w = createWorld();

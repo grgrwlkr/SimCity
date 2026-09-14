@@ -16,7 +16,10 @@ import {
   newBuilding,
 } from '../../src/buildings/building';
 import { updateConstructionProgress } from '../../src/buildings/construction';
-import { buildingDecayEconomic } from '../../src/buildings/decay';
+import { buildingDecayEconomic, despawnInvalidBuildings } from '../../src/buildings/decay';
+import { spawnBuilding } from '../../src/buildings/spawn';
+import { bumpVersion } from '../../src/map/dirty';
+import { rangeU32, stdRngSeedFromU64 } from '../../src/rng';
 import { upgradeBuildings } from '../../src/buildings/upgrade';
 import { calculateFillDays, calculatePressure, calculateTargetRatio, updateOccupancy } from '../../src/buildings/occupancy';
 import { emptyEvents } from '../../src/events';
@@ -25,6 +28,45 @@ import { MAX_ZONE_DEPTH, isFootprintWithinZoneDepth, isWithinZoneDepth } from '.
 import { UtilityNetwork } from '../../src/utilities';
 import { setRoad } from '../transport/helpers';
 import { t, worldOn } from './helpers';
+
+describe('invalid buildings', () => {
+  // Stage 3½e: a city of ten thousand buildings was checked against the map every tick; now after a change only.
+  it('anInvalidBuildingGoesOnTheTickTheMapChanges', () => {
+    const grid = new MapGrid(64, 64);
+    const w = worldOn(grid);
+    const rng = stdRngSeedFromU64(21n);
+    const place = (x: number, y: number) => {
+      const b = spawnBuilding(w, t(x, y), 3, 3, 'Residential', true, { density: 'Medium', class: 'Middle' });
+      for (const tile of footprintTiles(b)) w.grid.set(tile, { ...w.grid.get(tile)!, zone: 'Residential', building: 'Residential' });
+      return b;
+    };
+    for (let y = 1; y < 60; y += 5) for (let x = 1; x < 60; x += 5) place(x, y);
+    w.mapEditVersion = bumpVersion(w.mapEditVersion);
+    despawnInvalidBuildings(w);
+    const standing = () => w.buildings.all().map((b) => b.id);
+    expect(standing(), 'a valid city stands').toHaveLength(144);
+
+    // The scan it replaces: every building against the map, every tick.
+    const valid = (id: number) => {
+      const b = w.buildings.get(id)!;
+      return footprintTiles(b).every((tile) => {
+        const cell = w.grid.get(tile);
+        return cell !== undefined && !cell.water && cell.building === 'Residential' && (tile.x !== b.anchor.x || tile.y !== b.anchor.y || cell.zone === 'Residential');
+      });
+    };
+    for (let edit = 0; edit < 40; edit++) {
+      const tile = t(rangeU32(rng, 0, 64), rangeU32(rng, 0, 64));
+      const cell = w.grid.get(tile)!;
+      const change = rangeU32(rng, 0, 3);
+      w.grid.set(tile, change === 0 ? { ...cell, building: null } : change === 1 ? { ...cell, water: true } : { ...cell, zone: 'Commercial' });
+      w.mapEditVersion = bumpVersion(w.mapEditVersion);
+      const expected = standing().filter(valid);
+      despawnInvalidBuildings(w);
+      expect(standing(), `after edit ${edit} at (${tile.x},${tile.y})`).toEqual(expected);
+    }
+    expect(standing().length, 'some went').toBeLessThan(144);
+  });
+});
 
 describe('building record', () => {
   it('buildingFootprintTilesReturnsCorrectTiles', () => {

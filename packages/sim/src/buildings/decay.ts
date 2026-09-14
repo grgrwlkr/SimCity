@@ -1,11 +1,12 @@
 // Port of crates/simcity_sim/src/game/buildings/decay.rs: buildings the grid no longer backs, and buildings
 // abandoned for lost road access, unhappy occupants or economic losses. The warning tints are render-side.
 import { crimeContentment } from '../cityFields';
+import { BUILDING_KINDS, ZONE_KINDS } from '../commands';
+import type { MapGrid } from '../map/grid';
 import { zoneDemand } from '../demand';
 import { bumpVersion } from '../map/dirty';
 import type { World } from '../world';
 import {
-  allFootprintTiles,
   anyFootprintTile,
   buildingArea,
   buildingKindZone,
@@ -44,22 +45,29 @@ export function demolishBuilding(w: World, b: Building): void {
   w.mapEditVersion = bumpVersion(w.mapEditVersion);
 }
 
-/** `despawn_invalid_buildings`: a building whose anchor or footprint the grid no longer shows goes. */
-export function despawnInvalidBuildings(w: World): void {
-  const grid = w.grid;
-  for (const b of [...w.buildings.all()]) {
-    const cell = grid.get(b.anchor);
-    const valid =
-      cell !== undefined &&
-      !cell.water &&
-      cell.zone === buildingKindZone(b.kind) &&
-      cell.building === b.kind &&
-      allFootprintTiles(b.anchor, b.width, b.length, (tile) => {
-        const c = grid.get(tile);
-        return c !== undefined && !c.water && c.building === b.kind;
-      });
-    if (!valid) demolishBuilding(w, b);
+/** The grid still shows `b`: its kind on every dry tile of its footprint, and its zone on the anchor. */
+function gridShows(grid: MapGrid, b: Building): boolean {
+  const code = 1 + BUILDING_KINDS.indexOf(b.kind);
+  const anchor = grid.idx(b.anchor);
+  if (anchor === undefined || grid.zone[anchor] !== ZONE_KINDS.indexOf(buildingKindZone(b.kind))) return false;
+  if (b.anchor.x + b.width > grid.width || b.anchor.y + b.length > grid.height) return false;
+  for (let y = b.anchor.y; y < b.anchor.y + b.length; y++) {
+    for (let i = y * grid.width + b.anchor.x, end = i + b.width; i < end; i++) if (grid.water[i] !== 0 || grid.building[i] !== code) return false;
   }
+  return true;
+}
+
+/**
+ * `despawn_invalid_buildings`: a building whose anchor or footprint the grid no longer shows goes. Only a map edit or a
+ * change of the buildings can make one invalid, so the city is checked after such a change only (stage 3½e: ten thousand
+ * buildings a tick were 12 ms).
+ */
+export function despawnInvalidBuildings(w: World): void {
+  const checked = w.buildingsChecked;
+  if (checked.mapEditVersion === w.mapEditVersion && checked.buildingsVersion === w.buildings.version) return;
+  for (const b of [...w.buildings.all()]) if (!gridShows(w.grid, b)) demolishBuilding(w, b);
+  checked.mapEditVersion = w.mapEditVersion;
+  checked.buildingsVersion = w.buildings.version;
 }
 
 /** `building_decay_no_road_access`: without a road beside its footprint a building is demolished after the grace day. */

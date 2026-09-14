@@ -5,12 +5,14 @@ import { describe, expect, it } from 'vitest';
 import { newBuilding, type Building } from '../src/buildings/building';
 import {
   CITIZEN_TRIP_TIMEOUT_SECS,
+  PLAN_BACKLOG_PER_TICK,
   citizenSlot,
   citizenTripPlanner,
   cleanupHomelessCitizens,
   handleTripFinished,
   newCitizen,
   planAgenda,
+  planCitizenBacklog,
   recoverStuckTrips,
   spawnCitizensFromResidential,
 } from '../src/citizens';
@@ -83,6 +85,29 @@ function commuter(width: number, workplaceX: number, options: { car?: boolean; j
 }
 
 describe('citizens', () => {
+  // Stage 3½e: a city opening with a million people had the planner make a million plans in one tick, 7.5 s.
+  it('aBacklogOfNewCitizensIsPlannedAFewThousandATick', () => {
+    const w = plainDays(worldOn(new MapGrid(32, 16)));
+    const house = home(w, t(2, 2));
+    for (let i = 0; i < 100_000; i++) w.citizens.add(newCitizen(house));
+    const c = w.citizens;
+    const planned = () => c.nextAt.subarray(0, c.highWater).filter((minute) => minute !== -1).length;
+    at(w, 1, 6);
+    planCitizenBacklog(w);
+    expect(PLAN_BACKLOG_PER_TICK).toBe(2000);
+    expect([planned(), c.unplanned.length], 'a tick plans a few thousand').toEqual([2000, 98_000]);
+    for (let tick = 1; tick < 50; tick++) planCitizenBacklog(w);
+    expect([planned(), c.unplanned.length], 'fifty ticks plan them all').toEqual([100_000, 0]);
+
+    const small = plainDays(worldOn(new MapGrid(32, 16)));
+    const smallHouse = home(small, t(2, 2));
+    for (let i = 0; i < 50; i++) small.citizens.add(newCitizen(smallHouse));
+    planCitizenBacklog(small);
+    expect(small.citizens.unplanned.length, 'a short queue waits for the planner').toBe(50);
+    planAt(small, 1, 6);
+    expect(small.citizens.unplanned.length).toBe(0);
+  });
+
   it('recoverStuckTripsRevertsOrphanedButKeepsInProgressAndStable', () => {
     const w = plainDays(worldOn(new MapGrid(16, 16)));
     const house = home(w, t(1, 1));

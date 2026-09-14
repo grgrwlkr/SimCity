@@ -181,9 +181,12 @@ function hashTraffic(h: Fnv64, w: World): void {
 /** Buildings, the utility network and the inputs growth reads: demand, city fields and land value. */
 function hashBuildings(h: Fnv64, w: World): void {
   h.str(stableJson(w.buildings.fingerprintState()));
+  h.int(w.buildingsChecked.mapEditVersion);
+  h.int(w.buildingsChecked.buildingsVersion);
   const network = w.utilityNetwork;
   h.int(network.version);
   h.int(network.mapVersion);
+  h.i32(network.consumersSignature);
   h.bytes(network.served);
   h.int(w.utilitySupply.version);
   h.str(stableJson(w.utilitySupply.components));
@@ -479,6 +482,7 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
       }
       h.u64(w.mapSeed);
       h.int(w.gameHourNs);
+      h.bool(w.microTraffic);
       h.str(stableJson([...w.systemErrors.values()]));
       h.str(w.debugFailSystem ?? '');
     },

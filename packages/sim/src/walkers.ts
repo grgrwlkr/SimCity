@@ -3,6 +3,8 @@
 // comes from the map and is cached; how far along it a walker is, is state of the citizens, moved every tick by
 // `moveWalkers`. A road with no box within reach of the goal is crossed where it must be, at a price no detour pays.
 import { DEFAULT_GAME_HOUR_NS } from './city';
+import { TICK_DT_NS, periodTicks } from './rates';
+import { SECOND_NS } from './timer';
 import type { TilePos } from './commands';
 import { inTileView, tileFToWorld, type TileView } from './map/coords';
 import type { MapGrid } from './map/grid';
@@ -25,6 +27,8 @@ const MAX_EXPANDED = 20_000;
 export const LIT_CROSSING_WAIT_SECS = 15;
 /** Paths kept per world before the cache starts over. */
 const PATH_CACHE_LIMIT = 20_000;
+/** Walkers step this much game time at once; the renderer draws them on between their steps. */
+export const WALKER_STEP_NS = SECOND_NS;
 
 // `ROAD_DIRS` indices.
 const WEST = 1;
@@ -174,6 +178,25 @@ export function walkPath(w: World, from: TilePos, to: TilePos): WalkPath {
   return path;
 }
 
+/** Derived, not state: the path each walker slot walks, and the ends it was found for. */
+const slotPaths = new WeakMap<World, { key: number; readonly entries: Array<{ fx: number; fy: number; tx: number; ty: number; path: WalkPath } | undefined> }>();
+
+/** The path of the walker in `slot`, without a key built for every walker every step. */
+function walkerPath(w: World, slot: number): WalkPath {
+  const c = w.citizens;
+  let cache = slotPaths.get(w);
+  if (cache === undefined || cache.key !== w.graphVersion) {
+    cache = { key: w.graphVersion, entries: [] };
+    slotPaths.set(w, cache);
+  }
+  const [fx, fy, tx, ty] = [c.walkFromX[slot]!, c.walkFromY[slot]!, c.destX[slot]!, c.destY[slot]!];
+  const known = cache.entries[slot];
+  if (known !== undefined && known.fx === fx && known.fy === fy && known.tx === tx && known.ty === ty) return known.path;
+  const path = walkPath(w, { x: fx, y: fy }, { x: tx, y: ty });
+  cache.entries[slot] = { fx, fy, tx, ty, path };
+  return path;
+}
+
 /** Metres of a walk from `from` to `to`, and the crossings with a light on its way. */
 export function walkMeasure(w: World, from: TilePos, to: TilePos): { readonly meters: number; readonly litCrossings: number } {
   const path = walkPath(w, from, to);
@@ -195,7 +218,7 @@ export function moveWalkers(w: World, dtNs: number): void {
   const pace = w.citizenConfig.walkKmh / 3.6 / w.trafficConfig.tileMeters;
   let lights: Map<number, TrafficLight> | undefined;
   for (const slot of c.walkers()) {
-    const { along, gate, eastWest } = walkPath(w, { x: c.walkFromX[slot]!, y: c.walkFromY[slot]! }, { x: c.destX[slot]!, y: c.destY[slot]! });
+    const { along, gate, eastWest } = walkerPath(w, slot);
     const total = along[along.length - 1]!;
     let progress = c.walkProgress[slot]!;
     let k = 1;
@@ -232,12 +255,39 @@ function poseAt(path: WalkPath, progress: number): readonly [x: number, y: numbe
   return [ax + dx * t, ay + dy * t, heading];
 }
 
-/** Every citizen on foot, in no particular order; with a `view`, only those in it. */
+/** How far along its path a walker may be drawn: the corner before the first crossing ahead whose light holds it now. */
+function drawnLimit(path: WalkPath, progress: number, lights: ReadonlyMap<number, TrafficLight>): number {
+  const { along, gate, eastWest } = path;
+  const last = along.length - 1;
+  for (let k = 1; k <= last; k++) {
+    if (along[k - 1]! < progress || gate[k]! < 0) continue;
+    const light = lights.get(gate[k]!);
+    if (light !== undefined && !isGreen(light, eastWest[k] === 1 ? 'East' : 'North')) return along[k - 1]!;
+  }
+  return along[last]!;
+}
+
+/**
+ * Every citizen on foot, in no particular order; with a `view`, only those in it. A walker steps a second at a time and is
+ * drawn on by the time since its last step, never past a crossing whose light holds it.
+ */
 export function forEachWalker(w: World, visit: WalkerVisitor, view?: TileView): void {
   const c = w.citizens;
+  if (c.onFootCount === 0) return;
+  const period = periodTicks(w, WALKER_STEP_NS);
+  const pace = w.citizenConfig.walkKmh / 3.6 / w.trafficConfig.tileMeters;
+  const ahead = period > 1 ? (((w.tick % period) * TICK_DT_NS) / 1e9) * (DEFAULT_GAME_HOUR_NS / w.gameHourNs) * pace : 0;
+  const lights = new Map(w.trafficLights.map((light) => [light.intersectionId, light]));
   for (const slot of c.walkers()) {
-    const path = walkPath(w, { x: c.walkFromX[slot]!, y: c.walkFromY[slot]! }, { x: c.destX[slot]!, y: c.destY[slot]! });
-    const [x, y, heading] = poseAt(path, c.walkProgress[slot]!);
+    if (view !== undefined) {
+      // A walk of a kilometre keeps within this of its ends, detours around a block included.
+      const [fx, fy, tx, ty] = [c.walkFromX[slot]!, c.walkFromY[slot]!, c.destX[slot]!, c.destY[slot]!];
+      const reach = Math.abs(fx - tx) + Math.abs(fy - ty);
+      if (Math.max(fx, tx) + reach < view.minX || Math.min(fx, tx) - reach > view.maxX || Math.max(fy, ty) + reach < view.minY || Math.min(fy, ty) - reach > view.maxY) continue;
+    }
+    const path = walkerPath(w, slot);
+    const progress = c.walkProgress[slot]!;
+    const [x, y, heading] = poseAt(path, ahead > 0 ? Math.max(Math.min(progress + ahead, drawnLimit(path, progress, lights)), progress) : progress);
     if (!inTileView(view, x, y)) continue;
     const at = tileFToWorld(w.mapConfig, x, y);
     visit(slot, c.generation[slot]!, at.x, at.y, heading);

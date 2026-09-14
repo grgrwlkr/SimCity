@@ -1082,6 +1082,27 @@ function leaveStop(w: World, slot: number, home: Building, lastPlace: TilePos, m
   goHome(w, slot, home, lastPlace, minute, nowSecs);
 }
 
+/** A queue of citizens without a plan longer than this is worked through a few thousand a tick. */
+export const PLAN_BACKLOG_THRESHOLD = 1000;
+export const PLAN_BACKLOG_PER_TICK = 2000;
+
+/**
+ * Stage 3½e: a city opening lived in has every citizen without a plan, a million plans in one tick of the planner. A queue
+ * longer than `PLAN_BACKLOG_THRESHOLD` is planned `PLAN_BACKLOG_PER_TICK` a tick, oldest first; a short one waits for the
+ * planner's minute, as it always did.
+ */
+export function planCitizenBacklog(w: World): void {
+  const c = w.citizens;
+  if (c.unplanned.length <= PLAN_BACKLOG_THRESHOLD) return;
+  const now = gameMinute(w);
+  const batch = c.unplanned.slice(0, PLAN_BACKLOG_PER_TICK);
+  c.unplanned = c.unplanned.slice(PLAN_BACKLOG_PER_TICK);
+  for (const ref of batch) {
+    const slot = c.resolve(ref);
+    if (slot !== undefined && c.state[slot] === AT_HOME && c.nextAt[slot] === NONE) planNext(w, slot, now, false);
+  }
+}
+
 /**
  * `citizen_trip_planner` (SimStep::Citizens), once a game minute: citizens with no plan make one, then those whose
  * minute has come, minute by minute, act on it. A walk under way arrives; a stay that is over goes on to the next stop
