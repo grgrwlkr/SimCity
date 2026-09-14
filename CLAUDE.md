@@ -86,12 +86,14 @@ bun install
 bun run typecheck   # tsc по каждому пакету: sim без DOM и Node, bridge с WebWorker
 bun run lint
 bun run test        # Vitest; `bun test` — другой раннер, не использовать
-bun run e2e         # Playwright, Chromium + WebKit
+bun run e2e         # Playwright, только Chromium
 bun run bench       # тик симуляции, p50/p99
 bun run dev         # Vite, http://localhost:5174, ?debug=1
 ```
 
 Ворота этапа порта: `bun run typecheck && bun run lint && bun run test && bun run e2e`. Из задач порта Rust не собирается, кроме Tauri-крейта и того, что нужно для упаковки. `cargo test` и `cargo clippy` по корневому Bevy-workspace из порта не запускаются, корневой `target/` в worktree порта — мусор, его удаляют.
+
+Проверки в WebKit/Safari не выполняются — решение пользователя 2026-09-14. Это сознательное отступление от глобального правила о двух движках, его не восстанавливать; отдельная проверка в Safari — только по явной просьбе. Собранный `.app` на macOS исполняется в WKWebView, поэтому проверка собранного приложения и есть проверка в WebKit, отдельный Safari-прогон не нужен.
 
 - `packages/sim` — симуляция без DOM, часов и хоста. Время приходит как `dtNs`, случайность только из `StdRng`, это бит-в-бит порт `rand 0.10.1`. ESLint запрещает там `Math.random`, `Date`, float-функции `Math.*`, `TODO` и `any`.
 - `packages/bridge` — воркер, драйвер fixed-step 10 Гц, протокол, render-SAB с двойным буфером. `render`, `ui`, `app` — кадр, HUD на React + zustand, точка входа Vite.
