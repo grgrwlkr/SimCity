@@ -42,6 +42,7 @@ export * from './meso/traffic';
 export * from './nearest';
 export * from './notifications';
 export * from './parking';
+export * from './pedestrians/graph';
 export * from './probe';
 export * from './rates';
 export * from './regional';

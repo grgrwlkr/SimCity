@@ -326,6 +326,12 @@ export class Citizens {
   walkFromX = new Int32Array(0);
   walkFromY = new Int32Array(0);
   walkProgress = new Float32Array(0);
+  /** Game seconds the walker has stood at an uncontrolled crossing it may not step onto yet. */
+  walkWaitSecs = new Float32Array(0);
+  /** Other ways the walk under way has taken past crossings it waited at too long. */
+  walkReroutes = new Uint8Array(0);
+  /** The intersection the walk under way keeps off, -1 for none. */
+  walkAvoid = new Int32Array(0);
   /** `CAR_STATUSES` index. */
   carStatus = new Uint8Array(0);
   /** A `parking.ts` address, 0 without a car. */
@@ -364,6 +370,8 @@ export class Citizens {
    * its next step has to look at the path (a crossing to wait at, the end, a walk just begun).
    */
   walkLimit = new Float32Array(0);
+  /** Derived, not state: the crossing the walker is on, `intersection × 2 + (walking north–south ? 1 : 0)`, -1 for none. */
+  walkCrossing = new Int32Array(0);
   /** Derived, not state: the cars standing on each tile of the map. */
   private parked: Uint16Array;
 
@@ -472,6 +480,7 @@ export class Citizens {
         this.walkerIndex[slot] = NONE;
       }
       this.onFoot[slot] = 0;
+      this.walkCrossing[slot] = NONE;
       return;
     }
     if (!was) {
@@ -479,11 +488,20 @@ export class Citizens {
       this.walkerIndex[slot] = this.walkerList.length;
       this.walkerList.push(slot);
     }
-    this.walkLimit[slot] = -1;
     this.onFoot[slot] = 1;
+    this.walkWaitSecs[slot] = 0;
+    this.walkReroutes[slot] = 0;
+    this.restartWalk(slot, from, NONE);
+  }
+
+  /** The walk under way starts over from `from`, keeping off `avoid`; its waits and other ways so far stay. */
+  restartWalk(slot: number, from: TilePos, avoid: number): void {
+    this.walkLimit[slot] = -1;
+    this.walkCrossing[slot] = NONE;
     this.walkFromX[slot] = from.x;
     this.walkFromY[slot] = from.y;
     this.walkProgress[slot] = 0;
+    this.walkAvoid[slot] = avoid;
   }
 
   /** The slots of the citizens on foot, in no particular order. */
@@ -640,6 +658,7 @@ export class Citizens {
     this.walkerList.length = 0;
     this.walkerIndex = new Int32Array(0);
     this.walkLimit = new Float32Array(0);
+    this.walkCrossing = new Int32Array(0);
     this.parked.fill(0);
     this.freeSlots.length = 0;
     this.unplanned = [];
@@ -662,11 +681,13 @@ export class Citizens {
       agendaBuilding: NONE,
       agendaLeave: NONE,
       agendaArrive: NONE,
+      walkAvoid: NONE,
     };
     for (const name of LAYER_NAMES) this[name] = grown(this[name] as Layer, capacity, fills[name] ?? 0) as never;
     for (const name of STOP_LAYER_NAMES) this[name] = grown(this[name] as Layer, capacity * AGENDA_STOPS, fills[name] ?? 0) as never;
     this.walkerIndex = grown(this.walkerIndex, capacity, NONE);
     this.walkLimit = grown(this.walkLimit, capacity, NONE);
+    this.walkCrossing = grown(this.walkCrossing, capacity, NONE);
     this.capacity = capacity;
   }
 }
@@ -690,6 +711,9 @@ export const LAYER_NAMES = [
   'walkFromX',
   'walkFromY',
   'walkProgress',
+  'walkWaitSecs',
+  'walkReroutes',
+  'walkAvoid',
   'carStatus',
   'carPlace',
   'carX',

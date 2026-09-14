@@ -23,6 +23,7 @@ import { MesoGraph } from './meso/graph';
 import { MesoTraffic } from './meso/traffic';
 import { Notifications } from './notifications';
 import { Parking, defaultCitizenConfig, type CitizenConfig } from './parking';
+import { PedestrianGraph, defaultPedestrianConfig, type PedestrianConfig } from './pedestrians/graph';
 import { RegionalTrips, defaultRegionalConfig, type RegionalConfig } from './regional';
 import { DEFAULT_RNG_SEED, stdRngSeedFromU64, type StdRng } from './rng';
 import type { AppState, PendingState } from './state';
@@ -130,8 +131,11 @@ export interface World {
   arbiterStats: ArbiterTickStats;
   /** `RingTopologyStatus` (advisory) and the intersection version it was counted for. */
   readonly ringTopology: { clustersWithoutOpenExit: number; lastVersion: number };
-  /** Active `PedestrianCrossing`s; pedestrians arrive with stage 4, until then only tests fill it. */
+  /** Active `PedestrianCrossing`s: the walkers on a box, by intersection and axis, rebuilt by `moveWalkers`. */
   readonly pedestrianCrossings: Array<{ readonly intersectionId: number; readonly axisNs: boolean }>;
+  /** Where walkers may walk, keyed on the graph version. */
+  pedestrianGraph: PedestrianGraph;
+  readonly pedestrianConfig: PedestrianConfig;
   /** `invalidate_routes_on_graph_change` locals: the graph version last seen and an unfinished sweep. */
   readonly routeInvalidation: RouteInvalidation;
   /** Fixed ticks run since the world was created. */
@@ -256,6 +260,8 @@ export function createWorld(options: WorldOptions = {}): World {
     arbiterStats: emptyArbiterStats(),
     ringTopology: { clustersWithoutOpenExit: 0, lastVersion: 0 },
     pedestrianCrossings: [],
+    pedestrianGraph: new PedestrianGraph(),
+    pedestrianConfig: defaultPedestrianConfig(),
     routeInvalidation: { lastSeen: null, sweepPending: false },
     tick: 0,
     appState: 'MainMenu',

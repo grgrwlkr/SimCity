@@ -22,6 +22,7 @@ import { applyGameCommandsToGrid } from './map/apply';
 import { updateDistrictTimes } from './meso/districts';
 import { rebuildMesoGraph } from './meso/graph';
 import { runMesoTraffic } from './meso/traffic';
+import { rebuildPedestrianGraph } from './pedestrians/graph';
 import { handleRegionalArrivals, planRegionalTrips } from './regional';
 import { computePollution } from './pollution';
 import { resetGrowthRngOnNewMap, resetSimRngOnNewMap } from './seeding';
@@ -89,6 +90,8 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'buildLaneletGraph', run: buildLaneletGraph, runIn: ALL_STATES },
   // After buildLaneletGraph: the meso links and their joins, keyed on the same graph version; reads the clusters.
   { name: 'rebuildMesoGraph', run: rebuildMesoGraph, runIn: ALL_STATES },
+  // After rebuildMesoGraph, keyed on the same graph version: the pavements and crossings walkers search their paths over.
+  { name: 'rebuildPedestrianGraph', run: rebuildPedestrianGraph, runIn: ALL_STATES },
   // After rebuildMesoGraph: a few rows of district travel times a tick, the old rows serving until rebuilt.
   { name: 'updateDistrictTimes', run: updateDistrictTimes, runIn: ALL_STATES },
   // After buildLaneletGraph, in game: a graph version bump re-checks active routes against the new grid.

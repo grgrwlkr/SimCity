@@ -176,6 +176,12 @@ function hashTraffic(h: Fnv64, w: World): void {
   // Arbiter stats, the ring-topology advisory and the index cache are observability or derived.
   h.str(stableJson([...w.approachFairness].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))));
   h.str(stableJson(w.pedestrianCrossings));
+  const walk = w.pedestrianGraph;
+  h.f64(walk.builtFor ?? -1);
+  h.u32(walk.width);
+  h.u32(walk.height);
+  h.bytes(walk.walk);
+  h.str(stableJson(w.pedestrianConfig));
 }
 
 /** Buildings, the utility network and the inputs growth reads: demand, city fields and land value. */
@@ -258,7 +264,13 @@ function hashMeso(h: Fnv64, w: World): void {
   h.u32(m.trucks);
   h.u32(m.routeSearchesPerTick);
   h.u32(m.searchesThisTick);
-  for (const layer of [m.citizen, m.vehicle, m.purpose, m.link, m.enterSec, m.readySec, m.goalLink, m.goalOffset, m.next, m.heldSince, m.atRed, m.routeCursor, m.fromOffset, m.prevLink, m.generation]) {
+  const busy = [...m.boxBusyUntil].sort(([a], [b]) => a - b);
+  h.u32(busy.length);
+  for (const [cluster, until] of busy) {
+    h.i32(cluster);
+    h.f64(until);
+  }
+  for (const layer of [m.citizen, m.vehicle, m.purpose, m.link, m.enterSec, m.readySec, m.goalLink, m.goalOffset, m.next, m.heldSince, m.atRed, m.yieldSince, m.routeCursor, m.fromOffset, m.prevLink, m.generation]) {
     h.bytes(layer.subarray(0, m.highWater));
   }
   h.u32(m.freeSlots.length);

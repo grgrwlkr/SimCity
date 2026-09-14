@@ -123,6 +123,11 @@ export class TrafficSpatialIndex {
   }
 
   /** The tile's vehicles by progress; `undefined` off the grid. */
+  /** Whether it was last built over a map of `len` tiles. */
+  isBuiltForLen(len: number): boolean {
+    return this.gridLen === len;
+  }
+
   tileEntries(tileIdx: number): readonly VehicleTileEntry[] | undefined {
     const count = this.counts[tileIdx];
     if (count === undefined) return undefined;

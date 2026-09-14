@@ -32,6 +32,11 @@ const LENGTH_METERS = [CAR_LENGTH_METERS, TRUCK_LENGTH_METERS] as const;
 const PCE = [1, TRUCK_PCE] as const;
 /** A head held by a full link this long, game seconds, is pushed on. */
 export const FORCE_PUSH_SECS = 120;
+/**
+ * At an uncontrolled box a head waits for the walkers on its crossing no longer than this, game seconds: drivers yield to
+ * pedestrians on a crossing (ПДД РФ 14.1), but a stream of them never locks a street.
+ */
+export const PEDESTRIAN_YIELD_MAX_SECS = 15;
 /** A car due this long and still queued counts as stuck, game seconds. */
 export const STUCK_SECS = 60;
 /** A held head looks again after this long, game seconds. */
@@ -57,6 +62,8 @@ export interface MesoStats {
   dropped: number;
   /** Routes searched rather than taken from the cache. */
   routeSearches: number;
+  /** Heads that waited `PEDESTRIAN_YIELD_MAX_SECS` for walkers and went on. */
+  pedestrianYieldsExpired: number;
 }
 
 /** Metres of queue a link holds: its lanes over its length. */
@@ -88,7 +95,7 @@ export class MesoTraffic {
   nowSec = 0;
   /** Trips waiting for room on their first link, oldest first. */
   pending: TripRequested[] = [];
-  readonly stats: MesoStats = { arrived: 0, forcedPushes: 0, dropped: 0, routeSearches: 0 };
+  readonly stats: MesoStats = { arrived: 0, forcedPushes: 0, dropped: 0, routeSearches: 0, pedestrianYieldsExpired: 0 };
   /** New routes a tick may search; the trips past it wait a tick to leave. */
   routeSearchesPerTick = ROUTE_SEARCHES_PER_TICK;
   /** Routes searched in the tick under way. */
@@ -117,6 +124,8 @@ export class MesoTraffic {
   heldSince = new Float64Array(0);
   /** A red light held the car at the head at its last look. */
   atRed = new Uint8Array(0);
+  /** When walkers on an uncontrolled crossing first held the head; NaN while not held, -Infinity once it went on past its wait. */
+  yieldSince = new Float64Array(0);
   /** The tile along its link the car entered at: its start for the first link, 0 after. */
   fromOffset = new Uint16Array(0);
   /** The link the car left for the one it is on; -1 on its first link. The renderer draws it across the box between. */
@@ -147,6 +156,8 @@ export class MesoTraffic {
   readonly due = new LinkHeap();
   /** Routes between links for the current link times; derived, cleared with them. */
   readonly routeCache = new Map<number, Int32Array | null>();
+  /** By uncontrolled intersection: until when the last car to enter it is in the box, game seconds. Walkers wait for it. */
+  readonly boxBusyUntil = new Map<number, number>();
 
   carCount(): number {
     return this.count;
@@ -193,6 +204,7 @@ function growCars(m: MesoTraffic): void {
   m.next = grown(m.next, -1);
   m.heldSince = grown(m.heldSince, NaN);
   m.atRed = grown(m.atRed, 0);
+  m.yieldSince = grown(m.yieldSince, NaN);
   m.routeCursor = grown(m.routeCursor, 0);
   m.fromOffset = grown(m.fromOffset, 0);
   m.prevLink = grown(m.prevLink, -1);
@@ -229,6 +241,7 @@ function resetLinks(w: World): void {
   m.measuredCount = new Uint32Array(n);
   m.due.clear();
   m.routeCache.clear();
+  m.boxBusyUntil.clear();
 }
 
 function enqueue(m: MesoTraffic, car: number, link: number, enterSec: number, readySec: number): void {
@@ -422,6 +435,7 @@ function spawn(w: World, trip: TripRequested): 'spawned' | 'wait' | 'dropped' {
   m.routeCursor[car] = 0;
   m.heldSince[car] = NaN;
   m.atRed[car] = 0;
+  m.yieldSince[car] = NaN;
   m.fromOffset[car] = startOffset;
   m.prevLink[car] = -1;
   m.generation[car]! += 1;
@@ -430,8 +444,11 @@ function spawn(w: World, trip: TripRequested): 'spawned' | 'wait' | 'dropped' {
   return 'spawned';
 }
 
-/** The head of `link` is due: it arrives, or leaves for the next link of its route, or is held and looks again later. */
-function leave(w: World, link: number, now: number, lights: ReadonlyMap<number, TrafficLight>): void {
+/**
+ * The head of `link` is due: it arrives, or leaves for the next link of its route, or is held and looks again later.
+ * `crossings` are the intersections walkers are on.
+ */
+function leave(w: World, link: number, now: number, lights: ReadonlyMap<number, TrafficLight>, crossings: ReadonlySet<number>): void {
   const m = w.mesoTraffic;
   const g = w.meso;
   const car = m.head[link]!;
@@ -456,6 +473,16 @@ function leave(w: World, link: number, now: number, lights: ReadonlyMap<number, 
     return;
   }
   m.atRed[car] = 0;
+  // Walkers on an uncontrolled crossing go first, for a while.
+  if (cluster >= 0 && light === undefined && crossings.has(cluster) && m.yieldSince[car] !== -Infinity) {
+    if (Number.isNaN(m.yieldSince[car]!)) m.yieldSince[car] = now;
+    if (now - m.yieldSince[car]! < PEDESTRIAN_YIELD_MAX_SECS) {
+      m.due.push(now + RETRY_SECS, link);
+      return;
+    }
+    m.stats.pedestrianYieldsExpired += 1;
+    m.yieldSince[car] = -Infinity;
+  }
 
   const lanes = g.lanes[link]!;
   // Heads of one link come due in the order of their times, so the flow only ever refills forward.
@@ -482,10 +509,12 @@ function leave(w: World, link: number, now: number, lights: ReadonlyMap<number, 
   m.measuredSum[link]! += now - m.enterSec[car]!;
   m.measuredCount[link]! += 1;
   m.heldSince[car] = NaN;
+  m.yieldSince[car] = NaN;
   m.routeCursor[car] = cursor + 1;
   m.fromOffset[car] = 0;
   m.prevLink[car] = link;
   const entered = now + g.succBoxTiles[k]! * boxSeconds(w);
+  if (cluster >= 0 && light === undefined && g.succBoxTiles[k]! > 0) m.boxBusyUntil.set(cluster, Math.max(m.boxBusyUntil.get(cluster) ?? entered, entered));
   const tiles = cursor + 1 >= route.length ? m.goalOffset[car]! : g.length[next]!;
   enqueue(m, car, next, entered, entered + tiles * secondsPerTile(w, next));
   scheduleHead(m, link, now);
@@ -528,6 +557,7 @@ export function stepMesoTraffic(w: World, dtNs: number): void {
   joinWaitingTrips(w);
 
   let lights: Map<number, TrafficLight> | undefined;
+  let crossings: Set<number> | undefined;
   let heads = 0;
   while (m.due.size > 0 && m.due.peekKey() <= now) {
     const [at, link] = m.due.pop();
@@ -535,9 +565,10 @@ export function stepMesoTraffic(w: World, dtNs: number): void {
     // A head not yet due keeps its own entry at its time.
     if (car < 0 || m.readySec[car]! > now) continue;
     lights ??= new Map(w.trafficLights.map((light) => [light.intersectionId, light]));
+    crossings ??= new Set(w.pedestrianCrossings.map((crossing) => crossing.intersectionId));
     // At the second it came due, not at the end of the tick: a tick of several game seconds lets as many through as its
-    // seconds in tenths. The lights stand as they are at the end of the tick.
-    leave(w, link, Math.max(at, m.readySec[car]!), lights);
+    // seconds in tenths. The lights and the walkers stand as they are at the end of the tick.
+    leave(w, link, Math.max(at, m.readySec[car]!), lights, crossings);
     heads += 1;
   }
   // Room that freed up in this tick takes the trips that waited for it now, not at the start of the next tick.
