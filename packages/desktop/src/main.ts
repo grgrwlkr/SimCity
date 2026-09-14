@@ -11,8 +11,9 @@ const APP_HOST = 'bundle';
 /** Set by `bun run desktop:dev`. */
 const devServerUrl = process.env.SIMCITY_DEV_SERVER_URL;
 /**
- * `SIMCITY_TEST_WINDOW=1` (e2e and measurements): the app does not activate, the window never takes
- * focus and lets clicks through, and it stays on top, because an occluded window stops drawing.
+ * `SIMCITY_TEST_WINDOW=1` (e2e and measurements): nothing reaches the screen. No Dock icon, the window
+ * is never shown, and the page renders offscreen on the GPU (shared textures), so every frame is still
+ * composited and counted in `simcityPaintCount`; throttling is off, so a hidden page keeps drawing.
  */
 const testWindow = process.env.SIMCITY_TEST_WINDOW === '1';
 
@@ -62,17 +63,23 @@ function createWindow(): void {
     height: 800,
     title: 'SimCity',
     show: !testWindow,
-    ...(testWindow ? { focusable: false, alwaysOnTop: true } : {}),
     webPreferences: {
       preload: path.join(here, 'preload.cjs'),
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      ...(testWindow ? { offscreen: { useSharedTexture: true }, backgroundThrottling: false } : {}),
     },
   });
   if (testWindow) {
-    window.setIgnoreMouseEvents(true);
-    window.once('ready-to-show', () => window.showInactive());
+    const counter = globalThis as { simcityPaintCount?: number };
+    counter.simcityPaintCount = 0;
+    window.webContents.setFrameRate(60);
+    window.webContents.on('paint', (event) => {
+      // Only a few shared textures may exist at once: release each frame as soon as it is counted.
+      event.texture?.release();
+      counter.simcityPaintCount = (counter.simcityPaintCount ?? 0) + 1;
+    });
   }
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event, url) => {
@@ -84,7 +91,7 @@ function createWindow(): void {
 app.on('window-all-closed', () => app.quit());
 
 void app.whenReady().then(() => {
-  if (testWindow && process.platform === 'darwin') app.setActivationPolicy('accessory');
+  if (testWindow) app.dock?.hide();
   protocol.handle('app', serveRenderer);
   createWindow();
 });

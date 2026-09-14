@@ -17,11 +17,14 @@ async function launch(): Promise<{ app: ElectronApplication; page: Page }> {
   return { app, page };
 }
 
-test('startsWithoutFocusAndTheSimAnswers', async () => {
+test('startsWithNothingOnScreenAndTheSimAnswers', async () => {
   const { app, page } = await launch();
   try {
-    const focused = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.isFocused()));
-    expect(focused).toEqual([false]);
+    const shown = await app.evaluate(({ app: a, BrowserWindow }) => ({
+      windows: BrowserWindow.getAllWindows().map((w) => ({ visible: w.isVisible(), focused: w.isFocused() })),
+      dock: a.dock?.isVisible() ?? false,
+    }));
+    expect(shown).toEqual({ windows: [{ visible: false, focused: false }], dock: false });
     expect(page.url()).toBe('app://bundle/index.html');
     expect(await page.evaluate(() => crossOriginIsolated)).toBe(true);
     const before = await page.evaluate(async () => {
@@ -44,16 +47,25 @@ test('theTestCityHoldsItsFrameRate', async () => {
     await page.waitForFunction(() => typeof window.__sim !== 'undefined');
     await page.evaluate(() => window.__sim.ready);
     await page.waitForTimeout(2000);
+    // Two counts per second: frames the page drew (rAF) and frames the GPU composited (`paint`).
+    const paints = () => app.evaluate(() => (globalThis as { simcityPaintCount?: number }).simcityPaintCount ?? 0);
     const fps: number[] = [];
+    const composited: number[] = [];
     for (let i = 0; i < 10; i++) {
+      const before = await paints();
+      const started = Date.now();
       await page.waitForTimeout(1000);
+      composited.push(Math.round(((await paints()) - before) * (1000 / (Date.now() - started))));
       fps.push((await page.evaluate(() => window.__sim.renderStats())).fps);
     }
     const citizens = await page.evaluate(() => window.__sim.snapshot().then((s) => s.traffic.citizens));
-    test.info().annotations.push({ type: 'fps', description: `${fps.join(' ')} (citizens ${citizens})` });
-    console.log(`fps on the test city (${citizens} citizens): ${fps.join(' ')}`);
-    const median = [...fps].sort((a, b) => a - b)[Math.floor(fps.length / 2)]!;
-    expect(median).toBeGreaterThanOrEqual(58);
+    const backend = await page.evaluate(() => window.__sim.renderStats().then((s) => s.backend));
+    const line = `page fps ${fps.join(' ')}; composited ${composited.join(' ')} (${backend}, citizens ${citizens})`;
+    test.info().annotations.push({ type: 'fps', description: line });
+    console.log(`test city: ${line}`);
+    const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
+    expect(median(fps)).toBeGreaterThanOrEqual(58);
+    expect(median(composited)).toBeGreaterThanOrEqual(55);
   } finally {
     await app.close();
   }
