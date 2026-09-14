@@ -1,4 +1,4 @@
-// Stage 0 gate: the worker in each browser engine computes exactly what Node computes.
+// Stage 0 gate: the worker in Chromium computes exactly what Node computes.
 import { expect, test } from '@playwright/test';
 import type {} from '../packages/app/src/simApi';
 import { createWorld, fingerprint, requestState, rngProbeDigest, step, toHex64 } from '../packages/sim/src/index';
@@ -12,7 +12,7 @@ test.beforeEach(async ({ page }) => {
   await page.evaluate(() => window.__sim.ready);
 });
 
-test('fingerprintMatchesNodeInBothEngines', async ({ page }) => {
+test('fingerprintMatchesNode', async ({ page }) => {
   const reply = await page.evaluate(async (ticks) => {
     // The real-time loop must not add ticks of its own to the manual run.
     await window.__sim.setSpeed('Paused');
@@ -29,7 +29,7 @@ test('fingerprintMatchesNodeInBothEngines', async ({ page }) => {
   expect(frame, 'the main thread reads the frame the worker published').toEqual({ tick: TICKS, count: 0 });
 });
 
-test('rngProbeMatchesNodeInBothEngines', async ({ page }) => {
+test('rngProbeMatchesNode', async ({ page }) => {
   const digest = await page.evaluate((draws) => window.__sim.rngProbe('42', draws), PROBE_DRAWS);
   expect(digest).toBe(rngProbeDigest(42n, PROBE_DRAWS));
 });

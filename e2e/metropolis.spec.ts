@@ -1,5 +1,5 @@
-// Stage 3½e gate: the metropolis of a million in Chromium and WebKit. The fingerprint and the failing system run with the
-// suite, in projects of their own after the rest; the measurements carry `@perf` and run alone
+// Stage 3½e gate: the metropolis of a million in Chromium. The fingerprint and the failing system run with the
+// suite, in a project of its own after the rest; the measurements carry `@perf` and run alone
 // (`E2E_PERF=1 bunx playwright test e2e/metropolis.spec.ts --no-deps --workers=1`), since a parallel suite takes the
 // processor they measure.
 import { expect, test, type Page } from '@playwright/test';
@@ -14,7 +14,7 @@ async function openMenu(page: Page): Promise<void> {
   await page.evaluate(() => window.__sim.ready);
 }
 
-test('metropolisFingerprintMatchesNodeInBothEngines', async ({ page }) => {
+test('metropolisFingerprintMatchesNode', async ({ page }) => {
   test.setTimeout(240_000);
   await openMenu(page);
   const reply = await page.evaluate(async (ticks) => {

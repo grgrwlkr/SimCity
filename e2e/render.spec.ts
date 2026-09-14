@@ -1,4 +1,4 @@
-// Stage 1½: the debug renderer in Chromium and WebKit. The gate reads the class of every tile back
+// Stage 1½: the debug renderer in Chromium. The gate reads the class of every tile back
 // from a screenshot of the Rust test city and compares it with the Rust grid and the Rust frame.
 import { expect, test, type Page } from '@playwright/test';
 import { existsSync, readFileSync } from 'node:fs';
@@ -224,7 +224,7 @@ test('livingCityShowsItsCitizens', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.vehicles), { timeout: 30_000 }).toBeGreaterThan(100);
 });
 
-// Stage 3½d gate: the living city in its morning rush at ×1, where every car, parked car and person in view is drawn, and at
+// Stage 3½d gate, in Chromium: the living city in its morning rush at ×1, where every car, parked car and person in view is drawn, and at
 // ×60, where the roads show their load and a sample of the cars drives on them.
 test('livingCityAtX1AndX60', async ({ page }, testInfo) => {
   // Nine thousand ticks in the browser and three screenshots, drawn on the processor in headless Chromium.
@@ -233,7 +233,7 @@ test('livingCityAtX1AndX60', async ({ page }, testInfo) => {
   await page.waitForFunction(() => typeof window.__sim !== 'undefined');
   await page.evaluate(() => window.__sim.ready);
   await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.lights), { timeout: 30_000 }).toBe(36);
-  // A quarter of an hour into the rush, stepped while paused so both engines draw the same city.
+  // A quarter of an hour into the rush, stepped while paused so every run draws the same city.
   await page.evaluate(async () => {
     await window.__sim.setSpeed('Paused');
     for (let minute = 0; minute < 15; minute++) await window.__sim.step(600);
@@ -266,7 +266,7 @@ test('hudShowsTheSpeedLadderAndTheRealRate', async ({ page }, testInfo) => {
   await expect(page.getByRole('navigation', { name: 'Скорость' }).getByRole('button')).toHaveText(['Стоп', '×1', '×3', '×10', '×60', '×360']);
   const x60 = page.getByRole('button', { name: '×60', exact: true });
   await x60.click();
-  // The pressed state comes back with the worker's next snapshot: under a full parallel run WebKit took past 5 s once.
+  // The pressed state comes back with the worker's next snapshot: under a full parallel run it took past 5 s once.
   await expect(x60).toHaveAttribute('aria-pressed', 'true', { timeout: 15_000 });
   await expect(page.getByTestId('real-rate')).toHaveText(/^×\d+(,\d)?$/);
   await expect(page.getByTestId('clock')).toHaveText(/^День \d+, \d{2}:\d{2}:\d{2}$/);
