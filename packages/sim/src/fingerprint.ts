@@ -201,7 +201,17 @@ function hashBuildings(h: Fnv64, w: World): void {
   h.f64(w.rciDemand.industrial);
   h.str(stableJson(w.classDemand.byClass));
   h.int(w.cityFields.version);
+  h.u32(w.cityFields.currentChunk);
   for (const field of CITY_FIELDS) h.bytes(w.cityFields.values(field));
+  h.str(w.cityFields.homesKey);
+  h.bytes(w.cityFields.schooled);
+  h.bytes(w.cityFields.people);
+  const civic = w.civicCoverage;
+  h.int(civic.version);
+  h.int(civic.mapVersion);
+  h.str(civic.sourcesKey);
+  h.str(stableJson(civic.sources));
+  for (const layer of civic.strength) h.bytes(layer);
   h.int(w.landValue.version);
   h.u32(w.landValue.currentChunk);
   h.bytes(w.landValue.values);

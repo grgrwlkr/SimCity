@@ -11,6 +11,8 @@ export * from './buildings/upgrade';
 export * from './citizens';
 export * from './city';
 export * from './cityFields';
+export * from './cityFieldsCompute';
+export * from './civicCoverage';
 export * from './employment';
 export * from './demand';
 export * from './economy/economy';

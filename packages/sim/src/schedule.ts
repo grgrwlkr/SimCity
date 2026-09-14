@@ -10,6 +10,8 @@ import { updateCityPopulation } from './buildings/population';
 import { upgradeBuildings } from './buildings/upgrade';
 import { citizenTripPlanner, cleanupHomelessCitizens, handleTripFinished, planCitizenBacklog, recoverStuckTrips, spawnCitizensFromResidential } from './citizens';
 import { simTick } from './city';
+import { computeCityFields } from './cityFieldsCompute';
+import { updateCivicCoverage } from './civicCoverage';
 import type { GameCommand } from './commands';
 import { computeRciDemand } from './demand';
 import { applyDailyEconomy } from './economy/economy';
@@ -178,8 +180,14 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'computePollution', run: computePollution, runIn: IN_GAME },
   // PostSimStep::Coverage: after this tick's map edits and buildings; land value and the daily economy read it.
   { name: 'updateServiceCoverage', run: updateServiceCoverage, runIn: IN_GAME, everyGameNs: 60 * SECOND_NS },
+  // PostSimStep::Coverage, beside the service coverage and on its minute, which a day turns on: the reach of schools,
+  // universities and parks, from this tick's homes; the city fields read it.
+  { name: 'updateCivicCoverage', run: updateCivicCoverage, runIn: IN_GAME, everyGameNs: 60 * SECOND_NS },
   // PostSimStep::Utilities: after this tick's buildings and map edits; growth reads it next tick.
   { name: 'updateUtilityNetwork', run: updateUtilityNetwork, runIn: IN_GAME },
+  // PostSimStep::Fields: one chunk from the coverage and utilities above, last tick's land value and employment; growth,
+  // decay and land value below read them.
+  { name: 'computeCityFields', run: computeCityFields, runIn: IN_GAME },
   // PostSimStep::LandValue: one chunk from the pollution and coverage above, the traffic heat and the city fields.
   { name: 'computeLandValue', run: computeLandValue, runIn: IN_GAME },
   // PostSimStep::EmploymentStats: after this tick's assignments and departures; demand reads the class gaps.

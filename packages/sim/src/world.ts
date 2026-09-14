@@ -4,6 +4,7 @@ import { Buildings } from './buildings/building';
 import { Citizens, emptyCommuteStats, emptyShoppingStats, type CommuteStats, type ShoppingDemandStats } from './citizens';
 import { DEFAULT_GAME_HOUR_NS, createSimClock, defaultCity, type City } from './city';
 import { CityFields } from './cityFields';
+import { CivicCoverage } from './civicCoverage';
 import { ClassDemand, emptyDemand, type RciDemand } from './demand';
 import { BudgetLedger, ECONOMY_CONFIG, Loans, ServiceFunding, TaxRates, type EconomyConfig } from './economy/economy';
 import { emptyEmploymentStats, type EmploymentStats } from './employment';
@@ -187,6 +188,8 @@ export interface World {
   loans: Loans;
   /** `ServiceCoverageIndex`, derived from the stations, the map and the funding. */
   serviceCoverage: ServiceCoverageIndex;
+  /** How strongly schools, universities and parks reach each tile. */
+  civicCoverage: CivicCoverage;
   /** The citizens, as typed arrays by slot. */
   readonly citizens: Citizens;
   /** How citizens get about: walking reach, parking reach. */
@@ -295,6 +298,7 @@ export function createWorld(options: WorldOptions = {}): World {
     serviceFunding: new ServiceFunding(),
     loans: new Loans(),
     serviceCoverage: new ServiceCoverageIndex(),
+    civicCoverage: new CivicCoverage(),
     citizens: new Citizens(mapConfig.width, mapConfig.height),
     citizenConfig: defaultCitizenConfig(),
     parking: new Parking(grid.len()),
