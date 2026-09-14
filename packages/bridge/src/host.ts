@@ -14,6 +14,7 @@ import {
   fingerprint,
   linkRoomMeters,
   LivingCityScenario,
+  MetropolisScenario,
   parseRustCommand,
   recordSystemError,
   refSlot,
@@ -57,7 +58,7 @@ import {
 } from './renderBuffer';
 import { debugOverlayOf, renderLayersOf } from './renderLayers';
 import { SAMPLE_CARS, sampleCutoff, sampled } from './sample';
-import type { ScenarioName } from './scenarios';
+import { SCENARIOS, type ScenarioName } from './scenarios';
 
 /** Vehicles a frame holds: the micro vehicles, meso traffic, parked cars, standing trucks and people on foot. */
 export const RENDER_CAPACITY = 32_768;
@@ -93,14 +94,15 @@ const SCENARIO_BUILDERS: Readonly<Record<ScenarioName, (w: World) => HostScenari
     return new CityCommuteScenario(w, { ...CITY_COMMUTE, homes: plan.homes, workplaces: plan.workplaces });
   },
   livingCity: (w) => new LivingCityScenario(w),
+  metropolis: (w) => new MetropolisScenario(w),
   signalizedCross: (w) => new SignalizedCrossScenario(w, undefined, CROSS_LAYOUT.signalizedCross),
   signalizedCross4: (w) => new SignalizedCrossScenario(w, undefined, CROSS_LAYOUT.signalizedCross4),
 };
 
 export class SimHost {
   readonly render: SharedArrayBuffer;
-  private readonly world: World;
-  private readonly driver: FixedStepDriver;
+  private world: World;
+  private driver: FixedStepDriver;
   private readonly writer: RenderWriter;
   private readonly extras: RenderExtras;
   private readonly loads = new Uint8Array(RENDER_LINK_CAPACITY);
@@ -164,9 +166,12 @@ export class SimHost {
         return null;
       case 'debugOverlay':
         return debugOverlayOf(this.world);
-      case 'scenario':
+      case 'scenario': {
+        const size = req.size ?? SCENARIOS.find((s) => s.name === req.name)?.mapSize;
+        if (size !== undefined && (size !== this.world.grid.width || size !== this.world.grid.height)) this.replaceWorld(size);
         this.scenario = SCENARIO_BUILDERS[req.name](this.world);
         return null;
+      }
       case 'debugFailSystem':
         this.world.debugFailSystem = req.system;
         return null;
@@ -176,6 +181,21 @@ export class SimHost {
       case 'mesoLinks':
         return this.mesoLinks();
     }
+  }
+
+  /** A fresh world of `size` tiles a side for a scenario of its own map, in the state the old one was heading for, at its speed. */
+  private replaceWorld(size: number): void {
+    const old = this.world;
+    const w = createWorld({ mapWidth: size, mapHeight: size });
+    const state = old.nextState?.state ?? old.appState;
+    if (state !== 'MainMenu') requestState(w, state);
+    const driver = new FixedStepDriver(w);
+    driver.speed = this.driver.speed;
+    this.world = w;
+    this.driver = driver;
+    this.tickMs = null;
+    this.lastReported = null;
+    this.scenario = null;
   }
 
   private setView(view: WorldView | null): void {

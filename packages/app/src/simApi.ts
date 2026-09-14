@@ -58,7 +58,7 @@ export interface SimApi {
   pickTile(x: number, y: number): Promise<TilePos | null>;
   renderStats(): Promise<RenderStats>;
   /** Build a scenario into the running world (`?scenario=signalized` does this on load). */
-  scenario(name: ScenarioName): Promise<null>;
+  scenario(name: ScenarioName, size?: number): Promise<null>;
   /** Make a system throw on every call (`null` stops it): the HUD reports it and the world goes on. */
   failSystem(system: string | null): Promise<null>;
 }
@@ -134,7 +134,7 @@ export function installSimApi(
       return cfg === null ? null : (r.view.pickTile(cfg, x, y) ?? null);
     },
     renderStats: async () => (await renderer).stats(),
-    scenario: (name) => client.request({ t: 'scenario', name }),
+    scenario: (name, size) => client.request(size === undefined ? { t: 'scenario', name } : { t: 'scenario', name, size }),
     failSystem: (system) => client.request({ t: 'debugFailSystem', system }),
   };
   window.__sim = api;

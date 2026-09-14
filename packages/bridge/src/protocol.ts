@@ -143,7 +143,7 @@ export type Request =
   | { readonly t: 'debugVehicles'; readonly vehicles: readonly DebugVehicle[] }
   | { readonly t: 'debugOverlay' }
   /** Build a scenario into the world; the host feeds it before every fixed tick from then on. */
-  | { readonly t: 'scenario'; readonly name: ScenarioName }
+  | { readonly t: 'scenario'; readonly name: ScenarioName; readonly size?: number }
   /** Make a system throw on every call (`null` stops it): the worker's resilience from DevTools and Playwright. */
   | { readonly t: 'debugFailSystem'; readonly system: string | null }
   /** What the camera sees (`null` for everything): the render frame holds only what lies in it, with a margin. */

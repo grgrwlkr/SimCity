@@ -243,6 +243,21 @@ describe('SimHost', () => {
     expect(kinds.has(TRUCK_KIND) || kinds.has(PARKED_TRUCK_KIND), 'and trucks').toBe(true);
   }, 120_000);
 
+  // Stage 3½e: the metropolis is as large as its map, and opening it keeps the speed the player chose.
+  it('theMetropolisOpensOnAMapOfItsOwnSize', () => {
+    const host = new SimHost(RENDER_CAPACITY);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'setSpeed', speed: 'X10' });
+    host.handle({ t: 'scenario', name: 'metropolis', size: 160 });
+    host.handle({ t: 'step', ticks: 2 });
+    const layers = host.handle({ t: 'mapLayers' });
+    expect([layers.width, layers.height, layers.layers.roadKind.length], 'the map of the scenario').toEqual([160, 160, 160 * 160]);
+    const snapshot = host.handle({ t: 'snapshot' });
+    expect(snapshot).toMatchObject({ speed: 'X10', appState: 'InGame' });
+    expect(snapshot.traffic.citizens, 'lived in from the start').toBeGreaterThan(1000);
+    expect(snapshot.lights.length, 'its arterial crossings lit').toBeGreaterThan(0);
+  }, 120_000);
+
   // Stage 3½d: the frame holds what the camera can see, with a margin for a pan, and nothing of it is lost.
   it('publishKeepsOnlyWhatIsInView', () => {
     const host = new SimHost(RENDER_CAPACITY);
