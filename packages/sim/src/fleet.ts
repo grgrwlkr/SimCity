@@ -1,7 +1,9 @@
-// Stage 4: the city's own vehicles — the fire engines, police cars and ambulances of its stations. Rust drove them as
-// micro vehicles; here each drive is a car trip of meso traffic, under an id below the ids of the region's agents, so an
-// arrival finds its way back to the vehicle.
+// Stage 4: the city's own vehicles — the fire engines, police cars and ambulances of its stations, and its buses. Rust
+// drove them as micro vehicles; here each drive is a trip of meso traffic, under an id below the ids of the region's agents,
+// so an arrival finds its way back to the vehicle. A trip is queued in meso traffic directly, so a vehicle may set out from
+// a system that runs after traffic.
 import type { ServiceVehicle } from './services/vehicles';
+import type { Bus } from './transit/buses';
 
 /** A vehicle `id` drives in meso traffic as `-(FLEET_ID_BASE + id + 1)`; the region's agents stay above `-FLEET_ID_BASE`. */
 export const FLEET_ID_BASE = 1 << 30;
@@ -16,6 +18,8 @@ export class Fleet {
   nextId = 0;
   /** The vehicles of the service stations, in the order they were given. */
   services: ServiceVehicle[] = [];
+  /** The buses, one a route. */
+  buses: Bus[] = [];
   /** The buildings, the map edit and the game minute the stations were last looked at for. */
   stationsKey = '';
 

@@ -171,6 +171,7 @@ describe('determinism', () => {
       ['serviceCoverage', (w) => void (w.serviceCoverage.fire = 0.5)],
       ['civicCoverage', (w) => void (w.civicCoverage.version += 1)],
       ['fleet', (w) => void (w.fleet.nextId += 1)],
+      ['busRoutes', (w) => void w.busRoutes.createRoute([{ x: 1, y: 1 }])],
       ['emergencies', (w) => void (w.emergencies.nextId += 1)],
       ['events.tripDropped', (w) => void w.events.tripDropped.push(3)],
       ['cityFields.currentChunk', (w) => void (w.cityFields.currentChunk = 2)],

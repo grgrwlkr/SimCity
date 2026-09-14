@@ -18,6 +18,7 @@ import { applyDailyEconomy } from './economy/economy';
 import { assignJobs, clearInvalidWorkplaces, computeEmploymentStats } from './employment';
 import { updateServiceCoverage } from './services/coverage';
 import { handleServiceArrivals, syncServiceStations } from './services/vehicles';
+import { handleBusArrivals, tickBuses } from './transit/buses';
 import {
   applyEmergencyConsequences,
   cleanupResolvedEmergencies,
@@ -148,6 +149,8 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'resolveEmergencies', run: resolveEmergencies, runIn: IN_GAME },
   { name: 'applyEmergencyConsequences', run: applyEmergencyConsequences, runIn: IN_GAME },
   { name: 'cleanupResolvedEmergencies', run: cleanupResolvedEmergencies, runIn: IN_GAME },
+  // SimStep::PublicTransport, after the emergencies: routes without a bus get one, and buses done at a stop leave for the next.
+  { name: 'tickBuses', run: tickBuses, runIn: IN_GAME },
   // SimStep::Traffic, before the vehicle states that read the phase.
   { name: 'updateTrafficLights', run: updateTrafficLights, runIn: IN_GAME },
   // After updateTrafficLights: walkers wait at a crossing by this tick's lights; the planner of this tick set out the new ones.
@@ -194,6 +197,8 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'handleRegionalArrivals', run: handleRegionalArrivals, runIn: IN_GAME },
   // Beside them: the arrivals and the dropped trips of the service vehicles, which carry the fleet's ids.
   { name: 'handleServiceArrivals', run: handleServiceArrivals, runIn: IN_GAME },
+  // And the buses: at their stop, or on to the next when a leg found no way.
+  { name: 'handleBusArrivals', run: handleBusArrivals, runIn: IN_GAME },
   // PostSimStep::Citizens: residents a shrunken or vanished home no longer holds leave, then their parked cars go.
   { name: 'cleanupHomelessCitizens', run: cleanupHomelessCitizens, runIn: IN_GAME, everyGameNs: 60 * SECOND_NS },
   // PostSimStep::TrafficIndex: the end-of-tick metrics RCI demand reads.

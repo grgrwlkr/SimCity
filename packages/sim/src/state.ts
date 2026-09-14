@@ -76,6 +76,7 @@ function enterMainMenu(w: World): void {
   // EmergenciesPlugin and ServicesPlugin state of the game that ended.
   w.fleet = new Fleet();
   w.emergencies = new Emergencies();
+  w.busRoutes.reset();
   // CitizensPlugin: cleanup_citizens; the employment and trip stats of the game that ended go with them.
   w.citizens.clear();
   w.parking.clear();

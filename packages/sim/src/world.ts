@@ -7,6 +7,7 @@ import { CityFields } from './cityFields';
 import { CivicCoverage } from './civicCoverage';
 import { Emergencies } from './emergencies';
 import { Fleet } from './fleet';
+import { BusRoutes } from './transit/buses';
 import { ClassDemand, emptyDemand, type RciDemand } from './demand';
 import { BudgetLedger, ECONOMY_CONFIG, Loans, ServiceFunding, TaxRates, type EconomyConfig } from './economy/economy';
 import { emptyEmploymentStats, type EmploymentStats } from './employment';
@@ -192,8 +193,10 @@ export interface World {
   serviceCoverage: ServiceCoverageIndex;
   /** How strongly schools, universities and parks reach each tile. */
   civicCoverage: CivicCoverage;
-  /** The city's own vehicles: those of its service stations. */
+  /** The city's own vehicles: those of its service stations and its buses. */
   fleet: Fleet;
+  /** The routes the buses loop. */
+  readonly busRoutes: BusRoutes;
   /** Fires, crimes and medical calls under way, and how the city fared with them. */
   emergencies: Emergencies;
   /** The citizens, as typed arrays by slot. */
@@ -306,6 +309,7 @@ export function createWorld(options: WorldOptions = {}): World {
     serviceCoverage: new ServiceCoverageIndex(),
     civicCoverage: new CivicCoverage(),
     fleet: new Fleet(),
+    busRoutes: new BusRoutes(),
     emergencies: new Emergencies(),
     citizens: new Citizens(mapConfig.width, mapConfig.height),
     citizenConfig: defaultCitizenConfig(),

@@ -29,9 +29,9 @@ export interface ServiceVehicle {
 
 const TRIP_VEHICLE = { Fire: 'Fire', Police: 'Police', Medical: 'Ambulance' } as const;
 
-/** `v` sets out in meso traffic from where it is to `to`. */
+/** `v` sets out in meso traffic from where it is to `to`, queued there directly: a drive back may start after traffic ran. */
 export function driveService(w: World, v: ServiceVehicle, to: TilePos): void {
-  w.events.tripRequested.push({ citizen: fleetTripId(v.id), from: v.at, carParkedAt: v.at, to, purpose: 'Service', mode: 'Car', pocket: true, vehicle: TRIP_VEHICLE[v.kind] });
+  w.mesoTraffic.pending.push({ citizen: fleetTripId(v.id), from: v.at, carParkedAt: v.at, to, purpose: 'Service', mode: 'Car', pocket: true, vehicle: TRIP_VEHICLE[v.kind] });
   v.at = to;
 }
 

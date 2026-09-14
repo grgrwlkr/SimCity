@@ -206,6 +206,8 @@ function applyGenerateMap(w: World, seed: bigint): void {
   w.pollution.resetValues();
   w.landValue.resetValues();
   w.cityFields.resetValues();
+  // The routes ran over the old roads; their buses go with them.
+  w.busRoutes.reset();
   w.dirty.markAll();
   w.roadDirty.markAll();
   bumpMapEdit(w);

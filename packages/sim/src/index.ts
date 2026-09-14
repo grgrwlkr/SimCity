@@ -24,6 +24,7 @@ export * from './services/stations';
 export * from './services/vehicles';
 export * from './emergencies';
 export * from './fleet';
+export * from './transit/buses';
 export * from './utilities';
 export * from './commandCodec';
 export * from './commands';

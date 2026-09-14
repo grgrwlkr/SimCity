@@ -595,6 +595,10 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
       h.u32(w.fleet.nextId);
       h.str(w.fleet.stationsKey);
       h.str(stableJson(w.fleet.services));
+      h.str(stableJson(w.fleet.buses));
+      h.u32(w.busRoutes.nextRouteId);
+      h.int(w.busRoutes.version);
+      h.str(stableJson(w.busRoutes.routes));
       const m = w.emergencies;
       h.u32(m.nextId);
       h.f64(m.baseSpawnChance);
