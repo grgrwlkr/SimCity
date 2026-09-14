@@ -180,10 +180,10 @@ Rust и TS гоняются на одном seed и одной последов�
 | 3. Сим в WASM | JS-исходника сима нет, только декомпиляция в псевдо-C | прямого пути TS→WASM нет: AssemblyScript — это второй порт, а Rust-сим в WASM отменяет порт сима на TS |
 | 4. Сим на сервере, тонкий клиент | единственная настоящая защита | игра становится онлайн: сервер, сеть, латентность, хостинг |
 
-Замер ступени 1 на Electron-сборке `bun run desktop:build` (2026-09-14). В `packages/desktop/out/renderer` нет ни `.map`, ни `sourceMappingURL`. `app.asar` — 10 записей и 1 365 723 байта: `out/main.js`, `out/preload.cjs`, рендерер из четырёх файлов, `package.json`; `node_modules` в нём нет.
+Замер ступени 1 на Electron-сборке `bun run desktop:build` (2026-09-15). Source maps в `packages/app/vite.config.ts` выключены явно (`build.sourcemap: false`); в `app.asar` нет ни одного `.map`, в выгруженных файлах нет `sourceMappingURL`. `app.asar` — 10 записей и 1 366 089 байт: `out/main.js`, `out/preload.cjs`, рендерер из четырёх файлов, `package.json`; `node_modules` в нём нет.
 
 Что ступень 1 в текущей оболочке не закрывает:
-- Архив извлекается одной командой `asar extract` из `@electron/asar` 3.4.1 (`…/SimCity.app/Contents/Resources/app.asar`): замер — выгруженный `index-*.js` байт в байт совпадает со сборкой. Раздача через loopback ушла вместе с Tauri: страница идёт по схеме `app://` и наружу ничего не слушает.
+- Архив извлекается одной командой: `npx @electron/asar extract SimCity.app/Contents/Resources/app.asar simcity-assets` (вне репозитория: внутри порта npx падает на `asar: command not found`; там же работает `bunx @electron/asar extract`). Замер на живой сборке: обе команды дают одинаковые файлы, `index-*.js` байт в байт совпадает со сборкой. Раздача через loopback ушла вместе с Tauri: страница идёт по схеме `app://` и наружу ничего не слушает.
 - `window.__sim`, полный API команд мира, есть и в релизной сборке. Его стоит оставить только для dev и e2e.
 
 Решение по умолчанию: ступень 1 на этапе 7 плюс лицензия. Ступень 2 — отдельный флаг сборки, по требованию. Ступени 3 и 4 — только по явному решению пользователя, они меняют план миграции. Не применимы к коду игры `bun build --compile --bytecode` и `bytenode`: игра исполняется в рендерере Chromium без Node (`sandbox`, без `nodeIntegration`), а не в Bun или Node.
