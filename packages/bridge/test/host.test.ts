@@ -1,18 +1,23 @@
 import {
   ROAD_DIRS,
   ROAD_KINDS,
+  LivingCityScenario,
   createWorld,
   fingerprint,
+  frame,
+  linkRoomMeters,
   requestState,
   rngProbeDigest,
   step,
   toHex64,
+  type World,
 } from '@simcity/sim';
 import { describe, expect, it } from 'vitest';
 import { loadTestCity } from '../../sim/test/testCity';
 import { RENDER_CAPACITY, SimHost } from '../src/host';
 import { GRID_LAYER_NAMES, type GridLayers } from '../src/protocol';
-import { PARKED_TRUCK_KIND, PEDESTRIAN_KIND, RenderReader, TRUCK_KIND } from '../src/renderBuffer';
+import { PARKED_TRUCK_KIND, PARKED_VEHICLE_KIND, PEDESTRIAN_KIND, RenderReader, TRUCK_KIND } from '../src/renderBuffer';
+import { SAMPLE_CARS } from '../src/sample';
 import { SCENARIOS } from '../src/scenarios';
 
 describe('SimHost', () => {
@@ -188,7 +193,8 @@ describe('SimHost', () => {
     for (const { name } of SCENARIOS) {
       const host = new SimHost(4096);
       host.handle({ t: 'setState', state: 'InGame' });
-      host.handle({ t: 'scenario', name });
+      // The metropolis on a small map of its own: the million is the gate's, not this check's.
+      host.handle(name === 'metropolis' ? { t: 'scenario', name, size: 160 } : { t: 'scenario', name });
       host.handle({ t: 'step', ticks: 20 });
       const { mapEditVersion, lights } = host.handle({ t: 'snapshot' });
       expect(mapEditVersion, `${name} builds its map`).toBeGreaterThan(0);
@@ -238,6 +244,117 @@ describe('SimHost', () => {
     }
     expect(kinds.has(PEDESTRIAN_KIND), `pedestrians among ${[...kinds].join(' ')}`).toBe(true);
     expect(kinds.has(TRUCK_KIND) || kinds.has(PARKED_TRUCK_KIND), 'and trucks').toBe(true);
+  }, 120_000);
+
+  // Stage 3½e gate: the cost of every tick is kept, so p50 and p99 are read off the running game, not a bench.
+  it('tickStatsReportTheCostOfEachTick', () => {
+    const host = new SimHost(16);
+    host.handle({ t: 'setState', state: 'InGame' });
+    expect(host.handle({ t: 'tickStats' }).count, 'nothing before the first tick').toBe(0);
+    host.handle({ t: 'step', ticks: 100 });
+    host.handle({ t: 'setSpeed', speed: 'X10' });
+    host.update(0);
+    const ticks = host.update(500)?.tick ?? 0;
+    const stats = host.handle({ t: 'tickStats' });
+    expect(stats.count, 'every tick, stepped or run').toBe(ticks);
+    expect(stats.p50Ms).toBeGreaterThan(0);
+    expect(stats.p99Ms).toBeGreaterThanOrEqual(stats.p50Ms);
+    expect(stats.maxMs).toBeGreaterThanOrEqual(stats.p99Ms);
+  });
+
+  // Stage 3½e gate: a scenario is built and settled into its first frame in the request, so what the worker's loop did in
+  // between cannot change the fingerprint.
+  it('aScenarioSettlesInTheRequestThatBuildsIt', () => {
+    const host = new SimHost(16);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'scenario', name: 'livingCity' });
+    // No frame of the worker's loop in between: the step request comes straight after.
+    const reply = host.handle({ t: 'step', ticks: 30 });
+
+    const w = createWorld();
+    requestState(w, 'InGame');
+    const scenario = new LivingCityScenario(w);
+    frame(w, 0);
+    for (let i = 0; i < 30; i++) {
+      scenario.advance(w);
+      step(w, 1);
+    }
+    expect(reply).toEqual({ tick: 30, fingerprint: toHex64(fingerprint(w)) });
+  }, 60_000);
+
+  // Stage 3½e: the metropolis is as large as its map, and opening it keeps the speed the player chose.
+  it('theMetropolisOpensOnAMapOfItsOwnSize', () => {
+    const host = new SimHost(RENDER_CAPACITY);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'setSpeed', speed: 'X10' });
+    host.handle({ t: 'scenario', name: 'metropolis', size: 160 });
+    host.handle({ t: 'step', ticks: 2 });
+    const layers = host.handle({ t: 'mapLayers' });
+    expect([layers.width, layers.height, layers.layers.roadKind.length], 'the map of the scenario').toEqual([160, 160, 160 * 160]);
+    const snapshot = host.handle({ t: 'snapshot' });
+    expect(snapshot).toMatchObject({ speed: 'X10', appState: 'InGame' });
+    expect(snapshot.traffic.citizens, 'lived in from the start').toBeGreaterThan(1000);
+    expect(snapshot.lights.length, 'its arterial crossings lit').toBeGreaterThan(0);
+  }, 120_000);
+
+  // Stage 3½d: the frame holds what the camera can see, with a margin for a pan, and nothing of it is lost.
+  it('publishKeepsOnlyWhatIsInView', () => {
+    const host = new SimHost(RENDER_CAPACITY);
+    const reader = new RenderReader(host.render);
+    const out = reader.allocate();
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'scenario', name: 'livingCity' });
+    for (let minute = 0; minute < 20; minute++) host.handle({ t: 'step', ticks: 600 });
+    const drawn = () => {
+      reader.readInto(out);
+      return Array.from({ length: out.count }, (_, i) => ({ id: out.slot[i]!, x: out.x[i]!, y: out.y[i]!, kind: out.kind[i]! }));
+    };
+    const full = drawn();
+
+    const view = { left: -400, right: 100, bottom: -300, top: 200 };
+    host.handle({ t: 'setView', view });
+    host.handle({ t: 'step', ticks: 0 });
+    const inView = drawn();
+    const [marginX, marginY] = [(view.right - view.left) / 4, (view.top - view.bottom) / 4];
+    const within = (p: { x: number; y: number }, mx: number, my: number) =>
+      p.x >= view.left - mx && p.x <= view.right + mx && p.y >= view.bottom - my && p.y <= view.top + my;
+    expect(new Set(full.map((p) => p.kind)).size, `the city shows cars, parked cars and people: ${full.length}`).toBeGreaterThanOrEqual(3);
+    expect(inView.length, 'less than the whole city').toBeLessThan(full.length);
+    expect(inView.filter((p) => !within(p, marginX, marginY)), 'nothing beyond the margin').toEqual([]);
+    const ids = new Set(inView.map((p) => p.id));
+    expect(full.filter((p) => within(p, 0, 0) && !ids.has(p.id)), 'and everything in view').toEqual([]);
+
+    host.handle({ t: 'setView', view: null });
+    host.handle({ t: 'step', ticks: 0 });
+    expect(drawn().length, 'without a view, the whole city again').toBe(full.length);
+  }, 120_000);
+
+  // Stage 3½d: at ×60 and above the roads show their load and a sample of the cars drives on them.
+  it('fastSpeedsPublishASampleAndTheLinkLoads', () => {
+    const host = new SimHost(RENDER_CAPACITY);
+    const reader = new RenderReader(host.render);
+    const out = reader.allocate();
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'scenario', name: 'livingCity' });
+    for (let minute = 0; minute < 20; minute++) host.handle({ t: 'step', ticks: 600 });
+    const w = (host as unknown as { world: World }).world;
+
+    host.handle({ t: 'setSpeed', speed: 'X60' });
+    host.handle({ t: 'step', ticks: 0 });
+    reader.readInto(out);
+    const kinds = Array.from(out.kind.subarray(0, out.count));
+    expect(kinds.filter((kind) => kind === 0 || kind === TRUCK_KIND).length, 'cars drive').toBeGreaterThan(0);
+    expect(kinds.length, 'a sample of them').toBeLessThanOrEqual(SAMPLE_CARS);
+    expect(kinds.filter((kind) => kind === PARKED_VEHICLE_KIND || kind === PARKED_TRUCK_KIND || kind === PEDESTRIAN_KIND), 'and nothing that stands or walks').toEqual([]);
+    expect([out.links, out.linksFor], 'the load of every link').toEqual([w.meso.linkCount, w.meso.builtFor]);
+    const loads = Array.from({ length: w.meso.linkCount }, (_, link) => Math.round(255 * Math.min(w.mesoTraffic.usedMeters[link]! / linkRoomMeters(w, link), 1)));
+    expect(loads.some((load) => load > 0), 'some links carry cars').toBe(true);
+    expect(Array.from(out.load.subarray(0, out.links))).toEqual(loads);
+
+    host.handle({ t: 'setSpeed', speed: 'X1' });
+    host.handle({ t: 'step', ticks: 0 });
+    reader.readInto(out);
+    expect(out.links, 'at ×1 the cars themselves').toBe(0);
   }, 120_000);
 
   it('aScenarioSeesEveryTickOfAFastFrame', () => {

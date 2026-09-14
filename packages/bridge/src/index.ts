@@ -4,4 +4,5 @@ export * from './host';
 export * from './protocol';
 export * from './renderBuffer';
 export * from './renderLayers';
+export * from './sample';
 export * from './scenarios';

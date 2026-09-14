@@ -1,10 +1,10 @@
 // Stage 3½d: where the cars of citizens are drawn. A meso car keeps the lane of its manoeuvre along a link — the kerb lane
 // before a right turn, the one by the centre line before a left turn or a U-turn, its own lane straight on — and stands at
 // its share of the way, a car's room behind the car ahead in that lane. Through a box it moves from the end of the link it
-// left to the start of the next along an L for a turn and a U for a U-turn, as micro traffic keeps its trajectories. A
-// parked car stands on its tile. The renderer interpolates between frames by the id and generation of each car.
-import { tileFToWorld } from '../map/coords';
-import { CAR_PARKED } from '../parking';
+// left to the start of the next along an L for a turn and a U for a U-turn, as micro traffic keeps its trajectories. The
+// parked cars of a tile stand one over another, so a tile with any is drawn once. The renderer interpolates between frames
+// by the id and generation of each car.
+import { inTileView, tileFToWorld, type TileView } from '../map/coords';
 import type { World } from '../world';
 import { BOX_KMH } from './districts';
 import type { MesoGraph } from './graph';
@@ -30,7 +30,7 @@ const DELTA_Y = [0, 0, 0, 1, -1] as const;
 type Dir = 0 | 1 | 2 | 3 | 4;
 const horizontal = (dir: number) => dir === EAST || dir === WEST;
 
-/** `id` is a meso car slot for a driving vehicle and a citizen slot for a parked car; world coordinates. */
+/** `id` is a meso car slot for a driving vehicle and the tile index for parked cars; world coordinates. */
 export type CitizenCarVisitor = (parked: boolean, id: number, generation: number, x: number, y: number, heading: number, truck: boolean) => void;
 
 /** The lane a car takes on `link` before leaving for `next` (-1 at its goal): 0 is the kerb lane. */
@@ -111,11 +111,14 @@ function boxPose(w: World, car: number, link: number, lane: number): readonly [x
   return alongPath(points, share);
 }
 
+/** A tile of room around a link for the lanes and the box a car may stand in. */
+const LINK_REACH = 2;
+
 /**
- * Every vehicle in meso traffic queue by queue, a truck its length back behind the vehicle ahead, then the parked cars of
- * citizens in citizen order.
+ * Every vehicle in meso traffic queue by queue, a truck its length back behind the vehicle ahead, then a car for every tile
+ * with parked cars of citizens, row by row, unless `withParked` is false. With a `view`, only what stands in it.
  */
-export function forEachCitizenCar(w: World, visit: CitizenCarVisitor): void {
+export function forEachCitizenCar(w: World, visit: CitizenCarVisitor, view?: TileView, withParked = true): void {
   const m = w.mesoTraffic;
   const g = w.meso;
   const cfg = w.mapConfig;
@@ -124,6 +127,12 @@ export function forEachCitizenCar(w: World, visit: CitizenCarVisitor): void {
 
   if (m.linksFor !== null && m.linksFor === g.builtFor) {
     for (let link = 0; link < m.head.length; link++) {
+      if (m.head[link]! < 0) continue;
+      if (view !== undefined) {
+        const [x0, x1] = [Math.min(g.startX[link]!, g.endX[link]!) - LINK_REACH, Math.max(g.startX[link]!, g.endX[link]!) + LINK_REACH];
+        const [y0, y1] = [Math.min(g.startY[link]!, g.endY[link]!) - LINK_REACH, Math.max(g.startY[link]!, g.endY[link]!) + LINK_REACH];
+        if (x1 < view.minX || x0 > view.maxX || y1 < view.minY || y0 > view.maxY) continue;
+      }
       const dir = g.dir[link]! as Dir;
       const length = g.length[link]!;
       ahead.fill(0);
@@ -146,16 +155,24 @@ export function forEachCitizenCar(w: World, visit: CitizenCarVisitor): void {
           const along = Math.max(Math.min(from + (last - from) * share, last - behind), 0);
           [x, y] = linkPoint(g, link, along, lane);
         }
+        if (!inTileView(view, x, y)) continue;
         const at = tileFToWorld(cfg, x, y);
         visit(false, car, m.generation[car]!, at.x, at.y, heading, vehicle === VEHICLE_TRUCK);
       }
     }
   }
 
-  const c = w.citizens;
-  for (let slot = 0; slot < c.highWater; slot++) {
-    if (c.alive[slot] !== 1 || c.carStatus[slot] !== CAR_PARKED) continue;
-    const at = tileFToWorld(cfg, c.carX[slot]!, c.carY[slot]!);
-    visit(true, slot, c.generation[slot]!, at.x, at.y, 0, false);
+  if (!withParked) return;
+  const parked = w.citizens.parkedCounts();
+  const width = w.citizens.mapWidth;
+  const height = w.citizens.mapHeight;
+  const [x0, x1] = view === undefined ? [0, width - 1] : [Math.max(Math.ceil(view.minX), 0), Math.min(Math.floor(view.maxX), width - 1)];
+  const [y0, y1] = view === undefined ? [0, height - 1] : [Math.max(Math.ceil(view.minY), 0), Math.min(Math.floor(view.maxY), height - 1)];
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0, tile = y * width + x0; x <= x1; x++, tile++) {
+      if (parked[tile] === 0) continue;
+      const at = tileFToWorld(cfg, x, y);
+      visit(true, tile, 0, at.x, at.y, 0, false);
+    }
   }
 }

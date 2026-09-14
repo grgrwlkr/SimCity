@@ -8,6 +8,20 @@ import { CAR_OWNERSHIP, NO_PLACE, buildingPlace, findParking, giveCar, parkingCa
 import { roadRow, t, worldOn } from './buildings/helpers';
 
 describe('parking', () => {
+  // Stage 3½e: the HUD read the spots taken by walking every street tile of the map for every snapshot.
+  it('parkingKeepsItsTotal', () => {
+    const w = worldOn(new MapGrid(64, 16));
+    const recount = () => [...w.parking.buildings.values()].reduce((sum, n) => sum + n, 0) + w.parking.streets.reduce((sum, n) => sum + n, 0);
+    const places = [buildingPlace(3), buildingPlace(3), streetPlace(70), buildingPlace(9), streetPlace(70), streetPlace(5)];
+    for (const place of places) takeParking(w, place);
+    expect(w.parking.totalUsed()).toBe(recount());
+    for (const place of places.slice(0, 4)) w.parking.release(place);
+    w.parking.release(streetPlace(999));
+    expect([w.parking.totalUsed(), recount()], 'releasing a free spot takes nothing').toEqual([2, 2]);
+    w.parking.clear();
+    expect(w.parking.totalUsed()).toBe(0);
+  });
+
   it('parkingCapacityFollowsKindAreaLevelAndGarage', () => {
     const home = (wealth: 'Low' | 'Middle' | 'High') =>
       newBuilding({ kind: 'Residential', anchor: t(0, 0), capacityResidents: 40, profile: { density: 'Medium', class: wealth } });

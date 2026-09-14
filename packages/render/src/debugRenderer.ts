@@ -1,6 +1,15 @@
 // The stage 1½ debug renderer: map chunks, vehicles as cubes, overlays, a top-down orthographic
 // camera. Colours reach the screen exactly as written, so a screenshot can be read back per tile.
-import { PEDESTRIAN_KIND, RENDER_ID_SPACE, type DebugOverlayReply, type MapLayersReply, type RenderFrameCopy, type RenderReader, type TrafficLightView } from '@simcity/bridge';
+import {
+  PEDESTRIAN_KIND,
+  type DebugOverlayReply,
+  type MapLayersReply,
+  type MesoLinksReply,
+  type RenderFrameCopy,
+  type RenderReader,
+  type TrafficLightView,
+  type WorldView,
+} from '@simcity/bridge';
 import {
   VEHICLE_LENGTH_TILES,
   VEHICLE_WIDTH_TILES,
@@ -13,6 +22,7 @@ import { OrthoView } from './camera';
 import { FpsMeter } from './fpsMeter';
 import { interpolateHeading, interpolatePositions, pairVehicles } from './interpolate';
 import { lampSignal } from './lamps';
+import { linkRect, loadColor } from './linkLoad';
 import { buildChunkGeometry, changedChunks, chunkGrid } from './mapChunks';
 import { LAMP_COLORS, VEHICLE_COLORS } from './palette';
 import { PlaybackClock } from './playback';
@@ -22,6 +32,10 @@ import { drawnScale, vehicleScale } from './vehicleLook';
 const FRAME_HISTORY = 6;
 const BACKGROUND = 0x1b1d1a;
 const MANEUVER_COLORS: Record<string, number> = { Straight: 0x2fd67e, RightTurn: 0x3b8cff, LeftTurn: 0xff4d4d, UTurn: 0xc26bff };
+/** The worker hears of a moved camera no more often than this. */
+const VIEW_REPORT_MS = 100;
+/** Link loads are drawn between the map and the vehicles. */
+const LINK_Z = 0.5;
 
 export interface RenderStats {
   readonly backend: 'WebGPU' | 'WebGL2';
@@ -38,6 +52,8 @@ export interface RenderStats {
   readonly lights: number;
   /** Green left arrows lit: two per light in a protected-left phase. */
   readonly arrows: number;
+  /** Meso links coloured by their load: every link at ×60 and above, none below. */
+  readonly loadLinks: number;
   /** The sim tick the vehicles are drawn at, fractional between frames; `null` before the first frame. */
   readonly playbackTick: number | null;
   readonly hovered: TilePos | null;
@@ -66,6 +82,10 @@ type Lamp = { readonly mesh: THREE.Mesh; readonly arrow: THREE.Mesh; readonly ax
 export class DebugRenderer {
   readonly view: OrthoView;
   hovered: TilePos | null = null;
+  /** Hears what the camera sees when it moves, at most every `VIEW_REPORT_MS`. */
+  onViewChange: ((view: WorldView) => void) | null = null;
+  /** Hears that a frame carries link loads numbered for a graph whose links the renderer does not have. */
+  onLinksNeeded: ((graphVersion: number) => void) | null = null;
 
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 5000);
@@ -87,7 +107,13 @@ export class DebugRenderer {
   private readonly clock = new PlaybackClock();
   private playbackTick = NaN;
   /** Per-vehicle scratch: pairing between the two frames drawn, drawn positions, the kind each instance is coloured as. */
-  private scratch: { bySlot: Int32Array; pairs: Int32Array; x: Float32Array; y: Float32Array; drawnKind: Uint8Array } | null = null;
+  private scratch: { table: Int32Array; pairs: Int32Array; x: Float32Array; y: Float32Array; drawnKind: Uint8Array } | null = null;
+  private linkMesh: THREE.InstancedMesh | null = null;
+  /** The graph version the link rectangles are for, and the one last asked for. */
+  private linksFor: number | null = null;
+  private linksAskedFor: number | null = null;
+  private reportedView: WorldView | null = null;
+  private reportedViewMs = -Infinity;
   private pairedFrom: RenderFrameCopy | null = null;
   private pairedTo: RenderFrameCopy | null = null;
   private frames = 0;
@@ -149,7 +175,8 @@ export class DebugRenderer {
     for (let i = 0; i <= FRAME_HISTORY; i++) this.spareFrames.push(reader.allocate());
     const n = reader.capacity;
     this.scratch = {
-      bySlot: new Int32Array(RENDER_ID_SPACE),
+      // A power of two at least twice the vehicles a frame holds: the probes of the pairing hash stay short.
+      table: new Int32Array(2 ** Math.ceil(Math.log2(2 * n + 2))),
       pairs: new Int32Array(n),
       x: new Float32Array(n),
       y: new Float32Array(n),
@@ -181,6 +208,36 @@ export class DebugRenderer {
     this.map = map;
     this.pendingMapEditVersion = map.mapEditVersion;
     if (this.vehicles === null) this.createVehicleMesh(map.tileSize);
+  }
+
+  /** A rectangle for every meso link, coloured by the loads frames carry; replaces those of an older graph. */
+  setLinks(links: MesoLinksReply): void {
+    if (this.map === null || links.builtFor === null) {
+      // Asked again with the next frame that carries loads.
+      this.linksAskedFor = null;
+      return;
+    }
+    if (this.linkMesh !== null) {
+      this.scene.remove(this.linkMesh);
+      this.linkMesh.geometry.dispose();
+      (this.linkMesh.material as THREE.Material).dispose();
+      this.linkMesh.dispose();
+    }
+    const cfg: MapConfig = { width: this.map.width, height: this.map.height, tileSize: this.map.tileSize };
+    const mesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: 0xffffff }), Math.max(links.count, 1));
+    mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(Math.max(links.count, 1) * 3), 3);
+    const matrix = new THREE.Matrix4();
+    for (let link = 0; link < links.count; link++) {
+      const r = linkRect(cfg, links.dir[link]!, links.lanes[link]!, links.startX[link]!, links.startY[link]!, links.endX[link]!, links.endY[link]!);
+      matrix.makeScale(r.width, r.height, 1).setPosition(r.x, r.y, LINK_Z);
+      mesh.setMatrixAt(link, matrix);
+    }
+    mesh.count = links.count;
+    mesh.frustumCulled = false;
+    mesh.visible = false;
+    this.scene.add(mesh);
+    this.linkMesh = mesh;
+    this.linksFor = links.builtFor;
   }
 
   /** Grid lines, intersection boxes and lanelet paths; `null` hides them. */
@@ -309,6 +366,7 @@ export class DebugRenderer {
       overlayLanelets: this.overlay.visible ? this.overlayLanelets : 0,
       lights: [...this.lamps.values()].reduce((n, set) => n + set.length, 0),
       arrows: [...this.lamps.values()].reduce((n, set) => n + set.filter((lamp) => lamp.arrow.visible).length, 0),
+      loadLinks: this.linkMesh?.visible === true ? this.linkMesh.count : 0,
       playbackTick: Number.isNaN(this.playbackTick) ? null : this.playbackTick,
       hovered: this.hovered,
     };
@@ -321,6 +379,7 @@ export class DebugRenderer {
     }
     this.updateVehicles(nowMs);
     const b = this.view.bounds();
+    this.reportView(b, nowMs);
     this.camera.left = b.left;
     this.camera.right = b.right;
     this.camera.top = b.top;
@@ -333,6 +392,43 @@ export class DebugRenderer {
       this.drawnMapEditVersion = this.pendingMapEditVersion;
       this.pendingMapEditVersion = null;
     }
+  }
+
+  /** Tells the worker what the camera sees once it moved, no more often than `VIEW_REPORT_MS`. */
+  private reportView(b: { left: number; right: number; top: number; bottom: number }, nowMs: number): void {
+    const last = this.reportedView;
+    if (this.onViewChange === null || nowMs - this.reportedViewMs < VIEW_REPORT_MS) return;
+    if (last !== null && last.left === b.left && last.right === b.right && last.top === b.top && last.bottom === b.bottom) return;
+    this.reportedView = { left: b.left, right: b.right, bottom: b.bottom, top: b.top };
+    this.reportedViewMs = nowMs;
+    this.onViewChange(this.reportedView);
+  }
+
+  /** Colours the links by the loads of a new frame, or hides them when it carries none. */
+  private updateLinkLoads(frame: RenderFrameCopy): void {
+    const mesh = this.linkMesh;
+    if (frame.links === 0) {
+      if (mesh !== null) mesh.visible = false;
+      return;
+    }
+    if (mesh === null || this.linksFor !== frame.linksFor || mesh.instanceColor === null) {
+      if (mesh !== null) mesh.visible = false;
+      if (this.linksAskedFor !== frame.linksFor) {
+        this.linksAskedFor = frame.linksFor;
+        this.onLinksNeeded?.(frame.linksFor);
+      }
+      return;
+    }
+    const colors = mesh.instanceColor.array as Float32Array;
+    const count = Math.min(frame.links, mesh.count);
+    for (let link = 0; link < count; link++) {
+      const [r, g, b] = loadColor(frame.load[link]!);
+      colors[link * 3] = r / 255;
+      colors[link * 3 + 1] = g / 255;
+      colors[link * 3 + 2] = b / 255;
+    }
+    mesh.instanceColor.needsUpdate = true;
+    mesh.visible = true;
   }
 
   private createVehicleMesh(tileSize: number): void {
@@ -362,6 +458,7 @@ export class DebugRenderer {
       else if (history.length === FRAME_HISTORY) this.spareFrames.push(history.shift()!);
       history.push(incoming);
       this.pairedFrom = null;
+      this.updateLinkLoads(incoming);
     }
     if (history.length === 0) return;
 
@@ -372,7 +469,7 @@ export class DebugRenderer {
     const from = history[i]!;
     const to = history[Math.min(i + 1, history.length - 1)]!;
     if (from !== this.pairedFrom || to !== this.pairedTo) {
-      pairVehicles(from, to, scratch.bySlot, scratch.pairs);
+      pairVehicles(from, to, scratch.table, scratch.pairs);
       this.pairedFrom = from;
       this.pairedTo = to;
     }

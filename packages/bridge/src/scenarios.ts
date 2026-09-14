@@ -12,6 +12,8 @@ export interface ScenarioInfo {
   readonly description: string;
   /** The camera opens on this lit cross; without one the whole map is in view. */
   readonly cross?: CrossLayout;
+  /** The side of the map the scenario is built on, tiles; the default map without one. */
+  readonly mapSize?: number;
 }
 
 const LISTED = [
@@ -26,6 +28,13 @@ const LISTED = [
     query: 'living',
     title: 'Живой город',
     description: 'Город растёт из зон сам: жители заселяются, работают, ходят в магазины и ездят, казна собирает налоги и платит за содержание',
+  },
+  {
+    name: 'metropolis',
+    query: 'metropolis',
+    title: 'Мегаполис',
+    description: 'Около миллиона жителей на карте 8×8 км: небоскрёбы в центре, магистрали со светофорами, заводы и пригороды; открывается заселённым',
+    mapSize: 800,
   },
   {
     name: 'signalizedCross',

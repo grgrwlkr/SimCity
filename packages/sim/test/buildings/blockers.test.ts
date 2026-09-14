@@ -210,8 +210,18 @@ describe('zone density and class', () => {
     expect(decays(0, 0, 4, 10), 'a building the market gives nobody').toBe(true);
   });
 
+  // Stage 3½e: a tower holds thousands, on a lot a zone three tiles deep from two roads still reaches.
+  it('towerDensityHoldsThousands', () => {
+    const tower = { density: 'Tower', class: 'Middle' } as const;
+    expect(footprintSides('Tower'), 'a tower stands on a whole lot between two roads').toEqual([6, 6]);
+    expect(densityLevels('Tower'), 'and is built to its full height').toEqual([3, 3]);
+    expect(profileCapacity('Residential', 3, 36, tower), 'residents of a tower').toEqual([2400, 0]);
+    expect(profileCapacity('Commercial', 3, 36, tower), 'jobs in an office tower').toEqual([0, 2000]);
+    expect(densityHeightFactor('Tower')).toBeGreaterThan(densityHeightFactor('High'));
+  });
+
   it('zoneDensityHighZoneGrowsLargeTallBuildingsAndLowZoneSmallOnes', () => {
-    for (const density of ['Low', 'High'] as const) {
+    for (const density of ['Low', 'High', 'Tower'] as const) {
       const w = growthWorld(twoRoadBlock(density));
       growForHours(w, 48);
       const grown = w.buildings.all();

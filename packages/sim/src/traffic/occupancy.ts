@@ -181,6 +181,9 @@ export function updateTrafficOccupancy(w: World): void {
 export function updateTrafficIndex(w: World): void {
   w.trafficOccupancy.ensureLen(w.grid.len());
   w.trafficRoadCache.ensureBuilt(w);
+  // No vehicle on any road this tick and the index already says so: the scan would write the same zeros.
+  const index = w.trafficIndex;
+  if (w.trafficOccupancy.touched.length === 0 && index.vehiclesOnRoads === 0 && index.maxCongestionTile === null && index.roadTiles === w.trafficRoadCache.roadTiles) return;
   // Rust scans every tile and skips those without capacity; the ascending road list is the same visit.
   writeIndex(w, w.trafficRoadCache.roadIdx);
 }

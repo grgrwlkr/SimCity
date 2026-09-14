@@ -6,6 +6,8 @@ import { citizenTripPlanner, handleTripFinished, newCitizen } from '../src/citiz
 import { emptyEvents } from '../src/events';
 import { tileFToWorld } from '../src/map/coords';
 import { giveCar, streetPlace, takeParking } from '../src/parking';
+import { runsThisTick } from '../src/app';
+import { FIXED_UPDATE, TICK_DT_NS } from '../src/schedule';
 import { SECOND_NS } from '../src/timer';
 import { summarizeTraffic } from '../src/traffic/stats';
 import { forEachWalker, moveWalkers } from '../src/walkers';
@@ -142,6 +144,31 @@ describe('walkers', () => {
     expect(path.filter((p) => p.x < 29.5 && p.y < 9.5), 'west of the box it keeps to the north side').toEqual([]);
     expect(path.filter((p) => p.x > 31.5 && p.y > 9.5), 'east of it to the south side').toEqual([]);
     expect(fromFootprint(shop, path.at(-1)!), `and gets to the shop: ${JSON.stringify(path.at(-1))}`).toBeLessThan(1);
+  });
+
+  // Stage 3½e: walkers step once a game second; between their seconds they are drawn walking on, never past a crossing
+  // whose light may hold them.
+  it('aWalkerIsDrawnMovingBetweenItsSeconds', () => {
+    const { w, house, shop } = crossroads();
+    const intersectionId = w.intersections.intersectionIdAt(t(30, 9))!;
+    w.trafficLights = [
+      { intersectionId, intersectionKey: 'test', pos: t(30, 9), phase: 'EastWestGreen', phaseTimer: 1e9, greenDuration: 20, yellowDuration: 3, allRedDuration: 4 },
+    ];
+    goShopping(w, house, shop);
+    const entry = FIXED_UPDATE.find((s) => s.name === 'moveWalkers')!;
+    const drawn: Point[] = [];
+    for (let tick = 0; tick < 6000; tick++) {
+      if (runsThisTick(w, entry)) moveWalkers(w, 10 * TICK_DT_NS);
+      w.tick += 1;
+      const seen = walkers(w);
+      if (seen.length > 0) drawn.push(seen[0]!);
+    }
+    const steps = drawn.slice(1).map((p, i) => Math.abs(p.x - drawn[i]!.x) + Math.abs(p.y - drawn[i]!.y));
+    // Five kilometres an hour on tiles of ten metres: 0.014 tiles a tick.
+    expect(Math.max(...steps), 'no jump between ticks').toBeLessThan(0.03);
+    // Two minutes up to the first crossing, on its green.
+    expect(steps.slice(0, 1200).filter((step) => step > 0).length, 'moving on every tick of the way, not once a second').toBeGreaterThan(1150);
+    expect(drawn.filter((p) => p.y < 9.5), 'never drawn across the road on its red').toEqual([]);
   });
 
   it('aWalkerWaitsForTheirGreenToCross', () => {

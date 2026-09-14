@@ -40,6 +40,8 @@ const RETRY_SECS = 1;
 const MIN_FLOW_WAIT_SECS = 0.01;
 /** Flow this close to a whole car counts as one. */
 const TOKEN_EPSILON = 1e-9;
+/** New routes a tick searches at most (stage 3½e): a minute of a rush sends thousands of trips out at once. */
+export const ROUTE_SEARCHES_PER_TICK = 400;
 /** Link times move a share towards what the cars measured, once a game minute. */
 const COST_UPDATE_SECS = 60;
 const COST_EMA = 0.3;
@@ -53,6 +55,8 @@ export interface MesoStats {
   forcedPushes: number;
   /** Trips with no link beside their ends or no route between them. */
   dropped: number;
+  /** Routes searched rather than taken from the cache. */
+  routeSearches: number;
 }
 
 /** Metres of queue a link holds: its lanes over its length. */
@@ -84,7 +88,11 @@ export class MesoTraffic {
   nowSec = 0;
   /** Trips waiting for room on their first link, oldest first. */
   pending: TripRequested[] = [];
-  readonly stats: MesoStats = { arrived: 0, forcedPushes: 0, dropped: 0 };
+  readonly stats: MesoStats = { arrived: 0, forcedPushes: 0, dropped: 0, routeSearches: 0 };
+  /** New routes a tick may search; the trips past it wait a tick to leave. */
+  routeSearchesPerTick = ROUTE_SEARCHES_PER_TICK;
+  /** Routes searched in the tick under way. */
+  searchesThisTick = 0;
 
   highWater = 0;
   count = 0;
@@ -263,6 +271,53 @@ let via = new Int32Array(0);
 let reached = new Uint32Array(0);
 let settled = new Uint32Array(0);
 let search = 0;
+// A binary min-heap of links by cost, as `LinkHeap` orders it, on typed arrays that live between searches.
+let heapKeys = new Float64Array(1024);
+let heapLinks = new Int32Array(1024);
+let heapSize = 0;
+
+function heapPush(key: number, link: number): void {
+  if (heapSize === heapKeys.length) {
+    const [keys, links] = [new Float64Array(heapSize * 2), new Int32Array(heapSize * 2)];
+    keys.set(heapKeys);
+    links.set(heapLinks);
+    [heapKeys, heapLinks] = [keys, links];
+  }
+  let i = heapSize;
+  heapSize += 1;
+  while (i > 0) {
+    const up = (i - 1) >> 1;
+    if (heapKeys[up]! <= key) break;
+    heapKeys[i] = heapKeys[up]!;
+    heapLinks[i] = heapLinks[up]!;
+    i = up;
+  }
+  heapKeys[i] = key;
+  heapLinks[i] = link;
+}
+
+/** Takes the link of the least cost. */
+function heapPop(): number {
+  const top = heapLinks[0]!;
+  heapSize -= 1;
+  const key = heapKeys[heapSize]!;
+  const link = heapLinks[heapSize]!;
+  if (heapSize > 0) {
+    let i = 0;
+    for (;;) {
+      const left = 2 * i + 1;
+      if (left >= heapSize) break;
+      const child = left + 1 < heapSize && heapKeys[left + 1]! < heapKeys[left]! ? left + 1 : left;
+      if (heapKeys[child]! >= key) break;
+      heapKeys[i] = heapKeys[child]!;
+      heapLinks[i] = heapLinks[child]!;
+      i = child;
+    }
+    heapKeys[i] = key;
+    heapLinks[i] = link;
+  }
+  return top;
+}
 
 /** A* over the links from the end of `from` to the start of `to` by the current link times: successor indices, or `null`. */
 function findRoute(w: World, from: number, to: number): Int32Array | null {
@@ -272,6 +327,8 @@ function findRoute(w: World, from: number, to: number): Int32Array | null {
   const key = from * n + to;
   const cached = m.routeCache.get(key);
   if (cached !== undefined) return cached;
+  m.stats.routeSearches += 1;
+  m.searchesThisTick += 1;
   if (reached.length < n) {
     [best, parent, via, reached, settled] = [new Float64Array(n), new Int32Array(n), new Int32Array(n), new Uint32Array(n), new Uint32Array(n)];
     search = 0;
@@ -279,26 +336,31 @@ function findRoute(w: World, from: number, to: number): Int32Array | null {
   search += 1;
   const box = boxSeconds(w);
   const fast = w.trafficConfig.tileMeters / (HEURISTIC_KMH / 3.6);
-  const estimate = (link: number) => (Math.abs(g.startX[to]! - g.startX[link]!) + Math.abs(g.startY[to]! - g.startY[link]!)) * fast;
-  const heap = new LinkHeap();
-  const relax = (link: number, base: number, from: number) => {
-    for (let k = g.succStart[link]!; k < g.succStart[link + 1]!; k++) {
-      const next = g.succLink[k]!;
-      const cost = base + g.succBoxTiles[k]! * box;
+  const [toX, toY] = [g.startX[to]!, g.startY[to]!];
+  const { succStart, succLink, succBoxTiles, startX, startY } = g;
+  const linkSeconds = m.linkSeconds;
+  heapSize = 0;
+  for (let link = from, base = 0, origin = -1; ; ) {
+    for (let k = succStart[link]!; k < succStart[link + 1]!; k++) {
+      const next = succLink[k]!;
+      const cost = base + succBoxTiles[k]! * box;
       if (reached[next] === search && cost >= best[next]!) continue;
       reached[next] = search;
       best[next] = cost;
-      parent[next] = from;
+      parent[next] = origin;
       via[next] = k;
-      heap.push(cost + estimate(next), next);
+      heapPush(cost + (Math.abs(toX - startX[next]!) + Math.abs(toY - startY[next]!)) * fast, next);
     }
-  };
-  relax(from, 0, -1);
-  while (heap.size > 0) {
-    const [, link] = heap.pop();
-    if (settled[link] === search) continue;
-    settled[link] = search;
-    if (link === to) {
+    let found = -1;
+    while (heapSize > 0) {
+      const candidate = heapPop();
+      if (settled[candidate] === search) continue;
+      settled[candidate] = search;
+      found = candidate;
+      break;
+    }
+    if (found < 0) break;
+    if (found === to) {
       const steps: number[] = [];
       for (let at = to, guard = 0; guard <= n; guard++) {
         steps.push(via[at]!);
@@ -309,7 +371,9 @@ function findRoute(w: World, from: number, to: number): Int32Array | null {
       m.routeCache.set(key, route);
       return route;
     }
-    relax(link, best[link]! + m.linkSeconds[link]!, link);
+    link = found;
+    base = best[found]! + linkSeconds[found]!;
+    origin = found;
   }
   m.routeCache.set(key, null);
   return null;
@@ -332,6 +396,7 @@ function spawn(w: World, trip: TripRequested): 'spawned' | 'wait' | 'dropped' {
   const startOffset = g.offsetAt(start!);
   const goalOffset = g.offsetAt(goal!);
   const straight = startLink === goalLink && goalOffset >= startOffset;
+  if (!straight && m.searchesThisTick >= m.routeSearchesPerTick && !m.routeCache.has(startLink * g.linkCount + goalLink)) return 'wait';
   const route = straight ? EMPTY_ROUTE : findRoute(w, startLink, goalLink);
   if (route === null) {
     m.stats.dropped += 1;
@@ -441,22 +506,29 @@ function updateLinkTimes(w: World): void {
   m.nextCostUpdate = m.nowSec + COST_UPDATE_SECS;
 }
 
-/** One tick of meso traffic: game time on, waiting trips join, due heads leave or arrive. */
+/** The trips waiting to leave join their first link where it has room, oldest first; the rest wait on. */
+function joinWaitingTrips(w: World): void {
+  const m = w.mesoTraffic;
+  if (m.pending.length === 0) return;
+  const waiting = m.pending;
+  m.pending = [];
+  for (const trip of waiting) if (spawn(w, trip) === 'wait') m.pending.push(trip);
+}
+
+/** One tick of meso traffic: game time on, waiting trips join, due heads leave or arrive, and the room they left is taken. */
 export function stepMesoTraffic(w: World, dtNs: number): void {
   const m = w.mesoTraffic;
   const g = w.meso;
   if (g.builtFor === null) return;
   if (m.linksFor !== g.builtFor) resetLinks(w);
   m.nowSec += (dtNs / 1e9) * (DEFAULT_GAME_HOUR_NS / w.gameHourNs);
+  m.searchesThisTick = 0;
   const now = m.nowSec;
 
-  if (m.pending.length > 0) {
-    const waiting = m.pending;
-    m.pending = [];
-    for (const trip of waiting) if (spawn(w, trip) === 'wait') m.pending.push(trip);
-  }
+  joinWaitingTrips(w);
 
   let lights: Map<number, TrafficLight> | undefined;
+  let heads = 0;
   while (m.due.size > 0 && m.due.peekKey() <= now) {
     const [at, link] = m.due.pop();
     const car = m.head[link]!;
@@ -466,7 +538,10 @@ export function stepMesoTraffic(w: World, dtNs: number): void {
     // At the second it came due, not at the end of the tick: a tick of several game seconds lets as many through as its
     // seconds in tenths. The lights stand as they are at the end of the tick.
     leave(w, link, Math.max(at, m.readySec[car]!), lights);
+    heads += 1;
   }
+  // Room that freed up in this tick takes the trips that waited for it now, not at the start of the next tick.
+  if (heads > 0) joinWaitingTrips(w);
 
   if (now >= m.nextCostUpdate) updateLinkTimes(w);
 }

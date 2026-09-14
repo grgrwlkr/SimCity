@@ -181,9 +181,12 @@ function hashTraffic(h: Fnv64, w: World): void {
 /** Buildings, the utility network and the inputs growth reads: demand, city fields and land value. */
 function hashBuildings(h: Fnv64, w: World): void {
   h.str(stableJson(w.buildings.fingerprintState()));
+  h.int(w.buildingsChecked.mapEditVersion);
+  h.int(w.buildingsChecked.buildingsVersion);
   const network = w.utilityNetwork;
   h.int(network.version);
   h.int(network.mapVersion);
+  h.i32(network.consumersSignature);
   h.bytes(network.served);
   h.int(w.utilitySupply.version);
   h.str(stableJson(w.utilitySupply.components));
@@ -253,6 +256,8 @@ function hashMeso(h: Fnv64, w: World): void {
   h.u32(m.highWater);
   h.u32(m.count);
   h.u32(m.trucks);
+  h.u32(m.routeSearchesPerTick);
+  h.u32(m.searchesThisTick);
   for (const layer of [m.citizen, m.vehicle, m.purpose, m.link, m.enterSec, m.readySec, m.goalLink, m.goalOffset, m.next, m.heldSince, m.atRed, m.routeCursor, m.fromOffset, m.prevLink, m.generation]) {
     h.bytes(layer.subarray(0, m.highWater));
   }
@@ -479,6 +484,7 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
       }
       h.u64(w.mapSeed);
       h.int(w.gameHourNs);
+      h.bool(w.microTraffic);
       h.str(stableJson([...w.systemErrors.values()]));
       h.str(w.debugFailSystem ?? '');
     },

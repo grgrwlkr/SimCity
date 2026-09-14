@@ -372,7 +372,7 @@ export function buildLaneletGraphInner(
 
 /** `build_lanelet_graph` (FixedUpdate / GraphUpdate): early-returns when built for the current version. */
 export function buildLaneletGraph(w: World): void {
-  if (w.laneletGraph.isBuiltFor(w.graphVersion, w.grid)) return;
+  if (!w.microTraffic || w.laneletGraph.isBuiltFor(w.graphVersion, w.grid)) return;
   const { graph, matrices } = buildLaneletGraphInner(
     w.grid,
     w.intersections,

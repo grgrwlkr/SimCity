@@ -143,6 +143,10 @@ export interface World {
   city: City;
   /** Length of a game hour at ×1: a real hour, shorter only in tests that run days in a hurry. */
   readonly gameHourNs: number;
+  /** Micro traffic runs in this world: its lane graph and lanelets are built. The metropolis drives by meso only. */
+  microTraffic: boolean;
+  /** The map edit and the buildings `despawnInvalidBuildings` last checked against. */
+  readonly buildingsChecked: { mapEditVersion: number; buildingsVersion: number };
   /** Systems that threw, by name; the worker never dies of one. */
   readonly systemErrors: Map<string, SystemError>;
   /** A system made to throw on every tick, for resilience checks; `null` in play. */
@@ -200,6 +204,8 @@ export interface WorldOptions {
   readonly mapHeight?: number;
   /** A game hour at ×1; a real minute unless a test runs days in a hurry. */
   readonly gameHourNs?: number;
+  /** Whether micro traffic runs (the default). */
+  readonly microTraffic?: boolean;
 }
 
 export function createWorld(options: WorldOptions = {}): World {
@@ -257,6 +263,8 @@ export function createWorld(options: WorldOptions = {}): World {
     mapSeed: STARTUP_MAP_SEED,
     city: defaultCity(),
     gameHourNs: options.gameHourNs ?? DEFAULT_GAME_HOUR_NS,
+    microTraffic: options.microTraffic ?? true,
+    buildingsChecked: { mapEditVersion: -1, buildingsVersion: -1 },
     systemErrors: new Map(),
     debugFailSystem: null,
     clock: createSimClock(options.gameHourNs ?? DEFAULT_GAME_HOUR_NS),
@@ -281,7 +289,7 @@ export function createWorld(options: WorldOptions = {}): World {
     serviceFunding: new ServiceFunding(),
     loans: new Loans(),
     serviceCoverage: new ServiceCoverageIndex(),
-    citizens: new Citizens(),
+    citizens: new Citizens(mapConfig.width, mapConfig.height),
     citizenConfig: defaultCitizenConfig(),
     parking: new Parking(grid.len()),
     regional: new RegionalTrips(),

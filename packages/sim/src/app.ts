@@ -1,7 +1,7 @@
 // Driving the world one app update at a time, in the order of Bevy's main schedule:
 // StateTransition → FixedUpdate (as many ticks as the frame owes) → Update's CommandApply.
 // A system that throws is logged in the world's journal and skipped for that call: the worker never dies of one.
-import { DEFAULT_GAME_HOUR_NS } from './city';
+import { periodTicks } from './rates';
 import { COMMAND_APPLY, FIXED_UPDATE, TICK_DT_NS, UPDATE_GRAPH, type SystemEntry } from './schedule';
 import { applyStateTransition } from './state';
 import type { World } from './world';
@@ -22,23 +22,21 @@ export function recordSystemError(w: World, system: string, error: unknown): voi
 /** Whether a system runs on this tick: every tick, or on the tick its period of game time completes. */
 export function runsThisTick(w: World, system: Pick<SystemEntry, 'everyGameNs'>): boolean {
   if (system.everyGameNs === undefined) return true;
-  // A tick is a tenth of a game second on the real-time clock, more on a test world's faster one.
-  const gameNsPerTick = (TICK_DT_NS * DEFAULT_GAME_HOUR_NS) / w.gameHourNs;
-  const period = Math.max(1, Math.round(system.everyGameNs / gameNsPerTick));
   // Aligned with the clock: the tick the minute, hour or day turns on is the last tick of a period.
-  return (w.tick + 1) % period === 0;
+  return (w.tick + 1) % periodTicks(w, system.everyGameNs) === 0;
 }
 
 function failIfAsked(w: World, system: string): void {
   if (w.debugFailSystem === system) throw new Error(`debug failure of ${system}`);
 }
 
-export function runFixedTick(w: World): void {
-  for (const system of FIXED_UPDATE) {
+/** One fixed tick of `systems`; a system of a period is handed the ticks of its period. */
+export function runFixedTick(w: World, systems: readonly SystemEntry[] = FIXED_UPDATE): void {
+  for (const system of systems) {
     if (!system.runIn.includes(w.appState) || !runsThisTick(w, system)) continue;
     try {
       failIfAsked(w, system.name);
-      system.run(w, TICK_DT_NS);
+      system.run(w, system.everyGameNs === undefined ? TICK_DT_NS : TICK_DT_NS * periodTicks(w, system.everyGameNs));
     } catch (error) {
       recordSystemError(w, system.name, error);
     }

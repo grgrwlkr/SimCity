@@ -28,6 +28,9 @@ const renderer = client.ready.then(async (sab) => {
   const r = await DebugRenderer.create(canvas);
   r.attachRenderBuffer(new RenderReader(sab));
   installViewControls(canvas, r, () => mapConfig);
+  // The frame holds only what the camera sees; at ×60 and above it carries the load of links the renderer draws.
+  r.onViewChange = (view) => void client.request({ t: 'setView', view });
+  r.onLinksNeeded = () => void client.request({ t: 'mesoLinks' }).then((links) => r.setLinks(links));
   return r;
 });
 const api = installSimApi(client, debug, renderer, () => mapConfig);
@@ -98,7 +101,9 @@ void api.ready
   .then(async () => {
     if (scenario !== undefined) {
       await api.setState('InGame');
-      await api.scenario(scenario.name);
+      // `&size=<tiles>` builds a scenario of its own map on another size.
+      const size = params.get('size');
+      await api.scenario(scenario.name, size === null ? undefined : Number(size));
     }
     return api.snapshot();
   })

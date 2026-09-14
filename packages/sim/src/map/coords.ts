@@ -11,6 +11,29 @@ export interface MapConfig {
 
 export const DEFAULT_MAP_CONFIG: MapConfig = { width: 128, height: 128, tileSize: 16 };
 
+/** A rectangle of the map in fractional tile coordinates, bounds included: what a camera sees. */
+export interface TileView {
+  readonly minX: number;
+  readonly minY: number;
+  readonly maxX: number;
+  readonly maxY: number;
+}
+
+export function inTileView(view: TileView | undefined, x: number, y: number): boolean {
+  return view === undefined || (x >= view.minX && x <= view.maxX && y >= view.minY && y <= view.maxY);
+}
+
+/** The view in tiles of a rectangle of world coordinates. */
+export function worldRectToTiles(cfg: MapConfig, left: number, right: number, bottom: number, top: number): TileView {
+  const origin = mapOrigin(cfg);
+  return {
+    minX: (left - origin.x) / cfg.tileSize,
+    maxX: (right - origin.x) / cfg.tileSize,
+    minY: (bottom - origin.y) / cfg.tileSize,
+    maxY: (top - origin.y) / cfg.tileSize,
+  };
+}
+
 export interface Vec2 {
   readonly x: number;
   readonly y: number;

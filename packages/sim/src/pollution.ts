@@ -1,7 +1,7 @@
 // Port of crates/simcity_sim/src/game/pollution.rs: open factories pollute the tiles within ten of their anchor.
 // One chunk of 32 tiles is recomputed a tick, zeroed and refilled in the same tick, so a reader never sees a
 // polluted tile at zero for a whole pass.
-import { isOperational } from './buildings/building';
+import { isOperational, type Building } from './buildings/building';
 import { sqrtF32 } from './math';
 import type { World } from './world';
 
@@ -33,6 +33,17 @@ export class PollutionIndex {
   }
 }
 
+/** Derived, not state: the industrial buildings, open or not, for the buildings version they were listed for. */
+const factoryCache = new WeakMap<World, { readonly version: number; readonly factories: readonly Building[] }>();
+
+function factories(w: World): readonly Building[] {
+  const cached = factoryCache.get(w);
+  if (cached?.version === w.buildings.version) return cached.factories;
+  const list = w.buildings.all().filter((b) => b.kind === 'Industrial');
+  factoryCache.set(w, { version: w.buildings.version, factories: list });
+  return list;
+}
+
 /**
  * `compute_pollution` (PostSimStep::Pollution). A chunk is a contiguous row-major range, so only the rows of a
  * factory's disc that fall in it are scanned. Rust counted factories still under construction.
@@ -55,8 +66,8 @@ export function computePollution(w: World): void {
   const firstRow = Math.trunc(start / width);
   const lastRow = Math.trunc((end - 1) / width);
   const r = POLLUTION_RADIUS;
-  for (const b of w.buildings.all()) {
-    if (b.kind !== 'Industrial' || !isOperational(b)) continue;
+  for (const b of factories(w)) {
+    if (!isOperational(b)) continue;
     const { x: ax, y: ay } = b.anchor;
     for (let dy = Math.max(-r, firstRow - ay); dy <= Math.min(r, lastRow - ay); dy++) {
       for (let dx = -r; dx <= r; dx++) {

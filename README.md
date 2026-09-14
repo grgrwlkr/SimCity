@@ -29,7 +29,7 @@ cargo run --release --features profile_chrome
 
 ## TypeScript + Three.js порт (в работе)
 
-Игра переезжает в браузер и в Tauri: программа и контракты — в `docs/plans/2026-09-11-ts-threejs-migration-plan.md`, код — bun-монорепо `packages/` в корне. Готов этап 0: симуляция на фиксированном шаге в Web Worker, бит-в-бит порт RNG из Rust, отпечаток состояния одинаков в Chromium и WebKit.
+Игра переезжает в браузер и в Tauri: программа и контракты — в `docs/plans/2026-09-11-ts-threejs-migration-plan.md`, код — bun-монорепо `packages/` в корне. Готов этап 0: симуляция на фиксированном шаге в Web Worker, бит-в-бит порт RNG из Rust, отпечаток состояния совпадает между двумя прогонами в Chromium.
 
 ```bash
 bun install

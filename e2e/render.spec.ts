@@ -1,8 +1,9 @@
-// Stage 1½: the debug renderer in Chromium and WebKit. The gate reads the class of every tile back
+// Stage 1½: the debug renderer in Chromium. The gate reads the class of every tile back
 // from a screenshot of the Rust test city and compares it with the Rust grid and the Rust frame.
 import { expect, test, type Page } from '@playwright/test';
 import { existsSync, readFileSync } from 'node:fs';
 import type { CameraState } from '../packages/app/src/simApi';
+import { SAMPLE_CARS } from '../packages/bridge/src/sample';
 import { SCENARIOS } from '../packages/bridge/src/scenarios';
 import { CLASS_COLORS, VEHICLE_COLORS, layoutClass, tileClass, type LayoutClass, type TileClass } from '../packages/render/src/palette';
 import { tileToWorld } from '../packages/sim/src/index';
@@ -219,8 +220,41 @@ test('livingCityShowsItsCitizens', async ({ page }) => {
 
   await expect(page.getByTestId('citizens')).toHaveText(/^Жители \d/, { timeout: 30_000 });
   await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.lights), { timeout: 30_000 }).toBe(36);
-  // Stage 3½d: the cars of its citizens are drawn, the parked ones from the start.
-  await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.vehicles), { timeout: 30_000 }).toBeGreaterThan(1000);
+  // Stage 3½d: the cars of its citizens are drawn, the parked ones from the start, one cube for every tile they stand on.
+  await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.vehicles), { timeout: 30_000 }).toBeGreaterThan(100);
+});
+
+// Stage 3½d gate, in Chromium: the living city in its morning rush at ×1, where every car, parked car and person in view is drawn, and at
+// ×60, where the roads show their load and a sample of the cars drives on them.
+test('livingCityAtX1AndX60', async ({ page }, testInfo) => {
+  // Nine thousand ticks in the browser and three screenshots, drawn on the processor in headless Chromium.
+  test.setTimeout(90_000);
+  await page.goto('/?scenario=living');
+  await page.waitForFunction(() => typeof window.__sim !== 'undefined');
+  await page.evaluate(() => window.__sim.ready);
+  await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.lights), { timeout: 30_000 }).toBe(36);
+  // A quarter of an hour into the rush, stepped while paused so every run draws the same city.
+  await page.evaluate(async () => {
+    await window.__sim.setSpeed('Paused');
+    for (let minute = 0; minute < 15; minute++) await window.__sim.step(600);
+    await window.__sim.setSpeed('X1');
+  });
+  await expect
+    .poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => ({ cars: s.vehicles > 0, loadLinks: s.loadLinks })), { timeout: 15_000 })
+    .toEqual({ cars: true, loadLinks: 0 });
+  await page.locator('#view').screenshot({ path: testInfo.outputPath('living-x1.png') });
+  // Downtown by the boulevard, close enough to tell the cars, the parked ones and the people apart.
+  await page.evaluate(() => window.__sim.setCamera({ centerX: -24, centerY: -24, worldPerPixel: 0.5 }));
+  const frames = (await page.evaluate(() => window.__sim.renderStats())).frames;
+  await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.frames), { timeout: 15_000 }).toBeGreaterThan(frames + 30);
+  await page.locator('#view').screenshot({ path: testInfo.outputPath('living-x1-downtown.png') });
+
+  await page.evaluate(() => window.__sim.fitMap());
+  await page.evaluate(() => window.__sim.setSpeed('X60'));
+  await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.loadLinks), { timeout: 15_000 }).toBeGreaterThan(0);
+  const fast = await page.evaluate(() => window.__sim.renderStats());
+  expect(fast.vehicles, 'a sample of the cars').toBeLessThanOrEqual(SAMPLE_CARS);
+  await page.locator('#view').screenshot({ path: testInfo.outputPath('living-x60.png') });
 });
 
 // Stage 3½a: the speed ladder, the rate the game really runs at, and a failing system reported while the world goes on.
@@ -232,7 +266,7 @@ test('hudShowsTheSpeedLadderAndTheRealRate', async ({ page }, testInfo) => {
   await expect(page.getByRole('navigation', { name: 'Скорость' }).getByRole('button')).toHaveText(['Стоп', '×1', '×3', '×10', '×60', '×360']);
   const x60 = page.getByRole('button', { name: '×60', exact: true });
   await x60.click();
-  // The pressed state comes back with the worker's next snapshot: under a full parallel run WebKit took past 5 s once.
+  // The pressed state comes back with the worker's next snapshot: under a full parallel run it took past 5 s once.
   await expect(x60).toHaveAttribute('aria-pressed', 'true', { timeout: 15_000 });
   await expect(page.getByTestId('real-rate')).toHaveText(/^×\d+(,\d)?$/);
   await expect(page.getByTestId('clock')).toHaveText(/^День \d+, \d{2}:\d{2}:\d{2}$/);

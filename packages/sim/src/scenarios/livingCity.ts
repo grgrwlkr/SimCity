@@ -40,21 +40,12 @@ export interface CitizenTripStats {
 const ownTrips = (w: World) => w.events.tripRequested.filter((trip) => trip.citizen >= 0).length;
 const ownArrivals = (w: World) => w.events.tripFinished.filter((arrival) => arrival.citizen >= 0).length + w.events.walksFinished.length;
 
-export class LivingCityScenario {
+/** Counts the trips of a city's own citizens for the HUD, whatever the city. */
+export class CitizenTripCounter {
   private requested = 0;
   private arrived = 0;
   private lastTick = -1;
 
-  constructor(w: World, options: LivingCityOptions = {}) {
-    buildCity(w);
-    // The generated city is 1.3 km across: past 300 m its citizens drive, so its roads carry traffic until the big map
-    // of stage 3½e, where the default kilometre holds.
-    w.citizenConfig.walkMaxMeters = LIVING_CITY_WALK_MAX_METERS;
-    w.citizenConfig.labourShare = LIVING_CITY_LABOUR_SHARE;
-    Object.assign(w.regionalConfig, LIVING_CITY_REGION);
-    if (options.prebuilt ?? true) prebuildCity(w);
-    w.city.hour = LIVING_CITY_START_HOUR;
-  }
 
   /** Call before each fixed tick: the trips of the last tick are counted once, however often the host calls. */
   advance(w: World): void {
@@ -74,5 +65,19 @@ export class LivingCityScenario {
       requested: this.requested + (fresh ? ownTrips(w) : 0),
       arrived: this.arrived + (fresh ? ownArrivals(w) : 0),
     };
+  }
+}
+
+export class LivingCityScenario extends CitizenTripCounter {
+  constructor(w: World, options: LivingCityOptions = {}) {
+    super();
+    buildCity(w);
+    // The generated city is 1.3 km across: past 300 m its citizens drive, so its roads carry traffic until the big map
+    // of stage 3½e, where the default kilometre holds.
+    w.citizenConfig.walkMaxMeters = LIVING_CITY_WALK_MAX_METERS;
+    w.citizenConfig.labourShare = LIVING_CITY_LABOUR_SHARE;
+    Object.assign(w.regionalConfig, LIVING_CITY_REGION);
+    if (options.prebuilt ?? true) prebuildCity(w);
+    w.city.hour = LIVING_CITY_START_HOUR;
   }
 }
