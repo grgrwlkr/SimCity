@@ -2,7 +2,16 @@
 // the Rust test city (loaded from the stage 1 fixture); and the systems that scale with citizens on the living city
 // with 100 000 more of them (stage 3½b). The numbers go into the stage plan.
 import {
+  FIXED_UPDATE,
   LivingCityScenario,
+  METROPOLIS_SIZE,
+  MetropolisScenario,
+  TICK_DT_NS,
+  applyCommands,
+  applyStateTransition,
+  recordSystemError,
+  runUpdateGraph,
+  runsThisTick,
   SHIFT_MINUTES,
   WORK_START_WINDOW,
   assignJobs,
@@ -107,6 +116,70 @@ function benchCitizens(total: number): void {
   );
 }
 
-bench('empty map', buildHeadlessGame());
-bench('Rust test city (graphs and lanelets built, no vehicles before stage 2)', loadTestCity());
-benchCitizens(100_000);
+/**
+ * The metropolis of stage 3½e: how long it takes to build and move into, the heap it holds, then `ticks` fixed ticks from
+ * six in the morning with the cost of every system, as `frame` runs them.
+ */
+function benchMetropolis(size: number, ticks: number): void {
+  const heap = () => Math.round(process.memoryUsage().heapUsed / 1e6);
+  const before = heap();
+  const w = createWorld({ mapWidth: size, mapHeight: size });
+  requestState(w, 'InGame');
+  frame(w, 0);
+  const started = performance.now();
+  new MetropolisScenario(w);
+  const buildMs = performance.now() - started;
+  const bySystem = new Map<string, { total: number; max: number; calls: number }>();
+  const samples: number[] = [];
+  for (let tick = 0; tick < ticks; tick++) {
+    const tickStart = performance.now();
+    applyStateTransition(w);
+    for (const system of FIXED_UPDATE) {
+      if (!system.runIn.includes(w.appState) || !runsThisTick(w, system)) continue;
+      const t0 = performance.now();
+      try {
+        system.run(w, TICK_DT_NS);
+      } catch (error) {
+        recordSystemError(w, system.name, error);
+      }
+      const ms = performance.now() - t0;
+      const entry = bySystem.get(system.name) ?? { total: 0, max: 0, calls: 0 };
+      entry.total += ms;
+      entry.max = Math.max(entry.max, ms);
+      entry.calls += 1;
+      bySystem.set(system.name, entry);
+    }
+    w.tick += 1;
+    applyCommands(w);
+    runUpdateGraph(w);
+    samples.push(performance.now() - tickStart);
+  }
+  const systems = [...bySystem]
+    .sort(([, a], [, b]) => b.total - a.total)
+    .slice(0, 15)
+    .map(([name, e]) => ({ name, totalMs: round(e.total), meanMs: round(e.total / e.calls), maxMs: round(e.max), calls: e.calls }));
+  console.log(
+    JSON.stringify({
+      world: `metropolis ${size}×${size}`,
+      citizens: w.citizens.count,
+      buildings: w.buildings.all().length,
+      links: w.meso.linkCount,
+      buildMs: round(buildMs),
+      heapMb: heap() - before,
+      ticks,
+      clock: `${w.city.hour}:${w.city.minute}`,
+      errors: [...w.systemErrors.keys()],
+      tick: percentiles(samples.slice(1)),
+      firstTickMs: round(samples[0] ?? 0),
+    }),
+  );
+  console.log(JSON.stringify(systems));
+}
+
+const only = process.argv[2];
+if (only === undefined || only === 'small') {
+  bench('empty map', buildHeadlessGame());
+  bench('Rust test city (graphs and lanelets built, no vehicles before stage 2)', loadTestCity());
+  benchCitizens(100_000);
+}
+if (only === undefined || only === 'metropolis') benchMetropolis(Number(process.argv[3] ?? METROPOLIS_SIZE), Number(process.argv[4] ?? 3000));
