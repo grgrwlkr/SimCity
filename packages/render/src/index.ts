@@ -8,3 +8,6 @@ export * from './palette';
 export * from './picking';
 export * from './atlas';
 export * from './renderPrimitives';
+export * from './renderConfig';
+export * from './overlays';
+export * from './dayNight';
