@@ -6,3 +6,4 @@ export * from './interpolate';
 export * from './mapChunks';
 export * from './palette';
 export * from './picking';
+export * from './atlas';
