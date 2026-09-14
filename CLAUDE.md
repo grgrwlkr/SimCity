@@ -98,6 +98,7 @@ bun run dev         # Vite, http://localhost:5174, ?debug=1
 - `packages/sim` — симуляция без DOM, часов и хоста. Время приходит как `dtNs`, случайность только из `StdRng`, это бит-в-бит порт `rand 0.10.1`. ESLint запрещает там `Math.random`, `Date`, float-функции `Math.*`, `TODO` и `any`.
 - `packages/bridge` — воркер, драйвер fixed-step 10 Гц, протокол, render-SAB с двойным буфером. `render`, `ui`, `app` — кадр, HUD на React + zustand, точка входа Vite.
 - Порядок систем — массив `FIXED_UPDATE` в `packages/sim/src/schedule.ts`. Новая система встаёт в конкретную позицию с комментарием, после чего она идёт и что читает.
+- CI — только порт: `.github/workflows/ci.yml` на `ubuntu-latest` гоняет `typecheck`, `lint`, `test` матрицей и `e2e` в headless Chromium на каждый PR и push в `main` и ветку порта; Rust в CI не собирается, трейсы упавшего e2e — в артефакте `playwright-test-results`.
 - Портированный Rust-тест сохраняет имя в camelCase и ссылку на исходный файл.
 - `tools/rand-vectors` — Rust-генератор эталона RNG со своим `[workspace]`; версии крейтов пинятся под корневой `Cargo.lock`.
 - `window.__sim` в DevTools и Playwright: `snapshot() step(n) fingerprint() cmd(json) setState(s) setSpeed(s) rngProbe(seed, n) renderFrame()`, для рендера `loadGridHex(layers) debugVehicles(list) camera() setCamera(s) fitMap() pickTile(x, y) renderStats()`. Флаг `?debug=1` включает `__sim.debug` и оверлеи: сетку, боксы перекрёстков, лейнлеты.
