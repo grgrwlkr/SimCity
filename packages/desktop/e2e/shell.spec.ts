@@ -37,6 +37,19 @@ test('startsWithNothingOnScreenAndTheSimAnswers', async () => {
   }
 });
 
+test('aMalformedAssetPathGets404', async () => {
+  const { app, page } = await launch();
+  try {
+    const statuses = await page.evaluate(async () => {
+      const status = (url: string) => fetch(url).then((r) => r.status, (e: unknown) => `rejected: ${String(e)}`);
+      return { badPercent: await status('app://bundle/assets/%E0%A4%A'), missing: await status('app://bundle/assets/none.js') };
+    });
+    expect(statuses).toEqual({ badPercent: 404, missing: 404 });
+  } finally {
+    await app.close();
+  }
+});
+
 test('theTestCityHoldsItsFrameRate', async () => {
   const { app, page } = await launch();
   try {

@@ -34,13 +34,21 @@ protocol.registerSchemesAsPrivileged([
 
 async function serveRenderer(request: Request): Promise<Response> {
   const { host, pathname } = new URL(request.url);
-  const file = path.resolve(RENDERER_DIR, `.${decodeURIComponent(pathname === '/' ? '/index.html' : pathname)}`);
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname === '/' ? '/index.html' : pathname);
+  } catch {
+    // A malformed `%xx` would otherwise reject the handler and surface as a net error.
+    return new Response('not found', { status: 404 });
+  }
+  const file = path.resolve(RENDERER_DIR, `.${decoded}`);
   const relative = path.relative(RENDERER_DIR, file);
   if (host !== APP_HOST || relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
     return new Response('not found', { status: 404 });
   }
-  const response = await net.fetch(pathToFileURL(file).toString());
-  if (!response.ok) return new Response('not found', { status: 404 });
+  // A file that is not in the bundle makes `net.fetch` throw rather than answer with an error status.
+  const response = await net.fetch(pathToFileURL(file).toString()).catch(() => null);
+  if (response === null || !response.ok) return new Response('not found', { status: 404 });
   return new Response(response.body, {
     headers: {
       'Content-Type': MIME[path.extname(file)] ?? 'application/octet-stream',

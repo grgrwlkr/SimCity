@@ -1,4 +1,4 @@
-// Stage 7: the gamepad layer in both engines — silent without a pad, and a pad drives the camera and the clock.
+// Stage 7: the gamepad layer in Chromium — silent without a pad, and a pad drives the camera and the clock.
 import { expect, test } from '@playwright/test';
 import type {} from '../packages/app/src/simApi';
 
