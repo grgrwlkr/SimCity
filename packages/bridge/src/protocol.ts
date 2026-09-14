@@ -105,6 +105,14 @@ export interface MesoLinksReply {
   readonly endY: Float32Array;
 }
 
+/** The cost of the last ticks the worker ran, stepped or at speed. */
+export interface TickStatsReply {
+  readonly count: number;
+  readonly p50Ms: number;
+  readonly p99Ms: number;
+  readonly maxMs: number;
+}
+
 /** A vehicle placed by hand into the render layer until traffic exists (stage 2). World coordinates. */
 export interface DebugVehicle {
   readonly x: number;
@@ -148,7 +156,10 @@ export type Request =
   | { readonly t: 'debugFailSystem'; readonly system: string | null }
   /** What the camera sees (`null` for everything): the render frame holds only what lies in it, with a margin. */
   | { readonly t: 'setView'; readonly view: WorldView | null }
-  | { readonly t: 'mesoLinks' };
+  | { readonly t: 'mesoLinks' }
+  /** The cost of the last 4 096 ticks at most, since the last reset. */
+  | { readonly t: 'tickStats' }
+  | { readonly t: 'resetTickStats' };
 
 export interface ReplyByRequest {
   readonly cmd: null;
@@ -169,6 +180,8 @@ export interface ReplyByRequest {
   readonly debugFailSystem: null;
   readonly setView: null;
   readonly mesoLinks: MesoLinksReply;
+  readonly tickStats: TickStatsReply;
+  readonly resetTickStats: null;
 }
 
 export type Reply = ReplyByRequest[keyof ReplyByRequest];

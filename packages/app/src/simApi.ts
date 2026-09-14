@@ -8,6 +8,7 @@ import {
   type ScenarioName,
   type SimClient,
   type SimSpeed,
+  type TickStatsReply,
   type WorldSnapshot,
 } from '@simcity/bridge';
 import type { DebugRenderer, RenderStats } from '@simcity/render';
@@ -61,6 +62,9 @@ export interface SimApi {
   scenario(name: ScenarioName, size?: number): Promise<null>;
   /** Make a system throw on every call (`null` stops it): the HUD reports it and the world goes on. */
   failSystem(system: string | null): Promise<null>;
+  /** p50, p99 and the longest of the last ticks the worker ran, and how many since the reset. */
+  tickStats(): Promise<TickStatsReply>;
+  resetTickStats(): Promise<null>;
 }
 
 declare global {
@@ -136,6 +140,8 @@ export function installSimApi(
     renderStats: async () => (await renderer).stats(),
     scenario: (name, size) => client.request(size === undefined ? { t: 'scenario', name } : { t: 'scenario', name, size }),
     failSystem: (system) => client.request({ t: 'debugFailSystem', system }),
+    tickStats: () => client.request({ t: 'tickStats' }),
+    resetTickStats: () => client.request({ t: 'resetTickStats' }),
   };
   window.__sim = api;
   return api;

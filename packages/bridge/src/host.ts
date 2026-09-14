@@ -12,6 +12,7 @@ import {
   forEachWalker,
   detectIntersections,
   fingerprint,
+  frame,
   linkRoomMeters,
   LivingCityScenario,
   MetropolisScenario,
@@ -42,6 +43,7 @@ import {
   type Reply,
   type ReplyByRequest,
   type Request,
+  type TickStatsReply,
   type WorldSnapshot,
   type WorldView,
 } from './protocol';
@@ -72,6 +74,8 @@ const DRIVING_ID_BASE = VEHICLE_CAPACITY;
 const PARKED_ID_BASE = 1 << 21;
 const WALKER_ID_BASE = 1 << 22;
 const STANDING_ID_BASE = (1 << 22) + (1 << 21);
+/** Ticks whose cost `tickStats` reads. */
+const TICK_SAMPLES = 4096;
 /** From this speed up a frame shows the load of the roads and a sample of the cars on them. */
 const LOAD_VIEW_MULTIPLIER = 60;
 /** The part of the view's width and height added on every side, so a pan does not show an empty edge. */
@@ -112,6 +116,9 @@ export class SimHost {
   private scenario: HostScenario | null = null;
   /** Recent average cost of a fixed tick, ms. */
   private tickMs: number | null = null;
+  /** The cost of each of the last ticks, a ring. */
+  private readonly tickSamples = new Float64Array(TICK_SAMPLES);
+  private tickSampleCount = 0;
 
   constructor(renderCapacity: number) {
     this.world = createWorld();
@@ -135,7 +142,9 @@ export class SimHost {
           this.scenario?.advance(this.world);
           const started = performance.now();
           step(this.world, 1);
-          this.recordTickCost(performance.now() - started);
+          const ms = performance.now() - started;
+          this.recordTickCost(ms);
+          this.recordTickSample(ms);
         }
         this.publish();
         return this.fingerprintReply();
@@ -170,6 +179,8 @@ export class SimHost {
         const size = req.size ?? SCENARIOS.find((s) => s.name === req.name)?.mapSize;
         if (size !== undefined && (size !== this.world.grid.width || size !== this.world.grid.height)) this.replaceWorld(size);
         this.scenario = SCENARIO_BUILDERS[req.name](this.world);
+        // Settled into its first frame here: whether the loop ran an empty frame before the next request cannot matter.
+        frame(this.world, 0);
         return null;
       }
       case 'debugFailSystem':
@@ -180,6 +191,11 @@ export class SimHost {
         return null;
       case 'mesoLinks':
         return this.mesoLinks();
+      case 'tickStats':
+        return this.tickStats();
+      case 'resetTickStats':
+        this.tickSampleCount = 0;
+        return null;
     }
   }
 
@@ -196,6 +212,18 @@ export class SimHost {
     this.tickMs = null;
     this.lastReported = null;
     this.scenario = null;
+  }
+
+  private recordTickSample(ms: number): void {
+    this.tickSamples[this.tickSampleCount % TICK_SAMPLES] = ms;
+    this.tickSampleCount += 1;
+  }
+
+  private tickStats(): TickStatsReply {
+    const count = Math.min(this.tickSampleCount, TICK_SAMPLES);
+    const sorted = this.tickSamples.slice(0, count).sort();
+    const at = (q: number) => sorted[Math.min(count - 1, Math.floor(q * (count - 1)))] ?? 0;
+    return { count: this.tickSampleCount, p50Ms: at(0.5), p99Ms: at(0.99), maxMs: sorted[count - 1] ?? 0 };
   }
 
   private setView(view: WorldView | null): void {
@@ -228,8 +256,18 @@ export class SimHost {
       const started = performance.now();
       // The scenario is fed before every tick: at ×3 a frame runs several, each with its own events.
       this.driver.tickCostMs = this.tickMs;
-      const ticks = this.driver.update(nowMs, (w) => this.scenario?.advance(w));
+      // Each tick is timed from the start of its own to the start of the next; the last to the end of the frame.
+      let mark = started;
+      let ran = 0;
+      const ticks = this.driver.update(nowMs, (w) => {
+        const now = performance.now();
+        if (ran > 0) this.recordTickSample(now - mark);
+        mark = now;
+        ran += 1;
+        this.scenario?.advance(w);
+      });
       if (ticks > 0) {
+        this.recordTickSample(performance.now() - mark);
         this.recordTickCost((performance.now() - started) / ticks);
         this.publish();
       }

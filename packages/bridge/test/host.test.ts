@@ -1,8 +1,10 @@
 import {
   ROAD_DIRS,
   ROAD_KINDS,
+  LivingCityScenario,
   createWorld,
   fingerprint,
+  frame,
   linkRoomMeters,
   requestState,
   rngProbeDigest,
@@ -242,6 +244,42 @@ describe('SimHost', () => {
     expect(kinds.has(PEDESTRIAN_KIND), `pedestrians among ${[...kinds].join(' ')}`).toBe(true);
     expect(kinds.has(TRUCK_KIND) || kinds.has(PARKED_TRUCK_KIND), 'and trucks').toBe(true);
   }, 120_000);
+
+  // Stage 3½e gate: the cost of every tick is kept, so p50 and p99 are read off the running game, not a bench.
+  it('tickStatsReportTheCostOfEachTick', () => {
+    const host = new SimHost(16);
+    host.handle({ t: 'setState', state: 'InGame' });
+    expect(host.handle({ t: 'tickStats' }).count, 'nothing before the first tick').toBe(0);
+    host.handle({ t: 'step', ticks: 100 });
+    host.handle({ t: 'setSpeed', speed: 'X10' });
+    host.update(0);
+    const ticks = host.update(500)?.tick ?? 0;
+    const stats = host.handle({ t: 'tickStats' });
+    expect(stats.count, 'every tick, stepped or run').toBe(ticks);
+    expect(stats.p50Ms).toBeGreaterThan(0);
+    expect(stats.p99Ms).toBeGreaterThanOrEqual(stats.p50Ms);
+    expect(stats.maxMs).toBeGreaterThanOrEqual(stats.p99Ms);
+  });
+
+  // Stage 3½e gate: a scenario is built and settled into its first frame in the request, so what the worker's loop did in
+  // between cannot change the fingerprint.
+  it('aScenarioSettlesInTheRequestThatBuildsIt', () => {
+    const host = new SimHost(16);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'scenario', name: 'livingCity' });
+    // No frame of the worker's loop in between: the step request comes straight after.
+    const reply = host.handle({ t: 'step', ticks: 30 });
+
+    const w = createWorld();
+    requestState(w, 'InGame');
+    const scenario = new LivingCityScenario(w);
+    frame(w, 0);
+    for (let i = 0; i < 30; i++) {
+      scenario.advance(w);
+      step(w, 1);
+    }
+    expect(reply).toEqual({ tick: 30, fingerprint: toHex64(fingerprint(w)) });
+  }, 60_000);
 
   // Stage 3½e: the metropolis is as large as its map, and opening it keeps the speed the player chose.
   it('theMetropolisOpensOnAMapOfItsOwnSize', () => {
