@@ -2,9 +2,8 @@
 // crates/simcity_frontend/src/game/render_settings.rs. The config is data; this is the one place that turns it into
 // renderer settings, and the scene applies them when the config changes, never per frame.
 import { ACESFilmicToneMapping, NeutralToneMapping, NoToneMapping, type ToneMapping } from 'three';
+import type { Vec3 } from './picking';
 import type { ColorGradingConfig, RenderConfig, SsaoQuality, TonemappingCurve } from './renderConfig';
-
-export type Vec3 = readonly [number, number, number];
 
 /** The Three.js tone mapping of a configured curve. Three.js has no TonyMcMapface; PBR Neutral is its neutral, softer-than-ACES curve. */
 export function toneMappingOf(curve: TonemappingCurve): ToneMapping {

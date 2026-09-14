@@ -3,7 +3,8 @@
 import { ACESFilmicToneMapping, NeutralToneMapping, NoToneMapping, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 import { RENDER_CONFIG, SSAO_QUALITIES, type RenderConfig } from '../src/renderConfig';
-import { aoSamplesOf, resolveRenderSettings, sunDirection, toneMappingOf, type Vec3 } from '../src/renderSettings';
+import type { Vec3 } from '../src/picking';
+import { aoSamplesOf, resolveRenderSettings, sunDirection, toneMappingOf } from '../src/renderSettings';
 
 const closeVec = (a: Vec3, b: Vec3, eps: number) => a.every((v, i) => Math.abs(v - b[i]!) <= eps);
 
