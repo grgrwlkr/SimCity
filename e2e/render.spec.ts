@@ -1,4 +1,4 @@
-// Stage 1½: the debug renderer in Chromium and WebKit. The gate reads the class of every tile back
+// Stage 1½: the debug renderer in Chromium. The gate reads the class of every tile back
 // from a screenshot of the Rust test city and compares it with the Rust grid and the Rust frame.
 import { expect, test, type Page } from '@playwright/test';
 import { existsSync, readFileSync } from 'node:fs';
