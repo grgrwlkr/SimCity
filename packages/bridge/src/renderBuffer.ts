@@ -1,13 +1,13 @@
 // Render state shared between the sim worker and the main thread without a copy per message:
 // a header and two frames. The writer fills the frame the sequence does not point at and publishes
 // by bumping the sequence; the reader copies the frame the sequence points at and copies again if
-// the sequence moved meanwhile. Layers for pedestrians and buses join with their stages.
+// the sequence moved meanwhile. After the vehicles a frame may carry the load of every meso link (stage 3½d).
 import type { VehicleLayers } from '@simcity/sim';
 
-/** `[sequence, capacity]`; the active frame is `sequence & 1`. */
-const HEADER_WORDS = 2;
-/** `[tick, count]` at the start of each frame. */
-const FRAME_HEADER_WORDS = 2;
+/** `[sequence, capacity, linkCapacity]`; the active frame is `sequence & 1`. */
+const HEADER_WORDS = 3;
+/** `[tick, count, links, linksFor]` at the start of each frame. */
+const FRAME_HEADER_WORDS = 4;
 /** x, y, heading, slot, generation. */
 const WORD_LAYERS = 5;
 
@@ -15,18 +15,20 @@ function align4(n: number): number {
   return (n + 3) & ~3;
 }
 
-export function frameByteLength(capacity: number): number {
-  return FRAME_HEADER_WORDS * 4 + capacity * 4 * WORD_LAYERS + align4(capacity);
+export function frameByteLength(capacity: number, linkCapacity = 0): number {
+  return FRAME_HEADER_WORDS * 4 + capacity * 4 * WORD_LAYERS + align4(capacity) + align4(linkCapacity);
 }
 
-export function frameByteRange(capacity: number, index: number): { offset: number; length: number } {
-  const length = frameByteLength(capacity);
+export function frameByteRange(capacity: number, index: number, linkCapacity = 0): { offset: number; length: number } {
+  const length = frameByteLength(capacity, linkCapacity);
   return { offset: HEADER_WORDS * 4 + index * length, length };
 }
 
-export function createRenderBuffer(capacity: number): SharedArrayBuffer {
-  const sab = new SharedArrayBuffer(HEADER_WORDS * 4 + 2 * frameByteLength(capacity));
-  new Int32Array(sab, 0, HEADER_WORDS)[1] = capacity;
+export function createRenderBuffer(capacity: number, linkCapacity = 0): SharedArrayBuffer {
+  const sab = new SharedArrayBuffer(HEADER_WORDS * 4 + 2 * frameByteLength(capacity, linkCapacity));
+  const header = new Int32Array(sab, 0, HEADER_WORDS);
+  header[1] = capacity;
+  header[2] = linkCapacity;
   return sab;
 }
 
@@ -38,10 +40,11 @@ interface FrameViews {
   readonly slot: Uint32Array;
   readonly generation: Uint32Array;
   readonly kind: Uint8Array;
+  readonly load: Uint8Array;
 }
 
-function frameViews(sab: SharedArrayBuffer, capacity: number, index: number): FrameViews {
-  let offset = frameByteRange(capacity, index).offset;
+function frameViews(sab: SharedArrayBuffer, capacity: number, linkCapacity: number, index: number): FrameViews {
+  let offset = frameByteRange(capacity, index, linkCapacity).offset;
   const header = new Int32Array(sab, offset, FRAME_HEADER_WORDS);
   offset += FRAME_HEADER_WORDS * 4;
   const x = new Float32Array(sab, offset, capacity);
@@ -55,18 +58,23 @@ function frameViews(sab: SharedArrayBuffer, capacity: number, index: number): Fr
   const generation = new Uint32Array(sab, offset, capacity);
   offset += capacity * 4;
   const kind = new Uint8Array(sab, offset, capacity);
-  return { header, x, y, heading, slot, generation, kind };
+  offset += align4(capacity);
+  const load = new Uint8Array(sab, offset, linkCapacity);
+  return { header, x, y, heading, slot, generation, kind, load };
 }
 
 class RenderBufferViews {
   readonly capacity: number;
+  /** Links a frame carries the load of at most. */
+  readonly linkCapacity: number;
   protected readonly header: Int32Array;
   protected readonly frames: readonly [FrameViews, FrameViews];
 
   constructor(sab: SharedArrayBuffer) {
     this.header = new Int32Array(sab, 0, HEADER_WORDS);
     this.capacity = this.header[1]!;
-    this.frames = [frameViews(sab, this.capacity, 0), frameViews(sab, this.capacity, 1)];
+    this.linkCapacity = this.header[2]!;
+    this.frames = [frameViews(sab, this.capacity, this.linkCapacity, 0), frameViews(sab, this.capacity, this.linkCapacity, 1)];
   }
 
   activeFrameIndex(): number {
@@ -85,8 +93,8 @@ export const PARKED_VEHICLE_KIND = 4;
 export const TRUCK_KIND = 5;
 export const PARKED_TRUCK_KIND = 6;
 export const PEDESTRIAN_KIND = 7;
-/** Every id a frame may publish a vehicle under is below this: a reader pairs frames by an array this long. */
-export const RENDER_ID_SPACE = 1 << 20;
+/** Every id a frame may publish a vehicle under is below this. */
+export const RENDER_ID_SPACE = 1 << 23;
 
 /** Cars published after the vehicles: the cars of citizens the sim hands over (stage 3½d), each under its own slot id. */
 export interface RenderExtras {
@@ -111,18 +119,25 @@ export function extraCars(capacity: number): RenderExtras {
   };
 }
 
+/** The load of every meso link a frame carries: a byte a link, 255 for a full one. */
+export interface RenderLinks {
+  readonly count: number;
+  /** The graph version the links are numbered for. */
+  readonly builtFor: number;
+  readonly load: Uint8Array;
+}
+
 export class RenderWriter extends RenderBufferViews {
   /**
-   * Packs the live vehicles and then `extras` into the inactive frame, then makes it the active one. What does not fit
-   * is left out: a busy city never stops the worker.
+   * Packs the live vehicles (none with `null`), then `extras`, then the link loads into the inactive frame, then makes it
+   * the active one. What does not fit is left out: a busy city never stops the worker.
    */
-  publish(tick: number, vehicles: VehicleLayers, extras?: RenderExtras): void {
+  publish(tick: number, vehicles: VehicleLayers | null, extras?: RenderExtras, links?: RenderLinks): void {
     const sequence = Atomics.load(this.header, 0);
     const target = this.frameFor(sequence + 1);
-    const { alive } = vehicles;
     let count = 0;
-    for (let slot = 0; slot < alive.length && count < this.capacity; slot++) {
-      if (alive[slot] === 0) continue;
+    for (let slot = 0; vehicles !== null && slot < vehicles.alive.length && count < this.capacity; slot++) {
+      if (vehicles.alive[slot] === 0) continue;
       target.x[count] = vehicles.x[slot]!;
       target.y[count] = vehicles.y[slot]!;
       target.heading[count] = vehicles.heading[slot]!;
@@ -140,8 +155,12 @@ export class RenderWriter extends RenderBufferViews {
       target.kind[count] = extras.kind[i]!;
       count += 1;
     }
+    const linkCount = links === undefined ? 0 : Math.min(links.count, this.linkCapacity);
+    if (links !== undefined) target.load.set(links.load.subarray(0, linkCount));
     target.header[0] = tick;
     target.header[1] = count;
+    target.header[2] = linkCount;
+    target.header[3] = links?.builtFor ?? -1;
     Atomics.store(this.header, 0, (sequence + 1) | 0);
   }
 }
@@ -156,6 +175,10 @@ export interface RenderFrameCopy {
   readonly slot: Uint32Array;
   readonly generation: Uint32Array;
   readonly kind: Uint8Array;
+  /** Links whose load the frame carries, 0 when it carries none; the graph version they are numbered for. */
+  links: number;
+  linksFor: number;
+  readonly load: Uint8Array;
 }
 
 export class RenderReader extends RenderBufferViews {
@@ -164,6 +187,9 @@ export class RenderReader extends RenderBufferViews {
     return {
       tick: 0,
       count: 0,
+      links: 0,
+      linksFor: -1,
+      load: new Uint8Array(this.linkCapacity),
       x: new Float32Array(n),
       y: new Float32Array(n),
       heading: new Float32Array(n),
@@ -192,6 +218,9 @@ export class RenderReader extends RenderBufferViews {
       out.slot.set(frame.slot.subarray(0, count));
       out.generation.set(frame.generation.subarray(0, count));
       out.kind.set(frame.kind.subarray(0, count));
+      out.links = frame.header[2]!;
+      out.linksFor = frame.header[3]!;
+      out.load.set(frame.load.subarray(0, out.links));
       if (Atomics.load(this.header, 0) === sequence) return sequence;
     }
   }

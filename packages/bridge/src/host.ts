@@ -12,6 +12,7 @@ import {
   forEachWalker,
   detectIntersections,
   fingerprint,
+  linkRoomMeters,
   LivingCityScenario,
   parseRustCommand,
   recordSystemError,
@@ -25,19 +26,23 @@ import {
   toHex64,
   VEHICLE_CAPACITY,
   vehicleRef,
+  worldRectToTiles,
   worldToTile,
+  type TileView,
   type World,
 } from '@simcity/sim';
-import { FixedStepDriver } from './driver';
+import { FixedStepDriver, SPEED_MULTIPLIER } from './driver';
 import {
   GRID_LAYER_NAMES,
   type DebugVehicle,
   type FingerprintReply,
   type GridLayers,
+  type MesoLinksReply,
   type Reply,
   type ReplyByRequest,
   type Request,
   type WorldSnapshot,
+  type WorldView,
 } from './protocol';
 import {
   PARKED_TRUCK_KIND,
@@ -51,18 +56,25 @@ import {
   type RenderExtras,
 } from './renderBuffer';
 import { debugOverlayOf, renderLayersOf } from './renderLayers';
+import { SAMPLE_CARS, sampleCutoff, sampled } from './sample';
 import type { ScenarioName } from './scenarios';
 
 /** Vehicles a frame holds: the micro vehicles, meso traffic, parked cars, standing trucks and people on foot. */
 export const RENDER_CAPACITY = 32_768;
+/** Links a frame carries the load of: a map of a thousand tiles a side has fewer. */
+export const RENDER_LINK_CAPACITY = 1 << 18;
 /**
- * Render ids after the micro vehicle slots, each source in a range of its own: the vehicles of meso traffic, the parked
- * cars of citizens, citizens on foot, and the cars and trucks of the region standing at their buildings.
+ * Render ids after the micro vehicle slots, each source in a range of its own: the vehicles of meso traffic, the tiles
+ * with parked cars of citizens, citizens on foot, and the cars and trucks of the region standing at their buildings.
  */
 const DRIVING_ID_BASE = VEHICLE_CAPACITY;
-const PARKED_ID_BASE = 1 << 17;
-const WALKER_ID_BASE = 1 << 18;
-const STANDING_ID_BASE = 3 << 18;
+const PARKED_ID_BASE = 1 << 21;
+const WALKER_ID_BASE = 1 << 22;
+const STANDING_ID_BASE = (1 << 22) + (1 << 21);
+/** From this speed up a frame shows the load of the roads and a sample of the cars on them. */
+const LOAD_VIEW_MULTIPLIER = 60;
+/** The part of the view's width and height added on every side, so a pan does not show an empty edge. */
+const VIEW_MARGIN = 0.25;
 
 /** A scenario the host feeds before every tick; one with commuters also reports them. */
 interface HostScenario {
@@ -91,6 +103,9 @@ export class SimHost {
   private readonly driver: FixedStepDriver;
   private readonly writer: RenderWriter;
   private readonly extras: RenderExtras;
+  private readonly loads = new Uint8Array(RENDER_LINK_CAPACITY);
+  /** What the camera sees with its margin, in world coordinates and in tiles; `null` for everything. */
+  private view: { readonly world: WorldView; readonly tiles: TileView } | null = null;
   private lastReported: string | null = null;
   private scenario: HostScenario | null = null;
   /** Recent average cost of a fixed tick, ms. */
@@ -99,7 +114,7 @@ export class SimHost {
   constructor(renderCapacity: number) {
     this.world = createWorld();
     this.driver = new FixedStepDriver(this.world);
-    this.render = createRenderBuffer(renderCapacity);
+    this.render = createRenderBuffer(renderCapacity, RENDER_LINK_CAPACITY);
     this.writer = new RenderWriter(this.render);
     this.extras = extraCars(renderCapacity);
   }
@@ -155,7 +170,36 @@ export class SimHost {
       case 'debugFailSystem':
         this.world.debugFailSystem = req.system;
         return null;
+      case 'setView':
+        this.setView(req.view);
+        return null;
+      case 'mesoLinks':
+        return this.mesoLinks();
     }
+  }
+
+  private setView(view: WorldView | null): void {
+    if (view === null) {
+      this.view = null;
+      return;
+    }
+    const [mx, my] = [(view.right - view.left) * VIEW_MARGIN, (view.top - view.bottom) * VIEW_MARGIN];
+    const world = { left: view.left - mx, right: view.right + mx, bottom: view.bottom - my, top: view.top + my };
+    this.view = { world, tiles: worldRectToTiles(this.world.mapConfig, world.left, world.right, world.bottom, world.top) };
+  }
+
+  private mesoLinks(): MesoLinksReply {
+    const g = this.world.meso;
+    return {
+      builtFor: g.builtFor,
+      count: g.linkCount,
+      dir: g.dir.slice(),
+      lanes: g.lanes.slice(),
+      startX: g.startX.slice(),
+      startY: g.startY.slice(),
+      endX: g.endX.slice(),
+      endY: g.endY.slice(),
+    };
   }
 
   /** One loop iteration at real time `nowMs`: the snapshot if tick, state, speed or the map changed since the last report. */
@@ -267,13 +311,26 @@ export class SimHost {
     return { tick: this.world.tick, fingerprint: toHex64(fingerprint(this.world)) };
   }
 
+  /**
+   * The frame: what lies in view — every vehicle up to ×10; from ×60 up a sample of the driving ones and the load of every
+   * link instead of what stands or walks.
+   */
   private publish(): void {
+    const w = this.world;
     const extras = this.extras;
-    const capacity = extras.x.length;
+    const view = this.view;
+    const fast = SPEED_MULTIPLIER[this.driver.speed] >= LOAD_VIEW_MULTIPLIER;
+    const capacity = fast ? Math.min(extras.x.length, SAMPLE_CARS) : extras.x.length;
+    const v = w.vehicles;
+    let microDriving = 0;
+    for (const slot of v.order) if (v.parked[slot] !== 1) microDriving += 1;
+    const cutoff = fast ? sampleCutoff(microDriving + w.mesoTraffic.carCount(), SAMPLE_CARS) : Infinity;
     extras.count = 0;
-    /** Under `id` when it is below the range of the next source. */
+    /** Under `id` when it is below the range of the next source, in view, and in the sample of a fast frame. */
     const push = (id: number, limit: number, generation: number, x: number, y: number, heading: number, kind: number) => {
       if (extras.count >= capacity || id >= limit) return;
+      if (view !== null && (x < view.world.left || x > view.world.right || y < view.world.bottom || y > view.world.top)) return;
+      if (fast && !sampled(id, cutoff)) return;
       const i = extras.count;
       extras.x[i] = x;
       extras.y[i] = y;
@@ -283,15 +340,40 @@ export class SimHost {
       extras.kind[i] = kind;
       extras.count += 1;
     };
-    const w = this.world;
-    forEachCitizenCar(w, (parked, id, generation, x, y, heading, truck) => {
-      if (parked) push(PARKED_ID_BASE + id, WALKER_ID_BASE, generation, x, y, heading, PARKED_VEHICLE_KIND);
-      else push(DRIVING_ID_BASE + id, PARKED_ID_BASE, generation, x, y, heading, truck ? TRUCK_KIND : 0);
-    });
-    forEachRegionalStanding(w, (slot, generation, x, y, heading, truck) =>
-      push(STANDING_ID_BASE + slot, RENDER_ID_SPACE, generation, x, y, heading, truck ? PARKED_TRUCK_KIND : PARKED_VEHICLE_KIND),
+    for (const slot of v.order) {
+      if (fast && v.parked[slot] === 1) continue;
+      push(slot, DRIVING_ID_BASE, v.generation[slot]!, v.x[slot]!, v.y[slot]!, v.heading[slot]!, v.parked[slot] === 1 ? PARKED_VEHICLE_KIND : v.kind[slot]!);
+    }
+    const tiles = view?.tiles;
+    forEachCitizenCar(
+      w,
+      (parked, id, generation, x, y, heading, truck) => {
+        if (!parked) push(DRIVING_ID_BASE + id, PARKED_ID_BASE, generation, x, y, heading, truck ? TRUCK_KIND : 0);
+        else if (!fast) push(PARKED_ID_BASE + id, WALKER_ID_BASE, generation, x, y, heading, PARKED_VEHICLE_KIND);
+      },
+      tiles,
+      !fast,
     );
-    forEachWalker(w, (slot, generation, x, y, heading) => push(WALKER_ID_BASE + slot, STANDING_ID_BASE, generation, x, y, heading, PEDESTRIAN_KIND));
-    this.writer.publish(w.tick, w.vehicles, extras);
+    if (!fast) {
+      forEachRegionalStanding(
+        w,
+        (slot, generation, x, y, heading, truck) =>
+          push(STANDING_ID_BASE + slot, RENDER_ID_SPACE, generation, x, y, heading, truck ? PARKED_TRUCK_KIND : PARKED_VEHICLE_KIND),
+        tiles,
+      );
+      forEachWalker(w, (slot, generation, x, y, heading) => push(WALKER_ID_BASE + slot, STANDING_ID_BASE, generation, x, y, heading, PEDESTRIAN_KIND), tiles);
+    }
+    this.writer.publish(w.tick, null, extras, fast ? this.linkLoads() : undefined);
+  }
+
+  /** The load of every link: the metres its queue takes against its room, as a byte. */
+  private linkLoads(): { count: number; builtFor: number; load: Uint8Array } | undefined {
+    const w = this.world;
+    const g = w.meso;
+    const m = w.mesoTraffic;
+    if (g.builtFor === null || m.linksFor !== g.builtFor) return undefined;
+    const count = Math.min(g.linkCount, this.loads.length);
+    for (let link = 0; link < count; link++) this.loads[link] = Math.round(255 * Math.min(m.usedMeters[link]! / linkRoomMeters(w, link), 1));
+    return { count, builtFor: g.builtFor, load: this.loads };
   }
 }

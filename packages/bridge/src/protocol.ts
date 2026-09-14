@@ -84,6 +84,27 @@ export interface DebugOverlayReply {
   readonly lanelets: ReadonlyArray<{ readonly intersection: number; readonly maneuver: ManeuverKind; readonly path: number[] }>;
 }
 
+/** What the camera sees, in world coordinates. */
+export interface WorldView {
+  readonly left: number;
+  readonly right: number;
+  readonly bottom: number;
+  readonly top: number;
+}
+
+/** The meso links as the renderer colours them by load: tile coordinates of the middle of each end. */
+export interface MesoLinksReply {
+  /** The graph version the links are numbered for; `null` before the first graph. */
+  readonly builtFor: number | null;
+  readonly count: number;
+  readonly dir: Uint8Array;
+  readonly lanes: Uint8Array;
+  readonly startX: Float32Array;
+  readonly startY: Float32Array;
+  readonly endX: Float32Array;
+  readonly endY: Float32Array;
+}
+
 /** A vehicle placed by hand into the render layer until traffic exists (stage 2). World coordinates. */
 export interface DebugVehicle {
   readonly x: number;
@@ -124,7 +145,10 @@ export type Request =
   /** Build a scenario into the world; the host feeds it before every fixed tick from then on. */
   | { readonly t: 'scenario'; readonly name: ScenarioName }
   /** Make a system throw on every call (`null` stops it): the worker's resilience from DevTools and Playwright. */
-  | { readonly t: 'debugFailSystem'; readonly system: string | null };
+  | { readonly t: 'debugFailSystem'; readonly system: string | null }
+  /** What the camera sees (`null` for everything): the render frame holds only what lies in it, with a margin. */
+  | { readonly t: 'setView'; readonly view: WorldView | null }
+  | { readonly t: 'mesoLinks' };
 
 export interface ReplyByRequest {
   readonly cmd: null;
@@ -143,6 +167,8 @@ export interface ReplyByRequest {
   readonly debugOverlay: DebugOverlayReply;
   readonly scenario: null;
   readonly debugFailSystem: null;
+  readonly setView: null;
+  readonly mesoLinks: MesoLinksReply;
 }
 
 export type Reply = ReplyByRequest[keyof ReplyByRequest];
