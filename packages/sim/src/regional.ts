@@ -8,6 +8,7 @@ import { MINUTES_PER_DAY, gameMinute } from './city';
 import { MinuteQueue } from './citizens';
 import type { TilePos } from './commands';
 import type { TripRequested } from './events';
+import { fleetIdOfTrip } from './fleet';
 import { inTileView, tileFToWorld, type TileView } from './map/coords';
 import { NO_LINK, type MesoGraph } from './meso/graph';
 import { NearestBuildings } from './nearest';
@@ -540,7 +541,7 @@ export function handleRegionalArrivals(w: World): void {
   const r = w.regional;
   const now = gameMinute(w);
   for (const arrival of w.events.tripFinished) {
-    if (arrival.citizen >= 0) continue;
+    if (arrival.citizen >= 0 || fleetIdOfTrip(arrival.citizen) >= 0) continue;
     const slot = -arrival.citizen - 1;
     if (r.alive[slot] !== 1) continue;
     if (r.state[slot] === OUTBOUND) {

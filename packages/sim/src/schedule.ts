@@ -17,6 +17,15 @@ import { computeRciDemand } from './demand';
 import { applyDailyEconomy } from './economy/economy';
 import { assignJobs, clearInvalidWorkplaces, computeEmploymentStats } from './employment';
 import { updateServiceCoverage } from './services/coverage';
+import { handleServiceArrivals, syncServiceStations } from './services/vehicles';
+import {
+  applyEmergencyConsequences,
+  cleanupResolvedEmergencies,
+  dispatchEmergencyVehicles,
+  resolveEmergencies,
+  spawnEmergencies,
+  updateEmergencyTimers,
+} from './emergencies';
 import { beginTickEvents } from './events';
 import { detectIntersections } from './intersections/index';
 import { computeLandValue } from './landValue';
@@ -128,6 +137,17 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   // Before buildingDecayNoRoadAccess: records the grid no longer backs are removed before road access is scanned.
   { name: 'despawnInvalidBuildings', run: despawnInvalidBuildings, runIn: IN_GAME },
   { name: 'buildingDecayNoRoadAccess', run: buildingDecayNoRoadAccess, runIn: IN_GAME, everyGameNs: 60 * SECOND_NS },
+  // SimStep::Services, after this tick's buildings: stations that opened get their vehicles, those gone lose them.
+  { name: 'syncServiceStations', run: syncServiceStations, runIn: IN_GAME },
+  // SimStep::Emergencies, chained as in Rust: this hour's emergency breaks out, vehicles are sent from the stations above,
+  // deadlines run down, the scenes are worked on, the missed fail and the finished go. The trips set out join meso traffic
+  // later in this tick.
+  { name: 'spawnEmergencies', run: spawnEmergencies, runIn: IN_GAME },
+  { name: 'dispatchEmergencyVehicles', run: dispatchEmergencyVehicles, runIn: IN_GAME },
+  { name: 'updateEmergencyTimers', run: updateEmergencyTimers, runIn: IN_GAME },
+  { name: 'resolveEmergencies', run: resolveEmergencies, runIn: IN_GAME },
+  { name: 'applyEmergencyConsequences', run: applyEmergencyConsequences, runIn: IN_GAME },
+  { name: 'cleanupResolvedEmergencies', run: cleanupResolvedEmergencies, runIn: IN_GAME },
   // SimStep::Traffic, before the vehicle states that read the phase.
   { name: 'updateTrafficLights', run: updateTrafficLights, runIn: IN_GAME },
   // After updateTrafficLights: walkers wait at a crossing by this tick's lights; the planner of this tick set out the new ones.
@@ -172,6 +192,8 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'handleTripFinished', run: handleTripFinished, runIn: IN_GAME },
   // Beside handleTripFinished: the arrivals of the region's trips, which carry negative ids.
   { name: 'handleRegionalArrivals', run: handleRegionalArrivals, runIn: IN_GAME },
+  // Beside them: the arrivals and the dropped trips of the service vehicles, which carry the fleet's ids.
+  { name: 'handleServiceArrivals', run: handleServiceArrivals, runIn: IN_GAME },
   // PostSimStep::Citizens: residents a shrunken or vanished home no longer holds leave, then their parked cars go.
   { name: 'cleanupHomelessCitizens', run: cleanupHomelessCitizens, runIn: IN_GAME, everyGameNs: 60 * SECOND_NS },
   // PostSimStep::TrafficIndex: the end-of-tick metrics RCI demand reads.

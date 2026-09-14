@@ -384,6 +384,8 @@ function hashEvents(h: Fnv64, e: TickEvents): void {
   }
   h.u32(e.walksFinished.length);
   for (const citizen of e.walksFinished) h.u32(citizen);
+  h.u32(e.tripDropped.length);
+  for (const trip of e.tripDropped) h.i32(trip);
 }
 
 function hashNotifications(h: Fnv64, n: Notifications): void {
@@ -587,6 +589,20 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
   ['citizens', hashCitizens],
   ['regional', hashRegional],
   ['meso', hashMeso],
+  [
+    'services',
+    (h, w) => {
+      h.u32(w.fleet.nextId);
+      h.str(w.fleet.stationsKey);
+      h.str(stableJson(w.fleet.services));
+      const m = w.emergencies;
+      h.u32(m.nextId);
+      h.f64(m.baseSpawnChance);
+      h.u32(m.maxActive);
+      h.str(stableJson(m.stats));
+      h.str(stableJson(m.active));
+    },
+  ],
 ];
 
 export interface FingerprintSection {

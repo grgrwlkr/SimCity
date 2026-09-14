@@ -24,12 +24,21 @@ export const TRUCK_LENGTH_METERS = 16.5;
 export const TRUCK_SPACE_METERS = 19;
 /** A truck takes the flow of two cars. */
 export const TRUCK_PCE = 2;
-/** `MesoTraffic.vehicle` values. */
+/** A twelve-metre city bus and its room queued; it takes the flow of two cars. */
+export const BUS_LENGTH_METERS = 12;
+export const BUS_SPACE_METERS = 15;
+export const BUS_PCE = 2;
+/** `MesoTraffic.vehicle` values: a service vehicle is a car in the queue, told apart for the renderer. */
 export const VEHICLE_CAR = 0;
 export const VEHICLE_TRUCK = 1;
-const SPACE_METERS = [CAR_SPACE_METERS, TRUCK_SPACE_METERS] as const;
-const LENGTH_METERS = [CAR_LENGTH_METERS, TRUCK_LENGTH_METERS] as const;
-const PCE = [1, TRUCK_PCE] as const;
+export const VEHICLE_BUS = 2;
+export const VEHICLE_FIRE = 3;
+export const VEHICLE_POLICE = 4;
+export const VEHICLE_AMBULANCE = 5;
+const SPACE_METERS = [CAR_SPACE_METERS, TRUCK_SPACE_METERS, BUS_SPACE_METERS, CAR_SPACE_METERS, CAR_SPACE_METERS, CAR_SPACE_METERS] as const;
+const LENGTH_METERS = [CAR_LENGTH_METERS, TRUCK_LENGTH_METERS, BUS_LENGTH_METERS, CAR_LENGTH_METERS, CAR_LENGTH_METERS, CAR_LENGTH_METERS] as const;
+const PCE = [1, TRUCK_PCE, BUS_PCE, 1, 1, 1] as const;
+const VEHICLE_OF_TRIP = { Truck: VEHICLE_TRUCK, Bus: VEHICLE_BUS, Fire: VEHICLE_FIRE, Police: VEHICLE_POLICE, Ambulance: VEHICLE_AMBULANCE } as const;
 /** A head held by a full link this long, game seconds, is pushed on. */
 export const FORCE_PUSH_SECS = 120;
 /**
@@ -404,6 +413,7 @@ function spawn(w: World, trip: TripRequested): 'spawned' | 'wait' | 'dropped' {
   const goalLink = goal === undefined ? NO_LINK : g.linkAt(goal);
   if (startLink === NO_LINK || goalLink === NO_LINK) {
     m.stats.dropped += 1;
+    w.events.tripDropped.push(trip.citizen);
     return 'dropped';
   }
   const startOffset = g.offsetAt(start!);
@@ -413,9 +423,10 @@ function spawn(w: World, trip: TripRequested): 'spawned' | 'wait' | 'dropped' {
   const route = straight ? EMPTY_ROUTE : findRoute(w, startLink, goalLink);
   if (route === null) {
     m.stats.dropped += 1;
+    w.events.tripDropped.push(trip.citizen);
     return 'dropped';
   }
-  const vehicle = trip.vehicle === 'Truck' ? VEHICLE_TRUCK : VEHICLE_CAR;
+  const vehicle = trip.vehicle === undefined ? VEHICLE_CAR : VEHICLE_OF_TRIP[trip.vehicle];
   if (!fits(w, startLink, SPACE_METERS[vehicle])) return 'wait';
 
   let car = m.freeSlots.pop();

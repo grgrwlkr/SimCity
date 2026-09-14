@@ -2,6 +2,8 @@
 import { emptyCommuteStats, emptyShoppingStats } from './citizens';
 import { defaultCity } from './city';
 import { CivicCoverage } from './civicCoverage';
+import { Emergencies } from './emergencies';
+import { Fleet } from './fleet';
 import { resetEconomyPolicy } from './economy/economy';
 import { emptyEmploymentStats } from './employment';
 import { MesoTraffic } from './meso/traffic';
@@ -71,6 +73,9 @@ function enterMainMenu(w: World): void {
   resetEconomyPolicy(w);
   w.serviceCoverage = new ServiceCoverageIndex();
   w.civicCoverage = new CivicCoverage();
+  // EmergenciesPlugin and ServicesPlugin state of the game that ended.
+  w.fleet = new Fleet();
+  w.emergencies = new Emergencies();
   // CitizensPlugin: cleanup_citizens; the employment and trip stats of the game that ended go with them.
   w.citizens.clear();
   w.parking.clear();

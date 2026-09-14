@@ -15,7 +15,7 @@ export const VEHICLE_CAPACITY = 4096;
 export const VEHICLE_ROLES = ['trip', 'service', 'bus'] as const;
 export type VehicleRole = (typeof VEHICLE_ROLES)[number];
 
-export const TRIP_PURPOSES = ['Work', 'Shop', 'ReturnHome', 'Cafe', 'Park', 'Freight', 'Through'] as const;
+export const TRIP_PURPOSES = ['Work', 'Shop', 'ReturnHome', 'Cafe', 'Park', 'Freight', 'Through', 'Service', 'Transit'] as const;
 export type TripPurpose = (typeof TRIP_PURPOSES)[number];
 
 /** State of a vehicle relative to traffic lights and intersection admission. `intersection` is an `intersectionKeyString`. */

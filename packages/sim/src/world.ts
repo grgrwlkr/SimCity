@@ -5,6 +5,8 @@ import { Citizens, emptyCommuteStats, emptyShoppingStats, type CommuteStats, typ
 import { DEFAULT_GAME_HOUR_NS, createSimClock, defaultCity, type City } from './city';
 import { CityFields } from './cityFields';
 import { CivicCoverage } from './civicCoverage';
+import { Emergencies } from './emergencies';
+import { Fleet } from './fleet';
 import { ClassDemand, emptyDemand, type RciDemand } from './demand';
 import { BudgetLedger, ECONOMY_CONFIG, Loans, ServiceFunding, TaxRates, type EconomyConfig } from './economy/economy';
 import { emptyEmploymentStats, type EmploymentStats } from './employment';
@@ -190,6 +192,10 @@ export interface World {
   serviceCoverage: ServiceCoverageIndex;
   /** How strongly schools, universities and parks reach each tile. */
   civicCoverage: CivicCoverage;
+  /** The city's own vehicles: those of its service stations. */
+  fleet: Fleet;
+  /** Fires, crimes and medical calls under way, and how the city fared with them. */
+  emergencies: Emergencies;
   /** The citizens, as typed arrays by slot. */
   readonly citizens: Citizens;
   /** How citizens get about: walking reach, parking reach. */
@@ -299,6 +305,8 @@ export function createWorld(options: WorldOptions = {}): World {
     loans: new Loans(),
     serviceCoverage: new ServiceCoverageIndex(),
     civicCoverage: new CivicCoverage(),
+    fleet: new Fleet(),
+    emergencies: new Emergencies(),
     citizens: new Citizens(mapConfig.width, mapConfig.height),
     citizenConfig: defaultCitizenConfig(),
     parking: new Parking(grid.len()),

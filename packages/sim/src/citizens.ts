@@ -81,9 +81,11 @@ const TRAVEL_STATE: Readonly<Record<TripPurpose, number>> = {
   ReturnHome: TO_HOME,
   Cafe: CITIZEN_STATES.indexOf('ToCafe'),
   Park: CITIZEN_STATES.indexOf('ToPark'),
-  // Trips of the region, never of a citizen.
+  // Trips of the region and of the city's vehicles, never of a citizen.
   Freight: NONE,
   Through: NONE,
+  Service: NONE,
+  Transit: NONE,
 };
 const STAY_STATE: Readonly<Record<TripPurpose, number>> = {
   Work: CITIZEN_STATES.indexOf('AtWork'),
@@ -93,6 +95,8 @@ const STAY_STATE: Readonly<Record<TripPurpose, number>> = {
   Park: CITIZEN_STATES.indexOf('AtPark'),
   Freight: NONE,
   Through: NONE,
+  Service: NONE,
+  Transit: NONE,
 };
 const isTravelling = (state: number) => CITIZEN_STATES[state]!.startsWith('To');
 const isStaying = (state: number) => state !== AT_HOME && CITIZEN_STATES[state]!.startsWith('At');

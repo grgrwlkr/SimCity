@@ -209,6 +209,11 @@ export function serviceRadius(kind: BuildingKind): number | undefined {
   return radius[kind];
 }
 
+/** `vehicle_capacity`: the vehicles a service station keeps; 0 for every other building. */
+export function vehicleCapacity(kind: BuildingKind): number {
+  return kind === 'FireStation' ? 3 : kind === 'PoliceStation' ? 4 : kind === 'Hospital' ? 2 : 0;
+}
+
 /** Residents a civic building serves at full strength; `undefined` for every other building. */
 export function serviceCapacity(kind: BuildingKind): number | undefined {
   const capacity: Partial<Record<BuildingKind, number>> = { School: 400, University: 1200, Park: 300 };
