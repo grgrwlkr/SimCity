@@ -192,6 +192,8 @@ function slotPathsOf(w: World): SlotPath[] {
   if (cache === undefined || cache.key !== w.graphVersion) {
     cache = { key: w.graphVersion, entries: [] };
     slotPaths.set(w, cache);
+    // New roads, new paths: every walker's next step looks at its path again.
+    w.citizens.walkLimit.fill(-1);
   }
   return cache.entries;
 }
@@ -274,10 +276,18 @@ export function moveWalkers(w: World, dtNs: number): void {
   const pace = w.citizenConfig.walkKmh / 3.6 / w.trafficConfig.tileMeters;
   let lights: Map<number, TrafficLight> | undefined;
   const paths = slotPathsOf(w);
+  const limits = c.walkLimit;
+  const stride = pace * seconds;
   for (const slot of c.walkers()) {
+    // Inside a segment and not at a crossing to wait at: the step below would add the stride and stop there.
+    const at = c.walkProgress[slot]!;
+    if (at + stride < limits[slot]!) {
+      c.walkProgress[slot] = at + stride;
+      continue;
+    }
     const { along, gate, eastWest } = walkerPath(w, slot, paths);
     const total = along[along.length - 1]!;
-    let progress = c.walkProgress[slot]!;
+    let progress = at;
     let k = segmentAt(along, progress, false);
     for (let budget = pace * seconds; budget > 0 && progress < total; ) {
       if (progress === along[k - 1] && gate[k]! >= 0) {
@@ -294,6 +304,9 @@ export function moveWalkers(w: World, dtNs: number): void {
       }
     }
     c.walkProgress[slot] = progress;
+    const stored = c.walkProgress[slot]!;
+    const next = segmentAt(along, stored, false);
+    limits[slot] = stored >= total || (stored === along[next - 1] && gate[next]! >= 0) ? -1 : along[next]!;
   }
 }
 

@@ -359,6 +359,11 @@ export class Citizens {
   /** Derived, not state: the slots on foot in no particular order, and where each is in that list (-1 when not on foot). */
   private readonly walkerList: number[] = [];
   private walkerIndex = new Int32Array(0);
+  /**
+   * Derived, not state: how far a walker's progress may go by a plain add, the end of the path segment it walks; -1 when
+   * its next step has to look at the path (a crossing to wait at, the end, a walk just begun).
+   */
+  walkLimit = new Float32Array(0);
   /** Derived, not state: the cars standing on each tile of the map. */
   private parked: Uint16Array;
 
@@ -474,6 +479,7 @@ export class Citizens {
       this.walkerIndex[slot] = this.walkerList.length;
       this.walkerList.push(slot);
     }
+    this.walkLimit[slot] = -1;
     this.onFoot[slot] = 1;
     this.walkFromX[slot] = from.x;
     this.walkFromY[slot] = from.y;
@@ -633,6 +639,7 @@ export class Citizens {
     this.onFootCount = 0;
     this.walkerList.length = 0;
     this.walkerIndex = new Int32Array(0);
+    this.walkLimit = new Float32Array(0);
     this.parked.fill(0);
     this.freeSlots.length = 0;
     this.unplanned = [];
@@ -659,6 +666,7 @@ export class Citizens {
     for (const name of LAYER_NAMES) this[name] = grown(this[name] as Layer, capacity, fills[name] ?? 0) as never;
     for (const name of STOP_LAYER_NAMES) this[name] = grown(this[name] as Layer, capacity * AGENDA_STOPS, fills[name] ?? 0) as never;
     this.walkerIndex = grown(this.walkerIndex, capacity, NONE);
+    this.walkLimit = grown(this.walkLimit, capacity, NONE);
     this.capacity = capacity;
   }
 }

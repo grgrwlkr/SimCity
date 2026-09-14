@@ -271,6 +271,53 @@ let via = new Int32Array(0);
 let reached = new Uint32Array(0);
 let settled = new Uint32Array(0);
 let search = 0;
+// A binary min-heap of links by cost, as `LinkHeap` orders it, on typed arrays that live between searches.
+let heapKeys = new Float64Array(1024);
+let heapLinks = new Int32Array(1024);
+let heapSize = 0;
+
+function heapPush(key: number, link: number): void {
+  if (heapSize === heapKeys.length) {
+    const [keys, links] = [new Float64Array(heapSize * 2), new Int32Array(heapSize * 2)];
+    keys.set(heapKeys);
+    links.set(heapLinks);
+    [heapKeys, heapLinks] = [keys, links];
+  }
+  let i = heapSize;
+  heapSize += 1;
+  while (i > 0) {
+    const up = (i - 1) >> 1;
+    if (heapKeys[up]! <= key) break;
+    heapKeys[i] = heapKeys[up]!;
+    heapLinks[i] = heapLinks[up]!;
+    i = up;
+  }
+  heapKeys[i] = key;
+  heapLinks[i] = link;
+}
+
+/** Takes the link of the least cost. */
+function heapPop(): number {
+  const top = heapLinks[0]!;
+  heapSize -= 1;
+  const key = heapKeys[heapSize]!;
+  const link = heapLinks[heapSize]!;
+  if (heapSize > 0) {
+    let i = 0;
+    for (;;) {
+      const left = 2 * i + 1;
+      if (left >= heapSize) break;
+      const child = left + 1 < heapSize && heapKeys[left + 1]! < heapKeys[left]! ? left + 1 : left;
+      if (heapKeys[child]! >= key) break;
+      heapKeys[i] = heapKeys[child]!;
+      heapLinks[i] = heapLinks[child]!;
+      i = child;
+    }
+    heapKeys[i] = key;
+    heapLinks[i] = link;
+  }
+  return top;
+}
 
 /** A* over the links from the end of `from` to the start of `to` by the current link times: successor indices, or `null`. */
 function findRoute(w: World, from: number, to: number): Int32Array | null {
@@ -289,26 +336,31 @@ function findRoute(w: World, from: number, to: number): Int32Array | null {
   search += 1;
   const box = boxSeconds(w);
   const fast = w.trafficConfig.tileMeters / (HEURISTIC_KMH / 3.6);
-  const estimate = (link: number) => (Math.abs(g.startX[to]! - g.startX[link]!) + Math.abs(g.startY[to]! - g.startY[link]!)) * fast;
-  const heap = new LinkHeap();
-  const relax = (link: number, base: number, from: number) => {
-    for (let k = g.succStart[link]!; k < g.succStart[link + 1]!; k++) {
-      const next = g.succLink[k]!;
-      const cost = base + g.succBoxTiles[k]! * box;
+  const [toX, toY] = [g.startX[to]!, g.startY[to]!];
+  const { succStart, succLink, succBoxTiles, startX, startY } = g;
+  const linkSeconds = m.linkSeconds;
+  heapSize = 0;
+  for (let link = from, base = 0, origin = -1; ; ) {
+    for (let k = succStart[link]!; k < succStart[link + 1]!; k++) {
+      const next = succLink[k]!;
+      const cost = base + succBoxTiles[k]! * box;
       if (reached[next] === search && cost >= best[next]!) continue;
       reached[next] = search;
       best[next] = cost;
-      parent[next] = from;
+      parent[next] = origin;
       via[next] = k;
-      heap.push(cost + estimate(next), next);
+      heapPush(cost + (Math.abs(toX - startX[next]!) + Math.abs(toY - startY[next]!)) * fast, next);
     }
-  };
-  relax(from, 0, -1);
-  while (heap.size > 0) {
-    const [, link] = heap.pop();
-    if (settled[link] === search) continue;
-    settled[link] = search;
-    if (link === to) {
+    let found = -1;
+    while (heapSize > 0) {
+      const candidate = heapPop();
+      if (settled[candidate] === search) continue;
+      settled[candidate] = search;
+      found = candidate;
+      break;
+    }
+    if (found < 0) break;
+    if (found === to) {
       const steps: number[] = [];
       for (let at = to, guard = 0; guard <= n; guard++) {
         steps.push(via[at]!);
@@ -319,7 +371,9 @@ function findRoute(w: World, from: number, to: number): Int32Array | null {
       m.routeCache.set(key, route);
       return route;
     }
-    relax(link, best[link]! + m.linkSeconds[link]!, link);
+    link = found;
+    base = best[found]! + linkSeconds[found]!;
+    origin = found;
   }
   m.routeCache.set(key, null);
   return null;

@@ -134,8 +134,16 @@ export function assignJobs(w: World): void {
   stats.assignedLastTick = assigned;
 }
 
-/** `clear_invalid_workplaces` (SimStep::Employment, before assignment): a job goes with its workplace. */
+/** Derived, not state: the buildings version the workplaces were last checked against. */
+const workplacesChecked = new WeakMap<World, number>();
+
+/**
+ * `clear_invalid_workplaces` (SimStep::Employment, before assignment): a job goes with its workplace. A workplace stops
+ * being one only when its building goes, so the citizens are looked at after the buildings changed.
+ */
 export function clearInvalidWorkplaces(w: World): void {
+  if (workplacesChecked.get(w) === w.buildings.version) return;
+  workplacesChecked.set(w, w.buildings.version);
   const citizens = w.citizens;
   for (let slot = 0; slot < citizens.highWater; slot++) {
     if (citizens.alive[slot] !== 1 || citizens.workplace[slot] === -1) continue;
