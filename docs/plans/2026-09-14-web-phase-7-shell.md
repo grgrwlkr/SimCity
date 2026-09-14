@@ -1,25 +1,25 @@
-# Этап 7, часть «оболочка»: Tauri 2, геймпад, релизная сборка
+# Этап 7, часть «оболочка»: Electron, геймпад, релизная сборка
 
-> Программа: `docs/plans/2026-09-11-ts-threejs-migration-plan.md`, строка этапа 7. Эта часть закрывает оболочку Tauri 2 над `packages/app`, геймпад, релизный `.app` для macOS arm64 с замером fps, проверку ступени 1 защиты кода и опциональную обфускацию UI. Файловые сейвы и `.exe` сюда не входят.
+> Программа: `docs/plans/2026-09-11-ts-threejs-migration-plan.md`, строка этапа 7. Эта часть закрывает десктоп-оболочку над `packages/app`, геймпад, релизный `.app` для macOS arm64 и проверку ступени 1 защиты кода. Файловые сейвы и `.exe` сюда не входят.
 
-**Итог.** `bun run desktop:build` собирает `SimCity.app` (6 104 КиБ) за 40 с после правки фронта. Тестовый город в нём идёт на 60 fps, старт до готовой симуляции занимает 0,3–0,7 с. Геймпад работает в браузере и в оболочке. Обфусцированная сборка собирается и запускается, но в релиз не годится: у неё случается 29-секундное зависание загрузки (ниже).
+**Итог.** Оболочка — Electron 44.3.0 (Chromium 152). `bun run desktop:build` собирает `SimCity.app` за 2–4 с после установки зависимостей. Тестовый город в нём идёт на 60 fps в изолированной странице. Геймпад работает. Tauri убран целиком по решению пользователя: на macOS он исполняет страницу в WKWebView, а игре нужен один Chromium везде (история ниже).
 
 ## Команды
 
-- `bun run desktop:dev` — окно Tauri над dev-сервером Vite. Порт из `PORT`, по умолчанию 5174; `tools/desktop-dev.ts` передаёт тот же порт в `build.devUrl` через `tauri dev --config`.
-- `bun run desktop:build` — `vite build packages/app`, затем `tauri build --bundles app`. Результат: `packages/desktop/src-tauri/target/release/bundle/macos/SimCity.app`.
-- `bun run desktop:build:obfuscated` — то же, но Vite берёт `packages/desktop/vite.obfuscated.config.ts` (через `packages/desktop/tauri.obfuscated.conf.json`).
-- `SIMCITY_FPS_PROBE=<секунды> …/SimCity.app/Contents/MacOS/simcity_desktop` — зонд. В stdout идут строки JSON `{"shellMs":…,"probe":…}`: `menuReady` с Resource Timing всех ассетов, `cityReady`, затем раз в секунду fps и снимок сима. В stderr — каждый запрос к серверу ассетов со временем от запуска.
+- `bun run desktop:dev` — `tools/desktop-dev.ts`: `electron:install`, сборка main и preload, Vite на `PORT` (5174 по умолчанию), Electron над ним. С выходом Electron обёртка гасит Vite.
+- `bun run desktop:build` — `electron:install`, `bun build` для `src/main.ts` (ESM) и `src/preload.ts` (CJS) в `packages/desktop/out`, `vite build packages/app` в `out/renderer`, затем `electron-builder --mac --arm64`. Результат: `packages/desktop/release/mac-arm64/SimCity.app`.
+- `bun run desktop:build:obfuscated` — то же с `packages/desktop/vite.obfuscated.config.ts`. На Electron не перемерялся (пауза по обфускации от оркестратора).
 
 ## Решения
 
-- **Раскладка `packages/desktop/src-tauri`.** Стандартное место Tauri 2 (`src-tauri` рядом с `package.json`, где стоит `@tauri-apps/cli`) и отдельный пакет bun-монорепо. `packages/app` о Tauri не знает.
-- **Крейт вне cargo-workspace.** Пустой `[workspace]` в `Cargo.toml`, как у `tools/rand-vectors`. У крейта свой `Cargo.lock` и свой `target/`, `bevy_*` в дереве нет, корень не правился.
-- **Страница с `http://127.0.0.1:45174`, а не с `tauri://localhost`.** Замер: на `tauri://` приходят `coop: same-origin` и `coep: require-corp`, `isSecureContext: true`, но `crossOriginIsolated: false`, и `main.tsx` падает на старте. На loopback-origin с теми же заголовками изоляция есть.
-- **Сервер свой, не `tauri-plugin-localhost`.** Плагин 2.3.2 привязывал порт в своём потоке. Если порт занят, окно открывало чужую страницу (находка security-ревью). `serve_assets` на `tiny_http` 0.12 привязывает `127.0.0.1:45174` до старта Tauri. Проверено с `nc -l 127.0.0.1 45174`: приложение выходит с кодом 1 через 1 с, окна нет. На неизвестный путь сервер отвечает 404. В `tauri dev` сервера нет: заголовки ставит `vite.config.ts`.
-- **IPC-команд нет.** Зонд передаёт строки через `document.title` (`on_document_title_changed`).
-- **Окно зонда:** приложение запускается как accessory, окно `focused(false)`, `focusable(false)`, `always_on_top`, `set_ignore_cursor_events(true)`. Без «поверх остальных» перекрытое окно WebKit считает `hidden` и не рисует; в прогоне без `focusable(false)` окно получало чужие клики.
-- **Геймпад** (`packages/app/src/gamepad.ts`): чистая `mapGamepad` для стандартной раскладки W3C и опрос через rAF в `installGamepad`, одна точка подключения в `main.tsx`. Кнопки срабатывают по нажатию, стики и триггеры — пока удерживаются, с учётом `dt`. Мёртвая зона стика 0,2, шаг кадра не больше 0,1 с.
+- **Plain Vite + electron-builder, без electron-vite.** electron-vite 5.0.0 объявляет `peerDependencies` `vite: ^5 || ^6 || ^7` (реестр npm, 2026-09-14), а у порта Vite 8.3.0. Main и preload собирает `bun build` (по одному модулю), рендерер — Vite-конфиг самого `packages/app`.
+- **Версии:** `electron` 44.3.0, `electron-builder` 26.15.3 (реестр npm, 2026-09-14). Chromium 152.0.7977.78 и Node 24.20.0 сняты с самого бинарника (`ELECTRON_RUN_AS_NODE=1 … -p process.versions`). Цель Vite-сборки — `build.target: 'chrome152'` в `packages/app/vite.config.ts`. `safari13` там не было: цель вообще не задавалась, стоял дефолт Vite.
+- **Изоляция без сервера.** В сборке страница идёт по привилегированной схеме `app://bundle` (`standard`, `secure`, `supportFetchAPI`, `corsEnabled`). `protocol.handle` отдаёт файлы из `out/renderer` внутри asar с COOP/COEP и явным `Content-Type`, проверяет выход за каталог и отвечает 404. В dev окно грузит `SIMCITY_DEV_SERVER_URL`, заголовки ставит `vite.config.ts`.
+- **Безопасность окна:** `contextIsolation`, `sandbox`, без `nodeIntegration`. Preload отдаёт только `window.simcityDesktop` (платформа и версии). `setWindowOpenHandler` запрещает новые окна, `will-navigate` пускает только в свой origin.
+- **Бинарник Electron.** bun не запускает `install.js` пакета `electron`: ни `bun install`, ни `bun install --force`, ни `trustedDependencies` в корне не вернули удалённый `dist` (замер). Скрипт `electron:install` вызывает его явно; повторный запуск ничего не делает.
+- **asar без `node_modules`.** С `files: ["out/**"]` electron-builder брал продакшн-зависимости корневого workspace (react, three вместе с исходниками, zod вместе с тестами), и `app.asar` весил 30 011 411 байт. С `"!node_modules/**"` осталось 10 записей и 1 365 723 байта: рендерер уже собран в бандл.
+- **Подписи нет** (`mac.sign: null`), иконка — стандартная Electron.
+- **Геймпад** (`packages/app/src/gamepad.ts`, от оболочки не зависит): чистая `mapGamepad` для стандартной раскладки W3C и опрос через rAF в `installGamepad`, одна точка подключения в `main.tsx`.
 
   | Вход | Команда | Аналог |
   |---|---|---|
@@ -31,65 +31,48 @@
   | RB / LB | шаг по лестнице скоростей | кнопки HUD |
   | Y | `fitMap` | `__sim.fitMap` |
 
+  Мёртвая зона стика 0,2, шаг кадра не больше 0,1 с.
+
 ## Ступень 1 защиты: проверка
 
-- В `.app` нет `.map`: `find …/SimCity.app -type f` — только `Info.plist`, `simcity_desktop`, `icon.icns`.
-- Prod-сборка Vite без sourcemap. Ключа `sourcemap` в `packages/app/vite.config.ts` нет, в Vite 8 `build.sourcemap` по умолчанию `false` (исходник `build.ts`). В `packages/app/dist` нет `sourceMappingURL`.
-- В бинарнике нет открытого JS: строк `SharedArrayBuffer`, `WebGPURenderer`, `installGamepad` 0 — ассеты сжаты фичей `compression` из `default` крейта `tauri`.
-- Извлечь ассеты одной командой проще у запущенного приложения, чем из бинарника, — это и есть главная дыра ступени 1:
+- В `packages/desktop/out/renderer` нет `.map` и `sourceMappingURL`; в Vite 8 `build.sourcemap` по умолчанию `false` (исходник `build.ts`), ключ не задан.
+- `app.asar`: `out/main.js`, `out/preload.cjs`, `out/renderer/index.html` и три ассета, `package.json` — 10 записей.
+- Извлечение одной командой (замер: выгруженный `index-*.js` байт в байт совпадает со сборкой):
 
   ```sh
-  mkdir -p simcity-assets && cd simcity-assets && B=http://127.0.0.1:45174 && curl -s $B/ -o index.html && for p in $(rg -o --no-filename '/assets/[A-Za-z0-9._-]+' index.html | sort -u); do curl -s --create-dirs -o .$p $B$p; done && for p in $(rg -o --no-filename '/assets/[A-Za-z0-9._-]+' assets | sort -u); do [ -f .$p ] || curl -s --create-dirs -o .$p $B$p; done && ls -la assets
+  node node_modules/.bun/@electron+asar@3.4.1/node_modules/@electron/asar/bin/asar.js extract packages/desktop/release/mac-arm64/SimCity.app/Contents/Resources/app.asar simcity-assets
   ```
 
-  Замер на итоговой сборке: `index.html`, `index-*.css` (1 984 байта), `index-*.js` (1 083 617), `worker-*.js` (275 012). Выгруженный `index-*.js` байт в байт совпадает с `dist` (`cmp`). Из самого бинарника одной стандартной командой не достать: там brotli-потоки без имён.
-
-## Обфускация UI (`desktop:build:obfuscated`)
-
-`javascript-obfuscator` 5.7.0 (версия — реестр npm, API — context7, 2026-09-14), пресет `low-obfuscation` с `disableConsoleOutput: false`: пресет глушит `console` на всей странице. Группы `codeSplitting` в Rolldown: `vendor` — всё из `node_modules`, `ui` — `packages/ui/src` и `packages/app/src` без `main.tsx`, с `includeDependenciesRecursively: false`. Обфусцируется только чанк `ui` (`renderChunk`). Сборка падает, если в `ui` попал модуль не из app/ui. Воркер (sim, bridge) и `render` остаются чистыми.
-
-- **Почему без `main.tsx` и с `vendor`.** Чанк `ui`, в который попадала точка входа, вычислялся раньше чанка, из которого импортирует. В обоих движках страница падала с `a is not a function`, и так же без обфускатора, то есть дело в разбивке. Разбивка `vendor` + `ui` без точки входа в Chromium и WebKit работает без ошибок.
-- **Что защищено.** Обфусцирован только чанк `ui` — 10,2 кБ из ~1,36 МБ JS (`vendor` 1 052 кБ, `index` 24 кБ, `worker` 275 кБ остаются минифицированными). В `low`-пресете строки лежат в массиве открытым текстом.
-- **Замеры, macOS 27.0, 12 прогонов с self-defending.** В 2 прогонах окно было `hidden`, их fps не считается, старт считается.
-
-  | Сборка | Старт, `shellMs` | fps в видимых прогонах | Зависания |
-  |---|---|---|---|
-  | `desktop:build` (7 прогонов) | 335–675 мс | 60 | 0 из 7 |
-  | `desktop:build:obfuscated`, без зависания (7 прогонов) | 363–1 157 мс | 53–61 | — |
-  | `desktop:build:obfuscated`, с зависанием (5 прогонов, 2 из них `hidden`) | 29 438–31 834 мс | 60–61 после старта | 5 из 12 |
-
-- **Зависание.** Resource Timing: все JS и воркер приходят за 16–116 мс, а ответ на `ui-*.css` начинается на 29 020–29 166 мс. Трасса сервера в том же прогоне: запрос CSS доходит до `tiny_http` на 29 391 мс, хотя воркер отдан на 410 мс и цикл раздачи свободен. Три гипотезы опровергнуты замером: self-defending (висит CSS, а не JS), блокировка в цикле раздачи, простаивающие keep-alive-соединения (`Connection: close` не помог, 1 зависание из 3). Причина не найдена; обычная сборка с двумя подресурсами на тех же условиях не зависала ни разу.
-- **Вывод.** Скрипт оставлен как опция по требованию (решение программы). Цена обфускации как таковой в замерах не видна, но сборка с разбивкой в текущем виде в релиз не идёт, а защищает она 10 кБ.
+  Выходит `index.html` (424 байта), `index-*.css` (1 882), `index-*.js` (1 083 617), `worker-*.js` (275 012), `main.js` (2 419), `preload.cjs` (236), `package.json` (257).
+- ASAR integrity (фьюз `EnableEmbeddedAsarIntegrityValidation`) по документации Electron по умолчанию выключен и проверяет целостность, а не прячет код. Не включали.
 
 ## Зависимости и отложенное
 
-- **Файловые сейвы** ждут сейвов v1 этапа 6 (эквивалент `SaveGameV3`). Оболочке понадобится `tauri-plugin-fs` или команда Rust и выбор каталога.
-- **Зависание CSS в разбитой сборке** — разбирать перед любым релизом `desktop:build:obfuscated`. Следующий шаг — трасса TCP-соединений (accept и чтение запроса), а не новая гипотеза.
-- **Дыры ступени 1:** раздача с `127.0.0.1` читается любым локальным процессом, `window.__sim` есть в релизе (раздел «Защита кода от разбора» в программе).
-- **`.exe`** не собирался: Windows-машины нет. Loopback-раздачу и COOP/COEP в WebView2 надо проверить отдельно.
-- **Подпись и нотаризация** не делались, `bundle.macOS.signingIdentity` не задан. **Иконки** — заглушки `tauri init`.
+- **Файловые сейвы** ждут сейвов v1 этапа 6 (эквивалент `SaveGameV3`). В Electron это `ipcMain` с выбором каталога и мост в preload.
+- **Обфускация на Electron** не перемерялась; прошлые числа сняты на Tauri (ниже).
+- **Зонд fps в самом приложении** не переносился: собранный `.app` проверяется из Playwright `_electron.launch`.
+- **`.exe`, подпись, нотаризация, иконки, фьюзы Electron** не делались.
+- **`window.__sim` в релизе** остаётся (раздел «Защита кода от разбора» в программе).
 - **`live/*` как Playwright-хелперы** из строки этапа 7 в эту часть не входили.
 
 ## Сделано / Отклонения / Замеры
 
-**Сделано.** Оболочка Tauri 2.11 (`tauri` 2.11.5, `tauri-build` 2.6.3, `@tauri-apps/cli` 2.11.4, `tiny_http` 0.12.0; версии сверены с crates.io и npm 2026-09-14). Скрипты `desktop:dev`, `desktop:build`, `desktop:build:obfuscated`, зонд fps. Геймпад: 14 Vitest-тестов маппинга и `e2e/gamepad.spec.ts` в Chromium и WebKit — без геймпада страница работает без ошибок в консоли, подменённый `navigator.getGamepads` двигает камеру стиком и ставит паузу кнопкой Start. `desktop:dev` проверен зондом на `PORT=5210`: Vite на 5210, окно открыло `http://localhost:5210`, WebGPU, 60 fps со 2-й секунды, выход с кодом 0 за 29 с вместе с компиляцией, процессов и занятого порта не осталось.
+**Сделано.** Electron-оболочка в `packages/desktop` (`src/main.ts`, `src/preload.ts`, `tsconfig.json`, конфиг electron-builder в `package.json`), скрипты `desktop:dev`, `desktop:build`, `desktop:build:obfuscated`, пакет в `bun run typecheck`, `out/` и `release/` в `.gitignore` и в игнорах ESLint. Tauri-крейт, его конфиги, `@tauri-apps/cli` и обёртка dev на Tauri удалены вместе с `src-tauri/target` (3,1 ГБ). Rust в порте не собирается вообще. Геймпад: 14 Vitest-тестов маппинга и `e2e/gamepad.spec.ts`.
 
 **Отклонения.**
-- Замеры на Apple M5 (MacBook Air, 16 ГБ, дисплей 2560×1664), а не на M2, как в воротах программы: M2 Max — безголовый сервер без дисплея.
-- Посреди работы macOS обновилась с 26.x до 27.0 с перезагрузкой. Итоговые fps, старт и обфускация сняты на 27.0. Холодная сборка — на 26.x. Headless-сравнение вариантов погибло при перезагрузке и в итог не входит.
-- `app.security.headers` в конфиге не используются: на `tauri://` изоляцию они не дают, на `127.0.0.1` заголовки ставит `serve_assets`.
+- Замеры на Apple M5 (MacBook Air, 16 ГБ, macOS 27.0), а не на M2, как в воротах программы: M2 Max — безголовый сервер без дисплея.
+- Оболочка сменилась посреди этапа: Tauri → Electron (решение пользователя 2026-09-14). Коммиты Tauri остались в истории ветки.
+- **История Tauri (сжато).** На `tauri://` WebKit не давал `crossOriginIsolated` даже с COOP/COEP. Страницу пришлось отдавать своим сервером с `127.0.0.1:45174` (fail-closed на занятом порту). В разбитой на чанки обфусцированной сборке запрос CSS изредка висел 29 с (5 из 12 запусков), причина не найдена. Тогдашний `.app` весил 6 104 КиБ и шёл на 60 fps. Всё это с Electron не переносится.
 
-**Замеры.**
+**Замеры Electron (2026-09-14).**
 
 | Что | Число |
 |---|---|
-| Сборка с нуля (пустой `target/`, крейты скачаны `cargo fetch`), macOS 26.x | 89,5 с wall, cargo 87 с |
-| Пересборка после правки фронта, итоговая, macOS 27.0 | 40,5 с (cargo 39,3 с, thin LTO) |
-| `SimCity.app` итоговый | `du -sk` 6 104; бинарь `simcity_desktop` 5 966 368 байт, фронт вшит в него |
-| fps, `?scenario=city` (2000 жителей, ×1), окно 1280×768 CSS px, dpr 2, WebGPU | 60 на всех выборках: итоговый прогон 7/7, 6 прогонов с трассой по 3/3; на 26.x — 19/19 |
-| Старт до готовности `__sim` на странице меню (`shellMs` / `pageMs`) | 7 прогонов: 335–675 / 52–133 мс |
-| `packages/desktop/src-tauri/target` | 3,1 ГБ: `release` 904 МБ, `debug` 2,3 ГБ от проверки `desktop:dev`; корневого `target/` нет |
+| `desktop:build` целиком (main + renderer + electron-builder, zip Electron уже в кэше) | 2,4–3,4 с wall |
+| `SimCity.app` | `du -sk` 295 152; `app.asar` 1 365 723 байта |
+| Собранное приложение из Playwright `_electron.launch` | `app://bundle/index.html`, `crossOriginIsolated: true`, `__sim.ready` за 246–379 мс от начала навигации, 10 тиков в секунду на ×1, WebGPU, `window.simcityDesktop` есть, `window.require` и `window.process` — `undefined`, ошибок страницы нет |
+| fps, `?scenario=city` (2000 жителей, ×1), окно 1280×768 CSS px, dpr 2 | 60 на всех 6 выборках, окно `visible` |
+| dev-путь main (Vite на 5210) | `http://localhost:5210/`, `crossOriginIsolated: true`, мост есть, `window.open` не открыл второго окна |
+| `bun run desktop:dev` (`PORT=5210`) | Vite поднялся, Electron запущен. После завершения Electron процессов и слушателя на 5210 не осталось. Код выхода обёртки не зафиксирован |
 
-**Тесты (B/R/G).** B до правок: `bun run test` 520/520 в 86 файлах. R: `gamepad.test.ts` падал на `Cannot find module '../src/gamepad'`; e2e-тест пана с отключённым `installGamepad` падал в обоих движках (`centerX` 0), тест без геймпада проходил. G: `gamepad.test.ts` 14/14. Итоговые ворота порта после последней TS-правки: `typecheck` и `lint` — код 0, `test` — 534/534 в 87 файлах, `e2e` (`E2E_PORT=5184`) — 48/48. Прогон `test` под load average 40+ давал 5 таймаутов в чужих пакетах, без нагрузки — зелёный.
-
-**Rust.** Десктоп-крейт: `cargo fmt --check` и `cargo clippy --all-targets -- -D warnings` чисты. По корневому Bevy-workspace успел пройти `cargo clippy --all-targets --all-features -- -D warnings` (чисто, 7 мин 05 с; в `cargo metadata` те же 6 крейтов). Затем оркестратор по решению пользователя остановил `cargo test --workspace` и удалил корневой `target/`. С этого момента Rust из порта не собирается, кроме Tauri-крейта (правило в программе и в `CLAUDE.md`).
+**Тесты (B/R/G).** B до правок этапа: `bun run test` 520/520. R: `gamepad.test.ts` падал на `Cannot find module '../src/gamepad'`; e2e пана с отключённым `installGamepad` падал (`centerX` 0). G после перехода на Electron: `typecheck` и `lint` — код 0, `test` — 534/534 в 87 файлах, `e2e` только в Chromium (`--project=chromium`, `E2E_PORT=5184`) — 24/24.
