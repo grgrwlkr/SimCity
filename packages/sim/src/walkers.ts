@@ -57,21 +57,24 @@ let reached = new Uint32Array(0);
 let search = 0;
 
 const isRoad = (grid: MapGrid, i: number) => grid.roadKind[i] !== 0;
+const SIDES = [
+  [0, 1],
+  [0, -1],
+  [1, 0],
+  [-1, 0],
+] as const;
+const NO_SIDE = [0, 0] as const;
 const isBox = (grid: MapGrid, i: number) => grid.roadKind[i] !== 0 && grid.roadDir[i] === 0;
 const runsEastWest = (grid: MapGrid, i: number) => grid.roadDir[i] === WEST || grid.roadDir[i] === EAST;
 
 /** The side of a road tile its kerb is on, as a unit step; (0, 0) for a tile with road all round. */
 function kerbSide(grid: MapGrid, x: number, y: number): readonly [number, number] {
-  for (const [dx, dy] of [
-    [0, 1],
-    [0, -1],
-    [1, 0],
-    [-1, 0],
-  ] as const) {
-    const i = grid.idx({ x: x + dx, y: y + dy });
-    if (i === undefined || !isRoad(grid, i)) return [dx, dy];
-  }
-  return [0, 0];
+  const [width, height] = [grid.width, grid.height];
+  if (y + 1 >= height || !isRoad(grid, (y + 1) * width + x)) return SIDES[0];
+  if (y === 0 || !isRoad(grid, (y - 1) * width + x)) return SIDES[1];
+  if (x + 1 >= width || !isRoad(grid, y * width + x + 1)) return SIDES[2];
+  if (x === 0 || !isRoad(grid, y * width + x - 1)) return SIDES[3];
+  return NO_SIDE;
 }
 
 /**
@@ -109,21 +112,22 @@ function roadPath(grid: MapGrid, start: number, goal: number): number[] | null {
       for (let at = goal; at >= 0; at = parent[at]!) path.push(at);
       return path.reverse();
     }
-    const [x, y] = [i % width, Math.floor(i / width)];
-    for (const [dx, dy] of [
-      [1, 0],
-      [-1, 0],
-      [0, 1],
-      [0, -1],
-    ] as const) {
-      const j = grid.idx({ x: x + dx, y: y + dy });
-      if (j === undefined || !isRoad(grid, j)) continue;
+    const x = i % width;
+    const y = (i - x) / width;
+    // East, west, north, south, by index: no object a neighbour.
+    for (let move = 0; move < 4; move++) {
+      const dx = move === 0 ? 1 : move === 1 ? -1 : 0;
+      const dy = move === 2 ? 1 : move === 3 ? -1 : 0;
+      const [nx, ny] = [x + dx, y + dy];
+      if (nx < 0 || ny < 0 || nx >= width || ny >= grid.height) continue;
+      const j = ny * width + nx;
+      if (!isRoad(grid, j)) continue;
       const next = cost[i]! + 1 + stepPenalty(grid, i, j, dx, goal);
       if (reached[j] === search && next >= cost[j]!) continue;
       reached[j] = search;
       cost[j] = next;
       parent[j] = i;
-      heap.push(next + Math.abs(gx - (x + dx)) + Math.abs(gy - (y + dy)), j);
+      heap.push(next + Math.abs(gx - nx) + Math.abs(gy - ny), j);
     }
   }
   return null;
@@ -178,32 +182,84 @@ export function walkPath(w: World, from: TilePos, to: TilePos): WalkPath {
   return path;
 }
 
+type SlotPath = { fx: number; fy: number; tx: number; ty: number; path: WalkPath } | undefined;
 /** Derived, not state: the path each walker slot walks, and the ends it was found for. */
-const slotPaths = new WeakMap<World, { key: number; readonly entries: Array<{ fx: number; fy: number; tx: number; ty: number; path: WalkPath } | undefined> }>();
+const slotPaths = new WeakMap<World, { key: number; readonly entries: SlotPath[] }>();
 
-/** The path of the walker in `slot`, without a key built for every walker every step. */
-function walkerPath(w: World, slot: number): WalkPath {
-  const c = w.citizens;
+/** The paths of the walker slots for the current roads; taken once a pass, not once a walker. */
+function slotPathsOf(w: World): SlotPath[] {
   let cache = slotPaths.get(w);
   if (cache === undefined || cache.key !== w.graphVersion) {
     cache = { key: w.graphVersion, entries: [] };
     slotPaths.set(w, cache);
   }
+  return cache.entries;
+}
+
+/** The path of the walker in `slot`, without a key built for every walker every step. */
+function walkerPath(w: World, slot: number, entries: SlotPath[] = slotPathsOf(w)): WalkPath {
+  const c = w.citizens;
   const [fx, fy, tx, ty] = [c.walkFromX[slot]!, c.walkFromY[slot]!, c.destX[slot]!, c.destY[slot]!];
-  const known = cache.entries[slot];
+  const known = entries[slot];
   if (known !== undefined && known.fx === fx && known.fy === fy && known.tx === tx && known.ty === ty) return known.path;
   const path = walkPath(w, { x: fx, y: fy }, { x: tx, y: ty });
-  cache.entries[slot] = { fx, fy, tx, ty, path };
+  entries[slot] = { fx, fy, tx, ty, path };
   return path;
 }
 
-/** Metres of a walk from `from` to `to`, and the crossings with a light on its way. */
+/** Walk measures kept per world before the cache starts over. */
+const MEASURE_CACHE_LIMIT = 500_000;
+/** Derived, not state: the length and lit crossings of walks between tile pairs, `lit × 2¹⁶ + tiles`, for a graph and its lights. */
+const measureCache = new WeakMap<World, { graphVersion: number; lights: number; readonly values: Map<number, number> }>();
+
+/** A number that moves when the set of lit intersections does. */
+function lightsSignature(w: World): number {
+  let signature = w.trafficLights.length;
+  for (const light of w.trafficLights) signature = (Math.imul(signature, 31) + light.intersectionId) | 0;
+  return signature;
+}
+
+/**
+ * Metres of a walk from `from` to `to`, and the crossings with a light on its way. Kept apart from the paths themselves: the
+ * planner measures a walk for every tour it times, far more pairs than paths are worth keeping.
+ */
 export function walkMeasure(w: World, from: TilePos, to: TilePos): { readonly meters: number; readonly litCrossings: number } {
+  const grid = w.grid;
+  const [a, b] = [grid.idx(from), grid.idx(to)];
+  let values: Map<number, number> | undefined;
+  const key = a === undefined || b === undefined ? -1 : a * grid.len() + b;
+  if (key >= 0) {
+    const lights = lightsSignature(w);
+    let cache = measureCache.get(w);
+    if (cache === undefined || cache.graphVersion !== w.graphVersion || cache.lights !== lights || cache.values.size >= MEASURE_CACHE_LIMIT) {
+      cache = { graphVersion: w.graphVersion, lights, values: new Map() };
+      measureCache.set(w, cache);
+    }
+    values = cache.values;
+    const known = values.get(key);
+    if (known !== undefined) {
+      const litCrossings = Math.floor(known / 65536);
+      return { meters: (known - litCrossings * 65536) * w.trafficConfig.tileMeters, litCrossings };
+    }
+  }
   const path = walkPath(w, from, to);
   const lit = new Set(w.trafficLights.map((light) => light.intersectionId));
   let litCrossings = 0;
   for (const intersection of path.gate) if (intersection >= 0 && lit.has(intersection)) litCrossings += 1;
-  return { meters: path.along[path.along.length - 1]! * w.trafficConfig.tileMeters, litCrossings };
+  const tiles = path.along[path.along.length - 1]!;
+  values?.set(key, litCrossings * 65536 + tiles);
+  return { meters: tiles * w.trafficConfig.tileMeters, litCrossings };
+}
+
+/** The first index `k` from 1 whose `along[k]` passes `progress` (`strict`: reaches it), the last index when none does. */
+function segmentAt(along: Float32Array, progress: number, strict: boolean): number {
+  let [lo, hi] = [1, along.length - 1];
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (strict ? along[mid]! < progress : along[mid]! <= progress) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 /**
@@ -217,12 +273,12 @@ export function moveWalkers(w: World, dtNs: number): void {
   const seconds = (dtNs / 1e9) * (DEFAULT_GAME_HOUR_NS / w.gameHourNs);
   const pace = w.citizenConfig.walkKmh / 3.6 / w.trafficConfig.tileMeters;
   let lights: Map<number, TrafficLight> | undefined;
+  const paths = slotPathsOf(w);
   for (const slot of c.walkers()) {
-    const { along, gate, eastWest } = walkerPath(w, slot);
+    const { along, gate, eastWest } = walkerPath(w, slot, paths);
     const total = along[along.length - 1]!;
     let progress = c.walkProgress[slot]!;
-    let k = 1;
-    while (k < along.length - 1 && along[k]! <= progress) k += 1;
+    let k = segmentAt(along, progress, false);
     for (let budget = pace * seconds; budget > 0 && progress < total; ) {
       if (progress === along[k - 1] && gate[k]! >= 0) {
         lights ??= new Map(w.trafficLights.map((light) => [light.intersectionId, light]));
@@ -244,9 +300,7 @@ export function moveWalkers(w: World, dtNs: number): void {
 /** Where along `path` a walker `progress` tiles on is, and its heading along the axis it mostly moves on. */
 function poseAt(path: WalkPath, progress: number): readonly [x: number, y: number, heading: number] {
   const { points, along } = path;
-  const last = along.length - 1;
-  let k = 1;
-  while (k < last && along[k]! < progress) k += 1;
+  const k = segmentAt(along, progress, true);
   const [ax, ay, bx, by] = [points[2 * k - 2]!, points[2 * k - 1]!, points[2 * k]!, points[2 * k + 1]!];
   const span = along[k]! - along[k - 1]!;
   const t = span > 0 ? Math.min(Math.max((progress - along[k - 1]!) / span, 0), 1) : 1;
@@ -278,6 +332,7 @@ export function forEachWalker(w: World, visit: WalkerVisitor, view?: TileView): 
   const pace = w.citizenConfig.walkKmh / 3.6 / w.trafficConfig.tileMeters;
   const ahead = period > 1 ? (((w.tick % period) * TICK_DT_NS) / 1e9) * (DEFAULT_GAME_HOUR_NS / w.gameHourNs) * pace : 0;
   const lights = new Map(w.trafficLights.map((light) => [light.intersectionId, light]));
+  const paths = slotPathsOf(w);
   for (const slot of c.walkers()) {
     if (view !== undefined) {
       // A walk of a kilometre keeps within this of its ends, detours around a block included.
@@ -285,7 +340,7 @@ export function forEachWalker(w: World, visit: WalkerVisitor, view?: TileView): 
       const reach = Math.abs(fx - tx) + Math.abs(fy - ty);
       if (Math.max(fx, tx) + reach < view.minX || Math.min(fx, tx) - reach > view.maxX || Math.max(fy, ty) + reach < view.minY || Math.min(fy, ty) - reach > view.maxY) continue;
     }
-    const path = walkerPath(w, slot);
+    const path = walkerPath(w, slot, paths);
     const progress = c.walkProgress[slot]!;
     const [x, y, heading] = poseAt(path, ahead > 0 ? Math.max(Math.min(progress + ahead, drawnLimit(path, progress, lights)), progress) : progress);
     if (!inTileView(view, x, y)) continue;

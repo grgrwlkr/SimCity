@@ -56,7 +56,15 @@ describe('schedule', () => {
   // the game time of its period.
   it('slowJudgementsRunOnceAGameMinute', () => {
     const every = (name: string) => FIXED_UPDATE.find((s) => s.name === name)?.everyGameNs;
-    for (const name of ['buildingDecayEconomic', 'buildingDecayLowHappiness', 'buildingDecayNoRoadAccess', 'computeRciDemand']) {
+    for (const name of [
+      'buildingDecayEconomic',
+      'buildingDecayLowHappiness',
+      'buildingDecayNoRoadAccess',
+      'computeRciDemand',
+      'spawnCitizensFromResidential',
+      'updateCityPopulation',
+      'updateServiceCoverage',
+    ]) {
       expect(every(name), name).toBe(60 * SECOND_NS);
     }
     expect(every('moveWalkers'), 'walkers step a second at a time').toBe(SECOND_NS);

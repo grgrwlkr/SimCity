@@ -256,6 +256,8 @@ function hashMeso(h: Fnv64, w: World): void {
   h.u32(m.highWater);
   h.u32(m.count);
   h.u32(m.trucks);
+  h.u32(m.routeSearchesPerTick);
+  h.u32(m.searchesThisTick);
   for (const layer of [m.citizen, m.vehicle, m.purpose, m.link, m.enterSec, m.readySec, m.goalLink, m.goalOffset, m.next, m.heldSince, m.atRed, m.routeCursor, m.fromOffset, m.prevLink, m.generation]) {
     h.bytes(layer.subarray(0, m.highWater));
   }

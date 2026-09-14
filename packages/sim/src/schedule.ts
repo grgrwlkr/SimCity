@@ -97,7 +97,8 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'simTick', run: simTick, runIn: IN_GAME },
   // SimStep::Citizens, chained as in Rust: the open homes of the last tick fill up first, so the planner may send a
   // new citizen out this tick; its trip requests are read by spawnTripVehicles later in this tick.
-  { name: 'spawnCitizensFromResidential', run: spawnCitizensFromResidential, runIn: IN_GAME },
+  // Eight a home a game minute: occupancy moves by the day, and ten thousand homes a tick were a cost of their own.
+  { name: 'spawnCitizensFromResidential', run: spawnCitizensFromResidential, runIn: IN_GAME, everyGameNs: 60 * SECOND_NS },
   // After spawnCitizensFromResidential, before the planner: a backlog of thousands without a plan (a city opening lived in)
   // is planned a few thousand a tick instead of all in the planner's minute.
   { name: 'planCitizenBacklog', run: planCitizenBacklog, runIn: IN_GAME },
@@ -173,7 +174,7 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   // PostSimStep::Pollution: one chunk from the open factories of this tick; land value reads it below.
   { name: 'computePollution', run: computePollution, runIn: IN_GAME },
   // PostSimStep::Coverage: after this tick's map edits and buildings; land value and the daily economy read it.
-  { name: 'updateServiceCoverage', run: updateServiceCoverage, runIn: IN_GAME },
+  { name: 'updateServiceCoverage', run: updateServiceCoverage, runIn: IN_GAME, everyGameNs: 60 * SECOND_NS },
   // PostSimStep::Utilities: after this tick's buildings and map edits; growth reads it next tick.
   { name: 'updateUtilityNetwork', run: updateUtilityNetwork, runIn: IN_GAME },
   // PostSimStep::LandValue: one chunk from the pollution and coverage above, the traffic heat and the city fields.
@@ -190,7 +191,7 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   // on the network just computed, then the population and the feed line that read the occupancy.
   { name: 'updateConstructionProgress', run: updateConstructionProgress, runIn: IN_GAME },
   { name: 'updateOccupancy', run: updateOccupancy, runIn: IN_GAME },
-  { name: 'updateCityPopulation', run: updateCityPopulation, runIn: IN_GAME },
+  { name: 'updateCityPopulation', run: updateCityPopulation, runIn: IN_GAME, everyGameNs: 60 * SECOND_NS },
   { name: 'reportBuildingsWithoutPower', run: reportBuildingsWithoutPower, runIn: IN_GAME },
 ];
 
