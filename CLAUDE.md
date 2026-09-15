@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-SimCity — градостроительный симулятор. Основная кодовая база — порт на **TypeScript + Three.js** в `packages/`: bun-монорепо в корне репозитория. Симуляция идёт в Web Worker на фиксированном шаге 10 Гц, рендер Three.js и HUD на React в главном потоке. Rust + Bevy в `crates/` и `src/` — legacy-справка: источник алгоритмов и тестов для порта, в работе над портом не собирается и не запускается (раздел в конце файла).
+SimCity — градостроительный симулятор. Основная кодовая база — порт на **TypeScript + Three.js** в `packages/`: bun-монорепо в корне репозитория. Симуляция идёт в Web Worker на фиксированном шаге 10 Гц, рендер Three.js и HUD на React в главном потоке. Rust + Bevy из дерева удалены и читаются только из истории (раздел в конце файла).
 
 ## TypeScript + Three.js порт
 
@@ -23,11 +23,11 @@ bun tools/metropolis-day.ts [size] [hourSeconds] [hours]   # сутки часо
 
 ### Правила порта
 
-- **Никакого cargo.** Rust в работе над портом не компилируется вообще, в том числе ради фикстур. `target/` в корне после cargo — мусор. Фикстуры `packages/sim/test/fixtures/*.json` и `e2e/fixtures/rust-layout.json` заморожены; их генераторы `tools/rand-vectors` (Rust) и `tools/rust-layout.ts` (против живой Rust-игры) не запускаются.
-- **Проверки только в Chromium.** WebKit и Safari не проверяются: решение пользователя 2026-09-14. Отдельный прогон в Safari — только по явной просьбе.
+- **Rust в дереве нет.** Фикстуры `packages/sim/test/fixtures/*.json` и `e2e/fixtures/rust-layout.json` заморожены; их генераторы `tools/rand-vectors` (Rust) и `tools/rust-layout.ts` (против живой Rust-игры) остались только в истории и не восстанавливаются.
+- **Проверки только в Chromium.** WebKit и Safari не проверяются: решение пользователя 2026-09-14. Отдельный прогон в Safari — только по явной просьбе. Десктоп-оболочка — Electron, тот же Chromium, поэтому отдельного прогона в Safari нет и у собранного приложения.
 - WASM не предлагается до профиля с недостачей и не пишется без «да» пользователя на конкретный участок.
 - В `packages/sim` ESLint запрещает `Math.random`, `Date`, `performance`, `window`, таймеры, float-функции `Math.*` (`sin`, `sqrt`, `pow`…), импорт `three`/`react`/`zustand`, `TODO`/`FIXME`, `unimplemented` и `any`: состояние сходится между движками JS.
-- Портированный Rust-тест сохраняет имя в camelCase и ссылку на исходный файл. Изменение ожидаемого значения пина — отдельный коммит с обоснованием и запись в `docs/oracle-deviations.md`.
+- Портированный Rust-тест сохраняет имя в camelCase и ссылку на исходный файл в `rust-final`. Изменение ожидаемого значения пина — отдельный коммит с обоснованием и запись в `docs/oracle-deviations.md`.
 - Node-работа через bun; node/npm только там, где bun не может, с причиной.
 
 ### Пакеты
@@ -76,12 +76,13 @@ bun tools/metropolis-day.ts [size] [hourSeconds] [hours]   # сутки часо
 ### Проверки и замеры
 
 - e2e — проекты `chromium` и `metropolis-chromium` (мегаполис идёт после остальных). Фингерпринт в браузере сверяется с Node. `E2E_GPU=1` рисует через ANGLE Metal вместо SwiftShader — для замеров FPS; `E2E_PERF=1` включает замеры `@perf`, по умолчанию они пропущены.
+- CI — только порт: `.github/workflows/ci.yml` на `ubuntu-latest` гоняет typecheck, lint, test и e2e в headless Chromium на PR и на пушах в `main`.
 - `bun run bench` пишет JSON: пустая карта и тестовый город на 3 000 тиках, «Живой город» плюс 100 000 жителей (подбор работы, планировщик), мегаполис с разбивкой по системам. Числа идут в план этапа.
 - Игровое окно на экран не выводится: e2e headless.
 
 ### Desktop-оболочка (`packages/desktop`)
 
-- Electron 44.3.0 (Chromium 152.0.7977.78, Node 24.20.0) и electron-builder 26.15.3, Rust в оболочке нет. electron-vite не используется: его 5.0.0 требует Vite ^5–^7, а у порта Vite 8.
+- Electron 44.3.0 (Chromium 152.0.7977.78, Node 24.20.0) и electron-builder 26.15.3. electron-vite не используется: его 5.0.0 требует Vite ^5–^7, а у порта Vite 8.
 - `src/main.ts` — окно 1280×800. С `SIMCITY_DEV_SERVER_URL` оно грузит dev-сервер, без неё — схему `app://bundle`, которую `protocol.handle` отдаёт из `out/renderer` с COOP/COEP (`crossOriginIsolated: true`). Новые окна запрещены, навигация — только в свой origin. `src/preload.ts` работает при `contextIsolation`, `sandbox`, без `nodeIntegration` и отдаёт странице только `window.simcityDesktop` (платформа и версии).
 - `bun run desktop:dev` — Vite на `PORT` (5174 по умолчанию) и Electron над ним; с выходом Electron обёртка гасит и Vite. `bun run desktop:build` — `bun build` для main и preload в `packages/desktop/out`, `vite build packages/app` в `out/renderer`, `electron-builder --mac --arm64`. Результат — `packages/desktop/release/mac-arm64/SimCity.app`, рендерер в `app.asar`, без подписи.
 - Бинарник Electron качает `install.js` пакета `electron`; bun его сам не запускает (замер), поэтому оба скрипта сначала зовут `bun run --cwd packages/desktop electron:install`.
@@ -89,33 +90,9 @@ bun tools/metropolis-day.ts [size] [hourSeconds] [hours]   # сутки часо
 - Prod-сборка без sourcemap: `build.sourcemap: false` в `packages/app/vite.config.ts`, в `app.asar` нет `.map`. `app.asar` — 10 записей, `node_modules` в нём нет; извлекается `npx @electron/asar extract` (вне репозитория) или `bunx @electron/asar extract`.
 - `bun run desktop:e2e` (после `desktop:build`) — `packages/desktop/e2e` через Playwright `_electron.launch` на собранном `SimCity.app`: на экране ничего нет, `__sim` отвечает, тестовый город держит 60 fps. `SIMCITY_TEST_WINDOW=1` прячет Dock, не показывает окно и рендерит страницу offscreen на GPU (shared texture, `backgroundThrottling: false`), кадры считаются по событию `paint`. Любой агентский запуск приложения — только в этом режиме, экземпляр закрывается сразу после проверки; видимое окно — только по просьбе пользователя.
 
-## Rust + Bevy (legacy-справка)
+## Rust + Bevy — только в истории
 
-Не собирается и не запускается в работе над портом. Читается как источник алгоритмов и тестов: этап порта открывает Rust-тесты своей строки программы и выписывает из них инварианты.
-
-Стек: Rust + Bevy 0.19 (`bevy_egui 0.40`), `rust-toolchain.toml` → `1.96.0`, edition `2024`. Cargo workspace: бинарь `simcity_app` (`src/main.rs`) и крейты в `crates/`, зависимости однонаправленны (`docs/crate-workspace.md`):
-
-```
-simcity_app ─┬─> simcity_frontend ─┬─> simcity_debug ─┐
-             │                     ├─> simcity_data  ──┤
-             │                     └─> simcity_sim ────┴─> simcity_core
-             └─> (все крейты напрямую)
-```
-
-- `simcity_core` — контракты без логики: `commands` (`GameCommand`), `state` (`AppState`), `sets` (`GameSet`), `roads`, `ids`, `trips`, `sim_events`, `ui_state`, модель карты.
-- `simcity_sim` — вся симуляция: `buildings`, `citizens`, `economy`, `employment`, `demand`, `land_value`, `pollution`, `intersections`, `traffic`, `transport`, `pedestrians`, `public_transport`, `services`, `emergencies`, `civic_coverage`, `zone_placement`, `day_night`, `map`, `sim`.
-- `simcity_data` — `config_loader`, `persistence` (`SaveGameV3`), `scenarios`, тестовый город, детерминизм и oncoming-оракул (`route_oncoming_pins.rs`).
-- `simcity_debug` — `mcp_status`, `debug_world`.
-- `simcity_frontend` — камера, egui-UI, звук, input → command.
-
-Устройство, которое порт унаследовал в другой форме:
-- Команды: UI пишет `GameCommand` в `Input`, мир меняется в `CommandApply`; undo/redo через `command_history`.
-- Порядок: `Input → CommandApply → GraphUpdate → Sim → PostSim → RenderSync → Ui` на `Update`; `GraphUpdate → Sim → PostSim` на `FixedUpdate` 10 Гц с саб-сетами `SimStep` / `TrafficStep` / `PostSimStep`.
-- Параметры — `assets/config/*.ron` (`traffic`, `pedestrians`, `economy`, `employment`, `pathfinding`, `map`, `day_night`, `render`, `props`), сценарии — `assets/scenarios/scenarios.ron`.
-- Перекрёстки: `docs/architecture.md` → «Intersection Traffic Invariants (STRICT)» — Г/П-траектории в боксе, единый направленный гард маршрутов, левый уступает встречному.
-- Тесты co-located рядом с кодом, основная масса в `simcity_sim` (`map/tests.rs`, `traffic/tests/*.rs`, `pedestrians/tests_*.rs`, `emergencies/tests.rs` …).
-- Наблюдаемость: BRP-дебаг живой игры был у Rust-версии; в порте его заменяют `window.__sim` и Playwright.
-- Источник истины Rust-части: код и `assets/config/` → `docs/` (`architecture.md`, `gameplay.md`, `persistence.md`, `crate-workspace.md`, `debugging-and-observability.md`, `config-assets-scenarios.md`, `testing.md`) → deep-dive docs → `docs/archive/`.
+Rust + Bevy удалены из дерева 2026-09-15. Реализация, её тесты, генераторы фикстур и документы Rust-эпохи читаются из тега `rust-final` (= `edad8fb`): `git show rust-final:<path>`, `git grep <pattern> rust-final`. Ничего из них не собирается и в дерево не возвращается. Пути `crates/...` в комментариях `packages/**` и в планах этапов — ссылки на этот тег; инварианты перекрёстков — `git show rust-final:docs/architecture.md`, раздел «Intersection Traffic Invariants (STRICT)». `assets/` остался в дереве: константы порта ссылаются на `assets/config/*.ron`, часть тестов читает эти файлы напрямую.
 
 ## Conventions
 

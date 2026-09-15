@@ -1,15 +1,7 @@
-/target
-**/*.rs.bk
 .DS_Store
-
-# Local save files (M7)
-/saves
 
 # Local git worktrees (implementation isolation)
 /.worktrees/
-
-# Local Cursor hook state
-/.cursor/hooks/state/
 
 .superpowers/
 # Everything under `.claude/` is local, except the project's own skills: they are how a
@@ -19,15 +11,11 @@
 .claude/*
 !.claude/skills/
 
-# Scratch screenshots written by the game into the worktree root.
-/p*.png
-
 # TypeScript port (packages/)
 node_modules/
 dist/
 /test-results/
 /playwright-report/
-/tools/rand-vectors/target/
 
 # Electron shell (packages/desktop): bundled main/preload + renderer, and electron-builder output
 /packages/desktop/out/
