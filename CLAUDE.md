@@ -79,6 +79,16 @@ bun tools/metropolis-day.ts [size] [hourSeconds] [hours]   # сутки часо
 - `bun run bench` пишет JSON: пустая карта и тестовый город на 3 000 тиках, «Живой город» плюс 100 000 жителей (подбор работы, планировщик), мегаполис с разбивкой по системам. Числа идут в план этапа.
 - Игровое окно на экран не выводится: e2e headless.
 
+### Desktop-оболочка (`packages/desktop`)
+
+- Electron 44.3.0 (Chromium 152.0.7977.78, Node 24.20.0) и electron-builder 26.15.3, Rust в оболочке нет. electron-vite не используется: его 5.0.0 требует Vite ^5–^7, а у порта Vite 8.
+- `src/main.ts` — окно 1280×800. С `SIMCITY_DEV_SERVER_URL` оно грузит dev-сервер, без неё — схему `app://bundle`, которую `protocol.handle` отдаёт из `out/renderer` с COOP/COEP (`crossOriginIsolated: true`). Новые окна запрещены, навигация — только в свой origin. `src/preload.ts` работает при `contextIsolation`, `sandbox`, без `nodeIntegration` и отдаёт странице только `window.simcityDesktop` (платформа и версии).
+- `bun run desktop:dev` — Vite на `PORT` (5174 по умолчанию) и Electron над ним; с выходом Electron обёртка гасит и Vite. `bun run desktop:build` — `bun build` для main и preload в `packages/desktop/out`, `vite build packages/app` в `out/renderer`, `electron-builder --mac --arm64`. Результат — `packages/desktop/release/mac-arm64/SimCity.app`, рендерер в `app.asar`, без подписи.
+- Бинарник Electron качает `install.js` пакета `electron`; bun его сам не запускает (замер), поэтому оба скрипта сначала зовут `bun run --cwd packages/desktop electron:install`.
+- Цель Vite-сборки — `chrome152` в `packages/app/vite.config.ts`; при смене версии Electron поднимать вместе.
+- Prod-сборка без sourcemap: `build.sourcemap: false` в `packages/app/vite.config.ts`, в `app.asar` нет `.map`. `app.asar` — 10 записей, `node_modules` в нём нет; извлекается `npx @electron/asar extract` (вне репозитория) или `bunx @electron/asar extract`.
+- `bun run desktop:e2e` (после `desktop:build`) — `packages/desktop/e2e` через Playwright `_electron.launch` на собранном `SimCity.app`: на экране ничего нет, `__sim` отвечает, тестовый город держит 60 fps. `SIMCITY_TEST_WINDOW=1` прячет Dock, не показывает окно и рендерит страницу offscreen на GPU (shared texture, `backgroundThrottling: false`), кадры считаются по событию `paint`. Любой агентский запуск приложения — только в этом режиме, экземпляр закрывается сразу после проверки; видимое окно — только по просьбе пользователя.
+
 ## Rust + Bevy (legacy-справка)
 
 Не собирается и не запускается в работе над портом. Читается как источник алгоритмов и тестов: этап порта открывает Rust-тесты своей строки программы и выписывает из них инварианты.

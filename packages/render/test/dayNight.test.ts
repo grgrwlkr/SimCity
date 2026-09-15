@@ -2,7 +2,7 @@
 // ran `drive_day_night_lighting` on an App; here the same values come out of `dayNightLighting`.
 import { describe, expect, it } from 'vitest';
 import { dayNightLighting, lightingLevels, nightFactor } from '../src/dayNight';
-import { DAY_NIGHT_CONFIG, RENDER_CONFIG, type NightConfig, type SunConfig } from '../src/renderConfig';
+import { DAY_NIGHT_CONFIG, RENDER_CONFIG, SIGN_NIGHT_EMISSIVE, type NightConfig, type SunConfig } from '../src/renderConfig';
 
 const SUN: SunConfig = RENDER_CONFIG.sun;
 const NIGHT: NightConfig = RENDER_CONFIG.night;
@@ -24,19 +24,21 @@ describe('day and night', () => {
 
   /** Midnight: windows emissive, sun dim. Noon: windows dark, sun bright. */
   it('lightingFollowsGameHour', () => {
-    const midnight = dayNightLighting(0, 'None', DAY_NIGHT_CONFIG, RENDER);
+    const midnight = dayNightLighting(0, 'None', DAY_NIGHT_CONFIG, RENDER, SIGN_NIGHT_EMISSIVE);
     expect(midnight.windows.emissive[0], 'windows glow at midnight').toBeGreaterThan(1);
     expect(midnight.sun.illuminance, 'sun nearly off at midnight').toBeLessThan(SUN.dayIlluminance * 0.15);
 
-    const noon = dayNightLighting(12, 'None', DAY_NIGHT_CONFIG, RENDER);
+    const noon = dayNightLighting(12, 'None', DAY_NIGHT_CONFIG, RENDER, SIGN_NIGHT_EMISSIVE);
     expect(noon.windows.emissive[0], 'windows dark glass at noon').toBeLessThan(0.01);
     expect(noon.sun.illuminance, 'full sun at noon').toBeGreaterThan(SUN.dayIlluminance * 0.9);
   });
 
   /** Shop signs are the one prop meant to be seen after dark; one shared value lights the whole city. */
   it('shopSignsLightUpAfterDarkAndGoOutAtNoon', () => {
-    expect(dayNightLighting(0, 'None', DAY_NIGHT_CONFIG, RENDER).signs.emissive[0], 'signs glow at midnight').toBeGreaterThan(1);
-    expect(dayNightLighting(12, 'None', DAY_NIGHT_CONFIG, RENDER).signs.emissive[0], 'signs are unlit at noon').toBeLessThan(0.01);
+    expect(dayNightLighting(0, 'None', DAY_NIGHT_CONFIG, RENDER, SIGN_NIGHT_EMISSIVE).signs.emissive[0], 'signs glow at midnight').toBeGreaterThan(1);
+    expect(dayNightLighting(12, 'None', DAY_NIGHT_CONFIG, RENDER, SIGN_NIGHT_EMISSIVE).signs.emissive[0], 'signs are unlit at noon').toBeLessThan(0.01);
+    // The strength is a knob of props.ron and comes in like the other configs.
+    expect(dayNightLighting(0, 'None', DAY_NIGHT_CONFIG, RENDER, 1.5).signs.emissive[0], 'the configured strength lights the signs').toBeCloseTo(1.5, 9);
   });
 
   it('daytimeAnchorsComeFromTheConfig', () => {
@@ -88,11 +90,11 @@ describe('day and night', () => {
 
   /** Night darkens the whole map, and a data map read in the dark is not read: while one is on, the light is noon's. */
   it('aDataMapIsReadInDaylightWhateverTheHour', () => {
-    expect(dayNightLighting(0, 'LandValue', DAY_NIGHT_CONFIG, RENDER).sun.illuminance, 'midnight, but the land value map is on: full sun').toBeGreaterThan(
+    expect(dayNightLighting(0, 'LandValue', DAY_NIGHT_CONFIG, RENDER, SIGN_NIGHT_EMISSIVE).sun.illuminance, 'midnight, but the land value map is on: full sun').toBeGreaterThan(
       SUN.dayIlluminance * 0.9,
     );
-    expect(dayNightLighting(0, 'None', DAY_NIGHT_CONFIG, RENDER).sun.illuminance, 'the map is off: back to midnight').toBeLessThan(SUN.dayIlluminance * 0.15);
-    expect(dayNightLighting(0, 'Path', DAY_NIGHT_CONFIG, RENDER).sun.illuminance, 'the developer path view is not a data map').toBeLessThan(
+    expect(dayNightLighting(0, 'None', DAY_NIGHT_CONFIG, RENDER, SIGN_NIGHT_EMISSIVE).sun.illuminance, 'the map is off: back to midnight').toBeLessThan(SUN.dayIlluminance * 0.15);
+    expect(dayNightLighting(0, 'Path', DAY_NIGHT_CONFIG, RENDER, SIGN_NIGHT_EMISSIVE).sun.illuminance, 'the developer path view is not a data map').toBeLessThan(
       SUN.dayIlluminance * 0.15,
     );
   });
@@ -100,7 +102,7 @@ describe('day and night', () => {
   // Not in Rust, which lit by the whole hour and jumped every game hour. At time 1:1 an hour is a real hour, so the
   // scene passes minutes too and the light moves continuously.
   it('theLightMovesWithinAnHour', () => {
-    const at = (hour: number) => dayNightLighting(hour, 'None', DAY_NIGHT_CONFIG, RENDER).sun.illuminance;
+    const at = (hour: number) => dayNightLighting(hour, 'None', DAY_NIGHT_CONFIG, RENDER, SIGN_NIGHT_EMISSIVE).sun.illuminance;
     expect(at(6.5)).toBeGreaterThan(at(6));
     expect(at(6.5)).toBeLessThan(at(7));
     expect(close(nightFactor(24), nightFactor(0)), 'the day wraps').toBe(true);

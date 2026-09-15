@@ -10,7 +10,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace   # bare `cargo test` эквивалентен: default-members в Cargo.toml покрывают весь workspace
 ```
 
-Для проекта это базовый verification floor. Он же enforced в CI: `.github/workflows/ci.yml` гоняет fmt-check, clippy и `cargo test --workspace` на каждый push в `main` и на PR.
+Для Rust-части это verification floor, но в CI он больше не гоняется: проект переезжает на TypeScript, и `.github/workflows/ci.yml` проверяет только порт (typecheck, lint, Vitest, Playwright в Chromium).
 
 ## Where Tests Live
 

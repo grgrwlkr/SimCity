@@ -3,7 +3,7 @@
 // grow pools on the asphalt and shop signs light up; the scene writes each value into one shared material.
 import type { Rgb } from './buildingLook';
 import { isDataMap, type OverlayMode } from './overlays';
-import { SIGN_NIGHT_EMISSIVE, type DayNightVisualConfig, type NightConfig, type SunConfig } from './renderConfig';
+import type { DayNightVisualConfig, NightConfig, SunConfig } from './renderConfig';
 import type { Rgba } from './renderPrimitives';
 
 /** Night factor 0 (noon) .. 1 (midnight), a cosine over the day. `hour` may carry minutes: 6.5 is half past six. */
@@ -49,12 +49,16 @@ export interface DayNightLighting {
 
 const scale = (c: Rgb, k: number): Rgb => [c[0] * k, c[1] * k, c[2] * k];
 
-/** The whole lighting state at `hour`. A data map is read in daylight: night would darken what the player is reading. */
+/**
+ * The whole lighting state at `hour`. A data map is read in daylight: night would darken what the player is reading.
+ * `signNightEmissive` is the shop signs' strength after dark, `sign.night_emissive` of props.ron.
+ */
 export function dayNightLighting(
   hour: number,
   overlay: OverlayMode,
   visual: DayNightVisualConfig,
   render: { readonly sun: SunConfig; readonly night: NightConfig },
+  signNightEmissive: number,
 ): DayNightLighting {
   const litHour = isDataMap(overlay) ? 12 : hour;
   const darkness = Math.min(Math.max(nightFactor(litHour) * (visual.nightDarkness / 0.55), 0), 1);
@@ -62,7 +66,7 @@ export function dayNightLighting(
   const [illuminance, brightness] = lightingLevels(day, render.night, render.sun);
   const night = darkness;
   const glass = WINDOW_GLASS_DAY;
-  const signGlow = SIGN_NIGHT_EMISSIVE * night;
+  const signGlow = signNightEmissive * night;
   return {
     darkness,
     // Bright warm white by day, a dim cool moon at night.
