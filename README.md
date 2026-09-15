@@ -1,119 +1,68 @@
-# SimCity (Bevy)
+# SimCity
 
-Градостроительный симулятор на Rust + Bevy с упором на ECS, наблюдаемость и детальную транспортную модель.
+Градостроительный симулятор на TypeScript + Three.js — в браузере и в десктопном окне Electron. Симуляция идёт в Web Worker на фиксированном шаге 10 Гц, рендер Three.js и HUD на React в главном потоке. Код — bun-монорепо `packages/`, программа переезда и планы этапов — `docs/plans/`, устройство подробно — `CLAUDE.md`.
 
-Сейчас это не "skeleton", а Cargo workspace на `bevy = 0.19` (бинарь `simcity_app` + доменные crates `simcity_core`, `simcity_sim`, `simcity_data`, `simcity_debug`, `simcity_frontend`) с картой, дорогами, зонированием, зданиями, гражданами, трафиком, сервисами, persistence, сценариями и развитым debug/tooling слоем. По умолчанию запуск сейчас dev-ориентирован: игра автоматически переходит в `InGame` и грузит test city.
-
-## Быстрый старт
-
-```bash
-cargo run
-```
-
-Полезные команды:
-
-```bash
-# Faster iteration on native builds
-cargo run --features dev
-
-# Format / lint / test
-cargo fmt --all
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --workspace
-
-# Profiling
-cargo run --release --features profile_tracy
-cargo run --release --features profile_tracy_memory
-cargo run --release --features profile_chrome
-```
-
-## TypeScript + Three.js порт (в работе)
-
-Игра переезжает в браузер и в Tauri: программа и контракты — в `docs/plans/2026-09-11-ts-threejs-migration-plan.md`, код — bun-монорепо `packages/` в корне. Готов этап 0: симуляция на фиксированном шаге в Web Worker, бит-в-бит порт RNG из Rust, отпечаток состояния совпадает между двумя прогонами в Chromium.
+## Запуск
 
 ```bash
 bun install
-bun run dev        # http://localhost:5174, ?debug=1
-bun run typecheck && bun run lint && bun run test && bun run e2e
+bun run dev        # http://localhost:5174
 ```
+
+- `?debug=1` — оверлеи (сетка, боксы перекрёстков, лейнлеты) и `window.__sim.debug`.
+- `?scenario=<query>` — сразу открыть сценарий: `city`, `living`, `metropolis`, `signalized`, `signalized4`; `&size=<tiles>` задаёт свой размер карты.
 
 `SharedArrayBuffer` работает только на cross-origin isolated странице: хостинг обязан отдавать `Cross-Origin-Opener-Policy: same-origin` и `Cross-Origin-Embedder-Policy: require-corp` (dev-сервер Vite делает это сам, см. `packages/app/vite.config.ts`).
 
-## Что уже реализовано
+## Проверки
 
-- `128x128` карта с конфигом из `assets/config/map.ron`.
-- Псевдо-3D рендер: `Camera3d` + ортографическая проекция на орбитальном риге (Q/E/Ctrl+drag, eased zoom), volumetric-меши с vertex colors и батчингом по материалам, солнце с cascade shadows, полный световой цикл день/ночь (emissive окна, светящаяся разметка, световые пятна светофоров), деревья и миплы-пешеходы.
-- Дороги `2/4/6` полос, `one-way` режим, lane graph, region graph и path cache.
-- Point-to-point road building, drag-paint для зон и erase/inspect инструменты.
-- R/C/I zoning, рост зданий, occupancy, decay, land value, pollution.
-- Граждане, поездки, машины, пешеходы, перекрёстки, светофоры, резервации, парковка.
-- Сервисные здания и emergency loop: fire, police, hospital.
-- `RON` save/load с текущим форматом `SaveGameV3`.
-- Scenario system, custom building registry и externalized tuning через `assets/config/*.ron`.
-- egui UI: top bar, toolbar, right sidebar, stats, building popup, debug dump window.
-- Remote debugging через `bevy_remote` и HTTP bridge, MCP-visible world snapshots и screenshot handler.
+```bash
+bun run typecheck && bun run lint && bun run test && bun run e2e
+bun run bench                                             # тик p50/p99/max, JSON
+bun tools/metropolis-day.ts [size] [hourSeconds] [hours]  # сутки часов пик на мегаполисе
+```
+
+- `bun run test` — Vitest; `bun test` — другой раннер, не использовать.
+- e2e — Playwright, только Chromium, headless; поднимает dev-сервер на 5174 или на `E2E_PORT`. `E2E_GPU=1` рисует через ANGLE Metal для замеров FPS, `E2E_PERF=1` включает замеры `@perf`.
+- CI (`.github/workflows/ci.yml`) гоняет те же четыре проверки на `ubuntu-latest`.
+
+## Desktop (Electron)
+
+```bash
+bun run desktop:dev     # Electron поверх dev-сервера; закрытие окна гасит оба
+bun run desktop:build   # packages/desktop/release/mac-arm64/SimCity.app, без подписи
+bun run desktop:build:obfuscated   # то же, рендерер через javascript-obfuscator
+SIMCITY_TEST_WINDOW=1 bun run desktop:e2e   # после сборки; окно не показывается
+```
 
 ## Управление
 
-Актуальные бинды по коду:
+По коду `packages/ui/src/Hud.tsx`, `packages/render/src/controls.ts` и `packages/app/src/gamepad.ts`.
 
-- `Enter` — переход из `MainMenu` в `InGame`
-- `Space` — pause / resume
-- `Esc` — возврат в меню
-- `WASD` / `Arrow keys` — pan камеры
-- `Mouse wheel` — плавный zoom
-- `PageUp` / `PageDown` — шаг зума (для клавиатур без колеса и synthetic input)
-- `Q` / `E` — поворот камеры
-- `Ctrl` + `LMB drag` — свободная орбита (поворот + наклон)
-- `1` — road tool, повторное нажатие циклит `2/4/6` полос
-- `2` / `3` / `4` — residential / commercial / industrial
-- `5` — erase
-- `O` — одностороннее движение для следующего сегмента дороги (вкл/выкл)
+Клавиатура (молчит, пока фокус в текстовом поле):
 
-Хоткеи молчат, пока текстовое поле держит фокус клавиатуры: набор текста не переключает инструменты, не двигает камеру и не ставит паузу.
-- `Left click` — старт / завершение road segment
-- `Right click` или `Esc` во время road build — отмена текущего сегмента
-- `Left click + drag` — paint для зон и других drag-friendly инструментов
-- `Ctrl+Z` / `Ctrl+Y` — undo / redo
-- `?` — shortcuts panel
-- `F8` — toggle debug dump window
-- `F9` — copy debug dump
-- `F10` — toggle UI settings panel (живые ручки камеры: `camera_speed`, `zoom_speed`, `zoom_ease`, `rotate_speed`)
+- `Enter` — из главного меню в игру
+- `Space` — пауза / продолжить
+- `Esc` — в главное меню
 
-Сохранение и загрузка сейчас доступны через UI-кнопки. Хоткеи `Ctrl+S` / `Ctrl+L` в коде не привязаны.
+Мышь:
 
-## Где читать дальше
+- `Left click + drag` — сдвиг карты
+- `Mouse wheel` — зум вокруг курсора
+- наведение — тайл под курсором попадает в `window.__sim.renderStats().hovered`
 
-Current-state docs:
+HUD: в меню — «Новая игра» и сценарии; в игре — скорость `Стоп / ×1 / ×3 / ×10 / ×60 / ×360` и «В меню».
 
-- `docs/architecture.md`
-- `docs/gameplay.md`
-- `docs/persistence.md`
-- `docs/debugging-and-observability.md`
-- `docs/config-assets-scenarios.md`
-- `docs/testing.md`
-- `docs/README.md`
+Геймпад (стандартная раскладка):
 
-Deep dives, которые ещё полезны, но не являются источником истины:
+- `Start` или `A` в меню — начать; `Start` в игре — пауза / продолжить; `Back` — в меню
+- `RB` / `LB` — скорость на ступень выше / ниже
+- `Y` — показать всю карту
+- левый стик или крестовина — сдвиг карты
+- `RT` или правый стик вверх — приблизить; `LT` или правый стик вниз — отдалить
 
-- `docs/performance-audit.md`
-- `docs/buildings-zoning-architecture.md`
-- `docs/ui-architecture.md`
+Строительство и undo/redo в интерфейсе пока не выведены: команды идут через `window.__sim.cmd(json)` и `window.__sim.undoRedo(redo)`.
 
-Исторические и superseded материалы вынесены в `docs/archive/`.
+## Rust-версия
 
-## Что улучшать дальше
-
-- Traffic correctness: wrong-way detection, более полная ПДД/priority logic и добивка edge cases на перекрёстках.
-- Test coverage: construction, occupancy, parking, reverse behavior, right-of-way integration.
-- Performance scaling: дальнейший уход от per-tick временных структур к более плотным lane/cell индексам и более дешёвому render path.
-- Product polish: убрать расхождения между in-app help и реальными биндами, ослабить dev-biased auto-start test city, сделать main menu / scenarios first-class flow.
-
-## Source Of Truth
-
-Для текущего состояния проекта ориентир такой:
-
-1. Код и runtime config в `src/` и `assets/config/`
-2. Current-state docs в `docs/`
-3. Deep-dive docs
-4. `docs/archive/` как historical context
+Игра на Rust + Bevy, из которой портирован код, удалена из дерева 2026-09-15 и лежит в истории под тегом `rust-final`: `git show rust-final:<path>`, `git grep <pattern> rust-final`.
