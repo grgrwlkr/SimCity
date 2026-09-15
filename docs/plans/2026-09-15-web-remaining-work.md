@@ -9,11 +9,11 @@
 ## Объём
 
 - Строки программы 5 (раздел «Встраивание, после 3½» в `2026-09-14-web-phase-5-render-math.md`), 6 и 7.
-- Геймплей, который появился в Rust после старта программы: `2026-09-09-gameplay-goals.md`, `2026-09-10-f1…f4-*.md`, 109 коммитов `git log rust-final --since=2026-09-08`.
+- Геймплей, который появился в Rust после старта программы: `rust-final:docs/plans/2026-09-09-gameplay-goals.md`, `rust-final:docs/plans/2026-09-10-f1…f4-*.md`, 109 коммитов `git log rust-final --since=2026-09-08`.
 - Вне объёма:
   - закрытие этапа 4 — задача `dev-stage4-close`, раздел «Ворота» в `2026-09-14-web-phase-4-services.md`;
   - хвосты 3½: жители, которые работают за городом, и худший тик мегаполиса 221–315 мс (`2026-09-12-web-phase-3_5-scale.md`, «Хвосты»);
-  - цели Ф5–Ф6 из `gameplay-goals.md` §5 — в Rust их не было;
+  - цели Ф5–Ф6 из `rust-final:docs/plans/2026-09-09-gameplay-goals.md` §5 — в Rust их не было;
   - инспектор `ui/building_popup.rs` — dev-панель egui в `DevUiPlugin` (`crates/simcity_frontend/src/game/ui/mod.rs:136-160`).
 
 ## Геймплей Rust после 2026-09-08 против TS
@@ -166,7 +166,7 @@
 - Критерии: 2 теста пикинга; в e2e зум через `orthoAboveZoom` меняет видимую высоту не больше чем на 1 %; `__sim.pickTile` по центру кадра одинаков в обеих проекциях.
 - Пути: `packages/render/src/camera.ts`, `picking.ts`, `debugRenderer.ts`.
 
-**R2. Инстансированный псевдо-3D и атлас на GPU** · L · нет: визуальная цель утверждена в `docs/plans/2026-09-09-visual-goal.md` · R1
+**R2. Инстансированный псевдо-3D и атлас на GPU** · L · нет: визуальная цель утверждена в `rust-final:docs/plans/2026-09-09-visual-goal.md` · R1
 - Rust: `crates/simcity_sim/src/game/render_primitives.rs`, `atlas.rs`, `buildings/visual.rs`. Из 6 тестов `visual.rs` по имени не найден ни один. Высота и цвет портированы в `buildingLook.ts` (план этапа 5), остальные тесты про сцену: `mesh_cache_dedups_same_shape`, `roof_gravel_tiles_instead_of_stretching_over_the_whole_roof`, `repeats_follow_the_surface_size_and_stay_within_the_cap`, `service_building_gets_roof_glyph`, `tint_applies_and_clears`.
 - TS: карта — плоские чанки (`mapChunks.ts`), машины — `InstancedMesh` с `MeshBasicMaterial` (`debugRenderer.ts:499`).
 - Критерии:
@@ -212,9 +212,9 @@
   - часы не выставляются: `rg -i "setClock|setHour|timeOfDay|'hour'" packages/bridge/src/protocol.ts packages/bridge/src/host.ts` пусто;
   - разделов observe нет: бюджет, советник, вехи, поля, снабжение, покрытие, превью клетки, здания области;
   - каталога `e2e/helpers` нет;
-  - навык `.claude/skills/simcity-live/SKILL.md` описывает `cargo run` и BRP (строки 8 и 25).
-- Критерии: `e2e/helpers/live.ts` с `observe(sections)`, `setClock(hour)`, `capture({ ui })`; на каждый смысл `observe.rs` и `control.rs` — e2e-тест хелпера; навык переписан на `bun run dev`, `desktop:e2e` и `__sim`. `agent_tools.rs`, `runtime.rs` и `stats.rs` описывают каталог BRP, порт и режим окна; аналога в TS у них нет, они не переносятся.
-- Пути: `e2e/helpers/` (новый), `packages/app/src/simApi.ts`, `packages/bridge/src/protocol.ts`, `.claude/skills/simcity-live/SKILL.md`.
+  - навыка в дереве нет: `rust-final:.claude/skills/simcity-live/SKILL.md` описывал `cargo run` и BRP (строки 8 и 25).
+- Критерии: `e2e/helpers/live.ts` с `observe(sections)`, `setClock(hour)`, `capture({ ui })`; на каждый смысл `observe.rs` и `control.rs` — e2e-тест хелпера; навык написан заново на `bun run dev`, `desktop:e2e` и `__sim`. `agent_tools.rs`, `runtime.rs` и `stats.rs` описывают каталог BRP, порт и режим окна; аналога в TS у них нет, они не переносятся.
+- Пути: `e2e/helpers/` (новый), `packages/app/src/simApi.ts`, `packages/bridge/src/protocol.ts`, `.claude/skills/simcity-live/SKILL.md` (новый).
 
 **E4. Иконка и фьюзы Electron, перемер обфускации** · S · дизайнер нужен (иконка) · —
 - TS: иконка стандартная; фьюзы не заданы, обфускацию на Electron не перемеряли (план этапа 7, «Зависимости и отложенное»).
@@ -257,8 +257,8 @@
 
 1. **Q1 · user · эталон скриншотных ворот этапа 5.** Программа сравнивает с Rust-эталоном, но Rust больше не запускается.
    - (a) Эталоном становятся TS-снимки, принятые пользователем; дальше diff двух прогонов и против принятых не выше назначенного порога.
-   - (b) Сравнение с замороженными кадрами Rust `docs/plans/perf/2026-09-10-f3-s9/*.png` и `f4-s7/*.png` — там другие ракурсы и UI в кадре.
-   - (c) Только приёмка глазами по `2026-09-09-visual-goal.md`.
+   - (b) Сравнение с замороженными кадрами Rust `rust-final:docs/plans/perf/2026-09-10-f3-s9/*.png` и `rust-final:docs/plans/perf/2026-09-10-f4-s7/*.png` — там другие ракурсы и UI в кадре.
+   - (c) Только приёмка глазами по `rust-final:docs/plans/2026-09-09-visual-goal.md`.
 
    Рекомендация (a): это единственный повторяемый вариант. От ответа зависят критерии R5.
 2. **Q2 · user · формат сейва.**
