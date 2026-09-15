@@ -12,6 +12,7 @@ import {
   recordSystemError,
   runUpdateGraph,
   runsThisTick,
+  SECOND_NS,
   SHIFT_MINUTES,
   WORK_START_WINDOW,
   assignJobs,
@@ -50,6 +51,15 @@ function bench(label: string, w: World): void {
     samples.push(performance.now() - start);
   }
   console.log(JSON.stringify({ ticks: TICKS, world: label, ...percentiles(samples) }));
+}
+
+/** The world of the stage 4 gate: the living city with every system of the stage, on an hour of 60 s. */
+function livingCityOnTheGateClock(): World {
+  const w = createWorld({ gameHourNs: 60 * SECOND_NS });
+  requestState(w, 'InGame');
+  frame(w, 0);
+  new LivingCityScenario(w);
+  return w;
 }
 
 /**
@@ -180,6 +190,7 @@ const only = process.argv[2];
 if (only === undefined || only === 'small') {
   bench('empty map', buildHeadlessGame());
   bench('Rust test city (graphs and lanelets built, no vehicles before stage 2)', loadTestCity());
+  bench('living city, an hour of 60 s (stage 4 gate)', livingCityOnTheGateClock());
   benchCitizens(100_000);
 }
 if (only === undefined || only === 'metropolis') benchMetropolis(Number(process.argv[3] ?? METROPOLIS_SIZE), Number(process.argv[4] ?? 3000));
