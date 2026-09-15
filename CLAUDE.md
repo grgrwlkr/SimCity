@@ -24,11 +24,10 @@ bun tools/metropolis-day.ts [size] [hourSeconds] [hours]   # сутки часо
 ### Правила порта
 
 - **Rust в дереве нет.** Фикстуры `packages/sim/test/fixtures/*.json` и `e2e/fixtures/rust-layout.json` заморожены; их генераторы `tools/rand-vectors` (Rust) и `tools/rust-layout.ts` (против живой Rust-игры) остались только в истории и не восстанавливаются.
-- **Проверки только в Chromium.** WebKit и Safari не проверяются: решение пользователя 2026-09-14. Отдельный прогон в Safari — только по явной просьбе. Десктоп-оболочка — Electron, тот же Chromium, поэтому отдельного прогона в Safari нет и у собранного приложения.
+- **bun и проверки только в Chromium** — канон `~/.claude/CLAUDE.md` («Dev tooling», «When the task is code»). Местное: десктоп-оболочка — Electron, тот же Chromium, поэтому отдельного прогона в Safari нет и у собранного приложения.
 - WASM не предлагается до профиля с недостачей и не пишется без «да» пользователя на конкретный участок.
 - В `packages/sim` ESLint запрещает `Math.random`, `Date`, `performance`, `window`, таймеры, float-функции `Math.*` (`sin`, `sqrt`, `pow`…), импорт `three`/`react`/`zustand`, `TODO`/`FIXME`, `unimplemented` и `any`: состояние сходится между движками JS.
 - Портированный Rust-тест сохраняет имя в camelCase и ссылку на исходный файл в `rust-final`. Изменение ожидаемого значения пина — отдельный коммит с обоснованием и запись в `docs/oracle-deviations.md`.
-- Node-работа через bun; node/npm только там, где bun не может, с причиной.
 
 ### Пакеты
 
@@ -37,7 +36,7 @@ bun tools/metropolis-day.ts [size] [hourSeconds] [hours]   # сутки часо
 - `packages/render` — `debugRenderer.ts` на `THREE.WebGPURenderer` (в headless Chromium Playwright рисует через WebGL2), камера, чанки карты, интерполяция через `PlaybackClock`, загрузка участков; чистая математика этапа 5 без сцены: `atlas`, `renderPrimitives`, `dayNight`, `cameraProjection`, `renderSettings`, `vignette`, `overlayRepaint`, `toolPreview`, константы `render.ron` и `day_night.ron` в `renderConfig.ts`.
 - `packages/ui` — HUD на React (`Hud.tsx`) и zustand-стор снимка (`store.ts`).
 - `packages/app` — точка входа Vite (`main.tsx`), `window.__sim` (`simApi.ts`). Dev-сервер отдаёт COOP/COEP: без них нет `SharedArrayBuffer`.
-- `tools/` — `bench.ts`, `metropolis-day.ts`. `e2e/` — Playwright-спеки.
+- `tools/` — `bench.ts`, `metropolis-day.ts`, `desktop-dev.ts` (обёртка `desktop:dev`). `e2e/` — Playwright-спеки.
 
 ### Модель симуляции
 
@@ -84,7 +83,7 @@ bun tools/metropolis-day.ts [size] [hourSeconds] [hours]   # сутки часо
 
 - Electron 44.3.0 (Chromium 152.0.7977.78, Node 24.20.0) и electron-builder 26.15.3. electron-vite не используется: его 5.0.0 требует Vite ^5–^7, а у порта Vite 8.
 - `src/main.ts` — окно 1280×800. С `SIMCITY_DEV_SERVER_URL` оно грузит dev-сервер, без неё — схему `app://bundle`, которую `protocol.handle` отдаёт из `out/renderer` с COOP/COEP (`crossOriginIsolated: true`). Новые окна запрещены, навигация — только в свой origin. `src/preload.ts` работает при `contextIsolation`, `sandbox`, без `nodeIntegration` и отдаёт странице только `window.simcityDesktop` (платформа и версии).
-- `bun run desktop:dev` — Vite на `PORT` (5174 по умолчанию) и Electron над ним; с выходом Electron обёртка гасит и Vite. `bun run desktop:build` — `bun build` для main и preload в `packages/desktop/out`, `vite build packages/app` в `out/renderer`, `electron-builder --mac --arm64`. Результат — `packages/desktop/release/mac-arm64/SimCity.app`, рендерер в `app.asar`, без подписи.
+- `bun run desktop:dev` — Vite на `PORT` (5174 по умолчанию) и Electron над ним; с выходом Electron обёртка гасит и Vite. `bun run desktop:build` — `bun build` для main и preload в `packages/desktop/out`, `vite build packages/app` в `out/renderer`, `electron-builder --mac --arm64`. Результат — `packages/desktop/release/mac-arm64/SimCity.app`, рендерер в `app.asar`, без подписи. `bun run desktop:build:obfuscated` — то же, но рендерер собирается с `packages/desktop/vite.obfuscated.config.ts`.
 - Бинарник Electron качает `install.js` пакета `electron`; bun его сам не запускает (замер), поэтому оба скрипта сначала зовут `bun run --cwd packages/desktop electron:install`.
 - Цель Vite-сборки — `chrome152` в `packages/app/vite.config.ts`; при смене версии Electron поднимать вместе.
 - Prod-сборка без sourcemap: `build.sourcemap: false` в `packages/app/vite.config.ts`, в `app.asar` нет `.map`. `app.asar` — 10 записей, `node_modules` в нём нет; извлекается `npx @electron/asar extract` (вне репозитория) или `bunx @electron/asar extract`.
@@ -96,6 +95,6 @@ Rust + Bevy удалены из дерева 2026-09-15. Реализация, �
 
 ## Conventions
 
-- **Git**: не коммитить и не пушить без явной просьбы. Сообщения коммитов — английский, Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`), коммит на модуль.
+- **Git**: сообщения коммитов — английский, Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`), коммит на модуль.
 - Планы и спеки — по-русски, идентификаторы и пути английские.
 - README hotkeys актуальны по коду — при изменении биндов синхронизировать `README.md`.
