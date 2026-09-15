@@ -1,6 +1,7 @@
 // Port of the tests in crates/simcity_sim/src/game/city_fields.rs. Education weighs homes by their nearness along the axes
 // here (Rust: as the crow flies): the simulation has no `sqrt`.
 import { describe, expect, it } from 'vitest';
+import { frame, step } from '../src/app';
 import { newBuilding } from '../src/buildings/building';
 import { LOW_HAPPINESS_THRESHOLD, buildingDecayLowHappiness } from '../src/buildings/decay';
 import {
@@ -22,6 +23,7 @@ import {
 } from '../src/cityFields';
 import { computeCityFields } from '../src/cityFieldsCompute';
 import { MASK_FIRE, MASK_MEDICAL, MASK_POLICE } from '../src/services/coverage';
+import { requestState } from '../src/state';
 import { createWorld } from '../src/world';
 
 const t = (x: number, y: number) => ({ x, y });
@@ -102,6 +104,21 @@ describe('city fields', () => {
     for (let pass = 1; pass < 4; pass++) computeCityFields(w);
     expect([f.version, f.currentChunk], 'four chunks of 64 cover 200 tiles, and it starts over').toEqual([4, 0]);
     expect(f.get('Crime', 199)).toBeLessThan(cityFieldNeutral('Crime'));
+  });
+
+  // Not a Rust test: the running game recomputes the fields on its schedule, which the data overlays of the render follow.
+  it('cityFieldsAreRecomputedByTheRunningGame', () => {
+    const w = createWorld({ mapWidth: 16, mapHeight: 8 });
+    requestState(w, 'InGame');
+    frame(w, 0);
+    step(w, 1);
+    const f = w.cityFields;
+    const crimeLayer = f.values('Crime');
+    crimeLayer.fill(-1);
+    const before = f.version;
+    step(w, 2);
+    expect(f.version - before, 'a chunk a tick').toBe(2);
+    expect(crimeLayer.includes(-1), 'two chunks of 64 cover the 128 tiles').toBe(false);
   });
 
   it('cityFieldsResetToNeutralForANewMap', () => {

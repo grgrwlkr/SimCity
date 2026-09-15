@@ -45,7 +45,7 @@ describe('stage 4 gate', () => {
     for (let tick = 1; tick <= TICKS; tick++) {
       step(a, 1);
       step(b, 1);
-      // Every hundredth tick and the last: a fingerprint of the living city is 65 ms, and a divergence stays diverged.
+      // Every hundredth tick and the last: on every tick the test takes 137 s instead of 2 s, and a divergence stays diverged.
       if (divergedAt < 0 && (tick % 100 === 0 || tick === TICKS) && fingerprint(a) !== fingerprint(b)) divergedAt = tick;
       const m = a.mesoTraffic;
       for (let car = 0; car < m.highWater; car++) if (m.link[car] !== -1) longestQueuedPastTime = Math.max(longestQueuedPastTime, m.nowSec - m.readySec[car]!);
@@ -74,6 +74,10 @@ describe('stage 4 gate', () => {
     expect(ticksWithWalkersOnCrossings, `walkers cross: ${summary}`).toBeGreaterThan(0);
     expect(busStops, `the bus goes round its stops: ${summary}`).toBeGreaterThanOrEqual(2);
     expect(e.stats.resolvedInTime, `an emergency is served and resolved: ${summary}`).toBeGreaterThanOrEqual(1);
+    // The crime of `livingCity` is started by hand; the gate wants emergencies that break out by the hour's roll too.
+    const brokeOut = e.stats.totalFires + e.stats.totalCrimes + e.stats.totalMedical - 1;
+    expect(brokeOut, `emergencies break out by themselves: ${summary}`).toBeGreaterThanOrEqual(1);
+    expect(dispatched, `service vehicles go out: ${summary}`).toBeGreaterThanOrEqual(1);
   }, 600_000);
 
   it('theCityOfCommutersKeepsItsLightsFlowing', () => {
