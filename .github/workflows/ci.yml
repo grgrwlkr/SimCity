@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, claude/ts-threejs-migration-af56b0]
+    branches: [main]
   pull_request:
 
 concurrency:
