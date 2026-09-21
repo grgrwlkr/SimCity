@@ -101,9 +101,10 @@ function footprintProblem(grid: MapGrid, anchor: TilePos, width: number, length:
 
 /**
  * The preview of `tool` at `tile` with `money` in the treasury; `undefined` for a tool that edits nothing.
- * `milestones` says what the city has opened: left out, every building reads as open.
+ * `milestones` says what the city has opened; it is required, so no caller can promise a building the command
+ * then refuses.
  */
-export function previewToolAt(tool: ToolMode, tile: TilePos, grid: MapGrid, money: number, milestones?: Milestones): ToolPreview | undefined {
+export function previewToolAt(tool: ToolMode, tile: TilePos, grid: MapGrid, money: number, milestones: Milestones): ToolPreview | undefined {
   if (tool.kind === 'Inspect') return undefined;
   const effect = tool.kind === 'Road' ? `Builds a ${ROAD_NAMES[tool.road]} road tile` : EFFECTS[tool.kind];
   const placed = placedBuildingKind(tool);
@@ -140,7 +141,7 @@ export function previewToolAt(tool: ToolMode, tile: TilePos, grid: MapGrid, mone
       // Every remaining tool places a building.
       const cost = placed === undefined ? 0 : buildCost(placed);
       // A building the city has not opened yet says so before the click, and still shows its price.
-      const lock = placed === undefined || milestones === undefined ? null : milestones.lock(placed);
+      const lock = placed === undefined ? null : milestones.lock(placed);
       if (lock !== null) return result(cost, lock);
       const [width, length] = MANUAL_BUILDING_FOOTPRINT;
       if (validateBuildingPlacement(grid, tile, width, length) === undefined) return result(cost, footprintProblem(grid, tile, width, length));
