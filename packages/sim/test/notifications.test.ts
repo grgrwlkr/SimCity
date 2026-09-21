@@ -142,6 +142,56 @@ describe('notifications', () => {
     expect(feed.messages()[0]?.count, 'expiry left the feed alone').toBe(3);
   });
 
+  // The two counters the split leaves behind: the feed keeps the city's running total, the toast shows
+  // what has happened since it came up. A toast reading the total would say «×23» when one thing just
+  // happened — Rust read 1 here, and that is the number the player sees.
+  it('aToastThatComesBackCountsFromScratchWhileTheFeedKeepsCounting', () => {
+    const feed = new Notifications();
+    for (let i = 0; i < 20; i++) feed.add(UPGRADED, 'Info', 3);
+    let step = stampAndExpire(feed.messages(), [], 0);
+    expect(step.visible[0]?.count, 'nothing has been on screen yet, so all twenty count').toBe(20);
+    step = stampAndExpire(feed.messages(), step.shown, 5); // retires
+
+    feed.add(UPGRADED, 'Info', 3);
+    step = stampAndExpire(feed.messages(), step.shown, 5);
+    expect(step.visible[0]?.count, 'one event after it came back reads one').toBe(1);
+    expect(feed.messages()[0]?.count, 'while the feed keeps the running total').toBe(21);
+
+    feed.add(UPGRADED, 'Info', 3);
+    step = stampAndExpire(feed.messages(), step.shown, 6);
+    expect(step.visible[0]?.count, 'two read two').toBe(2);
+    expect(feed.messages()[0]?.count).toBe(22);
+
+    step = stampAndExpire(feed.messages(), step.shown, 20); // retires again
+    feed.add(UPGRADED, 'Info', 3);
+    step = stampAndExpire(feed.messages(), step.shown, 20);
+    expect(step.visible[0]?.count, 'and the next return starts over again').toBe(1);
+    expect(feed.messages()[0]?.count).toBe(23);
+  });
+
+  // The screen memory belongs to the world its lines came from: a scenario change builds a fresh
+  // `Notifications`, and the lines the old world had must not be drawn against the new one.
+  it('aScreenHandedToAnotherWorldForgetsWhatThatWorldNeverHad', () => {
+    const before = new Notifications();
+    before.add('Fire emergency', 'Warning', 5);
+    before.add(UPGRADED, 'Info', 3);
+    const carried = stampAndExpire(before.messages(), [], 0);
+    expect(carried.visible).toHaveLength(2);
+
+    const after = new Notifications();
+    after.add('Water shortage', 'Warning', 5);
+    const step = stampAndExpire(after.messages(), carried.shown, 1);
+    expect(step.shown.map((t) => t.text), 'nothing of the old world is remembered').toEqual(['Water shortage']);
+    expect(step.visible.map((t) => t.text)).toEqual(['Water shortage']);
+    expect(step.changed).toBe(true);
+
+    // And an empty feed leaves nothing behind and nothing to repaint.
+    const empty = stampAndExpire(new Notifications().messages(), step.shown, 2);
+    expect(empty.shown).toHaveLength(0);
+    expect(empty.visible).toHaveLength(0);
+    expect(empty.changed, 'the screen was already empty of this world').toBe(false);
+  });
+
   // rust-final crates/simcity_sim/src/game/notifications.rs:347 notification_dedup_a_line_leads_to_its_latest_place
   it('notificationDedupALineLeadsToItsLatestPlace', () => {
     const feed = new Notifications();
