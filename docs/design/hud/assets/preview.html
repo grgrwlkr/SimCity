@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>HUD 6c — токены, состояния, иконки</title>
+<link rel="stylesheet" href="./tokens.css">
+<style>
+  body { margin:0; font-family: var(--hud-font); color: var(--hud-ink); }
+  .bed { padding: var(--hud-space-24); display:flex; flex-direction:column; gap: var(--hud-space-16); }
+  .night { background:#0d0f14; } .sunlit { background:#bfbfb8; } .grass { background:#266b2e; }
+  .hud-glass { background-color: var(--hud-glass); background-image: var(--hud-glass-sheen);
+    border:1px solid var(--hud-glass-border); border-radius: var(--hud-radius-panel);
+    box-shadow: var(--hud-shadow-bar); }
+  .bar { display:inline-flex; align-items:center; gap:20px; padding:8px 16px; }
+  .num { font-variant-numeric: var(--hud-numeric); }
+  .money { font-size: var(--hud-size-title); font-weight: var(--hud-weight-strong); }
+  .body { font-size: var(--hud-size-body); }
+  .cap { font-size: var(--hud-size-caption); color: var(--hud-ink-muted); }
+  .btn { font: inherit; font-size: var(--hud-size-body); color: var(--hud-ink); background: transparent;
+    border:1px solid transparent; border-radius: var(--hud-radius-control); min-height: var(--hud-target-min);
+    padding: 4px 10px; cursor: pointer; transition: background-color var(--hud-motion-fast) var(--hud-ease); }
+  .btn:hover { background: var(--hud-hover); }
+  .btn:active { background: var(--hud-press); transform: translateY(1px); }
+  .btn:focus-visible { outline: var(--hud-focus-ring); outline-offset: var(--hud-focus-ring-offset);
+    box-shadow: var(--hud-focus-halo); }
+  .btn[aria-pressed="true"] { background: var(--hud-accent-fill); border-color: var(--hud-accent); }
+  .btn[aria-disabled="true"] { color: var(--hud-ink-disabled); cursor: not-allowed; }
+  .btn[aria-disabled="true"]:hover { background: transparent; }
+  .tool { display:flex; flex-direction:column; align-items:center; gap:2px; min-width:56px; padding:8px 8px 4px; }
+  .chip { font-size: var(--hud-size-caption); color: var(--hud-ink-muted); background: var(--hud-glass-highlight);
+    border-radius: var(--hud-radius-pill); padding:0 6px; }
+  .hud-icon { width:24px; height:24px; display:block; }
+  .palette { display:inline-flex; gap:12px; padding:8px; align-items:stretch; }
+  .group { display:flex; gap:4px; }
+  .div { width:1px; background: var(--hud-glass-border); }
+  .tip { background-color: var(--hud-glass-strong); background-image: var(--hud-glass-sheen);
+    border:1px solid var(--hud-glass-border); border-radius: var(--hud-radius-control);
+    box-shadow: var(--hud-shadow-tooltip); padding:6px 12px; max-width:320px; display:inline-flex;
+    flex-direction:column; gap:2px; }
+  .bad { color: var(--hud-negative); font-size: var(--hud-size-caption); }
+  .toast { display:inline-flex; align-items:center; gap:8px; background-color: var(--hud-glass-strong);
+    border-left:3px solid var(--hud-accent); border-radius: var(--hud-radius-control); padding:6px 12px;
+    font-size: var(--hud-size-body); white-space:nowrap; }
+  .toast.warn { border-left-color: var(--hud-warning); } .toast.err { border-left-color: var(--hud-negative); }
+  .toast.win { border-left-color: var(--hud-positive); }
+  .sw { width:12px; height:12px; border-radius: var(--hud-radius-swatch); background: var(--hud-glass-solid);
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / .45); display:inline-block; }
+  .legend { display:inline-flex; flex-direction:column; gap:4px; padding:8px; width:244px; }
+  .grad { height:10px; border-radius:4px; background: linear-gradient(90deg,#ff0000,#ffff00,#00ff00); }
+  .row { display:flex; align-items:center; gap:6px; font-size: var(--hud-size-body); }
+  .icons { display:grid; grid-template-columns: repeat(10, 1fr); gap:10px; padding:12px; }
+  .icons figure { margin:0; display:flex; flex-direction:column; align-items:center; gap:4px; }
+  .icons figcaption { font-size:10px; color: var(--hud-ink-muted); text-align:center; }
+</style>
+</head>
+<body>
+<div class="bed night" id="night">
+  <div class="hud-glass bar">
+    <span class="money num">$37 994</span>
+    <span class="body num">День 3, 09:00</span>
+    <span class="body num">Население 120</span>
+    <span class="div" style="height:20px"></span>
+    <button class="btn" type="button">⏸</button>
+    <button class="btn" type="button" aria-pressed="true">×1</button>
+    <button class="btn" type="button">×3</button>
+    <button class="btn" type="button">×60</button>
+    <span class="cap num">×1,0</span>
+    <button class="btn" type="button">Бюджет</button>
+    <button class="btn" type="button">Советник</button>
+  </div>
+
+  <div class="hud-glass palette">
+    <div class="group">
+      <button class="btn tool" type="button" aria-pressed="true"><svg class="hud-icon"><use href="./tools.svg#tool-road-2"/></svg><span>2 полосы</span><span class="chip">1</span></button>
+      <button class="btn tool" type="button"><svg class="hud-icon"><use href="./tools.svg#tool-road-4"/></svg><span>4 полосы</span><span class="chip">1</span></button>
+      <button class="btn tool" type="button"><svg class="hud-icon"><use href="./tools.svg#tool-oneway"/></svg><span>Односторонняя</span><span class="chip">O</span></button>
+    </div>
+    <div class="div"></div>
+    <div class="group">
+      <button class="btn tool" type="button"><svg class="hud-icon"><use href="./tools.svg#tool-zone-residential"/></svg><span>Жилая</span><span class="chip">2</span></button>
+      <button class="btn tool" type="button"><svg class="hud-icon"><use href="./tools.svg#tool-density-high"/></svg><span>Высокая</span></button>
+    </div>
+    <div class="div"></div>
+    <div class="group">
+      <button class="btn tool" type="button" aria-disabled="true"><svg class="hud-icon"><use href="./tools.svg#tool-school"/></svg><span>Школа</span><span class="cap">Откроется при 250 жителях</span></button>
+      <button class="btn tool" type="button"><svg class="hud-icon"><use href="./tools.svg#tool-bulldoze"/></svg><span>Снос</span></button>
+    </div>
+  </div>
+
+  <div>
+    <span class="tip"><span class="body">Дорога 2 полосы, $120</span><span class="cap">Покрывает 8 клеток вокруг</span></span>
+    <span class="tip"><span class="body">Школа, $3 000</span><span class="bad">Не хватает денег</span></span>
+  </div>
+
+  <div style="display:flex; gap:8px; flex-wrap:wrap">
+    <span class="toast"><svg class="hud-icon"><use href="./tools.svg#state-info"/></svg>Построен дом<span class="chip num">×3</span></span>
+    <span class="toast warn"><svg class="hud-icon"><use href="./tools.svg#state-warning"/></svg>Пробка на Вязовой</span>
+    <span class="toast err"><svg class="hud-icon"><use href="./tools.svg#state-error"/></svg>Пожар без пожарной</span>
+    <span class="toast win"><svg class="hud-icon"><use href="./tools.svg#state-achievement"/></svg>Открыта школа</span>
+  </div>
+
+  <div class="hud-glass legend">
+    <span class="cap">Стоимость земли</span>
+    <div class="grad"></div>
+    <div style="display:flex; justify-content:space-between"><span class="cap">Низкая</span><span class="cap">Высокая</span></div>
+    <div class="row"><span class="sw" style="background:#0000e6"></span>Полиция</div>
+    <div class="row"><span class="sw" style="background:#2e5cb8"></span>Коммерческая</div>
+    <div class="row"><span class="sw" style="background:#ffd91a"></span>Есть электричество</div>
+    <span class="body num" style="margin-top:4px">Стоимость земли: 68 %</span>
+  </div>
+
+  <div class="hud-glass icons" id="all-icons"></div>
+</div>
+
+<div class="bed sunlit" id="sunlit"></div>
+<div class="bed grass" id="grass"></div>
+
+<script type="module">
+  const ids = ['tool-road-2','tool-road-4','tool-road-6','tool-oneway','tool-zone-residential','tool-zone-commercial',
+    'tool-zone-industrial','tool-density-low','tool-density-mid','tool-density-high','tool-fire','tool-police',
+    'tool-hospital','tool-school','tool-university','tool-park','tool-signal','tool-power','tool-water',
+    'tool-landfill','tool-bulldoze','tool-inspect','panel-budget','panel-advisor','panel-datamap',
+    'state-info','state-warning','state-error','state-achievement'];
+  const grid = document.getElementById('all-icons');
+  for (const id of ids) {
+    const fig = document.createElement('figure');
+    fig.innerHTML = `<svg class="hud-icon"><use href="./tools.svg#${id}"/></svg><figcaption>${id.replace(/^(tool|panel|state)-/, '')}</figcaption>`;
+    grid.append(fig);
+  }
+  // the same HUD over the two other backdrops, to see the glass do its job
+  for (const bed of ['sunlit', 'grass']) {
+    document.getElementById(bed).innerHTML = document.getElementById('night').innerHTML;
+  }
+</script>
+</body>
+</html>
