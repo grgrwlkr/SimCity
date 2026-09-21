@@ -192,6 +192,25 @@ describe('notifications', () => {
     expect(empty.changed, 'the screen was already empty of this world').toBe(false);
   });
 
+  // The same case where the two worlds share a line, which is the normal one: the notices are constants
+  // (CONSTRUCTION_NOTICE and the rest), so a scenario change hands the screen a feed that counts the very
+  // same text from the start. A memory that outranks the new feed's count would hold the first events of
+  // the new world off the screen.
+  it('aScreenHandedToAnotherWorldDoesNotOutrankItsCounts', () => {
+    const before = new Notifications();
+    for (let i = 0; i < 5; i++) before.addAt(CONSTRUCTION_NOTICE, 'Info', 3, { x: i, y: 0 });
+    const carried = stampAndExpire(before.messages(), [], 100);
+    expect(carried.visible[0]?.count, 'five in the old world').toBe(5);
+
+    const after = new Notifications();
+    after.addAt(CONSTRUCTION_NOTICE, 'Info', 3, { x: 9, y: 9 });
+    const step = stampAndExpire(after.messages(), carried.shown, 200);
+    expect(step.visible, 'the first event of the new world is on screen').toHaveLength(1);
+    expect(step.visible[0]?.count, 'and it reads one, not the old world total').toBe(1);
+    expect(step.visible[0]?.lastAt, 'stamped when it arrived').toBe(200);
+    expect(step.changed).toBe(true);
+  });
+
   // rust-final crates/simcity_sim/src/game/notifications.rs:347 notification_dedup_a_line_leads_to_its_latest_place
   it('notificationDedupALineLeadsToItsLatestPlace', () => {
     const feed = new Notifications();
