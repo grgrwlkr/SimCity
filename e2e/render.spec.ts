@@ -418,9 +418,16 @@ test('pickingReportsTheTileUnderTheCursor', async ({ page }) => {
 
 // The zoom picks the projection: below `orthoAboveZoom` the camera is perspective, at it and above orthographic.
 // Swapping one camera for another must not resize the frame or aim it elsewhere. Nothing here reads the frame
-// size back off the plan the camera came from — that check could not fail. The height is measured by bisecting
-// `__sim.pickTile` for two tile boundaries down the middle column, and the picture is then read off the canvas
-// at the points the view contract puts the city at, so a frustum drawn at the wrong scale fails both ways.
+// size back off the plan the camera came from — that check could not fail. The two halves prove different things
+// at different resolutions, and neither is a substitute for the other:
+//   - the pick path carries the 1 % claim. `__sim.pickTile` is bisected down the middle column for two tile
+//     boundaries, to a hundredth of a pixel over roughly a thousand, so the measured frame height is good to
+//     far better than a percent. It sees everything the view ray is built from, and nothing beyond it.
+//   - the canvas probe is coarse on purpose. It only asks whether the city is drawn where the view contract
+//     puts it — the half of the frame the pick path cannot reach, since the picture comes out of Three. It
+//     reads a tile's class at that tile's centre, so it notices nothing until the drawing slips half a tile:
+//     8 world units against the 96 of the outermost probe, and more for the inner ones. That is tens of
+//     percent, not one. Tightening it means a finer landmark than a 16-unit tile, which the fixture has not got.
 test('zoomingThroughTheThresholdKeepsTheFrameAndThePick', async ({ page }) => {
   await openApp(page);
   await loadTestCity(page);
