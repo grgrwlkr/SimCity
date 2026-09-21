@@ -1,15 +1,23 @@
-// The debug view: an orthographic camera straight above the ground, north up and east right.
-// Screen coordinates are CSS pixels from the top-left corner of the canvas.
+// The debug view: a camera straight above the ground, north up and east right. The zoom picks the projection —
+// perspective close up, orthographic far out — through `projectionPlan`, and both sides frame the same ground
+// height, so only the shape of the view ray differs. Screen coordinates are CSS pixels from the top-left corner
+// of the canvas. The class keeps its name: every call site outside this package still holds an `OrthoView`.
 import { worldToTile, type MapConfig, type TilePos, type Vec2 } from '@simcity/sim';
-import { rayGroundT } from './picking';
+import { projectionPlan, type ProjectionPlan } from './cameraProjection';
+import { rayToGround, type Vec3 } from './picking';
+import { RENDER_CONFIG, type PerspectiveConfig } from './renderConfig';
 
 export interface Viewport {
   readonly width: number;
   readonly height: number;
 }
 
-/** Height of the camera above the ground; any positive value gives the same top-down picture. */
-const CAMERA_HEIGHT = 1000;
+/** The ray a pixel casts, from the camera towards the ground. */
+export interface ViewRay {
+  readonly origin: Vec3;
+  /** Unit length, so `rayGroundT` reads as a distance. */
+  readonly dir: Vec3;
+}
 
 export class OrthoView {
   /** World point at the centre of the viewport. */
@@ -17,8 +25,15 @@ export class OrthoView {
   centerY = 0;
   /** World units per CSS pixel: larger is further out. */
   worldPerPixel = 1;
+  /** Where the zoom turns the camera orthographic and how strong the perspective is below that. */
+  perspective: PerspectiveConfig = RENDER_CONFIG.perspective;
 
   constructor(public viewport: Viewport) {}
+
+  /** The projection this zoom asks for; the ground height in view is the same on both sides of the switch. */
+  plan(): ProjectionPlan {
+    return projectionPlan(this.worldPerPixel, Math.max(this.viewport.height, 1), this.perspective);
+  }
 
   groundToScreen(x: number, y: number): Vec2 {
     return {
@@ -27,16 +42,31 @@ export class OrthoView {
     };
   }
 
+  /**
+   * The ray a screen point casts, built from the camera's own parameters rather than from the zoom:
+   * the counterpart of `Camera::viewport_to_world`, and the only part of picking the projection changes.
+   */
+  viewRay(sx: number, sy: number): ViewRay {
+    const plan = this.plan();
+    const height = Math.max(this.viewport.height, 1);
+    // Ground covered by one pixel at the focus, read off the frustum the camera is given. Pixels are square, so
+    // the horizontal side needs no aspect of its own; orthographic gives back `worldPerPixel` unchanged.
+    const perPixel =
+      plan.kind === 'orthographic' ? plan.scale : (2 * plan.distance * Math.tan(plan.fovYRad / 2)) / height;
+    const dx = (sx - this.viewport.width / 2) * perPixel;
+    const dy = (this.viewport.height / 2 - sy) * perPixel;
+    if (plan.kind === 'orthographic') {
+      return { origin: [this.centerX + dx, this.centerY + dy, plan.distance], dir: [0, 0, -1] };
+    }
+    // Perspective: every ray leaves the one eye, so the offset becomes a direction instead of an origin.
+    const len = Math.hypot(dx, dy, plan.distance);
+    return { origin: [this.centerX, this.centerY, plan.distance], dir: [dx / len, dy / len, -plan.distance / len] };
+  }
+
   /** The view ray through a screen point, intersected with the ground. */
   screenToGround(sx: number, sy: number): Vec2 {
-    const origin = [
-      this.centerX + (sx - this.viewport.width / 2) * this.worldPerPixel,
-      this.centerY - (sy - this.viewport.height / 2) * this.worldPerPixel,
-      CAMERA_HEIGHT,
-    ] as const;
-    const dir = [0, 0, -1] as const;
-    const t = rayGroundT(origin, dir) ?? 0;
-    return { x: origin[0] + dir[0] * t, y: origin[1] + dir[1] * t };
+    const { origin, dir } = this.viewRay(sx, sy);
+    return rayToGround(origin, dir) ?? { x: origin[0], y: origin[1] };
   }
 
   pickTile(cfg: MapConfig, sx: number, sy: number): TilePos | undefined {

@@ -6,6 +6,7 @@ import type { CameraState } from '../packages/app/src/simApi';
 import { SAMPLE_CARS } from '../packages/bridge/src/sample';
 import { SCENARIOS } from '../packages/bridge/src/scenarios';
 import { CLASS_COLORS, VEHICLE_COLORS, layoutClass, tileClass, type LayoutClass, type TileClass } from '../packages/render/src/palette';
+import { RENDER_CONFIG } from '../packages/render/src/renderConfig';
 import { tileToWorld } from '../packages/sim/src/index';
 const readJson = <T,>(path: string): T => JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8')) as T;
 const road = readJson<RoadFixture>('../packages/sim/test/fixtures/road-routes.json');
@@ -413,6 +414,36 @@ test('pickingReportsTheTileUnderTheCursor', async ({ page }) => {
   await page.mouse.move(at.x, at.y);
   await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.hovered)).toEqual({ x: 10, y: 20 });
   expect(await page.evaluate((p) => window.__sim.pickTile(p.x, p.y), at)).toEqual({ x: 10, y: 20 });
+});
+
+// The zoom picks the projection: below `orthoAboveZoom` the camera is perspective, at it and above orthographic.
+// Swapping one camera for another must not resize the frame or aim it elsewhere.
+test('zoomingThroughTheThresholdKeepsTheFrameAndThePick', async ({ page }) => {
+  await openApp(page);
+  await waitForDrawn(page);
+  const threshold = RENDER_CONFIG.perspective.orthoAboveZoom;
+  const middle = { x: Math.floor(CFG.width / 2), y: Math.floor(CFG.height / 2) };
+  const focus = tileToWorld(CFG, middle);
+
+  /** Aims the camera at the middle tile at `worldPerPixel` and reports the frame actually drawn with it. */
+  async function framedAt(worldPerPixel: number) {
+    const drawn = (await page.evaluate(() => window.__sim.renderStats())).frames;
+    const cam = await page.evaluate((s) => window.__sim.setCamera(s), { centerX: focus.x, centerY: focus.y, worldPerPixel });
+    await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.frames)).toBeGreaterThan(drawn + 1);
+    const stats = await page.evaluate(() => window.__sim.renderStats());
+    const centre = await page.evaluate((p) => window.__sim.pickTile(p.x, p.y), { x: cam.width / 2, y: cam.height / 2 });
+    return { projection: stats.projection, visibleHeight: stats.visibleHeight, centre };
+  }
+
+  const below = await framedAt(threshold * 0.999);
+  const above = await framedAt(threshold);
+  expect([below.projection, above.projection], 'the zoom crosses the switch').toEqual(['perspective', 'orthographic']);
+  expect(
+    Math.abs(below.visibleHeight - above.visibleHeight) / above.visibleHeight,
+    `the frame resized across the switch: ${below.visibleHeight} then ${above.visibleHeight}`,
+  ).toBeLessThan(0.01);
+  expect(below.centre, 'the centre pixel is the same tile in both projections').toEqual(above.centre);
+  expect(below.centre, 'and that tile is the one the camera is aimed at').toEqual(middle);
 });
 
 // A page opened in a hidden pane or a collapsed layout starts with a 0×0 canvas: WebGPU rejects

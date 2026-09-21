@@ -1,5 +1,6 @@
-// The stage 1½ debug renderer: map chunks, vehicles as cubes, overlays, a top-down orthographic
-// camera. Colours reach the screen exactly as written, so a screenshot can be read back per tile.
+// The stage 1½ debug renderer: map chunks, vehicles as cubes, overlays, and a camera straight above the ground
+// whose projection the zoom picks — perspective close up, orthographic far out, both framing the same ground
+// height. Colours reach the screen exactly as written, so a screenshot can be read back per tile.
 import {
   PEDESTRIAN_KIND,
   type DebugOverlayReply,
@@ -19,6 +20,7 @@ import {
 } from '@simcity/sim';
 import * as THREE from 'three/webgpu';
 import { OrthoView } from './camera';
+import { orthographicFrustum, perspectiveFovDeg, visibleHeight, type ProjectionPlan } from './cameraProjection';
 import { FpsMeter } from './fpsMeter';
 import { interpolateHeading, interpolatePositions, pairVehicles } from './interpolate';
 import { lampSignal } from './lamps';
@@ -64,6 +66,10 @@ export interface RenderStats {
   /** Emergency markers on screen, one an emergency under way. */
   readonly emergencyMarkers: number;
   readonly hovered: TilePos | null;
+  /** The projection the last frame was drawn with; the zoom turns the camera orthographic at `orthoAboveZoom`. */
+  readonly projection: ProjectionPlan['kind'];
+  /** Ground height in view at the focus, world units: this is what must not jump when `projection` flips. */
+  readonly visibleHeight: number;
 }
 
 /** A turn arrow along +x, `size` world units long, centred on the origin. */
@@ -95,7 +101,11 @@ export class DebugRenderer {
   onLinksNeeded: ((graphVersion: number) => void) | null = null;
 
   private readonly scene = new THREE.Scene();
-  private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 5000);
+  /** Both cameras are kept: the zoom decides which one draws the frame, and neither is ever rotated. */
+  private readonly orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 5000);
+  private readonly perspectiveCamera = new THREE.PerspectiveCamera(50, 1, 0.1, 5000);
+  /** The plan the last frame was drawn with; `null` before the first frame. */
+  private drawnPlan: ProjectionPlan | null = null;
   private readonly chunkMeshes = new Map<number, THREE.Mesh>();
   private readonly overlay = new THREE.Group();
   /** Four lamps per light, keyed by the box bounds; the meshes stay and only their colours change. */
@@ -141,7 +151,6 @@ export class DebugRenderer {
   ) {
     this.view = new OrthoView({ width: canvas.clientWidth, height: canvas.clientHeight });
     this.scene.background = new THREE.Color(BACKGROUND);
-    this.camera.position.set(0, 0, 1000);
     this.overlay.visible = false;
     this.scene.add(this.overlay);
     this.scene.add(this.lampGroup);
@@ -371,7 +380,10 @@ export class DebugRenderer {
   }
 
   stats(): RenderStats {
+    const plan = this.drawnPlan ?? this.view.plan();
     return {
+      projection: plan.kind,
+      visibleHeight: visibleHeight(plan, Math.max(this.view.viewport.height, 1)),
       backend: this.backend,
       frames: this.frames,
       fps: Math.round(this.fpsMeter.fps),
@@ -389,6 +401,37 @@ export class DebugRenderer {
     };
   }
 
+  /**
+   * The camera for this frame. The zoom picks the projection through `projectionPlan`, and because both sides
+   * frame the same ground height the picture does not jump when it flips; neither camera is rotated, so the view
+   * stays north up and east right and the screenshot can still be read back per tile.
+   */
+  private frameCamera(): THREE.Camera {
+    const plan = this.view.plan();
+    const { width, height } = this.view.viewport;
+    let camera: THREE.Camera;
+    if (plan.kind === 'orthographic') {
+      const f = orthographicFrustum(plan, width, height);
+      this.orthoCamera.left = f.left;
+      this.orthoCamera.right = f.right;
+      this.orthoCamera.top = f.top;
+      this.orthoCamera.bottom = f.bottom;
+      this.orthoCamera.far = plan.distance * 4;
+      this.orthoCamera.updateProjectionMatrix();
+      camera = this.orthoCamera;
+    } else {
+      this.perspectiveCamera.fov = perspectiveFovDeg(plan);
+      this.perspectiveCamera.aspect = width / Math.max(height, 1);
+      this.perspectiveCamera.far = plan.distance * 4;
+      this.perspectiveCamera.updateProjectionMatrix();
+      camera = this.perspectiveCamera;
+    }
+    // The frustum is centred on the focus, so the pan lives in the camera's position.
+    camera.position.set(this.view.centerX, this.view.centerY, plan.distance);
+    this.drawnPlan = plan;
+    return camera;
+  }
+
   private draw(nowMs: number): void {
     if (this.view.viewport.width === 0 || this.view.viewport.height === 0) {
       this.fpsMeter.idle(nowMs);
@@ -396,14 +439,8 @@ export class DebugRenderer {
     }
     this.updateVehicles(nowMs);
     this.updateMarkers(nowMs);
-    const b = this.view.bounds();
-    this.reportView(b, nowMs);
-    this.camera.left = b.left;
-    this.camera.right = b.right;
-    this.camera.top = b.top;
-    this.camera.bottom = b.bottom;
-    this.camera.updateProjectionMatrix();
-    this.renderer.render(this.scene, this.camera);
+    this.reportView(this.view.bounds(), nowMs);
+    this.renderer.render(this.scene, this.frameCamera());
     this.frames += 1;
     this.fpsMeter.frame(nowMs);
     if (this.pendingMapEditVersion !== null) {
