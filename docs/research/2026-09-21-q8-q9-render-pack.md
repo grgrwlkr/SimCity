@@ -327,6 +327,11 @@ all 26.15.x: ['26.15.0', … '26.15.7']
   > Windows `ia32` and Linux `armv7l` builds require **`electronVersion` &lt;= 43.x** — [Electron 44 removed them](https://github.com/electron/electron/pull/51816). On Electron 44+ electron-builder fails fast with a configuration error (a warning if a custom `electronDist`/mirror is set).
 
   Репозиторий на `electron 44.3.0`, поэтому целями Windows остаются x64 и arm64.
+
+  Оговорка к цитате: она взята из документации ветки `master`, а это уже electron-builder v27, тогда как в репозитории
+  `26.15.3`. Подтверждён только факт со стороны Electron — в 44 32-битной Windows нет. Обещание, что именно
+  electron-builder 26.15.3 упадёт с ошибкой конфигурации, **не подтверждено**: grep по `node_modules` нашёл лишь строку
+  про Wine-бандл. Вывод от этого не меняется — целями Windows остаются x64 и arm64.
 - EV-сертификат на аппаратном токене: встроенного режима в 26.15.3 нет. `website/docs/tutorials/code-signing-windows-apps-on-unix.md`:
 
   > :::tip[v27: use the built-in PKCS#11 mode]
