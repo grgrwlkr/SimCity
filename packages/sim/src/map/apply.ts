@@ -116,6 +116,8 @@ function applyPlaceBuilding(w: World, pos: TilePos, kind: BuildingKind): void {
   const [width, length] = MANUAL_BUILDING_FOOTPRINT;
   const tiles = validateBuildingPlacement(w.grid, pos, width, length);
   if (tiles === undefined) return;
+  // A building the city has not opened yet is refused here, whatever the palette showed.
+  if (!w.milestones.isUnlocked(kind)) return;
   const cost = buildCost(kind);
   if (w.city.money < cost) return;
 
@@ -208,6 +210,8 @@ function applyGenerateMap(w: World, seed: bigint): void {
   w.cityFields.resetValues();
   // The routes ran over the old roads; their buses go with them.
   w.busRoutes.reset();
+  // A new map is a new city: it earns its milestones again.
+  w.milestones.reset();
   w.dirty.markAll();
   w.roadDirty.markAll();
   bumpMapEdit(w);

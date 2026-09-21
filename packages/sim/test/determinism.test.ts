@@ -75,6 +75,7 @@ describe('determinism', () => {
       ['pendingEvents', (w) => void w.pendingEvents.hourAdvanced.push({ hour: 1, day: 1 })],
       ['notifications', (w) => w.notifications.add('Fire emergency', 'Warning', 5)],
       ['notifications.day', (w) => w.notifications.setDay(9)],
+      ['milestones', (w) => void w.milestones.reach(250)],
       ['commands', (w) => void w.commands.push({ kind: 'LoadTestCity' })],
       ['dirty', (w) => w.dirty.mark(0)],
       ['roadDirty', (w) => w.roadDirty.mark(0)],

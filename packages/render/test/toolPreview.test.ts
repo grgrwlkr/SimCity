@@ -1,8 +1,9 @@
 // Port of crates/simcity_sim/src/game/map/preview.rs (mod tests): what the active tool would do at a tile, said before
 // the click. Each verdict is pinned against the real check of packages/sim, so the cursor cannot promise what the
-// click then refuses. `milestone_locked_building_preview_says_when_it_unlocks` waits for milestones in packages/sim.
+// click then refuses, the milestone lock included.
 import {
   MapGrid,
+  Milestones,
   buildCost,
   buildCostPerLaneTile,
   canZoneTile,
@@ -41,8 +42,8 @@ function town(): MapGrid {
   return grid;
 }
 
-function preview(tool: ToolMode, tile: TilePos, grid: MapGrid, money: number): ToolPreview {
-  const p = previewToolAt(tool, tile, grid, money);
+function preview(tool: ToolMode, tile: TilePos, grid: MapGrid, money: number, milestones?: Milestones): ToolPreview {
+  const p = previewToolAt(tool, tile, grid, money, milestones);
   if (p === undefined) throw new Error(`${tool.kind} at ${tile.x},${tile.y} must explain itself`);
   return p;
 }
@@ -121,6 +122,21 @@ describe('tool preview', () => {
       expect(beside.effect.toLowerCase(), `${tool} says ${beside.effect}`).toContain(word);
       expect(refusal(preview({ kind: tool }, at(20, 20), grid, RICH)), tool).toContain('road');
     }
+  });
+
+  /** A building the city has not opened yet says at what population it opens, before the click. */
+  it('milestoneLockedBuildingPreviewSaysWhenItUnlocks', () => {
+    const grid = town();
+    const fresh = new Milestones();
+    const school = preview({ kind: 'School' }, at(10, 11), grid, RICH, fresh);
+    expect(school.refusal).toBe('Unlocks at 250 residents');
+    expect(school.cost, 'the price still shows').toBe(buildCost('School'));
+    const park = preview({ kind: 'Park' }, at(10, 11), grid, RICH, fresh);
+    expect(park.refusal, 'a park is open from the start').toBeNull();
+
+    const grown = new Milestones();
+    grown.reach(300);
+    expect(preview({ kind: 'School' }, at(10, 11), grid, RICH, grown).refusal).toBeNull();
   });
 
   it('serviceBuildingToolsShowPriceAndRadius', () => {
