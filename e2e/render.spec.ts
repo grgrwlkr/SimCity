@@ -6,6 +6,7 @@ import type { CameraState } from '../packages/app/src/simApi';
 import { SAMPLE_CARS } from '../packages/bridge/src/sample';
 import { SCENARIOS } from '../packages/bridge/src/scenarios';
 import { CLASS_COLORS, VEHICLE_COLORS, layoutClass, tileClass, type LayoutClass, type TileClass } from '../packages/render/src/palette';
+import { RENDER_CONFIG } from '../packages/render/src/renderConfig';
 import { tileToWorld } from '../packages/sim/src/index';
 const readJson = <T,>(path: string): T => JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8')) as T;
 const road = readJson<RoadFixture>('../packages/sim/test/fixtures/road-routes.json');
@@ -413,6 +414,107 @@ test('pickingReportsTheTileUnderTheCursor', async ({ page }) => {
   await page.mouse.move(at.x, at.y);
   await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.hovered)).toEqual({ x: 10, y: 20 });
   expect(await page.evaluate((p) => window.__sim.pickTile(p.x, p.y), at)).toEqual({ x: 10, y: 20 });
+});
+
+// The zoom picks the projection: below `orthoAboveZoom` the camera is perspective, at it and above orthographic.
+// Swapping one camera for another must not resize the frame or aim it elsewhere. Nothing here reads the frame
+// size back off the plan the camera came from — that check could not fail. The two halves prove different things
+// at different resolutions, and neither is a substitute for the other:
+//   - the pick path carries the 1 % claim. `__sim.pickTile` is bisected down the middle column for two tile
+//     boundaries, to a hundredth of a pixel over roughly a thousand, so the measured frame height is good to
+//     far better than a percent. It sees everything the view ray is built from, and nothing beyond it.
+//   - the canvas probe is coarse on purpose. It only asks whether the city is drawn where the view contract
+//     puts it — the half of the frame the pick path cannot reach, since the picture comes out of Three. It
+//     reads a tile's class at that tile's centre, so it notices nothing until the drawing slips half a tile:
+//     8 world units against the 96 of the outermost probe, and more for the inner ones. That is tens of
+//     percent, not one. Tightening it means a finer landmark than a 16-unit tile, which the fixture has not got.
+test('zoomingThroughTheThresholdKeepsTheFrameAndThePick', async ({ page }) => {
+  await openApp(page);
+  await loadTestCity(page);
+  await waitForDrawn(page);
+  const threshold = RENDER_CONFIG.perspective.orthoAboveZoom;
+  const middle = { x: Math.floor(CFG.width / 2), y: Math.floor(CFG.height / 2) };
+  const focus = tileToWorld(CFG, middle);
+  // Six tiles out is 96 world units, well inside the ~137 the frame is half as tall as at these zooms.
+  const probes = [-6, -3, 0, 3, 6].flatMap((dy) => [-6, -3, 0, 3, 6].map((dx) => ({ x: middle.x + dx, y: middle.y + dy })));
+  const grid = gridLayout();
+  const probedClasses = probes.map((t) => grid[t.y * CFG.width + t.x]);
+  /** Fractions of the viewport: the centre, which every projection fixes, and two points far from it, which none does. */
+  const picked = [
+    { fx: 0, fy: 0 },
+    { fx: 0.3, fy: -0.3 },
+    { fx: -0.25, fy: 0.2 },
+  ];
+
+  /** Aims the camera at the middle tile at `worldPerPixel` and reports the frame that came out of it. */
+  async function framedAt(worldPerPixel: number) {
+    const seen = (await page.evaluate(() => window.__sim.renderStats())).frames;
+    const cam = await page.evaluate((s) => window.__sim.setCamera(s), { centerX: focus.x, centerY: focus.y, worldPerPixel });
+    await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.frames)).toBeGreaterThan(seen + 1);
+    const projection = (await page.evaluate(() => window.__sim.renderStats())).projection;
+
+    const edges = await page.evaluate(
+      async ({ x, h }) => {
+        const tileAt = async (row: number) => (await window.__sim.pickTile(x, row))?.y ?? null;
+        // Screen rows run down the frame while tile rows run north, so the pick falls as the row grows.
+        const north = await tileAt(2);
+        const south = await tileAt(h - 2);
+        if (north === null || south === null || north - south < 4) return null;
+        /** The row where the pick first drops to `target`: the boundary between tile rows `target + 1` and `target`. */
+        const edge = async (target: number) => {
+          let lo = 2;
+          let hi = h - 2;
+          while (hi - lo > 0.01) {
+            const mid = (lo + hi) / 2;
+            const seenTile = await tileAt(mid);
+            if (seenTile !== null && seenTile > target) lo = mid;
+            else hi = mid;
+          }
+          return (lo + hi) / 2;
+        };
+        return { north, south, rowNorth: await edge(north - 1), rowSouth: await edge(south) };
+      },
+      { x: Math.round(cam.width / 2), h: cam.height },
+    );
+    expect(edges, `no two tile boundaries to measure against at worldPerPixel ${worldPerPixel}`).not.toBeNull();
+    const { north, south, rowNorth, rowSouth } = edges!;
+    const northY = tileToWorld(CFG, { x: middle.x, y: north - 1 }).y + CFG.tileSize / 2;
+    const southY = tileToWorld(CFG, { x: middle.x, y: south }).y + CFG.tileSize / 2;
+    const frameHeight = (cam.height * (northY - southY)) / (rowSouth - rowNorth);
+
+    const classes = (
+      await sampleCanvas(
+        page,
+        probes.map((t) => {
+          const w = tileToWorld(CFG, t);
+          return toScreen(cam, w.x, w.y);
+        }),
+      )
+    ).map((c) => layoutClass(c));
+    const picks = await page.evaluate(
+      (points) => Promise.all(points.map((p) => window.__sim.pickTile(p.x, p.y))),
+      picked.map((p) => ({ x: cam.width * (0.5 + p.fx), y: cam.height * (0.5 + p.fy) })),
+    );
+    return { projection, frameHeight, classes, picks, wanted: cam.height * worldPerPixel };
+  }
+
+  const below = await framedAt(threshold * 0.999);
+  const above = await framedAt(threshold);
+  expect([below.projection, above.projection], 'the zoom crosses the switch').toEqual(['perspective', 'orthographic']);
+  expect(
+    Math.abs(below.frameHeight - above.frameHeight) / above.frameHeight,
+    `the frame resized across the switch: ${below.frameHeight} then ${above.frameHeight}`,
+  ).toBeLessThan(0.01);
+  // The two agreeing is not enough on its own — both could be the same wrong size — so each is held to its zoom.
+  for (const [label, f] of [
+    ['perspective', below],
+    ['orthographic', above],
+  ] as const) {
+    expect(Math.abs(f.frameHeight - f.wanted) / f.wanted, `the ${label} frame measures ${f.frameHeight}, not ${f.wanted}`).toBeLessThan(0.01);
+    expect(f.classes, `the ${label} frame draws the city away from where the view contract puts it`).toEqual(probedClasses);
+  }
+  expect(below.picks, 'the same pixels pick the same tiles in both projections').toEqual(above.picks);
+  expect(below.picks[0], 'and the centre pixel is the tile the camera is aimed at').toEqual(middle);
 });
 
 // A page opened in a hidden pane or a collapsed layout starts with a 0×0 canvas: WebGPU rejects
