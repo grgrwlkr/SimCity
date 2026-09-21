@@ -1,0 +1,108 @@
+/* HUD visual language, stage 6c. Copy into packages/app/src/ as hud-tokens.css and import before styles.css.
+   Source of truth: docs/design/hud/tokens.md. Values are pinned by docs/design/hud/contrast.md.
+   The HUD is one fixed smoked-glass skin over the map: it does NOT follow prefers-color-scheme,
+   because its backdrop is the 3D city, not the page. The light/dark block in styles.css keeps
+   governing the pre-canvas shell only. */
+
+:root {
+  /* ---- ink ---------------------------------------------------------- */
+  --hud-ink: #f2f5fa;           /* primary text on glass */
+  --hud-ink-muted: #b3bac7;     /* labels, units, hints, secondary rows */
+  --hud-ink-disabled: #9aa1ac;  /* a control that exists but cannot be used now */
+
+  /* ---- glass -------------------------------------------------------- */
+  --hud-glass-rgb: 15 20 28;                          /* #0f141c */
+  --hud-glass: rgb(var(--hud-glass-rgb) / 0.80);      /* bar, palette, panels */
+  --hud-glass-strong: rgb(var(--hud-glass-rgb) / 0.92); /* tooltip, toast — red text lives here */
+  --hud-glass-solid: #0f141c;                          /* swatch beds, scroll gutters */
+  --hud-glass-highlight: rgb(255 255 255 / 0.10);      /* top sheen, neutral button fill */
+  --hud-glass-border: rgb(255 255 255 / 0.12);         /* panel outline, dividers */
+  --hud-glass-sheen: linear-gradient(180deg, rgb(255 255 255 / 0.10) 0%, rgb(255 255 255 / 0) 35%);
+  --hud-glass-blur: 0px;   /* deliberately off: a backdrop-filter forces a frame readback over the
+                              WebGPU canvas every frame. Raise only after measuring frame time. */
+  --hud-scrim: rgb(6 8 11 / 0.55);  /* behind the budget screen only */
+
+  /* ---- accent and meaning ------------------------------------------- */
+  --hud-accent: #5c9eff;                        /* selection edge, focus ring, fills — never text */
+  --hud-accent-ink: #a8ceff;                    /* the accent when it has to be read as text */
+  --hud-accent-fill: rgb(92 158 255 / 0.35);    /* the selected tool, the active overlay */
+  --hud-accent-fill-strong: rgb(92 158 255 / 0.45);
+  --hud-positive: #73d98c;  /* money rising, a valid placement, an achievement */
+  --hud-negative: #ff736b;  /* money falling, a refused placement, an error */
+  --hud-warning: #ffc74d;   /* needs attention soon */
+
+  /* ---- interaction fills -------------------------------------------- */
+  --hud-hover: rgb(255 255 255 / 0.08);
+  --hud-press: rgb(255 255 255 / 0.16);
+  --hud-focus-ring: 2px solid var(--hud-accent);
+  --hud-focus-ring-offset: 2px;
+  --hud-focus-halo: 0 0 0 4px rgb(11 14 19 / 0.65); /* dark halo so the ring survives a bright map */
+
+  /* ---- type: one family, scale 1.2 anchored at 14 ------------------- */
+  --hud-font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', 'Noto Sans', sans-serif;
+  --hud-size-caption: 12px;  /* hotkey chip, units, legend ends, column heads */
+  --hud-size-body: 14px;     /* every readout and button label */
+  --hud-size-title: 17px;    /* money in the bar, panel titles, the advisor's worst problem */
+  --hud-size-display: 20px;  /* start-screen menu entries */
+  --hud-size-hero: 24px;     /* the game's name */
+  --hud-leading-tight: 1.25; /* HUD chrome */
+  --hud-leading-text: 1.45;  /* advisor and budget prose */
+  --hud-weight-regular: 450;
+  --hud-weight-strong: 650;
+  --hud-numeric: tabular-nums; /* every number that ticks: money, clock, population, percents */
+
+  /* ---- spacing: 4 px base ------------------------------------------- */
+  --hud-space-2: 2px;
+  --hud-space-4: 4px;
+  --hud-space-6: 6px;
+  --hud-space-8: 8px;
+  --hud-space-12: 12px;
+  --hud-space-16: 16px;
+  --hud-space-24: 24px;
+  --hud-space-32: 32px;
+  --hud-space-48: 48px;
+
+  /* ---- radius ------------------------------------------------------- */
+  --hud-radius-swatch: 3px;
+  --hud-radius-control: 8px;
+  --hud-radius-panel: 12px;
+  --hud-radius-pill: 999px;
+
+  /* ---- elevation ---------------------------------------------------- */
+  --hud-shadow-bar: 0 4px 16px rgb(0 0 0 / 0.35);
+  --hud-shadow-panel: 0 8px 32px rgb(0 0 0 / 0.45);
+  --hud-shadow-tooltip: 0 6px 20px rgb(0 0 0 / 0.45);
+
+  /* ---- layers ------------------------------------------------------- */
+  --hud-z-panel: 10;
+  --hud-z-toast: 20;
+  --hud-z-tooltip: 30;
+  --hud-z-scrim: 35;
+  --hud-z-modal: 40;
+  --hud-z-menu: 50;
+
+  /* ---- motion ------------------------------------------------------- */
+  --hud-motion-fast: 90ms;    /* hover, press, focus — under the 100 ms feedback budget */
+  --hud-motion-panel: 160ms;  /* a panel opening or closing */
+  --hud-ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+
+  /* ---- hit targets and safe zone ------------------------------------ */
+  --hud-target-min: 32px;   /* mouse and trackpad: every clickable box is at least this tall */
+  --hud-target-touch: 44px; /* when the window reports a coarse pointer */
+  --hud-safe-edge: 12px;    /* distance from the window edge to any HUD panel */
+  --hud-safe-edge-wide: 16px;
+}
+
+@media (pointer: coarse) {
+  :root {
+    --hud-target-min: var(--hud-target-touch);
+    --hud-safe-edge: var(--hud-safe-edge-wide);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --hud-motion-fast: 0ms;
+    --hud-motion-panel: 0ms;
+  }
+}
