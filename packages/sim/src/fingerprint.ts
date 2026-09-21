@@ -550,6 +550,7 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
     },
   ],
   ['notifications', (h, w) => hashNotifications(h, w.notifications)],
+  ['milestones', (h, w) => h.u32(w.milestones.bestPopulation)],
   [
     'commands',
     (h, w) => {

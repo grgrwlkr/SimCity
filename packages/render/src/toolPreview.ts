@@ -1,6 +1,6 @@
 // What the active tool would do at a tile, said before the click: port of crates/simcity_sim/src/game/map/preview.rs.
 // Every verdict restates a rule the command handlers of packages/sim enforce, and the tests pin each one against the
-// real check. Milestone locks join when packages/sim has milestones.
+// real check, the milestone lock included.
 import {
   MANUAL_BUILDING_FOOTPRINT,
   buildCost,
@@ -12,6 +12,7 @@ import {
   validateBuildingPlacement,
   type BuildingKind,
   type MapGrid,
+  type Milestones,
   type RoadKind,
   type TilePos,
 } from '@simcity/sim';
@@ -98,8 +99,12 @@ function footprintProblem(grid: MapGrid, anchor: TilePos, width: number, length:
   return blocked ? `The ${width}x${length} footprint needs clear land` : 'Needs a road next to it';
 }
 
-/** The preview of `tool` at `tile` with `money` in the treasury; `undefined` for a tool that edits nothing. */
-export function previewToolAt(tool: ToolMode, tile: TilePos, grid: MapGrid, money: number): ToolPreview | undefined {
+/**
+ * The preview of `tool` at `tile` with `money` in the treasury; `undefined` for a tool that edits nothing.
+ * `milestones` says what the city has opened; it is required, so no caller can promise a building the command
+ * then refuses.
+ */
+export function previewToolAt(tool: ToolMode, tile: TilePos, grid: MapGrid, money: number, milestones: Milestones): ToolPreview | undefined {
   if (tool.kind === 'Inspect') return undefined;
   const effect = tool.kind === 'Road' ? `Builds a ${ROAD_NAMES[tool.road]} road tile` : EFFECTS[tool.kind];
   const placed = placedBuildingKind(tool);
@@ -135,6 +140,9 @@ export function previewToolAt(tool: ToolMode, tile: TilePos, grid: MapGrid, mone
     default: {
       // Every remaining tool places a building.
       const cost = placed === undefined ? 0 : buildCost(placed);
+      // A building the city has not opened yet says so before the click, and still shows its price.
+      const lock = placed === undefined ? null : milestones.lock(placed);
+      if (lock !== null) return result(cost, lock);
       const [width, length] = MANUAL_BUILDING_FOOTPRINT;
       if (validateBuildingPlacement(grid, tile, width, length) === undefined) return result(cost, footprintProblem(grid, tile, width, length));
       return result(cost, money < cost ? 'Not enough money' : null);

@@ -1,8 +1,10 @@
 // Port of crates/simcity_sim/src/game/map/preview.rs (mod tests): what the active tool would do at a tile, said before
 // the click. Each verdict is pinned against the real check of packages/sim, so the cursor cannot promise what the
-// click then refuses. `milestone_locked_building_preview_says_when_it_unlocks` waits for milestones in packages/sim.
+// click then refuses, the milestone lock included.
 import {
+  MILESTONES,
   MapGrid,
+  Milestones,
   buildCost,
   buildCostPerLaneTile,
   canZoneTile,
@@ -41,8 +43,15 @@ function town(): MapGrid {
   return grid;
 }
 
-function preview(tool: ToolMode, tile: TilePos, grid: MapGrid, money: number): ToolPreview {
-  const p = previewToolAt(tool, tile, grid, money);
+/** A city that has opened everything: the default for the cases that are not about the milestone lock. */
+function grown(): Milestones {
+  const milestones = new Milestones();
+  milestones.reach(MILESTONES[MILESTONES.length - 1]!.population);
+  return milestones;
+}
+
+function preview(tool: ToolMode, tile: TilePos, grid: MapGrid, money: number, milestones: Milestones = grown()): ToolPreview {
+  const p = previewToolAt(tool, tile, grid, money, milestones);
   if (p === undefined) throw new Error(`${tool.kind} at ${tile.x},${tile.y} must explain itself`);
   return p;
 }
@@ -123,6 +132,21 @@ describe('tool preview', () => {
     }
   });
 
+  /** A building the city has not opened yet says at what population it opens, before the click. */
+  it('milestoneLockedBuildingPreviewSaysWhenItUnlocks', () => {
+    const grid = town();
+    const fresh = new Milestones();
+    const school = preview({ kind: 'School' }, at(10, 11), grid, RICH, fresh);
+    expect(school.refusal).toBe('Unlocks at 250 residents');
+    expect(school.cost, 'the price still shows').toBe(buildCost('School'));
+    const park = preview({ kind: 'Park' }, at(10, 11), grid, RICH, fresh);
+    expect(park.refusal, 'a park is open from the start').toBeNull();
+
+    const opened = new Milestones();
+    opened.reach(300);
+    expect(preview({ kind: 'School' }, at(10, 11), grid, RICH, opened).refusal).toBeNull();
+  });
+
   it('serviceBuildingToolsShowPriceAndRadius', () => {
     const grid = town();
     for (const kind of ['School', 'University', 'Park'] as const satisfies readonly BuildingKind[]) {
@@ -158,7 +182,7 @@ describe('tool preview', () => {
     expect(refusal(preview({ kind: 'Erase' }, at(3, 11), grid, RICH))).toContain('water');
     expect(preview({ kind: 'Erase' }, at(5, 10), grid, RICH).refusal).toBeNull();
 
-    expect(previewToolAt({ kind: 'Inspect' }, at(5, 10), grid, RICH)).toBeUndefined();
+    expect(previewToolAt({ kind: 'Inspect' }, at(5, 10), grid, RICH, grown())).toBeUndefined();
 
     expect(refusal(preview({ kind: 'Residential' }, at(-1, 4), grid, RICH))).toContain('map');
   });

@@ -30,6 +30,7 @@ import {
 import { beginTickEvents } from './events';
 import { detectIntersections } from './intersections/index';
 import { computeLandValue } from './landValue';
+import { trackMilestones } from './milestones';
 import { applyGameCommandsToGrid } from './map/apply';
 import { updateDistrictTimes } from './meso/districts';
 import { rebuildMesoGraph } from './meso/graph';
@@ -230,6 +231,8 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   { name: 'updateConstructionProgress', run: updateConstructionProgress, runIn: IN_GAME },
   { name: 'updateOccupancy', run: updateOccupancy, runIn: IN_GAME },
   { name: 'updateCityPopulation', run: updateCityPopulation, runIn: IN_GAME, everyGameNs: 60 * SECOND_NS },
+  // Rust `GameSet::PostSim`: reads the population just recomputed and puts the Achievement line in the feed.
+  { name: 'trackMilestones', run: trackMilestones, runIn: IN_GAME },
   { name: 'reportBuildingsWithoutPower', run: reportBuildingsWithoutPower, runIn: IN_GAME },
 ];
 

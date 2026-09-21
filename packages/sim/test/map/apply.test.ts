@@ -184,12 +184,41 @@ describe('building placement and erase', () => {
   it('serviceBuildingASchoolIsPlacedBesideARoadAndPaidFor', () => {
     const w = commandApplyWorld(16, 16);
     roadAbove(w);
+    // Rust left `Milestones` out of `build_command_apply_app`, so the lock was absent here; in TS every
+    // world carries it, so the school is opened first and this test stays about the price and footprint.
+    w.milestones.reach(250);
     const moneyBefore = w.city.money;
     send(w, { kind: 'PlaceBuilding', pos: { x: 2, y: 2 }, building: 'School' });
     update(w);
     expect(footprintBuildings(w).every((b) => b === 'School')).toBe(true);
     expect(moneyBefore - w.city.money, 'a school costs its price').toBe(700);
     expect(w.buildings.all()).toHaveLength(1);
+  });
+
+  /** B8: a school the city has not opened yet is refused by the command, whatever the palette showed. */
+  it('milestoneALockedSchoolIsRefusedByThePlacementCommand', () => {
+    const w = commandApplyWorld(16, 16);
+    roadAbove(w);
+    const moneyBefore = w.city.money;
+    const place: GameCommand = { kind: 'PlaceBuilding', pos: { x: 2, y: 2 }, building: 'School' };
+    send(w, place);
+    update(w);
+    expect(w.buildings.all(), 'a school before 250 residents is refused').toHaveLength(0);
+    expect(w.city.money).toBe(moneyBefore);
+
+    w.milestones.reach(250);
+    send(w, place);
+    update(w);
+    expect(w.buildings.all()).toHaveLength(1);
+  });
+
+  /** A new map is a new city: it earns its milestones again. */
+  it('milestoneANewMapStartsItsMilestonesOver', () => {
+    const w = commandApplyWorld(16, 16);
+    w.milestones.reach(300);
+    send(w, { kind: 'GenerateMap', seed: 7n });
+    update(w);
+    expect(w.milestones.bestPopulation).toBe(0);
   });
 
   /** B5: a 3×3 footprint beside a road places; the road-free interior needs no road of its own. */

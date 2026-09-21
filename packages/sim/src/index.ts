@@ -45,6 +45,7 @@ export * from './meso/districts';
 export * from './meso/graph';
 export * from './meso/render';
 export * from './meso/traffic';
+export * from './milestones';
 export * from './nearest';
 export * from './notifications';
 export * from './parking';

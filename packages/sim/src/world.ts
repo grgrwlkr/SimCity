@@ -25,6 +25,7 @@ import { COMMAND_HISTORY_LIMIT, CommandHistory } from './map/history';
 import { DistrictTimes } from './meso/districts';
 import { MesoGraph } from './meso/graph';
 import { MesoTraffic } from './meso/traffic';
+import { Milestones } from './milestones';
 import { Notifications } from './notifications';
 import { Parking, defaultCitizenConfig, type CitizenConfig } from './parking';
 import { PedestrianGraph, defaultPedestrianConfig, type PedestrianConfig } from './pedestrians/graph';
@@ -164,6 +165,8 @@ export interface World {
   readonly clock: Timer;
   readonly buildingUpgradeClock: Timer;
   readonly notifications: Notifications;
+  /** `Milestones`: the largest population the city has reached, and so what it has opened. */
+  readonly milestones: Milestones;
   simRng: StdRng;
   growthRng: StdRng;
   events: TickEvents;
@@ -291,6 +294,7 @@ export function createWorld(options: WorldOptions = {}): World {
     clock: createSimClock(options.gameHourNs ?? DEFAULT_GAME_HOUR_NS),
     buildingUpgradeClock: new Timer(BUILDING_UPGRADE_GAME_HOURS * (options.gameHourNs ?? DEFAULT_GAME_HOUR_NS), 'Repeating'),
     notifications: new Notifications(),
+    milestones: new Milestones(),
     simRng: stdRngSeedFromU64(DEFAULT_RNG_SEED),
     growthRng: stdRngSeedFromU64(DEFAULT_RNG_SEED),
     events: emptyEvents(),
