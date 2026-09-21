@@ -129,10 +129,11 @@ const toastKey = (line: { readonly kind: NotificationKind; readonly text: string
  * counted when it left the screen is not news to the player, so `count` is the occurrences since it
  * came up, while the feed's own line keeps its running total.
  *
- * `shown` belongs to the world its lines came from: a line the feed no longer carries is left out of
- * it, so handing the screen of one world to another — a scenario change builds a fresh `Notifications`
- * — throws the stale memory away instead of drawing it. Within one world the feed never lets a line
- * go, so nothing can come back up this way.
+ * `shown` belongs to the world its lines came from, and a scenario change builds a fresh
+ * `Notifications`: a line the new feed does not carry is left out of the memory, and a line it carries
+ * from a lower count than the memory has accounted for is taken as new, because within one world a
+ * line only counts up. So the screen of one world handed to another is forgotten rather than drawn,
+ * and neither its lines nor its totals can hold the new world's events off the screen.
  *
  * Pure — neither `feed` nor `shown` is touched, so nothing a wall clock decides can reach the world or
  * its fingerprint. Rust's `stamp_and_expire` mutated `Notifications::messages` in place and could,
@@ -147,10 +148,18 @@ export function stampAndExpire(feed: readonly Notification[], shown: readonly Sh
   const visible: ShownToast[] = [];
   let changed = false;
   for (const line of feed) {
-    const was = remembered.get(toastKey(line));
-    // What the screen has already accounted for. A feed count past it is a fresh occurrence, and the
-    // lifetime restarts from it: Rust cleared `last_at` in `push` for exactly this.
-    const accounted = was === undefined ? 0 : was.seen + was.count;
+    const held = remembered.get(toastKey(line));
+    // What the screen has already accounted for that line.
+    const held0 = held === undefined ? 0 : held.seen + held.count;
+    // A feed counting a line lower than the screen has accounted for cannot be the feed the screen
+    // came from — within one world a line only ever counts up — so the feed has been replaced and the
+    // memory of that line goes with it. Without this the old world's total would outrank the new
+    // world's, and its first events would never reach the screen: the notices are constants, so two
+    // worlds sharing a line is the ordinary case.
+    const was = held !== undefined && line.count >= held0 ? held : undefined;
+    const accounted = was === undefined ? 0 : held0;
+    // A feed count past what is accounted for is a fresh occurrence, and the lifetime restarts from
+    // it: Rust cleared `last_at` in `push` for exactly this.
     const fresh = was === undefined || line.count > accounted;
     // A retired line keeps the stamp it retired with, so the clock only ever carries it further past
     // its duration: nothing but a fresh occurrence can put it back up.
