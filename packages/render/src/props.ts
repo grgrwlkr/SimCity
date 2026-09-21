@@ -127,7 +127,7 @@ export function kerbSide(grid: PropGrid, x: number, y: number): TileDir | null {
 }
 
 /** Whether this kerb tile carries a lamp post. */
-export function wantsStreetlight(grid: PropGrid, x: number, y: number, cfg: StreetlightConfig = PROPS_CONFIG.streetlight): boolean {
+export function wantsStreetlight(grid: PropGrid, x: number, y: number, cfg: StreetlightConfig): boolean {
   if (!cfg.enabled || cfg.spacingTiles === 0) return false;
   if (kerbSide(grid, x, y) === null) return false;
   // Along a straight run one of x or y is constant, so the sum steps by one per tile and the lamps come out evenly
@@ -136,7 +136,7 @@ export function wantsStreetlight(grid: PropGrid, x: number, y: number, cfg: Stre
 }
 
 /** The tile a lamp's wire reaches towards: the next lamp along the same run, if there is one. */
-export function wirePartner(grid: PropGrid, x: number, y: number, cfg: StreetlightConfig = PROPS_CONFIG.streetlight): TilePos | null {
+export function wirePartner(grid: PropGrid, x: number, y: number, cfg: StreetlightConfig): TilePos | null {
   if (!cfg.wires || cfg.spacingTiles === 0) return null;
   const step = cfg.spacingTiles;
   const here = kerbSide(grid, x, y);
@@ -242,7 +242,7 @@ export type PropRole =
   | 'Kerbside';
 
 /** Whether a prop of `role` should be on screen for the tile as it stands now. */
-export function wantsShowing(role: PropRole, grid: PropGrid, x: number, y: number, built: boolean, cfg: StreetlightConfig = PROPS_CONFIG.streetlight): boolean {
+export function wantsShowing(role: PropRole, grid: PropGrid, x: number, y: number, built: boolean, cfg: StreetlightConfig): boolean {
   if (role === 'Streetlight') return wantsStreetlight(grid, x, y, cfg);
   if (role === 'ParkedCar') return kerbSide(grid, x, y) !== null;
   return kerbsideSide(grid, x, y, built) !== null;

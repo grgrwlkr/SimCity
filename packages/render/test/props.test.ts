@@ -4,6 +4,7 @@
 // reloads wrong.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { MapLayersReply } from '@simcity/bridge';
 import { describe, expect, it } from 'vitest';
 import { SIGN_NIGHT_EMISSIVE } from '../src/renderConfig';
 import {
@@ -13,9 +14,12 @@ import {
   kerbSide,
   kerbsideSide,
   parkedCarTint,
+  propGrid,
   propRoll,
   roadSide,
+  wantsShowing,
   wantsStreetlight,
+  wirePartner,
   type PropGrid,
   type StreetlightConfig,
 } from '../src/props';
@@ -141,5 +145,91 @@ describe('props placement', () => {
     for (let i = 0; i < 400; i++) {
       expect(propRoll(i % 20, Math.floor(i / 20), 42n, PROP_SALT.parkedCar, 0), 'a zero chance must place nothing').toBe(false);
     }
+  });
+});
+
+// Not in the Rust test module: `wire_partner`, `PropRole::wants_showing` and the grid the renderer feeds them were
+// pinned by eye there. The wire's side comparison is the subtlest line of props.rs, so it gets a test of its own.
+describe('props wiring and visibility', () => {
+  /** Three road rows, `y = 1..3`: the middle one has road on every side, so it carries no kerb at all. */
+  function roadBand(len: number): PropGrid {
+    const width = len + 4;
+    const height = 5;
+    const layers = { water: new Uint8Array(width * height), roadKind: new Uint8Array(width * height) };
+    for (let y = 1; y <= 3; y++) for (let x = 0; x < len; x++) layers.roadKind[y * width + x] = 1;
+    return { width, height, layers };
+  }
+
+  const cfg: StreetlightConfig = PROPS_CONFIG.streetlight;
+
+  it('aWireReachesTheNextLampAlongTheRun', () => {
+    const grid = roadRow(16);
+    // Lamps of a `y = 2` run sit where `(x + y) % 4 == 0`: x = 2, 6, 10, 14.
+    expect(wantsStreetlight(grid, 2, 2, cfg) && wantsStreetlight(grid, 6, 2, cfg)).toBe(true);
+    expect(wirePartner(grid, 2, 2, cfg)).toEqual({ x: 6, y: 2 });
+    // The last lamp of the run has nothing to string towards: the road ends at x = 15 and the map at y = 4.
+    expect(wirePartner(grid, 14, 2, cfg)).toBeNull();
+  });
+
+  it('switchingWiresOffLeavesTheLampsUnstrung', () => {
+    const grid = roadRow(16);
+    expect(wirePartner(grid, 2, 2, { ...cfg, wires: false })).toBeNull();
+    expect(wirePartner(grid, 2, 2, { ...cfg, spacingTiles: 0 })).toBeNull();
+  });
+
+  it('aWireNeedsBothEndsOnTheSameKerb', () => {
+    const grid = roadRow(16);
+    // A spur at (6, 3) turns the lamp at (6, 2) around: its kerb is now below, while (2, 2) still faces up.
+    grid.layers.roadKind[3 * grid.width + 6] = 1;
+    expect(kerbSide(grid, 2, 2)).toEqual({ x: 0, y: 1 });
+    expect(kerbSide(grid, 6, 2)).toEqual({ x: 0, y: -1 });
+    expect(wantsStreetlight(grid, 6, 2, cfg), 'the far tile is still a lamp site').toBe(true);
+    expect(wirePartner(grid, 2, 2, cfg), 'two kerbs facing apart are not one run').toBeNull();
+    // Both ends mid-carriageway: the Rust `kerb_side(next) == kerb_side(pos)` would hold as `None == None`, but
+    // `wants_streetlight` has already refused a tile without a kerb, so no wire is strung either way (props.rs:72).
+    const band = roadBand(16);
+    expect(kerbSide(band, 2, 2)).toBeNull();
+    expect(kerbSide(band, 6, 2)).toBeNull();
+    expect(wantsStreetlight(band, 6, 2, cfg)).toBe(false);
+    expect(wirePartner(band, 2, 2, cfg)).toBeNull();
+  });
+
+  it('wantsShowingAsksWhatTheRoleNeeds', () => {
+    const grid = roadRow(16);
+    // A lamp lives on its spacing, a parked car on any kerb tile, shop furniture on a built lot facing the road.
+    expect(wantsShowing('Streetlight', grid, 2, 2, false, cfg)).toBe(true);
+    expect(wantsShowing('Streetlight', grid, 3, 2, false, cfg)).toBe(false);
+    expect(wantsShowing('ParkedCar', grid, 3, 2, false, cfg)).toBe(true);
+    expect(wantsShowing('ParkedCar', grid, 3, 0, false, cfg)).toBe(false);
+    expect(wantsShowing('Kerbside', grid, 3, 3, true, cfg)).toBe(true);
+    expect(wantsShowing('Kerbside', grid, 3, 3, false, cfg), 'no shop, nothing to show').toBe(false);
+    expect(wantsShowing('Kerbside', grid, 3, 4, true, cfg), 'a lot that faces no road carries nothing').toBe(false);
+  });
+
+  it('propGridReadsTheRoadAndWaterLayersOfAMapReply', () => {
+    const width = 6;
+    const height = 3;
+    const cells = width * height;
+    const water = new Uint8Array(cells);
+    const roadKind = new Uint8Array(cells);
+    for (let x = 0; x < width; x++) roadKind[width + x] = 1;
+    water[width + 4] = 1;
+    const map: MapLayersReply = {
+      width,
+      height,
+      tileSize: 8,
+      mapEditVersion: 1,
+      graphVersion: 1,
+      layers: { water, roadKind, roadDir: new Uint8Array(cells), zone: new Uint8Array(cells), building: new Uint8Array(cells) },
+    };
+    const grid = propGrid(map);
+    expect({ width: grid.width, height: grid.height }).toEqual({ width, height });
+    // The arrays are read, not copied: a map edit that rewrites them in place needs no second pass here.
+    expect(grid.layers.roadKind).toBe(roadKind);
+    expect(grid.layers.water).toBe(water);
+    expect(kerbSide(grid, 2, 1), 'a road tile of the reply is a kerb').toEqual({ x: 0, y: 1 });
+    expect(kerbSide(grid, 4, 1), 'a flooded tile carries no furniture').toBeNull();
+    // The lot at (2, 0) sits below the road of `y = 1`, so its furniture faces up.
+    expect(roadSide(grid, 2, 0)).toEqual({ x: 0, y: 1 });
   });
 });
