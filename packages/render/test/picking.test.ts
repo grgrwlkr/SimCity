@@ -86,11 +86,38 @@ describe('picking across the projection switch', () => {
   });
 
   it('theFrameCentrePicksTheSameTileInBothProjections', () => {
+    const ortho = viewIn('orthographic');
+    const perspective = viewIn('perspective');
     const centre = { x: VIEWPORT.width / 2, y: VIEWPORT.height / 2 };
-    const orthoTile = viewIn('orthographic').pickTile(CFG, centre.x, centre.y);
-    const perspectiveTile = viewIn('perspective').pickTile(CFG, centre.x, centre.y);
+    const orthoTile = ortho.pickTile(CFG, centre.x, centre.y);
     expect(orthoTile, 'orthographic centre found no ground').toBeDefined();
-    expect(perspectiveTile, 'the two projections look at the same focus, so the centre pixel is the same tile').toEqual(orthoTile);
+    expect(perspective.pickTile(CFG, centre.x, centre.y), 'the two projections look at the same focus, so the centre pixel is the same tile').toEqual(orthoTile);
     expect(orthoTile, 'and that tile is the one the camera is aimed at').toEqual(FOCUS);
+
+    // The centre is every projection's fixed point, so on its own it would agree however wrong the frustum was.
+    // Away from it the two frames only still agree because they are the same size.
+    for (const at of [
+      { x: centre.x + 380, y: centre.y - 240 },
+      { x: centre.x - 300, y: centre.y + 190 },
+    ]) {
+      const tile = ortho.pickTile(CFG, at.x, at.y);
+      expect(tile, `orthographic found no ground at ${at.x},${at.y}`).toBeDefined();
+      expect(tile, `the two frames disagree away from the centre, at ${at.x},${at.y}`).not.toEqual(FOCUS);
+      expect(perspective.pickTile(CFG, at.x, at.y), `the two frames disagree at ${at.x},${at.y}`).toEqual(tile);
+    }
+  });
+
+  /**
+   * `projectionPlan` refuses to frame less than 1e-3 of ground, and nothing bounds the zoom, so far enough in
+   * the frame stops following `worldPerPixel`. Both directions read it off the plan, so they still invert.
+   */
+  it('theTwoDirectionsAgreeWhereTheFrameStopsFollowingTheZoom', () => {
+    const view = new OrthoView(VIEWPORT);
+    view.worldPerPixel = 1e-7;
+    expect(view.perPixel() / view.worldPerPixel, 'precondition: the plan has stopped following the zoom').toBeGreaterThan(2);
+    const world = { x: 3e-5, y: -1.7e-5 };
+    const screen = view.groundToScreen(world.x, world.y);
+    const back = view.screenToGround(screen.x, screen.y);
+    expect(Math.hypot(back.x - world.x, back.y - world.y), `${world.x},${world.y} came back as ${back.x},${back.y}`).toBeLessThan(1e-9);
   });
 });

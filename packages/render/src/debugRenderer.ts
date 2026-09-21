@@ -20,7 +20,7 @@ import {
 } from '@simcity/sim';
 import * as THREE from 'three/webgpu';
 import { OrthoView } from './camera';
-import { orthographicFrustum, perspectiveFovDeg, visibleHeight, type ProjectionPlan } from './cameraProjection';
+import { orthographicFrustum, perspectiveFovDeg, type ProjectionPlan } from './cameraProjection';
 import { FpsMeter } from './fpsMeter';
 import { interpolateHeading, interpolatePositions, pairVehicles } from './interpolate';
 import { lampSignal } from './lamps';
@@ -66,10 +66,12 @@ export interface RenderStats {
   /** Emergency markers on screen, one an emergency under way. */
   readonly emergencyMarkers: number;
   readonly hovered: TilePos | null;
-  /** The projection the last frame was drawn with; the zoom turns the camera orthographic at `orthoAboveZoom`. */
+  /**
+   * The projection the last frame was drawn with; the zoom turns the camera orthographic at `orthoAboveZoom`.
+   * How much ground that frame covers is deliberately not reported here: it would come from the same plan the
+   * camera came from, and a check reading it back could not fail. Measure it through the pick path instead.
+   */
   readonly projection: ProjectionPlan['kind'];
-  /** Ground height in view at the focus, world units: this is what must not jump when `projection` flips. */
-  readonly visibleHeight: number;
 }
 
 /** A turn arrow along +x, `size` world units long, centred on the origin. */
@@ -380,10 +382,8 @@ export class DebugRenderer {
   }
 
   stats(): RenderStats {
-    const plan = this.drawnPlan ?? this.view.plan();
     return {
-      projection: plan.kind,
-      visibleHeight: visibleHeight(plan, Math.max(this.view.viewport.height, 1)),
+      projection: (this.drawnPlan ?? this.view.plan()).kind,
       backend: this.backend,
       frames: this.frames,
       fps: Math.round(this.fpsMeter.fps),

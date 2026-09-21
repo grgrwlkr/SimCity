@@ -3,7 +3,7 @@
 // height, so only the shape of the view ray differs. Screen coordinates are CSS pixels from the top-left corner
 // of the canvas. The class keeps its name: every call site outside this package still holds an `OrthoView`.
 import { worldToTile, type MapConfig, type TilePos, type Vec2 } from '@simcity/sim';
-import { projectionPlan, type ProjectionPlan } from './cameraProjection';
+import { orthographicFrustum, perspectiveFovDeg, projectionPlan, type ProjectionPlan } from './cameraProjection';
 import { rayToGround, type Vec3 } from './picking';
 import { RENDER_CONFIG, type PerspectiveConfig } from './renderConfig';
 
@@ -35,10 +35,28 @@ export class OrthoView {
     return projectionPlan(this.worldPerPixel, Math.max(this.viewport.height, 1), this.perspective);
   }
 
+  /**
+   * Ground one CSS pixel covers at the focus, read off the very numbers the renderer hands Three —
+   * `orthographicFrustum` and `perspectiveFovDeg` — so the picture, the forward mapping and the picking
+   * cannot drift apart. It is `worldPerPixel` wherever the plan does not clamp, and the clamp is why it is
+   * worth carrying: under 1e-3 of framed ground `projectionPlan` holds the frame open and the zoom stops
+   * being the answer. Nothing bounds the zoom, so that floor is reachable.
+   */
+  perPixel(): number {
+    const plan = this.plan();
+    const height = Math.max(this.viewport.height, 1);
+    if (plan.kind === 'orthographic') {
+      const f = orthographicFrustum(plan, Math.max(this.viewport.width, 1), height);
+      return (f.top - f.bottom) / height;
+    }
+    return (2 * plan.distance * Math.tan(((perspectiveFovDeg(plan) * Math.PI) / 180) / 2)) / height;
+  }
+
   groundToScreen(x: number, y: number): Vec2 {
+    const perPixel = this.perPixel();
     return {
-      x: this.viewport.width / 2 + (x - this.centerX) / this.worldPerPixel,
-      y: this.viewport.height / 2 - (y - this.centerY) / this.worldPerPixel,
+      x: this.viewport.width / 2 + (x - this.centerX) / perPixel,
+      y: this.viewport.height / 2 - (y - this.centerY) / perPixel,
     };
   }
 
@@ -48,11 +66,8 @@ export class OrthoView {
    */
   viewRay(sx: number, sy: number): ViewRay {
     const plan = this.plan();
-    const height = Math.max(this.viewport.height, 1);
-    // Ground covered by one pixel at the focus, read off the frustum the camera is given. Pixels are square, so
-    // the horizontal side needs no aspect of its own; orthographic gives back `worldPerPixel` unchanged.
-    const perPixel =
-      plan.kind === 'orthographic' ? plan.scale : (2 * plan.distance * Math.tan(plan.fovYRad / 2)) / height;
+    // Pixels are square, so the one figure covers both sides of the frame.
+    const perPixel = this.perPixel();
     const dx = (sx - this.viewport.width / 2) * perPixel;
     const dy = (this.viewport.height / 2 - sy) * perPixel;
     if (plan.kind === 'orthographic') {
@@ -85,16 +100,18 @@ export class OrthoView {
 
   /** Drag by screen pixels: the grabbed ground point follows the cursor. */
   panBy(dxPx: number, dyPx: number): void {
-    this.centerX -= dxPx * this.worldPerPixel;
-    this.centerY += dyPx * this.worldPerPixel;
+    const perPixel = this.perPixel();
+    this.centerX -= dxPx * perPixel;
+    this.centerY += dyPx * perPixel;
   }
 
   /** Scale the view by `factor` (below 1 zooms in) around a screen point that stays put. */
   zoomAt(sx: number, sy: number, factor: number): void {
     const anchor = this.screenToGround(sx, sy);
     this.worldPerPixel *= factor;
-    this.centerX = anchor.x - (sx - this.viewport.width / 2) * this.worldPerPixel;
-    this.centerY = anchor.y + (sy - this.viewport.height / 2) * this.worldPerPixel;
+    const perPixel = this.perPixel();
+    this.centerX = anchor.x - (sx - this.viewport.width / 2) * perPixel;
+    this.centerY = anchor.y + (sy - this.viewport.height / 2) * perPixel;
   }
 
   /** Frustum edges in world units for a Three.js orthographic camera. */

@@ -417,33 +417,97 @@ test('pickingReportsTheTileUnderTheCursor', async ({ page }) => {
 });
 
 // The zoom picks the projection: below `orthoAboveZoom` the camera is perspective, at it and above orthographic.
-// Swapping one camera for another must not resize the frame or aim it elsewhere.
+// Swapping one camera for another must not resize the frame or aim it elsewhere. Nothing here reads the frame
+// size back off the plan the camera came from — that check could not fail. The height is measured by bisecting
+// `__sim.pickTile` for two tile boundaries down the middle column, and the picture is then read off the canvas
+// at the points the view contract puts the city at, so a frustum drawn at the wrong scale fails both ways.
 test('zoomingThroughTheThresholdKeepsTheFrameAndThePick', async ({ page }) => {
   await openApp(page);
+  await loadTestCity(page);
   await waitForDrawn(page);
   const threshold = RENDER_CONFIG.perspective.orthoAboveZoom;
   const middle = { x: Math.floor(CFG.width / 2), y: Math.floor(CFG.height / 2) };
   const focus = tileToWorld(CFG, middle);
+  // Six tiles out is 96 world units, well inside the ~137 the frame is half as tall as at these zooms.
+  const probes = [-6, -3, 0, 3, 6].flatMap((dy) => [-6, -3, 0, 3, 6].map((dx) => ({ x: middle.x + dx, y: middle.y + dy })));
+  const grid = gridLayout();
+  const probedClasses = probes.map((t) => grid[t.y * CFG.width + t.x]);
+  /** Fractions of the viewport: the centre, which every projection fixes, and two points far from it, which none does. */
+  const picked = [
+    { fx: 0, fy: 0 },
+    { fx: 0.3, fy: -0.3 },
+    { fx: -0.25, fy: 0.2 },
+  ];
 
-  /** Aims the camera at the middle tile at `worldPerPixel` and reports the frame actually drawn with it. */
+  /** Aims the camera at the middle tile at `worldPerPixel` and reports the frame that came out of it. */
   async function framedAt(worldPerPixel: number) {
-    const drawn = (await page.evaluate(() => window.__sim.renderStats())).frames;
+    const seen = (await page.evaluate(() => window.__sim.renderStats())).frames;
     const cam = await page.evaluate((s) => window.__sim.setCamera(s), { centerX: focus.x, centerY: focus.y, worldPerPixel });
-    await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.frames)).toBeGreaterThan(drawn + 1);
-    const stats = await page.evaluate(() => window.__sim.renderStats());
-    const centre = await page.evaluate((p) => window.__sim.pickTile(p.x, p.y), { x: cam.width / 2, y: cam.height / 2 });
-    return { projection: stats.projection, visibleHeight: stats.visibleHeight, centre };
+    await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.frames)).toBeGreaterThan(seen + 1);
+    const projection = (await page.evaluate(() => window.__sim.renderStats())).projection;
+
+    const edges = await page.evaluate(
+      async ({ x, h }) => {
+        const tileAt = async (row: number) => (await window.__sim.pickTile(x, row))?.y ?? null;
+        // Screen rows run down the frame while tile rows run north, so the pick falls as the row grows.
+        const north = await tileAt(2);
+        const south = await tileAt(h - 2);
+        if (north === null || south === null || north - south < 4) return null;
+        /** The row where the pick first drops to `target`: the boundary between tile rows `target + 1` and `target`. */
+        const edge = async (target: number) => {
+          let lo = 2;
+          let hi = h - 2;
+          while (hi - lo > 0.01) {
+            const mid = (lo + hi) / 2;
+            const seenTile = await tileAt(mid);
+            if (seenTile !== null && seenTile > target) lo = mid;
+            else hi = mid;
+          }
+          return (lo + hi) / 2;
+        };
+        return { north, south, rowNorth: await edge(north - 1), rowSouth: await edge(south) };
+      },
+      { x: Math.round(cam.width / 2), h: cam.height },
+    );
+    expect(edges, `no two tile boundaries to measure against at worldPerPixel ${worldPerPixel}`).not.toBeNull();
+    const { north, south, rowNorth, rowSouth } = edges!;
+    const northY = tileToWorld(CFG, { x: middle.x, y: north - 1 }).y + CFG.tileSize / 2;
+    const southY = tileToWorld(CFG, { x: middle.x, y: south }).y + CFG.tileSize / 2;
+    const frameHeight = (cam.height * (northY - southY)) / (rowSouth - rowNorth);
+
+    const classes = (
+      await sampleCanvas(
+        page,
+        probes.map((t) => {
+          const w = tileToWorld(CFG, t);
+          return toScreen(cam, w.x, w.y);
+        }),
+      )
+    ).map((c) => layoutClass(c));
+    const picks = await page.evaluate(
+      (points) => Promise.all(points.map((p) => window.__sim.pickTile(p.x, p.y))),
+      picked.map((p) => ({ x: cam.width * (0.5 + p.fx), y: cam.height * (0.5 + p.fy) })),
+    );
+    return { projection, frameHeight, classes, picks, wanted: cam.height * worldPerPixel };
   }
 
   const below = await framedAt(threshold * 0.999);
   const above = await framedAt(threshold);
   expect([below.projection, above.projection], 'the zoom crosses the switch').toEqual(['perspective', 'orthographic']);
   expect(
-    Math.abs(below.visibleHeight - above.visibleHeight) / above.visibleHeight,
-    `the frame resized across the switch: ${below.visibleHeight} then ${above.visibleHeight}`,
+    Math.abs(below.frameHeight - above.frameHeight) / above.frameHeight,
+    `the frame resized across the switch: ${below.frameHeight} then ${above.frameHeight}`,
   ).toBeLessThan(0.01);
-  expect(below.centre, 'the centre pixel is the same tile in both projections').toEqual(above.centre);
-  expect(below.centre, 'and that tile is the one the camera is aimed at').toEqual(middle);
+  // The two agreeing is not enough on its own — both could be the same wrong size — so each is held to its zoom.
+  for (const [label, f] of [
+    ['perspective', below],
+    ['orthographic', above],
+  ] as const) {
+    expect(Math.abs(f.frameHeight - f.wanted) / f.wanted, `the ${label} frame measures ${f.frameHeight}, not ${f.wanted}`).toBeLessThan(0.01);
+    expect(f.classes, `the ${label} frame draws the city away from where the view contract puts it`).toEqual(probedClasses);
+  }
+  expect(below.picks, 'the same pixels pick the same tiles in both projections').toEqual(above.picks);
+  expect(below.picks[0], 'and the centre pixel is the tile the camera is aimed at').toEqual(middle);
 });
 
 // A page opened in a hidden pane or a collapsed layout starts with a 0×0 canvas: WebGPU rejects
