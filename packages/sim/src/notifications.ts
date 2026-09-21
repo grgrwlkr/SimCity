@@ -91,8 +91,7 @@ export class Notifications {
     }
   }
 }
-
-/** A toast on screen: a line of the feed and the real time it was stamped with. */
+/** A toast the screen remembers: a line of the feed and the real time it was stamped with. */
 export interface ShownToast {
   readonly text: string;
   readonly kind: NotificationKind;
@@ -103,41 +102,57 @@ export interface ShownToast {
   readonly lastAt: number;
   /** Seconds on screen, `f32`. */
   readonly duration: number;
+  /** False once its time ran out. It is remembered so the clock alone can never put it back up. */
+  readonly visible: boolean;
 }
 
 export interface ShownToasts {
-  readonly toasts: readonly ShownToast[];
-  /** Whether a toast was stamped or dropped, so a caller can repaint only then. */
+  /** Every line the screen remembers, the retired ones included; the caller passes this back. */
+  readonly shown: readonly ShownToast[];
+  /** The lines to draw, in the feed's order. */
+  readonly visible: readonly ShownToast[];
+  /** Whether a toast was stamped or retired, so a caller can repaint only then. */
   readonly changed: boolean;
 }
 
 const toastKey = (line: { readonly kind: NotificationKind; readonly text: string }): string => `${line.kind}\u0000${line.text}`;
 
 /**
- * The toasts on screen at `timeNow`: a line the screen does not have yet, or one the feed has counted
- * again, is stamped with `timeNow`; a line whose duration has run out since its stamp is dropped.
+ * The screen at `timeNow`: a line the screen has never seen, and one the feed has counted again since
+ * it was last stamped, is stamped with `timeNow`; a line whose duration has run out since its stamp
+ * retires. A retired line stays in `shown` and off `visible` until a new occurrence bumps the feed's
+ * count for it — the clock alone may never put it back, and Rust's rule that only a `push` clears
+ * `last_at` is what that keeps.
  *
  * Pure — neither `feed` nor `shown` is touched, so nothing a wall clock decides can reach the world or
  * its fingerprint. Rust's `stamp_and_expire` mutated `Notifications::messages` in place and could,
- * because there the feed was not simulation state; here `shown` is the caller's own copy of the screen
- * and comes back on the next call.
+ * because there the feed was not simulation state; here `shown` is the caller's own memory of the
+ * screen and comes back on the next call.
  */
 export function stampAndExpire(feed: readonly Notification[], shown: readonly ShownToast[], timeNow: number): ShownToasts {
-  const up = new Map<string, ShownToast>();
-  for (const toast of shown) up.set(toastKey(toast), toast);
+  const remembered = new Map<string, ShownToast>();
+  for (const toast of shown) remembered.set(toastKey(toast), toast);
 
-  const toasts: ShownToast[] = [];
-  let stamped = false;
+  const next: ShownToast[] = [];
+  const visible: ShownToast[] = [];
+  let changed = false;
   for (const line of feed) {
-    const was = up.get(toastKey(line));
-    // A count that grew means a fresh occurrence and the lifetime restarts from it: Rust cleared
-    // `last_at` in `push` for exactly this.
+    const was = remembered.get(toastKey(line));
+    // A count past the one it was stamped with is a fresh occurrence, and the lifetime restarts from
+    // it: Rust cleared `last_at` in `push` for exactly this. Anything else leaves the stamp alone,
+    // so a line the player already watched retire stays retired.
+    const fresh = was === undefined || line.count > was.count;
+    // A retired line keeps the stamp it retired with, so the clock only ever carries it further past
+    // its duration: nothing but a fresh occurrence can put it back up.
+    const stamp = fresh ? timeNow : was.lastAt;
+    const up = timeNow - stamp < line.duration;
+    if (fresh || up !== was.visible) changed = true;
     const toast: ShownToast =
-      was !== undefined && was.count === line.count
+      !fresh && up === was.visible
         ? was
-        : { text: line.text, kind: line.kind, count: line.count, at: line.at, lastAt: timeNow, duration: line.duration };
-    if (toast !== was) stamped = true;
-    if (timeNow - toast.lastAt < toast.duration) toasts.push(toast);
+        : { text: line.text, kind: line.kind, count: line.count, at: line.at, lastAt: stamp, duration: line.duration, visible: up };
+    next.push(toast);
+    if (up) visible.push(toast);
   }
-  return { toasts, changed: stamped || toasts.length !== shown.length };
+  return { shown: next, visible, changed };
 }

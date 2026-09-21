@@ -19,16 +19,18 @@ const UPGRADED = 'Residential building upgraded to level II';
 const ZONES = ['Residential', 'Commercial', 'Industrial'] as const;
 const LEVELS = ['1', '2', '3', 'I', 'II', 'III'] as const;
 
-/** The screen after one more reading of the clock, starting from nothing on it. */
-function screen(feed: Notifications, times: readonly number[]): { toasts: readonly ShownToast[]; changed: readonly boolean[] } {
+/** Reads the clock at each of `times` in turn, from an empty screen; the screen at the end. */
+function screen(feed: Notifications, times: readonly number[]): { visible: readonly ShownToast[]; changed: readonly boolean[] } {
   let shown: readonly ShownToast[] = [];
   const changed: boolean[] = [];
+  let visible: readonly ShownToast[] = [];
   for (const timeNow of times) {
     const next = stampAndExpire(feed.messages(), shown, timeNow);
-    shown = next.toasts;
+    shown = next.shown;
+    visible = next.visible;
     changed.push(next.changed);
   }
-  return { toasts: shown, changed };
+  return { visible, changed };
 }
 
 describe('notifications', () => {
@@ -46,7 +48,11 @@ describe('notifications', () => {
     expect(history[0]).toEqual([4, 'Event 5', 1]); // the oldest go first
     expect(history.at(-1)).toEqual([4, 'Event 34', 2]); // a repeat in a row counts on its line
 
-    expect(screen(feed, [0, 100]).toasts).toHaveLength(0);
+    // Past the point the toasts are gone the clock alone must not bring a single one back, however
+    // long it runs: the feed still holds every line, and only a new occurrence may re-stamp one.
+    const run = screen(feed, [0, 100, 101, 500, 5000]);
+    expect(run.visible).toHaveLength(0);
+    expect(run.changed.slice(2), 'and nothing is repainted after they retire').toEqual([false, false, false]);
     expect(feed.history()).toHaveLength(HISTORY_LINES); // the history outlives the toasts
   });
 
@@ -86,15 +92,15 @@ describe('notifications', () => {
   it('notificationDedupGroupLifetimeCountsFromTheLastOccurrence', () => {
     const feed = new Notifications();
     feed.add(UPGRADED, 'Info', 3);
-    let shown = stampAndExpire(feed.messages(), [], 10).toasts;
+    let step = stampAndExpire(feed.messages(), [], 10);
     feed.add(UPGRADED, 'Info', 3);
-    shown = stampAndExpire(feed.messages(), shown, 12).toasts;
+    step = stampAndExpire(feed.messages(), step.shown, 12);
 
-    shown = stampAndExpire(feed.messages(), shown, 14).toasts;
+    step = stampAndExpire(feed.messages(), step.shown, 14);
     // two seconds after the repeat the line is alive, though four passed since the first
-    expect(shown).toHaveLength(1);
-    shown = stampAndExpire(feed.messages(), shown, 15.5).toasts;
-    expect(shown).toHaveLength(0); // three seconds after the last it is gone
+    expect(step.visible).toHaveLength(1);
+    step = stampAndExpire(feed.messages(), step.shown, 15.5);
+    expect(step.visible).toHaveLength(0); // three seconds after the last it is gone
   });
 
   // rust-final crates/simcity_sim/src/game/notifications.rs:317 notification_dedup_a_repeat_moves_its_line_to_the_newest_place
@@ -108,22 +114,31 @@ describe('notifications', () => {
 
   // rust-final crates/simcity_sim/src/game/notifications.rs:335 notification_dedup_an_expired_line_starts_a_fresh_count.
   // Rust restarted the counter because expiry removed the line from `Notifications::messages`, which was
-  // both the screen and the feed. Here expiry may not touch the feed at all — see
-  // docs/oracle-deviations.md, 2026-09-21 — so the pin is the part that survives the split: the line is
-  // back on screen, stamped afresh, and the feed's running count is the one thing expiry did not reset.
+  // both the screen and the feed. Here expiry may not touch the feed at all — see docs/oracle-deviations.md,
+  // 2026-09-21 — so the screen remembers what it retired, and only a new occurrence may put it back. The
+  // count the feed carries is the one thing expiry did not reset.
   it('notificationDedupAnExpiredLineStartsAFreshCount', () => {
     const feed = new Notifications();
     feed.add(UPGRADED, 'Info', 3);
     feed.add(UPGRADED, 'Info', 3);
-    let shown = stampAndExpire(feed.messages(), [], 0).toasts;
-    expect(shown[0]?.lastAt).toBe(0);
-    shown = stampAndExpire(feed.messages(), shown, 5).toasts;
-    expect(shown, 'the line left the screen').toHaveLength(0);
+    let step = stampAndExpire(feed.messages(), [], 0);
+    expect(step.visible[0]?.lastAt).toBe(0);
+    step = stampAndExpire(feed.messages(), step.shown, 5);
+    expect(step.visible, 'the line left the screen').toHaveLength(0);
 
+    // The clock on its own may never bring a retired line back, however far it runs.
+    step = stampAndExpire(feed.messages(), step.shown, 6);
+    expect(step.visible, 'no event, no toast').toHaveLength(0);
+    expect(step.changed, 'and nothing to repaint').toBe(false);
+    step = stampAndExpire(feed.messages(), step.shown, 1000);
+    expect(step.visible, 'still nothing a thousand seconds on').toHaveLength(0);
+
+    // Only the occurrence does, and the lifetime starts over from it.
     feed.add(UPGRADED, 'Info', 3);
-    shown = stampAndExpire(feed.messages(), shown, 5).toasts;
-    expect(shown).toHaveLength(1);
-    expect(shown[0]?.lastAt, 'the lifetime runs from the occurrence that brought it back').toBe(5);
+    step = stampAndExpire(feed.messages(), step.shown, 1000);
+    expect(step.visible).toHaveLength(1);
+    expect(step.visible[0]?.lastAt, 'the lifetime runs from the occurrence that brought it back').toBe(1000);
+    expect(step.changed).toBe(true);
     expect(feed.messages()[0]?.count, 'expiry left the feed alone').toBe(3);
   });
 
@@ -140,23 +155,19 @@ describe('notifications', () => {
   // rust-final crates/simcity_sim/src/game/notifications.rs:370 notification_dedup_stamping_reports_whether_the_feed_changed
   it('notificationDedupStampingReportsWhetherTheFeedChanged', () => {
     const feed = new Notifications();
-    let shown: readonly ShownToast[] = [];
-    let step = stampAndExpire(feed.messages(), shown, 0);
+    let step = stampAndExpire(feed.messages(), [], 0);
     expect(step.changed).toBe(false); // an empty feed has nothing to change
-    shown = step.toasts;
 
     feed.add(UPGRADED, 'Info', 3);
-    step = stampAndExpire(feed.messages(), shown, 1);
+    step = stampAndExpire(feed.messages(), step.shown, 1);
     expect(step.changed).toBe(true); // a new line was stamped
-    shown = step.toasts;
 
-    step = stampAndExpire(feed.messages(), shown, 2);
+    step = stampAndExpire(feed.messages(), step.shown, 2);
     expect(step.changed).toBe(false); // nothing new and nothing expired
-    shown = step.toasts;
 
-    step = stampAndExpire(feed.messages(), shown, 9);
+    step = stampAndExpire(feed.messages(), step.shown, 9);
     expect(step.changed).toBe(true); // the line expired
-    expect(step.toasts).toHaveLength(0);
+    expect(step.visible).toHaveLength(0);
   });
 
   // The reason `stampAndExpire` is pure: the toast list is hashed (packages/sim/src/fingerprint.ts:392,
@@ -169,38 +180,36 @@ describe('notifications', () => {
     w.notifications.add(UPGRADED, 'Info', 3);
     const before = fingerprint(w);
 
-    let shown = stampAndExpire(w.notifications.messages(), [], 0).toasts;
-    expect(shown, 'the whole screen is up').toHaveLength(2);
-    shown = stampAndExpire(w.notifications.messages(), shown, 100).toasts;
-    expect(shown, 'and then every line has expired').toHaveLength(0);
-
+    const run = screen(w.notifications, [0, 100]);
+    expect(run.visible, 'the whole screen went up and then expired').toHaveLength(0);
     expect(w.notifications.messages(), 'the feed keeps its lines').toHaveLength(2);
     expect(fingerprint(w)).toBe(before);
   });
 
   // rust-final crates/simcity_sim/src/game/buildings/growth.rs:620 notification_dedup_every_construction_is_the_same_line.
-  // Rust asserted that `construction_notice(kind)` ignores the zone; the port dropped the argument for a
-  // constant, so the pin is driven through the real path instead: `growBuildings`
+  // Rust asserted that `construction_notice(kind)` ignores the zone, over all three zones; the port dropped
+  // the argument for a constant, so the pin is driven through the real path instead: `growBuildings`
   // (packages/sim/src/buildings/growth.ts:179) is where a zone name could be interpolated into the line.
   it('notificationDedupEveryConstructionIsTheSameLine', () => {
-    const grid = new MapGrid(40, 16);
-    roadRow(grid, 2, 0, 39);
-    zoneRect(grid, 'Residential', 2, 12, 3, 5, 'Medium');
-    zoneRect(grid, 'Commercial', 16, 26, 3, 5, 'Medium');
-    station(grid, 'PowerPlant', 30, 3);
-    station(grid, 'WaterPump', 34, 3);
+    const grid = new MapGrid(48, 16);
+    roadRow(grid, 2, 0, 47);
+    zoneRect(grid, 'Residential', 2, 10, 3, 5, 'Medium');
+    zoneRect(grid, 'Commercial', 14, 22, 3, 5, 'Medium');
+    zoneRect(grid, 'Industrial', 26, 34, 3, 5, 'Medium');
+    station(grid, 'PowerPlant', 38, 3);
+    station(grid, 'WaterPump', 42, 3);
     const w = worldOn(grid);
     w.utilityNetwork = network(grid);
-    w.rciDemand = demand(1, 1);
+    w.rciDemand = demand(1, 1, 1);
 
-    for (let hour = 0; hour < 200 && !bothZonesBuilt(w); hour++) {
+    for (let hour = 0; hour < 400 && !allThreeZonesBuilt(w); hour++) {
       w.events = emptyEvents();
       w.events.hourAdvanced.push({ hour: hour % 24, day: 1 });
       growBuildings(w);
     }
-    expect(bothZonesBuilt(w), 'two zones grew buildings').toBe(true);
+    expect(allThreeZonesBuilt(w), `all three zones grew buildings, got ${zonesBuilt(w).join('/')}`).toBe(true);
 
-    const built = w.buildings.all().filter((b) => b.kind === 'Residential' || b.kind === 'Commercial').length;
+    const built = w.buildings.all().length;
     expect(w.notifications.messages(), 'every zone lands on one feed line').toHaveLength(1);
     const line = w.notifications.messages()[0]!;
     expect(line.text).toBe(CONSTRUCTION_NOTICE);
@@ -210,27 +219,31 @@ describe('notifications', () => {
   });
 
   // rust-final crates/simcity_sim/src/game/buildings/upgrade.rs:91 notification_dedup_every_upgrade_is_the_same_line.
-  // Same shape, same treatment: `upgradeBuildings` (packages/sim/src/buildings/upgrade.ts:23) is driven for
-  // real, so neither the zone nor the level can split one stream into several lines.
+  // Rust checked `(Residential, 3)`, `(Commercial, 2)` and `(Industrial, 3)` against `(Residential, 2)`;
+  // the same three zones and both levels are driven for real through `upgradeBuildings`
+  // (packages/sim/src/buildings/upgrade.ts:23), so neither can split one stream into several lines.
   it('notificationDedupEveryUpgradeIsTheSameLine', () => {
-    const grid = new MapGrid(40, 16);
-    roadRow(grid, 2, 0, 39);
+    const grid = new MapGrid(48, 16);
+    roadRow(grid, 2, 0, 47);
     zoneRect(grid, 'Residential', 2, 8, 3, 5, 'Medium');
     zoneRect(grid, 'Commercial', 12, 18, 3, 5, 'Medium');
-    station(grid, 'PowerPlant', 30, 3);
-    station(grid, 'WaterPump', 34, 3);
+    zoneRect(grid, 'Industrial', 22, 28, 3, 5, 'Medium');
+    station(grid, 'PowerPlant', 38, 3);
+    station(grid, 'WaterPump', 42, 3);
     const w = worldOn(grid);
     w.utilityNetwork = network(grid);
     w.rciDemand = demand(1, 1, 1);
-    const houses = spawnBuilding(w, { x: 2, y: 3 }, 3, 3, 'Residential', false, { density: 'Medium', class: 'Middle' });
-    const shops = spawnBuilding(w, { x: 12, y: 3 }, 3, 3, 'Commercial', false, { density: 'Medium', class: 'Middle' });
-    const levels = () => [houses.level, shops.level] as const;
-    const grown = () => levels()[0] > 1 && levels()[1] > 1;
+    const profile = { density: 'Medium', class: 'Middle' } as const;
+    const houses = spawnBuilding(w, { x: 2, y: 3 }, 3, 3, 'Residential', false, profile);
+    const shops = spawnBuilding(w, { x: 12, y: 3 }, 3, 3, 'Commercial', false, profile);
+    const works = spawnBuilding(w, { x: 22, y: 3 }, 3, 3, 'Industrial', false, profile);
+    // Rust's table: residential and industrial reach the third level, commercial the second.
+    const grown = () => houses.level >= 3 && shops.level >= 2 && works.level >= 3;
 
-    for (let check = 0; check < 500 && !grown(); check++) upgradeBuildings(w, 5 * w.gameHourNs);
-    expect(grown(), `both zones upgraded, levels ${levels().join('/')}`).toBe(true);
+    for (let check = 0; check < 2000 && !grown(); check++) upgradeBuildings(w, 5 * w.gameHourNs);
+    expect(grown(), `levels R/C/I ${houses.level}/${shops.level}/${works.level}`).toBe(true);
 
-    const upgrades = houses.level - 1 + (shops.level - 1);
+    const upgrades = houses.level + shops.level + works.level - 3;
     expect(w.notifications.messages(), 'every zone and level lands on one feed line').toHaveLength(1);
     const line = w.notifications.messages()[0]!;
     expect(line.text).toBe(UPGRADE_NOTICE);
@@ -240,8 +253,12 @@ describe('notifications', () => {
   });
 });
 
-/** Whether the world grew at least one building in each of the two zones. */
-function bothZonesBuilt(w: World): boolean {
+/** The zones that have at least one building standing. */
+function zonesBuilt(w: World): readonly string[] {
+  return [...new Set(w.buildings.all().map((b) => b.kind))].sort();
+}
+
+function allThreeZonesBuilt(w: World): boolean {
   const kinds = new Set(w.buildings.all().map((b) => b.kind));
-  return kinds.has('Residential') && kinds.has('Commercial');
+  return ZONES.every((zone) => kinds.has(zone));
 }
