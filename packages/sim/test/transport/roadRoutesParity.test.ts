@@ -1,12 +1,12 @@
-// Stage 1b gate: on the Rust test city, the TS turn-lane marks, road and region graphs and 200
-// road-A* paths equal what Rust computes (fixture from examples/dump_routes.rs).
+// Stage 1b gate, now TS route pins on the test city: the turn-lane marks, road and region graphs and 200 road-A*
+// paths stay what they were when they matched Rust (values frozen from examples/dump_routes.rs in road-routes.json).
 import { describe, expect, it } from 'vitest';
 import { TrafficOccupancy } from '../../src/traffic/occupancy';
 import { PathCache, findRoadPathCached, type PathfindingCtx } from '../../src/transport/pathfinding';
 import fixture from '../../src/scenarios/road-routes.json';
 import { hex, loadTestCity } from '../testCity';
 
-describe('road A* parity with Rust on the test city', () => {
+describe('road A* route pins on the test city', () => {
   const w = loadTestCity();
 
   it('turnLaneMarksMatchRust', () => {

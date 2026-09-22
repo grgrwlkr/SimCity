@@ -18,7 +18,7 @@ interface RoadFixture {
   rawGrid: Record<'height' | 'water' | 'terrain' | 'roadKind' | 'roadDir' | 'roadLane' | 'roadFlow' | 'laneType' | 'zone' | 'density' | 'building', string>;
 }
 
-const RUST_LAYOUT = new URL('./fixtures/rust-layout.json', import.meta.url);
+const DEBUG_LAYOUT = new URL('./fixtures/debug-layout.json', import.meta.url);
 const CFG = { width: road.width, height: road.height, tileSize: 16 };
 
 test.use({ viewport: { width: 1100, height: 1100 } });
@@ -140,8 +140,8 @@ test('debugRenderMatchesRustLayout', async ({ page }, testInfo) => {
   const mismatches = drawn.flatMap((c, i) => (c === expected[i] ? [] : [`(${i % CFG.width},${Math.floor(i / CFG.width)}) ${c}≠${expected[i]}`]));
   expect(mismatches.slice(0, 10), `${mismatches.length} tiles differ from the Rust grid`).toEqual([]);
 
-  expect(existsSync(RUST_LAYOUT), 'e2e/fixtures/rust-layout.json comes from tools/rust-layout.ts').toBe(true);
-  const rust = JSON.parse(readFileSync(RUST_LAYOUT, 'utf8')) as { classes: string };
+  expect(existsSync(DEBUG_LAYOUT), 'e2e/fixtures/debug-layout.json: the frame the Rust game drew of the test city (tools/rust-layout.ts at rust-final)').toBe(true);
+  const rust = JSON.parse(readFileSync(DEBUG_LAYOUT, 'utf8')) as { classes: string };
   const legend: Record<string, LayoutClass> = { r: 'road', w: 'water', o: 'other' };
   let known = 0;
   let agree = 0;
