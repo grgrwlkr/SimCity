@@ -9,7 +9,7 @@ const road = (dir: RoadCell['dir']): RoadCell => ({ ...roadCellNone(), kind: 'Tw
 function layers(width: number, height: number, edit: (grid: MapGrid) => void = () => {}) {
   const grid = new MapGrid(width, height);
   edit(grid);
-  return renderLayersOf(grid, { width, height, tileSize: 16 }, 1, 1);
+  return renderLayersOf(grid, { width, height, tileSize: 16 }, 1, 1, 0n);
 }
 
 describe('palette', () => {

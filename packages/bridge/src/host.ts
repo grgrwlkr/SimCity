@@ -23,10 +23,14 @@ import {
   rngProbeDigest,
   SignalizedCrossScenario,
   spawnVehicle,
+  stampAndExpire,
   startEmergency,
   step,
   summarizeTraffic,
+  tileDiagnosis,
   toHex64,
+  type BudgetLines,
+  type ShownToast,
   VEHICLE_CAPACITY,
   vehicleRef,
   worldRectToTiles,
@@ -37,6 +41,7 @@ import {
 import { FixedStepDriver, SPEED_MULTIPLIER } from './driver';
 import {
   GRID_LAYER_NAMES,
+  type BudgetMonthView,
   type DebugVehicle,
   type FingerprintReply,
   type GridLayers,
@@ -126,6 +131,10 @@ export class SimHost {
   /** The cost of each of the last ticks, a ring. */
   private readonly tickSamples = new Float64Array(TICK_SAMPLES);
   private tickSampleCount = 0;
+  /** The screen's memory of the feed's toasts, `stampAndExpire`'s to keep: the host's, never the world's. */
+  private shownToasts: readonly ShownToast[] = [];
+  /** A toast came up or retired since the last snapshot `update` reported. */
+  private toastsChanged = false;
 
   constructor(renderCapacity: number) {
     this.world = createWorld();
@@ -172,8 +181,13 @@ export class SimHost {
         return null;
       case 'tile':
         return this.world.grid.get(req.pos) ?? null;
+      case 'tileDiagnosis': {
+        const w = this.world;
+        const found = tileDiagnosis(w.grid, w.utilityNetwork, w.rciDemand, req.pos, w.cityFields);
+        return found === null ? null : { zone: found[0], reason: found[1] };
+      }
       case 'mapLayers':
-        return renderLayersOf(this.world.grid, this.world.mapConfig, this.world.mapEditVersion, this.world.graphVersion);
+        return renderLayersOf(this.world.grid, this.world.mapConfig, this.world.mapEditVersion, this.world.graphVersion, this.world.mapSeed);
       case 'loadGrid':
         this.loadGrid(req.layers);
         return null;
@@ -222,6 +236,7 @@ export class SimHost {
     this.tickMs = null;
     this.lastReported = null;
     this.scenario = null;
+    this.shownToasts = [];
   }
 
   private recordTickSample(ms: number): void {
@@ -285,17 +300,30 @@ export class SimHost {
       // The worker must not die: the frame's error goes to the snapshot and the next frame runs.
       recordSystemError(this.world, 'frame', error);
     }
-    const snapshot = this.snapshot();
+    const snapshot = this.snapshot(nowMs);
     const failures = snapshot.errors.reduce((sum, e) => sum + e.count, 0);
     const key = `${snapshot.tick}|${snapshot.appState}|${snapshot.speed}|${snapshot.mapEditVersion}|${snapshot.graphVersion}|${failures}`;
-    if (key === this.lastReported) return null;
+    if (key === this.lastReported && !this.toastsChanged) return null;
     this.lastReported = key;
+    this.toastsChanged = false;
     return snapshot;
   }
 
-  snapshot(): WorldSnapshot {
+  /** The snapshot at real time `nowMs`, which decides the toasts on screen. */
+  snapshot(nowMs = performance.now()): WorldSnapshot {
     const w = this.world;
     const stats = this.scenario?.stats?.(w);
+    const screen = stampAndExpire(w.notifications.messages(), this.shownToasts, nowMs / 1000);
+    this.shownToasts = screen.shown;
+    this.toastsChanged ||= screen.changed;
+    const ledger = w.budget;
+    const month = (index: number, moneyStart: number, moneyEnd: number, lines: BudgetLines): BudgetMonthView => ({
+      month: index,
+      moneyStart,
+      moneyEnd,
+      lines: lines.entries().map(([item, amount]) => ({ item, amount })),
+    });
+    const rates = w.taxRates.percent;
     return {
       tick: w.tick,
       appState: w.appState,
@@ -332,6 +360,19 @@ export class SimHost {
         resolved: w.emergencies.stats.resolvedInTime,
         failed: w.emergencies.stats.failedResponses,
       },
+      budget: {
+        current: month(ledger.month, ledger.moneyStart, w.city.money, ledger.current),
+        last: ledger.last === null ? null : month(ledger.last.month, ledger.last.moneyStart, ledger.last.moneyEnd, ledger.last.lines),
+        daysElapsed: ledger.daysElapsed,
+        daysPerMonth: w.economyConfig.daysPerMonth,
+      },
+      taxRates: { Residential: { ...rates.Residential }, Commercial: { ...rates.Commercial }, Industrial: { ...rates.Industrial } },
+      serviceFunding: { ...w.serviceFunding.percent },
+      loans: w.loans.active.map((loan) => ({ principal: loan.principal, monthlyPayment: loan.monthlyPayment, monthsLeft: loan.monthsLeft })),
+      toasts: screen.visible,
+      history: w.notifications.history().map((line) => ({ ...line })),
+      milestones: { bestPopulation: w.milestones.bestPopulation, next: w.milestones.next() ?? null },
+      advisor: [],
     };
   }
 

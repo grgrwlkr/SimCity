@@ -1,5 +1,23 @@
 // Worker ↔ main thread messages. Requests carry an id so `window.__sim` can await each reply.
-import type { AppState, City, EmergencyKind, LightPhase, ManeuverKind, MapCell, MapGrid, SystemError, TilePos, TrafficSummary } from '@simcity/sim';
+import type {
+  AppState,
+  BudgetItem,
+  City,
+  EmergencyKind,
+  HistoryLine,
+  LightPhase,
+  ManeuverKind,
+  MapCell,
+  MapGrid,
+  Milestone,
+  ServiceKind,
+  ShownToast,
+  SystemError,
+  TaxZone,
+  TilePos,
+  TrafficSummary,
+  WealthClass,
+} from '@simcity/sim';
 import type { SimSpeed } from './driver';
 import type { ScenarioName } from './scenarios';
 
@@ -29,6 +47,72 @@ export interface WorldSnapshot {
   readonly lights: readonly TrafficLightView[];
   readonly traffic: TrafficView;
   readonly services: ServicesView;
+  readonly budget: BudgetView;
+  /** Whole percent per zone and wealth class. */
+  readonly taxRates: Readonly<Record<TaxZone, Readonly<Record<WealthClass, number>>>>;
+  /** Whole percent of its full budget per service. */
+  readonly serviceFunding: Readonly<Record<ServiceKind, number>>;
+  readonly loans: readonly LoanView[];
+  /**
+   * The feed's toasts on screen now, stamped by `stampAndExpire` against the host's memory of the screen: a wall
+   * clock decides them, so they live outside the world and its fingerprint.
+   */
+  readonly toasts: readonly ShownToast[];
+  /** The feed's last events, oldest first. */
+  readonly history: readonly HistoryLine[];
+  readonly milestones: MilestonesView;
+  /** The advisor's first three problems, worst first; empty until the advisor is ported (S3). */
+  readonly advisor: readonly AdvisorProblemView[];
+}
+
+/** One budget line of a month, whole dollars: income positive, spending negative. */
+export interface BudgetLineView {
+  readonly item: BudgetItem;
+  readonly amount: number;
+}
+
+export interface BudgetMonthView {
+  readonly month: number;
+  readonly moneyStart: number;
+  /** The treasury when the month closed; for the month in progress, the treasury now. */
+  readonly moneyEnd: number;
+  /** The lines posted, in `BUDGET_ITEMS` order. */
+  readonly lines: readonly BudgetLineView[];
+}
+
+export interface BudgetView {
+  readonly current: BudgetMonthView;
+  /** The month closed last; `null` before the first closes. */
+  readonly last: BudgetMonthView | null;
+  readonly daysElapsed: number;
+  readonly daysPerMonth: number;
+}
+
+export interface LoanView {
+  readonly principal: number;
+  readonly monthlyPayment: number;
+  readonly monthsLeft: number;
+}
+
+export interface MilestonesView {
+  /** The largest population the city has reached. */
+  readonly bestPopulation: number;
+  /** The next milestone ahead; `null` once none is left. */
+  readonly next: Milestone | null;
+}
+
+/** A problem of the city the advisor names: `ProblemKind` of crates/simcity_sim/src/game/advisor.rs, as S3 ports it. */
+export interface AdvisorProblemView {
+  readonly kind: string;
+  readonly severity: number;
+  readonly text: string;
+  readonly at: TilePos | null;
+}
+
+/** Why a zoned tile is held back, for the tooltip: `tileDiagnosis` of packages/sim. */
+export interface TileDiagnosisReply {
+  readonly zone: string;
+  readonly reason: string;
 }
 
 /** An emergency under way, at the anchor of the building it broke out at. */
@@ -86,6 +170,8 @@ export interface MapLayersReply {
   readonly tileSize: number;
   readonly mapEditVersion: number;
   readonly graphVersion: number;
+  /** `u64` as a decimal string, as in the snapshot: street furniture rolls on it. */
+  readonly mapSeed: string;
   readonly layers: {
     readonly water: Uint8Array;
     readonly roadKind: Uint8Array;
@@ -162,6 +248,8 @@ export type Request =
   | { readonly t: 'undoRedo'; readonly redo: boolean }
   /** One map cell, for debugging and e2e checks. */
   | { readonly t: 'tile'; readonly pos: TilePos }
+  /** What holds a zoned tile back: asked when the pointer rests on it, never in every snapshot. */
+  | { readonly t: 'tileDiagnosis'; readonly pos: TilePos }
   | { readonly t: 'mapLayers' }
   /**
    * Replace every grid layer at once (debug and tests, as writing the world over BRP did): the test
@@ -195,6 +283,8 @@ export interface ReplyByRequest {
   readonly undoRedo: null;
   /** `null` outside the map. */
   readonly tile: MapCell | null;
+  /** `null` outside the map, on an unzoned tile and where nothing is in the way. */
+  readonly tileDiagnosis: TileDiagnosisReply | null;
   readonly mapLayers: MapLayersReply;
   readonly loadGrid: null;
   readonly debugVehicles: null;

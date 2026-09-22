@@ -8,6 +8,7 @@ export function renderLayersOf(
   cfg: MapConfig,
   mapEditVersion: number,
   graphVersion: number,
+  mapSeed: bigint,
 ): MapLayersReply {
   return {
     width: grid.width,
@@ -15,6 +16,7 @@ export function renderLayersOf(
     tileSize: cfg.tileSize,
     mapEditVersion,
     graphVersion,
+    mapSeed: mapSeed.toString(),
     layers: {
       water: grid.water.slice(),
       roadKind: grid.roadKind.slice(),
