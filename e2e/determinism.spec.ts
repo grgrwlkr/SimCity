@@ -38,7 +38,9 @@ test('menuStartsAGameAndTheClockRuns', async ({ page }, testInfo) => {
   await page.getByTestId('start').click();
   await expect(page.getByTestId('hud')).toBeVisible();
   // ×1 is real time: a second or two after the start, the clock shows them.
-  await expect(page.getByTestId('clock')).toHaveText(/^День 1, 00:00:0[1-9]$/, { timeout: 5_000 });
+  // The bar shows no seconds (docs/design/hud/layout.md §2): the snapshot says the clock runs.
+  await expect(page.getByTestId('clock')).toHaveText(/^День 1, 00:00$/);
+  await expect.poll(() => page.evaluate(() => window.__sim.snapshot().then((s) => s.city.second)), { timeout: 5_000 }).toBeGreaterThan(0);
   await page.screenshot({ path: testInfo.outputPath('hud.png') });
 
   await page.keyboard.press('Space');
@@ -63,6 +65,8 @@ test('hudShowsTheSpeedLadderAndTheRealRate', async ({ page }) => {
 });
 
 test('hudShowsTheFrameRate', async ({ page }) => {
+  // The frame rate is a dev element: only under `?debug=1` (dev_ui_gate.rs).
+  await page.goto('/?debug=1');
   await page.getByTestId('start').click();
   const fps = page.getByTestId('fps');
   await expect(fps).toHaveText(/^FPS \d+$/);

@@ -21,7 +21,9 @@ test('withoutAPadTheAppRunsAndNothingThrows', async ({ page }) => {
   expect(await page.evaluate(() => [...navigator.getGamepads()].every((p) => p === null))).toBe(true);
 
   await page.getByTestId('start').click();
-  await expect(page.getByTestId('clock')).toHaveText(/^День 1, 00:00:0[1-9]$/, { timeout: 5_000 });
+  // The bar shows no seconds (docs/design/hud/layout.md §2): the snapshot says the clock runs.
+  await expect(page.getByTestId('clock')).toHaveText(/^День 1, 00:00$/);
+  await expect.poll(() => page.evaluate(() => window.__sim.snapshot().then((s) => s.city.second)), { timeout: 5_000 }).toBeGreaterThan(0);
   await page.keyboard.press('Space');
   await expect(page.getByText('Пауза')).toBeVisible();
   expect(errors).toEqual([]);

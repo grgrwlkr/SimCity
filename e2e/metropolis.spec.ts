@@ -36,7 +36,7 @@ test('metropolisFingerprintMatchesNode', async ({ page }) => {
 
 test('metropolisGoesOnPastAFailingSystem', async ({ page }) => {
   test.setTimeout(180_000);
-  await page.goto('/?scenario=metropolis');
+  await page.goto('/?scenario=metropolis&debug=1');
   await page.waitForFunction(() => typeof window.__sim !== 'undefined');
   await page.evaluate(() => window.__sim.ready);
   await expect
@@ -61,7 +61,7 @@ test.describe('@perf metropolis measurements', () => {
 
   test('metropolisHoldsX10AndRunsX360', async ({ page }, testInfo) => {
     test.setTimeout(600_000);
-    await page.goto('/?scenario=metropolis');
+    await page.goto('/?scenario=metropolis&debug=1');
     await page.waitForFunction(() => typeof window.__sim !== 'undefined');
     await page.evaluate(() => window.__sim.ready);
     await expect
