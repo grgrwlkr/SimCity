@@ -44,16 +44,21 @@ export function atlasDetail(atlas: THREE.DataTexture, spec: MaterialSpec) {
 }
 
 export class SceneMaterials {
-  private readonly bySpec = new Map<MaterialSpec, THREE.MeshStandardNodeMaterial>();
+  private readonly bySpec = new Map<MaterialSpec, THREE.MeshLambertNodeMaterial>();
 
   constructor(private readonly atlas: THREE.DataTexture) {}
 
-  /** Lit and matte; vertex colours multiply in where the geometry has them, instance colours where the mesh has them. */
-  get(spec: MaterialSpec): THREE.MeshStandardNodeMaterial {
+  /**
+   * Lit and matte: Lambert is the fully rough end of the spec's `roughness: 1`. Not the standard material: with any
+   * light in the scene its pipeline fails in Chromium's WebGPU ("An error occurred while generating Tint IR", three
+   * 0.185.1, measured under E2E_GPU=1), while Lambert compiles. Vertex colours multiply in where the geometry has
+   * them, instance colours where the mesh has them.
+   */
+  get(spec: MaterialSpec): THREE.MeshLambertNodeMaterial {
     let m = this.bySpec.get(spec);
     if (m === undefined) {
       const [r, g, b, a] = spec.color;
-      m = new THREE.MeshStandardNodeMaterial({ roughness: spec.roughness, metalness: 0 });
+      m = new THREE.MeshLambertNodeMaterial();
       m.color.setRGB(r / 255, g / 255, b / 255, THREE.SRGBColorSpace);
       m.vertexColors = true;
       if (spec.atlas) m.colorNode = vec4(materialColor.mul(atlasDetail(this.atlas, spec)), 1);

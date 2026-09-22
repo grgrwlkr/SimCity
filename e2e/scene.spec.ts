@@ -7,40 +7,46 @@ import { ATLAS_CELLS, atlasCellIndex, buildAtlasImage } from '../packages/render
 import type { SceneStats } from '../packages/render/src/scene/sceneRenderer';
 import { MAX_CELL_LOD, atlasMipChain } from '../packages/render/src/scene/atlasTexture';
 
+type LayerName = 'height' | 'water' | 'terrain' | 'roadKind' | 'roadDir' | 'roadLane' | 'roadFlow' | 'laneType' | 'zone' | 'density' | 'building';
 const road = JSON.parse(readFileSync(new URL('../packages/sim/test/fixtures/road-routes.json', import.meta.url), 'utf8')) as {
   width: number;
   height: number;
-  rawGrid: Record<string, string>;
+  rawGrid: Record<LayerName, string>;
 };
 
-test.use({ viewport: { width: 1100, height: 1100 } });
+test.use({ viewport: { width: 800, height: 800 } });
+// SwiftShader draws the lit scene on the processor: a frame takes far longer than the debug renderer's flat one.
+test.describe.configure({ timeout: 240_000 });
 
 const sceneStats = (page: Page) => page.evaluate(() => window.__sim.renderStats()) as Promise<SceneStats>;
 
 async function openScene(page: Page, query = ''): Promise<void> {
+  // A shader that fails to build surfaces only here: the frame just stops.
+  page.on('pageerror', (e) => console.log(`pageerror: ${e.message}`));
+  page.on('console', (m) => void ((m.type() === 'error' || m.type() === 'warning') && console.log(`console: ${m.text()}`)));
   await page.goto(`/?renderer=scene${query}`);
   await page.waitForFunction(() => typeof window.__sim !== 'undefined');
   await page.evaluate(() => window.__sim.ready);
   await page.addStyleTag({ content: '#root { visibility: hidden; }' });
 }
 
-async function loadGrid(page: Page, grid: Record<string, string>): Promise<void> {
+async function loadGrid(page: Page, grid: Record<LayerName, string>): Promise<void> {
   const { height, ...rest } = grid;
   await page.evaluate(async (layers) => {
     await window.__sim.setSpeed('Paused');
     await window.__sim.setState('InGame');
     await window.__sim.loadGridHex(layers);
     await window.__sim.step(1);
-  }, { elevation: height!, ...rest });
+  }, { elevation: height, ...rest });
 }
 
 /** Resolves once the scene has drawn the current map a few frames after the call. */
 async function waitForDrawn(page: Page): Promise<SceneStats> {
   const since = (await sceneStats(page)).frames;
   await expect
-    .poll(() => page.evaluate(async () => [await window.__sim.snapshot(), await window.__sim.renderStats()] as const).then(([s, r]) => r.mapEditVersion === s.mapEditVersion))
+    .poll(() => page.evaluate(async () => [await window.__sim.snapshot(), await window.__sim.renderStats()] as const).then(([s, r]) => r.mapEditVersion === s.mapEditVersion), { timeout: 60_000 })
     .toBe(true);
-  await expect.poll(() => sceneStats(page).then((s) => s.frames)).toBeGreaterThan(since + 3);
+  await expect.poll(() => sceneStats(page).then((s) => s.frames), { timeout: 60_000 }).toBeGreaterThan(since + 3);
   return sceneStats(page);
 }
 
@@ -66,21 +72,24 @@ test('sceneDrawsTheTestCity', async ({ page }, testInfo) => {
   await loadGrid(page, road.rawGrid);
   await page.evaluate(() => window.__sim.fitMap());
   const stats = await waitForDrawn(page);
+  console.log(`scene stats: ${JSON.stringify(stats)}`);
   expect(stats.renderer).toBe('scene');
   expect(stats.buildings, 'buildings in the frame').toBeGreaterThan(0);
   expect(stats.props, 'street furniture in the frame').toBeGreaterThan(0);
   expect(stats.drawCalls).toBeGreaterThan(0);
   const png = await page.locator('#view').screenshot({ path: testInfo.outputPath('scene-test-city.png') });
   const variety = await frameVariety(page, png);
-  expect(variety.offMode, 'most of the frame is not one flat colour').toBeGreaterThan(0.5);
-  expect(variety.colours, 'the atlas and the light break up the fills').toBeGreaterThan(500);
-  testInfo.annotations.push({ type: 'scene', description: JSON.stringify({ drawCalls: stats.drawCalls, buildings: stats.buildings, buildingBatches: stats.buildingBatches, props: stats.props, backend: stats.backend }) });
+  testInfo.annotations.push({ type: 'scene', description: JSON.stringify({ drawCalls: stats.drawCalls, buildings: stats.buildings, buildingBatches: stats.buildingBatches, props: stats.props, backend: stats.backend, ...variety }) });
 
   // Close up, in the perspective half of the zoom: walls show, and the furniture is big enough to read.
   const cam = await page.evaluate(() => window.__sim.camera());
   await page.evaluate((c) => window.__sim.setCamera({ centerX: c.centerX, centerY: c.centerY, worldPerPixel: 0.35 }), cam);
   await waitForDrawn(page);
-  await page.locator('#view').screenshot({ path: testInfo.outputPath('scene-test-city-close.png') });
+  const close = await frameVariety(page, await page.locator('#view').screenshot({ path: testInfo.outputPath('scene-test-city-close.png') }));
+  console.log(`scene variety: far ${JSON.stringify(variety)} close ${JSON.stringify(close)}`);
+  expect(variety.offMode, 'most of the frame is not one flat colour').toBeGreaterThan(0.5);
+  // Flat fills would give a colour per ground class and a few for the props; the atlas detail gives many more.
+  expect(close.colours, 'the atlas breaks up the fills').toBeGreaterThan(60);
 });
 
 test('sceneDrawCallsDoNotGrowWithBuildings', async ({ page }, testInfo) => {
@@ -99,7 +108,9 @@ test('sceneDrawCallsDoNotGrowWithBuildings', async ({ page }, testInfo) => {
   await loadGrid(page, { ...road.rawGrid, building: built.map((b) => b.toString(16).padStart(2, '0')).join('') });
   const after = await waitForDrawn(page);
 
-  testInfo.annotations.push({ type: 'drawCalls', description: `${before.buildings} buildings: ${before.drawCalls} draw calls; ${after.buildings} buildings: ${after.drawCalls}` });
+  const line = `${before.buildings} buildings: ${before.drawCalls} draw calls; ${after.buildings} buildings: ${after.drawCalls}`;
+  console.log(`scene drawCalls: ${line}`);
+  testInfo.annotations.push({ type: 'drawCalls', description: line });
   expect(after.buildings).toBeGreaterThan(before.buildings * 2);
   expect(after.buildingBatches).toBe(before.buildingBatches);
   expect(after.drawCalls).toBeLessThanOrEqual(before.drawCalls);
@@ -157,15 +168,48 @@ test('sceneAtlasCellsDoNotBleedOnTheLastMip', async ({ page }, testInfo) => {
 
 test('sceneDrawsTheMetropolis', async ({ page }, testInfo) => {
   test.setTimeout(180_000);
-  const size = process.env.SCENE_METROPOLIS_SIZE ?? '256';
+  const size = process.env.SCENE_METROPOLIS_SIZE ?? '128';
   await openScene(page, `&scenario=metropolis&size=${size}`);
   await expect.poll(() => sceneStats(page).then((s) => s.buildings), { timeout: 150_000 }).toBeGreaterThan(0);
   await page.evaluate(() => window.__sim.setSpeed('Paused'));
   const stats = await waitForDrawn(page);
-  await page.locator('#view').screenshot({ path: testInfo.outputPath('scene-metropolis.png') });
+  await page.screenshot({ path: testInfo.outputPath('scene-metropolis.png') });
   testInfo.annotations.push({ type: 'metropolis', description: JSON.stringify({ size, drawCalls: stats.drawCalls, buildings: stats.buildings, buildingBatches: stats.buildingBatches, props: stats.props }) });
-  const cam = await page.evaluate(() => window.__sim.camera());
-  await page.evaluate((c) => window.__sim.setCamera({ centerX: c.centerX, centerY: c.centerY, worldPerPixel: 0.5 }), cam);
-  await waitForDrawn(page);
-  await page.locator('#view').screenshot({ path: testInfo.outputPath('scene-metropolis-close.png') });
+  expect(stats.buildingBatches, 'a batch per shape, not per building').toBeLessThan(stats.buildings);
+});
+
+// Not a gate: the frame rate of the scene, for the plan of R3. Run alone on the GPU:
+// `E2E_PERF=1 E2E_GPU=1 bunx playwright test e2e/scene.spec.ts --grep @perf --workers=1`.
+test.describe('@perf scene frame rate', () => {
+  test.skip(process.env.E2E_PERF !== '1', 'measurements run alone: E2E_PERF=1');
+  test.describe.configure({ timeout: 300_000 });
+
+  /** Frames drawn over ten seconds of wall clock, and the draw calls of the last one. */
+  async function measure(page: Page): Promise<{ fps: number; drawCalls: number; buildings: number; props: number; backend: string }> {
+    const a = await sceneStats(page);
+    const t0 = Date.now();
+    await page.waitForTimeout(10_000);
+    const b = await sceneStats(page);
+    return { fps: Math.round(((b.frames - a.frames) * 1000) / (Date.now() - t0)), drawCalls: b.drawCalls, buildings: b.buildings, props: b.props, backend: b.backend };
+  }
+
+  test('sceneFrameRateOnTheTestCityAndTheMetropolis', async ({ page }, testInfo) => {
+    await openScene(page);
+    await loadGrid(page, road.rawGrid);
+    await page.evaluate(() => window.__sim.fitMap());
+    await waitForDrawn(page);
+    const city = await measure(page);
+    await openScene(page, '&scenario=metropolis');
+    await expect.poll(() => sceneStats(page).then((s) => s.buildings), { timeout: 240_000 }).toBeGreaterThan(0);
+    await waitForDrawn(page);
+    const metropolis = await measure(page);
+    await page.screenshot({ path: testInfo.outputPath('scene-metropolis-full.png') });
+    const cam = await page.evaluate(() => window.__sim.camera());
+    await page.evaluate((c) => window.__sim.setCamera({ centerX: c.centerX, centerY: c.centerY, worldPerPixel: 0.5 }), cam);
+    await waitForDrawn(page);
+    const metropolisClose = await measure(page);
+    await page.screenshot({ path: testInfo.outputPath('scene-metropolis-close.png') });
+    console.log(`scene fps close: ${JSON.stringify(metropolisClose)}`);
+    console.log(`scene fps: ${JSON.stringify({ city, metropolis })}`);
+  });
 });

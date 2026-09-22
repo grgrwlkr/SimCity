@@ -146,7 +146,8 @@ export class SceneRenderer implements Renderer {
 
   static async create(canvas: HTMLCanvasElement): Promise<SceneRenderer> {
     THREE.ColorManagement.enabled = true;
-    const renderer = new THREE.WebGPURenderer({ canvas, antialias: true });
+    // Anti-aliasing goes by `renderSettings.ts` with the rest of the post-processing (R3).
+    const renderer = new THREE.WebGPURenderer({ canvas, antialias: false });
     await renderer.init();
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.NoToneMapping;
