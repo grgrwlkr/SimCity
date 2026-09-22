@@ -203,6 +203,52 @@ test('sceneAtlasCellsDoNotBleedOnTheLastMip', async ({ page }, testInfo) => {
   expect(report.find((r) => r.cell === 'Plain')!.lo, 'white Plain stays white beside grey Asphalt and Water').toBe(255);
 });
 
+// The shader's clamp itself, between two levels: a 90-pixel square with the cell repeated 64 times puts the sampler at
+// lod ≈ 6.5, where it blends levels 6 and 7. On an atlas whose Plain cell alone is white, a clamp by half a texel of the
+// finer level lets the coarser one read a fifth of a texel of black next door: Plain drops below 255 at its edges and
+// its neighbours light up.
+test('sceneAtlasClampHoldsBetweenTwoLevels', async ({ page }, testInfo) => {
+  await openScene(page);
+  const SIDE = 90;
+  const probe = new URL('../packages/render/src/scene/atlasProbe.ts', import.meta.url).pathname;
+  const backend = await page.evaluate(
+    async ({ probe, side }) => {
+      const canvas = document.createElement('canvas');
+      canvas.id = 'atlas-probe';
+      canvas.style.cssText = `position:fixed;left:0;top:0;width:${side * 7}px;height:${side}px;z-index:10`;
+      document.body.append(canvas);
+      const { drawAtlasProbe } = (await import(/* @vite-ignore */ `/@fs${probe}`)) as typeof import('../packages/render/src/scene/atlasProbe');
+      return drawAtlasProbe(canvas, side, 64, 'Plain');
+    },
+    { probe, side: SIDE },
+  );
+  const png = await page.locator('#atlas-probe').screenshot({ path: testInfo.outputPath('atlas-probe-fractional.png') });
+  const red = await page.evaluate(async (b64) => {
+    const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+    const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d')!;
+    ctx.drawImage(bitmap, 0, 0);
+    return { width: bitmap.width, height: bitmap.height, values: Array.from(ctx.getImageData(0, 0, bitmap.width, bitmap.height).data.filter((_, i) => i % 4 === 0)) };
+  }, png.toString('base64'));
+  const scale = red.width / (SIDE * ATLAS_CELLS.length);
+  const report = ATLAS_CELLS.map((cell, i) => {
+    let lo = 255;
+    let hi = 0;
+    for (let y = Math.ceil(scale); y < red.height - Math.ceil(scale); y++) {
+      for (let x = Math.ceil((i * SIDE + 1) * scale); x < Math.floor(((i + 1) * SIDE - 1) * scale); x++) {
+        lo = Math.min(lo, red.values[y * red.width + x]!);
+        hi = Math.max(hi, red.values[y * red.width + x]!);
+      }
+    }
+    return { cell, lo, hi };
+  });
+  testInfo.annotations.push({ type: 'atlas', description: `${backend}: ${JSON.stringify(report)}` });
+  console.log(`atlas fractional: ${backend} ${JSON.stringify(report)}`);
+  for (const r of report) {
+    if (r.cell === 'Plain') expect(r.lo, `Plain stays white: ${JSON.stringify(r)}`).toBe(255);
+    else expect(r.hi, `${r.cell} stays black beside a white Plain: ${JSON.stringify(r)}`).toBeLessThanOrEqual(1);
+  }
+});
+
 test('sceneDrawsTheMetropolis', async ({ page }, testInfo) => {
   test.setTimeout(180_000);
   const size = process.env.SCENE_METROPOLIS_SIZE ?? '128';

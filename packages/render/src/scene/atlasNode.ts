@@ -3,13 +3,13 @@
 // out the same spec object for the same look, so a spec is the cache key and batching survives recolouring.
 import { ceil, clamp, dFdx, dFdy, exp2, float, floor, fract, length, log2, materialColor, max, texture, uv, vec2, vec4 } from 'three/tsl';
 import * as THREE from 'three/webgpu';
-import { ATLAS_GRID, ATLAS_SIZE, IDENTITY_UV, buildAtlasImage } from '../atlas';
+import { ATLAS_GRID, ATLAS_SIZE, IDENTITY_UV, buildAtlasImage, type AtlasImage } from '../atlas';
 import type { MaterialSpec } from '../renderPrimitives';
 import { MAX_CELL_LOD, atlasMipChain } from './atlasTexture';
 
 /** Linear RGBA8, the whole chain given, so nothing is generated on the GPU across cell borders. */
-export function createAtlasTexture(): THREE.DataTexture {
-  const chain = atlasMipChain(buildAtlasImage());
+export function createAtlasTexture(image: AtlasImage = buildAtlasImage()): THREE.DataTexture {
+  const chain = atlasMipChain(image);
   const base = chain[0]!;
   const tex = new THREE.DataTexture(base.data, base.width, base.height, THREE.RGBAFormat, THREE.UnsignedByteType);
   tex.mipmaps = chain.map((level) => ({ data: level.data, width: level.width, height: level.height })) as unknown as typeof tex.mipmaps;
