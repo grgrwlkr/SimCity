@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { frame, step } from '../src/app';
 import { updateCityPopulation } from '../src/buildings/population';
 import { fingerprint } from '../src/fingerprint';
-import { MILESTONES, Milestones, lockedReason, milestoneLine, trackMilestones, unlockPopulation } from '../src/milestones';
+import { MILESTONES, Milestones, lockedReason, milestoneLine, recordGrownPopulation, trackMilestones, unlockPopulation } from '../src/milestones';
 import { buildCity } from '../src/scenarios/cityGen';
 import { MetropolisScenario } from '../src/scenarios/metropolis';
 import { requestState } from '../src/state';
@@ -57,6 +57,23 @@ describe('milestones', () => {
   });
 
   /** A milestone is state: the fingerprint carries it, so two engines cannot drift apart on it. */
+  /**
+   * The one helper every city that opens grown goes through (the city and metropolis scenarios, and `LoadGame` with
+   * P1): the population is recorded, what it opens stays open, and a smaller one never takes it back. Nothing is
+   * announced, then or on the next tick.
+   */
+  it('recordGrownPopulationEarnsMilestonesWithoutAnnouncing', () => {
+    const w = createWorld({ mapWidth: 8, mapHeight: 8 });
+    recordGrownPopulation(w, 1000);
+    recordGrownPopulation(w, 300);
+    expect(w.milestones.bestPopulation, 'the larger of the two, like max(saved, city.population)').toBe(1000);
+    expect(w.milestones.isUnlocked('University')).toBe(true);
+
+    w.city.population = 1000;
+    trackMilestones(w);
+    expect(w.notifications.messages(), 'a city that opens grown announces nothing').toEqual([]);
+  });
+
   it('fingerprintCarriesMilestones', () => {
     const w = createWorld({ mapWidth: 8, mapHeight: 8 });
     const before = fingerprint(w);
