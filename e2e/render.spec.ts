@@ -9,7 +9,7 @@ import { CLASS_COLORS, VEHICLE_COLORS, layoutClass, tileClass, type LayoutClass,
 import { RENDER_CONFIG } from '../packages/render/src/renderConfig';
 import { tileToWorld } from '../packages/sim/src/index';
 const readJson = <T,>(path: string): T => JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8')) as T;
-const road = readJson<RoadFixture>('../packages/sim/src/scenarios/road-routes.json');
+const road = readJson<RoadFixture>('../packages/sim/src/scenarios/testCity.json');
 const laneletFixture = readJson<{ lanelets: unknown[] }>('../packages/sim/test/fixtures/lanelet-routes.json');
 
 interface RoadFixture {

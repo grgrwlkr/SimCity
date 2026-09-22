@@ -1,6 +1,6 @@
 // The test city of rust-final crates/simcity_data/src/game/test_city.rs, frozen as the 128×128 grid its
-// examples/dump_routes.rs dumped (`road-routes.json`, which also carries the route pins of the tests) instead of
-// regenerated. `LoadTestCity` writes it into the running world; `loadTestCity` builds a fresh world with it the
+// examples/dump_routes.rs dumped (`testCity.json`; the route pins of that dump stay with the tests in
+// test/fixtures/road-routes.json) instead of regenerated. `LoadTestCity` writes it into the running world; `loadTestCity` builds a fresh world with it the
 // way the Rust dumps saw it: intersections detected in Update, then one fixed tick builds every graph.
 import { runFixedTick } from '../app';
 import { DEFAULT_PROFILE } from '../buildings/building';
@@ -9,7 +9,7 @@ import { detectIntersections } from '../intersections/index';
 import { MANUAL_BUILDING_FOOTPRINT } from '../map/apply';
 import { tileKey } from '../map/grid';
 import { createWorld, type World } from '../world';
-import fixture from './road-routes.json' with { type: 'json' };
+import fixture from './testCity.json' with { type: 'json' };
 
 const LAYER_ORDER = [
   'height',

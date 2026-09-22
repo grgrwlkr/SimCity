@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { TrafficOccupancy } from '../../src/traffic/occupancy';
 import { PathCache, findRoadPathCached, type PathfindingCtx } from '../../src/transport/pathfinding';
-import fixture from '../../src/scenarios/road-routes.json';
+import fixture from '../fixtures/road-routes.json';
 import { hex, loadTestCity } from '../testCity';
 
 describe('road A* route pins on the test city', () => {
