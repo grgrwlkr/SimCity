@@ -1,9 +1,11 @@
 // Port of `apply_game_commands_to_grid` and `apply_history_entry` (crates/simcity_sim/src/game/map/
-// commands.rs) for roads, zones, building placement, erase and map generation. Traffic lights are read
-// by their own system; saves and the test city arrive with stage 6.
+// commands.rs) for roads, zones, building placement, erase and map generation, plus `handle_load_test_city`.
+// Traffic lights are read by their own system; saves arrive with stage 6b.
 import { DEFAULT_PROFILE, buildCost, cloneBuilding, footprintTiles, type Building } from '../buildings/building';
 import { spawnBuilding } from '../buildings/spawn';
 import type { BuildingKind, GameCommand, RoadCell, RoadDir, TilePos, ZoneDensity, ZoneKind } from '../commands';
+import { TEST_CITY_MONEY, spawnTestCityServices, writeTestCity } from '../scenarios/testCity';
+import { seedDemoBusRoute } from '../transit/buses';
 import type { World } from '../world';
 import type { MapGrid } from './grid';
 import { bumpVersion } from './dirty';
@@ -218,6 +220,31 @@ function applyGenerateMap(w: World, seed: bigint): void {
   bumpGraph(w);
 }
 
+/**
+ * `handle_load_test_city` (rust-final crates/simcity_data/src/game/mod.rs:67): the test city replaces the map, and
+ * with it what was recorded against the old one. The dump is 128×128; a map of another size is left alone.
+ */
+function applyLoadTestCity(w: World): void {
+  if (!writeTestCity(w)) return;
+  w.city.money = TEST_CITY_MONEY;
+  w.city.day = 1;
+  w.city.population = 0;
+  w.budget.restart(w.city.money);
+  spawnTestCityServices(w);
+  w.history.clear();
+  w.pollution.resetValues();
+  w.landValue.resetValues();
+  w.cityFields.resetValues();
+  w.milestones.reset();
+  w.busRoutes.reset();
+  seedDemoBusRoute(w.grid, w.busRoutes);
+  w.pendingEvents.dayAdvanced.push(w.city.day);
+  w.dirty.markAll();
+  w.roadDirty.markAll();
+  bumpMapEdit(w);
+  bumpGraph(w);
+}
+
 /** Exact restore of a road cell: bypasses the build rules, keeps every side effect. */
 function restoreRoadCell(w: World, pos: TilePos, road: RoadCell): void {
   const idx = w.grid.idx(pos);
@@ -324,10 +351,15 @@ export function applyGameCommandsToGrid(w: World, commands: readonly GameCommand
       case 'PlaceBuilding':
         applyPlaceBuilding(w, cmd.pos, cmd.building);
         break;
+      case 'LoadTestCity':
+        applyLoadTestCity(w);
+        break;
+      // Saves arrive with unit P1 (stage 6b) of docs/plans/2026-09-15-web-remaining-work.md.
       case 'DumpSaveContract':
       case 'SaveGame':
       case 'LoadGame':
-      case 'LoadTestCity':
+        break;
+      // Read by `handleTrafficLightCommands` (traffic/lights.ts), the next system of COMMAND_APPLY.
       case 'PlaceTrafficLight':
       case 'RemoveTrafficLight':
         break;
