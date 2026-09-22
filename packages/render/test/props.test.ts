@@ -1,9 +1,7 @@
-// Port of the `props_placement` tests of crates/simcity_sim/src/game/map/tests.rs (tag rust-final), plus a check that
-// the constants of `props.ts` still say what assets/config/props.ron says. Placement is a pure function of the grid
-// and the map seed: a roll that drifted between runs would be a save-load difference nobody sees until the city
-// reloads wrong.
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+// Port of the `props_placement` tests of crates/simcity_sim/src/game/map/tests.rs (tag rust-final), plus a pin of the
+// constants of `props.ts` at the values the game shipped with (rust-final:assets/config/props.ron). Placement is a pure
+// function of the grid and the map seed: a roll that drifted between runs would be a save-load difference nobody sees
+// until the city reloads wrong.
 import type { MapLayersReply } from '@simcity/bridge';
 import { describe, expect, it } from 'vitest';
 import { SIGN_NIGHT_EMISSIVE } from '../src/renderConfig';
@@ -34,46 +32,15 @@ function roadRow(len: number): PropGrid {
   return { width, height, layers };
 }
 
-type Scalar = number | boolean | string;
-
-/** The RON subset of the config files, as renderConfig.test.ts reads them: nested unnamed structs of `name: value`. */
-function readRon(file: string): Map<string, Scalar> {
-  const text = readFileSync(join(import.meta.dirname, '../../../assets/config', file), 'utf8').replace(/\/\/.*$/gm, '');
-  const tokens = text.match(/[():,]|[A-Za-z_]\w*|-?\d+(?:\.\d+)?/g) ?? [];
-  let at = 0;
-  const out = new Map<string, Scalar>();
-  const next = () => tokens[at++] ?? '';
-  const struct = (prefix: string) => {
-    expect(next()).toBe('(');
-    while (tokens[at] !== ')') {
-      const name = next();
-      expect(next(), `':' after ${prefix}${name}`).toBe(':');
-      if (tokens[at] === '(') struct(`${prefix}${name}.`);
-      else {
-        const raw = next();
-        out.set(`${prefix}${name}`, raw === 'true' ? true : raw === 'false' ? false : /^-?\d/.test(raw) ? Number(raw) : raw);
-      }
-      if (tokens[at] === ',') at++;
-    }
-    next();
-  };
-  struct('');
-  return out;
-}
-
-/** The config as `snake_case.path → value`, the names the .ron file uses. */
-function flatten(value: object, prefix = '', out = new Map<string, Scalar>()): Map<string, Scalar> {
-  for (const [key, v] of Object.entries(value)) {
-    const name = prefix + key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
-    if (typeof v === 'object' && v !== null) flatten(v as object, `${name}.`, out);
-    else out.set(name, v as Scalar);
-  }
-  return out;
-}
-
 describe('props config', () => {
-  it('propsConfigIsPropsRon', () => {
-    expect(flatten(PROPS_CONFIG)).toEqual(readRon('props.ron'));
+  it('propsConfigPinsTheShippedFurniture', () => {
+    expect(PROPS_CONFIG).toEqual({
+      streetlight: { enabled: true, spacingTiles: 4, poleHeight: 9, armLength: 2.5, kerbOffset: 6, wires: true, wireSag: 1.4 },
+      sign: { enabled: true, chancePercent: 45, width: 5, height: 1.8, mountHeight: 7, nightEmissive: 2.8 },
+      bin: { enabled: true, chancePercent: 30 },
+      awning: { enabled: true, chancePercent: 40 },
+      parkedCar: { enabled: true, chancePercent: 28 },
+    });
   });
 
   it('signNightEmissiveAgreesWithRenderConfig', () => {
@@ -169,6 +136,22 @@ describe('props wiring and visibility', () => {
     expect(wirePartner(grid, 2, 2, cfg)).toEqual({ x: 6, y: 2 });
     // The last lamp of the run has nothing to string towards: the road ends at x = 15 and the map at y = 4.
     expect(wirePartner(grid, 14, 2, cfg)).toBeNull();
+  });
+
+  it('aWireRunsDownAVerticalStreetToo', () => {
+    // A two-lane road down `x = 2` of a 5 by `len + 4` map: the same road as `roadRow`, turned.
+    const len = 16;
+    const width = 5;
+    const height = len + 4;
+    const layers = { water: new Uint8Array(width * height), roadKind: new Uint8Array(width * height) };
+    for (let y = 0; y < len; y++) layers.roadKind[y * width + 2] = 1;
+    const grid: PropGrid = { width, height, layers };
+    // Lamps sit at y = 2, 6, 10, 14; the step along x lands off the map, so only the step along y can find the wire.
+    expect(kerbSide(grid, 2, 2)).toEqual({ x: 1, y: 0 });
+    expect(wirePartner(grid, 2, 2, cfg)).toEqual({ x: 2, y: 6 });
+    expect(wirePartner(grid, 2, 10, cfg)).toEqual({ x: 2, y: 14 });
+    // The last lamp: the road ends at y = 15.
+    expect(wirePartner(grid, 2, 14, cfg)).toBeNull();
   });
 
   it('switchingWiresOffLeavesTheLampsUnstrung', () => {
