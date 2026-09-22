@@ -81,10 +81,15 @@ test('hudBarScreenshotsOverLightAndDarkMap', async ({ page }, testInfo) => {
   await expect(page.getByTestId('population')).toHaveText(/^Население \d/);
   await page.evaluate(() => window.__sim.setSpeed('Paused'));
   const dir = process.env.HUD_SHOTS_DIR;
-  for (const [name, worldPerPixel] of [['hud-dark', 64], ['hud-light', 0.05]] as const) {
-    await page.evaluate((wpp) => window.__sim.setCamera({ worldPerPixel: wpp }), worldPerPixel);
+  // Dark: downtown streets by the boulevard (asphalt, as render.spec's living-x1-downtown); light: a close-up of pale tiles.
+  const views = [
+    ['hud-dark', { centerX: -24, centerY: -24, worldPerPixel: 0.5 }],
+    ['hud-light', { worldPerPixel: 0.05 }],
+  ] as const;
+  for (const [name, view] of views) {
+    await page.evaluate((v) => window.__sim.setCamera(v), view);
     await page.waitForTimeout(400);
     const path = dir === undefined ? testInfo.outputPath(`${name}.png`) : `${dir}/${name}.png`;
-    await page.screenshot({ path, clip: { x: 0, y: 0, width: 1280, height: 120 } });
+    await page.screenshot({ path, clip: { x: 0, y: 0, width: 1280, height: 200 } });
   }
 });
