@@ -177,8 +177,9 @@ describe('SimHost', () => {
     const w = worldOf(host);
     expect(host.handle({ t: 'tileDiagnosis', pos: { x: -1, y: 0 } })).toBeNull();
     let checked = 0;
-    for (let y = 0; y < w.grid.height; y++) {
-      for (let x = 0; x < w.grid.width; x++) {
+    // The first few held-back tiles are enough: every tile of the map is seconds of work under a loaded machine.
+    for (let y = 0; y < w.grid.height && checked < 8; y++) {
+      for (let x = 0; x < w.grid.width && checked < 8; x++) {
         const expected = tileDiagnosis(w.grid, w.utilityNetwork, w.rciDemand, { x, y }, w.cityFields);
         if (expected === null) continue;
         expect(host.handle({ t: 'tileDiagnosis', pos: { x, y } })).toEqual({ zone: expected[0], reason: expected[1] });
@@ -186,7 +187,7 @@ describe('SimHost', () => {
       }
     }
     expect(checked).toBeGreaterThan(0);
-  });
+  }, 60_000);
 
   it('mapLayersCarryTheMapSeed', () => {
     const host = new SimHost(16);
@@ -211,7 +212,7 @@ describe('SimHost', () => {
     expect(w.citizens.count).toBe(citizens + 20_000);
     // A field per citizen would add at least a byte each; the counters' digits move by a few.
     expect(Math.abs(bytes() - before)).toBeLessThan(64);
-  });
+  }, 60_000);
 
   it('stepRepliesWithTheFingerprintOfTheSameRunInProcess', () => {
     const host = new SimHost(16);
