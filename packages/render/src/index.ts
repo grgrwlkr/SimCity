@@ -20,3 +20,5 @@ export * from './toolPreview';
 export * from './serviceGlyphs';
 export * from './serviceVehicles';
 export * from './emergencyMarkers';
+export * from './scene/renderer';
+export * from './scene/sceneRenderer';

@@ -1,7 +1,7 @@
 // Gamepad input: the Gamepad API polled once a frame and mapped onto the commands the keyboard, the
 // mouse and the HUD already send. Nothing runs until a pad connects.
 import type { SimSpeed } from '@simcity/bridge';
-import type { DebugRenderer, OrthoView } from '@simcity/render';
+import type { OrthoView, Renderer } from '@simcity/render';
 import type { AppState } from '@simcity/sim';
 import type { SimApi } from './simApi';
 
@@ -111,7 +111,7 @@ export function applyCameraAction(view: OrthoView, action: PadAction): void {
 }
 
 export interface GamepadTarget {
-  readonly renderer: Promise<DebugRenderer>;
+  readonly renderer: Promise<Renderer>;
   readonly api: Pick<SimApi, 'setState' | 'setSpeed' | 'fitMap'>;
   readonly context: () => PadContext | null;
 }

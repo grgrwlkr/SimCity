@@ -1,8 +1,8 @@
 // Mouse on the debug view: drag pans, the wheel zooms around the cursor, hovering picks a tile.
 import type { MapConfig } from '@simcity/sim';
-import type { DebugRenderer } from './debugRenderer';
+import type { Renderer } from './scene/renderer';
 
-export function installViewControls(canvas: HTMLCanvasElement, r: DebugRenderer, mapConfig: () => MapConfig | null): () => void {
+export function installViewControls(canvas: HTMLCanvasElement, r: Renderer, mapConfig: () => MapConfig | null): () => void {
   let drag: { x: number; y: number } | null = null;
 
   const onDown = (e: PointerEvent) => {
