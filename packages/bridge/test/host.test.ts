@@ -6,9 +6,12 @@ import {
   fingerprint,
   frame,
   linkRoomMeters,
+  monthlyPayment,
+  newCitizen,
   requestState,
   rngProbeDigest,
   step,
+  tileDiagnosis,
   toHex64,
   type World,
 } from '@simcity/sim';
@@ -19,6 +22,8 @@ import { GRID_LAYER_NAMES, type GridLayers } from '../src/protocol';
 import { BUS_KIND, FIRE_KIND, PARKED_TRUCK_KIND, PARKED_VEHICLE_KIND, PEDESTRIAN_KIND, RenderReader, TRUCK_KIND } from '../src/renderBuffer';
 import { SAMPLE_CARS } from '../src/sample';
 import { SCENARIOS } from '../src/scenarios';
+
+const worldOf = (host: SimHost): World => (host as unknown as { world: World }).world;
 
 describe('SimHost', () => {
   // Stage 4: the HUD and the markers read the services from the snapshot; the frame draws the city's vehicles in their kinds.
@@ -39,6 +44,174 @@ describe('SimHost', () => {
     const kinds = new Set(frame.kind.subarray(0, frame.count));
     expect([kinds.has(FIRE_KIND), kinds.has(BUS_KIND)], 'drawn as a fire engine and a bus').toEqual([true, true]);
   }, 60_000);
+
+  // U0: the HUD's panels read the economy, the feed and the city's progress from the snapshot.
+  it('snapshotCarriesTheBudgetOfThisMonthAndTheLast', () => {
+    const host = new SimHost(16);
+    const w = worldOf(host);
+    const m0 = w.city.money;
+    w.budget.restart(m0);
+    w.budget.post('ResidentialTax', 120, w.city);
+    w.budget.post('ServiceMaintenance', -20, w.city);
+    // A month of one day closes on the first.
+    w.budget.endOfDay(1, w.city);
+    w.budget.post('RoadMaintenance', -7, w.city);
+    w.budget.daysElapsed = 3;
+    const { budget } = host.handle({ t: 'snapshot' });
+    expect(budget.last).toEqual({
+      month: 0,
+      moneyStart: m0,
+      moneyEnd: m0 + 100,
+      lines: [
+        { item: 'ResidentialTax', amount: 120 },
+        { item: 'ServiceMaintenance', amount: -20 },
+      ],
+    });
+    expect(budget.current).toEqual({ month: 1, moneyStart: m0 + 100, moneyEnd: m0 + 93, lines: [{ item: 'RoadMaintenance', amount: -7 }] });
+    expect(budget.daysElapsed).toBe(3);
+    expect(budget.daysPerMonth).toBe(w.economyConfig.daysPerMonth);
+  });
+
+  it('snapshotCarriesTaxRatesFundingAndLoans', () => {
+    const host = new SimHost(16);
+    const w = worldOf(host);
+    w.taxRates.set('Commercial', 'High', 14);
+    w.serviceFunding.set('Police', 80);
+    expect(w.loans.take(25_000, w.budget, w.city)).toBeUndefined();
+    const s = host.handle({ t: 'snapshot' });
+    expect(s.taxRates).toEqual({
+      Residential: { Low: 9, Middle: 9, High: 9 },
+      Commercial: { Low: 9, Middle: 9, High: 14 },
+      Industrial: { Low: 9, Middle: 9, High: 9 },
+    });
+    expect(s.serviceFunding).toEqual({ Fire: 100, Police: 80, Medical: 100 });
+    expect(s.loans).toEqual([{ principal: 25_000, monthlyPayment: monthlyPayment(25_000), monthsLeft: 12 }]);
+    // Copies: nothing the HUD holds writes back into the world.
+    (s.taxRates.Commercial as Record<string, number>).High = 0;
+    (s.serviceFunding as Record<string, number>).Police = 0;
+    expect(w.taxRates.get('Commercial', 'High')).toBe(14);
+    expect(w.serviceFunding.get('Police')).toBe(80);
+  });
+
+  it('snapshotCarriesTheToastsOnScreenAndTheFeedHistory', () => {
+    const host = new SimHost(16);
+    const w = worldOf(host);
+    w.notifications.add('Road built', 'Info', 4);
+    w.notifications.add('Road built', 'Info', 4);
+    w.notifications.addAt('Fire!', 'Warning', 8, { x: 3, y: 4 });
+    const before = host.handle({ t: 'fingerprint' }).fingerprint;
+    const first = host.snapshot(1_000);
+    expect(first.toasts.map((t) => [t.text, t.kind, t.count, t.at])).toEqual([
+      ['Road built', 'Info', 2, null],
+      ['Fire!', 'Warning', 1, { x: 3, y: 4 }],
+    ]);
+    expect(first.history).toEqual([
+      { day: 0, text: 'Road built', kind: 'Info', count: 2 },
+      { day: 0, text: 'Fire!', kind: 'Warning', count: 1 },
+    ]);
+    // Six real seconds on, the four-second toast has retired; the history keeps both lines.
+    const later = host.snapshot(7_000);
+    expect(later.toasts.map((t) => t.text)).toEqual(['Fire!']);
+    expect(later.history).toHaveLength(2);
+    // The screen's memory is the host's: the world and its fingerprint never see the wall clock.
+    expect(host.handle({ t: 'fingerprint' }).fingerprint).toBe(before);
+    // A history line handed out is a copy: a later repeat does not change what the HUD already holds.
+    w.notifications.add('Fire!', 'Warning', 8);
+    expect(later.history[1]!.count).toBe(1);
+  });
+
+  it('updateReportsAToastRetiringWhileTheWorldStandsStill', () => {
+    const host = new SimHost(16);
+    worldOf(host).notifications.add('Hello', 'Info', 2);
+    expect(host.update(0)?.toasts.map((t) => t.text)).toEqual(['Hello']);
+    expect(host.update(1_000)).toBeNull();
+    expect(host.update(3_000)?.toasts).toEqual([]);
+    expect(host.update(4_000)).toBeNull();
+  });
+
+  it('snapshotCarriesTheMilestoneReachedAndTheNextOne', () => {
+    const host = new SimHost(16);
+    const w = worldOf(host);
+    expect(host.handle({ t: 'snapshot' }).milestones).toEqual({ bestPopulation: 0, next: { population: 250, unlocks: 'School' } });
+    w.milestones.reach(300);
+    expect(host.handle({ t: 'snapshot' }).milestones).toEqual({ bestPopulation: 300, next: { population: 1000, unlocks: 'University' } });
+    w.milestones.reach(1000);
+    expect(host.handle({ t: 'snapshot' }).milestones).toEqual({ bestPopulation: 1000, next: null });
+  });
+
+  it('snapshotHasTheAdvisorsProblemsAndNoTileDiagnosis', () => {
+    const s = new SimHost(16).handle({ t: 'snapshot' });
+    // The advisor is S3's: the field is there, empty until it is ported.
+    expect(s.advisor).toEqual([]);
+    expect(Object.keys(s).sort()).toEqual(
+      [
+        'tick',
+        'appState',
+        'speed',
+        'realRate',
+        'errors',
+        'mapSeed',
+        'city',
+        'mapEditVersion',
+        'graphVersion',
+        'lights',
+        'traffic',
+        'services',
+        'budget',
+        'taxRates',
+        'serviceFunding',
+        'loans',
+        'toasts',
+        'history',
+        'milestones',
+        'advisor',
+      ].sort(),
+    );
+  });
+
+  it('tileDiagnosisComesOnRequest', () => {
+    const host = new SimHost(RENDER_CAPACITY);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'scenario', name: 'livingCity' });
+    host.handle({ t: 'step', ticks: 10 });
+    const w = worldOf(host);
+    expect(host.handle({ t: 'tileDiagnosis', pos: { x: -1, y: 0 } })).toBeNull();
+    let checked = 0;
+    for (let y = 0; y < w.grid.height; y++) {
+      for (let x = 0; x < w.grid.width; x++) {
+        const expected = tileDiagnosis(w.grid, w.utilityNetwork, w.rciDemand, { x, y }, w.cityFields);
+        if (expected === null) continue;
+        expect(host.handle({ t: 'tileDiagnosis', pos: { x, y } })).toEqual({ zone: expected[0], reason: expected[1] });
+        checked += 1;
+      }
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
+
+  it('mapLayersCarryTheMapSeed', () => {
+    const host = new SimHost(16);
+    const w = worldOf(host);
+    expect(host.handle({ t: 'mapLayers' }).mapSeed).toBe(w.mapSeed.toString());
+    w.mapSeed = 0xffff_ffff_ffff_fff1n;
+    expect(host.handle({ t: 'mapLayers' }).mapSeed).toBe('18446744073709551601');
+  });
+
+  it('theSnapshotDoesNotGrowWithTheCitizens', () => {
+    const host = new SimHost(RENDER_CAPACITY);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'scenario', name: 'livingCity' });
+    host.handle({ t: 'step', ticks: 30 });
+    const w = worldOf(host);
+    const bytes = () => JSON.stringify(host.handle({ t: 'snapshot' })).length;
+    const before = bytes();
+    const homes = w.buildings.all().filter((b) => b.kind === 'Residential');
+    for (const b of homes) b.capacityResidents += 1_000;
+    const citizens = w.citizens.count;
+    for (let i = 0; i < 20_000; i++) w.citizens.add(newCitizen(homes[i % homes.length]!));
+    expect(w.citizens.count).toBe(citizens + 20_000);
+    // A field per citizen would add at least a byte each; the counters' digits move by a few.
+    expect(Math.abs(bytes() - before)).toBeLessThan(64);
+  });
 
   it('stepRepliesWithTheFingerprintOfTheSameRunInProcess', () => {
     const host = new SimHost(16);
