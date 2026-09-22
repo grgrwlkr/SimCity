@@ -32,7 +32,7 @@ export interface PathfindingConfig {
   regionPad: number;
 }
 
-/** `PathfindingConfig::default()` (and assets/config/pathfinding.ron). */
+/** `PathfindingConfig::default()`. */
 export function defaultPathfindingConfig(): PathfindingConfig {
   return {
     cacheCapacity: 4096,

@@ -1,4 +1,4 @@
-// Port of crates/simcity_sim/src/game/traffic/config.rs (`TrafficConfig`, defaults = assets/config/traffic.ron).
+// Port of crates/simcity_sim/src/game/traffic/config.rs (`TrafficConfig`; the defaults are the shipped values).
 // Float fields are f32 in Rust and stored rounded to f32 here.
 const f32 = Math.fround;
 
