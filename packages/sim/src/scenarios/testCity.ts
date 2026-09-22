@@ -9,7 +9,7 @@ import { detectIntersections } from '../intersections/index';
 import { MANUAL_BUILDING_FOOTPRINT } from '../map/apply';
 import { tileKey } from '../map/grid';
 import { createWorld, type World } from '../world';
-import fixture from './road-routes.json';
+import fixture from './road-routes.json' with { type: 'json' };
 
 const LAYER_ORDER = [
   'height',
