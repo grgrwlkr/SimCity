@@ -33,7 +33,7 @@ bun tools/metropolis-day.ts [size] [hourSeconds] [hours]   # сутки часо
 
 - `packages/sim` (`@simcity/sim`) — вся симуляция: без DOM, часов и хоста. Время приходит как `dtNs`, случайность только из `StdRng` (`rng.ts`, бит-в-бит порт `rand 0.10.1`). Мир — `World` в `world.ts`: слои тайлов, машины, жители и регион в типизированных массивах плюс ресурсы.
 - `packages/bridge` — воркер (`worker.ts`), `SimHost` (`host.ts`: обработка запросов, сборка кадра), `FixedStepDriver` (`driver.ts`), протокол (`protocol.ts`), render-SAB с двойным буфером (`renderBuffer.ts`), список сценариев меню (`scenarios.ts`).
-- `packages/render` — `debugRenderer.ts` на `THREE.WebGPURenderer` (в headless Chromium Playwright рисует через WebGL2), камера, чанки карты, интерполяция через `PlaybackClock`, загрузка участков; чистая математика этапа 5 без сцены: `atlas`, `renderPrimitives`, `dayNight`, `cameraProjection`, `renderSettings`, `vignette`, `overlayRepaint`, `toolPreview`, константы `render.ron` и `day_night.ron` в `renderConfig.ts`.
+- `packages/render` — `debugRenderer.ts` на `THREE.WebGPURenderer` (в headless Chromium Playwright рисует через WebGL2), камера, чанки карты, интерполяция через `PlaybackClock`, загрузка участков; чистая математика этапа 5 без сцены: `atlas`, `renderPrimitives`, `dayNight`, `cameraProjection`, `renderSettings`, `vignette`, `overlayRepaint`, `toolPreview`, константы вида и ночи `RENDER_CONFIG` и `DAY_NIGHT_CONFIG` в `renderConfig.ts`.
 - `packages/ui` — HUD на React (`Hud.tsx`) и zustand-стор снимка (`store.ts`).
 - `packages/app` — точка входа Vite (`main.tsx`), `window.__sim` (`simApi.ts`). Dev-сервер отдаёт COOP/COEP: без них нет `SharedArrayBuffer`.
 - `tools/` — `bench.ts`, `metropolis-day.ts`, `desktop-dev.ts` (обёртка `desktop:dev`). `e2e/` — Playwright-спеки.
@@ -91,7 +91,7 @@ bun tools/metropolis-day.ts [size] [hourSeconds] [hours]   # сутки часо
 
 ## Rust + Bevy — только в истории
 
-Rust + Bevy удалены из дерева 2026-09-15. Реализация, её тесты, генераторы фикстур и документы Rust-эпохи читаются из тега `rust-final` (= `edad8fb`): `git show rust-final:<path>`, `git grep <pattern> rust-final`. Ничего из них не собирается и в дерево не возвращается. Пути `crates/...` в комментариях `packages/**` и в планах этапов — ссылки на этот тег; инварианты перекрёстков — `git show rust-final:docs/architecture.md`, раздел «Intersection Traffic Invariants (STRICT)». `assets/` остался в дереве: константы порта ссылаются на `assets/config/*.ron`, часть тестов читает эти файлы напрямую.
+Rust + Bevy удалены из дерева 2026-09-15. Реализация, её тесты, генераторы фикстур и документы Rust-эпохи читаются из тега `rust-final` (= `edad8fb`): `git show rust-final:<path>`, `git grep <pattern> rust-final`. Ничего из них не собирается и в дерево не возвращается. Пути `crates/...` в комментариях `packages/**` и в планах этапов — ссылки на этот тег; инварианты перекрёстков — `git show rust-final:docs/architecture.md`, раздел «Intersection Traffic Invariants (STRICT)». Каталога `assets/` в дереве нет: значения `assets/config/*.ron`, которыми пользуется порт, живут константами TS под пинами тестов, пресеты `assets/scenarios/scenarios.ron` — в `packages/sim/src/scenarios/catalogData.ts`; сами файлы читаются из `rust-final`.
 
 ## Conventions
 
