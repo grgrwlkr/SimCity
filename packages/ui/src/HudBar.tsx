@@ -1,4 +1,5 @@
 import type { ServicesView, SimSpeed, TrafficView, WorldSnapshot } from '@simcity/bridge';
+import type { AppState, City } from '@simcity/sim';
 import type { PointerEvent, WheelEvent } from 'react';
 import type { HudActions } from './Hud';
 
@@ -24,6 +25,13 @@ const count = new Intl.NumberFormat('ru-RU');
 export function formatMoney(value: number): string {
   const digits = String(Math.abs(Math.trunc(value))).replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0');
   return `${value < 0 ? '-' : ''}$${digits}`;
+}
+
+/** The window title speaks to the player: no engine name, no tool in debug formatting (`update_window_title`, window_title.rs). */
+export function windowTitle(appState: AppState, city: Pick<City, 'day' | 'money' | 'population'>): string {
+  const status = `День ${city.day} — ${formatMoney(city.money)} — Население ${count.format(city.population)}`;
+  if (appState === 'MainMenu') return 'SimCity';
+  return appState === 'Paused' ? `SimCity — Пауза — ${status}` : `SimCity — ${status}`;
 }
 
 /** A press or a wheel on a panel is the panel's: it never reaches the map (`PointerOverGameUi`, hud/pointer.rs). */

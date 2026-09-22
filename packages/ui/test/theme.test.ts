@@ -37,12 +37,18 @@ describe('HUD theme', () => {
   it('uiShellBodyTextIsReadableOnGlassOverAnyWorld', () => {
     for (const [name, backdrop] of BACKDROPS) {
       expect(ratioOnGlass(HUD_COLORS.ink, backdrop), `ink over ${name}`).toBeGreaterThanOrEqual(4.5);
+    }
+    // The numbers of contrast.md, «Текст на --hud-glass»: the sunlit gate row and the night edge.
+    expect(ratioOnGlass(HUD_COLORS.ink, MAP_BACKDROPS.sunlit)).toBeCloseTo(11.1, 2);
+    expect(ratioOnGlass(HUD_COLORS.ink, MAP_BACKDROPS.night)).toBeCloseTo(17.04, 2);
+  });
+
+  it('uiShellMutedTextStaysReadableOnGlassOverAnyWorld', () => {
+    // Rust asked 3:1 of muted text; contrast.md raises it to AA 4.5:1, which it holds everywhere.
+    for (const [name, backdrop] of BACKDROPS) {
       expect(ratioOnGlass(HUD_COLORS.inkMuted, backdrop), `ink-muted over ${name}`).toBeGreaterThanOrEqual(4.5);
     }
-    // The numbers of contrast.md, «Текст на --hud-glass»: the sunlit gate row and the white edge.
-    expect(ratioOnGlass(HUD_COLORS.ink, MAP_BACKDROPS.sunlit)).toBeCloseTo(11.1, 2);
     expect(ratioOnGlass(HUD_COLORS.inkMuted, MAP_BACKDROPS.sunlit)).toBeCloseTo(6.22, 2);
-    expect(ratioOnGlass(HUD_COLORS.ink, MAP_BACKDROPS.night)).toBeCloseTo(17.04, 2);
     expect(ratioOnGlass(HUD_COLORS.inkMuted, MAP_BACKDROPS.white)).toBeCloseTo(5.1, 2);
   });
 

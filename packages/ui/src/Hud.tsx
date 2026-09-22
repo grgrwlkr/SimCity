@@ -1,7 +1,7 @@
 import { SCENARIOS, type Scenario, type SimSpeed } from '@simcity/bridge';
 import type { AppState } from '@simcity/sim';
 import { useEffect } from 'react';
-import { HudBar } from './HudBar';
+import { HudBar, windowTitle } from './HudBar';
 import { useSimStore } from './store';
 
 export interface HudActions {
@@ -40,6 +40,10 @@ export function Hud({ actions, debug = debugFlag() }: { actions: HudActions; deb
   const snapshot = useSimStore((s) => s.snapshot);
   const fps = useSimStore((s) => s.fps);
   useStateHotkeys(snapshot?.appState, actions);
+  const title = snapshot === null ? null : windowTitle(snapshot.appState, snapshot.city);
+  useEffect(() => {
+    if (title !== null && document.title !== title) document.title = title;
+  }, [title]);
 
   if (snapshot === null) {
     return <p className="hud-status">Запуск симуляции…</p>;
