@@ -4,6 +4,7 @@
 import { DEFAULT_PROFILE, buildCost, cloneBuilding, footprintTiles, type Building } from '../buildings/building';
 import { spawnBuilding } from '../buildings/spawn';
 import type { BuildingKind, GameCommand, RoadCell, RoadDir, TilePos, ZoneDensity, ZoneKind } from '../commands';
+import { fleetTripId } from '../fleet';
 import { TEST_CITY_MONEY, spawnTestCityServices, writeTestCity } from '../scenarios/testCity';
 import { seedDemoBusRoute } from '../transit/buses';
 import type { World } from '../world';
@@ -201,6 +202,18 @@ function applyEraseTile(w: World, pos: TilePos): void {
   clearTile(w, idx);
 }
 
+/**
+ * The routes ran over the old roads: they go, and their buses with them (rust-final mod.rs:121-135). A surviving bus
+ * would keep a stale-map leg and, its route id matching the rewound counter, keep a new route 0 from getting a bus.
+ * Legs still waiting to join meso traffic go here; one already on a link ends when the new graph resets the links.
+ */
+function resetBusRoutes(w: World): void {
+  const legs = new Set(w.fleet.buses.map((bus) => fleetTripId(bus.id)));
+  if (legs.size > 0) w.mesoTraffic.pending = w.mesoTraffic.pending.filter((trip) => !legs.has(trip.citizen));
+  w.fleet.buses = [];
+  w.busRoutes.reset();
+}
+
 function applyGenerateMap(w: World, seed: bigint): void {
   w.mapSeed = BigInt.asUintN(64, seed);
   generateMapIntoGrid(w.grid, w.mapSeed);
@@ -210,8 +223,7 @@ function applyGenerateMap(w: World, seed: bigint): void {
   w.pollution.resetValues();
   w.landValue.resetValues();
   w.cityFields.resetValues();
-  // The routes ran over the old roads; their buses go with them.
-  w.busRoutes.reset();
+  resetBusRoutes(w);
   // A new map is a new city: it earns its milestones again.
   w.milestones.reset();
   w.dirty.markAll();
@@ -236,7 +248,7 @@ function applyLoadTestCity(w: World): void {
   w.landValue.resetValues();
   w.cityFields.resetValues();
   w.milestones.reset();
-  w.busRoutes.reset();
+  resetBusRoutes(w);
   seedDemoBusRoute(w.grid, w.busRoutes);
   w.pendingEvents.dayAdvanced.push(w.city.day);
   w.dirty.markAll();

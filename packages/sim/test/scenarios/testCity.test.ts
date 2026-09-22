@@ -6,6 +6,8 @@ import { describe, expect, it } from 'vitest';
 import { frame, step } from '../../src/app';
 import { blockHas } from '../../src/buildings/blockers';
 import type { TilePos } from '../../src/commands';
+import { fleetTripId } from '../../src/fleet';
+import { NO_LINK } from '../../src/meso/graph';
 import { applyGameCommandsToGrid } from '../../src/map/apply';
 import { MAX_ZONE_DEPTH, isWithinZoneDepth } from '../../src/map/zonePlacement';
 import { TEST_CITY_MONEY, loadTestCity } from '../../src/scenarios/testCity';
@@ -29,6 +31,15 @@ function headlessTestCity(): World {
   // The command applies at the end of the first frame; the fixed tick of the second builds the graphs.
   step(w, 2);
   return w;
+}
+
+/** Where a leg of bus `id` still is: waiting to join meso traffic, or on a link. */
+function legsOf(w: World, id: number): string[] {
+  const m = w.mesoTraffic;
+  const trip = fleetTripId(id);
+  const legs = m.pending.filter((leg) => leg.citizen === trip).map(() => 'pending');
+  for (let car = 0; car < m.highWater; car++) if (m.link[car] !== NO_LINK && m.citizen[car] === trip) legs.push(`link ${m.link[car]}`);
+  return legs;
 }
 
 function allTiles(w: World): TilePos[] {
@@ -138,6 +149,48 @@ describe('test city', () => {
     }
     expect({ targets: targets.size >= 4, dwelled }, `bus never toured: distinct targets ${[...targets].join(',')}`).toEqual({ targets: true, dwelled: true });
   }, 180_000);
+
+  /**
+   * The buses go with the routes they ran (rust-final mod.rs:121-135): a survivor keeps a stale-map leg, and its route
+   * id collides with the rewound counter, so the new route never gets a bus of its own.
+   */
+  it('reloadingTheTestCityLeavesOneNewBusOnTheNewRoute', () => {
+    const w = headlessTestCity();
+    step(w, 40);
+    expect(w.fleet.buses.length, 'the first city has its bus').toBe(1);
+    const old = w.fleet.buses[0]!.id;
+
+    w.commands.push({ kind: 'LoadTestCity' });
+    step(w, 40);
+
+    expect(w.fleet.buses.map((bus) => bus.route), 'exactly one bus, on the new route').toEqual([w.busRoutes.routes[0]!.id]);
+    expect(w.fleet.buses[0]!.id, 'the old bus went; the new route got its own').not.toBe(old);
+    expect(legsOf(w, old), 'no leg of the old bus is left, pending or on the road').toEqual([]);
+    const at = w.grid.get(w.fleet.buses[0]!.at)!;
+    expect(at.road.kind !== 'None' && !at.water, 'the bus stands on a road').toBe(true);
+  }, 120_000);
+
+  it('aNewMapTakesTheBusesWithItsRoutes', () => {
+    const w = headlessTestCity();
+    step(w, 40);
+    const old = w.fleet.buses[0]!.id;
+    w.commands.push({ kind: 'GenerateMap', seed: 7n });
+    w.commands.push({ kind: 'LoadTestCity' });
+    step(w, 40);
+    expect(w.fleet.buses.length).toBe(1);
+    expect(w.fleet.buses[0]!.id).not.toBe(old);
+    expect(legsOf(w, old)).toEqual([]);
+  }, 120_000);
+
+  it('generateMapAloneTakesTheBusesAndTheirLegs', () => {
+    const w = headlessTestCity();
+    step(w, 40);
+    const old = w.fleet.buses[0]!.id;
+    w.commands.push({ kind: 'GenerateMap', seed: 7n });
+    step(w, 40);
+    expect(w.fleet.buses).toEqual([]);
+    expect(legsOf(w, old)).toEqual([]);
+  }, 120_000);
 
   /** Rust's generator reset the treasury and the calendar with the map. */
   it('loadTestCityStartsTheTreasuryAndTheCalendarOver', () => {
