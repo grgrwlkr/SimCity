@@ -1,57 +1,31 @@
-// Not a Rust port. The render knobs are constants until the RON loader of stage 6, like `defaultTrafficConfig`; this
-// reads the .ron files they were copied from and fails when a value drifts or a knob is added without its constant.
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+// Not a Rust port. The render knobs are constants, like `defaultTrafficConfig`; these pins hold the values the game
+// shipped with (rust-final:assets/config/render.ron, day_night.ron and props.ron) and fail when a value drifts or a
+// knob is added without its pin.
 import { describe, expect, it } from 'vitest';
 import { DAY_NIGHT_CONFIG, RENDER_CONFIG, SIGN_NIGHT_EMISSIVE } from '../src/renderConfig';
 
-type Scalar = number | boolean | string;
-
-/** The RON subset of the config files: nested unnamed structs of `name: value`, enum variants, numbers, booleans. */
-function readRon(file: string): Map<string, Scalar> {
-  const text = readFileSync(join(import.meta.dirname, '../../../assets/config', file), 'utf8').replace(/\/\/.*$/gm, '');
-  const tokens = text.match(/[():,]|[A-Za-z_]\w*|-?\d+(?:\.\d+)?/g) ?? [];
-  let at = 0;
-  const out = new Map<string, Scalar>();
-  const next = () => tokens[at++] ?? '';
-  const struct = (prefix: string) => {
-    expect(next()).toBe('(');
-    while (tokens[at] !== ')') {
-      const name = next();
-      expect(next(), `':' after ${prefix}${name}`).toBe(':');
-      if (tokens[at] === '(') struct(`${prefix}${name}.`);
-      else {
-        const raw = next();
-        out.set(`${prefix}${name}`, raw === 'true' ? true : raw === 'false' ? false : /^-?\d/.test(raw) ? Number(raw) : raw);
-      }
-      if (tokens[at] === ',') at++;
-    }
-    next();
-  };
-  struct('');
-  return out;
-}
-
-/** The config as `snake_case.path → value`, the names the .ron file uses. */
-function flatten(value: object, prefix = '', out = new Map<string, Scalar>()): Map<string, Scalar> {
-  for (const [key, v] of Object.entries(value)) {
-    const name = prefix + key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
-    if (typeof v === 'object' && v !== null) flatten(v as object, `${name}.`, out);
-    else out.set(name, v as Scalar);
-  }
-  return out;
-}
-
 describe('render config', () => {
-  it('renderConfigIsRenderRon', () => {
-    expect(flatten(RENDER_CONFIG)).toEqual(readRon('render.ron'));
+  it('renderConfigPinsTheShippedLook', () => {
+    expect(RENDER_CONFIG).toEqual({
+      tonemapping: 'AcesFitted',
+      antiAliasing: 'Fxaa',
+      bloom: { enabled: false, intensity: 0.12, lowFrequencyBoost: 0.7, maxMipDimension: 512 },
+      ssao: { enabled: true, quality: 'Medium' },
+      colorGrading: { exposure: 0, contrast: 1.08, saturation: 1.05, gamma: 1 },
+      vignette: { enabled: true, strength: 0.35, innerRadius: 0.55 },
+      sun: { noonElevationDeg: 14, azimuthDeg: 135, illuminanceScale: 1, dayIlluminance: 12000, dayAmbient: 700 },
+      night: { sunFloor: 0.3, ambientFloor: 1 },
+      perspective: { orthoAboveZoom: 0.25, nearFovDeg: 42, farFovDeg: 12, ramp: 1.6, minDistance: 40, maxDistance: 900, orthoDistance: 500 },
+      atlas: { worldUnitsPerCell: 12, maxRepeats: 4 },
+      shadows: { maximumDistance: 900, cascades: 4, firstSliceDepth: 90, overlapProportion: 0.2, softSize: 0 },
+    });
   });
 
-  it('dayNightConfigIsDayNightRon', () => {
-    expect(flatten(DAY_NIGHT_CONFIG)).toEqual(readRon('day_night.ron'));
+  it('dayNightConfigPinsTheShippedNight', () => {
+    expect(DAY_NIGHT_CONFIG).toEqual({ nightDarkness: 0.55, windowGlow: 1, markingGlow: 1, lightPoolGlow: 1 });
   });
 
-  it('signNightEmissiveIsPropsRon', () => {
-    expect(SIGN_NIGHT_EMISSIVE).toBe(readRon('props.ron').get('sign.night_emissive'));
+  it('signNightEmissivePinsTheShippedGlow', () => {
+    expect(SIGN_NIGHT_EMISSIVE).toBe(2.8);
   });
 });

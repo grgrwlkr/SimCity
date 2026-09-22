@@ -9,7 +9,7 @@ import type { World } from '../world';
 
 const SIX_LANE = ROAD_KINDS.indexOf('SixLane');
 
-/** `pedestrians.ron` knobs the walkers read; the walking speed lives in `CitizenConfig.walkKmh`. */
+/** Pedestrian knobs the walkers read; the walking speed lives in `CitizenConfig.walkKmh`. */
 export interface PedestrianConfig {
   /** A walker held this long at an uncontrolled crossing looks for another way, game seconds. */
   waitRerouteSecs: number;
@@ -22,8 +22,9 @@ export interface PedestrianConfig {
 }
 
 /**
- * `pedestrians.ron`. Rust waited `wait_reroute_hours: 6.0` on a clock of a second an hour, six real seconds; on the
- * real-time clock six game hours at a kerb would be absurd, so the wait is a game minute.
+ * The shipped knobs (rust-final:assets/config/pedestrians.ron). Rust waited `wait_reroute_hours: 6.0` on a clock of a
+ * second an hour, six real seconds; on the real-time clock six game hours at a kerb would be absurd, so the wait is a
+ * game minute.
  */
 export const defaultPedestrianConfig = (): PedestrianConfig => ({
   waitRerouteSecs: 60,

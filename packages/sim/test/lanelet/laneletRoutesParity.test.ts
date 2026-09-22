@@ -1,6 +1,7 @@
-// Stage 1c gate, which closes the stage 1 program gate: on the Rust test city the TS lanelets,
-// conflict matrices and `find_route` (tiles and sidecar) on 200 seeded lane pairs equal what Rust
-// computes (fixture from examples/dump_lanelet_routes.rs; the grid comes from road-routes.json).
+// Stage 1c gate, which closes the stage 1 program gate: pins of the TS lanelets, conflict matrices and
+// routes on the test city and 200 seeded lane pairs. The frozen fixture was recorded from Rust by
+// examples/dump_lanelet_routes.rs (history only: added in 0ea281b, removed in a1a5c6a); the grid
+// comes from road-routes.json.
 import { describe, expect, it } from 'vitest';
 import { TrafficOccupancy } from '../../src/traffic/occupancy';
 import { findRoute, routeIsDirectionCorrect } from '../../src/transport/lanelet/pathfinding';
@@ -26,7 +27,7 @@ function firstMismatch<T>(actual: readonly T[], expected: readonly T[]): number 
   return -1;
 }
 
-describe('lanelet parity with Rust on the test city', () => {
+describe('lanelet and route pins on the test city', () => {
   const w = loadTestCity();
 
   it('sameCityAndPathfindingConfig', () => {
@@ -37,7 +38,7 @@ describe('lanelet parity with Rust on the test city', () => {
     expect(w.pathfindingConfig.costScale).toBe(fixture.costScale);
   });
 
-  it('laneletsMatchRust', () => {
+  it('laneletsMatchTheFixture', () => {
     const actual = w.laneletGraph.lanelets.map((l) => ({
       intersection: l.intersection,
       entry: l.entryLane,
@@ -46,11 +47,11 @@ describe('lanelet parity with Rust on the test city', () => {
       path: l.internalPath.flatMap((p) => [p.x, p.y]),
     }));
     const i = firstMismatch(actual, fixture.lanelets);
-    expect(i, `lanelet ${i}: ts ${JSON.stringify(actual[i])} vs rust ${JSON.stringify(fixture.lanelets[i])}`).toBe(-1);
+    expect(i, `lanelet ${i}: ts ${JSON.stringify(actual[i])} vs fixture ${JSON.stringify(fixture.lanelets[i])}`).toBe(-1);
     expect(actual.length).toBeGreaterThan(100);
   });
 
-  it('conflictMatricesMatchRust', () => {
+  it('conflictMatricesMatchTheFixture', () => {
     expect(w.laneletConflicts.byIntersection.size).toBe(fixture.matrices.length);
     for (const expected of fixture.matrices) {
       const m = w.laneletConflicts.byIntersection.get(expected.intersection);
@@ -65,10 +66,11 @@ describe('lanelet parity with Rust on the test city', () => {
     }
   });
 
-  // Was a bit-for-bit match with Rust's `find_route`. The TS planner also turns around where a two-way
-  // road ends, as the road graph does, so it finds routes Rust had none for and shorter ones through
-  // such a turn. What stays pinned: every pair Rust routed is routed, and every route is drivable.
-  it('findRouteRoutesEveryRustPairLegallyOnTestCity', () => {
+  // Once a bit-for-bit match with the fixture's routes. The TS planner also turns around where a two-way
+  // road ends, as the road graph does, so it finds routes the fixture has none for and shorter ones
+  // through such a turn. What stays pinned: every pair the fixture routes is routed, and every route
+  // is drivable.
+  it('findRouteRoutesEveryFixturePairLegallyOnTestCity', () => {
     const traffic = new TrafficOccupancy();
     let throughLanelets = 0;
     let routed = 0;
@@ -76,7 +78,7 @@ describe('lanelet parity with Rust on the test city', () => {
       const label = `pair ${i}: lane ${route.start} -> ${route.goal}, seed ${route.seed}`;
       const ctx = { grid: w.grid, traffic, cfg: w.pathfindingConfig, jitterSeed: BigInt(route.seed) };
       const { tiles, sidecar } = findRoute(w.laneGraph, w.laneletGraph, ctx, route.start, route.goal);
-      if (route.tiles.length > 0) expect(tiles.length, `${label}: Rust routed it`).toBeGreaterThan(0);
+      if (route.tiles.length > 0) expect(tiles.length, `${label}: the fixture routes it`).toBeGreaterThan(0);
       if (tiles.length === 0) return;
       tiles.slice(1).forEach((tile, k) => {
         expect(Math.abs(tile.x - tiles[k]!.x) + Math.abs(tile.y - tiles[k]!.y), `${label}: step ${k} is one tile`).toBe(1);

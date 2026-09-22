@@ -51,7 +51,7 @@ const scale = (c: Rgb, k: number): Rgb => [c[0] * k, c[1] * k, c[2] * k];
 
 /**
  * The whole lighting state at `hour`. A data map is read in daylight: night would darken what the player is reading.
- * `signNightEmissive` is the shop signs' strength after dark, `sign.night_emissive` of props.ron.
+ * `signNightEmissive` is the shop signs' strength after dark, `PROPS_CONFIG.sign.nightEmissive`.
  */
 export function dayNightLighting(
   hour: number,

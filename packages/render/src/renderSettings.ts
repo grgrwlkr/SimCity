@@ -1,4 +1,4 @@
-// render.ron resolved into what the camera, the post-processing chain and the sun get: port of
+// `RENDER_CONFIG` resolved into what the camera, the post-processing chain and the sun get: port of
 // crates/simcity_frontend/src/game/render_settings.rs. The config is data; this is the one place that turns it into
 // renderer settings, and the scene applies them when the config changes, never per frame.
 import { ACESFilmicToneMapping, NeutralToneMapping, NoToneMapping, type ToneMapping } from 'three';

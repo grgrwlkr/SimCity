@@ -1,6 +1,5 @@
 // Port of crates/simcity_sim/src/game/economy.rs: the budget ledger every dollar moves through, daily taxes by zone
-// and wealth class, upkeep of roads, services and utilities, service funding and loans. The config is
-// `assets/config/economy.ron` as a constant until the RON loader of stage 6.
+// and wealth class, upkeep of roads, services and utilities, service funding and loans. The config is a constant.
 import { isOperational } from '../buildings/building';
 import type { City } from '../city';
 import type { MapGrid } from '../map/grid';
@@ -37,7 +36,7 @@ export interface EconomyConfig {
 
 const classIncome = (low: number, middle: number, high: number): ClassIncome => ({ Low: f32(low), Middle: f32(middle), High: f32(high) });
 
-/** `assets/config/economy.ron`; at the default 9 % rate low earns 0.6 of middle, high 1.6. */
+/** The shipped economy (rust-final:assets/config/economy.ron); at the default 9 % rate low earns 0.6 of middle, high 1.6. */
 export const ECONOMY_CONFIG: EconomyConfig = {
   happinessTarget: f32(0.7),
   roadUpkeepPer100Tiles: 10,

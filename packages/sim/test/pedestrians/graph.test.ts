@@ -1,8 +1,6 @@
 // Port of crates/simcity_sim/src/game/pedestrians/tests_graph.rs. Walkers here walk the lane beside the kerb, not a tile
 // beside the road, so the invariant reads on lane tiles: a six-lane road carries no pavement, but the lane tile at its box
 // is a corner a walker stands on to cross, and the box itself is walked.
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { defaultPedestrianConfig } from '../../src/pedestrians/graph';
 import { startWalk, t, walk, walkWorld } from './helpers';
@@ -37,16 +35,16 @@ describe('pedestrian graph', () => {
     expect(path.at(-1)!.x, 'and on the way to the far door').toBeGreaterThan(30);
   });
 
-  // Not a Rust port: the pedestrian knobs are constants until the RON loader of stage 6, like `defaultTrafficConfig`.
-  it('pedestrianConfigIsPedestriansRon', () => {
-    const text = readFileSync(join(import.meta.dirname, '../../../../assets/config/pedestrians.ron'), 'utf8').replace(/\/\/.*$/gm, '');
-    const value = (name: string) => Number(new RegExp(`${name}:\\s*(-?[\\d.]+)`).exec(text)![1]);
-    const cfg = defaultPedestrianConfig();
-    expect(cfg.uncontrolledSafetyMarginSecs).toBe(value('uncontrolled_safety_margin_secs'));
-    expect(cfg.uncontrolledMinGapTiles).toBe(value('uncontrolled_min_gap_tiles'));
-    expect(cfg.waitRerouteMaxAttempts).toBe(value('wait_reroute_max_attempts'));
-    // Rust counted six game hours on a clock of a second an hour; on a real-time clock that wait is a game minute.
-    expect(value('wait_reroute_hours')).toBe(6);
-    expect(cfg.waitRerouteSecs).toBe(60);
+  // Not a Rust port: the pedestrian knobs are constants, like `defaultTrafficConfig`, pinned at the values of
+  // rust-final:assets/config/pedestrians.ron.
+  it('pedestrianConfigPinsTheShippedKnobs', () => {
+    expect(defaultPedestrianConfig()).toEqual({
+      // Rust counted `wait_reroute_hours: 6.0` on a clock of a second an hour; on a real-time clock that wait is a
+      // game minute.
+      waitRerouteSecs: 60,
+      waitRerouteMaxAttempts: 3,
+      uncontrolledSafetyMarginSecs: 0.5,
+      uncontrolledMinGapTiles: 0.35,
+    });
   });
 });

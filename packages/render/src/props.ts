@@ -1,5 +1,5 @@
 // Where street furniture stands: port of crates/simcity_sim/src/game/map/props.rs with the knobs of
-// crates/simcity_core/src/game/props_config.rs, values from assets/config/props.ron (tag rust-final). Pure functions
+// crates/simcity_core/src/game/props_config.rs, values of assets/config/props.ron (tag rust-final). Pure functions
 // only — the scene that spawns the meshes is stage R2, so nothing here touches three.js.
 //
 // Placement is a function of the grid and the map seed: no RNG state, no spawn order dependence. Props are spawned
@@ -74,10 +74,9 @@ export interface PropsConfig {
 }
 
 /**
- * assets/config/props.ron, as constants until the RON loader of stage 6 — the same arrangement `renderConfig.ts`
- * uses; props.test.ts reads the file and fails when a value drifts or a knob is added without its constant. Where
- * the file differs from the Rust defaults (the sign's night emissive: 5.0 blew the boards out to white bars under
- * ACES), the file wins: it is what the game ran with.
+ * The shipped furniture knobs as constants — the same arrangement `renderConfig.ts` uses; props.test.ts pins them.
+ * Where the shipped values differ from the Rust defaults (the sign's night emissive: 5.0 blew the boards out to white
+ * bars under ACES), the shipped value wins: it is what the game ran with.
  */
 export const PROPS_CONFIG: PropsConfig = {
   // Denser than 4 turns a street into a picket fence at far zoom; sparser and the night reads unlit.
@@ -243,9 +242,19 @@ export type PropRole =
 
 /** Whether a prop of `role` should be on screen for the tile as it stands now. */
 export function wantsShowing(role: PropRole, grid: PropGrid, x: number, y: number, built: boolean, cfg: StreetlightConfig): boolean {
-  if (role === 'Streetlight') return wantsStreetlight(grid, x, y, cfg);
-  if (role === 'ParkedCar') return kerbSide(grid, x, y) !== null;
-  return kerbsideSide(grid, x, y, built) !== null;
+  switch (role) {
+    case 'Streetlight':
+      return wantsStreetlight(grid, x, y, cfg);
+    case 'ParkedCar':
+      return kerbSide(grid, x, y) !== null;
+    case 'Kerbside':
+      return kerbsideSide(grid, x, y, built) !== null;
+    default: {
+      // A new role fails to compile here instead of silently taking another role's predicate.
+      const unhandled: never = role;
+      return unhandled;
+    }
+  }
 }
 
 /** A `MapLayersReply` read as a placement grid. */
