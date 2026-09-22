@@ -78,9 +78,13 @@ describe('map instances', () => {
     expect(fresh.props).toBeGreaterThan(100);
     expect(edited.buildings).toBe(fresh.buildings);
     expect(edited.props).toBe(fresh.props);
-    const a = new Set(edited.digest());
-    const b = new Set(fresh.digest());
-    expect([...a].filter((e) => !b.has(e)), 'instances only the edited build has').toEqual([]);
-    expect([...b].filter((e) => !a.has(e)), 'instances only the fresh build has').toEqual([]);
+    // Multisets, not sets: an instance drawn twice is a difference too.
+    expect(edited.batchCounts(), 'instances per batch').toEqual(fresh.batchCounts());
+    const tally = (entries: string[]) => entries.reduce((m, e) => m.set(e, (m.get(e) ?? 0) + 1), new Map<string, number>());
+    const a = tally(edited.digest());
+    const b = tally(fresh.digest());
+    const surplus = (x: Map<string, number>, y: Map<string, number>) => [...x].filter(([e, n]) => n > (y.get(e) ?? 0)).map(([e, n]) => `${n - (y.get(e) ?? 0)}× ${e}`);
+    expect(surplus(a, b), 'instances only the edited build has').toEqual([]);
+    expect(surplus(b, a), 'instances only the fresh build has').toEqual([]);
   });
 });

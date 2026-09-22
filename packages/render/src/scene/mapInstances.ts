@@ -82,6 +82,14 @@ export class MapInstances {
     return all.flatMap((b) => b.entries().map((e) => `${b.name}|${e}`)).sort();
   }
 
+  /** Instances per batch name, the empty ones left out: a duplicated instance shows here even where `buildings` does not. */
+  batchCounts(): Record<string, number> {
+    const all = [...this.buildingBatches(), ...(this.glyphBatch === null ? [] : [this.glyphBatch]), ...this.propBatches.values()];
+    const out: Record<string, number> = {};
+    for (const b of all) if (b.count > 0) out[b.name] = (out[b.name] ?? 0) + b.count;
+    return out;
+  }
+
   private reset(): void {
     for (const batch of this.buildingBatches()) batch.dispose();
     for (const batch of this.propBatches.values()) batch.dispose();
