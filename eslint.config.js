@@ -23,6 +23,8 @@ export default defineConfig([
     'packages/desktop/playwright-report/**',
     // Local tool state is not part of the port.
     '.claude/**',
+    // Per-session scratch files and logs inside a worktree.
+    '.scratch/**',
   ]),
   js.configs.recommended,
   tseslint.configs.recommended,

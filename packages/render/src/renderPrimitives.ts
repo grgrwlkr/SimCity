@@ -4,6 +4,7 @@
 // before asking, so the cache stays bounded. The scene turns a spec into a Three.js material once per spec.
 import { IDENTITY_UV, cellUv, type AtlasCell, type CellUv } from './atlas';
 import type { Rgb } from './buildingLook';
+import { PARKED_CAR_TINTS } from './props';
 
 /** sRGB with alpha, each channel 0..1. */
 export type Rgba = readonly [number, number, number, number];
@@ -39,24 +40,27 @@ function srgbToLinear(c: number): number {
 }
 
 type Vec3 = readonly [number, number, number];
-type Color4 = readonly [number, number, number, number];
+/** Linear rgba. */
+export type Color4 = readonly [number, number, number, number];
 
-class MeshBuilder {
+export class MeshBuilder {
   private readonly pos: number[] = [];
   private readonly nor: number[] = [];
   private readonly uv: number[] = [];
   private readonly col: number[] = [];
   private readonly idx: number[] = [];
 
-  private quad(verts: readonly [Vec3, Vec3, Vec3, Vec3], n: Vec3, c: Color4): void {
+  /** Corners counter-clockwise from outside; `uv` per corner, the whole 0..1 square unless given. */
+  quad(verts: readonly [Vec3, Vec3, Vec3, Vec3], n: Vec3, c: Color4, uv: readonly number[] = [0, 0, 1, 0, 1, 1, 0, 1]): this {
     const base = this.pos.length / 3;
     for (const v of verts) {
       this.pos.push(...v);
       this.nor.push(...n);
       this.col.push(...c);
     }
-    this.uv.push(0, 0, 1, 0, 1, 1, 0, 1);
+    this.uv.push(...uv);
     this.idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    return this;
   }
 
   /** Top (+Z), then the walls +Y, −Y, +X, −X, counter-clockwise seen from outside. */
@@ -151,5 +155,63 @@ export class RenderPrimitives {
       this.meeples.set(key, mesh);
     }
     return mesh;
+  }
+
+  /** Street furniture of R4 (`render_primitives.rs`), one cached mesh per shape; `+X` faces the road or the street. */
+  propMesh(kind: PropMeshKind): CompositeMesh {
+    let mesh = this.props.get(kind);
+    if (mesh === undefined) {
+      mesh = buildPropMesh(kind);
+      this.props.set(kind, mesh);
+    }
+    return mesh;
+  }
+
+  private readonly props = new Map<PropMeshKind, CompositeMesh>();
+}
+
+/**
+ * `streetlight`: mast, arm over the carriageway and lamp head, for `PROPS_CONFIG` pole 9 and arm 2.5. `wire`: a span one
+ * unit long, dipping 1.4 in the middle, that the scene stretches along X to the next lamp. `sign`: a panel face up,
+ * reaching out over the pavement (a board on edge is invisible from above). `bin`: over-scale on purpose, dark body and
+ * pale lid. `awning`: a sloped cloth shelf. `parkedCar0..3`: a body in one of `PARKED_CAR_TINTS` and a glass cabin.
+ */
+export type PropMeshKind = 'streetlight' | 'wire' | 'sign' | 'bin' | 'awning' | `parkedCar${0 | 1 | 2 | 3}`;
+
+const POLE = 9;
+const ARM = 2.5;
+const SAG = 1.4;
+const SIGN_WIDTH = 5;
+const SIGN_REACH = 1.8 * 1.6;
+
+function buildPropMesh(kind: PropMeshKind): CompositeMesh {
+  const b = new MeshBuilder();
+  switch (kind) {
+    case 'streetlight': {
+      const metal: Color4 = [0.16, 0.17, 0.19, 1];
+      b.box([-0.35, -0.35, 0], [0.35, 0.35, POLE], metal);
+      b.box([0, -0.18, POLE - 0.5], [ARM, 0.18, POLE - 0.1], metal);
+      return b.box([ARM - 0.7, -0.5, POLE - 1.1], [ARM + 0.4, 0.5, POLE - 0.5], [0.85, 0.8, 0.62, 1]).build();
+    }
+    case 'wire': {
+      const t = 0.09;
+      const dark: Color4 = [0.07, 0.07, 0.08, 1];
+      b.box([0, -t, -SAG - t], [0.5, t, t], dark);
+      return b.box([0.5, -t, -SAG - t], [1, t, t], dark).build();
+    }
+    case 'sign':
+      return b.box([0, -SIGN_WIDTH / 2, -0.14], [SIGN_REACH, SIGN_WIDTH / 2, 0.14], [1, 1, 1, 1]).build();
+    case 'bin':
+      return b.box([-1.4, -1.1, 0], [1.4, 1.1, 5.2], [0.13, 0.19, 0.15, 1]).box([-1.7, -1.4, 5.2], [1.7, 1.4, 5.9], [0.72, 0.75, 0.7, 1]).build();
+    case 'awning': {
+      const cloth: Color4 = [0.42, 0.13, 0.13, 1];
+      b.quad([[0, -3, 5.2], [3.2, -3, 4.2], [3.2, 3, 4.2], [0, 3, 5.2]], [0, 0, 1], cloth);
+      return b.quad([[0, 3, 5.2], [3.2, 3, 4.2], [3.2, -3, 4.2], [0, -3, 5.2]], [0, 0, -1], cloth).build();
+    }
+    default: {
+      const [r, g, bl] = PARKED_CAR_TINTS[Number(kind.slice('parkedCar'.length))]!;
+      b.box([-3.4, -1.5, 0.2], [3.4, 1.5, 1.9], [r, g, bl, 1]);
+      return b.box([-1.6, -1.3, 1.9], [1.4, 1.3, 2.9], [0.12, 0.14, 0.18, 1]).build();
+    }
   }
 }

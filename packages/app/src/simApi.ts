@@ -11,7 +11,7 @@ import {
   type TickStatsReply,
   type WorldSnapshot,
 } from '@simcity/bridge';
-import type { DebugRenderer, RenderStats } from '@simcity/render';
+import type { RenderStats, Renderer } from '@simcity/render';
 import type { AppState, EmergencyKind, MapCell, MapConfig, TilePos } from '@simcity/sim';
 
 export interface RenderFrameSummary {
@@ -84,14 +84,14 @@ function hexToBytes(text: string): Uint8Array {
 export function installSimApi(
   client: SimClient,
   debug: boolean,
-  renderer: Promise<DebugRenderer>,
+  renderer: Promise<Renderer>,
   mapConfig: () => MapConfig | null,
 ): SimApi {
   const reader = client.ready.then((render) => {
     const r = new RenderReader(render);
     return { reader: r, frame: r.allocate() };
   });
-  const cameraOf = (r: DebugRenderer): CameraState => ({
+  const cameraOf = (r: Renderer): CameraState => ({
     centerX: r.view.centerX,
     centerY: r.view.centerY,
     worldPerPixel: r.view.worldPerPixel,

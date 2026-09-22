@@ -1,5 +1,5 @@
 import { RenderReader, SimClient, scenarioByQuery, type WorldSnapshot } from '@simcity/bridge';
-import { DebugRenderer, installViewControls } from '@simcity/render';
+import { DebugRenderer, SceneRenderer, installViewControls, type Renderer } from '@simcity/render';
 import { SIGNALIZED_CROSS, crossBoxSize, tileToWorld, type MapConfig } from '@simcity/sim';
 import { Hud, useSimStore, type HudActions } from '@simcity/ui';
 import { StrictMode } from 'react';
@@ -16,6 +16,13 @@ const params = new URLSearchParams(location.search);
 const debug = params.get('debug') === '1';
 /** `?scenario=<query>`: a scenario of the main menu, built on load; a lit cross opens with the camera on its box. */
 const scenario = scenarioByQuery(params.get('scenario'));
+/**
+ * The player sees the scene. The debug renderer draws under `?debug=1` or `?renderer=debug`, and by default under
+ * automation (`navigator.webdriver`): the e2e gates read tile classes back from its flat colours. `?renderer=scene`
+ * forces the scene anywhere.
+ */
+const rendererParam = params.get('renderer');
+const useScene = rendererParam === 'scene' || (rendererParam !== 'debug' && !debug && !navigator.webdriver);
 let focusPending = scenario?.cross !== undefined;
 const canvas = document.getElementById('view');
 if (!(canvas instanceof HTMLCanvasElement)) throw new Error('canvas#view is missing from index.html');
@@ -25,7 +32,7 @@ const client = new SimClient(worker);
 
 let mapConfig: MapConfig | null = null;
 const renderer = client.ready.then(async (sab) => {
-  const r = await DebugRenderer.create(canvas);
+  const r: Renderer = useScene ? await SceneRenderer.create(canvas) : await DebugRenderer.create(canvas);
   r.attachRenderBuffer(new RenderReader(sab));
   installViewControls(canvas, r, () => mapConfig);
   // The frame holds only what the camera sees; at ×60 and above it carries the load of links the renderer draws.
@@ -119,6 +126,7 @@ const actions: HudActions = {
   scenarioHref: (s) => {
     const query = new URLSearchParams({ scenario: s.query });
     if (debug) query.set('debug', '1');
+    if (rendererParam !== null) query.set('renderer', rendererParam);
     return `?${query.toString()}`;
   },
 };
