@@ -1,3 +1,7 @@
+/* The HUD tokens first, then the HUD that draws with them (packages/ui has no bundler of its own). */
+@import './hud-tokens.css';
+@import '../../ui/src/hud.css';
+
 :root {
   color-scheme: light dark;
   --bg: #f3f1ea;
@@ -108,39 +112,8 @@ button[aria-pressed='true'] {
 }
 
 .hint,
-.hud-status,
-.tick {
+.hud-status {
   color: var(--muted);
-}
-
-.hud {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.75rem 1rem;
-  padding: 0.6rem 1rem;
-  background: var(--panel);
-  border-bottom: 1px solid color-mix(in srgb, var(--muted) 40%, transparent);
-  font-variant-numeric: tabular-nums;
-}
-
-.hud-stats {
-  flex-basis: 100%;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.2rem 1rem;
-  font-size: 0.85em;
-  color: var(--muted);
-}
-
-.hud nav {
-  display: flex;
-  gap: 0.25rem;
-}
-
-.paused {
-  font-weight: 600;
-  color: var(--accent);
 }
 
 .hud-status {
