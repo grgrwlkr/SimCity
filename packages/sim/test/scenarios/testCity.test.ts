@@ -8,7 +8,7 @@ import { blockHas } from '../../src/buildings/blockers';
 import type { TilePos } from '../../src/commands';
 import { applyGameCommandsToGrid } from '../../src/map/apply';
 import { MAX_ZONE_DEPTH, isWithinZoneDepth } from '../../src/map/zonePlacement';
-import { TEST_CITY_MONEY } from '../../src/scenarios/testCity';
+import { TEST_CITY_MONEY, loadTestCity } from '../../src/scenarios/testCity';
 import { requestState } from '../../src/state';
 import { UTILITY_KINDS, UtilityNetwork, computeServed, type UtilityKind } from '../../src/utilities';
 import { createWorld, type World } from '../../src/world';
@@ -155,5 +155,26 @@ describe('test city', () => {
     const version = w.mapEditVersion;
     applyGameCommandsToGrid(w, [{ kind: 'LoadTestCity' }]);
     expect({ version: w.mapEditVersion, undo: w.history.canUndo() }).toEqual({ version, undo: true });
+  });
+
+  /**
+   * Characterisation pin from test_city.rs: the Height overlay paints `height / 255`, so the test city's gentle
+   * relief (0..29) reads dark. The mean is the frozen dump's 10.03, not the 10.86 of the Rust generator: see
+   * docs/oracle-deviations.md.
+   */
+  it('theTestCityHasReliefAndItIsGentle', () => {
+    const height = loadTestCity().grid.elevation;
+    let lo = 255;
+    let hi = 0;
+    let total = 0;
+    for (const h of height) {
+      lo = Math.min(lo, h);
+      hi = Math.max(hi, h);
+      total += h;
+    }
+    expect(hi, 'the terrain must vary, not be a constant plate').toBeGreaterThan(lo);
+    expect([lo, hi], 'range quoted in assets/README.md').toEqual([0, 29]);
+    expect(Math.abs(total / height.length - 10.03), 'mean of the frozen dump is 10.03').toBeLessThan(0.01);
+    expect(hi / 255, 'the highest ground is under a fifth of the ramp').toBeLessThan(0.2);
   });
 });
