@@ -70,6 +70,16 @@ export class Milestones {
   }
 }
 
+/**
+ * A city that opens already grown records `population` without announcing it: the milestones reached are discarded,
+ * so the feed stays quiet, and a smaller population never takes back what a larger one opened. The mirror of
+ * `restore_milestones` (rust-final crates/simcity_data/src/game/persistence.rs:681), which takes
+ * `max(saved, city.population)`; the scenarios that open grown and `LoadGame` share it.
+ */
+export function recordGrownPopulation(w: World, population: number): void {
+  w.milestones.reach(population);
+}
+
 /** Follow the population to its milestones and announce each one reached. */
 export function trackMilestones(w: World): void {
   // Read before writing: a resource written every tick would repaint the palette every tick.

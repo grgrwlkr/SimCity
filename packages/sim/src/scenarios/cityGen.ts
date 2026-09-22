@@ -6,7 +6,7 @@
 import type { BuildingKind, GameCommand, RoadKind, TilePos, ZoneDensity, ZoneKind } from '../commands';
 import { detectIntersections } from '../intersections/index';
 import { applyGameCommandsToGrid } from '../map/apply';
-import { MILESTONES } from '../milestones';
+import { MILESTONES, recordGrownPopulation } from '../milestones';
 import { roadSegmentCommands } from '../map/roadTool';
 import type { World } from '../world';
 
@@ -168,8 +168,8 @@ export function buildCity(w: World, options: CityOptions = {}): CityPlan {
   w.city.money = money;
   if (zoned) {
     // A demonstration city opens already grown: it has earned its milestones before its services go down, or the
-    // lock would refuse its two schools. The milestones reached are discarded, so it announces nothing in the feed.
-    w.milestones.reach(MILESTONES[MILESTONES.length - 1]!.population);
+    // lock would refuse its two schools.
+    recordGrownPopulation(w, MILESTONES[MILESTONES.length - 1]!.population);
     applyGameCommandsToGrid(w, [...STATIONS, ...VENUES, ...SERVICES].map(([building, x, y]): GameCommand => ({ kind: 'PlaceBuilding', pos: { x, y }, building })));
   }
   w.city.money = money;

@@ -9,6 +9,7 @@
 import { densityLevels, profileCapacity } from '../buildings/building';
 import { updateCityPopulation } from '../buildings/population';
 import { spawnBuilding } from '../buildings/spawn';
+import { recordGrownPopulation } from '../milestones';
 import { seedDemoBusRoute } from '../transit/buses';
 import {
   BUILDING_KINDS,
@@ -255,11 +256,9 @@ export class MetropolisScenario extends CitizenTripCounter {
     w.citizenConfig.labourShare = LIVING_CITY_LABOUR_SHARE;
     Object.assign(w.regionalConfig, METROPOLIS_REGION);
     this.plan = buildMetropolis(w, seed);
-    // A city that opens already grown has earned its milestones: record the population without announcing it, the
-    // mirror of `restore_milestones` (rust-final crates/simcity_data/src/game/persistence.rs:681), which takes
-    // `max(saved, city.population)`. The reached milestones are discarded, so the feed stays quiet.
+    // A city that opens already grown has earned its milestones.
     updateCityPopulation(w);
-    w.milestones.reach(w.city.population);
+    recordGrownPopulation(w, w.city.population);
     seedDemoBusRoute(w.grid, w.busRoutes);
     w.city.hour = LIVING_CITY_START_HOUR;
   }
