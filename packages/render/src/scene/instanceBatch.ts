@@ -55,6 +55,12 @@ export class InstanceBatch {
     for (const [from, to] of this.slots.remove(owner)) m.copyWithin(to * 16, from * 16, from * 16 + 16);
   }
 
+  /** Every instance as `owner|matrix`, matrix elements rounded to 1e-3: what the GPU buffer holds, slot by slot. */
+  entries(): string[] {
+    const m = this.mesh.instanceMatrix.array as Float32Array;
+    return Array.from({ length: this.slots.count }, (_, s) => `${this.slots.ownerOf(s)}|${Array.from(m.subarray(s * 16, s * 16 + 16), (v) => Math.round(v * 1000) / 1000).join(',')}`);
+  }
+
   /** Publishes the edits of this pass to the GPU. */
   flush(): void {
     this.mesh.count = this.slots.count;

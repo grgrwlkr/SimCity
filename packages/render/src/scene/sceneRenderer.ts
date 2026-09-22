@@ -11,7 +11,7 @@ import {
   type TrafficLightView,
   type WorldView,
 } from '@simcity/bridge';
-import { BUILDING_KINDS, VEHICLE_LENGTH_TILES, VEHICLE_WIDTH_TILES, tileToWorld, type BuildingProfile, type MapConfig, type TilePos } from '@simcity/sim';
+import { VEHICLE_LENGTH_TILES, VEHICLE_WIDTH_TILES, tileToWorld, type MapConfig, type TilePos } from '@simcity/sim';
 import * as THREE from 'three/webgpu';
 import { OrthoView } from '../camera';
 import { orthographicFrustum, perspectiveFovDeg, type ProjectionPlan } from '../cameraProjection';
@@ -20,16 +20,13 @@ import { EmergencyMarkers, type EmergencyView } from '../emergencyMarkers';
 import { FpsMeter } from '../fpsMeter';
 import { interpolateHeading, interpolatePositions, pairVehicles } from '../interpolate';
 import { lampSignal } from '../lamps';
-import { CHUNK_TILES, changedChunks, chunkGrid } from '../mapChunks';
+import { changedChunks, chunkGrid } from '../mapChunks';
 import { LAMP_COLORS, VEHICLE_COLORS } from '../palette';
 import { PlaybackClock } from '../playback';
-import { PARKED_CAR_TINTS, PROPS_CONFIG } from '../props';
-import { RenderPrimitives, type CompositeMesh, type MaterialSpec, type PropMeshKind } from '../renderPrimitives';
+import { RenderPrimitives, type CompositeMesh } from '../renderPrimitives';
 import { drawnScale, vehicleScale } from '../vehicleLook';
 import { SceneMaterials, createAtlasTexture } from './atlasNode';
-import { BuildingVisuals } from './buildings';
-import { placeFurniture, type PropPose, type TileArea } from './furniture';
-import { InstanceBatch } from './instanceBatch';
+import { MapInstances } from './mapInstances';
 import { buildGroundChunk } from './ground';
 import type { Renderer } from './renderer';
 
@@ -40,13 +37,7 @@ const VIEW_REPORT_MS = 100;
 /** Emergency markers float above the tallest buildings. */
 const MARKER_Z = 48;
 const MARKER_TILES = 0.6;
-/** The grid carries a building's kind per tile, not its level or profile: every building shows as a first-level medium one. */
-const GRID_PROFILE: BuildingProfile = { density: 'Medium', class: 'Middle' };
-/**
- * The seed street furniture is rolled with. `MapLayersReply` carries no map seed yet (unit U0 adds it); until then every
- * map rolls with 0, so furniture is stable per layout but the same pattern on every map.
- */
-export const SCENE_MAP_SEED = 0n;
+export { SCENE_MAP_SEED } from './mapInstances';
 
 export interface SceneStats extends RenderStats {
   readonly renderer: 'scene';
@@ -87,19 +78,9 @@ export class SceneRenderer implements Renderer {
   private readonly materials = new SceneMaterials(createAtlasTexture());
   private readonly geometries = new Map<CompositeMesh, THREE.BufferGeometry>();
   private readonly chunkMeshes = new Map<number, THREE.Mesh>();
-  private readonly buildingGroup = new THREE.Group();
-  private readonly propGroup = new THREE.Group();
-  private buildings: BuildingVisuals | null = null;
-  /** Building instances by (shape, material), and the batch each tile's building sits in. */
-  private readonly buildingBatchByKey = new Map<CompositeMesh, Map<MaterialSpec, InstanceBatch>>();
-  private readonly buildingBatchOf = new Map<number, InstanceBatch>();
-  private glyphBatch: InstanceBatch | null = null;
-  /** One unit quad for every glyph piece and one for every marker, sized per instance. */
-  private readonly glyphGeometry = new THREE.PlaneGeometry(1, 1);
+  /** One unit quad for every marker, sized per instance. */
   private readonly markerGeometry = new THREE.PlaneGeometry(1, 1);
-  private readonly propBatches = new Map<PropMeshKind, InstanceBatch>();
-  /** The kinds of prop each tile owns instances of. */
-  private readonly propsOf = new Map<number, PropMeshKind[]>();
+  private readonly instances = new MapInstances(this.prims, this.materials, (mesh) => this.geometryOf(mesh));
   private map: MapLayersReply | null = null;
   private reader: RenderReader | null = null;
   private cars: THREE.InstancedMesh | null = null;
@@ -142,7 +123,7 @@ export class SceneRenderer implements Renderer {
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8f94, 2.4));
     const sun = new THREE.DirectionalLight(0xffffff, 1.4);
     sun.position.set(-0.6, -0.8, 1.6);
-    this.scene.add(sun, this.buildingGroup, this.propGroup);
+    this.scene.add(sun, this.instances.buildingGroup, this.instances.propGroup);
     const unlit = () => {
       const m = new THREE.MeshBasicNodeMaterial();
       m.color.set(0xffffff);
@@ -233,15 +214,8 @@ export class SceneRenderer implements Renderer {
       this.scene.add(mesh);
     }
     this.chunksRebuiltLast = changed.length;
-    if (this.buildings === null || this.tileSize !== map.tileSize || resized) {
-      this.resetInstances();
-      this.buildings = new BuildingVisuals(this.prims, map.tileSize);
-    }
+    this.instances.apply(map, changed, resized);
     this.tileSize = map.tileSize;
-    if (changed.length > 0) {
-      this.updateBuildings(map, this.buildings, changed);
-      this.updateProps(map, changed);
-    }
     this.map = map;
     this.pendingMapEditVersion = map.mapEditVersion;
     if (this.cars === null) this.createVehicleMeshes(map.tileSize);
@@ -321,10 +295,10 @@ export class SceneRenderer implements Renderer {
       emergencyMarkers: this.markerMesh?.count ?? 0,
       hovered: this.hovered,
       drawCalls: this.drawCalls,
-      buildings: this.buildings?.size ?? 0,
-      buildingBatches: this.buildingBatchList().filter((b) => b.count > 0).length,
-      buildingInstancesDrawn: this.buildingBatchList().reduce((n, b) => n + (this.inScene(b.drawn) && b.drawn.visible ? b.drawn.count : 0), 0),
-      props: [...this.propBatches.values()].reduce((n, b) => n + b.count, 0),
+      buildings: this.instances.buildings,
+      buildingBatches: this.instances.buildingBatches().filter((b) => b.count > 0).length,
+      buildingInstancesDrawn: this.instances.buildingBatches().reduce((n, b) => n + (this.inScene(b.drawn) && b.drawn.visible ? b.drawn.count : 0), 0),
+      props: this.instances.props,
       setMapMs: Math.round(this.setMapMs),
     };
   }
@@ -344,152 +318,10 @@ export class SceneRenderer implements Renderer {
     return g;
   }
 
-  private buildingBatchList(): InstanceBatch[] {
-    return [...this.buildingBatchByKey.values()].flatMap((m) => [...m.values()]);
-  }
-
   /** Whether `object` is in the scene graph the frame is drawn from, not merely built. */
   private inScene(object: THREE.Object3D): boolean {
     for (let o: THREE.Object3D | null = object; o !== null; o = o.parent) if (o === this.scene) return true;
     return false;
-  }
-
-  /** A new map or a new size: every instance goes, the shared geometries and materials stay. */
-  private resetInstances(): void {
-    for (const byMaterial of this.buildingBatchByKey.values()) for (const batch of byMaterial.values()) batch.dispose();
-    for (const batch of this.propBatches.values()) batch.dispose();
-    this.glyphBatch?.dispose();
-    this.buildingBatchByKey.clear();
-    this.buildingBatchOf.clear();
-    this.propBatches.clear();
-    this.propsOf.clear();
-    this.glyphBatch = null;
-    this.buildings?.clear();
-  }
-
-  /** Tiles of chunk `index`. */
-  private static chunkArea(map: MapLayersReply, index: number): TileArea {
-    const { cols } = chunkGrid(map.width, map.height);
-    const x0 = (index % cols) * CHUNK_TILES;
-    const y0 = Math.floor(index / cols) * CHUNK_TILES;
-    return { x0, y0, x1: Math.min(x0 + CHUNK_TILES, map.width), y1: Math.min(y0 + CHUNK_TILES, map.height) };
-  }
-
-  private buildingBatch(body: CompositeMesh, material: MaterialSpec): InstanceBatch {
-    let byMaterial = this.buildingBatchByKey.get(body);
-    if (byMaterial === undefined) this.buildingBatchByKey.set(body, (byMaterial = new Map()));
-    let batch = byMaterial.get(material);
-    if (batch === undefined) byMaterial.set(material, (batch = new InstanceBatch(this.buildingGroup, this.geometryOf(body), this.materials.get(material), 'buildings')));
-    return batch;
-  }
-
-  /**
-   * The buildings of the tiles in `changed` chunks, out and back in: one instanced draw per (shape, material) and one for
-   * every roof glyph piece of every station, whatever the number of buildings.
-   */
-  private updateBuildings(map: MapLayersReply, visuals: BuildingVisuals, changed: readonly number[]): void {
-    const cfg: MapConfig = { width: map.width, height: map.height, tileSize: map.tileSize };
-    const glyphs = (this.glyphBatch ??= new InstanceBatch(this.buildingGroup, this.glyphGeometry, this.materials.get(visuals.glyphMaterial), 'glyphs'));
-    const touched = new Set<InstanceBatch>([glyphs]);
-    const matrix = new THREE.Matrix4();
-    const turn = new THREE.Quaternion();
-    const z = new THREE.Vector3(0, 0, 1);
-    for (const index of changed) {
-      const a = SceneRenderer.chunkArea(map, index);
-      for (let y = a.y0; y < a.y1; y++) {
-        for (let x = a.x0; x < a.x1; x++) {
-          const i = y * map.width + x;
-          const old = this.buildingBatchOf.get(i);
-          if (old !== undefined) {
-            old.remove(i);
-            touched.add(old);
-            this.buildingBatchOf.delete(i);
-            visuals.delete(i);
-          }
-          glyphs.remove(i);
-          const code = map.layers.building[i]!;
-          if (code === 0) continue;
-          const v = visuals.set(i, { kind: BUILDING_KINDS[code - 1]!, level: 1, width: 1, length: 1, profile: GRID_PROFILE });
-          const c = tileToWorld(cfg, { x, y });
-          const batch = this.buildingBatch(v.body, v.material);
-          batch.put(i, matrix.makeTranslation(c.x, c.y, 0));
-          touched.add(batch);
-          this.buildingBatchOf.set(i, batch);
-          for (const p of v.glyph) {
-            glyphs.put(i, matrix.compose(new THREE.Vector3(c.x + p.offset[0], c.y + p.offset[1], v.glyphZ), turn.setFromAxisAngle(z, p.rotation), new THREE.Vector3(p.size[0], p.size[1], 1)));
-          }
-        }
-      }
-    }
-    for (const batch of touched) batch.flush();
-  }
-
-  private propBatch(kind: PropMeshKind): InstanceBatch {
-    let batch = this.propBatches.get(kind);
-    if (batch === undefined) {
-      // Paint by day for signs; their night glow is R3's.
-      const material = this.prims.material(kind === 'sign' ? [0.96, 0.82, 0.32] : [1, 1, 1]);
-      batch = new InstanceBatch(this.propGroup, this.geometryOf(this.prims.propMesh(kind)), this.materials.get(material), `props-${kind}`);
-      this.propBatches.set(kind, batch);
-    }
-    return batch;
-  }
-
-  /**
-   * Street furniture of the changed chunks and of the ring of chunks around them: a prop reads its neighbours (a kerb, the
-   * road a shop faces, the lamp a wire reaches, at most `spacingTiles` = 4 away), so an edit can move props up to that far
-   * outside its own chunk, and a chunk is 16 tiles.
-   */
-  private updateProps(map: MapLayersReply, changed: readonly number[]): void {
-    const { cols, rows } = chunkGrid(map.width, map.height);
-    const ring = new Set<number>();
-    for (const index of changed) {
-      const [cx, cy] = [index % cols, Math.floor(index / cols)];
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          if (cx + dx >= 0 && cx + dx < cols && cy + dy >= 0 && cy + dy < rows) ring.add((cy + dy) * cols + cx + dx);
-        }
-      }
-    }
-    const touched = new Set<InstanceBatch>();
-    const matrix = new THREE.Matrix4();
-    const turn = new THREE.Quaternion();
-    const z = new THREE.Vector3(0, 0, 1);
-    for (const index of ring) {
-      const a = SceneRenderer.chunkArea(map, index);
-      for (let y = a.y0; y < a.y1; y++) {
-        for (let x = a.x0; x < a.x1; x++) {
-          const i = y * map.width + x;
-          for (const kind of this.propsOf.get(i) ?? []) {
-            const batch = this.propBatch(kind);
-            batch.remove(i);
-            touched.add(batch);
-          }
-          this.propsOf.delete(i);
-        }
-      }
-      const f = placeFurniture(map, SCENE_MAP_SEED, PROPS_CONFIG, a);
-      const lists: Array<[PropMeshKind, PropPose[]]> = [
-        ['streetlight', f.lamps],
-        ['wire', f.wires],
-        ['bin', f.bins],
-        ['awning', f.awnings],
-        ['sign', f.signs],
-        ...PARKED_CAR_TINTS.map((_, t) => [`parkedCar${t as 0 | 1 | 2 | 3}`, f.parkedCars[t]!] as [PropMeshKind, PropPose[]]),
-      ];
-      for (const [kind, poses] of lists) {
-        if (poses.length === 0) continue;
-        const batch = this.propBatch(kind);
-        touched.add(batch);
-        for (const p of poses) {
-          batch.put(p.tile, matrix.compose(new THREE.Vector3(p.x, p.y, p.z), turn.setFromAxisAngle(z, p.rotation), new THREE.Vector3(p.scaleX, 1, 1)));
-          const kinds = this.propsOf.get(p.tile);
-          if (kinds === undefined) this.propsOf.set(p.tile, [kind]);
-          else if (!kinds.includes(kind)) kinds.push(kind);
-        }
-      }
-    }
-    for (const batch of touched) batch.flush();
   }
 
   private ensureCapacity(which: 'lamps' | 'arrows', needed: number): void {
