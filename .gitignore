@@ -4,6 +4,8 @@
 /.worktrees/
 
 .superpowers/
+# Per-session scratch files and logs inside a worktree
+.scratch/
 # Everything under `.claude/` is local, except the project's own skills: they are how a
 # fresh session learns this repo's workflows, so they belong in the repository rather than
 # in one machine's config. Note the `/*` — nothing inside a directory that is itself

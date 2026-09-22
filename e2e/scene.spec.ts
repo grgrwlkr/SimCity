@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { ATLAS_CELLS, atlasCellIndex, buildAtlasImage } from '../packages/render/src/atlas';
 import type { SceneStats } from '../packages/render/src/scene/sceneRenderer';
 import { MAX_CELL_LOD, atlasMipChain } from '../packages/render/src/scene/atlasTexture';
+import { tileToWorld } from '../packages/sim/src/index';
 
 type LayerName = 'height' | 'water' | 'terrain' | 'roadKind' | 'roadDir' | 'roadLane' | 'roadFlow' | 'laneType' | 'zone' | 'density' | 'building';
 const road = JSON.parse(readFileSync(new URL('../packages/sim/test/fixtures/road-routes.json', import.meta.url), 'utf8')) as {
@@ -67,23 +68,57 @@ async function frameVariety(page: Page, png: Buffer): Promise<{ offMode: number;
   }, png.toString('base64'));
 }
 
+/** RGB of the screenshot at CSS points. */
+async function pixelsAt(page: Page, png: Buffer, points: ReadonlyArray<{ x: number; y: number }>): Promise<Array<[number, number, number]>> {
+  return page.evaluate(
+    async ({ b64, points }) => {
+      const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+      const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d')!;
+      ctx.drawImage(bitmap, 0, 0);
+      const scale = bitmap.width / document.getElementById('view')!.clientWidth;
+      return points.map((p) => {
+        const d = ctx.getImageData(Math.floor(p.x * scale), Math.floor(p.y * scale), 1, 1).data;
+        return [d[0]!, d[1]!, d[2]!] as [number, number, number];
+      });
+    },
+    { b64: png.toString('base64'), points },
+  );
+}
+
+const hex = (s: string) => Array.from({ length: s.length / 2 }, (_, i) => parseInt(s.slice(2 * i, 2 * i + 2), 16));
+/** `1 + BUILDING_KINDS.indexOf('FireStation')`: the fixture's fire station tiles. */
+const FIRE_STATION = 4;
+
 test('sceneDrawsTheTestCity', async ({ page }, testInfo) => {
   await openScene(page);
   await loadGrid(page, road.rawGrid);
-  await page.evaluate(() => window.__sim.fitMap());
+  const cam = await page.evaluate(() => window.__sim.fitMap());
   const stats = await waitForDrawn(page);
   console.log(`scene stats: ${JSON.stringify(stats)}`);
   expect(stats.renderer).toBe('scene');
-  expect(stats.buildings, 'buildings in the frame').toBeGreaterThan(0);
+  expect(stats.buildings, 'buildings on the map').toBeGreaterThan(0);
+  // Counted on the meshes that are in the scene graph, not on the records the scene keeps.
+  expect(stats.buildingInstancesDrawn, 'every building is an instance the frame draws').toBe(stats.buildings);
   expect(stats.props, 'street furniture in the frame').toBeGreaterThan(0);
   expect(stats.drawCalls).toBeGreaterThan(0);
   const png = await page.locator('#view').screenshot({ path: testInfo.outputPath('scene-test-city.png') });
+  // A fire station's roof is red where the ground under it is grey pavement: read the tile centres (between the rails and
+  // rungs of the ladder glyph) back from the frame.
+  const cfg = { width: road.width, height: road.height, tileSize: 16 };
+  const fire = hex(road.rawGrid.building).flatMap((b, i) => (b === FIRE_STATION ? [i] : []));
+  expect(fire.length).toBeGreaterThan(0);
+  const points = fire.map((i) => {
+    const w = tileToWorld(cfg, { x: i % cfg.width, y: Math.floor(i / cfg.width) });
+    return { x: cam.width / 2 + (w.x - cam.centerX) / cam.worldPerPixel, y: cam.height / 2 - (w.y - cam.centerY) / cam.worldPerPixel };
+  });
+  const red = (await pixelsAt(page, png, points)).filter(([r, g]) => r - g > 60).length;
+  expect(red, `${red} of ${fire.length} fire station tiles read red`).toBeGreaterThanOrEqual(fire.length * 0.8);
   const variety = await frameVariety(page, png);
   testInfo.annotations.push({ type: 'scene', description: JSON.stringify({ drawCalls: stats.drawCalls, buildings: stats.buildings, buildingBatches: stats.buildingBatches, props: stats.props, backend: stats.backend, ...variety }) });
 
   // Close up, in the perspective half of the zoom: walls show, and the furniture is big enough to read.
-  const cam = await page.evaluate(() => window.__sim.camera());
-  await page.evaluate((c) => window.__sim.setCamera({ centerX: c.centerX, centerY: c.centerY, worldPerPixel: 0.35 }), cam);
+  const fitted = await page.evaluate(() => window.__sim.camera());
+  await page.evaluate((c) => window.__sim.setCamera({ centerX: c.centerX, centerY: c.centerY, worldPerPixel: 0.35 }), fitted);
   await waitForDrawn(page);
   const close = await frameVariety(page, await page.locator('#view').screenshot({ path: testInfo.outputPath('scene-test-city-close.png') }));
   console.log(`scene variety: far ${JSON.stringify(variety)} close ${JSON.stringify(close)}`);
@@ -98,22 +133,24 @@ test('sceneDrawCallsDoNotGrowWithBuildings', async ({ page }, testInfo) => {
   await page.evaluate(() => window.__sim.fitMap());
   const before = await waitForDrawn(page);
 
-  // Every empty tile of the city built up with the kind the city already has most of: many more buildings, no new shape.
-  const hex = (s: string) => Array.from({ length: s.length / 2 }, (_, i) => parseInt(s.slice(2 * i, 2 * i + 2), 16));
-  const [roadKind, water, building] = [hex(road.rawGrid.roadKind!), hex(road.rawGrid.water!), hex(road.rawGrid.building!)];
+  // Three hundred more buildings of the kind the city already has most of: five times the buildings, no new shape. Few
+  // enough that a mesh per building would still draw in time, so a regression shows in the count and not as a timeout.
+  const [roadKind, water, building] = [hex(road.rawGrid.roadKind), hex(road.rawGrid.water), hex(road.rawGrid.building)];
   const counts = new Map<number, number>();
   for (const b of building) if (b !== 0) counts.set(b, (counts.get(b) ?? 0) + 1);
   const common = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]![0];
-  const built = building.map((b, i) => (b === 0 && roadKind[i] === 0 && water[i] === 0 ? common : b));
+  let added = 0;
+  const built = building.map((b, i) => (b === 0 && roadKind[i] === 0 && water[i] === 0 && added < 300 ? (added++, common) : b));
   await loadGrid(page, { ...road.rawGrid, building: built.map((b) => b.toString(16).padStart(2, '0')).join('') });
   const after = await waitForDrawn(page);
 
   const line = `${before.buildings} buildings: ${before.drawCalls} draw calls; ${after.buildings} buildings: ${after.drawCalls}`;
   console.log(`scene drawCalls: ${line}`);
   testInfo.annotations.push({ type: 'drawCalls', description: line });
-  expect(after.buildings).toBeGreaterThan(before.buildings * 2);
+  expect(after.buildings).toBe(before.buildings + 300);
+  expect(after.buildingInstancesDrawn).toBe(after.buildings);
+  expect(after.drawCalls, 'draw calls do not grow with the buildings').toBeLessThanOrEqual(before.drawCalls);
   expect(after.buildingBatches).toBe(before.buildingBatches);
-  expect(after.drawCalls).toBeLessThanOrEqual(before.drawCalls);
 });
 
 test('sceneAtlasCellsDoNotBleedOnTheLastMip', async ({ page }, testInfo) => {
@@ -210,6 +247,16 @@ test.describe('@perf scene frame rate', () => {
     const metropolisClose = await measure(page);
     await page.screenshot({ path: testInfo.outputPath('scene-metropolis-close.png') });
     console.log(`scene fps close: ${JSON.stringify(metropolisClose)}`);
+    // One edit in view: a tile erased under the camera. The map applied on load is the whole map; this one is one chunk.
+    const loadMs = (await sceneStats(page)).setMapMs;
+    const tile = await page.evaluate((c) => window.__sim.pickTile(c.width / 2, c.height / 2), cam);
+    await page.evaluate(async (pos) => {
+      await window.__sim.setSpeed('Paused');
+      await window.__sim.cmd({ EraseTile: { pos } });
+      await window.__sim.step(1);
+    }, tile!);
+    const edited = await waitForDrawn(page);
+    console.log(`scene setMap: ${JSON.stringify({ loadMs, editMs: edited.setMapMs, tile })}`);
     console.log(`scene fps: ${JSON.stringify({ city, metropolis })}`);
   });
 });
