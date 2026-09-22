@@ -40,7 +40,7 @@ test('metropolisGoesOnPastAFailingSystem', async ({ page }) => {
   await page.waitForFunction(() => typeof window.__sim !== 'undefined');
   await page.evaluate(() => window.__sim.ready);
   await expect
-    .poll(async () => Number((await page.getByTestId('citizens').textContent())?.replace(/\D/g, '')), { timeout: 120_000 })
+    .poll(async () => Number((await page.getByTestId('population').textContent())?.replace(/\D/g, '')), { timeout: 120_000 })
     .toBeGreaterThan(900_000);
   await page.evaluate(() => window.__sim.failSystem('computePollution'));
   await expect(page.getByTestId('sim-errors')).toHaveText(/^Сбой: computePollution ×\d+ — debug failure of computePollution$/, { timeout: 30_000 });
@@ -65,7 +65,7 @@ test.describe('@perf metropolis measurements', () => {
     await page.waitForFunction(() => typeof window.__sim !== 'undefined');
     await page.evaluate(() => window.__sim.ready);
     await expect
-      .poll(async () => Number((await page.getByTestId('citizens').textContent())?.replace(/\D/g, '')), { timeout: 120_000 })
+      .poll(async () => Number((await page.getByTestId('population').textContent())?.replace(/\D/g, '')), { timeout: 120_000 })
       .toBeGreaterThan(900_000);
     // The whole map in view: what the renderer draws is part of the frame the worker publishes.
     await page.evaluate(() => window.__sim.fitMap());

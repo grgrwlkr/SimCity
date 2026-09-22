@@ -1,0 +1,142 @@
+/* The HUD shell and bar: docs/design/hud/layout.md §1–2, states.md. Every value is a token of hud-tokens.css. */
+
+/* Glass without blur (tokens.md, «Стекло без размытия»). */
+.hud-glass {
+  background-color: var(--hud-glass);
+  background-image: var(--hud-glass-sheen);
+  border: 1px solid var(--hud-glass-border);
+  border-radius: var(--hud-radius-panel);
+  box-shadow: var(--hud-shadow-bar);
+  color: var(--hud-ink);
+  font-family: var(--hud-font);
+  line-height: var(--hud-leading-tight);
+}
+
+/* The wrapper only centres the panels: the map beside them stays clickable. */
+.hud-top {
+  position: fixed;
+  top: var(--hud-safe-edge);
+  left: var(--hud-safe-edge);
+  right: var(--hud-safe-edge);
+  z-index: var(--hud-z-panel);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--hud-space-8);
+  pointer-events: none;
+}
+
+.hud-top > * {
+  pointer-events: auto;
+}
+
+.hud-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  column-gap: calc(var(--hud-space-16) + var(--hud-space-4)); /* 20 px, layout.md §2 */
+  row-gap: var(--hud-space-4);
+  max-width: 100%;
+  padding: var(--hud-space-8) var(--hud-space-16);
+  font-size: var(--hud-size-body);
+  font-weight: var(--hud-weight-regular);
+  font-variant-numeric: var(--hud-numeric);
+}
+
+.hud-money {
+  font-size: var(--hud-size-title);
+  font-weight: var(--hud-weight-strong);
+  white-space: nowrap;
+}
+
+.hud-money[data-negative='true'] {
+  color: var(--hud-negative);
+}
+
+.hud-readout {
+  white-space: nowrap;
+}
+
+.hud-paused {
+  font-weight: var(--hud-weight-strong);
+  color: var(--hud-warning);
+}
+
+.hud-speeds {
+  display: flex;
+  gap: var(--hud-space-2);
+}
+
+.hud-rate {
+  font-size: var(--hud-size-caption);
+  color: var(--hud-ink-muted);
+}
+
+.hud-error {
+  flex-basis: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  color: var(--hud-negative);
+}
+
+/* Buttons on glass: the base table of states.md. */
+.hud-glass button {
+  min-width: var(--hud-target-min);
+  min-height: var(--hud-target-min);
+  padding: 0 var(--hud-space-8);
+  border: 1px solid transparent;
+  border-radius: var(--hud-radius-control);
+  background: transparent;
+  color: var(--hud-ink);
+  font: inherit;
+  cursor: pointer;
+  transition: background-color var(--hud-motion-fast) var(--hud-ease);
+}
+
+.hud-glass button:hover {
+  background: var(--hud-hover);
+}
+
+.hud-glass button:active {
+  background: var(--hud-press);
+  transform: translateY(1px);
+  transition: none;
+}
+
+.hud-glass button:focus-visible {
+  outline: var(--hud-focus-ring);
+  outline-offset: var(--hud-focus-ring-offset);
+  box-shadow: var(--hud-focus-halo);
+}
+
+/* Selected: fill, edge and aria-pressed together — the fill alone is not enough (contrast.md). */
+.hud-glass button[aria-pressed='true'] {
+  background: var(--hud-accent-fill);
+  border-color: var(--hud-accent);
+  color: var(--hud-ink);
+  transition: none;
+}
+
+.hud-glass button[aria-pressed='true']:active {
+  background: var(--hud-accent-fill-strong);
+}
+
+/* `?debug=1` only. */
+.hud-dev {
+  display: grid;
+  gap: var(--hud-space-4);
+  max-width: 100%;
+  padding: var(--hud-space-8) var(--hud-space-16);
+  font-size: var(--hud-size-caption);
+  font-variant-numeric: var(--hud-numeric);
+  color: var(--hud-ink-muted);
+}
+
+.hud-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--hud-space-2) var(--hud-space-16);
+}
