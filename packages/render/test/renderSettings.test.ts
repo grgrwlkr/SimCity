@@ -1,5 +1,5 @@
-// Port of crates/simcity_frontend/src/game/render_settings.rs (mod tests): render.ron resolved into what the camera, the
-// post-processing and the sun get. The Bevy tests ran `apply_render_config` on an App; here the resolution is a value.
+// Port of crates/simcity_frontend/src/game/render_settings.rs (mod tests): `RENDER_CONFIG` resolved into what the camera,
+// the post-processing and the sun get. The Bevy tests ran `apply_render_config` on an App; here the resolution is a value.
 import { ACESFilmicToneMapping, NeutralToneMapping, NoToneMapping, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 import { RENDER_CONFIG, SSAO_QUALITIES, type RenderConfig } from '../src/renderConfig';
@@ -23,7 +23,7 @@ describe('render settings', () => {
   });
 
   it('configReachesTheCameraAndTheSun', () => {
-    // render.ron keeps bloom off on measurement; switched on here so its values have somewhere to go.
+    // `RENDER_CONFIG` keeps bloom off on measurement; switched on here so its values have somewhere to go.
     const cfg: RenderConfig = { ...RENDER_CONFIG, bloom: { ...RENDER_CONFIG.bloom, enabled: true } };
     const s = resolveRenderSettings(cfg);
 
@@ -49,7 +49,7 @@ describe('render settings', () => {
       overlapProportion: cfg.shadows.overlapProportion,
     });
 
-    expect(resolveRenderSettings(RENDER_CONFIG).bloom, 'render.ron as shipped has no bloom').toBeNull();
+    expect(resolveRenderSettings(RENDER_CONFIG).bloom, 'RENDER_CONFIG as shipped has no bloom').toBeNull();
   });
 
   it('softShadowSizeReachesTheSunAndZeroMeansHardEdges', () => {

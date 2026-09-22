@@ -1,8 +1,7 @@
-// Look-and-feel knobs of the renderer: `RenderConfig` of crates/simcity_core/src/game/render_config.rs with the values
-// of assets/config/render.ron, `DayNightVisualConfig` with assets/config/day_night.ron, and the shop sign's night
-// emissive from assets/config/props.ron. Constants until the RON loader of stage 6; renderConfig.test.ts reads the
-// files and fails when they drift apart. Where render.ron differs from the Rust code defaults, the file wins: it is
-// what the game ran with.
+// Look-and-feel knobs of the renderer: `RenderConfig` of crates/simcity_core/src/game/render_config.rs,
+// `DayNightVisualConfig` and the shop sign's night emissive, as constants; renderConfig.test.ts pins them. The values
+// are those the game shipped with (rust-final:assets/config/render.ron, day_night.ron, props.ron); where they differ
+// from the Rust code defaults, the shipped value wins.
 
 /** Tone mapping curve of the camera. */
 export type TonemappingCurve = 'None' | 'AcesFitted' | 'TonyMcMapface';
@@ -112,7 +111,7 @@ export interface RenderConfig {
   readonly atlas: AtlasConfig;
 }
 
-/** assets/config/render.ron; the reasons behind each value are the comments in that file. */
+/** The shipped look; the reasons behind each value are the comments of rust-final:assets/config/render.ron. */
 export const RENDER_CONFIG: RenderConfig = {
   tonemapping: 'AcesFitted',
   antiAliasing: 'Fxaa',
@@ -147,8 +146,8 @@ export interface DayNightVisualConfig {
   readonly lightPoolGlow: number;
 }
 
-/** assets/config/day_night.ron. */
+/** The shipped night (rust-final:assets/config/day_night.ron). */
 export const DAY_NIGHT_CONFIG: DayNightVisualConfig = { nightDarkness: 0.55, windowGlow: 1, markingGlow: 1, lightPoolGlow: 1 };
 
-/** `sign.night_emissive` of assets/config/props.ron: 5.0 blew the boards out to white bars under ACES. */
+/** `PROPS_CONFIG.sign.nightEmissive` for the night materials: 5.0 blew the boards out to white bars under ACES. */
 export const SIGN_NIGHT_EMISSIVE = 2.8;

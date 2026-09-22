@@ -8,7 +8,7 @@ const SUN: SunConfig = RENDER_CONFIG.sun;
 const NIGHT: NightConfig = RENDER_CONFIG.night;
 /**
  * The night the Rust App tests ran under: they inserted no `RenderConfig`, so `NightConfig::default()` applied, not
- * render.ron. render.ron's floors (0.30 / 1.0) keep a legible night under ACES; the pins below are about the curve.
+ * `RENDER_CONFIG`. Its floors (0.30 / 1.0) keep a legible night under ACES; the pins below are about the curve.
  */
 const CODE_DEFAULT_NIGHT: NightConfig = { sunFloor: 0.1, ambientFloor: 0.45 };
 const RENDER = { sun: SUN, night: CODE_DEFAULT_NIGHT };
@@ -37,7 +37,7 @@ describe('day and night', () => {
   it('shopSignsLightUpAfterDarkAndGoOutAtNoon', () => {
     expect(dayNightLighting(0, 'None', DAY_NIGHT_CONFIG, RENDER, SIGN_NIGHT_EMISSIVE).signs.emissive[0], 'signs glow at midnight').toBeGreaterThan(1);
     expect(dayNightLighting(12, 'None', DAY_NIGHT_CONFIG, RENDER, SIGN_NIGHT_EMISSIVE).signs.emissive[0], 'signs are unlit at noon').toBeLessThan(0.01);
-    // The strength is a knob of props.ron and comes in like the other configs.
+    // The strength is a knob of `PROPS_CONFIG` and comes in like the other configs.
     expect(dayNightLighting(0, 'None', DAY_NIGHT_CONFIG, RENDER, 1.5).signs.emissive[0], 'the configured strength lights the signs').toBeCloseTo(1.5, 9);
   });
 
