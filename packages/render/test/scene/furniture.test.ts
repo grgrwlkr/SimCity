@@ -55,6 +55,17 @@ describe('street furniture in the scene', () => {
     for (const p of kerbside) expect(p.y).toBeCloseTo(edgeY, 3);
   });
 
+  it('places the same props over an area as the whole map does there, each tagged with its tile', () => {
+    const area = { x0: 4, y0: 0, x1: 13, y1: H };
+    const part = placeFurniture(map, 0n, undefined, area);
+    const inArea = (p: { tile: number }) => p.tile % W >= area.x0 && p.tile % W < area.x1;
+    for (const key of ['lamps', 'wires', 'bins', 'signs', 'awnings'] as const) {
+      expect(part[key].length).toBeGreaterThan(0);
+      expect(part[key]).toEqual(f[key].filter(inArea));
+    }
+    expect(part.parkedCars).toEqual(f.parkedCars.map((cars) => cars.filter(inArea)));
+  });
+
   it('is the same for the same seed and moves with another', () => {
     expect(placeFurniture(map, 0n)).toEqual(f);
     expect(placeFurniture(map, 12345n).bins).not.toEqual(f.bins);

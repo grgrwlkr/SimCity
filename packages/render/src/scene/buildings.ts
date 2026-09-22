@@ -162,8 +162,16 @@ export class BuildingVisuals {
     return this.byId.get(id);
   }
 
+  delete(id: number): void {
+    this.byId.delete(id);
+  }
+
   clear(): void {
     this.byId.clear();
+  }
+
+  get size(): number {
+    return this.byId.size;
   }
 
   entries(): IterableIterator<[number, BuildingVisual]> {

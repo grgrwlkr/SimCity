@@ -26,6 +26,16 @@ export interface PropPose {
   readonly rotation: number;
   /** Stretch along the mesh's X: a wire's span; 1 for everything else. */
   readonly scaleX: number;
+  /** Index of the tile the prop belongs to: an edit replaces the props of the tiles around it. */
+  readonly tile: number;
+}
+
+/** Tiles `x0..x1` × `y0..y1`, ends exclusive. */
+export interface TileArea {
+  readonly x0: number;
+  readonly y0: number;
+  readonly x1: number;
+  readonly y1: number;
 }
 
 export interface Furniture {
@@ -41,16 +51,23 @@ export interface Furniture {
 /**
  * Every prop of `map`. A tile is built when the map's building layer has something on it: unlike the Rust grid, the TS
  * one carries grown R/C/I buildings too (`growth.ts` writes the layer), so it is the building index `kerbsideSide` asks
- * for.
+ * for. `area` limits it to the props of those tiles; a prop still reads the tiles around its own.
  */
-export function placeFurniture(map: MapLayersReply, seed: bigint, cfg: PropsConfig = PROPS_CONFIG): Furniture {
+export function placeFurniture(
+  map: MapLayersReply,
+  seed: bigint,
+  cfg: PropsConfig = PROPS_CONFIG,
+  area: TileArea = { x0: 0, y0: 0, x1: map.width, y1: map.height },
+): Furniture {
   const grid = propGrid(map);
   const mc = { width: map.width, height: map.height, tileSize: map.tileSize };
   const lamp = cfg.streetlight;
   const out: Furniture = { lamps: [], wires: [], parkedCars: PARKED_CAR_TINTS.map(() => []), bins: [], signs: [], awnings: [] };
-  const pose = (x: number, y: number, z: number, rotation: number, scaleX = 1): PropPose => ({ x, y, z, rotation, scaleX });
-  for (let y = 0; y < map.height; y++) {
-    for (let x = 0; x < map.width; x++) {
+  let tile = 0;
+  const pose = (x: number, y: number, z: number, rotation: number, scaleX = 1): PropPose => ({ x, y, z, rotation, scaleX, tile });
+  for (let y = Math.max(area.y0, 0); y < Math.min(area.y1, map.height); y++) {
+    for (let x = Math.max(area.x0, 0); x < Math.min(area.x1, map.width); x++) {
+      tile = y * map.width + x;
       const kerb = kerbSide(grid, x, y);
       if (kerb !== null) {
         const world = tileToWorld(mc, { x, y });
