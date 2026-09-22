@@ -32,25 +32,30 @@ describe('atlas on the GPU', () => {
     }
   });
 
-  it('keeps the bilinear footprint inside the cell at every level', () => {
+  it('keeps the bilinear footprint inside the cell at every level, fractional ones too', () => {
     const edges = [0, 1e-4, 0.25, 0.5, 0.999, 1, 1.5, 3.99];
+    const lods = [...Array.from({ length: MAX_CELL_LOD + 3 }, (_, l) => l), 0.5, 3.5, 6.25, 6.5, 6.99];
     for (const cell of ATLAS_CELLS) {
       const [col, row] = atlasCellIndex(cell);
-      for (let lod = 0; lod <= MAX_CELL_LOD + 2; lod++) {
-        const side = ATLAS_SIZE >> Math.min(lod, MAX_CELL_LOD);
-        const lo = [col * (side / ATLAS_GRID), row * (side / ATLAS_GRID)];
-        const hi = [lo[0]! + side / ATLAS_GRID, lo[1]! + side / ATLAS_GRID];
-        for (const u of edges) {
-          for (const v of edges) {
-            for (const [uv, how] of [
-              [atlasUvAt(cellUv(cell, 3), u, v, lod), 'repeated'],
-              [atlasUvAt(IDENTITY_UV, ...uvIn(cell, u, v), lod), 'vertex-mapped'],
-            ] as const) {
-              // A linear sampler reads half a texel either side of the sample point.
-              for (const axis of [0, 1]) {
-                const t = uv[axis]! * side;
-                expect(t - 0.5, `${cell} ${how} lod ${lod} (${u}, ${v})`).toBeGreaterThanOrEqual(lo[axis]! - 1e-6);
-                expect(t + 0.5, `${cell} ${how} lod ${lod} (${u}, ${v})`).toBeLessThanOrEqual(hi[axis]! + 1e-6);
+      for (const lod of lods) {
+        // A fractional lod blends the two levels around it: the footprint must fit on both.
+        for (const level of new Set([Math.floor(lod), Math.ceil(lod)].map((l) => Math.min(l, MAX_CELL_LOD)))) {
+          const side = ATLAS_SIZE >> level;
+          const lo = [col * (side / ATLAS_GRID), row * (side / ATLAS_GRID)];
+          const hi = [lo[0]! + side / ATLAS_GRID, lo[1]! + side / ATLAS_GRID];
+          for (const u of edges) {
+            for (const v of edges) {
+              for (const [uv, how] of [
+                [atlasUvAt(cellUv(cell, 3), u, v, lod), 'repeated'],
+                [atlasUvAt(IDENTITY_UV, ...uvIn(cell, u, v), lod), 'vertex-mapped'],
+              ] as const) {
+                // A linear sampler reads half a texel either side of the sample point.
+                for (const axis of [0, 1]) {
+                  const t = uv[axis]! * side;
+                  const at = `${cell} ${how} lod ${lod} level ${level} (${u}, ${v})`;
+                  expect(t - 0.5, at).toBeGreaterThanOrEqual(lo[axis]! - 1e-6);
+                  expect(t + 0.5, at).toBeLessThanOrEqual(hi[axis]! + 1e-6);
+                }
               }
             }
           }

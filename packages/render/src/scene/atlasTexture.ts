@@ -29,9 +29,12 @@ export function atlasMipChain(image: AtlasImage): AtlasImage[] {
   return chain;
 }
 
-/** Half a texel of `lod`, in atlas UV; past the last level the sampler never goes further (the chain ends there). */
+/**
+ * Half a texel of the coarser of the two levels a fractional `lod` blends, in atlas UV: the finer one's footprint fits
+ * inside it. Past the last level the sampler never goes further (the chain ends there).
+ */
 export function halfTexelAt(lod: number): number {
-  return (0.5 * 2 ** Math.min(Math.max(lod, 0), MAX_CELL_LOD)) / ATLAS_SIZE;
+  return (0.5 * 2 ** Math.min(Math.ceil(Math.max(lod, 0)), MAX_CELL_LOD)) / ATLAS_SIZE;
 }
 
 /**

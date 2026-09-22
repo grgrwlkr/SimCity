@@ -1,7 +1,7 @@
 // The atlas on the GPU: a `DataTexture` carrying the per-cell mip chain of `atlasTexture.ts`, and the node that samples
 // it for a `MaterialSpec` — the shader side of `atlasUvAt`. Materials are made once per spec: `RenderPrimitives` hands
 // out the same spec object for the same look, so a spec is the cache key and batching survives recolouring.
-import { clamp, dFdx, dFdy, exp2, float, floor, fract, length, log2, materialColor, max, texture, uv, vec2, vec4 } from 'three/tsl';
+import { ceil, clamp, dFdx, dFdy, exp2, float, floor, fract, length, log2, materialColor, max, texture, uv, vec2, vec4 } from 'three/tsl';
 import * as THREE from 'three/webgpu';
 import { ATLAS_GRID, ATLAS_SIZE, IDENTITY_UV, buildAtlasImage } from '../atlas';
 import type { MaterialSpec } from '../renderPrimitives';
@@ -37,7 +37,8 @@ export function atlasDetail(atlas: THREE.DataTexture, spec: MaterialSpec) {
   const texels = vertexMapped ? raw.mul(ATLAS_SIZE) : raw.mul(t.repeat * t.scale * ATLAS_SIZE);
   const rho = max(length(dFdx(texels)), length(dFdy(texels)));
   const lod = clamp(log2(max(rho, float(1e-6))), 0, MAX_CELL_LOD);
-  const h = exp2(lod).mul(0.5 / ATLAS_SIZE);
+  // Half a texel of the coarser level the fractional lod blends in (`halfTexelAt`).
+  const h = exp2(ceil(lod)).mul(0.5 / ATLAS_SIZE);
   const origin = floor(placed.mul(ATLAS_GRID)).div(ATLAS_GRID);
   const at = clamp(placed, origin.add(h), origin.add(1 / ATLAS_GRID).sub(h));
   return texture(atlas, at).level(lod).r;
