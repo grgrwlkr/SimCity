@@ -72,9 +72,7 @@
 
 /* Columns 180 / 120 / 120, gap 8 (`BudgetUi::cell`, budget_panel.rs:284-300). */
 .budget-lines {
-  border-collapse: separate;
-  border-spacing: var(--hud-space-8) 0;
-  margin: 0 calc(-1 * var(--hud-space-8));
+  border-collapse: collapse;
   table-layout: fixed;
 }
 
@@ -94,6 +92,11 @@
   font-size: var(--hud-size-caption);
   color: var(--hud-ink-muted);
   text-align: right;
+}
+
+.budget-lines thead th + th,
+.budget-amount {
+  padding-left: var(--hud-space-8);
 }
 
 .budget-amount {
@@ -192,12 +195,9 @@
   overflow-wrap: break-word;
 }
 
-/* Narrow window (states.md): the last month goes first, the panel narrows to 420 px. */
+/* Narrow window (states.md): the last month goes first. The panel keeps 560 px: three steppers of 44 px targets
+   a row do not fit the 420 px of states.md, and 560 px fits the 1024 px window. */
 @media (max-width: 1099px) {
-  .budget-panel {
-    width: 420px;
-  }
-
   .budget-last,
   .budget-lines [data-testid='budget-last'] {
     display: none;
