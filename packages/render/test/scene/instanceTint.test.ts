@@ -102,5 +102,29 @@ describe('instance tint', () => {
     batch.tintOwner(3, [0, 1, 0]);
     expect(colours(), 'tint of one owner').toBeGreaterThan(before);
   });
-});
 
+  it('aFlushUploadsOnlyTheSlotsThatMovedNotTheWholeBuffer', () => {
+    const batch = new InstanceBatch(new THREE.Group(), new THREE.BoxGeometry(), new THREE.MeshBasicNodeMaterial(), 'windows', 8);
+    const ranges = () => [batch.drawn.instanceMatrix.updateRanges.map((r) => [r.start, r.count]), batch.drawn.instanceColor!.updateRanges.map((r) => [r.start, r.count])];
+    // What the renderer does once it has uploaded the ranges.
+    const upload = () => [batch.drawn.instanceMatrix, batch.drawn.instanceColor!].forEach((a) => a.clearUpdateRanges());
+    for (const owner of [1, 2, 3]) batch.put(owner, at);
+    batch.flush();
+    expect(ranges(), 'a new buffer goes up whole').toEqual([[[0, 3 * 16]], [[0, 3 * 3]]]);
+    upload();
+    batch.put(4, at);
+    batch.put(5, at);
+    batch.flush();
+    expect(ranges(), 'two appended: the tail from slot 3 on').toEqual([[[3 * 16, 2 * 16]], [[3 * 3, 2 * 3]]]);
+    // A second edit before the frame keeps the first one's range.
+    batch.remove(2);
+    batch.flush();
+    expect(ranges(), 'the last instance moved into slot 1').toEqual([[[3 * 16, 2 * 16], [16, 3 * 16]], [[3 * 3, 2 * 3], [3, 3 * 3]]]);
+    upload();
+    // A tint rewrites every colour; a flush after it before the frame adds to it, it does not narrow it.
+    batch.tint(() => [1, 0, 0]);
+    batch.put(6, at);
+    batch.flush();
+    expect(ranges()).toEqual([[[4 * 16, 16]], [[0, 4 * 3], [4 * 3, 3]]]);
+  });
+});
