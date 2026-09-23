@@ -29,6 +29,8 @@ const SOAK_TICKS = 600;
  */
 const COMMUTE_DEPARTURE_TICKS = 1200;
 const COMMUTE_TICKS = 1500;
+/** A stay at work short enough for the drive back to start within the run: the first arrive by tick ~350. */
+const COMMUTE_STAY_TICKS: readonly [number, number] = [200, 800];
 
 function livingCity(): World {
   const w = createWorld({ gameHourNs: 60 * SECOND_NS });
@@ -95,14 +97,19 @@ describe('stage 4 gate', () => {
     requestState(w, 'InGame');
     frame(w, 0);
     const plan = buildCity(w, { zones: false });
-    const scenario = new CityCommuteScenario(w, { citizens: 2000, departureWindowTicks: COMMUTE_DEPARTURE_TICKS, stayTicks: [1200, 3600], homes: plan.homes, workplaces: plan.workplaces });
+    const scenario = new CityCommuteScenario(w, { citizens: 2000, departureWindowTicks: COMMUTE_DEPARTURE_TICKS, stayTicks: COMMUTE_STAY_TICKS, homes: plan.homes, workplaces: plan.workplaces });
     const v = w.vehicles;
     const waitingSince = new Map<number, number>();
     let longestWaitForGreen = 0;
     let wrongWay = 0;
+    let returnHomeRequested = 0;
+    let returnedHome = 0;
     for (let tick = 1; tick <= COMMUTE_TICKS; tick++) {
+      const requestedBefore = w.pendingEvents.tripRequested.length;
       scenario.advance(w);
+      returnHomeRequested += w.pendingEvents.tripRequested.slice(requestedBefore).filter((t) => t.purpose === 'ReturnHome').length;
       step(w, 1);
+      returnedHome += w.events.tripFinished.filter((t) => t.purpose === 'ReturnHome').length;
       for (const slot of v.order) {
         if (v.parked[slot] === 1) continue;
         const ref = vehicleRef(v, slot);
@@ -113,11 +120,14 @@ describe('stage 4 gate', () => {
         if ((tick % SOAK_TICKS === 0 || tick === COMMUTE_TICKS) && !routeDirectionOk(w.pathPool.remainingFrom(v.pathHandle[slot]!, v.pathCursor[slot]!) ?? [], w.grid)) wrongWay += 1;
       }
     }
-    const summary = `requested ${scenario.requested}, arrived ${scenario.arrived}, longest wait for green ${longestWaitForGreen} ticks, wrong way ${wrongWay}, errors ${[...w.systemErrors.keys()].join(' ')}`;
+    const summary = `requested ${scenario.requested} (${returnHomeRequested} home), arrived ${scenario.arrived} (${returnedHome} home), longest wait for green ${longestWaitForGreen} ticks, wrong way ${wrongWay}, errors ${[...w.systemErrors.keys()].join(' ')}`;
     console.log(`stage 4 gate, micro: ${summary}`);
     // Most commuters are still on their way at the end: the cap holds the rest of the departures back.
     expect(scenario.requested, summary).toBeGreaterThan(1000);
     expect(scenario.arrived, summary).toBeGreaterThan(0);
+    // The drive back leaves a workplace lot where the car was parked, against the morning's flow.
+    expect(returnHomeRequested, `commuters drive back: ${summary}`).toBeGreaterThan(0);
+    expect(returnedHome, `a drive back reaches home: ${summary}`).toBeGreaterThan(0);
     expect(longestWaitForGreen, summary).toBeLessThan(SOAK_TICKS);
     expect(wrongWay, summary).toBe(0);
     expect([...w.systemErrors.keys()], summary).toEqual([]);
