@@ -66,6 +66,9 @@ export function Hud({ actions, dataMap, debug = debugFlag() }: { actions: HudAct
   const fps = useSimStore((s) => s.fps);
   const [budgetOpen, setBudgetOpen] = useState(false);
   const [advisorOpen, setAdvisorOpen] = useState(false);
+  // The data maps and the advisor share the left column one at a time (states.md «Левая колонка»): opening the advisor
+  // folds the data maps to their header, unfolding them closes the advisor. The picked map stays painted either way.
+  const [dataMapExpanded, setDataMapExpanded] = useState(false);
   useStateHotkeys(snapshot?.appState, actions);
   const title = snapshot === null ? null : windowTitle(snapshot.appState, snapshot.city);
   useEffect(() => {
@@ -107,7 +110,10 @@ export function Hud({ actions, dataMap, debug = debugFlag() }: { actions: HudAct
         budgetOpen={budgetOpen}
         onBudgetToggle={() => setBudgetOpen((open) => !open)}
         advisorOpen={advisorOpen}
-        onAdvisorToggle={() => setAdvisorOpen((open) => !open)}
+        onAdvisorToggle={() => {
+          if (!advisorOpen) setDataMapExpanded(false);
+          setAdvisorOpen(!advisorOpen);
+        }}
       />
       <ToolPalette onUndoRedo={actions.undoRedo} />
       <BudgetPanel snapshot={snapshot} open={budgetOpen} onClose={() => setBudgetOpen(false)} command={actions.command} />
@@ -118,6 +124,11 @@ export function Hud({ actions, dataMap, debug = debugFlag() }: { actions: HudAct
           overlay={overlay}
           legend={dataMap.legend(overlay)}
           read={dataMap.read}
+          expanded={dataMapExpanded}
+          onToggle={(expand) => {
+            setDataMapExpanded(expand);
+            if (expand) setAdvisorOpen(false);
+          }}
           onSelect={(next) => {
             setOverlay(next);
             dataMap.select(next);
