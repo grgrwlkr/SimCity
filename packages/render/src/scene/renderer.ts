@@ -19,5 +19,7 @@ export interface Renderer {
   setOverlay(overlay: DebugOverlayReply | null): void;
   setLights(lights: readonly TrafficLightView[]): void;
   setEmergencies(emergencies: readonly EmergencyView[]): void;
+  /** The world's hour, minutes as a fraction; only the scene lights by it, the debug renderer has no clock. */
+  setClock?(hour: number): void;
   stats(): RenderStats;
 }

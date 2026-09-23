@@ -87,4 +87,21 @@ describe('map instances', () => {
     expect(surplus(a, b), 'instances only the edited build has').toEqual([]);
     expect(surplus(b, a), 'instances only the fresh build has').toEqual([]);
   });
+
+  it('batches are named by what they hold, so emptying the first shape seen still matches a fresh build', () => {
+    const before = city();
+    const after = copy(before);
+    // Every building of the kind the scan meets first goes: its batches empty, and a fresh build never makes them.
+    const first = before.layers.building.find((b) => b !== 0)!;
+    after.layers.building.forEach((b, i) => {
+      if (b === first) after.layers.building[i] = 0;
+    });
+    const edited = instances();
+    edited.apply(before, all(before), true);
+    edited.apply(after, changedChunks(before, after), false);
+    const fresh = instances();
+    fresh.apply(after, all(after), true);
+    expect(edited.batchCounts()).toEqual(fresh.batchCounts());
+    expect([...edited.digest()].sort()).toEqual([...fresh.digest()].sort());
+  });
 });
