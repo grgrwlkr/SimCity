@@ -139,13 +139,15 @@ function benchMetropolis(size: number, ticks: number): void {
   const started = performance.now();
   new MetropolisScenario(w);
   const buildMs = performance.now() - started;
-  const bySystem = new Map<string, { total: number; max: number; calls: number }>();
+  const bySystem = new Map<string, { total: number; max: number; calls: number; samples: number[] }>();
   const samples: number[] = [];
+  const assessments: number[] = [];
   for (let tick = 0; tick < ticks; tick++) {
     const tickStart = performance.now();
     applyStateTransition(w);
     for (const system of FIXED_UPDATE) {
       if (!system.runIn.includes(w.appState) || !runsThisTick(w, system)) continue;
+      const advisorVersion = w.advisor.version;
       const t0 = performance.now();
       try {
         system.run(w, TICK_DT_NS);
@@ -153,10 +155,12 @@ function benchMetropolis(size: number, ticks: number): void {
         recordSystemError(w, system.name, error);
       }
       const ms = performance.now() - t0;
-      const entry = bySystem.get(system.name) ?? { total: 0, max: 0, calls: 0 };
+      const entry = bySystem.get(system.name) ?? { total: 0, max: 0, calls: 0, samples: [] };
       entry.total += ms;
       entry.max = Math.max(entry.max, ms);
       entry.calls += 1;
+      entry.samples.push(ms);
+      if (w.advisor.version !== advisorVersion) assessments.push(ms);
       bySystem.set(system.name, entry);
     }
     w.tick += 1;
@@ -167,7 +171,10 @@ function benchMetropolis(size: number, ticks: number): void {
   const systems = [...bySystem]
     .sort(([, a], [, b]) => b.total - a.total)
     .slice(0, 15)
-    .map(([name, e]) => ({ name, totalMs: round(e.total), meanMs: round(e.total / e.calls), maxMs: round(e.max), calls: e.calls }));
+    .map(([name, e]) => ({ name, totalMs: round(e.total), meanMs: round(e.total / e.calls), p99Ms: percentiles(e.samples).p99Ms, maxMs: round(e.max), calls: e.calls }));
+  // The advisor assesses once a game hour (and on the first tick and minute), so it never makes the top by total: its
+  // own line, over every tick it ran and over the ticks it assessed on.
+  const advisor = bySystem.get('updateAdvisor');
   console.log(
     JSON.stringify({
       world: `metropolis ${size}×${size}`,
@@ -184,6 +191,7 @@ function benchMetropolis(size: number, ticks: number): void {
     }),
   );
   console.log(JSON.stringify(systems));
+  console.log(JSON.stringify({ advisor: { calls: advisor?.calls ?? 0, perTick: percentiles(advisor?.samples ?? []), assessing: percentiles(assessments), assessments: assessments.length } }));
 }
 
 const only = process.argv[2];
