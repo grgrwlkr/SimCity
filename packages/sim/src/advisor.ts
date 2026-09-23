@@ -119,16 +119,29 @@ export interface AdvisorInputs {
   monthDays: number;
 }
 
+/** `of` is the utility in the genitive («нет воды»), `station` the station in the genitive («нет водокачки»). */
 const UTILITY_WORDS: Readonly<
-  Record<UtilityKind, { shortage: ProblemKind; missing: ProblemKind; name: string; stations: string; verb: string; station: string }>
+  Record<UtilityKind, { shortage: ProblemKind; missing: ProblemKind; of: string; stations: string; verb: string; station: string }>
 > = {
-  Power: { shortage: 'PowerShortage', missing: 'NoPower', name: 'power', stations: 'plants', verb: 'supply', station: 'power plant' },
-  Water: { shortage: 'WaterShortage', missing: 'NoWater', name: 'water', stations: 'pumps', verb: 'supply', station: 'water pump' },
-  Garbage: { shortage: 'GarbageShortage', missing: 'NoGarbage', name: 'garbage collection', stations: 'landfills', verb: 'take', station: 'landfill' },
+  Power: { shortage: 'PowerShortage', missing: 'NoPower', of: 'электричества', stations: 'электростанции', verb: 'дают', station: 'электростанции' },
+  Water: { shortage: 'WaterShortage', missing: 'NoWater', of: 'воды', stations: 'водокачки', verb: 'дают', station: 'водокачки' },
+  Garbage: { shortage: 'GarbageShortage', missing: 'NoGarbage', of: 'вывоза мусора', stations: 'свалки', verb: 'принимают', station: 'свалки' },
 };
 
 const clamp01 = (value: number): number => (value < 0 ? 0 : value > 1 ? 1 : value);
-const percent = (share: number): number => Math.round(clamp01(share) * 100);
+/** A share as the interface prints it: «18 %», the sign held to its number by a no-break space. */
+const percent = (share: number): string => `${Math.round(clamp01(share) * 100)}\u00a0%`;
+
+/** The Russian noun form a count takes: 1 здание, 3 здания, 5 зданий, 11 зданий, 21 здание. */
+function plural(count: number, one: string, few: string, many: string): string {
+  const tens = Math.abs(count) % 100;
+  const units = tens % 10;
+  if (tens >= 11 && tens <= 14) return many;
+  if (units === 1) return one;
+  return units >= 2 && units <= 4 ? few : many;
+}
+const buildingsWord = (count: number): string => `${thousands(count)} ${plural(count, 'здание', 'здания', 'зданий')}`;
+const residentsWord = (count: number): string => `${thousands(count)} ${plural(count, 'житель', 'жителя', 'жителей')}`;
 
 /** The city's problems, worst first. */
 export function assess(inputs: AdvisorInputs): Problem[] {
@@ -145,28 +158,28 @@ export function assess(inputs: AdvisorInputs): Problem[] {
       add(
         words.shortage,
         0.6 + 0.4 * short,
-        `${capitalized(words.name)} shortage: ${words.stations} ${words.verb} ${thousands(reading.supply)}, the city needs ${thousands(reading.demand)}`,
+        `Не хватает ${words.of}: ${words.stations} ${words.verb} ${thousands(reading.supply)}, городу нужно ${thousands(reading.demand)}`,
         reading.firstWithout,
       );
     } else if (reading.buildingsWithout > 0) {
       const share = reading.buildingsWithout / Math.max(inputs.buildings, 1);
-      const count = thousands(reading.buildingsWithout);
+      const count = buildingsWord(reading.buildingsWithout);
       if (reading.supply === 0) {
-        add(words.missing, 0.6 + 0.4 * share, `No ${words.name}: the city has no ${words.station}, ${count} buildings go without`, reading.firstWithout);
+        add(words.missing, 0.6 + 0.4 * share, `В городе нет ${words.station}: ${count} без ${words.of}`, reading.firstWithout);
       } else {
-        add(words.missing, 0.5 + 0.4 * share, `${count} buildings have no ${words.name}: no road links them to a ${words.station}`, reading.firstWithout);
+        add(words.missing, 0.5 + 0.4 * share, `${count} без ${words.of}: нет дороги до ${words.station}`, reading.firstWithout);
       }
     }
   });
 
   if (inputs.money < 0) {
-    add('EmptyTreasury', 1, `The treasury is empty: $${thousands(-inputs.money)} in debt`, null);
+    add('EmptyTreasury', 1, `Казна пуста: долг $${thousands(-inputs.money)}`, null);
   } else if (inputs.monthDays > 0 && inputs.monthRunningNet < 0) {
     const deficit = -inputs.monthRunningNet;
     add(
       'BudgetDeficit',
       0.3 + 0.5 * Math.min(deficit / DEFICIT_AT_WORST, 1),
-      `Budget deficit: upkeep and loan payments exceed taxes by $${thousands(deficit)} this month`,
+      `Дефицит бюджета: содержание и выплаты по займам превышают налоги на $${thousands(deficit)} за этот месяц`,
       null,
     );
   }
@@ -179,25 +192,25 @@ export function assess(inputs: AdvisorInputs): Problem[] {
       for (let index = 1; index < inputs.unemployedByClass.length; index++) {
         if (inputs.unemployedByClass[index]! > inputs.unemployedByClass[worst]!) worst = index;
       }
-      const cls = (['low-income', 'middle-income', 'high-income'] as const)[worst];
+      const cls = (['бедных', 'из среднего класса', 'богатых'] as const)[worst];
       add(
         'Unemployment',
         0.3 + 2 * (rate - UNEMPLOYMENT_TOLERATED),
-        `Unemployment ${percent(rate)}%: ${thousands(inputs.unemployed)} residents have no job, most of them ${cls}`,
+        `Безработица ${percent(rate)}: ${residentsWord(inputs.unemployed)} без работы, больше всего ${cls}`,
         null,
       );
     }
   }
 
   if (inputs.demandResidential > DEMAND_UNMET) {
-    add('HousingWanted', 0.2 + 0.8 * (inputs.demandResidential - DEMAND_UNMET), `Homes wanted: residential demand is ${percent(inputs.demandResidential)}%`, null);
+    add('HousingWanted', 0.2 + 0.8 * (inputs.demandResidential - DEMAND_UNMET), `Нужно жильё: жилой спрос ${percent(inputs.demandResidential)}`, null);
   }
   const jobs = Math.max(inputs.demandCommercial, inputs.demandIndustrial);
   if (jobs > DEMAND_UNMET) {
     add(
       'JobsWanted',
       0.2 + 0.8 * (jobs - DEMAND_UNMET),
-      `Jobs wanted: commercial demand is ${percent(inputs.demandCommercial)}%, industrial ${percent(inputs.demandIndustrial)}%`,
+      `Нужны рабочие места: торговый спрос ${percent(inputs.demandCommercial)}, промышленный ${percent(inputs.demandIndustrial)}`,
       null,
     );
   }
@@ -209,7 +222,7 @@ export function assess(inputs: AdvisorInputs): Problem[] {
       add(
         'SchoolReach',
         0.25 + 0.4 * Math.min(share, 1),
-        `No school nearby: ${thousands(inputs.residentsBeyondSchool)} residents live beyond a school's reach`,
+        `Нет школы рядом: ${residentsWord(inputs.residentsBeyondSchool)} вне охвата школ`,
         null,
       );
     }
@@ -219,7 +232,7 @@ export function assess(inputs: AdvisorInputs): Problem[] {
       add(
         'SchoolOvercrowded',
         0.25 + 0.4 * Math.max(missing, 0),
-        `School overcrowded: ${thousands(crowded.residents)} residents for ${thousands(crowded.places)} places`,
+        `Школа переполнена: ${residentsWord(crowded.residents)} на ${thousands(crowded.places)} ${plural(crowded.places, 'место', 'места', 'мест')}`,
         crowded.at,
       );
     }
@@ -229,7 +242,7 @@ export function assess(inputs: AdvisorInputs): Problem[] {
     add(
       'Crime',
       0.2 + 0.6 * inputs.crimeShare,
-      `High crime in ${percent(inputs.crimeShare)}% of the city: police cover ${percent(inputs.policeCover)}% of buildings`,
+      `Высокая преступность в ${percent(inputs.crimeShare)} города: полиция охватывает ${percent(inputs.policeCover)} зданий`,
       null,
     );
   }
@@ -237,7 +250,7 @@ export function assess(inputs: AdvisorInputs): Problem[] {
     add(
       'FireRisk',
       0.2 + 0.6 * inputs.fireShare,
-      `Fire risk in ${percent(inputs.fireShare)}% of the city: fire stations cover ${percent(inputs.fireCover)}% of buildings`,
+      `Пожароопасно в ${percent(inputs.fireShare)} города: пожарные части охватывают ${percent(inputs.fireCover)} зданий`,
       null,
     );
   }
@@ -245,7 +258,7 @@ export function assess(inputs: AdvisorInputs): Problem[] {
     add(
       'PoorHealth',
       0.2 + 0.5 * inputs.poorHealthShare,
-      `Poor health in ${percent(inputs.poorHealthShare)}% of homes: hospitals cover ${percent(inputs.medicalCover)}% of buildings`,
+      `Плохое здоровье в ${percent(inputs.poorHealthShare)} домов: больницы охватывают ${percent(inputs.medicalCover)} зданий`,
       null,
     );
   }
@@ -253,16 +266,12 @@ export function assess(inputs: AdvisorInputs): Problem[] {
   return problems.sort((a, b) => b.severity - a.severity || PROBLEM_KINDS.indexOf(a.kind) - PROBLEM_KINDS.indexOf(b.kind));
 }
 
-function capitalized(word: string): string {
-  return word.length === 0 ? word : word[0]!.toUpperCase() + word.slice(1);
-}
-
-/** Group digits by thousands the way the interface prints money: 6200 reads "6 200". */
+/** Group digits by thousands the way the interface prints money (`formatMoney`, HudBar.tsx): 6200 reads "6 200", a no-break space between the groups. */
 export function thousands(value: number): string {
   const digits = String(Math.abs(value));
   let grouped = value < 0 ? '-' : '';
   for (let index = 0; index < digits.length; index++) {
-    if (index > 0 && (digits.length - index) % 3 === 0) grouped += ' ';
+    if (index > 0 && (digits.length - index) % 3 === 0) grouped += '\u00a0';
     grouped += digits[index];
   }
   return grouped;
