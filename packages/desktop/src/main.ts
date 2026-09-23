@@ -1,7 +1,8 @@
 // The desktop shell: one Chromium window over packages/app. `bun run desktop:dev` points it at the
 // Vite dev server; the packaged app serves the Vite build from its asar through the `app://` scheme,
 // with the headers cross-origin isolation (and so the sim's SharedArrayBuffer) needs.
-import { app, BrowserWindow, ipcMain, net, protocol } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, net, protocol, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { registerSaveHandlers } from './saves';
@@ -17,6 +18,31 @@ const devServerUrl = process.env.SIMCITY_DEV_SERVER_URL;
  * composited and counted in `simcityPaintCount`; throttling is off, so a hidden page keeps drawing.
  */
 const testWindow = process.env.SIMCITY_TEST_WINDOW === '1';
+
+/** `out/build-info.json`, written by scripts/build-info.ts: the commit of the bundle and whether it is the test build. */
+export interface BuildInfo {
+  readonly commit: string;
+  readonly dirty: boolean;
+  readonly test: boolean;
+}
+
+function readBuildInfo(): BuildInfo | null {
+  try {
+    return (JSON.parse(readFileSync(path.join(here, 'build-info.json'), 'utf8')) as { simcityBuild: BuildInfo }).simcityBuild;
+  } catch {
+    return null;
+  }
+}
+
+/** DevTools (and the menu that opens them) in the test build and the dev shell only; a release, or a bundle whose build info cannot be read, has none. */
+export function devToolsAllowed(info: BuildInfo | null, isPackaged: boolean): boolean {
+  return !isPackaged || info?.test === true;
+}
+
+/** The release's menu: the app (about, hide, quit), editing and windows; no View, so no reload and no DevTools. */
+export const RELEASE_MENU: MenuItemConstructorOptions[] = [{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }];
+
+const devTools = devToolsAllowed(readBuildInfo(), app.isPackaged);
 
 const MIME: Readonly<Record<string, string>> = {
   '.html': 'text/html',
@@ -77,6 +103,7 @@ function createWindow(): void {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      devTools,
       ...(testWindow ? { offscreen: { useSharedTexture: true }, backgroundThrottling: false } : {}),
     },
   });
@@ -101,7 +128,12 @@ app.on('window-all-closed', () => app.quit());
 
 void app.whenReady().then(() => {
   if (testWindow) app.dock?.hide();
+  if (!devTools) Menu.setApplicationMenu(Menu.buildFromTemplate(RELEASE_MENU));
   protocol.handle('app', serveRenderer);
-  registerSaveHandlers(ipcMain, path.join(app.getPath('userData'), 'saves'));
+  registerSaveHandlers(ipcMain, path.join(app.getPath('userData'), 'saves'), (event) => {
+    // Only the main frame of the game's own page: not a subframe, not a page the window was steered to.
+    const { sender, senderFrame } = event as IpcMainInvokeEvent;
+    return senderFrame !== null && senderFrame === sender.mainFrame && allowedOrigin(senderFrame.url);
+  });
   createWindow();
 });

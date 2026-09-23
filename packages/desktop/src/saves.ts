@@ -1,6 +1,6 @@
 // The game's saves as files (E1): `<userData>/saves/slot<n>.json`, written by the main process only. The page names a
 // slot number and nothing else; the number is checked here, so no path from the renderer ever reaches the disk.
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 /** The highest slot, as the Rust build's `u8` slot. */
@@ -32,10 +32,23 @@ const FILE = /^slot([1-9]\d{0,2})\.json$/;
 const fileOf = (dir: string, slot: number) => path.join(dir, `slot${slotNumber(slot)}.json`);
 const isNotFound = (error: unknown) => (error as { code?: unknown }).code === 'ENOENT';
 
+let partials = 0;
+
 export function createSaveFiles(dir: string) {
   const info = async (slot: number): Promise<SaveFileInfo> => {
     const s = await stat(fileOf(dir, slot));
     return { slot, bytes: s.size, modifiedMs: s.mtimeMs };
+  };
+  /** Saves and removes of one slot, one after another: the last one asked for is the last one done. */
+  const queues = new Map<number, Promise<unknown>>();
+  const queued = <T>(slot: number, work: () => Promise<T>): Promise<T> => {
+    const done = (queues.get(slot) ?? Promise.resolve()).then(work, work);
+    const settled = done.catch(() => undefined);
+    queues.set(slot, settled);
+    void settled.then(() => {
+      if (queues.get(slot) === settled) queues.delete(slot);
+    });
+    return done;
   };
   return {
     async list(): Promise<SaveFileInfo[]> {
@@ -47,16 +60,32 @@ export function createSaveFiles(dir: string) {
         throw error;
       }
       const slots = names.map((n) => Number(FILE.exec(n)?.[1])).filter((n) => Number.isInteger(n) && n <= MAX_SLOT);
-      return Promise.all(slots.sort((a, b) => a - b).map(info));
+      // A slot removed between readdir and stat is simply not there any more.
+      const found = await Promise.all(slots.sort((a, b) => a - b).map((n) => info(n).catch((e: unknown) => (isNotFound(e) ? null : Promise.reject(e)))));
+      return found.filter((f) => f !== null);
     },
     /** `bytes` into `slot`, replacing what it held only once they are all written. */
-    async save(slot: number, bytes: Uint8Array): Promise<SaveFileInfo> {
+    save(slot: number, bytes: Uint8Array): Promise<SaveFileInfo> {
       const file = fileOf(dir, slot);
-      await mkdir(dir, { recursive: true });
-      const partial = `${file}.partial`;
-      await writeFile(partial, bytes);
-      await rename(partial, file);
-      return info(slot);
+      return queued(slot, async () => {
+        await mkdir(dir, { recursive: true });
+        // A name of its own per write, on disk (fsync) before it replaces the slot, and gone if anything fails.
+        const partial = `${file}.${process.pid}-${++partials}.partial`;
+        try {
+          const handle = await open(partial, 'w');
+          try {
+            await handle.writeFile(bytes);
+            await handle.sync();
+          } finally {
+            await handle.close();
+          }
+          await rename(partial, file);
+        } catch (error) {
+          await rm(partial, { force: true });
+          throw error;
+        }
+        return info(slot);
+      });
     },
     async load(slot: number): Promise<Uint8Array> {
       try {
@@ -67,8 +96,9 @@ export function createSaveFiles(dir: string) {
       }
     },
     /** An empty slot stays empty. */
-    async remove(slot: number): Promise<void> {
-      await rm(fileOf(dir, slot), { force: true });
+    remove(slot: number): Promise<void> {
+      const file = fileOf(dir, slot);
+      return queued(slot, () => rm(file, { force: true }));
     },
   };
 }
@@ -84,11 +114,29 @@ export interface IpcHandle {
   handle(channel: string, handler: (event: unknown, ...args: unknown[]) => unknown): void;
 }
 
-/** One handler per channel; each checks the slot before it touches `dir`. */
-export function registerSaveHandlers(ipc: IpcHandle, dir: string): void {
+/**
+ * One handler per channel; each checks the sender (`trusted`: the game's own page) and then the slot before it
+ * touches `dir`.
+ */
+export function registerSaveHandlers(ipc: IpcHandle, dir: string, trusted: (event: unknown) => boolean): void {
   const files = createSaveFiles(dir);
-  ipc.handle(SAVE_CHANNELS.save, async (_event, slot, bytes) => files.save(slotNumber(slot), bytesOf(bytes)));
-  ipc.handle(SAVE_CHANNELS.load, async (_event, slot) => files.load(slotNumber(slot)));
-  ipc.handle(SAVE_CHANNELS.list, async () => files.list());
-  ipc.handle(SAVE_CHANNELS.remove, async (_event, slot) => files.remove(slotNumber(slot)));
+  const from = (event: unknown) => {
+    if (!trusted(event)) throw new Error('saves: refused a sender that is not the game page');
+  };
+  ipc.handle(SAVE_CHANNELS.save, async (event, slot, bytes) => {
+    from(event);
+    return files.save(slotNumber(slot), bytesOf(bytes));
+  });
+  ipc.handle(SAVE_CHANNELS.load, async (event, slot) => {
+    from(event);
+    return files.load(slotNumber(slot));
+  });
+  ipc.handle(SAVE_CHANNELS.list, async (event) => {
+    from(event);
+    return files.list();
+  });
+  ipc.handle(SAVE_CHANNELS.remove, async (event, slot) => {
+    from(event);
+    return files.remove(slotNumber(slot));
+  });
 }

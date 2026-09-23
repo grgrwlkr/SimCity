@@ -1,6 +1,6 @@
 // The shell's save files (E1): `<dir>/slot<n>.json` by slot number, the number checked in the main process before
 // anything touches the disk, and a preload that hands the page nothing but the four slot calls.
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -17,6 +17,7 @@ afterEach(() => {
 });
 
 const bytesOf = (text: string) => new TextEncoder().encode(text);
+const TRUSTED = { sender: 'the game page' };
 
 describe('desktop save files', () => {
   it('slotNumberAcceptsOnlyWholeSlotsOneToMax', () => {
@@ -45,18 +46,51 @@ describe('desktop save files', () => {
     expect(readdirSync(dir)).toEqual(['slot10.json']);
   });
 
+  it('concurrentSavesToOneSlotLeaveTheLastWholeSave', async () => {
+    const dir = tempDir();
+    const files = createSaveFiles(dir);
+    // Each save is 1 MiB and more of its own letter: a mixed or cut file shows at once.
+    const saves = Array.from({ length: 20 }, (_, i) => new Uint8Array((1 << 20) + i * 4099).fill(65 + i));
+    const results = await Promise.allSettled(saves.map((bytes) => files.save(1, bytes)));
+    expect(results.filter((r) => r.status === 'rejected')).toEqual([]);
+    expect(Buffer.from(readFileSync(path.join(dir, 'slot1.json'))).equals(Buffer.from(saves[19]!))).toBe(true);
+    expect(readdirSync(dir)).toEqual(['slot1.json']);
+  });
+
+  it('aFailedSaveLeavesNoPartialFile', async () => {
+    const dir = tempDir();
+    // A directory where the slot's file should be: the write succeeds, the rename cannot.
+    mkdirSync(path.join(dir, 'slot1.json'), { recursive: true });
+    writeFileSync(path.join(dir, 'slot1.json', 'keep'), '');
+    await expect(createSaveFiles(dir).save(1, bytesOf('x'))).rejects.toThrow();
+    expect(readdirSync(dir)).toEqual(['slot1.json']);
+  });
+
+  it('aSlotFileThatGoesAwayDuringListIsLeftOut', async () => {
+    const dir = tempDir();
+    const files = createSaveFiles(dir);
+    await files.save(2, bytesOf('{}'));
+    // Listed by readdir, gone for stat: what a remove between the two leaves.
+    symlinkSync(path.join(dir, 'nowhere'), path.join(dir, 'slot3.json'));
+    expect((await files.list()).map((s) => s.slot)).toEqual([2]);
+  });
+
   it('theHandlersRefuseABadSlotBeforeTouchingTheDisk', async () => {
     const dir = tempDir();
     const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
-    registerSaveHandlers({ handle: (channel, handler) => void handlers.set(channel, handler) }, dir);
+    registerSaveHandlers({ handle: (channel, handler) => void handlers.set(channel, handler) }, dir, (event) => event === TRUSTED);
     expect([...handlers.keys()].sort()).toEqual(Object.values(SAVE_CHANNELS).sort());
-    const call = (channel: string, ...args: unknown[]) => Promise.resolve().then(() => handlers.get(channel)!({}, ...args));
+    const call = (channel: string, ...args: unknown[]) => Promise.resolve().then(() => handlers.get(channel)!(TRUSTED, ...args));
     for (const slot of ['../../escape', 0, 256, 1.5, '1']) {
       await expect(call(SAVE_CHANNELS.save, slot, new ArrayBuffer(2)), String(slot)).rejects.toThrow(RangeError);
       await expect(call(SAVE_CHANNELS.load, slot)).rejects.toThrow(RangeError);
       await expect(call(SAVE_CHANNELS.remove, slot)).rejects.toThrow(RangeError);
     }
     await expect(call(SAVE_CHANNELS.save, 1, 'not bytes')).rejects.toThrow(TypeError);
+    // A sender other than the game's own page is refused before anything else.
+    for (const channel of Object.values(SAVE_CHANNELS)) {
+      await expect(Promise.resolve().then(() => handlers.get(channel)!({}, 1, new ArrayBuffer(1)))).rejects.toThrow(/sender/);
+    }
     expect(existsSync(dir)).toBe(false);
     // A good slot takes an ArrayBuffer (what the page sends) and gives the bytes back.
     expect(await call(SAVE_CHANNELS.save, 1, bytesOf('abc').buffer)).toMatchObject({ slot: 1, bytes: 3 });
