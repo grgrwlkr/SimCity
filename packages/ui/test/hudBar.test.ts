@@ -9,7 +9,7 @@ import { Hud, type HudActions } from '../src/Hud';
 import { HudBar, formatMoney, windowTitle } from '../src/HudBar';
 import { useSimStore } from '../src/store';
 
-const actions: HudActions = { setState: () => {}, setSpeed: () => {}, scenarioHref: (s) => `?scenario=${s.query}` };
+const actions: HudActions = { setState: () => {}, setSpeed: () => {}, scenarioHref: (s) => `?scenario=${s.query}`, command: () => {}, undoRedo: () => {} };
 
 function snapshot(city: Partial<WorldSnapshot['city']> = {}, rest: Partial<WorldSnapshot> = {}): WorldSnapshot {
   return {

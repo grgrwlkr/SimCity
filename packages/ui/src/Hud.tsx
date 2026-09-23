@@ -1,14 +1,22 @@
 import { SCENARIOS, type Scenario, type SimSpeed } from '@simcity/bridge';
-import type { AppState } from '@simcity/sim';
+import type { AppState, GameCommand } from '@simcity/sim';
 import { useEffect } from 'react';
 import { HudBar, windowTitle } from './HudBar';
 import { useSimStore } from './store';
+import { ToolPalette } from './ToolPalette';
+
+// The brush in packages/app reads the tool in hand from here.
+export { useToolStore, type ToolMode, type ToolState } from './ToolPalette';
 
 export interface HudActions {
   setState(state: AppState): void;
   setSpeed(speed: SimSpeed): void;
   /** The link that opens a scenario: a fresh page, so nothing of the current world carries over. */
   scenarioHref(scenario: Scenario): string;
+  /** A structural edit of the world, applied with the next tick's commands. */
+  command(cmd: GameCommand): void;
+  /** Undo (`false`) or redo (`true`) the last map edit. */
+  undoRedo(redo: boolean): void;
 }
 
 /** `handle_state_hotkeys` (sim.rs): Escape to the menu, Enter starts from the menu, Space pauses and resumes. */
@@ -70,5 +78,10 @@ export function Hud({ actions, debug = debugFlag() }: { actions: HudActions; deb
     );
   }
 
-  return <HudBar snapshot={snapshot} fps={fps} debug={debug} actions={actions} />;
+  return (
+    <>
+      <HudBar snapshot={snapshot} fps={fps} debug={debug} actions={actions} />
+      <ToolPalette onUndoRedo={actions.undoRedo} />
+    </>
+  );
 }

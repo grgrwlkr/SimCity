@@ -140,3 +140,96 @@
   flex-wrap: wrap;
   gap: var(--hud-space-2) var(--hud-space-16);
 }
+
+/* The tool palette: docs/design/hud/layout.md §3. The root only centres the panel at the bottom; the strip is map. */
+.hud-tools {
+  position: fixed;
+  bottom: var(--hud-safe-edge);
+  left: var(--hud-safe-edge);
+  right: var(--hud-safe-edge);
+  z-index: var(--hud-z-panel);
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.hud-tools-panel {
+  display: flex;
+  flex-wrap: wrap; /* below 1100 px the groups take a second row, states.md «Узкая ширина» */
+  justify-content: center;
+  gap: var(--hud-space-8) 0;
+  max-width: 100%;
+  padding: var(--hud-space-8);
+  box-shadow: var(--hud-shadow-panel);
+  pointer-events: auto;
+}
+
+.hud-tools-group {
+  display: flex;
+  gap: var(--hud-space-4);
+  padding: 0 var(--hud-space-6);
+}
+
+.hud-tools-group + .hud-tools-group {
+  border-left: 1px solid var(--hud-glass-border);
+}
+
+.hud-glass button.hud-tool {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--hud-space-2);
+  min-width: 56px;
+  padding: var(--hud-space-4) var(--hud-space-4);
+  font-size: var(--hud-size-caption);
+  white-space: nowrap;
+}
+
+.hud-icon {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.hud-icon .thin {
+  stroke-width: 1.5;
+}
+
+.hud-icon .solid {
+  fill: currentColor;
+  stroke: none;
+}
+
+.hud-tool-key {
+  min-width: 1.5em;
+  padding: 0 var(--hud-space-4);
+  border-radius: var(--hud-radius-pill);
+  background: var(--hud-glass-highlight);
+  color: var(--hud-ink-muted);
+  text-align: center;
+}
+
+/* Closed by a milestone: stays in the palette, reads as closed and says when it opens (states.md). */
+.hud-glass button.hud-tool[aria-disabled='true'] {
+  color: var(--hud-ink-disabled);
+  cursor: not-allowed;
+}
+
+.hud-glass button.hud-tool[aria-disabled='true']:hover,
+.hud-glass button.hud-tool[aria-disabled='true']:active {
+  background: transparent;
+  transform: none;
+}
+
+.hud-tool-lock {
+  max-width: 9em;
+  white-space: normal;
+  text-align: center;
+  line-height: var(--hud-leading-tight);
+}
