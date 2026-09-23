@@ -288,6 +288,88 @@ describe('data maps', () => {
     expect(areaChanged(null, 2, { x0: 0, y0: 0, x1: 1, y1: 1 }), 'null repaints everything').toBe(true);
   });
 
+  it('theScalesTurnAtTheMidpointAndRunMonotonically', () => {
+    // Just below the midpoint the scales are still orange and lime, not clamped yellow.
+    expect(landValueColor(0.45)).toEqual([1, 0.9, 0, 1]);
+    expect(pollutionColor(0.45)).toEqual([0.9, 1, 0, 1]);
+    let [lr, lg, pr, pg] = [Infinity, -Infinity, -Infinity, Infinity];
+    for (let k = 0; k <= 100; k++) {
+      const [r, g] = landValueColor(k / 100);
+      const [r2, g2] = pollutionColor(k / 100);
+      for (const c of [r, g, r2, g2]) expect(c >= 0 && c <= 1, `in range at ${k} %`).toBe(true);
+      expect(r <= lr + 1e-12 && g >= lg - 1e-12 && r2 >= pr - 1e-12 && g2 <= pg + 1e-12, `monotonic at ${k} %`).toBe(true);
+      [lr, lg, pr, pg] = [r, g, r2, g2];
+    }
+  });
+
+  it('theLegendIsTheGamesPaletteAndTheDesignsWords', () => {
+    // Hex of docs/design/hud/data-map-legend.md, checked byte for byte against rust-final data_map.rs, types.rs:55-60
+    // and civic_coverage.rs; the words are the design's table.
+    const hex = (c: Srgba) => `#${c.slice(0, 3).map((v) => Math.round(v * 255).toString(16).padStart(2, '0')).join('')}`;
+    const rows = (mode: OverlayMode) => swatches(mode).map(([label, c]) => [label, hex(c)]);
+    expect(rows('Power')).toEqual([['Есть электричество', '#ffd91a'], ['Зона без питания', '#e62626']]);
+    expect(rows('WaterSupply')).toEqual([['Вода', '#3399ff'], ['Зона без воды', '#e62626']]);
+    expect(rows('Garbage')).toEqual([['Вывозится', '#9e7542'], ['Зона без вывоза', '#e62626']]);
+    expect(rows('Zones')).toEqual([['Жилая', '#2ea638'], ['Коммерческая', '#2e5cb8'], ['Промышленная', '#b88f1f']]);
+    expect(rows('Roads')).toEqual([['Дорога', '#ebebf5']]);
+    expect(rows('Water')).toEqual([['Вода', '#2673f2']]);
+    expect(swatches('Water')[0]![1][3], 'Rust WATER_OVERLAY_COLOR alpha').toBe(0.85);
+    expect(rows('ServiceCoverage')).toEqual([
+      ['Пожарная', '#e60000'],
+      ['Полиция', '#0000e6'],
+      ['Медицина', '#00cc00'],
+      ['Школа', '#cc944d'],
+      ['Университет', '#8c5c9e'],
+      ['Парк', '#4d9e47'],
+      ['Зона без покрытия', '#e61a1a'],
+    ]);
+    const ends = (mode: OverlayMode) => {
+      const g = gradient(mode);
+      return [g.low, g.high, g.stops.length];
+    };
+    expect(ends('LandValue')).toEqual(['Низкая', 'Высокая', 9]);
+    expect(ends('Pollution')).toEqual(['Чисто', 'Грязно', 9]);
+    expect(ends('Traffic')).toEqual(['Свободно', 'Затор', 9]);
+    expect(ends('Crime')).toEqual(['Безопасно', 'Криминал', 9]);
+    expect(ends('FireHazard')).toEqual(['Безопасно', 'Риск пожара', 9]);
+    expect(ends('Health')).toEqual(['Плохо', 'Здорово', 9]);
+    expect(ends('Education')).toEqual(['Нет', 'Образованно', 9]);
+    expect(ends('Attractiveness')).toEqual(['Избегают', 'Желанно', 9]);
+    expect(ends('Height')).toEqual(['Низко', 'Высоко', 9]);
+    // Stops land on eighths: 1/8 of land value is (1, 0.25, 0); height rounds 31.875 up to 32.
+    expect(gradient('LandValue').stops[1]).toEqual([1, 0.25, 0, 1]);
+    expect(gradient('Height').stops[1]).toEqual([32 / 255, 32 / 255, 32 / 255, 1]);
+    expect(gradient('Height').stops[4]).toEqual([128 / 255, 128 / 255, 128 / 255, 1]);
+  });
+
+  it('aReadingRoundsToTheNearestPercentAndStaysOnTheScale', () => {
+    const m = mapOf(4, 1, { landValue: new Float32Array([0.626, 0.624, 1.2, -0.1]) });
+    expect([0, 1, 2, 3].map((x) => overlayReading('LandValue', at(x, 0), m))).toEqual([
+      'Стоимость земли: 63 %',
+      'Стоимость земли: 62 %',
+      'Стоимость земли: 100 %',
+      'Стоимость земли: 0 %',
+    ]);
+  });
+
+  it('theServiceMapWarnsOfAZoneNothingCoversInTheLegendsColour', () => {
+    // Tiles: covered by police, a crowded school, a zone nobody covers, a road, water, unzoned land.
+    const m = mapOf(6, 1, {
+      zone: new Uint8Array([1, 1, 1, 1, 1, 0]),
+      roadKind: new Uint8Array([0, 0, 0, 1, 0, 0]),
+      water: new Uint8Array([0, 0, 0, 0, 1, 0]),
+      coverage: new Uint8Array([MASK_POLICE, 0, 0, 0, 0, 0]),
+      civic: [new Float32Array([0, 0.3, 0, 0, 0, 0]), new Float32Array(6), new Float32Array(6)],
+    });
+    const legend = new Map(swatches('ServiceCoverage'));
+    expect(dataMapTileColor('ServiceCoverage', 0, m)).toEqual(legend.get('Полиция'));
+    expect(dataMapTileColor('ServiceCoverage', 1, m), 'a school at 30 % still covers').toEqual(legend.get('Школа'));
+    expect(dataMapTileColor('ServiceCoverage', 2, m), 'the warning is the legend row').toEqual(legend.get('Зона без покрытия'));
+    expect(dataMapTileColor('ServiceCoverage', 3, m), 'a road is no zone').toBeNull();
+    expect(dataMapTileColor('ServiceCoverage', 4, m), 'nor is water').toBeNull();
+    expect(dataMapTileColor('ServiceCoverage', 5, m), 'unzoned land is no warning').toBeNull();
+  });
+
   it('aTranslucentOverlayColourIsLaidOverTheTileUnderIt', () => {
     expect(paintOver([1, 0, 0, 1], [0, 0, 1])).toEqual([1, 0, 0]);
     expect(paintOver([0, 0, 0, 0.1], [1, 1, 1])).toEqual([0.9, 0.9, 0.9]);

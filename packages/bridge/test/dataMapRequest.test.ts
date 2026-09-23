@@ -1,8 +1,10 @@
 // The worker's side of a data map: the numbers one overlay is painted and read from, taken out of the world without
 // writing to it. Holds the eleventh test of rust-final crates/simcity_sim/src/game/map/data_map.rs, the one that needs
 // the utility network of a world; the other ten are packages/render/test/dataMap.test.ts.
-import { CITY_FIELDS, MASK_FIRE, createWorld, fingerprint, utilityMask, type World } from '@simcity/sim';
+import { CITY_FIELDS, MASK_FIRE, MetropolisScenario, createWorld, fingerprint, frame, linkRoomMeters, requestState, step, utilityMask, type World } from '@simcity/sim';
 import { describe, expect, it } from 'vitest';
+import { dataMapInputs, dataMapTileColor, overlayReading, trafficHeatColor } from '../../render/src/dataMap';
+import { renderLayersOf } from '../src/renderLayers';
 import { DATA_MAP_OVERLAYS, dataMapLayer, utilityReaches } from '../src/requests/dataMap';
 
 const at = (x: number, y: number) => ({ x, y });
@@ -112,6 +114,45 @@ describe('data map request', () => {
     occ.maxScaled = 4;
     const heat = dataMapLayer(w, 'Traffic').traffic!;
     expect([heat[1], heat[2], heat[10], heat[20]]).toEqual([1, 0.25, 0, 0]);
+  });
+
+  it('trafficReadsTheMesoQueuesWhereNoMicroTrafficRuns', { timeout: 600_000 }, () => {
+    // The metropolis drives every trip through meso and builds no micro traffic at all.
+    const w = createWorld({ mapWidth: 200, mapHeight: 200 });
+    requestState(w, 'InGame');
+    frame(w, 0);
+    new MetropolisScenario(w);
+    expect(w.microTraffic).toBe(false);
+    // The graph and the queues are rebuilt as new objects: read them from the world every time.
+    const busiest = () => {
+      const m = w.mesoTraffic;
+      let best = -1;
+      for (let l = 0; l < m.usedMeters.length; l++) if (m.usedMeters[l]! > 0 && (best < 0 || m.usedMeters[l]! / linkRoomMeters(w, l) > m.usedMeters[best]! / linkRoomMeters(w, best))) best = l;
+      return best;
+    };
+    let link = -1;
+    for (let round = 0; round < 60 && link < 0; round++) {
+      step(w, 50);
+      link = busiest();
+    }
+    expect(link, 'a queue on some link').toBeGreaterThanOrEqual(0);
+    const g = w.meso;
+    const m = w.mesoTraffic;
+    const load = Math.min(m.usedMeters[link]! / linkRoomMeters(w, link), 1);
+    const heat = dataMapLayer(w, 'Traffic').traffic!;
+    const tiles = [...g.tileLink.keys()].filter((i) => g.tileLink[i] === link);
+    expect(tiles.length, 'the link lies on road tiles').toBeGreaterThan(0);
+    for (const i of tiles) expect(heat[i], `tile ${i}`).toBeCloseTo(load, 5);
+    expect(w.trafficOccupancy.maxHeat(), 'no micro heat to fall back on').toBe(0);
+
+    // Painted off green and read as a share above zero, as the player sees it.
+    const inputs = dataMapInputs(renderLayersOf(w.grid, w.mapConfig, w.mapEditVersion, w.graphVersion, w.mapSeed), dataMapLayer(w, 'Traffic'));
+    const tile = tiles[0]!;
+    expect(dataMapTileColor('Traffic', tile, inputs)).toEqual(trafficHeatColor(load));
+    expect(dataMapTileColor('Traffic', tile, inputs)![0], 'red rises with the queue').toBeGreaterThan(0);
+    const percent = Number(/(\d+) %/.exec(overlayReading('Traffic', { x: tile % 200, y: Math.floor(tile / 200) }, inputs)!)![1]);
+    expect(percent).toBe(Math.round(load * 100));
+    expect(percent).toBeGreaterThan(0);
   });
 
   it('theVersionMovesWithWhatTheLayerIsReadFrom', () => {

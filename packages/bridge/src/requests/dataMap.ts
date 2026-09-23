@@ -5,6 +5,7 @@ import {
   CIVIC_KINDS,
   MAX_ZONE_DEPTH,
   blockHas,
+  linkRoomMeters,
   utilityMask,
   type CityField,
   type MapGrid,
@@ -140,11 +141,24 @@ export function dataMapLayer(w: World, overlay: DataMapOverlay): DataMapReply {
     case 'Height':
       return withArray({ ...base, version: version() }, 'heights', measured(grid.elevation));
     case 'Traffic': {
+      // Two sources: the meso queues (every citizen and regional trip, the metropolis's only traffic) as the metres a
+      // link's queue takes against its room, spread over the link's tiles; and the micro occupancy heat (the `city` and
+      // crossing scenarios) as a share of the busiest road. A tile shows the heavier of the two.
+      const g = w.meso;
+      const m = w.mesoTraffic;
       const occ = w.trafficOccupancy;
-      if (len === 0 || occ.emaScaled.length !== len) return { ...base, version: version(w.tick) };
+      const meso = len > 0 && g.builtFor !== null && m.linksFor === g.builtFor && g.tileLink.length === len;
+      const micro = len > 0 && occ.emaScaled.length === len;
+      if (!meso && !micro) return { ...base, version: version(w.tick) };
       const heat = new Float32Array(len);
       const busiest = Math.max(occ.maxHeat(), 0.001);
-      for (let i = 0; i < len; i++) if (grid.roadKind[i] !== 0) heat[i] = Math.min(occ.heatIdx(i) / busiest, 1);
+      for (let i = 0; i < len; i++) {
+        if (grid.roadKind[i] === 0) continue;
+        let h = micro ? Math.min(occ.heatIdx(i) / busiest, 1) : 0;
+        const link = meso ? g.tileLink[i]! : -1;
+        if (link >= 0 && link < m.usedMeters.length) h = Math.max(h, Math.min(m.usedMeters[link]! / linkRoomMeters(w, link), 1));
+        heat[i] = h;
+      }
       return { ...base, version: version(w.tick), traffic: heat };
     }
     case 'ServiceCoverage': {
