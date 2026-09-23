@@ -8,7 +8,7 @@ import { DEFAULT_MAP_CONFIG, Notifications, tileToWorld, type HistoryLine, type 
 import { createElement, isValidElement, type ReactElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { ADVISOR_TOGGLE_ID, AdvisorPanel, AdvisorToggle, RECENT_EVENTS, type AdvisorPanelProps } from '../src/AdvisorPanel';
+import { ADVISOR_TOGGLE_ID, AdvisorPanel, focusOnOpen, AdvisorToggle, RECENT_EVENTS, type AdvisorPanelProps } from '../src/AdvisorPanel';
 import { focusViewOn } from '../src/Toasts';
 
 const advisorCss = readFileSync(new URL('../src/advisorPanel.css', import.meta.url), 'utf8');
@@ -151,16 +151,42 @@ describe('advisor panel', () => {
       (root.props[name] as (e: { stopPropagation(): void }) => void)({ stopPropagation: () => (stopped = true) });
       expect(stopped, name).toBe(true);
     }
-    let stopped = false;
-    const onKeyDown = root.props.onKeyDown as (e: { key: string; stopPropagation(): void }) => void;
-    onKeyDown({ key: 'a', stopPropagation: () => (stopped = true) });
-    expect([closed, stopped], 'other keys pass to the game').toEqual([0, false]);
-    onKeyDown({ key: 'Escape', stopPropagation: () => (stopped = true) });
-    expect([closed, stopped], 'Esc closes the panel, not the game').toEqual([1, true]);
+    type Key = { key: string; target: { tagName?: string }; stopPropagation(): void };
+    const onKeyDown = root.props.onKeyDown as (e: Key) => void;
+    const press = (key: string, tagName: string) => {
+      let stopped = false;
+      onKeyDown({ key, target: { tagName }, stopPropagation: () => (stopped = true) });
+      return stopped;
+    };
+    expect([press('a', 'SECTION'), closed], 'other keys pass to the game').toEqual([false, 0]);
+    // Non-modal: the tool and digit hotkeys still reach the game with a problem focused.
+    expect(press('1', 'BUTTON'), 'a digit on a focused problem is a hotkey').toBe(false);
+    // Space and Enter on a focused problem press it rather than pausing the game (rev-advisor-panel, finding 2).
+    expect(press(' ', 'BUTTON'), 'Space presses the problem').toBe(true);
+    expect(press('Enter', 'BUTTON'), 'Enter presses the problem').toBe(true);
+    expect(press(' ', 'SECTION'), 'Space on the panel itself still pauses').toBe(false);
+    expect(closed).toBe(0);
+    expect(press('Escape', 'SECTION'), 'Esc closes the panel, not the game').toBe(true);
+    expect(closed).toBe(1);
     // layout.md §8: left column under the data maps, 420 px wide, on the panels' layer.
     expect(rule('.advisor-panel')).toMatch(/top:\s*352px/);
     expect(rule('.advisor-panel')).toMatch(/width:\s*420px/);
     expect(rule('.advisor-panel')).toMatch(/z-index:\s*var\(--hud-z-panel\)/);
     expect(rule('.advisor-panel')).toMatch(/pointer-events:\s*auto/);
+  });
+
+  // rev-advisor-panel, finding 1: opening from the toggle puts focus in the panel, so the next Esc closes it rather
+  // than taking the game to the menu. `focusOnOpen` is one function for the panel's life: React calls it on mount only.
+  it('advisorPanelTakesFocusWhenItOpens', () => {
+    const root = AdvisorPanel(props([])) as Element & { props: { ref?: unknown } };
+    expect(root.props.ref, 'the panel focuses itself on mount').toBe(focusOnOpen);
+    expect((AdvisorPanel(props([])) as Element & { props: { ref?: unknown } }).props.ref, 'the same ref every render').toBe(focusOnOpen);
+    const calls: unknown[] = [];
+    focusOnOpen({ focus: (options?: unknown) => calls.push(options) } as unknown as HTMLElement);
+    focusOnOpen(null);
+    expect(calls).toEqual([{ preventScroll: true }]);
+    // states.md: the panel stops above the palette and scrolls rather than covering it.
+    expect(rule('.advisor-panel')).toMatch(/max-height:/);
+    expect(rule('.advisor-panel')).toMatch(/overflow-y:\s*auto/);
   });
 });

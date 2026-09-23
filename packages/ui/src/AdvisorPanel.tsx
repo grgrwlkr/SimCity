@@ -47,13 +47,25 @@ export function eventLine(line: HistoryLine): string {
 /** A press or a wheel on the panel is the panel's: it never reaches the map (states.md, «Правило клика сквозь HUD»). */
 const keepOffTheMap = (event: { stopPropagation(): void }) => event.stopPropagation();
 
+/**
+ * The panel's ref: focus moves into it when it opens, so Esc closes it rather than taking the game to the menu. One
+ * function for the panel's life, so React calls it on mount only, not on every snapshot.
+ */
+export const focusOnOpen = (el: HTMLElement | null): void => el?.focus({ preventScroll: true });
+
 /** The advisor's panel; `null` while closed. */
 export function AdvisorPanel({ snapshot, open, onClose, onFocus }: AdvisorPanelProps) {
   if (!open) return null;
   const problems = snapshot.advisor.slice(0, 1 + MORE_PROBLEMS);
   const events = snapshot.history.slice(-RECENT_EVENTS).reverse();
   // Esc closes the open panel before it can take the game to the menu (states.md, «Клавиатура»).
-  const onKeyDown = (event: Pick<KeyboardEvent, 'key' | 'stopPropagation'>) => {
+  // Space and Enter on a focused problem press it rather than pausing the game; other hotkeys pass (not modal).
+  const onKeyDown = (event: Pick<KeyboardEvent, 'key' | 'stopPropagation'> & { target: { tagName?: string } | EventTarget }) => {
+    const onButton = (event.target as { tagName?: string }).tagName === 'BUTTON';
+    if (onButton && (event.key === ' ' || event.key === 'Enter')) {
+      event.stopPropagation();
+      return;
+    }
     if (event.key !== 'Escape') return;
     event.stopPropagation();
     onClose();
@@ -66,7 +78,8 @@ export function AdvisorPanel({ snapshot, open, onClose, onFocus }: AdvisorPanelP
       className="advisor-panel hud-glass"
       data-testid="advisor"
       aria-labelledby="advisor-title"
-      // A click anywhere on the panel puts focus in it, so Esc reaches `onKeyDown` rather than the game's hotkeys.
+      // Focus sits in the panel from its opening, and a click anywhere on it keeps it there: Esc reaches `onKeyDown`.
+      ref={focusOnOpen}
       tabIndex={-1}
       onPointerDown={keepOffTheMap}
       onWheel={keepOffTheMap}

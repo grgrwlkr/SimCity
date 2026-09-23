@@ -7,6 +7,8 @@ import type {} from '../packages/app/src/simApi';
 
 // Opening the game alone takes 25 s under a loaded machine (rev-toasts, round 1).
 test.describe.configure({ timeout: 120_000 });
+// The Electron window and the smallest screen of states.md: the panel must clear the palette here.
+test.use({ viewport: { width: 1280, height: 800 } });
 
 async function openGame(page: Page, url = '/'): Promise<void> {
   await page.goto(url);
@@ -23,6 +25,17 @@ async function openAdvisor(page: Page): Promise<void> {
   await page.getByTestId('advisor-toggle').click();
   await expect(page.getByTestId('advisor-toggle')).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByTestId('advisor')).toBeVisible();
+  // Focus moves into the panel on opening, so the next Esc is the panel's (rev-advisor-panel, finding 1).
+  await expect(page.getByTestId('advisor')).toBeFocused();
+}
+
+/** The panel stops above the palette rather than covering its left end (rev-advisor-panel, finding 3). */
+async function expectClearOfPalette(page: Page): Promise<void> {
+  const panel = await page.getByTestId('advisor').boundingBox();
+  const palette = await page.getByRole('toolbar', { name: 'Инструменты' }).boundingBox();
+  expect(panel, 'the panel is laid out').not.toBeNull();
+  expect(palette, 'the palette is laid out').not.toBeNull();
+  expect(panel!.y + panel!.height, `the panel ${JSON.stringify(panel)} ends above the palette ${JSON.stringify(palette)}`).toBeLessThanOrEqual(palette!.y);
 }
 
 const snapshot = (page: Page) => page.evaluate(() => window.__sim.snapshot());
@@ -38,9 +51,16 @@ test('advisorOpensFromTheBarAndNamesTheWorstProblem', async ({ page }) => {
   await openGame(page);
   await page.evaluate(() => window.__sim.setSpeed('Paused'));
   await openAdvisor(page);
-  // The worst problem of the snapshot, or the healthy city's one line (states.md).
-  const worst = (await snapshot(page)).advisor[0]?.text ?? 'Ничего не требует внимания';
-  await expect(page.getByTestId('advisor').locator('.advisor-worst')).toHaveText(worst);
+  // The worst problem of the snapshot, or the healthy city's one line (states.md), read afresh on every try: a tick
+  // in flight when the game paused may still change it.
+  const worst = page.getByTestId('advisor').locator('.advisor-worst');
+  await expect
+    .poll(async () => {
+      await page.evaluate(() => window.__sim.step(1));
+      const expected = (await snapshot(page)).advisor[0]?.text ?? 'Ничего не требует внимания';
+      return (await worst.textContent()) === expected;
+    }, { message: 'the panel names the worst problem of the snapshot' })
+    .toBe(true);
   await page.getByTestId('advisor-toggle').click();
   await expect(page.getByTestId('advisor')).toHaveCount(0);
 });
@@ -55,7 +75,8 @@ test('advisorPanelKeepsItsClicksOffTheMapAndEscClosesIt', async ({ page }) => {
   await page.mouse.down();
   await page.mouse.up();
   expect(await page.evaluate(() => window.__sim.camera()), 'a wheel on the panel does not zoom the map').toEqual(camera);
-  await panel.locator('h2').click();
+  // Straight from the toggle, as a player does: the panel took focus on opening.
+  await expect(panel).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(panel).toHaveCount(0);
   await page.evaluate(() => window.__sim.step(1));
@@ -64,6 +85,8 @@ test('advisorPanelKeepsItsClicksOffTheMapAndEscClosesIt', async ({ page }) => {
 });
 
 test('clickingAProblemWithAPlaceTakesTheCameraThere', async ({ page }) => {
+  // openGame (up to 25 s under load) + the 90 s poll + the rest.
+  test.setTimeout(240_000);
   // The living city grows zoned buildings before any plant or pump: the advisor points at the first one without.
   await openGame(page, '/?scenario=living');
   await page.evaluate(() => window.__sim.setSpeed('X360'));
@@ -73,8 +96,18 @@ test('clickingAProblemWithAPlaceTakesTheCameraThere', async ({ page }) => {
   await page.evaluate(() => window.__sim.setSpeed('Paused'));
   await page.evaluate(() => window.__sim.fitMap());
   await openAdvisor(page);
-  const placed = (await snapshot(page)).advisor.find((problem) => problem.at !== null)!;
-  expect(await centreTile(page), 'the camera starts elsewhere').not.toEqual(placed.at);
-  await page.getByTestId('advisor-problem').filter({ hasText: placed.text }).click();
-  await expect.poll(() => centreTile(page)).toEqual(placed.at);
+  await expectClearOfPalette(page);
+  const centre = await centreTile(page);
+  const placed = (await snapshot(page)).advisor.find((problem) => problem.at !== null && (problem.at.x !== centre?.x || problem.at.y !== centre?.y));
+  expect(placed, `a problem with a place away from the centre tile ${JSON.stringify(centre)} is still named after the pause`).toBeDefined();
+  const line = page.getByTestId('advisor-problem').filter({ hasText: placed!.text });
+  // Space on a focused problem presses it: the camera goes there and the game does not pause (finding 2).
+  await line.focus();
+  await page.keyboard.press('Space');
+  await expect.poll(() => centreTile(page)).toEqual(placed!.at);
+  await page.evaluate(() => window.__sim.step(1));
+  expect((await snapshot(page)).appState, 'Space on a problem is not the pause hotkey').toBe('InGame');
+  await page.evaluate(() => window.__sim.fitMap());
+  await line.click();
+  await expect.poll(() => centreTile(page)).toEqual(placed!.at);
 });
