@@ -1,7 +1,8 @@
 // Building bodies of the scene: port of crates/simcity_sim/src/game/buildings/visual.rs (tag rust-final). A body is walls
 // of facade and a roof of gravel in one mesh whose vertices carry atlas UVs per face, so one material covers both; the
 // mesh is cached by shape, so buildings of one shape are instances of one mesh, and a decay tint is a swap to another
-// cached material. Windows and their night glow belong to the lighting stage (R3) and are not built here.
+// cached material. Windows are a mesh of their own per shape, so the one shared material `lighting.ts` drives can glow
+// at night.
 import { serviceKindFromBuilding, type BuildingKind, type BuildingProfile } from '@simcity/sim';
 import { uvIn, type AtlasCell } from '../atlas';
 import { profileColor, profileHeight, type Rgb } from '../buildingLook';
@@ -27,6 +28,8 @@ export interface BuildingVisual {
   readonly shape: BuildingShape;
   /** Shared by every building of the same shape. */
   readonly body: CompositeMesh;
+  /** Glass bands round the walls, shared by every building of the same shape. */
+  readonly windows: CompositeMesh;
   /** The body material: white, or the decay tint; vertex-mapped, so the mesh picks the atlas cells. */
   readonly material: MaterialSpec;
   /** The service glyph on the roof, empty for anything but a station. */
@@ -79,9 +82,39 @@ export function buildingBodyMesh(w: number, d: number, h: number, base: Rgb, atl
   return b.build();
 }
 
+/** Storeys whose windows show: `building_floors` of visual.rs. */
+export function buildingFloors(kind: BuildingKind, level: number): number {
+  return kind === 'Residential' || kind === 'Commercial' ? Math.max(level, 1) * 2 : 2;
+}
+
+/** Window bands `[z0, z1]` over a plinth, the lower 45 % of each storey: `window_bands` of visual.rs. */
+export function windowBands(h: number, floors: number): Array<[number, number]> {
+  const plinth = Math.min(h * 0.08, 2);
+  const fh = (h - plinth) / floors;
+  return Array.from({ length: floors }, (_, i) => [plinth + i * fh, plinth + i * fh + fh * 0.45]);
+}
+
+/** The bands as wall quads a little proud of the body, white: the shared window material gives the glass and the glow. */
+export function buildingWindowsMesh(w: number, d: number, h: number, floors: number): CompositeMesh {
+  // Proud of the wall, so the glass does not fight the facade for depth.
+  const e = 0.08;
+  const [hw, hd] = [w / 2 + e, d / 2 + e];
+  const white: Color4 = [1, 1, 1, 1];
+  const b = new MeshBuilder();
+  const uv = [...uvIn('Plain', 0, 0), ...uvIn('Plain', 1, 0), ...uvIn('Plain', 1, 1), ...uvIn('Plain', 0, 1)];
+  for (const [z0, z1] of windowBands(h, floors)) {
+    b.quad([[-hw, hd, z0], [-hw, hd, z1], [hw, hd, z1], [hw, hd, z0]], [0, 1, 0], white, uv);
+    b.quad([[-hw, -hd, z0], [hw, -hd, z0], [hw, -hd, z1], [-hw, -hd, z1]], [0, -1, 0], white, uv);
+    b.quad([[hw, -hd, z0], [hw, hd, z0], [hw, hd, z1], [hw, -hd, z1]], [1, 0, 0], white, uv);
+    b.quad([[-hw, -hd, z0], [-hw, -hd, z1], [-hw, hd, z1], [-hw, hd, z0]], [-1, 0, 0], white, uv);
+  }
+  return b.build();
+}
+
 /** Body meshes by (kind, level, footprint, profile): buildings of one shape are GPU instances of one mesh. */
 export class BuildingMeshCache {
   private readonly byKey = new Map<string, CompositeMesh>();
+  private readonly windowsByKey = new Map<string, CompositeMesh>();
 
   constructor(
     private readonly tileSize: number,
@@ -89,16 +122,30 @@ export class BuildingMeshCache {
   ) {}
 
   get(s: BuildingShape): CompositeMesh {
-    // Inset a unit per side, so neighbouring buildings read as separate blocks.
-    const w = s.width * this.tileSize - 2;
-    const d = s.length * this.tileSize - 2;
-    const key = `${s.kind}|${s.level}|${w}|${d}|${s.profile.density}|${s.profile.class}`;
+    const { w, d, key } = this.keyOf(s);
     let mesh = this.byKey.get(key);
     if (mesh === undefined) {
       mesh = buildingBodyMesh(w, d, profileHeight(s.kind, s.level, s.profile), profileColor(s.kind, s.profile), this.atlas);
       this.byKey.set(key, mesh);
     }
     return mesh;
+  }
+
+  windows(s: BuildingShape): CompositeMesh {
+    const { w, d, key } = this.keyOf(s);
+    let mesh = this.windowsByKey.get(key);
+    if (mesh === undefined) {
+      mesh = buildingWindowsMesh(w, d, profileHeight(s.kind, s.level, s.profile), buildingFloors(s.kind, s.level));
+      this.windowsByKey.set(key, mesh);
+    }
+    return mesh;
+  }
+
+  private keyOf(s: BuildingShape): { w: number; d: number; key: string } {
+    // Inset a unit per side, so neighbouring buildings read as separate blocks.
+    const w = s.width * this.tileSize - 2;
+    const d = s.length * this.tileSize - 2;
+    return { w, d, key: `${s.kind}|${s.level}|${w}|${d}|${s.profile.density}|${s.profile.class}` };
   }
 
   get size(): number {
@@ -141,6 +188,7 @@ export class BuildingVisuals {
     const visual: BuildingVisual = {
       shape,
       body: this.cache.get(shape),
+      windows: this.cache.windows(shape),
       material: this.prims.materialVertexMapped(tint ?? [1, 1, 1]),
       glyph: service === undefined ? [] : glyphPieces(service, this.glyphSize),
       glyphZ: profileHeight(shape.kind, shape.level, shape.profile) + CHILD_ABOVE,

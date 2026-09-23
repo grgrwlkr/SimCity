@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { BuildingKind, BuildingProfile } from '@simcity/sim';
 import { uvIn } from '../../src/atlas';
 import { RenderPrimitives } from '../../src/renderPrimitives';
-import { BuildingVisuals, atlasRepeats, buildingBodyMesh } from '../../src/scene/buildings';
+import { BuildingVisuals, atlasRepeats, buildingBodyMesh, buildingFloors, buildingWindowsMesh, windowBands } from '../../src/scene/buildings';
 
 const TILE = 16;
 const MEDIUM: BuildingProfile = { density: 'Medium', class: 'Middle' };
@@ -74,5 +74,35 @@ describe('building visuals', () => {
     for (let id = 1; id <= 4000; id++) many.set(id, shape(kinds[id % kinds.length]!, 1));
     expect(many.batches().length).toBe(few.batches().length);
     expect(many.batches().reduce((n, b) => n + b.ids.length, 0)).toBe(4000);
+  });
+
+  // `window_bands`, `building_floors` and `building_windows_mesh` of visual.rs: glass bands a little proud of the walls,
+  // a mesh apart from the body so one shared material can glow at night.
+  it('windowBandsSitBetweenThePlinthAndTheRoofOnePerFloor', () => {
+    const bands = windowBands(22, 4);
+    expect(bands).toHaveLength(4);
+    const plinth = Math.min(22 * 0.08, 2);
+    expect(bands[0]![0]).toBeCloseTo(plinth);
+    for (const [z0, z1] of bands) {
+      expect(z1).toBeGreaterThan(z0);
+      expect(z1).toBeLessThanOrEqual(22);
+    }
+    expect(buildingFloors('Residential', 2)).toBe(4);
+    expect(buildingFloors('Commercial', 0)).toBe(2);
+    expect(buildingFloors('Industrial', 3)).toBe(2);
+  });
+
+  it('windowsAreTheirOwnMeshProudOfTheWalls', () => {
+    const mesh = buildingWindowsMesh(30, 20, 10, 2);
+    // Four walls per band, a quad each.
+    expect(mesh.indices.length).toBe(2 * 4 * 6);
+    let maxX = 0;
+    for (let i = 0; i < mesh.positions.length; i += 3) maxX = Math.max(maxX, Math.abs(mesh.positions[i]!));
+    expect(maxX).toBeGreaterThan(15);
+    const all = visuals();
+    const v = all.set(1, shape('Residential', 1));
+    expect(v.windows.indices.length).toBeGreaterThan(0);
+    expect(all.set(2, shape('Residential', 1)).windows, 'windows of one shape are one mesh').toBe(v.windows);
+    expect(all.set(3, shape('Residential', 2)).windows).not.toBe(v.windows);
   });
 });

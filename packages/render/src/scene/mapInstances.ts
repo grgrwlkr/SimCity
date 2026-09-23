@@ -28,6 +28,12 @@ function chunkArea(map: MapLayersReply, index: number): TileArea {
   return { x0, y0, x1: Math.min(x0 + CHUNK_TILES, map.width), y1: Math.min(y0 + CHUNK_TILES, map.height) };
 }
 
+/** The shared night-glow materials of `lighting.ts`; without them windows and signs wear a flat cached material. */
+export interface GlowMaterials {
+  readonly windows: THREE.Material;
+  readonly signs: THREE.Material;
+}
+
 export class MapInstances {
   readonly buildingGroup = new THREE.Group();
   readonly propGroup = new THREE.Group();
@@ -36,6 +42,9 @@ export class MapInstances {
   /** Building instances by (shape, material), and the batch each tile's building sits in. */
   private readonly buildingBatchByKey = new Map<CompositeMesh, Map<MaterialSpec, InstanceBatch>>();
   private readonly buildingBatchOf = new Map<number, InstanceBatch>();
+  /** Window instances by window mesh, all on the one window material, and the batch each tile's windows sit in. */
+  private readonly windowBatchByMesh = new Map<CompositeMesh, InstanceBatch>();
+  private readonly windowBatchOf = new Map<number, InstanceBatch>();
   private glyphBatch: InstanceBatch | null = null;
   /** One unit quad for every glyph piece, sized per instance. */
   private readonly glyphGeometry = new THREE.PlaneGeometry(1, 1);
@@ -47,6 +56,7 @@ export class MapInstances {
     private readonly prims: RenderPrimitives,
     private readonly materials: SceneMaterials,
     private readonly geometryOf: (mesh: CompositeMesh) => THREE.BufferGeometry,
+    private readonly glow: GlowMaterials | null = null,
   ) {}
 
   /** Brings the instances to `map`, redoing the tiles of `changed` chunks; `fresh` drops everything first (a new map). */
@@ -77,14 +87,18 @@ export class MapInstances {
    * Every instance as `batch|tile|matrix`, sorted: two builds of the same map give the same list whatever order their
    * edits came in, and a stale matrix or a stale prop shows as a difference.
    */
+  windowBatches(): InstanceBatch[] {
+    return [...this.windowBatchByMesh.values()];
+  }
+
   digest(): string[] {
-    const all = [...this.buildingBatches(), ...(this.glyphBatch === null ? [] : [this.glyphBatch]), ...this.propBatches.values()];
+    const all = [...this.buildingBatches(), ...this.windowBatches(), ...(this.glyphBatch === null ? [] : [this.glyphBatch]), ...this.propBatches.values()];
     return all.flatMap((b) => b.entries().map((e) => `${b.name}|${e}`)).sort();
   }
 
   /** Instances per batch name, the empty ones left out: a duplicated instance shows here even where `buildings` does not. */
   batchCounts(): Record<string, number> {
-    const all = [...this.buildingBatches(), ...(this.glyphBatch === null ? [] : [this.glyphBatch]), ...this.propBatches.values()];
+    const all = [...this.buildingBatches(), ...this.windowBatches(), ...(this.glyphBatch === null ? [] : [this.glyphBatch]), ...this.propBatches.values()];
     const out: Record<string, number> = {};
     for (const b of all) if (b.count > 0) out[b.name] = (out[b.name] ?? 0) + b.count;
     return out;
@@ -92,10 +106,13 @@ export class MapInstances {
 
   private reset(): void {
     for (const batch of this.buildingBatches()) batch.dispose();
+    for (const batch of this.windowBatches()) batch.dispose();
     for (const batch of this.propBatches.values()) batch.dispose();
     this.glyphBatch?.dispose();
     this.buildingBatchByKey.clear();
     this.buildingBatchOf.clear();
+    this.windowBatchByMesh.clear();
+    this.windowBatchOf.clear();
     this.propBatches.clear();
     this.propsOf.clear();
     this.glyphBatch = null;
@@ -107,6 +124,15 @@ export class MapInstances {
     if (byMaterial === undefined) this.buildingBatchByKey.set(body, (byMaterial = new Map()));
     let batch = byMaterial.get(material);
     if (batch === undefined) byMaterial.set(material, (batch = new InstanceBatch(this.buildingGroup, this.geometryOf(body), this.materials.get(material), label)));
+    return batch;
+  }
+
+  private windowBatch(windows: CompositeMesh): InstanceBatch {
+    let batch = this.windowBatchByMesh.get(windows);
+    if (batch === undefined) {
+      const material = this.glow?.windows ?? this.materials.get(this.prims.material([1, 1, 1]));
+      this.windowBatchByMesh.set(windows, (batch = new InstanceBatch(this.buildingGroup, this.geometryOf(windows), material, `windows ${this.windowBatchByMesh.size}`)));
+    }
     return batch;
   }
 
@@ -133,6 +159,12 @@ export class MapInstances {
             this.buildingBatchOf.delete(i);
             visuals.delete(i);
           }
+          const oldWindows = this.windowBatchOf.get(i);
+          if (oldWindows !== undefined) {
+            oldWindows.remove(i);
+            touched.add(oldWindows);
+            this.windowBatchOf.delete(i);
+          }
           glyphs.remove(i);
           const code = map.layers.building[i]!;
           if (code === 0) continue;
@@ -143,6 +175,10 @@ export class MapInstances {
           batch.put(i, matrix.makeTranslation(c.x, c.y, 0));
           touched.add(batch);
           this.buildingBatchOf.set(i, batch);
+          const windows = this.windowBatch(v.windows);
+          windows.put(i, matrix);
+          touched.add(windows);
+          this.windowBatchOf.set(i, windows);
           for (const p of v.glyph) {
             glyphs.put(i, matrix.compose(new THREE.Vector3(c.x + p.offset[0], c.y + p.offset[1], v.glyphZ), turn.setFromAxisAngle(z, p.rotation), new THREE.Vector3(p.size[0], p.size[1], 1)));
           }
@@ -155,9 +191,10 @@ export class MapInstances {
   private propBatch(kind: PropMeshKind): InstanceBatch {
     let batch = this.propBatches.get(kind);
     if (batch === undefined) {
-      // Paint by day for signs; their night glow is R3's.
-      const material = this.prims.material(kind === 'sign' ? [0.96, 0.82, 0.32] : [1, 1, 1]);
-      batch = new InstanceBatch(this.propGroup, this.geometryOf(this.prims.propMesh(kind)), this.materials.get(material), `props-${kind}`);
+      // Signs wear the shared glow material: a painted board by day, lit at night.
+      const cached = this.materials.get(this.prims.material(kind === 'sign' ? [0.96, 0.82, 0.32] : [1, 1, 1]));
+      const material = kind === 'sign' && this.glow !== null ? this.glow.signs : cached;
+      batch = new InstanceBatch(this.propGroup, this.geometryOf(this.prims.propMesh(kind)), material, `props-${kind}`);
       this.propBatches.set(kind, batch);
     }
     return batch;
