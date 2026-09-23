@@ -51,6 +51,8 @@ export class MapInstances {
   private readonly propBatches = new Map<PropMeshKind, InstanceBatch>();
   /** The kinds of prop each tile owns instances of. */
   private readonly propsOf = new Map<number, PropMeshKind[]>();
+  /** Lit white, no vertex colour: under a data map a body is its instance colour and the scene's light, nothing else. */
+  private tintMaterial: THREE.MeshLambertNodeMaterial | null = null;
 
   constructor(
     private readonly prims: RenderPrimitives,
@@ -85,7 +87,8 @@ export class MapInstances {
    */
   tintBuildings(of: ((tile: number) => readonly [number, number, number] | null) | null): void {
     // White bodies while tinted: a roof's own colour times the map's would shade the map, a blue roof under yellow black.
-    const white = of === null ? null : this.materials.get(this.prims.material([1, 1, 1]));
+    // The shared white material still reads the geometry's vertex colours, so the tint has its own without them.
+    const white = of === null ? null : (this.tintMaterial ??= new THREE.MeshLambertNodeMaterial());
     for (const batch of this.buildingBatches()) {
       batch.useMaterial(white);
       batch.tint(of);
