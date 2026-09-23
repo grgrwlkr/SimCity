@@ -9,7 +9,7 @@ import { Hud, type HudActions } from '../src/Hud';
 import { HudBar, formatMoney, windowTitle } from '../src/HudBar';
 import { useSimStore } from '../src/store';
 
-const actions: HudActions = { setState: () => {}, setSpeed: () => {}, scenarioHref: (s) => `?scenario=${s.query}`, command: () => {}, undoRedo: () => {} };
+const actions: HudActions = { setState: () => {}, setSpeed: () => {}, scenarioHref: (s) => `?scenario=${s.query}`, command: () => {}, undoRedo: () => {}, focusTile: () => {} };
 
 function snapshot(city: Partial<WorldSnapshot['city']> = {}, rest: Partial<WorldSnapshot> = {}): WorldSnapshot {
   return {
@@ -32,7 +32,7 @@ function snapshot(city: Partial<WorldSnapshot['city']> = {}, rest: Partial<World
   } as WorldSnapshot;
 }
 
-const bar = (s: WorldSnapshot, debug: boolean, fps: number | null = 60) => renderToStaticMarkup(createElement(HudBar, { snapshot: s, fps, debug, actions }));
+const bar = (s: WorldSnapshot, debug: boolean, fps: number | null = 60) => renderToStaticMarkup(createElement(HudBar, { snapshot: s, fps, debug, actions, budgetOpen: false, onBudgetToggle: () => {} }));
 const text = (html: string) => html.replace(/<[^>]+>/g, ' ');
 const count = (html: string, needle: string) => html.split(needle).length - 1;
 const DEV_IDS = ['fps', 'tick', 'sim-tick', 'citizens', 'driving', 'emergencies'];

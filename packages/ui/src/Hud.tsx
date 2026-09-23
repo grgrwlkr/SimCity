@@ -1,8 +1,10 @@
 import { SCENARIOS, type Scenario, type SimSpeed } from '@simcity/bridge';
-import type { AppState, GameCommand } from '@simcity/sim';
-import { useEffect } from 'react';
+import type { AppState, GameCommand, TilePos } from '@simcity/sim';
+import { useEffect, useState } from 'react';
+import { BudgetPanel } from './BudgetPanel';
 import { HudBar, windowTitle } from './HudBar';
 import { useSimStore } from './store';
+import { Toasts } from './Toasts';
 import { ToolPalette } from './ToolPalette';
 
 // The brush in packages/app reads the tool in hand from here.
@@ -17,6 +19,8 @@ export interface HudActions {
   command(cmd: GameCommand): void;
   /** Undo (`false`) or redo (`true`) the last map edit. */
   undoRedo(redo: boolean): void;
+  /** A toast line with a place: the camera goes to that tile. */
+  focusTile(at: TilePos): void;
 }
 
 /** `handle_state_hotkeys` (sim.rs): Escape to the menu, Enter starts from the menu, Space pauses and resumes. */
@@ -47,6 +51,7 @@ function debugFlag(): boolean {
 export function Hud({ actions, debug = debugFlag() }: { actions: HudActions; debug?: boolean }) {
   const snapshot = useSimStore((s) => s.snapshot);
   const fps = useSimStore((s) => s.fps);
+  const [budgetOpen, setBudgetOpen] = useState(false);
   useStateHotkeys(snapshot?.appState, actions);
   const title = snapshot === null ? null : windowTitle(snapshot.appState, snapshot.city);
   useEffect(() => {
@@ -80,8 +85,17 @@ export function Hud({ actions, debug = debugFlag() }: { actions: HudActions; deb
 
   return (
     <>
-      <HudBar snapshot={snapshot} fps={fps} debug={debug} actions={actions} />
+      <HudBar
+        snapshot={snapshot}
+        fps={fps}
+        debug={debug}
+        actions={actions}
+        budgetOpen={budgetOpen}
+        onBudgetToggle={() => setBudgetOpen((open) => !open)}
+      />
       <ToolPalette onUndoRedo={actions.undoRedo} />
+      <BudgetPanel snapshot={snapshot} open={budgetOpen} onClose={() => setBudgetOpen(false)} command={actions.command} />
+      <Toasts onFocus={actions.focusTile} />
     </>
   );
 }

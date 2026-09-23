@@ -1,7 +1,7 @@
 import { RenderReader, SimClient, scenarioByQuery, type WorldSnapshot } from '@simcity/bridge';
 import { DebugRenderer, SceneRenderer, installViewControls, type Renderer } from '@simcity/render';
 import { SIGNALIZED_CROSS, crossBoxSize, defaultTrafficConfig, tileToWorld, toRustCommand, type MapConfig } from '@simcity/sim';
-import { Hud, useSimStore, useToolStore, type HudActions } from '@simcity/ui';
+import { Hud, focusViewOn, useSimStore, useToolStore, type HudActions } from '@simcity/ui';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { installGamepad } from './gamepad';
@@ -80,6 +80,7 @@ function syncRender(snapshot: WorldSnapshot): void {
     }
     r.setLights(snapshot.lights);
     r.setEmergencies(snapshot.services.emergencies);
+    r.setClock?.(snapshot.city.hour + snapshot.city.minute / 60);
     // The scenario's map is on screen: centre its box and show the whole cross, once the canvas has a
     // size (registered after the first fit, so it runs after it).
     const cross = scenario?.cross;
@@ -139,6 +140,10 @@ const actions: HudActions = {
   },
   command: (cmd) => void api.cmd(toRustCommand(cmd)),
   undoRedo: (redo) => void api.undoRedo(redo),
+  focusTile: (at) =>
+    void renderer.then((r) => {
+      if (mapConfig !== null) focusViewOn(r.view, mapConfig, at);
+    }),
 };
 
 const root = document.getElementById('root');

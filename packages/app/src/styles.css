@@ -1,6 +1,8 @@
 /* The HUD tokens first, then the HUD that draws with them (packages/ui has no bundler of its own). */
 @import './hud-tokens.css';
 @import '../../ui/src/hud.css';
+@import '../../ui/src/budget.css';
+@import '../../ui/src/toasts.css';
 
 :root {
   color-scheme: light dark;
