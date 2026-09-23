@@ -17,6 +17,19 @@ export interface ScenarioInfo {
 }
 
 const LISTED = [
+  // The presets of the catalog (`SCENARIO_PRESETS`): a new game on a generated map, its own seed unless the request gives one.
+  {
+    name: 'sandbox',
+    query: 'sandbox',
+    title: 'Песочница',
+    description: 'Новая карта без целей: 2 000 $ в казне, первый день, восемь утра',
+  },
+  {
+    name: 'starter',
+    query: 'starter',
+    title: 'Первый город',
+    description: 'Карта на сиде 42 и 1 500 $ в казне. Цели: 50 жителей и счастье не ниже 60 %',
+  },
   {
     name: 'city',
     query: 'city',

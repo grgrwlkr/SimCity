@@ -6,6 +6,7 @@ import {
   CitizenTripCounter,
   CityCommuteScenario,
   createWorld,
+  emptyScenarioProgress,
   CROSS_LAYOUT,
   despawnVehicle,
   forEachCitizenCar,
@@ -18,7 +19,9 @@ import {
   LivingCityScenario,
   loadWorld,
   MetropolisScenario,
+  objectiveValue,
   parseRustCommand,
+  presetById,
   recordSystemError,
   refSlot,
   requestState,
@@ -28,11 +31,13 @@ import {
   spawnVehicle,
   stampAndExpire,
   startEmergency,
+  startScenario,
   step,
   summarizeTraffic,
   tileDiagnosis,
   toHex64,
   type BudgetLines,
+  type ScenarioRuntime,
   type ShownToast,
   VEHICLE_CAPACITY,
   vehicleRef,
@@ -50,6 +55,7 @@ import {
   type GridLayers,
   type MesoLinksReply,
   isSlotRequest,
+  type ScenarioProgressView,
   type ImmediateRequest,
   type Reply,
   type ReplyByRequest,
@@ -113,8 +119,16 @@ interface HostScenario {
 /** `?scenario=city`: commuters, their departures spread over five minutes, a stay of two to six. */
 const CITY_COMMUTE = { citizens: 2000, departureWindowTicks: 3000, stayTicks: [1200, 3600] } as const;
 
+/** A catalog preset on its own seed or `seed`; its runtime only counts the trips of its citizens for the HUD. */
+const preset = (id: string) => (w: World, seed: bigint | undefined) => {
+  startScenario(w, presetById(id)!, seed);
+  return new CitizenTripCounter();
+};
+
 /** A builder for every scenario of the menu: a listed name without one fails the typecheck. */
-const SCENARIO_BUILDERS: Readonly<Record<ScenarioName, (w: World) => HostScenario>> = {
+const SCENARIO_BUILDERS: Readonly<Record<ScenarioName, (w: World, seed: bigint | undefined) => ScenarioRuntime>> = {
+  sandbox: preset('sandbox'),
+  starter: preset('starter'),
   // Without zones: grown citizens would drive among the commuters and share their ids.
   city: (w) => {
     const plan = buildCity(w, { zones: false });
@@ -126,6 +140,18 @@ const SCENARIO_BUILDERS: Readonly<Record<ScenarioName, (w: World) => HostScenari
   signalizedCross4: (w) => new SignalizedCrossScenario(w, undefined, CROSS_LAYOUT.signalizedCross4),
 };
 
+function scenarioView(w: World): ScenarioProgressView | null {
+  const s = w.scenario;
+  if (s.activeId === null) return null;
+  return {
+    id: s.activeId,
+    name: s.activeName ?? s.activeId,
+    objectives: s.objectives.map((o, i) => ({ kind: o.kind, target: o.target, current: objectiveValue(w.city, o), met: s.met[i] ?? false })),
+    completed: s.objectivesCompleted,
+    isCompleted: s.isCompleted,
+  };
+}
+
 export class SimHost {
   readonly render: SharedArrayBuffer;
   private world: World;
@@ -136,7 +162,6 @@ export class SimHost {
   /** What the camera sees with its margin, in world coordinates and in tiles; `null` for everything. */
   private view: { readonly world: WorldView; readonly tiles: TileView } | null = null;
   private lastReported: string | null = null;
-  private scenario: HostScenario | null = null;
   /** Recent average cost of a fixed tick, ms. */
   private tickMs: number | null = null;
   /** The cost of each of the last ticks, a ring. */
@@ -149,6 +174,11 @@ export class SimHost {
   /** The requests `answer` holds back behind a slot request, and the end of the last of them. */
   private waiting = 0;
   private queue: Promise<void> = Promise.resolve();
+
+  /** The running scenario, which the world keeps so a save carries it. */
+  private get scenario(): HostScenario | null {
+    return this.world.scenarioRuntime;
+  }
 
   /** `saves`: where the game's save slots live; OPFS unless a test gives another. */
   constructor(
@@ -211,9 +241,8 @@ export class SimHost {
 
   /** Built aside and swapped in only whole: a file that fails leaves the running world untouched. */
   private loadBytes(bytes: Uint8Array): FingerprintReply {
+    // The world brings its scenario with it.
     this.adoptWorld(loadWorld(UTF8_DECODER.decode(bytes)));
-    // A scenario's own state is not the world's and is not saved: the trips of the HUD count on from the load.
-    this.scenario = new CitizenTripCounter();
     return this.fingerprintReply();
   }
 
@@ -271,10 +300,13 @@ export class SimHost {
         return debugOverlayOf(this.world);
       case 'scenario': {
         const size = req.size ?? SCENARIOS.find((s) => s.name === req.name)?.mapSize;
-        if (size !== undefined && (size !== this.world.grid.width || size !== this.world.grid.height)) this.replaceWorld(size);
-        // A world of the same size is reused: the previous city's advice must not stand until the next hour.
+        // A preset is a new game: a fresh world, not the last scenario's buildings and citizens under a new map.
+        const fresh = presetById(req.name) !== undefined;
+        if (fresh || (size !== undefined && (size !== this.world.grid.width || size !== this.world.grid.height))) this.replaceWorld(size);
+        // A world of the same size is reused: the previous city's advice and objectives must not stand.
         this.world.advisor.reset();
-        this.scenario = SCENARIO_BUILDERS[req.name](this.world);
+        this.world.scenario = emptyScenarioProgress();
+        this.world.scenarioRuntime = SCENARIO_BUILDERS[req.name](this.world, req.seed === undefined ? undefined : BigInt(req.seed));
         // Settled into its first frame here: whether the loop ran an empty frame before the next request cannot matter.
         frame(this.world, 0);
         return null;
@@ -304,16 +336,19 @@ export class SimHost {
     }
   }
 
-  /** A fresh world of `size` tiles a side for a scenario of its own map, in the state the old one was heading for, at its speed. */
-  private replaceWorld(size: number): void {
+  /**
+   * A fresh world of `size` tiles a side (the default map without one) for a scenario of its own map, in the state the
+   * old one was heading for, at its speed.
+   */
+  private replaceWorld(size: number | undefined): void {
     const old = this.world;
-    const w = createWorld({ mapWidth: size, mapHeight: size });
+    const w = createWorld(size === undefined ? {} : { mapWidth: size, mapHeight: size });
     const state = old.nextState?.state ?? old.appState;
     if (state !== 'MainMenu') requestState(w, state);
     this.adoptWorld(w);
   }
 
-  /** `w` in place of the running world, at the running speed and without a scenario. */
+  /** `w` in place of the running world, at the running speed, with the scenario it carries. */
   private adoptWorld(w: World): void {
     const driver = new FixedStepDriver(w);
     driver.speed = this.driver.speed;
@@ -321,7 +356,6 @@ export class SimHost {
     this.driver = driver;
     this.tickMs = null;
     this.lastReported = null;
-    this.scenario = null;
     this.shownToasts = [];
   }
 
@@ -459,6 +493,7 @@ export class SimHost {
       history: w.notifications.history().map((line) => ({ ...line })),
       milestones: { bestPopulation: w.milestones.bestPopulation, next: w.milestones.next() ?? null },
       advisor: w.advisor.problems.slice(0, 3).map((problem) => ({ ...problem, at: problem.at === null ? null : { ...problem.at } })),
+      scenario: scenarioView(w),
     };
   }
 

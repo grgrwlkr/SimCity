@@ -2,6 +2,7 @@ import {
   ROAD_DIRS,
   ROAD_KINDS,
   LivingCityScenario,
+  SCENARIO_PRESETS,
   createWorld,
   fingerprint,
   frame,
@@ -166,6 +167,7 @@ describe('SimHost', () => {
         'history',
         'milestones',
         'advisor',
+        'scenario',
       ].sort(),
     );
   });
@@ -392,7 +394,41 @@ describe('SimHost', () => {
       host.handle({ t: 'step', ticks: 20 });
       const { mapEditVersion, lights } = host.handle({ t: 'snapshot' });
       expect(mapEditVersion, `${name} builds its map`).toBeGreaterThan(0);
-      expect(lights.length, `${name} lights its crossings`).toBeGreaterThan(0);
+      // The presets of the catalog generate a map of land and water, without roads.
+      if (!SCENARIO_PRESETS.some((p) => p.id === name)) expect(lights.length, `${name} lights its crossings`).toBeGreaterThan(0);
+    }
+  }, SIZED_IN_TICKS);
+
+  // Debt (b) of p1-save: what a scenario keeps outside the city (its objectives, the commuters of `city`, the waves of a
+  // crossing) is part of the save, so the loaded world goes on as the saved one.
+  it('aScenarioWithObjectivesLoadsWithItsFingerprintAndProgress', () => {
+    const host = new SimHost(RENDER_CAPACITY);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'scenario', name: 'starter' });
+    worldOf(host).city.population = 60;
+    const at = host.handle({ t: 'step', ticks: 20 });
+    const progress = host.handle({ t: 'snapshot' }).scenario;
+    expect(progress?.objectives[0]?.met, 'the population objective is met before the save').toBe(true);
+    const other = new SimHost(RENDER_CAPACITY);
+    other.handle({ t: 'setState', state: 'InGame' });
+    other.handle({ t: 'scenario', name: 'livingCity' });
+    expect(other.handle({ t: 'load', bytes: host.handle({ t: 'save' }) })).toEqual(at);
+    expect(other.handle({ t: 'snapshot' }).scenario).toEqual(progress);
+    expect(other.handle({ t: 'step', ticks: 100 })).toEqual(host.handle({ t: 'step', ticks: 100 }));
+    expect(other.handle({ t: 'snapshot' }).scenario).toEqual(host.handle({ t: 'snapshot' }).scenario);
+  }, SIZED_IN_TICKS);
+
+  it('theStateOfAScenarioOutsideTheCityComesBackWithASave', () => {
+    for (const name of ['city', 'signalizedCross'] as const) {
+      const host = new SimHost(RENDER_CAPACITY);
+      host.handle({ t: 'setState', state: 'InGame' });
+      host.handle({ t: 'scenario', name });
+      host.handle({ t: 'step', ticks: 150 });
+      const other = new SimHost(RENDER_CAPACITY);
+      other.handle({ t: 'setState', state: 'InGame' });
+      other.handle({ t: 'load', bytes: host.handle({ t: 'save' }) });
+      expect(other.handle({ t: 'step', ticks: 450 }), `${name} goes on after the load as before it`).toEqual(host.handle({ t: 'step', ticks: 450 }));
+      expect(other.handle({ t: 'snapshot' }).traffic.tripsStarted, `${name}: the trips counted`).toBe(host.handle({ t: 'snapshot' }).traffic.tripsStarted);
     }
   }, SIZED_IN_TICKS);
 
@@ -468,6 +504,8 @@ describe('SimHost', () => {
     const w = createWorld();
     requestState(w, 'InGame');
     const scenario = new LivingCityScenario(w);
+    // The host keeps the scenario in its world, where a save finds it.
+    w.scenarioRuntime = scenario;
     frame(w, 0);
     for (let i = 0; i < 30; i++) {
       scenario.advance(w);
