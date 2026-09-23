@@ -432,6 +432,50 @@ describe('SimHost', () => {
     }
   }, SIZED_IN_TICKS);
 
+  // Rust `reset_scenario_runtime` on `OnEnter(MainMenu)` (rust-final scenarios.rs:30, 116-119).
+  it('theMainMenuEndsTheScenario', () => {
+    const host = new SimHost(RENDER_CAPACITY);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'scenario', name: 'starter' });
+    Object.assign(worldOf(host).city, { population: 60, happiness: Math.fround(0.9) });
+    host.handle({ t: 'step', ticks: 2 });
+    expect(host.handle({ t: 'snapshot' }).scenario?.isCompleted).toBe(true);
+    host.handle({ t: 'setState', state: 'MainMenu' });
+    host.handle({ t: 'step', ticks: 2 });
+    expect(host.handle({ t: 'snapshot' }).scenario, 'in the menu').toBeNull();
+    expect(worldOf(host).scenarioRuntime).toBeNull();
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'step', ticks: 2 });
+    expect(host.handle({ t: 'snapshot' }).scenario, 'the next game is not measured against the last').toBeNull();
+  });
+
+  it('aScenarioOpensTheSameWhateverRanBefore', () => {
+    for (const name of ['signalizedCross', 'city'] as const) {
+      const fresh = new SimHost(RENDER_CAPACITY);
+      fresh.handle({ t: 'setState', state: 'InGame' });
+      fresh.handle({ t: 'scenario', name });
+      const after = new SimHost(RENDER_CAPACITY);
+      after.handle({ t: 'setState', state: 'InGame' });
+      after.handle({ t: 'scenario', name: 'starter' });
+      after.handle({ t: 'step', ticks: 30 });
+      after.handle({ t: 'scenario', name });
+      expect(after.handle({ t: 'fingerprint' }), `${name} after a preset`).toEqual(fresh.handle({ t: 'fingerprint' }));
+      expect(after.handle({ t: 'step', ticks: 600 }), `${name} runs the same`).toEqual(fresh.handle({ t: 'step', ticks: 600 }));
+    }
+  }, SIZED_IN_TICKS);
+
+  it('aSaveWithAForeignRuntimeIsRefusedAndTheWorldStays', () => {
+    const host = new SimHost(RENDER_CAPACITY);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'scenario', name: 'starter' });
+    const file = JSON.parse(new TextDecoder().decode(host.handle({ t: 'save' }))) as { world: Record<string, unknown> };
+    file.world.scenarioRuntime = { hello: 1 };
+    const before = host.handle({ t: 'fingerprint' });
+    expect(() => host.handle({ t: 'load', bytes: new TextEncoder().encode(JSON.stringify(file)).buffer })).toThrow(/world\.scenarioRuntime/);
+    expect(host.handle({ t: 'fingerprint' })).toEqual(before);
+    expect(host.handle({ t: 'step', ticks: 2 }).tick).toBe(2);
+  });
+
   it('snapshotReportsCitizensTrafficAndTickCost', () => {
     const host = new SimHost(4096);
     host.handle({ t: 'setState', state: 'InGame' });
@@ -504,8 +548,6 @@ describe('SimHost', () => {
     const w = createWorld();
     requestState(w, 'InGame');
     const scenario = new LivingCityScenario(w);
-    // The host keeps the scenario in its world, where a save finds it.
-    w.scenarioRuntime = scenario;
     frame(w, 0);
     for (let i = 0; i < 30; i++) {
       scenario.advance(w);

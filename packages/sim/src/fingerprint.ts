@@ -2,6 +2,7 @@
 // the divergence probe and the cross-engine gate compare it: a field missing here is a field no
 // pin can see diverge (test `fingerprintCoversEveryStateField`). Typed arrays are hashed as their
 // little-endian bytes; every target this ships to is little-endian.
+import { savedClassName } from './save/codec';
 import { CITY_FIELDS } from './cityFields';
 import type { GameCommand } from './commands';
 import type { TickEvents } from './events';
@@ -555,7 +556,9 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
     'scenario',
     (h, w) => {
       h.str(stableJson(w.scenario));
-      // Every own field of the runtime, its private ones and its generator's state words included.
+      // The runtime's class by its save name, which a minified build keeps, then every own field of it, its private
+      // ones and its generator's state words included.
+      h.str(w.scenarioRuntime === null ? '' : (savedClassName(w.scenarioRuntime) ?? ''));
       h.str(stableJson(w.scenarioRuntime));
     },
   ],

@@ -4,13 +4,14 @@
 import { z } from 'zod';
 import { AGENDA_STOPS, LAYER_NAMES as CITIZEN_LAYER_NAMES, STOP_LAYER_NAMES } from '../citizens';
 import { createWorld, type World } from '../world';
-import { SaveError, TYPED_ARRAY_NAMES, classInstances, decodeNode, encodeNode, type SaveNode } from './codec';
-import { ELEMENT_TEMPLATES, NULLABLE_FIELDS } from './rules';
+import { emptyScenarioProgress } from '../objectives';
+import { SaveError, TYPED_ARRAY_NAMES, classInstances, decodeNode, encodeNode, kindOf, savedClassName, type SaveNode } from './codec';
+import { ELEMENT_TEMPLATES, NULLABLE_FIELDS, SCENARIO_RUNTIMES, runtimeSamples } from './rules';
 
 export { SaveError } from './codec';
 
 export const SAVE_FORMAT = 'simcity-save';
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 2;
 
 const id = z.number().int().nonnegative();
 const fields = (): z.ZodType<Record<string, SaveNode>> => z.record(z.string(), node);
@@ -64,10 +65,21 @@ export type SaveMigration = (file: Record<string, unknown>) => Record<string, un
 
 /**
  * The steps that bring an older save up to `SAVE_VERSION`, by the version each starts from. v1 is the first save of the
- * TS game and Rust `.ron` saves are not read: nothing to migrate yet. The Rust saves' way with an added field (a
- * `#[serde(default)]` value) is a step here, never a silent default in the loader.
+ * TS game and Rust `.ron` saves are not read. The Rust saves' way with an added field (a `#[serde(default)]` value) is
+ * a step here, never a silent default in the loader.
  */
-export const SAVE_MIGRATIONS: Readonly<Record<number, SaveMigration>> = {};
+export const SAVE_MIGRATIONS: Readonly<Record<number, SaveMigration>> = {
+  // v2 (P3): the world keeps the running scenario and its objectives. A v1 world ran none.
+  1: (file) => {
+    const world = file.world;
+    if (typeof world !== 'object' || world === null || Array.isArray(world)) return { ...file, version: 2 };
+    const node = world as Record<string, unknown>;
+    const added = { scenario: encodeNode(emptyScenarioProgress(), 'world.scenario'), scenarioRuntime: null };
+    // The world is a tagged object only when something in it refers back to it.
+    const migrated = node.$ === 'obj' ? { ...node, v: { ...(node.v as object), ...added } } : { ...node, ...added };
+    return { ...file, version: 2, world: migrated };
+  },
+};
 
 function migrate(json: unknown, migrations: Readonly<Record<number, SaveMigration>>): unknown {
   if (typeof json !== 'object' || json === null || Array.isArray(json)) return json;
@@ -142,7 +154,8 @@ export function worldFromSave(file: SaveFile): World {
   const template = createWorld(file.options);
   let world: unknown;
   try {
-    world = decodeNode(file.world, template, 'world', { nullable: NULLABLE_FIELDS, elements: ELEMENT_TEMPLATES, classes: classInstances(template) });
+    const classes = new Map([...classInstances(template), ...runtimeSamples(template.simRng)]);
+    world = decodeNode(file.world, template, 'world', { nullable: NULLABLE_FIELDS, elements: ELEMENT_TEMPLATES, classes });
   } catch (error) {
     throw error instanceof SaveError ? new SaveError(`save rejected: ${error.message}`) : error;
   }
@@ -159,6 +172,10 @@ export function worldFromSave(file: SaveFile): World {
     throw new SaveError(`save rejected: world.grid: ${w.grid.width}×${w.grid.height} on a map of ${w.mapConfig.width}×${w.mapConfig.height}`);
   }
   if (!isCount(w.tick)) throw new SaveError(`save rejected: world.tick: ${w.tick} is not a count`);
+  const runtime: unknown = w.scenarioRuntime;
+  if (runtime !== null && !(typeof runtime === 'object' && SCENARIO_RUNTIMES.includes(savedClassName(runtime) ?? ''))) {
+    throw new SaveError(`save rejected: world.scenarioRuntime: expected a scenario runtime, found ${kindOf(runtime)}`);
+  }
   // The citizens' layers grow together: one length per slot, `AGENDA_STOPS` a slot for the stops.
   const c = w.citizens;
   // The longest layer sets the slots, so the message names the layer cut short.

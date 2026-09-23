@@ -2,6 +2,11 @@
 // collections look like. Each sample is the shape of the type the field is declared with.
 import { newBuilding } from '../buildings/building';
 import { BudgetLines } from '../economy/economy';
+import type { StdRng } from '../rng';
+import { CityCommuteScenario } from '../scenarios/cityCommute';
+import { CitizenTripCounter, LivingCityScenario } from '../scenarios/livingCity';
+import { MetropolisScenario } from '../scenarios/metropolis';
+import { SignalizedCrossScenario } from '../scenarios/signalizedCross';
 import { NullOr, type DecodeRules } from './codec';
 
 const tile = () => ({ x: 0, y: 0 });
@@ -27,9 +32,30 @@ export const NULLABLE_FIELDS: DecodeRules['nullable'] = {
   'world.debugFailSystem': '',
   'world.scenario.activeId': '',
   'world.scenario.activeName': '',
-  // One of the runtimes of `ScenarioRuntime`: its class is named in the save and held to the fields it saved.
+  // One of `SCENARIO_RUNTIMES`, held to the fields of its sample in `runtimeSamples`; the loader refuses any other.
   'world.scenarioRuntime': undefined,
+  // Its routes are found once the lanelets are built.
+  'SignalizedCrossScenario.routes': [],
 };
+
+/** The classes of `ScenarioRuntime`, by their save names: the only ones a save may hold as the running scenario. */
+export const SCENARIO_RUNTIMES: readonly string[] = ['CitizenTripCounter', 'LivingCityScenario', 'MetropolisScenario', 'CityCommuteScenario', 'SignalizedCrossScenario'];
+
+/**
+ * An instance of each scenario runtime with every field it saves, built without a world (their constructors build a
+ * city into one): a runtime in a save is held to its class's fields. `rng` is a generator of the fresh world.
+ */
+export function runtimeSamples(rng: StdRng): Map<string, object> {
+  const sample = (cls: { readonly prototype: object }, fields: object): object => Object.assign(Object.create(cls.prototype) as object, fields);
+  const counter = { requested: 0, arrived: 0, lastTick: 0 };
+  return new Map([
+    ['CitizenTripCounter', sample(CitizenTripCounter, counter)],
+    ['LivingCityScenario', sample(LivingCityScenario, counter)],
+    ['MetropolisScenario', sample(MetropolisScenario, { ...counter, plan: { lights: [], first: 0, last: 0 } })],
+    ['CityCommuteScenario', sample(CityCommuteScenario, { requested: 0, arrived: 0, rng, commuters: [], stayTicks: [0, 0], lastTick: 0 })],
+    ['SignalizedCrossScenario', sample(SignalizedCrossScenario, { spawned: 0, routes: null, nextWaveTick: 0, wave: 0, spawnEvery: 0, layout: 'twoLane' })],
+  ]);
+}
 
 /** A building as `newBuilding` makes it; its phase is a union and any of its shapes passes. */
 const building = {
@@ -48,4 +74,6 @@ export const ELEMENT_TEMPLATES: DecodeRules['elements'] = {
   // Every `ScenarioObjective` is a kind and a target.
   'world.scenario.objectives': { kind: 'PopulationAtLeast', target: 0 },
   'world.scenario.met': false,
+  'world.scenarioRuntime.commuters': { home: tile(), work: tile(), atWork: false, driving: false, departAt: 0 },
+  'world.scenarioRuntime.plan.lights': tile(),
 };

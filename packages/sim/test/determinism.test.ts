@@ -8,7 +8,7 @@ import { buildingPlace, streetPlace } from '../src/parking';
 import { fingerprint, fingerprintSections } from '../src/fingerprint';
 import { buildHeadlessGame, reseed } from '../src/headless';
 import { firstDivergence } from '../src/probe';
-import { CitizenTripCounter } from '../src/scenarios/livingCity';
+import { CitizenTripCounter, LivingCityScenario } from '../src/scenarios/livingCity';
 import { requestState } from '../src/state';
 import { refSlot, spawnVehicle } from '../src/traffic/vehicles';
 import type { World } from '../src/world';
@@ -225,6 +225,16 @@ describe('determinism', () => {
           counter.advance(w);
           w.tick -= 1;
           expect(fingerprint(w), 'fingerprint is blind to the state of the scenario runtime').not.toBe(before);
+        },
+      ],
+      [
+        'scenarioRuntime.class',
+        (w) => {
+          w.scenarioRuntime = new CitizenTripCounter();
+          const before = fingerprint(w);
+          // The same fields under another runtime's class.
+          w.scenarioRuntime = Object.assign(Object.create(LivingCityScenario.prototype) as LivingCityScenario, w.scenarioRuntime);
+          expect(fingerprint(w), 'fingerprint is blind to the class of the scenario runtime').not.toBe(before);
         },
       ],
     );

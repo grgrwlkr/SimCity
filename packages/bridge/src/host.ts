@@ -6,7 +6,6 @@ import {
   CitizenTripCounter,
   CityCommuteScenario,
   createWorld,
-  emptyScenarioProgress,
   CROSS_LAYOUT,
   despawnVehicle,
   forEachCitizenCar,
@@ -300,13 +299,9 @@ export class SimHost {
       case 'debugOverlay':
         return debugOverlayOf(this.world);
       case 'scenario': {
-        const size = req.size ?? SCENARIOS.find((s) => s.name === req.name)?.mapSize;
-        // A preset is a new game: a fresh world, not the last scenario's buildings and citizens under a new map.
-        const fresh = presetById(req.name) !== undefined;
-        if (fresh || (size !== undefined && (size !== this.world.grid.width || size !== this.world.grid.height))) this.replaceWorld(size);
-        // A world of the same size is reused: the previous city's advice and objectives must not stand.
-        this.world.advisor.reset();
-        this.world.scenario = emptyScenarioProgress();
+        // Every scenario in a fresh world: the same game whatever ran before it in this tab, never its map, seed,
+        // treasury, hour or objectives.
+        this.replaceWorld(req.size ?? SCENARIOS.find((s) => s.name === req.name)?.mapSize);
         this.world.scenarioRuntime = SCENARIO_BUILDERS[req.name](this.world, req.seed === undefined ? undefined : BigInt(req.seed));
         // Settled into its first frame here: whether the loop ran an empty frame before the next request cannot matter.
         frame(this.world, 0);

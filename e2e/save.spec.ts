@@ -38,7 +38,7 @@ test('saveThenANewScenarioThenLoadGivesTheSameFingerprint', async ({ page }) => 
   expect(run.saved.slot).toBe('e2e-slot');
   expect(run.names, 'one file for the slot, nothing half-written left').toEqual(['e2e-slot.json']);
   expect(run.fileBytes, 'the save is a file in OPFS').toBe(run.saved.bytes);
-  expect(run.head).toMatch(/^\{"format":"simcity-save","version":1,/);
+  expect(run.head).toMatch(/^\{"format":"simcity-save","version":2,/);
 
   const snapshot = await page.evaluate(() => window.__sim.snapshot());
   expect(snapshot.tick).toBe(run.at.tick);
