@@ -24,6 +24,11 @@
   pointer-events: auto;
 }
 
+/* The card scrolls when it is taller than the window: its rows keep their height instead of shrinking. */
+.hud-menu-card > * {
+  flex-shrink: 0;
+}
+
 .hud-menu-title {
   margin: 0;
   font-size: var(--hud-size-hero);

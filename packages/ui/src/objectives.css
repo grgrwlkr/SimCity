@@ -1,10 +1,11 @@
 /* The objectives panel: docs/design/hud/layout.md §10. Values are tokens of hud-tokens.css. */
 
-/* A readout with nothing to press: the map under it stays clickable. Right column, above the 96 px bottom band. */
+/* A readout with nothing to press: the map under it stays clickable. Right column, above the tool palette. */
 .hud-objectives {
   position: fixed;
   right: var(--hud-safe-edge);
-  bottom: 108px; /* layout.md §1: the 96 px bottom band plus the 12 px edge */
+  /* Above the tool palette, as the advisor keeps clear of it: its measured height, 182 px until it is measured. */
+  bottom: calc(var(--hud-safe-edge) + var(--hud-palette-height, 182px) + var(--hud-space-8));
   z-index: var(--hud-z-panel);
   box-sizing: border-box;
   width: min(320px, calc(100vw - 2 * var(--hud-safe-edge)));

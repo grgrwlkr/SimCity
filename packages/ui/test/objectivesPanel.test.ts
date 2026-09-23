@@ -50,11 +50,11 @@ describe('objectives panel', () => {
     expect(html({ id: 'sandbox', name: 'Песочница', objectives: [], completed: 0, isCompleted: false }), 'a preset without goals').toBe('');
   });
 
-  // A readout: the map under it stays clickable, and it sits in the right column above the bottom band.
+  // A readout: the map under it stays clickable, and it sits in the right column above the tool palette.
   it('staysOffThePointerAndInTheRightColumn', () => {
     const root = /(?:^|\n)\.hud-objectives\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
     expect(root).toMatch(/pointer-events:\s*none/);
     expect(root).toMatch(/right:\s*var\(--hud-safe-edge\)/);
-    expect(root).toMatch(/bottom:\s*108px/);
+    expect(root, 'above the palette').toMatch(/bottom:\s*calc\(var\(--hud-safe-edge\) \+ var\(--hud-palette-height, 182px\) \+ var\(--hud-space-8\)\)/);
   });
 });
