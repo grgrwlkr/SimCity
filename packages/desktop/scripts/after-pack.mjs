@@ -1,8 +1,10 @@
 // electron-builder afterPack hook (package.json `build.afterPack`): flips the Electron fuses of the
 // packed SimCity.app. Runs after electron-builder wrote Info.plist (ElectronAsarIntegrity included),
-// so the asar integrity fuse has a hash to check. The build is unsigned (`mac.sign: null`), but an
-// arm64 binary must carry at least an ad-hoc signature, which flipping bytes breaks: the ad-hoc
-// signature is redone. Fuse semantics: https://www.electronjs.org/docs/latest/tutorial/fuses
+// so the asar integrity fuse has a hash to check. The build is unsigned (`mac.identity: null`)
+// only because this machine has no Developer ID certificate; E5 replaces that. An arm64 binary must
+// still carry an ad-hoc signature, which flipping bytes breaks, so the ad-hoc signature is redone.
+// Ad-hoc signed fuses stop casual launch flags and env vars only: anyone can flip them back and
+// re-sign. Tamper resistance comes with a Developer ID signature. Fuse semantics: https://www.electronjs.org/docs/latest/tutorial/fuses
 import { FuseV1Options, FuseVersion, flipFuses } from '@electron/fuses';
 import path from 'node:path';
 

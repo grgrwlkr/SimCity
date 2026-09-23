@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- SimCity app icon. Source for build/icon.icns (scripts/build-icon.sh).
+<!-- SimCity app icon. Source for build/icon.icns (scripts/build-icon.ts).
      Visual language of docs/design/hud: the smoked-glass panel (tokens.md, "Стекло без размытия")
      carrying a skyline drawn like the tool sprite (24-unit grid, round caps and joins).
      Colours are HUD tokens only (tokens.md): hud-glass-solid, hud-glass-highlight,

@@ -59,7 +59,9 @@ async function warmUp(bin: string): Promise<void> {
   });
   if (child.exitCode === null && child.signalCode === null) {
     child.kill('SIGTERM');
+    const killer = setTimeout(() => child.kill('SIGKILL'), 5000);
     await exited;
+    clearTimeout(killer);
   }
   if (!cameUp) throw new Error(`the inspectable clone did not start:\n${output}`);
 }

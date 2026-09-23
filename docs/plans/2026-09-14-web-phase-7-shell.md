@@ -2,7 +2,7 @@
 
 > Программа: `docs/plans/2026-09-11-ts-threejs-migration-plan.md`, строка этапа 7. Эта часть закрывает десктоп-оболочку над `packages/app`, геймпад, релизный `.app` для macOS arm64, e2e оболочки и проверку ступени 1 защиты кода. Файловые сейвы и `.exe` сюда не входят.
 
-**Итог.** Оболочка — Electron 44.3.0 (Chromium 152). `bun run desktop:build` собирает `SimCity.app` (295 152 КиБ) за 3 с. В собранном приложении тестовый город идёт на 60 fps без окна на экране (offscreen-рендер на GPU); это проверяет `bun run desktop:e2e`. Геймпад работает. Tauri опробован и отклонён (раздел «Отклонения»).
+**Итог.** Оболочка — Electron 44.3.0 (Chromium 152). `bun run desktop:build` собирает `SimCity.app` (`du -sk` 294 628–297 064); тёплая сборка 2026-09-23 под чужой нагрузкой шла 22–187 с (раздел «Иконка и фьюзы»). В собранном приложении тестовый город идёт на 60 fps без окна на экране (offscreen-рендер на GPU); это проверяет `bun run desktop:e2e`. Геймпад работает. Tauri опробован и отклонён (раздел «Отклонения»).
 
 ## Команды
 
@@ -22,7 +22,7 @@
 - **Запуск без окна** (`SIMCITY_TEST_WINDOW=1`, требование пользователя: никаких окон поверх его окон и никакого фокуса). `app.dock.hide()`, `show: false`, `webPreferences.offscreen.useSharedTexture: true`, `backgroundThrottling: false`, `setFrameRate(60)`. Каждый кадр `paint` считается в `simcityPaintCount`, и его shared texture сразу освобождается.
 - **Бинарник Electron.** bun не запускает `install.js` пакета `electron`: ни `bun install`, ни `bun install --force`, ни `trustedDependencies` не вернули удалённый `dist` (замер). Скрипт `electron:install` зовёт его явно, повторный запуск ничего не делает.
 - **asar без `node_modules`.** С `files: ["out/**"]` electron-builder брал продакшн-зависимости корневого workspace, и `app.asar` весил 30 011 411 байт. С `"!node_modules/**"` осталось 10 записей: рендерер уже собран в бандл.
-- **Подписи нет** (`mac.sign: null`). Иконка и фьюзы — раздел «Иконка и фьюзы».
+- **Подписи нет, потому что на этой машине нет сертификата Developer ID.** Это явно задаёт `mac.identity: null`: без него electron-builder подписал бы любым найденным сертификатом. Прежний `mac.sign: null` ничего не выключал — `sign` в electron-builder 26.15.3 это функция своей подписи. Заменит E5 (подпись Developer ID). Ad-hoc подпись, без которой arm64 не запускается, ставит `afterPack` вместе с фьюзами. Иконка и фьюзы — раздел «Иконка и фьюзы».
 - **Геймпад** (`packages/app/src/gamepad.ts`, перенесён как есть): чистая `mapGamepad` для стандартной раскладки W3C и опрос через rAF в `installGamepad`, одна точка подключения в `main.tsx`.
 
   | Вход | Команда | Аналог |
@@ -65,11 +65,13 @@
   | `LoadBrowserProcessSpecificV8Snapshot` | off | своего снапшота нет |
   | `WasmTrapHandlers` | on | дефолт; выключение замедляет WASM |
 
+  **На ad-hoc сборке фьюзы не защищают от подмены.** Они отсекают только случайные флаги запуска и переменные окружения. Перевернуть их обратно и переподписать ad-hoc может кто угодно: так делает сам `makeInspectableClone`, а ревью воспроизвело это на `RunAsNode` (`bunx @electron/fuses@2.1.3 write --app <клон> RunAsNode=on`, `codesign --sign - --force --deep` → `ran as node 44.3.0`). Хэш asar в Info.plist переписывается так же. По документации Electron биты фьюзов стережёт ОС через подпись кода, поэтому устойчивость к подмене появится только с подписью Developer ID (E5).
+
 - **Playwright и `--inspect`.** `_electron.launch` всегда передаёт `--inspect=0` и ждёт `Debugger listening` (playwright-core 1.63.0), с релизными фьюзами он не стартует. Поэтому `makeInspectableClone` (`e2e/inspectableClone.ts`) перед `shell.spec.ts` делает APFS-клон (`cp -c`) текущего `release/mac-arm64/SimCity.app` в `release/e2e-inspectable/`, переворачивает только этот фьюз и переподписывает ad-hoc. Клон не отгружается: electron-builder о нём не знает, каждый прогон пересоздаёт его из текущей сборки. Разницу ровно в один фьюз проверяет тест `theTestCloneDiffersFromTheReleaseByTheInspectFuseOnly`. Тот же приём годится для `__sim` в E2. Свежий клон `makeInspectableClone` один раз запускает сам (без окна, до строки `DevTools listening`) и закрывает: при load average 70–87 первый Playwright-запуск свежего клона занял 12,0 с против 5,3 с у следующих (одна выборка), а внутри спеки он дважды подряд упёрся в 30-секундный лимит шага `launch the app`. С прогревом — 9/9 при load average 76–104.
 - **Проверка поведением** (`package.spec.ts`, релизный бинарник без окна). С `--inspect=0` приложение стартует без `Debugger listening`. С `ELECTRON_RUN_AS_NODE=1` стартует приложение, а не node (до фьюзов — `bad option: --remote-debugging-port=0`). С `NODE_OPTIONS=--require=…` нет строки `Most NODE_OPTIONs are not supported in packaged apps`: переменная не читается. Integrity проверена вручную: клон с нулевым хэшем в `ElectronAsarIntegrity` падает при старте с `FATAL … Integrity check failed for asar archive entry '<header>'`, код 133.
 - **Тесты (B/R/G).** B — `desktop:e2e` 3/3 на сборке без правок. R — 6 новых тестов, 5 красных: `CFBundleIconFile` = `electron.icns`, фьюзы по умолчанию, у клона нет разницы, `Debugger listening`, `bad option`; тест `NODE_OPTIONS` в первой редакции (искал путь `--require`) прошёл и на сборке без фьюзов — packaged Electron сам отбрасывает `--require`, поэтому тест переписан на строку-предупреждение и покраснел. G — 9/9 на обычной и на обфусцированной сборке; `typecheck` и `lint` — код 0.
 
-**Перемер обфускации на Electron** (2026-09-23, Apple M5, фьюзы включены). Параллельно шли чужие сборки, load average 56–62 на 10 ядрах.
+**Перемер обфускации на Electron** (2026-09-23, Apple M5, фьюзы включены). Параллельно шли чужие сборки, load average 56–104 на 10 ядрах за весь прогон.
 
 | Что | `desktop:build` | `desktop:build:obfuscated` |
 |---|---|---|
@@ -82,7 +84,7 @@
 | fps, скомпоновано | 59–64; повтор 58–63; медиана 60 | 52–64; повтор 59–60; медиана 60 |
 | `desktop:e2e` | 9/9 за 1,1 мин; повтор с прогревом клона 9/9 за 1,9 мин | 9/9 за 47,7 с; повтор с прогревом 9/9 за 1,8 мин |
 
-Разница во времени сборки тонет в шуме нагрузки: тот же `desktop:build` без `afterPack` дал 164,3 и 116,0 с, а с ним в третий раз — 149,5 с. Прежние 3,09 с сегодня не воспроизводятся; первая, холодная сборка worktree с загрузкой Electron — 234,1 с. Обфускация добавляет 7 030 байт к asar и не трогает fps: обфусцируется только чанк `ui`, горячий путь остаётся чистым.
+Разница во времени сборки тонет в шуме нагрузки: тот же `desktop:build` без `afterPack` дал 164,3 и 116,0 с, а с ним в третий раз — 149,5 с. Прежние 3,09 с сегодня не воспроизводятся; первая, холодная сборка worktree с загрузкой Electron — 234,1 с. Обфускация добавляет 7 030–7 091 байт к asar и не трогает fps: обфусцируется только чанк `ui`, горячий путь остаётся чистым.
 
 ## Зависимости и отложенное
 

@@ -1,7 +1,8 @@
 // `bun run --cwd packages/desktop build:icon`: build/icon.svg -> build/icon.icns.
 // sips cannot read SVG, so headless Chromium (the Playwright one the e2e already uses) rasterises
 // the 1024 master with a transparent background; sips scales it to the iconset sizes and
-// iconutil packs the .icns that electron-builder picks up from build/ by default. macOS only.
+// iconutil packs build/icon.icns, which package.json names explicitly in `mac.icon` (by default
+// electron-builder would convert build/icon.svg itself). macOS only.
 import { chromium } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, rmSync } from 'node:fs';
