@@ -11,6 +11,7 @@ import { firstDivergence } from '../src/probe';
 import { requestState } from '../src/state';
 import { refSlot, spawnVehicle } from '../src/traffic/vehicles';
 import type { World } from '../src/world';
+import { SIZED_IN_TICKS } from './scenarios/sizedInTicks';
 
 /** ~12 game days, as in Rust. */
 const TICKS = 2880;
@@ -33,7 +34,7 @@ describe('determinism', () => {
     expect(fingerprint(a), `same seed + ${TICKS} fixed ticks must produce identical sim state`).toBe(fingerprint(b));
     expect(fingerprint(a), `a different seed must diverge within ${TICKS} ticks`).not.toBe(fingerprint(c));
     expect(fingerprint(a), `expected the sim state to change after ${TICKS} ticks`).not.toBe(t0);
-  });
+  }, SIZED_IN_TICKS);
 
   // Rust `probe_first_divergence_tick` is an ignored diagnostic; here the harness is cheap enough to pin.
   it('probeFirstDivergenceTickFindsTheTickAndTheSection', () => {
@@ -47,8 +48,7 @@ describe('determinism', () => {
       if (tick === 250) right.city.money += 1;
     });
     expect(found).toEqual({ tick: 250, sections: ['city'] });
-    // 2 400 ticks with a fingerprint each: 1.7 s alone, past the default 5 s under a parallel suite.
-  }, 60_000);
+  }, SIZED_IN_TICKS);
 
   it('fingerprintCoversEveryStateField', () => {
     const mutations: Array<readonly [string, (w: World) => void]> = [
@@ -217,7 +217,7 @@ describe('determinism', () => {
       mutate(w);
       expect(fingerprint(w), `fingerprint is blind to ${label}`).not.toBe(before);
     }
-  });
+  }, SIZED_IN_TICKS);
 
   it('fingerprintIsTheSameForTwoFreshWorlds', () => {
     expect(fingerprintSections(buildHeadlessGame())).toEqual(fingerprintSections(buildHeadlessGame()));

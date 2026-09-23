@@ -62,5 +62,6 @@ describe('atlas on the GPU', () => {
         }
       }
     }
-  });
+    // No timeout: a fixed count of lookups in a synchronous body, as `SIZED_IN_TICKS` in packages/sim/test/scenarios/sizedInTicks.ts.
+  }, 0);
 });

@@ -74,6 +74,16 @@ upgraded», — но вызывать по зоне стало нечего, а 
 умолчанию. Число тиков и все ожидания прежние. Скорость тика меряет `bun run bench` (тестовый город,
 «Живой город», мегаполис).
 
+Волна 6 распространила приём на синхронные тесты с фиксированным объёмом работы (миры, маршруты, тексели), по тому же
+правилу — свой таймаут раньше или дольше 1 с под нагрузкой: в `determinism.test.ts` —
+`sameSeedProducesIdenticalFingerprintsAndDifferentSeedDiverges`, `probeFirstDivergenceTickFindsTheTickAndTheSection`,
+`fingerprintCoversEveryStateField`; `speedLadderMultipliesTicks` в `packages/bridge/test/driver.test.ts`;
+`aFireIsServedFromTheNearestStation` и `anEmergencyNobodyServesFailsAndHurtsHappiness` в `emergencies.test.ts`;
+`findRouteRoutesEveryFixturePairLegallyOnTestCity` в `lanelet/laneletRoutesParity.test.ts`; оба теста `gate4.test.ts`
+(было 600 000 мс; `theCityOfCommutersKeepsItsLightsFlowing` шёл 1 860 с при load 64–73 и 314 с при 52–66, ожидания
+выполнены оба раза); в `packages/render/test/scene/atlasMips.test.ts` — проверка билинейного следа, `0` без импорта из
+`packages/sim/test`. Ни одно ожидание не изменено.
+
 ## 2026-09-23 — `aScenarioSeesEveryTickOfAFastFrame`: ровно 1 490 тиков вместо «больше 300»
 
 Волна 5, задача «тесты на реальном времени». Тест (`packages/bridge/test/host.test.ts`) крутит 150 кадров

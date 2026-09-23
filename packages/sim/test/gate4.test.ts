@@ -15,6 +15,7 @@ import { SECOND_NS } from '../src/timer';
 import { routeDirectionOk } from '../src/traffic/reroute';
 import { vehicleRef } from '../src/traffic/vehicles';
 import { createWorld, type World } from '../src/world';
+import { SIZED_IN_TICKS } from './scenarios/sizedInTicks';
 
 const TICKS = 3000;
 /** The stage 2 soak: 600 ticks, a minute of the real-time clock. */
@@ -78,7 +79,7 @@ describe('stage 4 gate', () => {
     const brokeOut = e.stats.totalFires + e.stats.totalCrimes + e.stats.totalMedical - 1;
     expect(brokeOut, `emergencies break out by themselves: ${summary}`).toBeGreaterThanOrEqual(1);
     expect(dispatched, `service vehicles go out: ${summary}`).toBeGreaterThanOrEqual(1);
-  }, 600_000);
+  }, SIZED_IN_TICKS);
 
   it('theCityOfCommutersKeepsItsLightsFlowing', () => {
     const w = createWorld();
@@ -111,5 +112,5 @@ describe('stage 4 gate', () => {
     expect(longestWaitForGreen, summary).toBeLessThan(SOAK_TICKS);
     expect(wrongWay, summary).toBe(0);
     expect([...w.systemErrors.keys()], summary).toEqual([]);
-  }, 600_000);
+  }, SIZED_IN_TICKS);
 });

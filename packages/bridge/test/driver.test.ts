@@ -1,5 +1,6 @@
 import { applyStateTransition, createWorld, requestState, type World } from '@simcity/sim';
 import { describe, expect, it } from 'vitest';
+import { SIZED_IN_TICKS } from '../../sim/test/scenarios/sizedInTicks';
 import { FixedStepDriver, MAX_DELTA_MS } from '../src/driver';
 
 function inGame(): World {
@@ -47,7 +48,7 @@ describe('FixedStepDriver', () => {
       expect(w.city.hour * 3600 + w.city.minute * 60 + w.city.second, `${speed}: game seconds in a real second`).toBe(ticks / 10);
       expect(driver.realRate(), `${speed}: the rate the HUD shows`).toBe(ticks / 10);
     }
-  });
+  }, SIZED_IN_TICKS);
 
   it('aDearTickSlowsTheGameHonestly', () => {
     const w = inGame();
