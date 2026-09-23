@@ -7,7 +7,7 @@ import { NEW_GAME_START_HOUR, emptyScenarioProgress, presetById, startScenario, 
 import { SAVE_VERSION, loadWorld, saveWorld } from '../src/save/save';
 import { SCENARIO_PRESETS } from '../src/scenarios/catalogData';
 import { CityCommuteScenario } from '../src/scenarios/cityCommute';
-import { LivingCityScenario } from '../src/scenarios/livingCity';
+import { CitizenTripCounter, LivingCityScenario } from '../src/scenarios/livingCity';
 import { SignalizedCrossScenario } from '../src/scenarios/signalizedCross';
 import { FIXED_UPDATE } from '../src/schedule';
 import { requestState } from '../src/state';
@@ -178,5 +178,19 @@ describe('scenario catalog', () => {
       ],
     ];
     for (const [what, edit, message] of cases) expect(() => loadWorld(edited(edit)), what).toThrow(message);
+  });
+
+  it('theTripCountersOfTheHudAreNotState', () => {
+    // The host feeds its scenario before every tick; a world stepped without the host (Node's side of the e2e
+    // fingerprint gate) has the same future, so the counters the HUD reads stay out of the fingerprint.
+    const w = createWorld({ mapWidth: 16, mapHeight: 16 });
+    const counter = new CitizenTripCounter();
+    w.scenarioRuntime = counter;
+    const before = fingerprint(w);
+    w.tick = 1;
+    counter.advance(w);
+    w.tick = 0;
+    expect(counter.stats(w).citizens).toBe(0);
+    expect(fingerprint(w)).toBe(before);
   });
 });

@@ -3,6 +3,7 @@
 // pin can see diverge (test `fingerprintCoversEveryStateField`). Typed arrays are hashed as their
 // little-endian bytes; every target this ships to is little-endian.
 import { savedClassName } from './save/codec';
+import { CitizenTripCounter } from './scenarios/livingCity';
 import { CITY_FIELDS } from './cityFields';
 import type { GameCommand } from './commands';
 import type { TickEvents } from './events';
@@ -556,10 +557,12 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
     'scenario',
     (h, w) => {
       h.str(stableJson(w.scenario));
-      // The runtime's class by its save name, which a minified build keeps, then every own field of it, its private
-      // ones and its generator's state words included.
-      h.str(w.scenarioRuntime === null ? '' : (savedClassName(w.scenarioRuntime) ?? ''));
-      h.str(stableJson(w.scenarioRuntime));
+      // The runtime's class by its save name, which a minified build keeps. A commute or a crossing drives traffic:
+      // every own field of it, its private ones and its generator's state words included. The trip counters of a
+      // living city are the HUD's, fed by the host alone, and stay out like the other observability.
+      const run = w.scenarioRuntime;
+      h.str(run === null ? '' : (savedClassName(run) ?? ''));
+      if (run !== null && !(run instanceof CitizenTripCounter)) h.str(stableJson(run));
     },
   ],
   [

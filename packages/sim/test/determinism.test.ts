@@ -8,6 +8,7 @@ import { buildingPlace, streetPlace } from '../src/parking';
 import { fingerprint, fingerprintSections } from '../src/fingerprint';
 import { buildHeadlessGame, reseed } from '../src/headless';
 import { firstDivergence } from '../src/probe';
+import { CityCommuteScenario } from '../src/scenarios/cityCommute';
 import { CitizenTripCounter, LivingCityScenario } from '../src/scenarios/livingCity';
 import { requestState } from '../src/state';
 import { refSlot, spawnVehicle } from '../src/traffic/vehicles';
@@ -218,11 +219,11 @@ describe('determinism', () => {
       [
         'scenarioRuntime.state',
         (w) => {
-          const counter = new CitizenTripCounter();
-          w.scenarioRuntime = counter;
+          // What a commute keeps drives traffic: its generator, commuters and the last tick it fed.
+          const commute = new CityCommuteScenario(w, { citizens: 3 });
           const before = fingerprint(w);
           w.tick += 1;
-          counter.advance(w);
+          commute.advance(w);
           w.tick -= 1;
           expect(fingerprint(w), 'fingerprint is blind to the state of the scenario runtime').not.toBe(before);
         },
