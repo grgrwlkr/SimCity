@@ -109,6 +109,11 @@ export class SceneLighting {
     this.sun.shadow.shadowNode = this.csm;
   }
 
+  /** The hour the light is drawn at now. */
+  get litHour(): number {
+    return this.hour;
+  }
+
   /** Lights and glow materials at `hour`; nothing is written when neither the hour nor the overlay moved. */
   apply(hour: number, overlay: OverlayMode = this.overlay): void {
     if (hour === this.hour && overlay === this.overlay) return;

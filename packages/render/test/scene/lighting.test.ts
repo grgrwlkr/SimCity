@@ -25,6 +25,7 @@ describe('scene lighting', () => {
     lighting.apply(0);
     expect(brightest(lighting.windows.emissive) * lighting.windows.emissiveIntensity, 'windows glow at midnight').toBeGreaterThan(1);
     expect(brightest(lighting.signs.emissive) * lighting.signs.emissiveIntensity, 'signs light up at midnight').toBeGreaterThan(1);
+    expect(lighting.litHour, 'the hour the light is drawn at').toBe(0);
     const midnightSun = lighting.sun.intensity;
     lighting.apply(12);
     expect(brightest(lighting.windows.emissive) * lighting.windows.emissiveIntensity, 'windows dark glass at noon').toBeLessThan(0.01);

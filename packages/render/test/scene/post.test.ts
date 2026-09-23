@@ -71,6 +71,16 @@ describe('post-processing graph', () => {
     expect(configWithout(RENDER_CONFIG, new Set())).toEqual(RENDER_CONFIG);
   });
 
+  it('theVignetteAndTheGradeAreSampledByTheOutput', () => {
+    // The textures themselves must be reachable from the output, not only listed in `passes`.
+    const textures = (cfg: RenderConfig) => {
+      const g = postGraph(new THREE.Scene(), new THREE.PerspectiveCamera(), resolveRenderSettings(cfg), cfg.vignette);
+      return [...nodesOf(g.output as unknown as NodeLike)].map((n) => (n as { value?: { name?: string } }).value?.name).filter((n) => n === 'vignette' || n === 'grade');
+    };
+    expect(textures(RENDER_CONFIG).sort()).toEqual(['grade', 'vignette']);
+    expect(textures({ ...RENDER_CONFIG, vignette: { ...RENDER_CONFIG.vignette, enabled: false } })).toEqual(['grade']);
+  });
+
   it('msaaReachesTheScenePass', () => {
     const cfg: RenderConfig = { ...RENDER_CONFIG, antiAliasing: 'Msaa4', ssao: { ...RENDER_CONFIG.ssao, enabled: false } };
     const { g, has } = graphOf(cfg);

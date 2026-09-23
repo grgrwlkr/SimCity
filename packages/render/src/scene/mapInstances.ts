@@ -127,11 +127,12 @@ export class MapInstances {
     return batch;
   }
 
-  private windowBatch(windows: CompositeMesh): InstanceBatch {
+  /** `label` names the batch by what it holds, as the building batches are: a digest must not depend on build order. */
+  private windowBatch(windows: CompositeMesh, label: string): InstanceBatch {
     let batch = this.windowBatchByMesh.get(windows);
     if (batch === undefined) {
       const material = this.glow?.windows ?? this.materials.get(this.prims.material([1, 1, 1]));
-      this.windowBatchByMesh.set(windows, (batch = new InstanceBatch(this.buildingGroup, this.geometryOf(windows), material, `windows ${this.windowBatchByMesh.size}`)));
+      this.windowBatchByMesh.set(windows, (batch = new InstanceBatch(this.buildingGroup, this.geometryOf(windows), material, label)));
     }
     return batch;
   }
@@ -175,7 +176,7 @@ export class MapInstances {
           batch.put(i, matrix.makeTranslation(c.x, c.y, 0));
           touched.add(batch);
           this.buildingBatchOf.set(i, batch);
-          const windows = this.windowBatch(v.windows);
+          const windows = this.windowBatch(v.windows, `windows ${kind} L1`);
           windows.put(i, matrix);
           touched.add(windows);
           this.windowBatchOf.set(i, windows);

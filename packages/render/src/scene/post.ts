@@ -17,8 +17,11 @@ import { vignetteImage } from '../vignette';
 
 export type PostPassName = 'scene' | 'ao' | 'bloom' | 'tonemap' | 'grade' | 'vignette' | 'fxaa';
 
-/** Effects `?off=` can turn off, for a measurement or a side-by-side. */
-export const OPTIONAL_EFFECTS = ['ao', 'bloom', 'fxaa', 'grade', 'vignette', 'shadows'] as const;
+/**
+ * Effects `?off=` can turn off, for a measurement or a side-by-side. `windows` is not an effect of the config: it hides
+ * the lit window bands, so a test can tell their glow from everything else in the same frame.
+ */
+export const OPTIONAL_EFFECTS = ['ao', 'bloom', 'fxaa', 'grade', 'vignette', 'shadows', 'windows'] as const;
 export type OptionalEffect = (typeof OPTIONAL_EFFECTS)[number];
 
 /** `?off=ao,shadows`: the named effects, unknown names dropped. */
@@ -99,6 +102,7 @@ export function exposureOf(cfg: ColorGradingConfig): number {
 function gradeTexture(cfg: ColorGradingConfig): THREE.Data3DTexture {
   const n = GRADE_LUT_SIZE;
   const tex = new THREE.Data3DTexture(gradeLutData(cfg), n, n, n);
+  tex.name = 'grade';
   tex.format = THREE.RGBAFormat;
   tex.type = THREE.UnsignedByteType;
   tex.minFilter = THREE.LinearFilter;
@@ -113,6 +117,7 @@ function gradeTexture(cfg: ColorGradingConfig): THREE.Data3DTexture {
 function vignetteTexture(cfg: VignetteConfig): THREE.DataTexture {
   const img = vignetteImage(cfg.innerRadius, cfg.strength);
   const tex = new THREE.DataTexture(img.data, img.width, img.height, THREE.RGBAFormat, THREE.UnsignedByteType);
+  tex.name = 'vignette';
   tex.minFilter = THREE.LinearFilter;
   tex.magFilter = THREE.LinearFilter;
   tex.colorSpace = THREE.NoColorSpace;

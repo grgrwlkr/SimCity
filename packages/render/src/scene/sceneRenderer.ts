@@ -58,7 +58,7 @@ export interface SceneStats extends RenderStats {
   readonly setMapMs: number;
   /** The post-processing effects in the frame's graph, in order. */
   readonly post: readonly PostPassName[];
-  /** The hour the light is drawn at: the world's clock, or `?hour=` when pinned. */
+  /** The hour the light was last drawn at (the world's clock, or `?hour=` when pinned). */
   readonly hour: number;
 }
 
@@ -81,7 +81,8 @@ export class SceneRenderer implements Renderer {
 
   private readonly scene = new THREE.Scene();
   /** The shipped look, less what `?off=` names. */
-  private readonly config = configWithout(RENDER_CONFIG, effectsOffFromQuery(window.location.search));
+  private readonly off = effectsOffFromQuery(window.location.search);
+  private readonly config = configWithout(RENDER_CONFIG, this.off);
   private readonly settings = resolveRenderSettings(this.config);
   private readonly lighting = new SceneLighting(this.settings);
   private readonly pipelines = new Map<THREE.Camera, { pipeline: THREE.RenderPipeline; passes: readonly PostPassName[] }>();
@@ -137,6 +138,7 @@ export class SceneRenderer implements Renderer {
   ) {
     this.view = new OrthoView({ width: canvas.clientWidth, height: canvas.clientHeight });
     this.view.tilt = SCENE_TILT;
+    this.lighting.windows.visible = !this.off.has('windows');
     this.scene.background = new THREE.Color(SKY);
     this.scene.add(this.lighting.group, this.instances.buildingGroup, this.instances.propGroup);
     const unlit = () => {
@@ -333,7 +335,7 @@ export class SceneRenderer implements Renderer {
       props: this.instances.props,
       setMapMs: Math.round(this.setMapMs),
       post: this.postPasses,
-      hour: this.pinnedHour ?? this.worldHour,
+      hour: this.lighting.litHour,
     };
   }
 

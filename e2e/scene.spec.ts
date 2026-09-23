@@ -81,22 +81,24 @@ async function frameVariety(page: Page, png: Buffer): Promise<{ offMode: number;
   }, png.toString('base64'));
 }
 
-/** Mean Rec. 709 luma of the frame, 0..255, and the share of pixels lit warm and bright (a glowing window's colour). */
-async function frameLight(page: Page, png: Buffer): Promise<{ luma: number; warm: number }> {
+/**
+ * Mean Rec. 709 luma of the frame, 0..255, and the share of pixels bright in red and green alike: a lit window after tone
+ * mapping (cream to white), not the blue of the moonlit ground.
+ */
+async function frameLight(page: Page, png: Buffer): Promise<{ luma: number; glow: number }> {
   return page.evaluate(async (b64) => {
     const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
     const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d')!;
     ctx.drawImage(bitmap, 0, 0);
     const { data } = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
     let sum = 0;
-    let warm = 0;
+    let glow = 0;
     for (let o = 0; o < data.length; o += 4) {
       const [r, g, b] = [data[o]!, data[o + 1]!, data[o + 2]!];
       sum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
-      // Lit glass after tone mapping: bright, red over blue, green over blue (a red car or sign is not warm white).
-      if (r > 200 && r - b > 40 && g - b > 20) warm += 1;
+      if (r > 200 && g > 180) glow += 1;
     }
-    return { luma: sum / (data.length / 4), warm: warm / (data.length / 4) };
+    return { luma: sum / (data.length / 4), glow: glow / (data.length / 4) };
   }, png.toString('base64'));
 }
 
@@ -171,21 +173,26 @@ test('sceneDrawsTheTestCity', async ({ page }, testInfo) => {
 
 test('sceneNoonAndMidnightDifferInLight', async ({ page }, testInfo) => {
   test.setTimeout(900_000);
-  const shots: Record<string, { luma: number; warm: number; post: readonly string[]; hour: number }> = {};
-  for (const hour of [12, 0]) {
-    await openScene(page, `&hour=${hour}`);
+  const shots: Record<string, { luma: number; glow: number; post: readonly string[]; hour: number }> = {};
+  // Midnight twice, with the window bands and without: whatever else is bright at night, the difference is the windows.
+  for (const [key, query] of [
+    ['noon', '&hour=12'],
+    ['midnight', '&hour=0'],
+    ['dark', '&hour=0&off=windows'],
+  ] as const) {
+    await openScene(page, query);
     await loadGrid(page, road.rawGrid);
     // Close enough that windows are more than a pixel, over the fire station's block, in the perspective half of the zoom.
     const fire = hex(road.rawGrid.building).findIndex((b) => b === FIRE_STATION);
     const at = tileToWorld({ width: road.width, height: road.height, tileSize: 16 }, { x: fire % road.width, y: Math.floor(fire / road.width) });
     await page.evaluate((c) => window.__sim.setCamera({ centerX: c.x, centerY: c.y, worldPerPixel: 0.2 }), at);
     const stats = await waitForDrawn(page);
-    const png = await page.locator('#view').screenshot({ path: testInfo.outputPath(`scene-hour-${hour}.png`) });
-    shots[hour] = { ...(await frameLight(page, png)), post: stats.post, hour: stats.hour };
+    const png = await page.locator('#view').screenshot({ path: testInfo.outputPath(`scene-${key}.png`) });
+    shots[key] = { ...(await frameLight(page, png)), post: stats.post, hour: stats.hour };
   }
-  const [noon, midnight] = [shots[12]!, shots[0]!];
-  console.log(`scene light: ${JSON.stringify({ noon, midnight })}`);
-  testInfo.annotations.push({ type: 'light', description: JSON.stringify({ noon, midnight }) });
+  const { noon, midnight, dark } = shots as Record<'noon' | 'midnight' | 'dark', (typeof shots)[string]>;
+  console.log(`scene light: ${JSON.stringify({ noon, midnight, dark })}`);
+  testInfo.annotations.push({ type: 'light', description: JSON.stringify({ noon, midnight, dark }) });
   expect(noon.hour).toBe(12);
   expect(midnight.hour).toBe(0);
   // The shipped config: occlusion, tone mapping, grade, vignette and FXAA are in the graph, bloom is off.
@@ -196,8 +203,9 @@ test('sceneNoonAndMidnightDifferInLight', async ({ page }, testInfo) => {
   expect(noon.luma - midnight.luma, 'midnight is darker than noon').toBeGreaterThan(8);
   // The city stays readable at night: a new game opens at 00:00.
   expect(midnight.luma, 'midnight still shows the city').toBeGreaterThan(20);
-  // One block of buildings in view: its lit window bands are a few hundred pixels, none of them at noon.
-  expect(midnight.warm, 'windows glow at midnight').toBeGreaterThan(Math.max(noon.warm * 4, 1e-4));
+  // One block of buildings in view: its lit window bands are thousands of pixels; without them nothing at night is that bright.
+  expect(midnight.glow - dark.glow, 'windows glow at midnight').toBeGreaterThan(2e-3);
+  expect(dark.glow, 'nothing but the windows glows').toBeLessThan(5e-4);
 });
 
 // On the GPU only (E2E_GPU=1): GTAO darkens the frame against the same frame with `?off=ao`, and a disabled effect
