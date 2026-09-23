@@ -2,8 +2,10 @@
 // world and never touches the one running: a file that fails anywhere leaves the game as it was. Rust `.ron` saves
 // (SaveGameV3, crates/simcity_data/src/game/persistence_contract.rs in rust-final) are not read.
 import { z } from 'zod';
+import { AGENDA_STOPS, LAYER_NAMES as CITIZEN_LAYER_NAMES, STOP_LAYER_NAMES } from '../citizens';
 import { createWorld, type World } from '../world';
-import { SaveError, TYPED_ARRAY_NAMES, decodeNode, encodeNode, type SaveNode } from './codec';
+import { SaveError, TYPED_ARRAY_NAMES, classInstances, decodeNode, encodeNode, type SaveNode } from './codec';
+import { ELEMENT_TEMPLATES, NULLABLE_FIELDS } from './rules';
 
 export { SaveError } from './codec';
 
@@ -133,12 +135,14 @@ export function loadWorld(text: string): World {
   return worldFromSave(parseSave(text));
 }
 
+const isCount = (n: number): boolean => Number.isSafeInteger(n) && n >= 0;
+
 /** A new world from a checked save file. */
 export function worldFromSave(file: SaveFile): World {
   const template = createWorld(file.options);
   let world: unknown;
   try {
-    world = decodeNode(file.world, template, 'world');
+    world = decodeNode(file.world, template, 'world', { nullable: NULLABLE_FIELDS, elements: ELEMENT_TEMPLATES, classes: classInstances(template) });
   } catch (error) {
     throw error instanceof SaveError ? new SaveError(`save rejected: ${error.message}`) : error;
   }
@@ -154,6 +158,19 @@ export function worldFromSave(file: SaveFile): World {
   if (w.grid.width !== w.mapConfig.width || w.grid.height !== w.mapConfig.height) {
     throw new SaveError(`save rejected: world.grid: ${w.grid.width}×${w.grid.height} on a map of ${w.mapConfig.width}×${w.mapConfig.height}`);
   }
+  if (!isCount(w.tick)) throw new SaveError(`save rejected: world.tick: ${w.tick} is not a count`);
+  // The citizens' layers grow together: one length per slot, `AGENDA_STOPS` a slot for the stops.
+  const c = w.citizens;
+  // The longest layer sets the slots, so the message names the layer cut short.
+  const slots = CITIZEN_LAYER_NAMES.reduce((most, name) => (c[name].length > most ? c[name].length : most), 0);
+  for (const name of CITIZEN_LAYER_NAMES) {
+    if (c[name].length !== slots) throw new SaveError(`save rejected: world.citizens.${name}: ${c[name].length} slots, the other layers ${slots}`);
+  }
+  for (const name of STOP_LAYER_NAMES) {
+    if (c[name].length !== slots * AGENDA_STOPS) throw new SaveError(`save rejected: world.citizens.${name}: ${c[name].length} stops for ${slots} slots`);
+  }
+  if (!isCount(c.highWater) || c.highWater > slots) throw new SaveError(`save rejected: world.citizens.highWater: ${c.highWater} in ${slots} slots`);
+  if (!isCount(c.count) || c.count > c.highWater) throw new SaveError(`save rejected: world.citizens.count: ${c.count} above the high-water mark ${c.highWater}`);
   const tiles = w.grid.width * w.grid.height;
   for (const layer of w.grid.layers()) {
     if (layer.length !== tiles) throw new SaveError(`save rejected: world.grid: a layer of ${layer.length} tiles on a map of ${tiles}`);

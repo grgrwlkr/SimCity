@@ -99,6 +99,42 @@ describe('save', () => {
     for (const [what, edit, message] of cases) expect(() => loadWorld(edited(text, edit)), what).toThrow(message);
   }, SIZED_IN_TICKS);
 
+  it('aBrokenBuildingCitizenOrTickIsRejected', () => {
+    // Review round 2's six edits that loaded and ran on: now each is refused, the running world untouched.
+    exercisedWorld();
+    const { text } = exercised!;
+    const firstBuilding = (f: Json): Fields => {
+      const node = (classFields(f.world.buildings).list as unknown as Fields[])[0]!;
+      return Object.hasOwn(node, '$') ? classFields(node) : node;
+    };
+    const citizens = (f: Json) => classFields(f.world.citizens);
+    const cases: Array<readonly [string, (f: Json) => void, RegExp]> = [
+      ['a building without its anchor', (f) => void delete firstBuilding(f).anchor, /^save rejected: world\.buildings\.list\[0\]\.anchor: missing$/],
+      ['a building anchored at "x"', (f) => void (firstBuilding(f).anchor = 'x'), /^save rejected: world\.buildings\.list\[0\]\.anchor: expected object, found string$/],
+      ['a building with an extra field', (f) => void (firstBuilding(f).extra = 1), /^save rejected: world\.buildings\.list\[0\]\.extra: no such field in the world$/],
+      [
+        'a citizens layer cut short',
+        (f) => void (citizens(f).alive = { ...(citizens(f).alive as object), v: 'AAAA' } as SaveNode),
+        /^save rejected: world\.citizens\.alive: 3 slots, the other layers \d+$/,
+      ],
+      ['a billion citizens', (f) => void (citizens(f).count = 1e9), /^save rejected: world\.citizens\.count: 1000000000 above the high-water mark \d+$/],
+      ['tick -5', (f) => void (f.world.tick = -5), /^save rejected: world\.tick: -5 is not a count$/],
+    ];
+    for (const [what, edit, message] of cases) expect(() => loadWorld(edited(text, edit)), what).toThrow(message);
+  }, SIZED_IN_TICKS);
+
+  it('aNullOfAFreshWorldBecomesOnlyItsDeclaredShape', () => {
+    const text = saveWorld(createWorld({ mapWidth: 8, mapHeight: 8 }));
+    expect(loadWorld(edited(text, (f) => void (f.world.nextState = { state: 'InGame', ifNeq: false }))).nextState).toEqual({ state: 'InGame', ifNeq: false });
+    const cases: Array<readonly [string, (f: Json) => void, RegExp]> = [
+      ['nextState a number', (f) => void (f.world.nextState = 5), /^save rejected: world\.nextState: expected object, found number$/],
+      ['nextState with a stray field', (f) => void (f.world.nextState = { state: 'InGame', ifNeq: false, at: 1 }), /^save rejected: world\.nextState\.at: no such field in the world$/],
+      ['a graph built for "x"', (f) => void (classFields(f.world.meso).builtFor = 'x'), /^save rejected: world\.meso\.builtFor: expected number, found string$/],
+      ['a worst tile without y', (f) => void ((f.world.motionStats as Fields).worstTile = { x: 1 }), /^save rejected: world\.motionStats\.worstTile\.y: missing$/],
+    ];
+    for (const [what, edit, message] of cases) expect(() => loadWorld(edited(text, edit)), what).toThrow(message);
+  }, SIZED_IN_TICKS);
+
   it('stateBeyondTheFingerprintComesBackToo', () => {
     // The fingerprint equal is the gate; the same future is the point: ten more game minutes on both.
     const w = exercisedWorld();

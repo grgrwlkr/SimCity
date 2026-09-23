@@ -186,23 +186,65 @@ function kindOf(v: unknown): string {
 }
 
 /**
- * A value must be of the kind the fresh world holds at its place. A fresh `null` (a graph not built yet, a sweep not
- * started) takes anything: the running world fills those in.
+ * In a template, a field that is `null` or else shaped like `sample`: what a `null` of a fresh world may become. A
+ * `sample` of `undefined` takes any value (a union the save does not spell out).
  */
+export class NullOr {
+  constructor(readonly sample: unknown) {}
+}
+
+/** What a load holds the save against besides the fresh world itself. */
+export interface DecodeRules {
+  /**
+   * Samples for fields a fresh world holds as `null`, keyed `Class.field` for a field of a saved class and by path
+   * (`world.nextState`) otherwise. Without a sample, such a field must stay `null`.
+   */
+  readonly nullable: Readonly<Record<string, unknown>>;
+  /** Templates for the items of arrays and the values of maps, by the collection's path. */
+  readonly elements: Readonly<Record<string, unknown>>;
+  /** An instance of each saved class, for one met where the fresh world has nothing, as an element of a collection. */
+  readonly classes: ReadonlyMap<string, object>;
+}
+
+/** Every instance of a saved class in `root`, one per class. */
+export function classInstances(root: unknown): Map<string, object> {
+  const found = new Map<string, object>();
+  const seen = new Set<object>();
+  const stack: unknown[] = [root];
+  while (stack.length > 0) {
+    const v = stack.pop();
+    if (typeof v !== 'object' || v === null || seen.has(v) || ArrayBuffer.isView(v)) continue;
+    seen.add(v);
+    const name = CLASS_NAMES.get(Object.getPrototypeOf(v) as object);
+    if (name !== undefined && !found.has(name)) found.set(name, v);
+    if (v instanceof Map) for (const value of v.values()) stack.push(value);
+    else if (v instanceof Set) for (const value of v) stack.push(value);
+    else if (Array.isArray(v)) stack.push(...(v as unknown[]));
+    else for (const key of Object.keys(v)) stack.push((v as Record<string, unknown>)[key]);
+  }
+  return found;
+}
+
+/** A value must be of the kind its template holds; no template, no check. */
 function checkKind(value: unknown, template: unknown, path: string): void {
-  if (template === null || template === undefined) return;
+  if (template instanceof NullOr) {
+    if (value !== null) checkKind(value, template.sample, path);
+    return;
+  }
+  if (template === undefined) return;
   const want = kindOf(template);
   const got = kindOf(value);
   if (want !== got) throw new SaveError(`${path}: expected ${want}, found ${got}`);
 }
 
 /**
- * Strict against a fresh world: an object with a counterpart there (the world, its resources and their fields) must
- * have exactly its fields, each of its kind. Inside arrays, maps and sets nothing stands at the same place to hold a
- * value against; zod has checked their structure.
+ * Strict against a fresh world: an object with a counterpart there (the world, its resources and their fields), an
+ * instance of a saved class and an element with a template must have exactly its template's fields, each of its kind.
  */
 class Decoder {
   private readonly byId = new Map<number, unknown>();
+
+  constructor(private readonly rules: DecodeRules) {}
 
   /** `template` is the value at the same place in a fresh world of the save's options, `undefined` where none is. */
   node(node: SaveNode, template: unknown, path: string): unknown {
@@ -230,7 +272,8 @@ class Decoder {
         return this.fields(this.keep(node.id, {}, path), node.v, template, path);
       case 'map': {
         const map = this.keep(node.id, new Map<unknown, unknown>(), path);
-        node.v.forEach(([key, value], i) => map.set(this.node(key, undefined, `${path}{key ${i}}`), this.node(value, undefined, `${path}{${i}}`)));
+        const element = this.rules.elements[path];
+        node.v.forEach(([key, value], i) => map.set(this.node(key, undefined, `${path}{key ${i}}`), this.checked(value, element, `${path}{${i}}`)));
         return map;
       }
       case 'set': {
@@ -241,11 +284,12 @@ class Decoder {
       case 'cls': {
         const cls = Object.hasOwn(SAVED_CLASSES, node.c) ? SAVED_CLASSES[node.c] : undefined;
         if (cls === undefined) throw new SaveError(`${path}: unknown class ${JSON.stringify(node.c)}`);
-        if (template !== null && template !== undefined && kindOf(template) !== `class ${node.c}`) {
-          throw new SaveError(`${path}: expected ${kindOf(template)}, found class ${node.c}`);
+        const expected = template instanceof NullOr ? template.sample : template;
+        if (expected !== null && expected !== undefined && kindOf(expected) !== `class ${node.c}`) {
+          throw new SaveError(`${path}: expected ${kindOf(expected)}, found class ${node.c}`);
         }
         const instance = this.keep(node.id, Object.create(cls.prototype) as Record<string, unknown>, path);
-        return this.fields(instance, node.v, template, path);
+        return this.fields(instance, node.v, expected ?? this.rules.classes.get(node.c), path, node.c);
       }
       case 'ref': {
         if (!this.byId.has(node.id)) throw new SaveError(`${path}: refers to object #${node.id}, which comes nowhere before it`);
@@ -261,12 +305,22 @@ class Decoder {
     return value;
   }
 
+  /** `node` decoded against `template` and held to its kind. */
+  checked(node: SaveNode, template: unknown, path: string): unknown {
+    if (template instanceof NullOr && node === null) return null;
+    const value = this.node(node, template instanceof NullOr ? template.sample : template, path);
+    checkKind(value, template, path);
+    return value;
+  }
+
   private array(out: unknown[], items: readonly SaveNode[], path: string): unknown[] {
-    items.forEach((item, i) => out.push(this.node(item, undefined, `${path}[${i}]`)));
+    const element = this.rules.elements[path];
+    items.forEach((item, i) => out.push(this.checked(item, element, `${path}[${i}]`)));
     return out;
   }
 
-  private fields(out: Record<string, unknown>, fields: { readonly [key: string]: SaveNode }, template: unknown, path: string): Record<string, unknown> {
+  /** `className`: the saved class `out` is an instance of, whose `null` fields the rules name as `Class.field`. */
+  private fields(out: Record<string, unknown>, fields: { readonly [key: string]: SaveNode }, template: unknown, path: string, className?: string): Record<string, unknown> {
     if (!isPlainTemplate(template)) {
       for (const key of Object.keys(fields)) out[key] = this.node(fields[key]!, undefined, `${path}.${key}`);
       return out;
@@ -274,19 +328,20 @@ class Decoder {
     for (const key of Object.keys(template)) if (!Object.hasOwn(fields, key)) throw new SaveError(`${path}.${key}: missing`);
     for (const key of Object.keys(fields)) {
       if (!Object.hasOwn(template, key)) throw new SaveError(`${path}.${key}: no such field in the world`);
-      const value = this.node(fields[key]!, template[key], `${path}.${key}`);
-      checkKind(value, template[key], `${path}.${key}`);
-      out[key] = value;
+      let expected = template[key];
+      if (expected === null || expected === undefined) {
+        const rule = className === undefined ? `${path}.${key}` : `${className}.${key}`;
+        expected = Object.hasOwn(this.rules.nullable, rule) ? new NullOr(this.rules.nullable[rule]) : null;
+      }
+      out[key] = this.checked(fields[key]!, expected, `${path}.${key}`);
     }
     return out;
   }
 }
 
 /** The value a save tree describes, checked field by field against `template`, its counterpart in a fresh world. */
-export function decodeNode(node: SaveNode, template: unknown, path: string): unknown {
-  const value = new Decoder().node(node, template, path);
-  checkKind(value, template, path);
-  return value;
+export function decodeNode(node: SaveNode, template: unknown, path: string, rules: DecodeRules): unknown {
+  return new Decoder(rules).checked(node, template, path);
 }
 
 const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
