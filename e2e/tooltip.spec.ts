@@ -136,6 +136,69 @@ test('theTooltipGoesWithTheCursorOutOfTheWindowAndUnderAPanelOpenedFromTheKeyboa
   await expect(tooltip(page)).toHaveCount(0);
 });
 
+/** Lays a two-lane road stroke between two points with the road tool in hand. */
+async function road(page: Page, from: { x: number; y: number }, to: { x: number; y: number }): Promise<void> {
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(to.x, to.y, { steps: 8 });
+  await page.mouse.up();
+  const tile = (await page.evaluate(({ x, y }) => window.__sim.pickTile(x, y), to))!;
+  expect((await cellAfterTick(page, tile)).road.kind).toBe('TwoLane');
+}
+
+// The verdict shown is the one a click there gets: the tile is the one under the cursor even when the cursor did not
+// move over the map — a panel closed after the cursor crossed it, the camera moved under a still cursor.
+test('afterAPanelClosesTheTooltipSpeaksOfTheTileUnderTheCursor', async ({ page }) => {
+  await openBlankCity(page);
+  await toolButton(page, '2 полосы').click();
+  // A road left of the budget dialog, above the palette: the same road again is free there, bare land costs money under
+  // MAP_POINT.
+  const roadPoint = { x: 180, y: 480 };
+  await road(page, { x: roadPoint.x - 2 * TILE_PX, y: roadPoint.y }, roadPoint);
+  await page.mouse.move(MAP_POINT.x, MAP_POINT.y, { steps: 4 });
+  await expect(tooltip(page), NOT_MOUNTED).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId('tile-tooltip-headline')).toHaveText(/, \$\d/);
+
+  await page.getByTestId('budget-toggle').focus();
+  await page.keyboard.press('Enter');
+  const budget = page.getByRole('dialog', { name: 'Бюджет' });
+  await expect(budget).toBeVisible();
+  // Across the scrim to the road: the map under it gets no pointer move.
+  await page.mouse.move(roadPoint.x, roadPoint.y, { steps: 8 });
+  await expect(tooltip(page)).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(budget).toHaveCount(0);
+  await expect(page.getByTestId('hud')).toBeVisible();
+  await expect(page.getByTestId('tile-tooltip-headline')).toHaveText(/, бесплатно$/);
+});
+
+test('theCameraMovedUnderAStillCursorMovesTheTooltipsTile', async ({ page }) => {
+  await openBlankCity(page);
+  await toolButton(page, '2 полосы').click();
+  // Roads two rows above and two below the cursor's tile: a camera moved two tiles either way puts one under it.
+  for (const dy of [-2, 2]) await road(page, { x: MAP_POINT.x - 3 * TILE_PX, y: MAP_POINT.y + dy * TILE_PX }, { x: MAP_POINT.x + 3 * TILE_PX, y: MAP_POINT.y + dy * TILE_PX });
+  await page.mouse.move(MAP_POINT.x, MAP_POINT.y, { steps: 4 });
+  await expect(tooltip(page), NOT_MOUNTED).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId('tile-tooltip-headline')).toHaveText(/, \$\d/);
+
+  await page.evaluate(async (px) => {
+    const c = await window.__sim.camera();
+    await window.__sim.setCamera({ worldPerPixel: c.worldPerPixel, centerX: c.centerX, centerY: c.centerY + 2 * px * c.worldPerPixel });
+  }, TILE_PX);
+  const under = (await page.evaluate(({ x, y }) => window.__sim.pickTile(x, y), MAP_POINT))!;
+  expect((await cellAfterTick(page, under)).road.kind, 'the camera put a road under the cursor').toBe('TwoLane');
+  await expect(page.getByTestId('tile-tooltip-headline')).toHaveText(/, бесплатно$/);
+
+  // What following the cursor costs: the tooltip picks the tile under it once a frame (upper bound, through __sim).
+  const perPick = await page.evaluate(async ({ x, y }) => {
+    const t0 = performance.now();
+    for (let i = 0; i < 1000; i++) await window.__sim.pickTile(x, y);
+    return (performance.now() - t0) / 1000;
+  }, MAP_POINT);
+  console.log(`MEASURE pickTile ${perPick.toFixed(4)} ms per call, __sim promise included`);
+  expect(perPick).toBeLessThan(0.5);
+});
+
 test('underInspectAZonedTileThatDoesNotGrowSaysWhy', async ({ page }) => {
   await openBlankCity(page);
   // A road across the view and a residential tile two rows below it: zoned, within reach, and no power anywhere.

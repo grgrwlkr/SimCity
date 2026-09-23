@@ -228,8 +228,10 @@ describe('tile tooltip asks', () => {
     const { asked, ask } = worker();
     let now = 1_000;
     const asker = createTileTooltipAsker(ask, () => now);
-    useTileTooltipStore.setState({ hovered: at(3, 3), pointer: { x: 400, y: 300 }, overHud: true });
+    const old: TileReplyView = { tool: { kind: 'FireStation' }, tile: at(3, 3), preview: null, diagnosis: null };
+    useTileTooltipStore.setState({ hovered: at(3, 3), pointer: { x: 400, y: 300 }, overHud: true, reply: old });
     asker.refresh();
+    expect(useTileTooltipStore.getState().reply, 'hidden, the last reply is dropped: back on the tile it would be old').toBeNull();
     asker.frame(1);
     useTileTooltipStore.setState({ overHud: false, pointer: null });
     asker.refresh();
@@ -238,6 +240,15 @@ describe('tile tooltip asks', () => {
     useTileTooltipStore.setState({ hovered: null, pointer: { x: 400, y: 300 } });
     asker.refresh();
     expect(asked, 'over the HUD, out of the window, off the map: nothing to show, nothing asked').toHaveLength(0);
+
+    // An ask that lands after the tooltip hid is dropped too.
+    visibleOver(at(5, 5));
+    asker.refresh();
+    useTileTooltipStore.setState({ overHud: true });
+    asker.refresh();
+    asked.shift()!.answer();
+    await settle();
+    expect(useTileTooltipStore.getState().reply).toBeNull();
 
     // Back over the map: asked at once, then again for a map edit or a quarter second of frames, not every frame.
     visibleOver(at(3, 3));

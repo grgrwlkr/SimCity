@@ -199,9 +199,10 @@ export function createTileTooltipAsker(ask: (tool: ToolMode, tile: { x: number; 
   };
   const go = (force: boolean) => {
     const tile = shown();
-    // Hidden: whatever was asked last is stale by the time the tooltip shows again.
+    // Hidden: whatever was asked and answered last is stale by the time the tooltip shows again, and is not shown.
     if (tile === null) {
       askedFor = '';
+      if (useTileTooltipStore.getState().reply !== null) useTileTooltipStore.getState().set({ reply: null });
       return;
     }
     const { tool } = useToolStore.getState();
@@ -216,7 +217,10 @@ export function createTileTooltipAsker(ask: (tool: ToolMode, tile: { x: number; 
     askedAtMs = now();
     askedEdit = edit;
     ask(tool, { x: tile.x, y: tile.y })
-      .then((reply) => useTileTooltipStore.getState().set({ reply }))
+      .then((reply) => {
+        // Landed after the tooltip hid: dropped with the rest.
+        if (shown() !== null) useTileTooltipStore.getState().set({ reply });
+      })
       .catch((error: unknown) => console.warn('tile preview request failed', error))
       .finally(() => {
         inFlight = false;
