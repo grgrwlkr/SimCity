@@ -1,6 +1,6 @@
 // The worker's side of `setClock` (E3): the hour written into the world, as `simcity/sim` with `hour` and `day` did in
 // rust-final crates/simcity_debug/src/game/live/control.rs, so a noon frame is one call rather than half a day at speed.
-import { AGENDA_STOPS, CITIZEN_STATES, MINUTES_PER_DAY, TRIP_PURPOSES, gameMinute, type MinuteQueue, type World } from '@simcity/sim';
+import { AGENDA_STOPS, CITIZEN_STATES, MINUTES_PER_DAY, TRIP_PURPOSES, gameMinute, planRegionalTrips, type MinuteQueue, type World } from '@simcity/sim';
 
 export interface ClockRequest {
   readonly t: 'setClock';
@@ -66,8 +66,10 @@ export function setClock(w: World, req: Omit<ClockRequest, 't'>): ClockReply {
  *   any tour that late; the rest of their day is planned on a minute of the spread;
  * - any other due move — a stay that is over, a walk that has arrived, a tour just due, the planning of a day — comes on
  *   a minute of the spread (a drive under way is traffic's and arrives as it would);
- * - an agent of the region still waiting for a trip that late does not come; the rest move on a minute of the spread; a
- *   day the clock skipped into is not planned for the region, since its morning is gone.
+ * - an agent of the region still waiting for a trip that late does not come; the rest move on a minute of the spread;
+ * - a day the clock jumped into is planned for the region as its turn of the day would have planned it, and then the
+ *   same two rules apply: at 5:00 its whole day is ahead, at noon the 6–9 commute is gone and the freight until 16–18
+ *   is not.
  * Deterministic: the minute of the spread is the slot's.
  */
 export function replanSkippedTime(w: World, now: number): void {
@@ -88,11 +90,28 @@ export function replanSkippedTime(w: World, now: number): void {
     }
   }
   const r = w.regional;
-  for (let slot = 0; slot < r.highWater; slot++) {
-    const due = r.nextAt[slot]!;
-    if (r.alive[slot] !== 1 || due < 0 || due >= now) continue;
-    if (r.state[slot] === REGIONAL_WAITING && due + LATE_TOUR_MINUTES < now) r.free(slot);
-    else r.schedule(slot, spread(slot));
+  const replanRegion = () => {
+    for (let slot = 0; slot < r.highWater; slot++) {
+      const due = r.nextAt[slot]!;
+      if (r.alive[slot] !== 1 || due < 0 || due >= now) continue;
+      if (r.state[slot] === REGIONAL_WAITING && due + LATE_TOUR_MINUTES < now) r.free(slot);
+      else r.schedule(slot, spread(slot));
+    }
+  };
+  replanRegion();
+  const day = Math.floor(now / MINUTES_PER_DAY) + 1;
+  if (r.plannedDay !== 0 && r.plannedDay < day) {
+    // The region plans a day on its first run of the day, a run the jump skipped: plan it as of the day's first minute,
+    // with no through traffic or visitors for that minute, then treat what the plan put behind `now` as skipped time.
+    const city = w.city;
+    const hour = city.hour;
+    const carried = [r.accumulators[0]!, r.accumulators[1]!];
+    r.accumulators.fill(-Infinity);
+    city.hour = 0;
+    planRegionalTrips(w);
+    city.hour = hour;
+    r.accumulators.set(carried);
+    replanRegion();
   }
   // The moves taken off their old minutes would each be popped and passed over on the next planner run.
   dropStale(c.queue, (ref) => {
@@ -100,8 +119,6 @@ export function replanSkippedTime(w: World, now: number): void {
     return slot === undefined ? undefined : c.nextAt[slot];
   });
   dropStale(r.queue, (slot) => (r.alive[slot] === 1 ? r.nextAt[slot] : undefined));
-  const day = Math.floor(now / MINUTES_PER_DAY) + 1;
-  if (r.plannedDay !== 0 && r.plannedDay < day) r.plannedDay = day;
 }
 
 /** Keeps only the entries still waiting for their minute, in the order they were queued. */

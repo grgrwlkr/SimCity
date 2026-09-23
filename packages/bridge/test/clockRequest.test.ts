@@ -25,6 +25,16 @@ function cityAtSix(): World {
   return w;
 }
 
+/** The same metropolis with a game hour of a real minute, so a test lives two game hours in 1 200 ticks. */
+function shortCityAtSix(): World {
+  const w = createWorld({ mapWidth: 160, mapHeight: 160, gameHourNs: 60 * SECOND_NS });
+  requestState(w, 'InGame');
+  new MetropolisScenario(w);
+  frame(w, 0);
+  step(w, 50);
+  return w;
+}
+
 describe('clock request', () => {
   /** The hour is set, not waited for: a noon frame costs one call instead of half a day at speed. */
   it('aSimRequestReadsSpeedClockAndStep', () => {
@@ -113,6 +123,43 @@ describe('clock request', () => {
     const [before, after] = [run(plain), run(jumped)];
     expect(after.woken, `woken a minute: ${after.woken} after the jump, ${before.woken} at 6:05`).toBeLessThanOrEqual(2 * before.woken);
     expect(after.pending + after.onRoad, `trips: ${JSON.stringify(after)} against ${JSON.stringify(before)}`).toBeLessThanOrEqual(2 * (before.pending + before.onRoad) + 50);
+  }, 120_000);
+
+  /**
+   * A jump into the next day plans that day from the new time: before dawn the region's whole day is ahead (commuters
+   * 6–9, trucks 6–16, shipments 8–18, packages/sim regional.ts), at noon the commuters' window is gone and the freight's
+   * is not. Citizens whose day moved plan the new day's agenda.
+   */
+  it('aJumpIntoTheNextDayPlansThatDayFromTheNewTime', () => {
+    const kinds = (w: World) => {
+      const r = w.regional;
+      const n = [0, 0, 0, 0, 0, 0];
+      for (let s = 0; s < r.highWater; s++) if (r.alive[s] === 1) n[r.kind[s]!]! += 1;
+      return { commuters: n[0]!, deliveries: n[3]!, supply: n[4]!, shipments: n[5]! };
+    };
+    const dawn = shortCityAtSix();
+    const dayOne = kinds(dawn);
+    const c = dawn.citizens;
+    const home = [...Array(c.highWater).keys()].find((s) => c.alive[s] === 1 && c.agendaDay[s] === 1 && c.state[s] === CITIZEN_STATES.indexOf('AtHome'))!;
+    expect(home, 'a citizen at home with the agenda of day 1').toBeDefined();
+    setClock(dawn, { hour: 5 });
+    step(dawn, 10);
+    expect([dawn.city.day, dawn.city.hour]).toEqual([2, 5]);
+    const beforeDawn = kinds(dawn);
+    expect(beforeDawn.commuters, `day 2 at 5:00 ${JSON.stringify(beforeDawn)}, day 1 ${JSON.stringify(dayOne)}`).toBeGreaterThan(dayOne.commuters / 2);
+    for (const kind of ['deliveries', 'supply', 'shipments'] as const) expect(beforeDawn[kind], kind).toBeGreaterThan(0);
+    step(dawn, 1300);
+    expect(c.agendaDay[home], 'the moved day re-plans its agenda').toBe(2);
+
+    const noon = shortCityAtSix();
+    setClock(noon, { hour: 12, day: 2 });
+    step(noon, 10);
+    const atNoon = kinds(noon);
+    expect(atNoon.commuters, `the 6–9 commute is past at noon: ${JSON.stringify(atNoon)}`).toBeLessThan(beforeDawn.commuters / 4);
+    expect(atNoon.shipments, 'shipments leave until 18').toBeGreaterThan(0);
+    const r = noon.regional;
+    const now = gameMinute(noon);
+    for (let s = 0; s < r.highWater; s++) if (r.alive[s] === 1 && r.nextAt[s]! >= 0) expect(r.nextAt[s]!, `regional ${s}`).toBeGreaterThanOrEqual(now);
   }, 120_000);
 
   /** The same call on the same lived-in world is the same world: setClock is a debugging aid that must not break replays. */
