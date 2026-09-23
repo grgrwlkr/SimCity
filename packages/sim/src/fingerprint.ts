@@ -552,6 +552,23 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
   ['notifications', (h, w) => hashNotifications(h, w.notifications)],
   ['milestones', (h, w) => h.u32(w.milestones.bestPopulation)],
   [
+    'advisor',
+    (h, w) => {
+      h.int(w.advisor.version);
+      h.u32(w.advisor.problems.length);
+      for (const problem of w.advisor.problems) {
+        h.str(problem.kind);
+        h.f64(problem.severity);
+        h.str(problem.text);
+        h.bool(problem.at !== null);
+        if (problem.at !== null) {
+          h.i32(problem.at.x);
+          h.i32(problem.at.y);
+        }
+      }
+    },
+  ],
+  [
     'commands',
     (h, w) => {
       h.u32(w.commands.length);

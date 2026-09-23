@@ -188,6 +188,8 @@ describe('determinism', () => {
       ['buildingsChecked', (w) => void (w.buildingsChecked.mapEditVersion = 5)],
       ['utilityNetwork.consumersSignature', (w) => void (w.utilityNetwork.consumersSignature = 7)],
       ['employmentStats', (w) => void (w.employmentStats.employed += 1)],
+      ['advisor.version', (w) => void (w.advisor.version += 1)],
+      ['advisor.problems', (w) => void w.advisor.problems.push({ kind: 'Crime', severity: 0.5, text: 'High crime', at: { x: 1, y: 2 } })],
       ['meso', (w) => void (w.meso.builtFor = 99)],
       ['districtTimes', (w) => void (w.districtTimes.graphVersion = 7)],
       ['mesoTraffic', (w) => void w.mesoTraffic.pending.push({ citizen: 1, from: { x: 0, y: 0 }, carParkedAt: null, to: { x: 1, y: 1 }, purpose: 'Work', mode: 'Car', pocket: true })],

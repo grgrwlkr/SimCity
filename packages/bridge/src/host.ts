@@ -372,7 +372,7 @@ export class SimHost {
       toasts: screen.visible,
       history: w.notifications.history().map((line) => ({ ...line })),
       milestones: { bestPopulation: w.milestones.bestPopulation, next: w.milestones.next() ?? null },
-      advisor: [],
+      advisor: w.advisor.problems.slice(0, 3).map((problem) => ({ ...problem, at: problem.at === null ? null : { ...problem.at } })),
     };
   }
 
