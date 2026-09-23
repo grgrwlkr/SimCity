@@ -8,9 +8,13 @@ import { WEALTH_CLASSES } from './economy/wealth';
 import { MASK_FIRE, MASK_MEDICAL, MASK_POLICE } from './services/coverage';
 import { UTILITY_KINDS, utilityMask, type UtilityKind } from './utilities';
 import type { MapGrid } from './map/grid';
+import { thousands } from './format';
 import { periodTicks } from './rates';
 import { SECOND_NS } from './timer';
 import type { World } from './world';
+
+// The sim index exports everything of this module; the formatter reaches the HUD through it.
+export { thousands };
 
 /** Unemployment the advisor lets pass. */
 const UNEMPLOYMENT_TOLERATED = 0.08;
@@ -264,17 +268,6 @@ export function assess(inputs: AdvisorInputs): Problem[] {
   }
 
   return problems.sort((a, b) => b.severity - a.severity || PROBLEM_KINDS.indexOf(a.kind) - PROBLEM_KINDS.indexOf(b.kind));
-}
-
-/** Group digits by thousands the way the interface prints money (`formatMoney`, HudBar.tsx): 6200 reads "6 200", a no-break space between the groups. */
-export function thousands(value: number): string {
-  const digits = String(Math.abs(value));
-  let grouped = value < 0 ? '-' : '';
-  for (let index = 0; index < digits.length; index++) {
-    if (index > 0 && (digits.length - index) % 3 === 0) grouped += '\u00a0';
-    grouped += digits[index];
-  }
-  return grouped;
 }
 
 /**

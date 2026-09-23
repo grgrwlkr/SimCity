@@ -21,6 +21,12 @@ function until(w: World, done: () => boolean, limit: number): number {
 }
 
 describe('emergencies', () => {
+  // Not in Rust: the feed's names live in a leaf module, so the service vehicles read them without importing this one.
+  it('emergencyNamesLiveInALeafModule', async () => {
+    const { EMERGENCY_NAMES } = await import('../src/emergencyNames');
+    expect(EMERGENCY_NAMES).toEqual({ Fire: 'Пожар', Crime: 'Преступление', Medical: 'Вызов скорой' });
+  });
+
   it('cityFieldsFireHazardSetsWhereFiresBreakOut', () => {
     const [risky, safe] = [t(1, 1), t(9, 9)];
     const sites = [

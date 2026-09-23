@@ -7,6 +7,7 @@ import { isZonedKind, type Building } from './buildings/building';
 import { cityFieldNeutral } from './cityFields';
 import type { TilePos } from './commands';
 import { chooseIndex, rangeF32, rangeU32, type StdRng } from './rng';
+import { EMERGENCY_NAMES } from './emergencyNames';
 import type { ServiceKind } from './services/stations';
 import { driveService, returnToStation, type ServiceVehicle } from './services/vehicles';
 import { adjacentRoadTowards, adjacentRoadTowardsFootprint } from './transport/anchors';
@@ -16,9 +17,6 @@ const f32 = Math.fround;
 
 export const EMERGENCY_KINDS = ['Fire', 'Crime', 'Medical'] as const;
 export type EmergencyKind = (typeof EMERGENCY_KINDS)[number];
-
-/** What the feed calls an emergency of each kind. */
-export const EMERGENCY_NAMES: Readonly<Record<EmergencyKind, string>> = { Fire: 'Пожар', Crime: 'Преступление', Medical: 'Вызов скорой' };
 
 /** `EmergencyManager::default`. */
 export const EMERGENCY_MAX_ACTIVE = 8;

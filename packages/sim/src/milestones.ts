@@ -1,7 +1,7 @@
 // Port of crates/simcity_sim/src/game/milestones.rs (B8): the city's population opens new buildings.
 // A milestone once reached stays reached, so a city that shrinks keeps what it opened; a new map
 // starts over.
-import { thousands } from './advisor';
+import { thousands } from './format';
 import type { BuildingKind } from './commands';
 import type { World } from './world';
 

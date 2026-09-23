@@ -5,8 +5,7 @@
 import { vehicleCapacity } from '../buildings/building';
 import { gameMinute } from '../city';
 import type { TilePos } from '../commands';
-// A cycle (emergencies imports this module), safe: the names are read when a vehicle arrives, never at load.
-import { EMERGENCY_NAMES } from '../emergencies';
+import { EMERGENCY_NAMES } from '../emergencyNames';
 import { fleetIdOfTrip, fleetTripId } from '../fleet';
 import { adjacentRoadTowardsFootprint } from '../transport/anchors';
 import type { World } from '../world';

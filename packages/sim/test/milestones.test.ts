@@ -2,7 +2,7 @@
 // opens buildings, a milestone once reached stays reached, and reaching one puts a single Achievement
 // line in the feed.
 import { describe, expect, it } from 'vitest';
-import { thousands } from '../src/advisor';
+import { thousands } from '../src/format';
 import { frame, step } from '../src/app';
 import { updateCityPopulation } from '../src/buildings/population';
 import { fingerprint } from '../src/fingerprint';
