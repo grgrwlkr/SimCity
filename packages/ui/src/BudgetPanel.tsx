@@ -12,7 +12,7 @@ import {
   type TaxZone,
   type WealthClass,
 } from '@simcity/sim';
-import type { KeyboardEvent, PointerEvent, WheelEvent } from 'react';
+import type { KeyboardEvent, MouseEvent, PointerEvent, WheelEvent } from 'react';
 import { formatMoney } from './HudBar';
 
 // The budget screen, docs/design/hud/layout.md §7 and states.md; port of rust-final
@@ -48,6 +48,9 @@ const FUNDING_STEP = 10;
 
 /** A press or a wheel on the modal is the modal's: it never reaches the map. */
 const keepOffTheMap = (event: PointerEvent | WheelEvent) => event.stopPropagation();
+
+/** A press on the scrim keeps focus inside the modal (states.md): the focus change is mousedown's default action. */
+const keepFocusInside = (event: MouseEvent) => event.preventDefault();
 
 function lineAmount(month: BudgetMonthView | null, item: BudgetItem): number | null {
   return month?.lines.find((line) => line.item === item)?.amount ?? null;
@@ -150,10 +153,13 @@ function Lines({ current, last }: { current: BudgetMonthView; last: BudgetMonthV
   );
 }
 
-/** Tab and Shift+Tab stay inside the modal; Esc closes it before the HUD's own Esc takes the game to the menu. */
+/**
+ * The modal owns the keyboard (states.md): no key pressed inside it reaches the HUD's hotkeys on `window` — Space on
+ * «+» presses the button rather than pausing the game. Esc closes it; Tab and Shift+Tab stay inside.
+ */
 function onDialogKey(event: KeyboardEvent<HTMLElement>, close: () => void): void {
+  event.stopPropagation();
   if (event.key === 'Escape') {
-    event.stopPropagation();
     close();
     return;
   }
@@ -205,7 +211,7 @@ export function BudgetPanel({ snapshot, open, onClose, command }: BudgetPanelPro
 
   return (
     <div className="budget-root">
-      <div className="budget-scrim" onPointerDown={keepOffTheMap} onWheel={keepOffTheMap} />
+      <div className="budget-scrim" data-testid="budget-scrim" onPointerDown={keepOffTheMap} onMouseDown={keepFocusInside} onWheel={keepOffTheMap} />
       <section
         className="budget-panel hud-glass"
         data-testid="budget"

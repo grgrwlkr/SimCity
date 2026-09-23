@@ -4,12 +4,18 @@
 import { describe, expect, it } from 'vitest';
 import { frame, step } from '../src/app';
 import type { GameCommand } from '../src/commands';
-import { MAX_FUNDING_PERCENT, MAX_TAX_PERCENT } from '../src/economy/economy';
+import { newBuilding } from '../src/buildings/building';
+import { MAX_FUNDING_PERCENT, MAX_TAX_PERCENT, TAX_ZONES, applyDailyEconomy } from '../src/economy/economy';
+import { WEALTH_CLASSES } from '../src/economy/wealth';
 import { fingerprint } from '../src/fingerprint';
 import { buildHeadlessGame, reseed } from '../src/headless';
+import { applyGameCommandsToGrid } from '../src/map/apply';
+import { MapGrid } from '../src/map/grid';
+import { SERVICE_KINDS } from '../src/services/stations';
 import { requestState } from '../src/state';
 import { SECOND_NS } from '../src/timer';
 import { createWorld, type World } from '../src/world';
+import { roadRow, t, worldOn } from './buildings/helpers';
 
 /** Ten ticks a game hour, 240 a day: a ten-day budget month closes in 2 400 ticks. */
 function fastGame(): World {
@@ -85,6 +91,50 @@ describe('budget commands', () => {
     expect(last.lines.total()).toBe(last.moneyEnd - last.moneyStart);
     expect(w.budget.current.total()).toBe(w.city.money - w.budget.moneyStart);
   }, 60_000);
+
+  // The levers reach the ledger: over one day of a town with people in every zone and three stations, five
+  // points more tax is more tax in every zone and half funding is less station upkeep.
+  it('taxAndFundingCommandsChangeTheDaysLines', () => {
+    const oneDay = (edits: boolean) => {
+      const grid = new MapGrid(16, 16);
+      roadRow(grid, 0, 0, 15);
+      const w = worldOn(grid);
+      w.budget.restart(w.city.money);
+      for (const [i, kind] of (['FireStation', 'PoliceStation', 'Hospital'] as const).entries()) w.buildings.add(newBuilding({ kind, anchor: t(i * 4, 1) }));
+      for (const [i, kind] of (['Residential', 'Commercial', 'Industrial'] as const).entries()) {
+        const [residents, jobs] = kind === 'Residential' ? [40, 0] : [0, 20];
+        w.buildings.add(
+          newBuilding({
+            kind,
+            anchor: t(i * 4, 8),
+            constructionStartDay: 1,
+            capacityResidents: residents,
+            capacityJobs: jobs,
+            occupancyResidents: residents,
+            occupancyJobs: jobs,
+            targetOccupancyResidents: residents,
+            targetOccupancyJobs: jobs,
+            profile: { density: 'Medium', class: 'Middle' },
+          }),
+        );
+      }
+      const levers: GameCommand[] = [];
+      for (const zone of TAX_ZONES) for (const wealth of WEALTH_CLASSES) levers.push({ kind: 'AdjustTaxRate', zone, wealth, delta: 5 });
+      for (const service of SERVICE_KINDS) levers.push({ kind: 'AdjustServiceFunding', service, delta: -50 });
+      applyGameCommandsToGrid(w, edits ? levers : []);
+      w.events.dayAdvanced.push(2);
+      applyDailyEconomy(w);
+      return w.budget.current;
+    };
+    const pulled = oneDay(true);
+    const control = oneDay(false);
+    for (const item of ['ResidentialTax', 'CommercialTax', 'IndustrialTax'] as const) {
+      expect(control.get(item), `${item}: the town pays it`).toBeGreaterThan(0);
+      expect(pulled.get(item), `${item}: five points more`).toBeGreaterThan(control.get(item));
+    }
+    expect(control.get('ServiceMaintenance'), 'the stations cost upkeep').toBeLessThan(0);
+    expect(pulled.get('ServiceMaintenance'), 'half funding costs less upkeep').toBeGreaterThan(control.get('ServiceMaintenance'));
+  });
 
   it('twoRunsWithTheSameEditsHaveTheSameFingerprint', () => {
     const run = (edits: boolean): ReturnType<typeof fingerprint> => {

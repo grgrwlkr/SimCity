@@ -166,6 +166,29 @@ describe('budget panel', () => {
     expect(screen.markup(), 'the open loan is listed').toContain('12 мес.');
   });
 
+  // states.md:77: the modal owns the keyboard. The HUD's hotkeys listen on `window`, so a key the dialog lets
+  // bubble is a key they act on: Space would pause the game instead of pressing «+».
+  it('theModalOwnsTheKeyboard', () => {
+    const screen = new BudgetScreen();
+    const onKeyDown = byTestId(screen.tree(), 'budget').props.onKeyDown as (event: unknown) => void;
+    const reachedWindow: string[] = [];
+    for (const key of [' ', 'Enter', '1', 'o', 'Escape']) {
+      let stopped = false;
+      onKeyDown({ key, shiftKey: false, stopPropagation: () => (stopped = true), preventDefault: () => {} });
+      if (!stopped) reachedWindow.push(key);
+    }
+    expect(reachedWindow, 'no key leaves the modal for the HUD hotkeys').toEqual([]);
+    expect(screen.closed, 'Esc closes the modal').toBe(1);
+  });
+
+  it('aPressOnTheScrimKeepsFocusInTheModal', () => {
+    const screen = new BudgetScreen();
+    const scrim = byTestId(screen.tree(), 'budget-scrim');
+    let focusMoved = true;
+    (scrim.props.onMouseDown as ((event: { preventDefault(): void }) => void) | undefined)?.({ preventDefault: () => (focusMoved = false) });
+    expect(focusMoved, 'mousedown on the scrim does not take focus to the page').toBe(false);
+  });
+
   it('aStepperAtItsLimitIsDisabledNotHidden', () => {
     const screen = new BudgetScreen();
     screen.world.taxRates.set('Residential', 'Low', 0);

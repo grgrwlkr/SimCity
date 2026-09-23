@@ -20,6 +20,15 @@ function dollars(shown: string): number {
 
 const snapshot = (page: Page) => page.evaluate(() => window.__sim.snapshot());
 
+/** `formatMoney` of the HUD: digits grouped by a no-break space. */
+const money = (value: number) => `$${String(value).replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0')}`;
+
+/** The app state after one more frame: a leaked hotkey's `setState` lands on the next frame, not at once. */
+const appStateAfterAFrame = async (page: Page) => {
+  await page.evaluate(() => window.__sim.step(1));
+  return (await snapshot(page)).appState;
+};
+
 test('theBudgetScreenPullsItsLeversByClicks', async ({ page }) => {
   // A dozen clicks, each waiting for a stable frame of the software-rendered map.
   test.setTimeout(90_000);
@@ -49,7 +58,7 @@ test('theBudgetScreenPullsItsLeversByClicks', async ({ page }) => {
   await budget.getByTestId('budget-loan-10000').click();
   await expect.poll(() => snapshot(page).then((s) => s.city.money)).toBe(before + 10_000);
   await expect(budget.getByText(/Заём \$10\u00a0000: \$889 в месяц, осталось 12 мес\./)).toBeVisible();
-  await expect(page.getByTestId('money')).toHaveText(`$${String(before + 10_000).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')}`);
+  await expect(page.getByTestId('money')).toHaveText(money(before + 10_000));
 
   // The month's lines on screen add up to the change in the treasury.
   const now = await budget.locator('[data-testid^="budget-line-"] [data-testid="budget-now"]').allTextContents();
@@ -72,7 +81,33 @@ test('escapeClosesTheBudgetAndHandsFocusBackToItsButton', async ({ page }) => {
   await expect(page.getByTestId('budget-toggle')).toBeFocused();
   await expect(page.getByTestId('budget-toggle')).toHaveAttribute('aria-pressed', 'false');
   // The Escape was the modal's: the game did not go to the menu.
-  expect((await snapshot(page)).appState).not.toBe('MainMenu');
+  expect(await appStateAfterAFrame(page)).toBe('InGame');
+});
+
+// states.md:77: the modal owns the keyboard. Space on «+» presses it; the HUD's Space does not pause the game.
+test('spaceInsideTheBudgetPressesTheButtonAndDoesNotPause', async ({ page }) => {
+  test.setTimeout(60_000);
+  await openGame(page);
+  await page.getByTestId('budget-toggle').click();
+  const budget = page.getByRole('dialog', { name: 'Бюджет' });
+  await budget.getByTestId('budget-tax-residential-low-up').focus();
+  await page.keyboard.press('Space');
+  await expect(budget.getByTestId('budget-tax-residential-low')).toHaveText('10 %');
+  expect(await appStateAfterAFrame(page)).toBe('InGame');
+});
+
+// A press on the scrim keeps focus in the modal, so the next Esc is still the modal's.
+test('aPressOnTheScrimKeepsFocusInTheBudget', async ({ page }) => {
+  test.setTimeout(60_000);
+  await openGame(page);
+  await page.getByTestId('budget-toggle').click();
+  const budget = page.getByRole('dialog', { name: 'Бюджет' });
+  await expect(budget.getByTestId('budget-close')).toBeFocused();
+  await page.getByTestId('budget-scrim').click({ position: { x: 20, y: 700 } });
+  await expect(budget.getByTestId('budget-close')).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(budget).toBeHidden();
+  expect(await appStateAfterAFrame(page)).toBe('InGame');
 });
 
 // Stopping the clock is when a player sets the budget: the lever's change must reach the screen without a tick.
@@ -87,5 +122,5 @@ test('leversShowWhilePaused', async ({ page }) => {
   await budget.getByTestId('budget-funding-fire-up').click();
   await budget.getByTestId('budget-loan-10000').click();
   await expect(budget.getByTestId('budget-funding-fire')).toHaveText('110 %');
-  await expect(budget.getByTestId('budget-treasury')).toHaveText(`Казна $${String(before + 10_000).replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0')}`);
+  await expect(budget.getByTestId('budget-treasury')).toHaveText(`Казна ${money(before + 10_000)}`);
 });
