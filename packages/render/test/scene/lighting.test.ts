@@ -1,7 +1,6 @@
 // The scene's light by the world's clock: the sun and sky of `dayNight.ts` turned into three.js lights, and the shared
 // window and sign materials that glow after dark (the checks of `night_glow_follows_the_clock` in
 // crates/simcity_sim/src/game/day_night.rs, tag rust-final, made on the scene's own materials).
-import type { CSMShadowNode } from 'three/addons/csm/CSMShadowNode.js';
 import * as THREE from 'three/webgpu';
 import { describe, expect, it } from 'vitest';
 import { OrthoView, SCENE_TILT } from '../../src/camera';
@@ -108,7 +107,9 @@ describe('scene lighting', () => {
     // its shadow once, so the one shadow node must follow each camera and each zoom.
     const lighting = new SceneLighting(resolveRenderSettings(RENDER_CONFIG));
     const scene = new THREE.Scene().add(lighting.group);
-    const node = () => lighting.sun.shadow.shadowNode as unknown as CSMShadowNode & { _init(b: unknown): void };
+    // What of `CSMShadowNode` the renderer drives each frame: its first build, the pass before a frame, the cascade lights.
+    type Cascades = { camera: THREE.Camera | null; lights: Array<THREE.Object3D & { shadow: THREE.LightShadow }>; _init(builder: unknown): void; updateBefore(): void };
+    const node = () => lighting.sun.shadow.shadowNode as unknown as Cascades;
     for (const [k, worldPerPixel] of [1, 0.2, 0.15, 1].entries()) {
       const camera = sceneCamera(worldPerPixel);
       lighting.useCamera(camera);
@@ -119,7 +120,7 @@ describe('scene lighting', () => {
       scene.updateMatrixWorld(true);
       // Shadow-map coordinates of the point, 0..1 on every axis inside the cascade's box, depth included.
       const inside = csm.lights.map((l) => {
-        l.shadow.updateMatrices(l);
+        l.shadow.updateMatrices(l as unknown as THREE.Light);
         const p = new THREE.Vector3(0, 0, 0).applyMatrix4(l.shadow.matrix);
         return [p.x, p.y, p.z].every((v) => v >= 0 && v <= 1);
       });
