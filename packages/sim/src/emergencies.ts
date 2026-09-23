@@ -17,6 +17,9 @@ const f32 = Math.fround;
 export const EMERGENCY_KINDS = ['Fire', 'Crime', 'Medical'] as const;
 export type EmergencyKind = (typeof EMERGENCY_KINDS)[number];
 
+/** What the feed calls an emergency of each kind. */
+export const EMERGENCY_NAMES: Readonly<Record<EmergencyKind, string>> = { Fire: 'Пожар', Crime: 'Преступление', Medical: 'Вызов скорой' };
+
 /** `EmergencyManager::default`. */
 export const EMERGENCY_MAX_ACTIVE = 8;
 export const EMERGENCY_BASE_SPAWN_CHANCE = 0.06;
@@ -118,7 +121,7 @@ export function startEmergency(w: World, kind: EmergencyKind, pos: TilePos, seve
   if (kind === 'Fire') m.stats.totalFires += 1;
   else if (kind === 'Crime') m.stats.totalCrimes += 1;
   else m.stats.totalMedical += 1;
-  w.notifications.addAt(`${kind} emergency`, 'Warning', 5, pos);
+  w.notifications.addAt(EMERGENCY_NAMES[kind], 'Warning', 5, pos);
   return emergency;
 }
 
@@ -204,9 +207,9 @@ export function resolveEmergencies(w: World): void {
     returnToStation(w, v);
     if (e.timeRemaining > 0) {
       m.stats.resolvedInTime += 1;
-      w.notifications.addAt(`${e.kind} emergency resolved`, 'Info', 3, e.pos);
+      w.notifications.addAt(`${EMERGENCY_NAMES[e.kind]}: справились`, 'Info', 3, e.pos);
     } else {
-      w.notifications.addAt(`${e.kind} emergency failed - critical!`, 'Error', 7, e.pos);
+      w.notifications.addAt(`${EMERGENCY_NAMES[e.kind]}: не успели — критично!`, 'Error', 7, e.pos);
     }
   }
 }

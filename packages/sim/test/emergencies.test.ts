@@ -50,7 +50,7 @@ describe('emergencies', () => {
     };
     hour();
     expect(w.emergencies.active, 'a hundred times the chance of a village: one an hour').toHaveLength(1);
-    expect(w.notifications.history().at(-1)!.text).toMatch(/^(Fire|Crime|Medical) emergency$/);
+    expect(w.notifications.history().at(-1)!.text).toMatch(/^(Пожар|Преступление|Вызов скорой)$/);
     for (let i = 0; i < 20; i++) hour();
     expect(w.emergencies.active).toHaveLength(EMERGENCY_MAX_ACTIVE);
     w.events = emptyEvents();
