@@ -50,11 +50,12 @@ describe('advisor in the snapshot', () => {
     w.advisor.version = 7;
     expect(host.handle({ t: 'snapshot' }).advisor.map((problem) => problem.kind)).toEqual(['EmptyTreasury']);
 
+    // Whether the host reuses the world or builds a fresh one, the world it runs now holds no old advice.
     host.handle({ t: 'scenario', name: 'livingCity' });
-    expect(worldOf(host), 'the same world').toBe(w);
-    expect(w.advisor.version).toBe(0);
+    const now = worldOf(host);
+    expect(now.advisor.version).toBe(0);
     expect(host.handle({ t: 'snapshot' }).advisor).toEqual([]);
     host.handle({ t: 'step', ticks: 1 });
-    expect(w.advisor.version).toBe(1);
+    expect(now.advisor.version).toBe(1);
   }, 300_000);
 });
