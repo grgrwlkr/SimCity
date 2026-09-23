@@ -66,6 +66,8 @@ export function AdvisorPanel({ snapshot, open, onClose, onFocus }: AdvisorPanelP
       className="advisor-panel hud-glass"
       data-testid="advisor"
       aria-labelledby="advisor-title"
+      // A click anywhere on the panel puts focus in it, so Esc reaches `onKeyDown` rather than the game's hotkeys.
+      tabIndex={-1}
       onPointerDown={keepOffTheMap}
       onWheel={keepOffTheMap}
       onKeyDown={onKeyDown}

@@ -145,6 +145,7 @@ describe('advisor panel', () => {
     let closed = 0;
     const root = AdvisorPanel({ ...props([]), onClose: () => (closed += 1) }) as Element;
     expect(root.props['data-testid']).toBe('advisor');
+    expect(root.props.tabIndex, 'a click on the panel focuses it, so Esc lands here').toBe(-1);
     for (const name of ['onPointerDown', 'onWheel']) {
       let stopped = false;
       (root.props[name] as (e: { stopPropagation(): void }) => void)({ stopPropagation: () => (stopped = true) });
