@@ -71,9 +71,11 @@ describe('map instances', () => {
     expect(changed.length).toBeGreaterThan(0);
     expect(changed.length).toBeLessThan(all(after).length);
     edited.apply(after, changed, false);
+    edited.fillWindows();
 
     const fresh = instances();
     fresh.apply(after, all(after), true);
+    fresh.fillWindows();
     expect(fresh.buildings).toBeGreaterThan(1000);
     expect(fresh.props).toBeGreaterThan(100);
     expect(edited.buildings).toBe(fresh.buildings);
@@ -98,10 +100,46 @@ describe('map instances', () => {
     });
     const edited = instances();
     edited.apply(before, all(before), true);
+    edited.fillWindows();
     edited.apply(after, changedChunks(before, after), false);
+    edited.fillWindows();
     const fresh = instances();
     fresh.apply(after, all(after), true);
+    fresh.fillWindows();
     expect(edited.batchCounts()).toEqual(fresh.batchCounts());
     expect([...edited.digest()].sort()).toEqual([...fresh.digest()].sort());
+  });
+
+  it('windows wait for fillWindows: setMap places the bodies, the windows follow in slices', () => {
+    const map = city();
+    const built = instances();
+    built.apply(map, all(map), true);
+    const windows = () => built.windowBatches().reduce((n, b) => n + b.count, 0);
+    expect(built.buildings).toBeGreaterThan(1000);
+    expect(windows(), 'no window placed by apply').toBe(0);
+    expect(built.windowsPending).toBe(built.buildings);
+    // A spent budget still places a slice, and the rest waits for the next frame.
+    const left = built.fillWindows(0);
+    expect(left).toBeGreaterThan(0);
+    expect(left).toBeLessThan(built.buildings);
+    expect(windows() + left).toBe(built.buildings);
+    expect(built.fillWindows()).toBe(0);
+    expect(built.windowsPending).toBe(0);
+    expect(windows(), 'one window set per building').toBe(built.buildings);
+  });
+
+  it('only the building bodies cast shadows; everything the map places receives them', () => {
+    const map = city();
+    const built = instances();
+    built.apply(map, all(map), true);
+    built.fillWindows();
+    const meshes = [...built.buildingGroup.children, ...built.propGroup.children].filter((o) => (o as THREE.InstancedMesh).count > 0);
+    expect(meshes.some((o) => o.name.startsWith('windows'))).toBe(true);
+    expect(meshes.some((o) => o.name.startsWith('props-'))).toBe(true);
+    const casters = meshes.filter((o) => o.castShadow).map((o) => o.name);
+    expect(casters.length).toBeGreaterThan(0);
+    expect(casters.filter((n) => !n.startsWith('buildings ')), 'windows, glyphs and props cast none').toEqual([]);
+    expect(built.buildingBatches().every((b) => b.drawn.castShadow), 'every body casts').toBe(true);
+    expect(meshes.filter((o) => !o.receiveShadow).map((o) => o.name), 'everything receives').toEqual([]);
   });
 });

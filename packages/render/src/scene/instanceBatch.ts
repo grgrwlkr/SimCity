@@ -15,6 +15,8 @@ export class InstanceBatch {
     private readonly material: THREE.Material,
     readonly name: string,
     capacity = 64,
+    /** Whether the instances draw into the sun's shadow map; every instance receives shadows either way. */
+    private readonly castsShadow = false,
   ) {
     this.mesh = this.make(capacity);
   }
@@ -34,6 +36,8 @@ export class InstanceBatch {
     mesh.name = this.name;
     mesh.count = 0;
     mesh.visible = false;
+    mesh.castShadow = this.castsShadow;
+    mesh.receiveShadow = true;
     // A batch spans the whole map: culling it as a whole saves nothing and its bounds would need a pass per edit.
     mesh.frustumCulled = false;
     // Created with the mesh, white: a material compiled before the first colour would ignore instance colours.
