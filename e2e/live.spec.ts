@@ -20,6 +20,22 @@ async function openStillCity(page: Page, query = ''): Promise<void> {
   });
 }
 
+/** Mean luma of a CSS-pixel region of a PNG shot at `dpr`. */
+async function regionMean(page: Page, png: Buffer, r: { x: number; y: number; width: number; height: number }, dpr: number): Promise<number> {
+  return page.evaluate(
+    async ({ b64, r, dpr }) => {
+      const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+      const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d')!;
+      ctx.drawImage(bitmap, 0, 0);
+      const d = ctx.getImageData(Math.round(r.x * dpr), Math.round(r.y * dpr), Math.max(Math.round(r.width * dpr), 1), Math.max(Math.round(r.height * dpr), 1)).data;
+      let sum = 0;
+      for (let i = 0; i < d.length; i += 4) sum += 0.299 * d[i]! + 0.587 * d[i + 1]! + 0.114 * d[i + 2]!;
+      return sum / (d.length / 4);
+    },
+    { b64: png.toString('base64'), r, dpr },
+  );
+}
+
 test.describe('naming', () => {
   test('cityFieldsOverlaysCanBeNamed', () => {
     for (const [name, mode] of [
@@ -196,8 +212,17 @@ test.describe('capture', () => {
     const world = await capture(page);
     expect([world.stats.width, world.stats.height]).toEqual([Math.round(box.width * dpr), Math.round(box.height * dpr)]);
     const withHud = await page.locator('#view').screenshot();
-    expect(world.png.equals(withHud), 'the HUD over the map is not in the shot').toBe(false);
-    await expect(page.getByTestId('hud')).toBeVisible();
+    // Where the HUD bar lies the shot shows the map, not the bar; where nothing lies over the map both shots agree, so
+    // the difference is the HUD and nothing else.
+    const bar = (await page.getByTestId('hud').boundingBox())!;
+    const barBox = { x: bar.x - box.x, y: bar.y - box.y, width: bar.width, height: bar.height };
+    const clear = { x: box.width / 2 - 20, y: box.height / 2 - 20, width: 40, height: 40 };
+    const overClear = await page.evaluate(({ x, y }) => document.elementsFromPoint(x, y)[0]?.id, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
+    expect(overClear, 'nothing of the HUD over the middle of the map').toBe('view');
+    const differs = async (region: typeof clear) => (await regionMean(page, world.png, region, dpr)) - (await regionMean(page, withHud, region, dpr));
+    expect(Math.abs(await differs(barBox)), 'the bar is not in the shot').toBeGreaterThan(3);
+    expect(Math.abs(await differs(clear)), 'the map itself is the same').toBeLessThan(0.5);
+    await expect(page.getByTestId('hud'), 'and the HUD is back after the shot').toBeVisible();
   });
 
   test('aUiCaptureTakesTheWindowSizeAndScale', async ({ page }) => {
@@ -246,5 +271,8 @@ test.describe('capture', () => {
     expect(frameStats(4, 4, frame(() => 128)).std, 'a flat frame spreads by exactly zero').toBe(0);
     expect(looksRendered(frameStats(4, 4, frame((i) => ((i + (i >> 2)) % 2 === 0 ? 0 : 255)))), 'checkerboard').toBe(true);
     expect(() => frameStats(4, 4, new Uint8Array(10)), 'a buffer that disagrees with its size').toThrow(RangeError);
+    const flat = (r: number, g: number, b: number) => frameStats(1, 1, [r, g, b, 255]).mean;
+    expect(flat(0, 255, 0), 'luma weighs green heaviest').toBeGreaterThan(flat(255, 0, 0));
+    expect(flat(255, 0, 0)).toBeGreaterThan(flat(0, 0, 255));
   });
 });

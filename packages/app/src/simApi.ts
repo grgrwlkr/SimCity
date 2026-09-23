@@ -88,6 +88,43 @@ export interface SimApi {
   setClock(hour: number, day?: number): Promise<ClockReply>;
 }
 
+/**
+ * Every method of `window.__sim`, in the order of `SimApi`: the catalogue the live skill and CLAUDE.md list; a unit test holds
+ * it equal to the object's methods.
+ */
+export const SIM_API_METHODS = [
+  'snapshot',
+  'step',
+  'fingerprint',
+  'cmd',
+  'setState',
+  'setSpeed',
+  'rngProbe',
+  'undoRedo',
+  'tile',
+  'renderFrame',
+  'loadGridHex',
+  'debugVehicles',
+  'camera',
+  'setCamera',
+  'fitMap',
+  'pickTile',
+  'renderStats',
+  'scenario',
+  'failSystem',
+  'debugEmergency',
+  'tickStats',
+  'resetTickStats',
+  'hoverTile',
+  'pointerOverride',
+  'save',
+  'load',
+  'exportSave',
+  'importSave',
+  'observe',
+  'setClock',
+] as const satisfies ReadonlyArray<keyof SimApi>;
+
 declare global {
   interface Window {
     __sim: SimApi;
@@ -170,10 +207,15 @@ export function installSimApi(
     tickStats: () => client.request({ t: 'tickStats' }),
     resetTickStats: () => client.request({ t: 'resetTickStats' }),
     hoverTile: async (tile) => {
-      // The pointer can never rest off the map, so neither may the override.
-      const cfg = mapConfig();
-      if (tile !== null && cfg !== null && (tile.x < 0 || tile.y < 0 || tile.x >= cfg.width || tile.y >= cfg.height)) {
-        throw new RangeError(`tile (${tile.x}, ${tile.y}) is off the map, where the pointer can never rest`);
+      // The pointer can never rest off the map, so neither may the override; `__sim` takes any JSON, so a tile is checked
+      // for two whole numbers first (the rule of observe's `at`).
+      if (tile !== null) {
+        if (!Number.isInteger(tile.x) || !Number.isInteger(tile.y)) throw new TypeError(`a tile is { x, y } of whole numbers, got ${JSON.stringify(tile)}`);
+        const cfg = mapConfig();
+        if (cfg === null) throw new RangeError('there is no map yet, so no tile to hover');
+        if (tile.x < 0 || tile.y < 0 || tile.x >= cfg.width || tile.y >= cfg.height) {
+          throw new RangeError(`tile (${tile.x}, ${tile.y}) is off the map, where the pointer can never rest`);
+        }
       }
       pointerOverride = tile;
       const r = await renderer;

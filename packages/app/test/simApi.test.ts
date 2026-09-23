@@ -3,7 +3,7 @@
 import type { Request } from '@simcity/bridge';
 import type { Renderer } from '@simcity/render';
 import { describe, expect, it } from 'vitest';
-import { installSimApi } from '../src/simApi';
+import { SIM_API_METHODS, installSimApi } from '../src/simApi';
 
 function apiSending(sent: unknown[], reply: unknown) {
   const client = { ready: new Promise<never>(() => {}), request: async (req: Request) => (sent.push(req), reply) } as unknown as Parameters<typeof installSimApi>[0];
@@ -46,6 +46,34 @@ describe('sim api hover', () => {
     for (const tile of [{ x: 900, y: 4 }, { x: -1, y: 4 }, { x: 4, y: 64 }]) {
       await expect(api.hoverTile(tile), JSON.stringify(tile)).rejects.toThrow(/off the map/);
     }
+    // `__sim` takes any JSON from DevTools or Playwright: a tile that is not two whole numbers is no tile.
+    for (const tile of [{ x: 3.5, y: 1 }, { x: 'a', y: 1 }, { x: 1 }]) {
+      await expect(api.hoverTile(tile as never), JSON.stringify(tile)).rejects.toThrow(/whole/);
+    }
     expect(api.pointerOverride()).toBeNull();
+  });
+
+  it('hoverTileBeforeTheMapIsKnownIsRefused', async () => {
+    const client = { ready: new Promise<never>(() => {}), request: async () => null } as unknown as Parameters<typeof installSimApi>[0];
+    (globalThis as { window?: unknown }).window ??= {};
+    const api = installSimApi(client, false, new Promise<Renderer>(() => {}), () => null);
+    await expect(api.hoverTile({ x: 1, y: 1 })).rejects.toThrow(/no map/);
+    expect(api.pointerOverride()).toBeNull();
+  });
+});
+
+describe('sim api catalogue', () => {
+  /**
+   * `window.__sim` describes itself: `SIM_API_METHODS` is every method the object has and nothing else, so the list the
+   * live skill and CLAUDE.md copy cannot drift from the code (rust-final live/agent_tools.rs, the catalogue against the
+   * registered methods, both ways).
+   */
+  it('theCatalogueAgreesWithWhatTheApiHas', () => {
+    const client = { ready: new Promise<never>(() => {}), request: async () => null } as unknown as Parameters<typeof installSimApi>[0];
+    (globalThis as { window?: unknown }).window ??= {};
+    const api = installSimApi(client, false, new Promise<Renderer>(() => {}), () => null) as unknown as Record<string, unknown>;
+    const methods = Object.keys(api).filter((key) => typeof api[key] === 'function');
+    expect([...SIM_API_METHODS].sort()).toEqual(methods.sort());
+    expect(new Set(SIM_API_METHODS).size, 'names are unique').toBe(SIM_API_METHODS.length);
   });
 });
