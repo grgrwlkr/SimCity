@@ -1,0 +1,79 @@
+/* The advisor's panel: docs/design/hud/layout.md §8, states.md. Values are tokens of hud-tokens.css. */
+
+/* Left column under the data maps; not modal, so it sits on the panels' layer and takes its own clicks. */
+.advisor-panel {
+  position: fixed;
+  top: 352px;
+  left: var(--hud-safe-edge);
+  z-index: var(--hud-z-panel);
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--hud-space-8);
+  box-sizing: border-box;
+  width: 420px;
+  max-width: calc(100vw - 2 * var(--hud-safe-edge));
+  margin: 0;
+  padding: var(--hud-space-16);
+  box-shadow: var(--hud-shadow-panel);
+  pointer-events: auto;
+}
+
+.advisor-caption {
+  margin: 0;
+  color: var(--hud-ink-muted);
+  font-size: var(--hud-size-caption);
+  font-weight: var(--hud-weight-regular);
+}
+
+.advisor-problems,
+.advisor-events {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--hud-space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* states.md «Длинный текст»: wraps by words, three lines at most. */
+.advisor-problem {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  margin: 0;
+  color: var(--hud-ink-muted);
+  font-size: var(--hud-size-body);
+  line-height: var(--hud-leading-text);
+  overflow-wrap: break-word;
+}
+
+/* The worst is larger than the two after it: the panel's whole hierarchy (layout.md §8). */
+.advisor-worst {
+  color: var(--hud-ink);
+  font-size: var(--hud-size-title);
+  font-weight: var(--hud-weight-strong);
+}
+
+/* A problem with a place: the whole line is the control, laid out as the text it holds. */
+.hud-glass .advisor-go {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: var(--hud-space-2) var(--hud-space-4);
+  margin: 0 calc(-1 * var(--hud-space-4));
+  text-align: left;
+}
+
+.advisor-events {
+  color: var(--hud-ink);
+  font-size: var(--hud-size-body);
+  line-height: var(--hud-leading-text);
+}
+
+/* The rule between the problems and the events (layout.md §8). */
+.advisor-problems + .advisor-caption,
+.advisor-worst + .advisor-caption {
+  padding-top: var(--hud-space-8);
+  border-top: 1px solid var(--hud-glass-border);
+}
