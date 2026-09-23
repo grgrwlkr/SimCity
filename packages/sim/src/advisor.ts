@@ -1,12 +1,13 @@
 // The advisor (B8), ported from crates/simcity_sim/src/game/advisor.rs at tag rust-final: the city's problems ranked by
 // how badly they hurt, each named with the thing that is missing and its numbers, never a general phrase. Reassessed
 // once a game hour, and once when the game starts.
-import { anyFootprintTile, isOperational, isZonedKind, type Building } from './buildings/building';
+import { isOperational, isZonedKind, type Building } from './buildings/building';
 import { CRIME_EMPTIES_HOMES_FROM, FIRE_HAZARD_LIMIT, HEALTH_FOR_LEVEL_THREE } from './cityFields';
 import { BUILDING_KINDS, type TilePos } from './commands';
 import { WEALTH_CLASSES } from './economy/wealth';
 import { MASK_FIRE, MASK_MEDICAL, MASK_POLICE } from './services/coverage';
-import { UTILITY_KINDS, type UtilityKind } from './utilities';
+import { UTILITY_KINDS, utilityMask, type UtilityKind } from './utilities';
+import type { MapGrid } from './map/grid';
 import type { World } from './world';
 
 /** Unemployment the advisor lets pass. */
@@ -259,6 +260,27 @@ export function thousands(value: number): string {
   return grouped;
 }
 
+/**
+ * The bits of `layer` over a building's footprint, OR-ed together, stopping once all of `wanted` are in. Plain index
+ * arithmetic: on the metropolis the footprints hold millions of tiles, and a `TilePos` a tile made the hour's
+ * assessment cost a quarter of a second.
+ */
+function footprintBits(grid: MapGrid, b: Building, layer: Uint8Array, wanted: number): number {
+  const x0 = Math.max(b.anchor.x, 0);
+  const x1 = Math.min(b.anchor.x + b.width, grid.width);
+  const y0 = Math.max(b.anchor.y, 0);
+  const y1 = Math.min(b.anchor.y + b.length, grid.height);
+  let bits = 0;
+  for (let y = y0; y < y1; y++) {
+    const row = y * grid.width;
+    for (let x = x0; x < x1; x++) {
+      bits |= layer[row + x]!;
+      if ((bits & wanted) === wanted) return bits;
+    }
+  }
+  return bits;
+}
+
 const RESIDENTIAL_CODE = 1 + BUILDING_KINDS.indexOf('Residential');
 const COMMERCIAL_CODE = 1 + BUILDING_KINDS.indexOf('Commercial');
 const INDUSTRIAL_CODE = 1 + BUILDING_KINDS.indexOf('Industrial');
@@ -272,20 +294,26 @@ export function advisorInputs(w: World): AdvisorInputs {
   const utilities: AdvisorInputs['utilities'] = [noReading(), noReading(), noReading()];
 
   UTILITY_KINDS.forEach((kind, index) => {
-    const reading = utilities[index]!;
     const totals = w.utilitySupply.totals(kind);
-    reading.supply = totals.supply;
-    reading.demand = totals.demand;
-    reading.supplied = totals.supplied;
-    if (w.utilityNetwork.served.length !== len) return;
-    // The count and the first of them, top row first, without sorting them all.
-    for (const b of zoned) {
-      if (w.utilityNetwork.footprintHas(grid, b.anchor, b.width, b.length, kind)) continue;
-      reading.buildingsWithout += 1;
-      const first = reading.firstWithout;
-      if (first === null || b.anchor.y < first.y || (b.anchor.y === first.y && b.anchor.x < first.x)) reading.firstWithout = { ...b.anchor };
-    }
+    utilities[index] = { ...utilities[index]!, supply: totals.supply, demand: totals.demand, supplied: totals.supplied };
   });
+  const served = w.utilityNetwork.served;
+  if (served.length === len) {
+    const masks = UTILITY_KINDS.map(utilityMask);
+    const all = masks.reduce((a, m) => a | m, 0);
+    for (const b of zoned) {
+      const bits = footprintBits(grid, b, served, all);
+      if (bits === all) continue;
+      masks.forEach((mask, index) => {
+        if ((bits & mask) !== 0) return;
+        // The count and the first of them, top row first, without sorting them all.
+        const reading = utilities[index]!;
+        reading.buildingsWithout += 1;
+        const first = reading.firstWithout;
+        if (first === null || b.anchor.y < first.y || (b.anchor.y === first.y && b.anchor.x < first.x)) reading.firstWithout = { ...b.anchor };
+      });
+    }
+  }
 
   const employment = w.employmentStats;
   const unemployedByClass = WEALTH_CLASSES.map((cls) => employment.unemployedByClass[cls]) as [number, number, number];
@@ -348,12 +376,7 @@ export function advisorInputs(w: World): AdvisorInputs {
     let fire = 0;
     let medical = 0;
     for (const b of zoned) {
-      let mask = 0;
-      anyFootprintTile(b.anchor, b.width, b.length, (tile) => {
-        const idx = grid.idx(tile);
-        if (idx !== undefined) mask |= coverage.coverageMap[idx]!;
-        return mask === (MASK_POLICE | MASK_FIRE | MASK_MEDICAL);
-      });
+      const mask = footprintBits(grid, b, coverage.coverageMap, MASK_POLICE | MASK_FIRE | MASK_MEDICAL);
       if ((mask & MASK_POLICE) !== 0) police += 1;
       if ((mask & MASK_FIRE) !== 0) fire += 1;
       if ((mask & MASK_MEDICAL) !== 0) medical += 1;
