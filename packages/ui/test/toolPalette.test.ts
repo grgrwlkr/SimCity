@@ -49,7 +49,13 @@ const oneWayButton = (html: string) => {
   return found[0]!;
 };
 
-const key = (code: string, mods: { ctrlKey?: boolean; metaKey?: boolean } = {}) => ({ code, ctrlKey: false, metaKey: false, ...mods });
+const key = (code: string, mods: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean } = {}) => ({
+  code,
+  ctrlKey: false,
+  metaKey: false,
+  shiftKey: false,
+  ...mods,
+});
 
 describe('tool palette', () => {
   it('milestoneLockedToolButtonSaysWhenItUnlocksAndIsNotPicked', () => {
@@ -188,6 +194,9 @@ describe('tool hotkeys', () => {
     expect(undoRedoHotkey(key('KeyZ', { ctrlKey: true }), false)).toBe(false);
     expect(undoRedoHotkey(key('KeyY', { ctrlKey: true }), false)).toBe(true);
     expect(undoRedoHotkey(key('KeyZ'), false), 'a bare Z is no undo').toBeNull();
+    // ⌘⇧Z / Ctrl+Shift+Z is the redo of a Mac and of most editors.
+    expect(undoRedoHotkey(key('KeyZ', { metaKey: true, shiftKey: true }), false)).toBe(true);
+    expect(undoRedoHotkey(key('KeyZ', { ctrlKey: true, shiftKey: true }), false)).toBe(true);
   });
 
   it('keyboardIsCapturedByATextFieldOnly', () => {

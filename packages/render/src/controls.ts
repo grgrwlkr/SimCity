@@ -51,6 +51,14 @@ export function paintCommands(brush: MapTool, tile: TilePos, hasLight: boolean):
   }
 }
 
+/**
+ * Whether an input drops the road being drawn: Esc, or a right press during the left drag — a chorded press that
+ * Chromium reports as a move with the right bit set in `buttons`, never as a `pointerdown`.
+ */
+export function cancelsRoadStroke(e: { readonly buttons?: number; readonly code?: string }): boolean {
+  return ((e.buttons ?? 0) & 2) !== 0 || e.code === 'Escape';
+}
+
 /** Zones and the bulldozer paint every tile a drag crosses; a building or a signal goes down once per click. */
 const dragsPaint = (tool: ToolMode) => tool.kind === 'Residential' || tool.kind === 'Commercial' || tool.kind === 'Industrial' || tool.kind === 'Erase';
 
@@ -86,11 +94,6 @@ export function installViewControls(canvas: HTMLCanvasElement, r: Renderer, mapC
   };
 
   const onDown = (e: PointerEvent) => {
-    if (e.button === 2 && stroke?.road === true) {
-      // A right click drops the road being drawn, as in Rust.
-      stroke = null;
-      return;
-    }
     if (e.button === 0 && paintAllowed(e)) {
       const tile = tileAt(e);
       if (tile === null) return;
@@ -110,6 +113,7 @@ export function installViewControls(canvas: HTMLCanvasElement, r: Renderer, mapC
     canvas.setPointerCapture(e.pointerId);
   };
   const onMove = (e: PointerEvent) => {
+    if (stroke?.road === true && cancelsRoadStroke(e)) stroke = null;
     if (drag !== null) {
       r.view.panBy(e.clientX - drag.x, e.clientY - drag.y);
       drag = { x: e.clientX, y: e.clientY };
@@ -122,13 +126,21 @@ export function installViewControls(canvas: HTMLCanvasElement, r: Renderer, mapC
     }
   };
   const onUp = (e: PointerEvent) => {
-    if (stroke?.road === true && e.button === 0) {
+    // A road released over a panel lays nothing, as a drag painted over one paints nothing.
+    if (stroke?.road === true && e.button === 0 && !overUi(e)) {
       const end = tileAt(e) ?? r.hovered;
       if (end !== null) paint!.send(roadStrokeCommands(paint!.brush(), stroke.start, end, paint!.driveOnRight));
     }
     if (e.button === 0) stroke = null;
     drag = null;
     if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+  };
+  // Esc drops the road being drawn and is spent on it: the menu takes Esc only when no road is under way.
+  const onKey = (e: KeyboardEvent) => {
+    if (stroke?.road !== true || !cancelsRoadStroke(e)) return;
+    stroke = null;
+    e.preventDefault();
+    e.stopImmediatePropagation();
   };
   // The right button pans and cancels: no context menu over the map.
   const onContextMenu = (e: MouseEvent) => e.preventDefault();
@@ -143,6 +155,8 @@ export function installViewControls(canvas: HTMLCanvasElement, r: Renderer, mapC
   canvas.addEventListener('pointermove', onMove);
   canvas.addEventListener('pointerup', onUp);
   canvas.addEventListener('contextmenu', onContextMenu);
+  // Capture on the window runs before the HUD's own Esc listener.
+  window.addEventListener('keydown', onKey, { capture: true });
   canvas.addEventListener('wheel', onWheel, { passive: false });
   resize.observe(canvas);
   return () => {
@@ -150,6 +164,7 @@ export function installViewControls(canvas: HTMLCanvasElement, r: Renderer, mapC
     canvas.removeEventListener('pointermove', onMove);
     canvas.removeEventListener('pointerup', onUp);
     canvas.removeEventListener('contextmenu', onContextMenu);
+    window.removeEventListener('keydown', onKey, { capture: true });
     canvas.removeEventListener('wheel', onWheel);
     resize.disconnect();
   };

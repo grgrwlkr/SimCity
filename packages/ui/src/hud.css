@@ -181,8 +181,8 @@
   justify-content: flex-start;
   gap: var(--hud-space-2);
   min-width: 56px;
-  padding: var(--hud-space-4) var(--hud-space-4);
-  font-size: var(--hud-size-caption);
+  padding: var(--hud-space-4) var(--hud-space-8); /* 8/4 of layout.md §3: `UiRect::new(2, 2, 1, 1)` in space units */
+  font-size: var(--hud-size-body);
   white-space: nowrap;
 }
 
@@ -212,6 +212,7 @@
   border-radius: var(--hud-radius-pill);
   background: var(--hud-glass-highlight);
   color: var(--hud-ink-muted);
+  font-size: var(--hud-size-caption);
   text-align: center;
 }
 
@@ -229,6 +230,7 @@
 
 .hud-tool-lock {
   max-width: 9em;
+  font-size: var(--hud-size-caption);
   white-space: normal;
   text-align: center;
   line-height: var(--hud-leading-tight);

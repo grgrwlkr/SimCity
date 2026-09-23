@@ -174,3 +174,46 @@ test('aClickOnTheHudDoesNotPaintTheMap', async ({ page }) => {
   await stroke(page, { x: 640, y: 360 }, { x: 640, y: 360 });
   expect((await cellAfterTick(page, (await tileAt(page, 640, 360))!)).road.kind).toBe('TwoLane');
 });
+
+test('aRoadReleasedOverThePaletteLaysNothing', async ({ page }) => {
+  await openBlankCity(page);
+  await toolButton(page, '2 полосы').click();
+  // Straight down from the map onto a palette button: the road would end on the tile under the panel.
+  const box = (await toolButton(page, 'Жилая').boundingBox())!;
+  const end = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  const start = { x: end.x, y: end.y - 5 * TILE_PX };
+  const first = (await tileAt(page, start.x, start.y))!;
+  const under = (await tileAt(page, end.x, end.y))!;
+  expect(under.x).toBe(first.x);
+  await stroke(page, start, end);
+  expect((await cellAfterTick(page, under)).road.kind, 'the tile under the panel').toBe('None');
+  expect((await cellAfterTick(page, first)).road.kind, 'a stroke that ends on a panel lays nothing').toBe('None');
+  await expect(toolButton(page, 'Жилая'), 'the release is no click on the button either').toHaveAttribute('aria-pressed', 'false');
+});
+
+test('escAndARightPressDropTheRoadBeingDrawn', async ({ page }) => {
+  await openBlankCity(page);
+  await toolButton(page, '2 полосы').click();
+  const from = { x: 500, y: 300 };
+  const first = (await tileAt(page, from.x, from.y))!;
+
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(from.x + 4 * TILE_PX, from.y, { steps: 4 });
+  await page.keyboard.press('Escape');
+  await page.mouse.up();
+  expect((await cellAfterTick(page, first)).road.kind, 'Esc dropped the road').toBe('None');
+  expect((await page.evaluate(() => window.__sim.snapshot())).appState, 'Esc was spent on the road, not on the menu').not.toBe('MainMenu');
+
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(from.x + 4 * TILE_PX, from.y, { steps: 4 });
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.up({ button: 'right' });
+  await page.mouse.up();
+  expect((await cellAfterTick(page, first)).road.kind, 'a right press dropped the road').toBe('None');
+
+  // With no road under way Esc is the menu's again.
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('start')).toBeVisible();
+});

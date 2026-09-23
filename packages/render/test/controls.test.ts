@@ -3,7 +3,7 @@
 // `cursor_paint_to_command`).
 import { roadSegmentCommands, type GameCommand } from '@simcity/sim';
 import { describe, expect, it } from 'vitest';
-import { hoveredTile, mapPaintAllowed, paintCommands, roadStrokeCommands, type MapTool } from '../src/controls';
+import { cancelsRoadStroke, hoveredTile, mapPaintAllowed, paintCommands, roadStrokeCommands, type MapTool } from '../src/controls';
 
 const tool = (t: MapTool['tool'], rest: Partial<MapTool> = {}): MapTool => ({ tool: t, zoneDensity: 'Medium', oneWay: false, ...rest });
 const road = tool({ kind: 'Road', road: 'TwoLane' });
@@ -57,5 +57,13 @@ describe('map paint', () => {
     ];
     for (const [t, expected] of cases) expect(paintCommands(t, at, false), t.tool.kind).toEqual(expected);
     expect(paintCommands(tool({ kind: 'TrafficLight' }), at, true), 'a signal already there is taken down').toEqual([{ kind: 'RemoveTrafficLight', pos: at }]);
+  });
+
+  it('aRightPressOrEscDropsTheRoadBeingDrawn', () => {
+    // A right press during a left drag is a chord: Chromium reports it as a move with the right bit in `buttons`.
+    expect(cancelsRoadStroke({ buttons: 1 | 2 })).toBe(true);
+    expect(cancelsRoadStroke({ buttons: 1 })).toBe(false);
+    expect(cancelsRoadStroke({ code: 'Escape' })).toBe(true);
+    expect(cancelsRoadStroke({ code: 'KeyO' })).toBe(false);
   });
 });

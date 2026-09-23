@@ -114,6 +114,7 @@ interface KeyPress {
   readonly code: string;
   readonly ctrlKey: boolean;
   readonly metaKey: boolean;
+  readonly shiftKey?: boolean;
 }
 
 /** `build_mode_hotkeys`: a digit picks its tool, O flips one-way; nothing while a text field owns the keyboard. */
@@ -126,12 +127,12 @@ export function buildModeHotkey(state: ToolState, key: KeyPress, captured: boole
 }
 
 /**
- * `handle_undo_redo`: Ctrl+Z undoes (`false`), Ctrl+Y redoes (`true`), `null` for anything else. ⌘ counts as Ctrl on a
- * Mac. Inside a text field the keys are the field's.
+ * `handle_undo_redo`: Ctrl+Z undoes (`false`), Ctrl+Y and Ctrl+Shift+Z redo (`true`), `null` for anything else. ⌘ counts
+ * as Ctrl on a Mac. Inside a text field the keys are the field's.
  */
 export function undoRedoHotkey(key: KeyPress, captured: boolean): boolean | null {
   if (captured || !(key.ctrlKey || key.metaKey)) return null;
-  if (key.code === 'KeyZ') return false;
+  if (key.code === 'KeyZ') return key.shiftKey === true;
   if (key.code === 'KeyY') return true;
   return null;
 }
