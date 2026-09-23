@@ -1,7 +1,11 @@
 // The scene's light by the world's clock: the sun and sky of `dayNight.ts` turned into three.js lights, and the shared
 // window and sign materials that glow after dark (the checks of `night_glow_follows_the_clock` in
 // crates/simcity_sim/src/game/day_night.rs, tag rust-final, made on the scene's own materials).
+import type { CSMShadowNode } from 'three/addons/csm/CSMShadowNode.js';
+import * as THREE from 'three/webgpu';
 import { describe, expect, it } from 'vitest';
+import { OrthoView, SCENE_TILT } from '../../src/camera';
+import { orthographicFrustum, perspectiveFovDeg } from '../../src/cameraProjection';
 import { RENDER_CONFIG } from '../../src/renderConfig';
 import { resolveRenderSettings } from '../../src/renderSettings';
 import { SceneLighting, cascadeSplits, hourFromQuery, sceneLightLevels } from '../../src/scene/lighting';
@@ -76,5 +80,51 @@ describe('scene lighting', () => {
     expect(hourFromQuery('?hour=25.5')).toBe(1.5);
     expect(hourFromQuery('?hour=noon')).toBeNull();
     expect(hourFromQuery('?renderer=scene')).toBeNull();
+  });
+
+  /** The scene's camera for a view, set up as `SceneRenderer.frameCamera` does. */
+  function sceneCamera(worldPerPixel: number): THREE.Camera {
+    const view = new OrthoView({ width: 640, height: 480 });
+    view.tilt = SCENE_TILT;
+    view.worldPerPixel = worldPerPixel;
+    const plan = view.plan();
+    let camera: THREE.OrthographicCamera | THREE.PerspectiveCamera;
+    if (plan.kind === 'orthographic') {
+      const f = orthographicFrustum(plan, 640, 480);
+      camera = new THREE.OrthographicCamera(f.left, f.right, f.top, f.bottom, 0.1, 2 * view.eyeDistance() + plan.distance);
+    } else {
+      camera = new THREE.PerspectiveCamera(perspectiveFovDeg(plan), 640 / 480, plan.distance / 50, plan.distance * 4);
+    }
+    camera.up.set(0, 0, 1);
+    camera.position.set(...view.eye());
+    camera.lookAt(view.centerX, view.centerY, 0);
+    camera.updateMatrixWorld(true);
+    camera.updateProjectionMatrix();
+    return camera;
+  }
+
+  it('theGroundInTheMiddleOfTheFrameFallsInsideAShadowCascade', () => {
+    // The district and street views of the render gates, orthographic then perspective, and back out: the light builds
+    // its shadow once, so the one shadow node must follow each camera and each zoom.
+    const lighting = new SceneLighting(resolveRenderSettings(RENDER_CONFIG));
+    const scene = new THREE.Scene().add(lighting.group);
+    const node = () => lighting.sun.shadow.shadowNode as unknown as CSMShadowNode & { _init(b: unknown): void };
+    for (const [k, worldPerPixel] of [1, 0.2, 0.15, 1].entries()) {
+      const camera = sceneCamera(worldPerPixel);
+      lighting.useCamera(camera);
+      const csm = node();
+      // The first build hands the node the camera being drawn.
+      if (k === 0) csm._init({ camera, renderer: { coordinateSystem: THREE.WebGLCoordinateSystem, reversedDepthBuffer: false } });
+      csm.updateBefore();
+      scene.updateMatrixWorld(true);
+      // Shadow-map coordinates of the point, 0..1 on every axis inside the cascade's box, depth included.
+      const inside = csm.lights.map((l) => {
+        l.shadow.updateMatrices(l);
+        const p = new THREE.Vector3(0, 0, 0).applyMatrix4(l.shadow.matrix);
+        return [p.x, p.y, p.z].every((v) => v >= 0 && v <= 1);
+      });
+      expect(csm.camera, 'the cascades follow the camera of the frame').toBe(camera);
+      expect(inside, `worldPerPixel ${worldPerPixel}: the ground at the focus is in a cascade`).toContain(true);
+    }
   });
 });
