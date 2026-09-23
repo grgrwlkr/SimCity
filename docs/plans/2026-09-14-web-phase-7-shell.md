@@ -8,7 +8,8 @@
 
 - `bun run desktop:dev` — `tools/desktop-dev.ts`: `electron:install`, сборка main и preload, Vite на `PORT` (5174 по умолчанию), Electron над ним. С выходом Electron обёртка гасит Vite.
 - `bun run desktop:build` — `electron:install`, `bun build` для `src/main.ts` (ESM) и `src/preload.ts` (CJS) в `packages/desktop/out`, `vite build packages/app` в `out/renderer`, `electron-builder --mac --arm64`. Результат: `packages/desktop/release/mac-arm64/SimCity.app`.
-- `bun run desktop:e2e` — `packages/desktop/e2e/package.spec.ts` (иконка и фьюзы релизного `.app`) и `shell.spec.ts` (Playwright `_electron.launch` на клоне того же `.app`, см. «Иконка и фьюзы»), всё с `SIMCITY_TEST_WINDOW=1`.
+- `bun run --cwd packages/desktop build:test` — та же сборка, но страница собрана с `SIMCITY_SIM_API=1` (есть `window.__sim`); результат — `packages/desktop/release/test/mac-arm64/SimCity.app`.
+- `bun run desktop:e2e` — `packages/desktop/e2e/package.spec.ts` (иконка и фьюзы релизного `.app`) и `shell.spec.ts` (Playwright `_electron.launch` на клоне тестовой сборки, см. «Иконка и фьюзы» и «Сейвы файлами и `__sim` вне релиза»), всё с `SIMCITY_TEST_WINDOW=1`. Нужны обе сборки.
 - `bun run desktop:build:obfuscated` — то же, что `desktop:build`, с `packages/desktop/vite.obfuscated.config.ts`. Перемер на Electron — в «Иконка и фьюзы».
 - `bun run --cwd packages/desktop build:icon` — `build/icon.svg` → `build/icon.icns` (`scripts/build-icon.ts`).
 
@@ -86,11 +87,15 @@
 
 Разница во времени сборки тонет в шуме нагрузки: тот же `desktop:build` без `afterPack` дал 164,3 и 116,0 с, а с ним в третий раз — 149,5 с. Прежние 3,09 с сегодня не воспроизводятся; первая, холодная сборка worktree с загрузкой Electron — 234,1 с. Обфускация добавляет 7 030–7 091 байт к asar и не трогает fps: обфусцируется только чанк `ui`, горячий путь остаётся чистым.
 
+## Сейвы файлами и `__sim` вне релиза (волна 7, E1 и E2)
+
+- **Сейвы.** `packages/desktop/src/saves.ts`: файлы `<userData>/saves/slot<n>.json`, запись через `.partial` и переименование, слот — целое 1–255 (как `u8` слотов Rust, без его `max(1)`: 0 отвергается). Обработчики `ipcMain` проверяют номер до любого обращения к диску, байты сейва — только `ArrayBuffer` или его представление. Preload добавляет в `window.simcityDesktop` ровно `save/load/list/remove`, каждый передаёт в main только номер слота (и байты у `save`). Диалога нет. На стороне страницы `packages/app/src/saves/desktopSaveStore.ts`: сейв уходит из воркера запросом `save`, возвращается запросом `load`; `createSaveStore` выбирает файлы по наличию `window.simcityDesktop`, иначе OPFS воркера.
+- **`__sim`.** Флаг сборки `__SIM_API__` (`packages/app/vite.config.ts`): включён у dev-сервера и при `SIMCITY_SIM_API=1`, в релизной сборке выключен. `main.tsx` создаёт API игры через `createSimApi` и под флагом динамически импортирует `exposeSimApi.ts`, который один пишет `window.__sim`: в релизе импорт выпадает вместе с именем. Этот разрез `simApi.ts` и `main.tsx` вносит интегратор после E3 (`simApi.ts` в волне 7 у E3). `desktop:e2e` гоняется на отдельной тестовой сборке, а не на клоне релиза: клон копирует asar релиза, где `__sim` нет. Проверка — `theReleaseCarriesNoSimApi` (поиск по asar релиза, asar хранит файлы как есть; контроль — тестовая сборка находит).
+- **Замер fps тестового города.** Планка та же (58 у страницы, 55 композитных). Прогрев 5 с, затем до трёх окон по 10 с, медиана по окнам; два прошедших окна завершают замер. Разовый провал в окне больше не решает исход; при постоянной загрузке GPU тест падает, как и должен.
+
 ## Зависимости и отложенное
 
-- **Файловые сейвы** ждут сейвов v1 этапа 6 (эквивалент `SaveGameV3`). В Electron это `ipcMain` с выбором каталога и мост в preload.
 - **`.exe`, подпись, нотаризация** не делались.
-- **`window.__sim` в релизе** остаётся (раздел «Защита кода от разбора» в программе).
 - **`live/*` как Playwright-хелперы** из строки этапа 7 в эту часть не входили.
 
 ## Сделано / Отклонения / Замеры
