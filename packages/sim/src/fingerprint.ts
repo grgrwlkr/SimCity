@@ -417,11 +417,13 @@ function hashNotifications(h: Fnv64, n: Notifications): void {
   }
 }
 
-/** JSON with bigints spelled out; JSON number formatting is fully specified, so engines agree. */
 /** The fields of `CitizenTripCounter` the fingerprint leaves out. */
 const TRIP_COUNTER_FIELDS: ReadonlySet<string> = new Set(['requested', 'arrived', 'lastTick']);
 
-/** `value` as JSON; `omit`: keys of `value` itself left out. */
+/**
+ * JSON with bigints spelled out; JSON number formatting is fully specified, so engines agree. `omit`: keys of `value`
+ * itself left out.
+ */
 function stableJson(value: unknown, omit?: ReadonlySet<string>): string {
   return JSON.stringify(value, function (this: unknown, key, v: unknown) {
     // Own keys of `value` are the only ones whose holder is `value` itself.
