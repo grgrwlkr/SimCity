@@ -8,6 +8,8 @@ import { WEALTH_CLASSES } from './economy/wealth';
 import { MASK_FIRE, MASK_MEDICAL, MASK_POLICE } from './services/coverage';
 import { UTILITY_KINDS, utilityMask, type UtilityKind } from './utilities';
 import type { MapGrid } from './map/grid';
+import { periodTicks } from './rates';
+import { SECOND_NS } from './timer';
 import type { World } from './world';
 
 /** Unemployment the advisor lets pass. */
@@ -63,6 +65,12 @@ export class Advisor {
 
   worst(): Problem | undefined {
     return this.problems[0];
+  }
+
+  /** Nothing assessed: a new city is read afresh on its next tick. */
+  reset(): void {
+    this.version = 0;
+    this.problems = [];
   }
 }
 
@@ -414,11 +422,14 @@ export function advisorInputs(w: World): AdvisorInputs {
 }
 
 /**
- * `update_advisor`: reassess the city on the tick a game hour turns, and once on the first tick of a game. Runs every
- * tick; a tick with no new hour costs one check.
+ * `update_advisor`: reassess the city on the tick a game hour turns, and on the first tick of a game. Not in Rust: once
+ * more on the tick the first game minute of employment, demand and coverage is in (they run once a game minute, before
+ * this system), since the first assessment read them empty and would stand for an hour. Runs every tick; a tick with
+ * nothing new costs two checks.
  */
 export function updateAdvisor(w: World): void {
-  if (w.events.hourAdvanced.length === 0 && w.advisor.version > 0) return;
+  const firstMinuteIn = w.advisor.version === 1 && (w.tick + 1) % periodTicks(w, 60 * SECOND_NS) === 0;
+  if (w.events.hourAdvanced.length === 0 && w.advisor.version > 0 && !firstMinuteIn) return;
   w.advisor.problems = assess(advisorInputs(w));
   w.advisor.version += 1;
 }

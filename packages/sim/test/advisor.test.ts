@@ -5,7 +5,7 @@ import { advisorInputs, assess, thousands, updateAdvisor, type AdvisorInputs, ty
 import { runFixedTick } from '../src/app';
 import { newBuilding } from '../src/buildings/building';
 import { FIXED_UPDATE } from '../src/schedule';
-import { MASK_POLICE } from '../src/services/coverage';
+import { MASK_FIRE, MASK_MEDICAL, MASK_POLICE } from '../src/services/coverage';
 import { SECOND_NS } from '../src/timer';
 import { createWorld } from '../src/world';
 
@@ -186,7 +186,8 @@ describe('advisor', () => {
   });
 
   // advisor.rs `advisor_reassesses_the_city_each_game_hour`: the advice follows the city hour by hour and stands in
-  // between. As in Rust, the first update of a new world assesses it too.
+  // between. As in Rust, the first update of a new world assesses it too; in TS the tick its first game minute of stats
+  // is in reassesses once more (a one-second test hour makes that the second tick).
   it('advisorReassessesTheCityEachGameHour', () => {
     const systems = FIXED_UPDATE.filter((system) => ['beginTickEvents', 'simTick', 'updateAdvisor'].includes(system.name));
     const w = createWorld({ mapWidth: 8, mapHeight: 8, gameHourNs: SECOND_NS });
@@ -198,34 +199,179 @@ describe('advisor', () => {
       for (let i = 0; i < ticks; i++) runFixedTick(w, systems);
     };
 
-    run(1);
+    run(2);
     expect(worst()).toBe('EmptyTreasury');
 
     w.city.money = 9000;
-    run(ticksAnHour - 2);
+    run(ticksAnHour - 3);
     expect(w.city.hour).toBe(0);
     expect(worst(), 'between hours the advice stands').toBe('EmptyTreasury');
 
     run(1);
     expect(w.city.hour).toBe(1);
     expect(worst()).toBeUndefined();
-    expect(w.advisor.version).toBe(2);
+    expect(w.advisor.version).toBe(3);
   });
 
-  // Not in Rust: the TS schedule gates the system itself. A new world is assessed on its first fixed tick, not an hour
-  // later, and after that only on the tick the hour turns.
-  it('advisorAssessesANewWorldOnItsFirstTickAndThenOnTheHour', () => {
-    const w = createWorld({ mapWidth: 8, mapHeight: 8, gameHourNs: SECOND_NS });
+  // Not in Rust: a new world is assessed on its first fixed tick, once more on the tick its first game minute of
+  // employment, demand and coverage has run (the first assessment read them empty), and after that only on the hour.
+  it('advisorAssessesANewWorldOnItsFirstTickAndMinuteThenOnTheHour', () => {
+    const w = createWorld({ mapWidth: 8, mapHeight: 8 });
     w.appState = 'InGame';
     w.city.money = -500;
     expect(w.advisor.version).toBe(0);
     runFixedTick(w);
     expect(w.advisor.version, 'assessed on the first tick').toBe(1);
     expect(w.advisor.worst()?.kind).toBe('EmptyTreasury');
-    for (let i = 0; i < 8; i++) runFixedTick(w);
-    expect(w.advisor.version, 'not within the hour').toBe(1);
+    const minute = 600;
+    for (let i = 1; i < minute - 1; i++) runFixedTick(w);
+    expect(w.advisor.version, 'not within the first minute').toBe(1);
     runFixedTick(w);
-    expect(w.city.hour).toBe(1);
-    expect(w.advisor.version, 'on the tick the hour turns').toBe(2);
+    expect(w.advisor.version, 'on the tick the first minute of stats is in').toBe(2);
+    for (let i = 0; i < minute; i++) runFixedTick(w);
+    expect(w.advisor.version, 'not on later minutes').toBe(2);
+
+    const quick = createWorld({ mapWidth: 8, mapHeight: 8, gameHourNs: SECOND_NS });
+    quick.appState = 'InGame';
+    for (let i = 0; i < 9; i++) runFixedTick(quick);
+    expect(quick.advisor.version, 'first tick and first minute').toBe(2);
+    runFixedTick(quick);
+    expect(quick.city.hour).toBe(1);
+    expect(quick.advisor.version, 'on the tick the hour turns').toBe(3);
+  });
+
+  it('advisorRanksBySeverityNotByInsertion', () => {
+    const inputs = healthy();
+    inputs.demandResidential = 0.6; // HousingWanted 0.28, added before crime
+    inputs.crimeShare = 0.9; // Crime 0.74
+    expect(assess(inputs).map((problem) => problem.kind)).toEqual(['Crime', 'HousingWanted']);
+  });
+
+  it('advisorBreaksSeverityTiesByKind', () => {
+    const inputs = healthy();
+    inputs.money = -1; // EmptyTreasury 1
+    inputs.utilities[0] = reading(5000, 2000, 0, 0); // PowerShortage 0.6 + 0.4 × 1
+    expect(assess(inputs).map((problem) => problem.kind)).toEqual(['PowerShortage', 'EmptyTreasury']);
+  });
+
+  it('advisorThresholdsLetTheBoundaryPass', () => {
+    const cases: Array<[string, (inputs: AdvisorInputs, above: boolean) => void]> = [
+      ['Unemployment', (i, above) => Object.assign(i, { workers: 100, unemployed: above ? 9 : 8 })],
+      ['HousingWanted', (i, above) => Object.assign(i, { demandResidential: above ? 0.51 : 0.5 })],
+      ['JobsWanted', (i, above) => Object.assign(i, { demandIndustrial: above ? 0.51 : 0.5 })],
+      ['SchoolReach', (i, above) => Object.assign(i, { residentsBeyondSchool: above ? 100 : 99 })],
+      ['Crime', (i, above) => Object.assign(i, { crimeShare: above ? 0.11 : 0.1 })],
+      ['FireRisk', (i, above) => Object.assign(i, { fireShare: above ? 0.11 : 0.1 })],
+      ['PoorHealth', (i, above) => Object.assign(i, { poorHealthShare: above ? 0.21 : 0.2 })],
+    ];
+    for (const [kind, set] of cases) {
+      const at = healthy();
+      set(at, false);
+      expect(assess(at).map((problem) => problem.kind), `${kind} at its threshold`).toEqual([]);
+      const above = healthy();
+      set(above, true);
+      expect(assess(above).map((problem) => problem.kind), `${kind} just past it`).toEqual([kind]);
+    }
+  });
+
+  it('advisorWeighsEachProblemByItsOwnMeasure', () => {
+    const severityOf = (change: Partial<AdvisorInputs>): number => {
+      const problems = assess({ ...healthy(), ...change });
+      expect(problems).toHaveLength(1);
+      return problems[0]!.severity;
+    };
+    const power = (supply: number, demand: number, supplied: number, without: number): AdvisorInputs['utilities'] => [
+      reading(supply, demand, supplied, without),
+      reading(5000, 2000, 2000, 0),
+      reading(4000, 2000, 2000, 0),
+    ];
+    expect(severityOf({ utilities: power(5000, 1000, 750, 0) })).toBeCloseTo(0.6 + 0.4 * 0.25);
+    expect(severityOf({ utilities: power(0, 0, 0, 25) })).toBeCloseTo(0.6 + 0.4 * 0.25);
+    expect(severityOf({ utilities: power(5000, 1000, 1000, 25) })).toBeCloseTo(0.5 + 0.4 * 0.25);
+    expect(severityOf({ monthRunningNet: -5000 })).toBeCloseTo(0.3 + 0.5 * 0.5);
+    expect(severityOf({ monthRunningNet: -50_000 })).toBeCloseTo(0.8);
+    expect(severityOf({ workers: 1000, unemployed: 180 })).toBeCloseTo(0.3 + 2 * 0.1);
+    expect(severityOf({ demandResidential: 0.75 })).toBeCloseTo(0.2 + 0.8 * 0.25);
+    expect(severityOf({ demandCommercial: 0.75 })).toBeCloseTo(0.2 + 0.8 * 0.25);
+    expect(severityOf({ residentsBeyondSchool: 200 })).toBeCloseTo(0.25 + 0.4 * 0.5);
+    expect(severityOf({ crowdedSchool: { residents: 800, places: 200, at: { x: 1, y: 1 } } })).toBeCloseTo(0.25 + 0.4 * 0.75);
+    expect(severityOf({ crimeShare: 0.5 })).toBeCloseTo(0.2 + 0.6 * 0.5);
+    expect(severityOf({ fireShare: 0.5 })).toBeCloseTo(0.2 + 0.6 * 0.5);
+    expect(severityOf({ poorHealthShare: 0.5 })).toBeCloseTo(0.2 + 0.5 * 0.5);
+  });
+
+  it('advisorNamesTheLowerClassOnATie', () => {
+    const inputs = healthy();
+    inputs.workers = 1000;
+    inputs.unemployed = 180;
+    inputs.unemployedByClass = [10, 80, 80];
+    expect(texts(inputs)).toEqual(['Unemployment 18%: 180 residents have no job, most of them middle-income']);
+    inputs.unemployedByClass = [80, 80, 20];
+    expect(texts(inputs)).toEqual(['Unemployment 18%: 180 residents have no job, most of them low-income']);
+  });
+
+  // The rewritten reading of the city: whole footprints, the first building top row first, every cover, health, schools
+  // and the month's running net without construction and loans taken.
+  it('advisorReadsTheCityOverWholeFootprints', () => {
+    const w = createWorld({ mapWidth: 8, mapHeight: 4 });
+    const len = w.grid.len();
+    const idx = (x: number, y: number): number => y * 8 + x;
+    const place = (kind: 'Residential' | 'Commercial', x: number, y: number, residents: number, width = 2, length = 2): void => {
+      for (let dy = 0; dy < length; dy++) {
+        for (let dx = 0; dx < width; dx++) {
+          const pos = { x: x + dx, y: y + dy };
+          w.grid.set(pos, { ...w.grid.get(pos)!, zone: kind, building: kind });
+        }
+      }
+      w.buildings.add(newBuilding({ kind, anchor: { x, y }, width, length, level: 1, occupancyResidents: residents }));
+    };
+    place('Residential', 0, 2, 30); // A, rows 2-3
+    place('Residential', 4, 1, 50); // B, rows 1-2
+    place('Commercial', 6, 0, 0, 2, 1); // C, row 0
+    w.buildings.add(newBuilding({ kind: 'Residential', anchor: { x: 2, y: 0 }, phase: { kind: 'UnderConstruction', hoursRemaining: 3 } }));
+    w.buildings.add(newBuilding({ kind: 'Park', anchor: { x: 3, y: 3 } }));
+
+    const served = new Uint8Array(len);
+    served[idx(1, 3)] = 0b001; // power on A's second column, second row only
+    served[idx(4, 1)] = 0b011; // power and water at B
+    w.utilityNetwork.served = served;
+    w.serviceCoverage.coverageMap = new Uint8Array(len);
+    w.serviceCoverage.coverageMap[idx(1, 3)] = MASK_FIRE;
+    w.serviceCoverage.coverageMap[idx(5, 2)] = MASK_POLICE | MASK_MEDICAL;
+    const health = new Float32Array(len).fill(0.9);
+    for (const [x, y] of [[0, 2], [1, 2], [0, 3], [1, 3], [5, 2]] as const) health[idx(x, y)] = 0.3;
+    w.cityFields.setValues('Health', health);
+    w.budget.current.add('ResidentialTax', 300);
+    w.budget.current.add('Construction', -5000);
+    w.budget.current.add('LoanProceeds', 10_000);
+    w.budget.daysElapsed = 4;
+
+    let inputs = advisorInputs(w);
+    expect(inputs.buildings).toBe(3);
+    expect(inputs.utilities.map((r) => [r.buildingsWithout, r.firstWithout])).toEqual([
+      [1, { x: 6, y: 0 }],
+      [2, { x: 6, y: 0 }],
+      [3, { x: 6, y: 0 }],
+    ]);
+    expect([inputs.fireCover, inputs.policeCover, inputs.medicalCover]).toEqual([1 / 3, 1 / 3, 1 / 3]);
+    expect(inputs.poorHealthShare, 'five of the eight home tiles').toBe(5 / 8);
+    expect(inputs.monthRunningNet).toBe(300);
+    expect(inputs.monthDays).toBe(4);
+    expect(inputs.schoolOpen, 'no school before its milestone').toBe(false);
+
+    w.milestones.reach(1_000_000);
+    w.civicCoverage.strength = w.civicCoverage.strength.map(() => new Float32Array(len));
+    w.civicCoverage.strength[0]![idx(5, 2)] = 0.5; // B's centre
+    w.civicCoverage.sources = [{ kind: 'School', anchor: { x: 3, y: 0 }, capacity: 400, residents: 400, strength: 1 }];
+    inputs = advisorInputs(w);
+    expect(inputs.schoolOpen).toBe(true);
+    expect(inputs.residentsBeyondSchool, 'A alone').toBe(30);
+    expect(inputs.crowdedSchool, 'a full school is not crowded').toBeNull();
+    w.civicCoverage.sources = [
+      { kind: 'School', anchor: { x: 3, y: 0 }, capacity: 400, residents: 400, strength: 1 },
+      { kind: 'School', anchor: { x: 7, y: 3 }, capacity: 400, residents: 500, strength: 0.8 },
+      { kind: 'School', anchor: { x: 2, y: 1 }, capacity: 200, residents: 400, strength: 0.5 },
+    ];
+    expect(advisorInputs(w).crowdedSchool).toEqual({ residents: 400, places: 200, at: { x: 2, y: 1 } });
   });
 });
