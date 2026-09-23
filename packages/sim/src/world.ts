@@ -1,5 +1,6 @@
 // The simulation state: struct-of-arrays per entity kind, plus the resources the Rust sim keeps as
 // Bevy `Resource`s. Capacities are fixed; nothing here allocates per tick.
+import { Advisor } from './advisor';
 import { Buildings } from './buildings/building';
 import { Citizens, emptyCommuteStats, emptyShoppingStats, type CommuteStats, type ShoppingDemandStats } from './citizens';
 import { DEFAULT_GAME_HOUR_NS, createSimClock, defaultCity, type City } from './city';
@@ -167,6 +168,8 @@ export interface World {
   readonly notifications: Notifications;
   /** `Milestones`: the largest population the city has reached, and so what it has opened. */
   readonly milestones: Milestones;
+  /** `Advisor`: the city's problems, worst first, reassessed once a game hour. */
+  readonly advisor: Advisor;
   simRng: StdRng;
   growthRng: StdRng;
   events: TickEvents;
@@ -295,6 +298,7 @@ export function createWorld(options: WorldOptions = {}): World {
     buildingUpgradeClock: new Timer(BUILDING_UPGRADE_GAME_HOURS * (options.gameHourNs ?? DEFAULT_GAME_HOUR_NS), 'Repeating'),
     notifications: new Notifications(),
     milestones: new Milestones(),
+    advisor: new Advisor(),
     simRng: stdRngSeedFromU64(DEFAULT_RNG_SEED),
     growthRng: stdRngSeedFromU64(DEFAULT_RNG_SEED),
     events: emptyEvents(),

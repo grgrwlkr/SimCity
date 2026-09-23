@@ -1,6 +1,7 @@
 // Order of systems is data: the position in the array is the execution order (Rust: `GameSet`
 // chained with its `SimStep` / `TrafficStep` / `PostSimStep` sub-sets). A new system takes a
 // concrete position with a comment saying what it runs after and what it reads.
+import { updateAdvisor } from './advisor';
 import { reportBuildingsWithoutPower } from './buildings/blockers';
 import { updateConstructionProgress } from './buildings/construction';
 import { buildingDecayEconomic, buildingDecayLowHappiness, buildingDecayNoRoadAccess, despawnInvalidBuildings } from './buildings/decay';
@@ -234,6 +235,11 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   // Rust `GameSet::PostSim`: reads the population just recomputed and puts the Achievement line in the feed.
   { name: 'trackMilestones', run: trackMilestones, runIn: IN_GAME },
   { name: 'reportBuildingsWithoutPower', run: reportBuildingsWithoutPower, runIn: IN_GAME },
+  // Rust `GameSet::PostSim`, last: after everything it reads has run this tick — the utility network and supply, the
+  // employment stats and demand, the civic and service coverage, the city fields, the ledger after the daily economy,
+  // the population and milestones. Every tick, but it assesses only on the tick the hour turns (and on a game's first
+  // tick), so the advice is never an hour late at the start.
+  { name: 'updateAdvisor', run: updateAdvisor, runIn: IN_GAME },
 ];
 
 /** `Update` / `GameSet::CommandApply`. */

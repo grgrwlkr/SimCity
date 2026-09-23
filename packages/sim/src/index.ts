@@ -1,3 +1,4 @@
+export * from './advisor';
 export * from './app';
 export * from './buildings/blockers';
 export * from './buildings/building';

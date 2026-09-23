@@ -61,7 +61,7 @@ export interface WorldSnapshot {
   /** The feed's last events, oldest first. */
   readonly history: readonly HistoryLine[];
   readonly milestones: MilestonesView;
-  /** The advisor's first three problems, worst first; empty until the advisor is ported (S3). */
+  /** The advisor's first three problems, worst first; empty until the first tick of a game (or of a scenario) assesses it. */
   readonly advisor: readonly AdvisorProblemView[];
 }
 

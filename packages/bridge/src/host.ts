@@ -152,6 +152,8 @@ export class SimHost {
     switch (req.t) {
       case 'cmd':
         this.world.commands.push(parseRustCommand(req.cmd));
+        // The publish key does not see money, rates, funding or loans: the frame that applies the command reports it.
+        this.lastReported = null;
         return null;
       case 'step':
         for (let i = 0; i < req.ticks; i++) {
@@ -178,6 +180,8 @@ export class SimHost {
         return rngProbeDigest(BigInt(req.seed), req.draws);
       case 'undoRedo':
         this.world.undoRedo.push(req.redo);
+        // As with a command: an undo may change only what the publish key does not see.
+        this.lastReported = null;
         return null;
       case 'tile':
         return this.world.grid.get(req.pos) ?? null;
@@ -199,6 +203,8 @@ export class SimHost {
       case 'scenario': {
         const size = req.size ?? SCENARIOS.find((s) => s.name === req.name)?.mapSize;
         if (size !== undefined && (size !== this.world.grid.width || size !== this.world.grid.height)) this.replaceWorld(size);
+        // A world of the same size is reused: the previous city's advice must not stand until the next hour.
+        this.world.advisor.reset();
         this.scenario = SCENARIO_BUILDERS[req.name](this.world);
         // Settled into its first frame here: whether the loop ran an empty frame before the next request cannot matter.
         frame(this.world, 0);
@@ -372,7 +378,7 @@ export class SimHost {
       toasts: screen.visible,
       history: w.notifications.history().map((line) => ({ ...line })),
       milestones: { bestPopulation: w.milestones.bestPopulation, next: w.milestones.next() ?? null },
-      advisor: [],
+      advisor: w.advisor.problems.slice(0, 3).map((problem) => ({ ...problem, at: problem.at === null ? null : { ...problem.at } })),
     };
   }
 
