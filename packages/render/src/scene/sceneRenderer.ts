@@ -1,8 +1,9 @@
-// The scene the player sees (stage R2): textured ground, pseudo-3D buildings, cars and people as instanced meshes with
-// the materials of `RenderPrimitives`, street furniture, traffic lamps and emergency markers, all sampling one atlas.
-// The camera is the debug renderer's — straight above the ground, the zoom picking the projection — so picking, the
-// view controls and `__sim.camera` behave the same; its tilt, the sun and the post-processing are stage R3, and the
-// lights here are a flat placeholder until then. Draw calls follow the kinds of things on screen, not their number.
+// The scene the player sees (stages R2, R3): textured ground, pseudo-3D buildings with their windows, cars and people
+// as instanced meshes with the materials of `RenderPrimitives`, street furniture, traffic lamps and emergency markers,
+// all sampling one atlas. The view is the debug renderer's `OrthoView` with the rig's tilt (`SCENE_TILT`), so picking,
+// the view controls and `__sim.camera` go through the same maths the camera is placed by. The sun, sky and night glow
+// follow the world's clock (`lighting.ts`), and the frame goes through the post-processing of `post.ts`. Draw calls
+// follow the kinds of things on screen, not their number, and the ground draws a group of chunks at a time.
 import {
   PEDESTRIAN_KIND,
   type MapLayersReply,
@@ -13,21 +14,25 @@ import {
 } from '@simcity/bridge';
 import { VEHICLE_LENGTH_TILES, VEHICLE_WIDTH_TILES, tileToWorld, type MapConfig, type TilePos } from '@simcity/sim';
 import * as THREE from 'three/webgpu';
-import { OrthoView } from '../camera';
+import { OrthoView, SCENE_TILT } from '../camera';
 import { orthographicFrustum, perspectiveFovDeg, type ProjectionPlan } from '../cameraProjection';
 import type { RenderStats } from '../debugRenderer';
 import { EmergencyMarkers, type EmergencyView } from '../emergencyMarkers';
 import { FpsMeter } from '../fpsMeter';
 import { interpolateHeading, interpolatePositions, pairVehicles } from '../interpolate';
 import { lampSignal } from '../lamps';
-import { changedChunks, chunkGrid } from '../mapChunks';
+import { changedChunks, chunkGrid, groupTiles, groupsOfChunks } from '../mapChunks';
 import { LAMP_COLORS, VEHICLE_COLORS } from '../palette';
 import { PlaybackClock } from '../playback';
+import { RENDER_CONFIG } from '../renderConfig';
+import { resolveRenderSettings } from '../renderSettings';
 import { RenderPrimitives, type CompositeMesh } from '../renderPrimitives';
 import { drawnScale, vehicleScale } from '../vehicleLook';
 import { SceneMaterials, createAtlasTexture } from './atlasNode';
 import { MapInstances } from './mapInstances';
-import { buildGroundChunk } from './ground';
+import { buildGroundArea } from './ground';
+import { SceneLighting, hourFromQuery } from './lighting';
+import { configWithout, effectsOffFromQuery, exposureOf, postGraph, type PostPassName } from './post';
 import type { Renderer } from './renderer';
 
 /** Sim frames kept for playback: the display draws a gap or two behind the newest one. */
@@ -51,6 +56,10 @@ export interface SceneStats extends RenderStats {
   readonly props: number;
   /** Main-thread milliseconds the last map took to apply: an edit must not stall the frame. */
   readonly setMapMs: number;
+  /** The post-processing effects in the frame's graph, in order. */
+  readonly post: readonly PostPassName[];
+  /** The hour the light is drawn at: the world's clock, or `?hour=` when pinned. */
+  readonly hour: number;
 }
 
 /** A turn arrow along +x, `size` world units long, centred on the origin (the debug renderer's). */
@@ -71,6 +80,15 @@ export class SceneRenderer implements Renderer {
   onLinksNeeded: ((graphVersion: number) => void) | null = null;
 
   private readonly scene = new THREE.Scene();
+  /** The shipped look, less what `?off=` names. */
+  private readonly config = configWithout(RENDER_CONFIG, effectsOffFromQuery(window.location.search));
+  private readonly settings = resolveRenderSettings(this.config);
+  private readonly lighting = new SceneLighting(this.settings);
+  private readonly pipelines = new Map<THREE.Camera, { pipeline: THREE.RenderPipeline; passes: readonly PostPassName[] }>();
+  private postPasses: readonly PostPassName[] = [];
+  /** Noon until the world's clock arrives; `?hour=` overrides the clock while it is in the address. */
+  private worldHour = 12;
+  private readonly pinnedHour = hourFromQuery(window.location.search);
   private readonly orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 5000);
   private readonly perspectiveCamera = new THREE.PerspectiveCamera(50, 1, 0.1, 5000);
   private drawnPlan: ProjectionPlan | null = null;
@@ -80,7 +98,7 @@ export class SceneRenderer implements Renderer {
   private readonly chunkMeshes = new Map<number, THREE.Mesh>();
   /** One unit quad for every marker, sized per instance. */
   private readonly markerGeometry = new THREE.PlaneGeometry(1, 1);
-  private readonly instances = new MapInstances(this.prims, this.materials, (mesh) => this.geometryOf(mesh));
+  private readonly instances = new MapInstances(this.prims, this.materials, (mesh) => this.geometryOf(mesh), this.lighting);
   private map: MapLayersReply | null = null;
   private reader: RenderReader | null = null;
   private cars: THREE.InstancedMesh | null = null;
@@ -118,12 +136,9 @@ export class SceneRenderer implements Renderer {
     canvas: HTMLCanvasElement,
   ) {
     this.view = new OrthoView({ width: canvas.clientWidth, height: canvas.clientHeight });
+    this.view.tilt = SCENE_TILT;
     this.scene.background = new THREE.Color(SKY);
-    // A flat stand-in for the sun and sky of R3: enough to tell a wall from a roof.
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8f94, 2.4));
-    const sun = new THREE.DirectionalLight(0xffffff, 1.4);
-    sun.position.set(-0.6, -0.8, 1.6);
-    this.scene.add(sun, this.instances.buildingGroup, this.instances.propGroup);
+    this.scene.add(this.lighting.group, this.instances.buildingGroup, this.instances.propGroup);
     const unlit = () => {
       const m = new THREE.MeshBasicNodeMaterial();
       m.color.set(0xffffff);
@@ -145,7 +160,12 @@ export class SceneRenderer implements Renderer {
     const renderer = new THREE.WebGPURenderer({ canvas, antialias: false });
     await renderer.init();
     renderer.outputColorSpace = THREE.SRGBColorSpace;
+    // The post graph tone-maps with the configured curve; exposure is read from here by it.
     renderer.toneMapping = THREE.NoToneMapping;
+    renderer.toneMappingExposure = exposureOf(RENDER_CONFIG.colorGrading);
+    renderer.shadowMap.enabled = RENDER_CONFIG.shadows.cascades > 0 && !effectsOffFromQuery(window.location.search).has('shadows');
+    // The frame is several renders (shadows, the scene, the effects): the count is reset once per frame, not per render.
+    renderer.info.autoReset = false;
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(Math.max(canvas.clientWidth, 1), Math.max(canvas.clientHeight, 1), false);
     const r = new SceneRenderer(renderer, canvas);
@@ -168,6 +188,11 @@ export class SceneRenderer implements Renderer {
   whenSized(): Promise<void> {
     if (this.view.viewport.width > 0 && this.view.viewport.height > 0) return Promise.resolve();
     return new Promise((resolve) => this.sizedWaiters.push(resolve));
+  }
+
+  /** The world's hour, minutes as a fraction: the light follows it unless `?hour=` pins it. */
+  setClock(hour: number): void {
+    this.worldHour = hour;
   }
 
   attachRenderBuffer(reader: RenderReader): void {
@@ -199,22 +224,28 @@ export class SceneRenderer implements Renderer {
     const changed = changedChunks(this.map, map);
     const { cols } = chunkGrid(map.width, map.height);
     const ground = this.materials.get(this.prims.materialVertexMapped([1, 1, 1]));
-    for (const index of changed) {
+    const groups = groupsOfChunks(changed, cols);
+    for (const index of groups) {
       const old = this.chunkMeshes.get(index);
       if (old !== undefined) this.removeChunk(old);
-      const g = buildGroundChunk(map, index % cols, Math.floor(index / cols));
+      const g = buildGroundArea(map, groupTiles(map.width, map.height, index));
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.BufferAttribute(g.positions, 3));
       geometry.setAttribute('normal', new THREE.BufferAttribute(g.normals, 3));
       geometry.setAttribute('uv', new THREE.BufferAttribute(g.uvs, 2));
       geometry.setAttribute('color', new THREE.BufferAttribute(g.colors, 3));
+      geometry.computeBoundingSphere();
       const mesh = new THREE.Mesh(geometry, ground);
       mesh.name = `ground-${index}`;
+      mesh.receiveShadow = true;
       this.chunkMeshes.set(index, mesh);
       this.scene.add(mesh);
     }
-    this.chunksRebuiltLast = changed.length;
+    this.chunksRebuiltLast = groups.length;
     this.instances.apply(map, changed, resized);
+    for (const group of [this.instances.buildingGroup, this.instances.propGroup]) {
+      for (const child of group.children) child.castShadow = child.receiveShadow = true;
+    }
     this.tileSize = map.tileSize;
     this.map = map;
     this.pendingMapEditVersion = map.mapEditVersion;
@@ -283,6 +314,7 @@ export class SceneRenderer implements Renderer {
       backend: this.backend,
       frames: this.frames,
       fps: Math.round(this.fpsMeter.fps),
+      // The ground's draws: groups of chunks, not chunks, in the scene.
       chunks: this.chunkMeshes.size,
       chunksRebuiltLast: this.chunksRebuiltLast,
       mapEditVersion: this.drawnMapEditVersion,
@@ -300,6 +332,8 @@ export class SceneRenderer implements Renderer {
       buildingInstancesDrawn: this.instances.buildingBatches().reduce((n, b) => n + (this.inScene(b.drawn) && b.drawn.visible ? b.drawn.count : 0), 0),
       props: this.instances.props,
       setMapMs: Math.round(this.setMapMs),
+      post: this.postPasses,
+      hour: this.pinnedHour ?? this.worldHour,
     };
   }
 
@@ -368,10 +402,20 @@ export class SceneRenderer implements Renderer {
       this.perspectiveCamera.fov = perspectiveFovDeg(plan);
       this.perspectiveCamera.aspect = width / Math.max(height, 1);
       this.perspectiveCamera.far = plan.distance * 4;
+      // Depth precision for the occlusion pass: nothing is ever nearer than a fiftieth of the boom.
+      this.perspectiveCamera.near = plan.distance / 50;
       this.perspectiveCamera.updateProjectionMatrix();
       camera = this.perspectiveCamera;
     }
-    camera.position.set(this.view.centerX, this.view.centerY, plan.distance);
+    const [ex, ey, ez] = this.view.eye();
+    camera.up.set(0, 0, 1);
+    camera.position.set(ex, ey, ez);
+    camera.lookAt(this.view.centerX, this.view.centerY, 0);
+    if (plan.kind === 'orthographic') {
+      // The tilted frame reaches past the focus both ways along the view: the far plane covers its far edge.
+      this.orthoCamera.far = 2 * this.view.eyeDistance() + plan.distance;
+      this.orthoCamera.updateProjectionMatrix();
+    }
     this.drawnPlan = plan;
     return camera;
   }
@@ -384,7 +428,11 @@ export class SceneRenderer implements Renderer {
     this.updateVehicles(nowMs);
     this.updateMarkers(nowMs);
     this.reportView(this.view.bounds(), nowMs);
-    this.renderer.render(this.scene, this.frameCamera());
+    const camera = this.frameCamera();
+    this.lighting.apply(this.pinnedHour ?? this.worldHour);
+    this.lighting.useCamera(camera);
+    this.renderer.info.reset();
+    this.pipelineFor(camera).render();
     this.drawCalls = this.renderer.info.render.drawCalls;
     this.frames += 1;
     this.fpsMeter.frame(nowMs);
@@ -392,6 +440,21 @@ export class SceneRenderer implements Renderer {
       this.drawnMapEditVersion = this.pendingMapEditVersion;
       this.pendingMapEditVersion = null;
     }
+  }
+
+  /** The post-processing of one camera: built once per camera, as the graph binds the camera's matrices. */
+  private pipelineFor(camera: THREE.Camera): THREE.RenderPipeline {
+    let entry = this.pipelines.get(camera);
+    if (entry === undefined) {
+      const graph = postGraph(this.scene, camera, this.settings, this.config.vignette);
+      const pipeline = new THREE.RenderPipeline(this.renderer);
+      pipeline.outputColorTransform = false;
+      pipeline.outputNode = graph.output;
+      entry = { pipeline, passes: graph.passes };
+      this.pipelines.set(camera, entry);
+    }
+    this.postPasses = entry.passes;
+    return entry.pipeline;
   }
 
   /** A square over each emergency, dimmed by its blink. */
