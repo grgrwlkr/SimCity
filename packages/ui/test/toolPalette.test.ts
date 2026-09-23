@@ -14,7 +14,9 @@ import {
   buildModeHotkey,
   hotkeyFor,
   keyboardCaptured,
+  PALETTE_HEIGHT_TOKEN,
   toolKey,
+  trackPaletteHeight,
   toggleOneWay,
   undoRedoHotkey,
   type ToolMode,
@@ -205,5 +207,42 @@ describe('tool hotkeys', () => {
     expect(keyboardCaptured({ tagName: 'DIV', isContentEditable: true } as unknown as EventTarget)).toBe(true);
     expect(keyboardCaptured({ tagName: 'BUTTON' } as unknown as EventTarget)).toBe(false);
     expect(keyboardCaptured(null)).toBe(false);
+  });
+});
+
+describe('palette height token', () => {
+  // The advisor's panel stops above the palette by this token (advisorPanel.css): it follows the palette from one row
+  // to two and back, whatever resized the window, and leaves with the palette.
+  it('paletteHeightTokenFollowsThePaletteWhenItsRowsChange', () => {
+    let height = 103.5;
+    const panel = { getBoundingClientRect: () => ({ height }) } as unknown as Element;
+    const props = new Map<string, string>();
+    const root = { style: { setProperty: (k: string, v: string) => props.set(k, v), removeProperty: (k: string) => props.delete(k) } } as unknown as HTMLElement;
+    let resized = () => {};
+    let observed: Element | null = null;
+    let disconnected = false;
+    class FakeObserver {
+      constructor(callback: () => void) {
+        resized = callback;
+      }
+      observe(target: Element) {
+        observed = target;
+      }
+      disconnect() {
+        disconnected = true;
+      }
+    }
+    const stop = trackPaletteHeight(panel, root, FakeObserver);
+    expect(observed).toBe(panel);
+    expect(props.get(PALETTE_HEIGHT_TOKEN), 'one row, set on mount').toBe('103.5px');
+    height = 182;
+    resized();
+    expect(props.get(PALETTE_HEIGHT_TOKEN), 'the groups wrapped into a second row').toBe('182px');
+    height = 103.5;
+    resized();
+    expect(props.get(PALETTE_HEIGHT_TOKEN), 'back to one row').toBe('103.5px');
+    stop();
+    expect(disconnected).toBe(true);
+    expect(props.has(PALETTE_HEIGHT_TOKEN)).toBe(false);
   });
 });

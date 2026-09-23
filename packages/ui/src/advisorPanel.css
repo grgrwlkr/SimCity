@@ -14,9 +14,9 @@
   max-width: calc(100vw - 2 * var(--hud-safe-edge));
   margin: 0;
   padding: var(--hud-space-16);
-  /* It stops above the palette and scrolls: at 1280 px the palette wraps to two rows, 167 px tall at the bottom edge
-     (rev-advisor-panel, finding 3), plus the edge under it and a gap of 8 over it. */
-  max-height: calc(100vh - 352px - 167px - var(--hud-safe-edge) - var(--hud-space-8));
+  /* It stops above the palette and scrolls: the palette's height, one row or two (ToolPalette.tsx measures it), plus
+     the edge under it and a gap of 8 over it. */
+  max-height: calc(100vh - 352px - var(--hud-palette-height) - var(--hud-safe-edge) - var(--hud-space-8));
   overflow-y: auto;
   box-shadow: var(--hud-shadow-panel);
   pointer-events: auto;
