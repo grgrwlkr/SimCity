@@ -3,6 +3,7 @@
 import {
   buildCity,
   bumpVersion,
+  CitizenTripCounter,
   CityCommuteScenario,
   createWorld,
   CROSS_LAYOUT,
@@ -15,12 +16,14 @@ import {
   frame,
   linkRoomMeters,
   LivingCityScenario,
+  loadWorld,
   MetropolisScenario,
   parseRustCommand,
   recordSystemError,
   refSlot,
   requestState,
   rngProbeDigest,
+  saveWorld,
   SignalizedCrossScenario,
   spawnVehicle,
   stampAndExpire,
@@ -226,6 +229,14 @@ export class SimHost {
       case 'resetTickStats':
         this.tickSampleCount = 0;
         return null;
+      case 'save':
+        return saveWorld(this.world);
+      case 'load':
+        // Built aside and swapped in only whole: a file that fails leaves the running world untouched.
+        this.adoptWorld(loadWorld(req.text));
+        // A scenario's own state is not the world's and is not saved: the trips of the HUD count on from the load.
+        this.scenario = new CitizenTripCounter();
+        return this.fingerprintReply();
     }
   }
 
@@ -235,6 +246,11 @@ export class SimHost {
     const w = createWorld({ mapWidth: size, mapHeight: size });
     const state = old.nextState?.state ?? old.appState;
     if (state !== 'MainMenu') requestState(w, state);
+    this.adoptWorld(w);
+  }
+
+  /** `w` in place of the running world, at the running speed and without a scenario. */
+  private adoptWorld(w: World): void {
     const driver = new FixedStepDriver(w);
     driver.speed = this.driver.speed;
     this.world = w;

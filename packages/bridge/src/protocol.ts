@@ -270,7 +270,11 @@ export type Request =
   | { readonly t: 'debugEmergency'; readonly kind: EmergencyKind; readonly x: number; readonly y: number }
   /** The cost of the last 4 096 ticks at most, since the last reset. */
   | { readonly t: 'tickStats' }
-  | { readonly t: 'resetTickStats' };
+  | { readonly t: 'resetTickStats' }
+  /** The whole world as the text of a save file (packages/sim/src/save). */
+  | { readonly t: 'save' }
+  /** A save file's text in place of the world; a broken file is an error and the world stays as it was. */
+  | { readonly t: 'load'; readonly text: string };
 
 export interface ReplyByRequest {
   readonly cmd: null;
@@ -296,6 +300,9 @@ export interface ReplyByRequest {
   readonly debugEmergency: null;
   readonly tickStats: TickStatsReply;
   readonly resetTickStats: null;
+  readonly save: string;
+  /** The loaded world's tick and fingerprint: those of the world the save was taken of. */
+  readonly load: FingerprintReply;
 }
 
 export type Reply = ReplyByRequest[keyof ReplyByRequest];
