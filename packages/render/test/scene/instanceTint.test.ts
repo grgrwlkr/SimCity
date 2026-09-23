@@ -77,4 +77,30 @@ describe('instance tint', () => {
     instances.tintBuildings(null);
     expect(batches.map((b) => b.drawn.material)).toEqual(own);
   });
+
+  it('aTintGivenBeforeTheBufferGrowsSurvivesTheGrowth', () => {
+    // Review F15: only the edited tiles are re-tinted, so the colours of every other instance ride the grown buffer.
+    const batch = new InstanceBatch(new THREE.Group(), new THREE.BoxGeometry(), new THREE.MeshBasicNodeMaterial(), 'buildings', 2);
+    for (const owner of [5, 7]) batch.put(owner, at);
+    batch.tintOwner(5, [1, 0, 0]);
+    batch.tintOwner(7, [0, 0.5, 0]);
+    batch.put(9, at); // grows the buffer
+    batch.flush();
+    expect([5, 7, 9].map((o) => batch.tintOf(o))).toEqual([[1, 0, 0], [0, 0.5, 0], [1, 1, 1]]);
+  });
+
+  it('aTintReachesTheGpuThroughTheColourBuffersVersion', () => {
+    // Review F12/N09: a colour written without `needsUpdate` stays on the CPU until some later edit uploads it.
+    const batch = new InstanceBatch(new THREE.Group(), new THREE.BoxGeometry(), new THREE.MeshBasicNodeMaterial(), 'buildings', 4);
+    batch.put(3, at);
+    batch.flush();
+    const colours = () => batch.drawn.instanceColor!.version;
+    let before = colours();
+    batch.tint(() => [1, 0, 0]);
+    expect(colours(), 'tint over every instance').toBeGreaterThan(before);
+    before = colours();
+    batch.tintOwner(3, [0, 1, 0]);
+    expect(colours(), 'tint of one owner').toBeGreaterThan(before);
+  });
 });
+

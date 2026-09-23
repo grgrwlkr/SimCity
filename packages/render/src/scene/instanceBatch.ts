@@ -78,6 +78,13 @@ export class InstanceBatch {
     this.mesh.instanceColor!.needsUpdate = true;
   }
 
+  /** Multiplies every instance of `owner` by `rgb` (linear): one tile's re-tint, uploaded with the next frame. */
+  tintOwner(owner: number, rgb: readonly [number, number, number]): void {
+    const c = this.mesh.instanceColor!.array as Float32Array;
+    for (const slot of this.slots.slotsOf(owner)) c.set(rgb, slot * 3);
+    this.mesh.instanceColor!.needsUpdate = true;
+  }
+
   /** Draws every instance with `material` instead of the batch's own; `null` gives the batch its own back. */
   useMaterial(material: THREE.Material | null): void {
     this.override = material;

@@ -31,7 +31,7 @@ import { resolveRenderSettings } from '../renderSettings';
 import { RenderPrimitives, type CompositeMesh } from '../renderPrimitives';
 import { drawnScale, vehicleScale } from '../vehicleLook';
 import { SceneMaterials, createAtlasTexture } from './atlasNode';
-import { MapInstances } from './mapInstances';
+import { MapInstances, tilesOfChunks } from './mapInstances';
 import { buildGroundArea, groundColors } from './ground';
 import { SceneLighting, hourFromQuery } from './lighting';
 import { configWithout, effectsOffFromQuery, exposureOf, postGraph, vignetteGateFor, type PostPassName, type VignetteGate } from './post';
@@ -47,6 +47,10 @@ const MARKER_TILES = 0.6;
 export { SCENE_MAP_SEED } from './mapInstances';
 const WHITE = [1, 1, 1] as const;
 const linear = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+/** The tiles marked 1 in `changed`. */
+function* markedTiles(changed: Uint8Array): Generator<number> {
+  for (let i = 0; i < changed.length; i++) if (changed[i] === 1) yield i;
+}
 
 export interface SceneStats extends RenderStats {
   readonly renderer: 'scene';
@@ -257,8 +261,9 @@ export class SceneRenderer implements Renderer {
     }
     this.chunksRebuiltLast = groups.length;
     this.instances.apply(map, changed, resized);
-    // New buildings start plain: under an open data map they take its colour like the rest.
-    if (changed.length > 0) this.tintBuildings(this.paintFor(map));
+    // New buildings start plain: under an open data map the edited chunks' buildings take its colour like the rest.
+    const paint = this.paintFor(map);
+    if (changed.length > 0 && paint !== null) this.tintBuildings(paint, tilesOfChunks(map, changed));
     for (const group of [this.instances.buildingGroup, this.instances.propGroup]) {
       for (const child of group.children) child.castShadow = child.receiveShadow = true;
     }
@@ -292,13 +297,15 @@ export class SceneRenderer implements Renderer {
       groundColors(map, area, colors.array as Float32Array, paint);
       colors.needsUpdate = true;
     }
-    this.tintBuildings(paint);
+    // Only the buildings on tiles whose numbers moved; the whole map on a new overlay, and plain again once it closes.
+    if (paint !== null) this.tintBuildings(paint, changed === null ? undefined : markedTiles(changed));
+    else if (prev.overlay !== 'None') this.instances.tintBuildings(null);
     this.dataMapMs = performance.now() - started;
   }
 
-  /** Rooftops take their tile's map colour laid over white, in linear light; plain again without a data map. */
-  private tintBuildings(paint: TilePaint | null): void {
-    this.instances.tintBuildings(paint === null ? null : (tile) => paint(tile, WHITE).map(linear) as [number, number, number]);
+  /** Rooftops take their tile's map colour laid over white, in linear light; `tiles` narrows it to those tiles. */
+  private tintBuildings(paint: TilePaint, tiles?: Iterable<number>): void {
+    this.instances.tintBuildings((tile) => paint(tile, WHITE).map(linear) as [number, number, number], tiles);
   }
 
   private paintFor(map: MapLayersReply): TilePaint | null {
