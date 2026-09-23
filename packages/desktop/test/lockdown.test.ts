@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', () => ({
-  app: { on: () => undefined, whenReady: () => new Promise(() => undefined), isPackaged: true },
+  app: { on: () => undefined, whenReady: () => new Promise(() => undefined), isPackaged: true, exit: () => undefined, commandLine: { hasSwitch: () => false } },
   protocol: { registerSchemesAsPrivileged: () => undefined },
   BrowserWindow: class {},
   ipcMain: { handle: () => undefined },
@@ -10,7 +10,7 @@ vi.mock('electron', () => ({
   net: {},
 }));
 
-const { RELEASE_MENU, devToolsAllowed } = await import('../src/main');
+const { RELEASE_MENU, devToolsAllowed, remoteDebuggingRefused } = await import('../src/main');
 
 describe('release lockdown', () => {
   it('devToolsOnlyInTheTestBuildOrUnpackaged', () => {
@@ -18,6 +18,14 @@ describe('release lockdown', () => {
     expect(devToolsAllowed(null, true)).toBe(false);
     expect(devToolsAllowed({ commit: 'c', dirty: false, test: true }, true)).toBe(true);
     expect(devToolsAllowed(null, false)).toBe(true);
+  });
+
+  it('theReleaseRefusesRemoteDebuggingAndTheTestBuildDoesNot', () => {
+    const switches = (...on: string[]) => (name: string) => on.includes(name);
+    expect(remoteDebuggingRefused(false, switches('remote-debugging-port'))).toBe(true);
+    expect(remoteDebuggingRefused(false, switches('remote-debugging-pipe'))).toBe(true);
+    expect(remoteDebuggingRefused(false, switches())).toBe(false);
+    expect(remoteDebuggingRefused(true, switches('remote-debugging-port', 'remote-debugging-pipe'))).toBe(false);
   });
 
   it('theReleaseMenuHasNoViewMenu', () => {

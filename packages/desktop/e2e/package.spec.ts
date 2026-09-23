@@ -5,6 +5,7 @@
 import { FuseState, FuseV1Options, getCurrentFuseWire } from '@electron/fuses';
 import { expect, test } from '@playwright/test';
 import { execFileSync, spawn } from 'node:child_process';
+import { createServer } from 'node:net';
 import { existsSync, readFileSync } from 'node:fs';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
@@ -27,13 +28,14 @@ async function fusesOf(app: string): Promise<Record<string, string>> {
 }
 
 /**
- * Starts the release binary without a window and waits for Chromium's `DevTools listening` line,
- * which only the app (not a Node process) prints. Returns whether it came and everything printed.
+ * Starts the release binary without a window and waits for main.ts's `simcity: test window loaded` line, which only the
+ * app (not a Node process) prints once its page loaded. The release refuses a debugging port, so that is the signal.
+ * Returns whether it came and everything printed.
  */
 async function startRelease(args: string[], env: Record<string, string> = {}): Promise<{ app: boolean; output: string }> {
   const base = { ...process.env };
   delete base.NODE_OPTIONS;
-  const child = spawn(binaryOf(RELEASE_APP), ['--remote-debugging-port=0', ...args], {
+  const child = spawn(binaryOf(RELEASE_APP), args, {
     env: { ...base, SIMCITY_TEST_WINDOW: '1', ...env },
   });
   let output = '';
@@ -42,9 +44,9 @@ async function startRelease(args: string[], env: Record<string, string> = {}): P
     const timer = setTimeout(() => resolve(false), 30_000);
     const onData = (chunk: Buffer) => {
       output += chunk.toString();
-      if (/DevTools listening on ws:/.test(output)) {
+      if (/simcity: test window loaded/.test(output)) {
         clearTimeout(timer);
-        // A Node inspector would have announced itself before Chromium's DevTools server.
+        // A Node inspector would have announced itself before the page loaded.
         setTimeout(() => resolve(true), 1000);
       }
     };
@@ -98,6 +100,40 @@ test('theTestCloneDiffersFromTheReleaseByTheInspectFuseOnly', async () => {
   const differing = Object.keys(release).filter((name) => release[name] !== clone[name]);
   expect(differing).toEqual(['EnableNodeCliInspectArguments']);
   expect(clone.EnableNodeCliInspectArguments).toBe('on');
+});
+
+/** A TCP port nothing listens on right now. */
+async function freePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as { port: number };
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return port;
+}
+
+test('theReleaseRefusesRemoteDebugging', async () => {
+  for (const flag of ['--remote-debugging-port', '--remote-debugging-pipe']) {
+    const port = await freePort();
+    const env: NodeJS.ProcessEnv = { ...process.env, SIMCITY_TEST_WINDOW: '1' };
+    delete env.NODE_OPTIONS;
+    const child = spawn(binaryOf(RELEASE_APP), [flag === '--remote-debugging-port' ? `${flag}=${port}` : flag], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
+    });
+    let output = '';
+    child.stdout!.on('data', (chunk: Buffer) => (output += chunk.toString()));
+    child.stderr!.on('data', (chunk: Buffer) => (output += chunk.toString()));
+    const killer = setTimeout(() => child.kill('SIGKILL'), 30_000);
+    const [code] = (await once(child, 'exit')) as [number | null];
+    clearTimeout(killer);
+    const listed = await fetch(`http://127.0.0.1:${port}/json/list`).then((r) => r.status, () => 'refused');
+    expect({ flag, code, listed, loaded: /simcity: test window loaded/.test(output) }, output).toEqual({
+      flag,
+      code: 1,
+      listed: 'refused',
+      loaded: false,
+    });
+  }
 });
 
 test('theReleaseBinaryIgnoresNodeInspectFlags', async () => {

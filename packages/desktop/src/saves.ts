@@ -31,6 +31,9 @@ export function slotNumber(value: unknown): number {
 const FILE = /^slot([1-9]\d{0,2})\.json$/;
 const fileOf = (dir: string, slot: number) => path.join(dir, `slot${slotNumber(slot)}.json`);
 const isNotFound = (error: unknown) => (error as { code?: unknown }).code === 'ENOENT';
+const PARTIAL = /^slot[1-9]\d{0,2}\.json\..+\.partial$/;
+/** A temporary file older than this is left by a crash, not by a save still writing it. */
+const STALE_PARTIAL_MS = 60_000;
 
 let partials = 0;
 
@@ -51,7 +54,18 @@ export function createSaveFiles(dir: string) {
     return done;
   };
   return {
+    /** Removes temporary files a crashed save left behind (older than a minute); a save in progress keeps its own. */
+    async sweep(): Promise<void> {
+      const names = await readdir(dir).catch((e: unknown) => (isNotFound(e) ? [] : Promise.reject(e)));
+      const before = Date.now() - STALE_PARTIAL_MS;
+      for (const name of names.filter((n) => PARTIAL.test(n))) {
+        const file = path.join(dir, name);
+        const s = await stat(file).catch(() => null);
+        if (s !== null && s.mtimeMs < before) await rm(file, { force: true });
+      }
+    },
     async list(): Promise<SaveFileInfo[]> {
+      await this.sweep();
       let names: string[];
       try {
         names = await readdir(dir);
@@ -120,6 +134,7 @@ export interface IpcHandle {
  */
 export function registerSaveHandlers(ipc: IpcHandle, dir: string, trusted: (event: unknown) => boolean): void {
   const files = createSaveFiles(dir);
+  void files.sweep().catch((error: unknown) => console.warn('saves: sweeping temporary files failed', error));
   const from = (event: unknown) => {
     if (!trusted(event)) throw new Error('saves: refused a sender that is not the game page');
   };

@@ -14,9 +14,9 @@
     "build:renderer": "bunx vite build ../app --outDir ../desktop/out/renderer --emptyOutDir",
     "build:renderer:obfuscated": "bunx vite build ../app --config vite.obfuscated.config.ts --outDir ../desktop/out/renderer --emptyOutDir",
     "build:renderer:test": "SIMCITY_SIM_API=1 bunx vite build ../app --outDir ../desktop/out/renderer --emptyOutDir",
-    "build": "bun run electron:install && bun run build:main && bun scripts/build-info.ts release && bun run build:renderer && electron-builder --mac --arm64",
-    "build:obfuscated": "bun run electron:install && bun run build:main && bun scripts/build-info.ts release && bun run build:renderer:obfuscated && electron-builder --mac --arm64",
-    "build:test": "bun run electron:install && bun run build:main && bun scripts/build-info.ts test && bun run build:renderer:test && electron-builder --mac --arm64 -c.directories.output=release/test"
+    "build": "bun run electron:install && bun run build:main && bun run build:renderer && bun scripts/build-info.ts release && electron-builder --mac --arm64",
+    "build:obfuscated": "bun run electron:install && bun run build:main && bun run build:renderer:obfuscated && bun scripts/build-info.ts release && electron-builder --mac --arm64",
+    "build:test": "bun run electron:install && bun run build:main && bun run build:renderer:test && bun scripts/build-info.ts test && electron-builder --mac --arm64 -c.directories.output=release/test"
   },
   "devDependencies": {
     "@electron/fuses": "2.1.3",

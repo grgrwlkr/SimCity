@@ -47,7 +47,7 @@ export async function makeInspectableClone(source: string = RELEASE_APP): Promis
 }
 
 /**
- * Starts the fresh clone once (no window) until Chromium's DevTools server answers, then closes it.
+ * Starts the fresh clone once (no window) until main.ts reports its page loaded, then closes it.
  * The first start of freshly signed code was 12.0 s against 5.3 s for the next ones (measured under
  * load): it is paid here rather than inside a spec's 30 s launch step, and a clone that does not
  * start at all fails here with its output.
@@ -55,14 +55,14 @@ export async function makeInspectableClone(source: string = RELEASE_APP): Promis
 async function warmUp(bin: string): Promise<void> {
   const env: NodeJS.ProcessEnv = { ...process.env, SIMCITY_TEST_WINDOW: '1' };
   delete env.NODE_OPTIONS;
-  const child = spawn(bin, ['--remote-debugging-port=0'], { env });
+  const child = spawn(bin, [], { env });
   const exited = once(child, 'exit');
   let output = '';
   const cameUp = await new Promise<boolean>((resolve) => {
     const timer = setTimeout(() => resolve(false), 60_000);
     const onData = (chunk: Buffer) => {
       output += chunk.toString();
-      if (/DevTools listening on ws:/.test(output)) {
+      if (/simcity: test window loaded/.test(output)) {
         clearTimeout(timer);
         resolve(true);
       }

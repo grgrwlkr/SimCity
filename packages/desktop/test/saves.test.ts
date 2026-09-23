@@ -1,6 +1,6 @@
 // The shell's save files (E1): `<dir>/slot<n>.json` by slot number, the number checked in the main process before
 // anything touches the disk, and a preload that hands the page nothing but the four slot calls.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -64,6 +64,18 @@ describe('desktop save files', () => {
     writeFileSync(path.join(dir, 'slot1.json', 'keep'), '');
     await expect(createSaveFiles(dir).save(1, bytesOf('x'))).rejects.toThrow();
     expect(readdirSync(dir)).toEqual(['slot1.json']);
+  });
+
+  it('aStalePartialFileIsSweptAndAFreshOneKept', async () => {
+    const dir = tempDir();
+    mkdirSync(dir, { recursive: true });
+    // Left by a crash an hour ago, and one a save is writing right now.
+    const stale = path.join(dir, 'slot4.json.123-1.partial');
+    writeFileSync(stale, 'half');
+    utimesSync(stale, new Date(Date.now() - 3_600_000), new Date(Date.now() - 3_600_000));
+    writeFileSync(path.join(dir, 'slot4.json.123-2.partial'), 'writing');
+    await createSaveFiles(dir).sweep();
+    expect(readdirSync(dir)).toEqual(['slot4.json.123-2.partial']);
   });
 
   it('aSlotFileThatGoesAwayDuringListIsLeftOut', async () => {

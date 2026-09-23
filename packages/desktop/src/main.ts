@@ -42,7 +42,14 @@ export function devToolsAllowed(info: BuildInfo | null, isPackaged: boolean): bo
 /** The release's menu: the app (about, hide, quit), editing and windows; no View, so no reload and no DevTools. */
 export const RELEASE_MENU: MenuItemConstructorOptions[] = [{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }];
 
+/** The release refuses Chromium's remote debugging (a switch on the command line); the test build and dev keep it. */
+export function remoteDebuggingRefused(devTools: boolean, hasSwitch: (name: string) => boolean): boolean {
+  return !devTools && (hasSwitch('remote-debugging-port') || hasSwitch('remote-debugging-pipe'));
+}
+
 const devTools = devToolsAllowed(readBuildInfo(), app.isPackaged);
+const refused = remoteDebuggingRefused(devTools, (name) => app.commandLine.hasSwitch(name));
+if (refused) app.exit(1);
 
 const MIME: Readonly<Record<string, string>> = {
   '.html': 'text/html',
@@ -111,6 +118,8 @@ function createWindow(): void {
     const counter = globalThis as { simcityPaintCount?: number };
     counter.simcityPaintCount = 0;
     window.webContents.setFrameRate(60);
+    // The line the desktop e2e waits for: the app is up, without a debugging port to ask.
+    window.webContents.once('did-finish-load', () => console.log('simcity: test window loaded'));
     window.webContents.on('paint', (event) => {
       // Only a few shared textures may exist at once: release each frame as soon as it is counted.
       event.texture?.release();
@@ -127,6 +136,7 @@ function createWindow(): void {
 app.on('window-all-closed', () => app.quit());
 
 void app.whenReady().then(() => {
+  if (refused) return;
   if (testWindow) app.dock?.hide();
   if (!devTools) Menu.setApplicationMenu(Menu.buildFromTemplate(RELEASE_MENU));
   protocol.handle('app', serveRenderer);
