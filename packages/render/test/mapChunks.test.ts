@@ -1,7 +1,7 @@
 import { MapGrid, roadCellNone, tileToWorld, type RoadCell } from '@simcity/sim';
 import { describe, expect, it } from 'vitest';
 import { renderLayersOf } from '@simcity/bridge';
-import { CHUNK_TILES, buildChunkGeometry, changedChunks, chunkGrid } from '../src/mapChunks';
+import { CHUNK_TILES, buildChunkGeometry, changedChunks, chunkGrid, groupGrid, groupOfChunk, groupTiles, groupsOfChunks } from '../src/mapChunks';
 import { CLASS_COLORS, classifyColor, layoutClass, tileClass, type TileClass } from '../src/palette';
 
 const road = (dir: RoadCell['dir']): RoadCell => ({ ...roadCellNone(), kind: 'TwoLane', dir });
@@ -83,5 +83,43 @@ describe('map chunks', () => {
     expect(changedChunks(before, after)).toEqual([1]);
     expect(changedChunks(after, after)).toEqual([]);
     expect(changedChunks(layers(16, 16), after), 'a resize redraws everything').toEqual([0, 1, 2, 3]);
+  });
+});
+
+describe('ground groups', () => {
+  it('theMetropolisGroundIsFortyNineGroupsNotTwoAndAHalfThousandChunks', () => {
+    const { cols, rows } = chunkGrid(800, 800);
+    expect(cols * rows).toBe(2500);
+    const g = groupGrid(cols, rows);
+    expect(g.cols * g.rows).toBe(49);
+  });
+
+  it('groupsPartitionTheMapAndHoldTheirChunks', () => {
+    for (const [w, h] of [
+      [800, 800],
+      [128, 128],
+      [37, 250],
+    ] as const) {
+      const { cols, rows } = chunkGrid(w, h);
+      const g = groupGrid(cols, rows);
+      let area = 0;
+      for (let k = 0; k < g.cols * g.rows; k++) {
+        const t = groupTiles(w, h, k);
+        area += (t.x1 - t.x0) * (t.y1 - t.y0);
+      }
+      expect(area, `${w}×${h}`).toBe(w * h);
+      for (let index = 0; index < cols * rows; index++) {
+        const t = groupTiles(w, h, groupOfChunk(index, cols));
+        const [cx, cy] = [(index % cols) * CHUNK_TILES, Math.floor(index / cols) * CHUNK_TILES];
+        expect(cx >= t.x0 && cx < t.x1 && cy >= t.y0 && cy < t.y1, `chunk ${index} of ${w}×${h}`).toBe(true);
+      }
+    }
+  });
+
+  it('anEditRebuildsOnlyTheGroupsOfItsChunks', () => {
+    const { cols, rows } = chunkGrid(800, 800);
+    expect(groupsOfChunks([0], cols)).toEqual([0]);
+    expect(groupsOfChunks([cols * rows - 1, 1, 0], cols)).toEqual([0, 48]);
+    expect(groupsOfChunks([], cols)).toEqual([]);
   });
 });

@@ -1,4 +1,4 @@
-// The ground of the scene in the chunks of `mapChunks.ts`: one quad per tile carrying the atlas UVs of its cell and its
+// The ground of the scene in the chunks and groups of `mapChunks.ts`: one quad per tile carrying the atlas UVs of its cell and its
 // colour in linear light, so every chunk draws with the one vertex-mapped ground material.
 import type { MapLayersReply } from '@simcity/bridge';
 import { tileToWorld } from '@simcity/sim';
@@ -31,8 +31,11 @@ export interface GroundGeometry {
 export function buildGroundChunk(map: MapLayersReply, cx: number, cy: number): GroundGeometry {
   const x0 = cx * CHUNK_TILES;
   const y0 = cy * CHUNK_TILES;
-  const x1 = Math.min(x0 + CHUNK_TILES, map.width);
-  const y1 = Math.min(y0 + CHUNK_TILES, map.height);
+  return buildGroundArea(map, { x0, y0, x1: Math.min(x0 + CHUNK_TILES, map.width), y1: Math.min(y0 + CHUNK_TILES, map.height) });
+}
+
+/** The ground of tiles `x0..x1` × `y0..y1`: what the scene draws per group of `mapChunks.ts`. */
+export function buildGroundArea(map: MapLayersReply, { x0, y0, x1, y1 }: { x0: number; y0: number; x1: number; y1: number }): GroundGeometry {
   const tiles = Math.max(x1 - x0, 0) * Math.max(y1 - y0, 0);
   const positions = new Float32Array(tiles * 18);
   const colors = new Float32Array(tiles * 18);

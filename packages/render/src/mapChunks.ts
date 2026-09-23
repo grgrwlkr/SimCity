@@ -75,3 +75,35 @@ export function changedChunks(prev: MapLayersReply | null, next: MapLayersReply)
     return false;
   });
 }
+
+/**
+ * Chunks per side of a ground group: the scene draws the ground a group at a time, 8×8 chunks (128×128 tiles) in one
+ * mesh, so the fitted metropolis is 49 draws instead of 2 500, while an edit still rebuilds a bounded area and a close
+ * view still culls most of the map.
+ */
+export const GROUP_CHUNKS = 8;
+
+export function groupGrid(cols: number, rows: number): { cols: number; rows: number } {
+  return { cols: Math.ceil(cols / GROUP_CHUNKS), rows: Math.ceil(rows / GROUP_CHUNKS) };
+}
+
+/** Group index (`gy * groupCols + gx`) of chunk `index` in a grid `cols` chunks wide. */
+export function groupOfChunk(index: number, cols: number): number {
+  const gx = Math.floor((index % cols) / GROUP_CHUNKS);
+  const gy = Math.floor(Math.floor(index / cols) / GROUP_CHUNKS);
+  return gy * Math.ceil(cols / GROUP_CHUNKS) + gx;
+}
+
+/** The groups holding `changed` chunks, ascending, each once. */
+export function groupsOfChunks(changed: readonly number[], cols: number): number[] {
+  return [...new Set(changed.map((index) => groupOfChunk(index, cols)))].sort((a, b) => a - b);
+}
+
+/** Tiles of group `group` on a `width` × `height` map. */
+export function groupTiles(width: number, height: number, group: number): { x0: number; y0: number; x1: number; y1: number } {
+  const { cols } = groupGrid(chunkGrid(width, height).cols, 0);
+  const span = GROUP_CHUNKS * CHUNK_TILES;
+  const x0 = (group % cols) * span;
+  const y0 = Math.floor(group / cols) * span;
+  return { x0, y0, x1: Math.min(x0 + span, width), y1: Math.min(y0 + span, height) };
+}
