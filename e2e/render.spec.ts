@@ -38,6 +38,7 @@ function gridLayout(): LayoutClass[] {
     tileSize: 16,
     mapEditVersion: 0,
     graphVersion: 0,
+    mapSeed: '0',
     layers: {
       water: hexToBytes(l.water),
       roadKind: hexToBytes(l.roadKind),

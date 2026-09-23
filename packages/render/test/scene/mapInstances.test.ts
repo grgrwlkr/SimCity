@@ -27,7 +27,7 @@ function city(): MapLayersReply {
       }
     }
   }
-  return { width: SIZE, height: SIZE, tileSize: 16, mapEditVersion: 1, graphVersion: 1, layers };
+  return { width: SIZE, height: SIZE, tileSize: 16, mapEditVersion: 1, graphVersion: 1, mapSeed: '0', layers };
 }
 
 function copy(map: MapLayersReply): MapLayersReply {

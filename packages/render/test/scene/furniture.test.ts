@@ -18,7 +18,7 @@ function street(): MapLayersReply {
     layers.building[6 * W + x] = 2;
     layers.zone[4 * W + x] = 2;
   }
-  return { width: W, height: H, tileSize: TILE, mapEditVersion: 1, graphVersion: 1, layers };
+  return { width: W, height: H, tileSize: TILE, mapEditVersion: 1, graphVersion: 1, mapSeed: '0', layers };
 }
 
 describe('street furniture in the scene', () => {

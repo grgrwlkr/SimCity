@@ -203,6 +203,7 @@ describe('props wiring and visibility', () => {
       tileSize: 8,
       mapEditVersion: 1,
       graphVersion: 1,
+      mapSeed: '0',
       layers: { water, roadKind, roadDir: new Uint8Array(cells), zone: new Uint8Array(cells), building: new Uint8Array(cells) },
     };
     const grid = propGrid(map);
