@@ -1,6 +1,7 @@
 // The living city behind `?scenario=living`: the generated city with its utility stations, grown by its own citizens;
 // the scenario only counts their trips for the HUD.
 import { describe, expect, it } from 'vitest';
+import { SIZED_IN_TICKS } from './sizedInTicks';
 import { frame, step } from '../../src/app';
 import { isOperational } from '../../src/buildings/building';
 import { CITIZEN_STATES } from '../../src/citizens';
@@ -27,7 +28,7 @@ describe('living city', () => {
     expect([count('PowerPlant'), count('WaterPump')], 'power and water for every district').toEqual([3, 3]);
     expect(w.city.money, 'a demonstration city costs the treasury nothing').toBe(25_000);
     expect(w.budget.current.isEmpty(), 'and the month starts with nothing on its lines').toBe(true);
-  });
+  }, SIZED_IN_TICKS);
 
   // Stage 4: the city has its services and a bus, and they work from the start.
   it('theLivingCityHasItsServicesAndABus', () => {
@@ -38,7 +39,7 @@ describe('living city', () => {
     step(w, 20);
     expect(w.fleet.services.length, 'fire engines, police cars and ambulances at their stations').toBe(2 * 3 + 3 * 4 + 2);
     expect(w.fleet.buses, 'and the bus on its way').toHaveLength(1);
-  });
+  }, SIZED_IN_TICKS);
 
   // At a real-time clock a house takes eight hours to build: the city opens built and lived in, with room left to grow.
   it('theLivingCityOpensBuiltAndLivedIn', () => {
@@ -60,7 +61,7 @@ describe('living city', () => {
     const moved = citizens.count;
     for (let i = 0; i < 240; i++) step(w, 1);
     expect(citizens.count, 'and a day later they still live there').toBeGreaterThan(0.8 * moved);
-  }, 120_000);
+  }, SIZED_IN_TICKS);
 
   // Stage 3½: somewhere to go besides work and the shops, one of each for now.
   it('theLivingCityHasAParkAndACafeItsPeopleGoTo', () => {
@@ -81,7 +82,7 @@ describe('living city', () => {
     expect(purposes.get('Cafe') ?? 0, 'and to the café').toBeGreaterThan(0);
     const stats = scenario.stats(w);
     expect(stats.arrived, `arrivals on foot count too: ${JSON.stringify(stats)}`).toBeGreaterThan(0.9 * (stats.requested - stats.travelling));
-  }, 120_000);
+  }, SIZED_IN_TICKS);
 
   // Stage 3½: the city is not alone. Commuters, visitors and through traffic come over the edges of the map, trucks carry
   // goods; about 4 % of the vehicles in a city are large trucks.
@@ -107,7 +108,7 @@ describe('living city', () => {
     expect(walkersSeen, 'and people walk the streets').toBeGreaterThan(0);
     const stats = scenario.stats(w);
     expect(stats.arrived, `the HUD counts the citizens' own trips: ${JSON.stringify(stats)}`).toBeGreaterThan(0.9 * (stats.requested - stats.travelling));
-  }, 120_000);
+  }, SIZED_IN_TICKS);
 
   it('itsCitizensMoveInAndDriveOnTheirOwn', () => {
     const { w, scenario } = livingCity();
@@ -123,7 +124,7 @@ describe('living city', () => {
     expect(stats.travelling).toBe(states.filter((state) => state.startsWith('To')).length);
     scenario.advance(w);
     expect(scenario.stats(w), 'an advance without a tick counts nothing twice').toEqual(stats);
-  }, 120_000);
+  }, SIZED_IN_TICKS);
 
   // Stage 3½b: the counts by state, home and workplace are kept as citizens change, never recounted; they must agree.
   it('stateCountsMatchARecount', () => {
@@ -150,5 +151,5 @@ describe('living city', () => {
     const standing = new Uint16Array(w.grid.len());
     for (const c of views) if (c.carStatus === 'Parked') standing[c.carParkedAt.y * w.grid.width + c.carParkedAt.x]! += 1;
     expect(Array.from(citizens.parkedCounts()), 'parked cars by tile').toEqual(Array.from(standing));
-  }, 120_000);
+  }, SIZED_IN_TICKS);
 });

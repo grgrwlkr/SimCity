@@ -1,6 +1,7 @@
 // The generated city behind `?scenario=city`: arterials with lit crossings, local streets between them,
 // a commercial centre, residential districts, an industrial district, a park; commuters drive across it.
 import { describe, expect, it } from 'vitest';
+import { SIZED_IN_TICKS } from './sizedInTicks';
 import { frame, step } from '../../src/app';
 import type { TilePos } from '../../src/commands';
 import { buildCity, type CityOptions } from '../../src/scenarios/cityGen';
@@ -38,7 +39,7 @@ describe('generated city', () => {
     let roads = 0;
     for (let i = 0; i < w.grid.len(); i++) if (w.grid.roadKind[i] !== 0) roads += 1;
     expect(roads, 'a road network, not a single street').toBeGreaterThan(1500);
-  });
+  }, SIZED_IN_TICKS);
 
   it('arterialCrossingsAreLit', () => {
     const { w, plan } = city();
@@ -49,7 +50,7 @@ describe('generated city', () => {
       const box = w.intersections.clusterById(light.intersectionId)!;
       expect(box.tiles.length, `the box at (${box.aabbMin.x},${box.aabbMin.y}) spans both arterials`).toBeGreaterThanOrEqual(16);
     }
-  });
+  }, SIZED_IN_TICKS);
 
   it('zonesLookLikeACity', () => {
     const { w } = city();
@@ -76,7 +77,7 @@ describe('generated city', () => {
       expect(Math.abs(road!.x - lot.x) + Math.abs(road!.y - lot.y), `lot (${lot.x},${lot.y}) touches its road`).toBe(1);
       expect(isIntersectionTile(w.grid, road!)).toBe(false);
     }
-  });
+  }, SIZED_IN_TICKS);
 
   it('theTrafficCityHasNoZonesAndStillItsLotsBesideTheRoads', () => {
     const { w, plan } = city({ zones: false });
@@ -100,7 +101,7 @@ describe('generated city', () => {
       const route = planTilesLaneletFirst(w, start, goal);
       expect(route?.producer, `home (${home.x},${home.y}) to work (${work.x},${work.y})`).toBe('Lanelet');
     }
-  });
+  }, SIZED_IN_TICKS);
 
   it('commutersCrossTheCityWithoutJams', () => {
     // The traffic city: grown citizens would add their own trips and share the commuters' ids.
@@ -129,5 +130,5 @@ describe('generated city', () => {
     expect(driving.filter((slot) => v.stoppedSecs[slot]! >= 180).length, 'no car frozen for three minutes').toBe(0);
     const wrongWay = driving.filter((slot) => !routeDirectionOk(w.pathPool.remainingFrom(v.pathHandle[slot]!, v.pathCursor[slot]!) ?? [], w.grid));
     expect(wrongWay.length, 'no route against a lane').toBe(0);
-  }, 60_000);
+  }, SIZED_IN_TICKS);
 });

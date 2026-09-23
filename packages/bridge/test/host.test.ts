@@ -15,7 +15,8 @@ import {
   toHex64,
   type World,
 } from '@simcity/sim';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { SIZED_IN_TICKS } from '../../sim/test/scenarios/sizedInTicks';
 import { loadTestCity } from '../../sim/test/testCity';
 import { RENDER_CAPACITY, SimHost } from '../src/host';
 import { GRID_LAYER_NAMES, type GridLayers } from '../src/protocol';
@@ -43,7 +44,7 @@ describe('SimHost', () => {
     reader.readInto(frame);
     const kinds = new Set(frame.kind.subarray(0, frame.count));
     expect([kinds.has(FIRE_KIND), kinds.has(BUS_KIND)], 'drawn as a fire engine and a bus').toEqual([true, true]);
-  }, 60_000);
+  }, SIZED_IN_TICKS);
 
   // U0: the HUD's panels read the economy, the feed and the city's progress from the snapshot.
   it('snapshotCarriesTheBudgetOfThisMonthAndTheLast', () => {
@@ -187,7 +188,7 @@ describe('SimHost', () => {
       }
     }
     expect(checked).toBeGreaterThan(0);
-  }, 60_000);
+  }, SIZED_IN_TICKS);
 
   it('mapLayersCarryTheMapSeed', () => {
     const host = new SimHost(16);
@@ -212,7 +213,7 @@ describe('SimHost', () => {
     expect(w.citizens.count).toBe(citizens + 20_000);
     // A field per citizen would add at least a byte each; the counters' digits move by a few.
     expect(Math.abs(bytes() - before)).toBeLessThan(64);
-  }, 60_000);
+  }, SIZED_IN_TICKS);
 
   it('stepRepliesWithTheFingerprintOfTheSameRunInProcess', () => {
     const host = new SimHost(16);
@@ -223,7 +224,7 @@ describe('SimHost', () => {
     requestState(w, 'InGame');
     step(w, 500);
     expect(reply).toEqual({ tick: 500, fingerprint: toHex64(fingerprint(w)) });
-  });
+  }, SIZED_IN_TICKS);
 
   it('commandsGoThroughTheRustJsonCodec', () => {
     const host = new SimHost(16);
@@ -331,7 +332,7 @@ describe('SimHost', () => {
     expect(overlay.lanelets.length, 'the lanelets of the test city are built on the next tick').toBe(
       loadTestCity().laneletGraph.lanelets.length,
     );
-  });
+  }, SIZED_IN_TICKS);
 
   it('loadGridRejectsTheWrongSize', () => {
     const host = new SimHost(16);
@@ -365,7 +366,7 @@ describe('SimHost', () => {
         (p) => [p.x, p.y],
       ),
     });
-  });
+  }, SIZED_IN_TICKS);
 
   it('signalizedScenarioDrivesVehiclesAndReportsTheLight', () => {
     const host = new SimHost(256);
@@ -380,7 +381,7 @@ describe('SimHost', () => {
     const { lights, mapEditVersion } = host.handle({ t: 'snapshot' });
     expect(mapEditVersion, 'the cross is on the map').toBeGreaterThan(0);
     expect(lights).toEqual([{ minX: 40, minY: 40, maxX: 41, maxY: 41, phase: expect.any(String) }]);
-  });
+  }, SIZED_IN_TICKS);
 
   it('everyScenarioOfTheMenuStartsInTheHost', () => {
     for (const { name } of SCENARIOS) {
@@ -393,7 +394,7 @@ describe('SimHost', () => {
       expect(mapEditVersion, `${name} builds its map`).toBeGreaterThan(0);
       expect(lights.length, `${name} lights its crossings`).toBeGreaterThan(0);
     }
-  }, 60_000);
+  }, SIZED_IN_TICKS);
 
   it('snapshotReportsCitizensTrafficAndTickCost', () => {
     const host = new SimHost(4096);
@@ -406,7 +407,7 @@ describe('SimHost', () => {
     expect(traffic.driving + traffic.parked, 'and their cars').toBeGreaterThan(0);
     expect(traffic.tripsStarted!, 'every driving car is a started trip').toBeGreaterThanOrEqual(traffic.driving);
     expect(traffic.simTickMs!, 'the tick cost is measured').toBeGreaterThan(0);
-  }, 60_000);
+  }, SIZED_IN_TICKS);
 
   it('theLivingCityReportsItsOwnCitizens', () => {
     const host = new SimHost(4096);
@@ -418,7 +419,7 @@ describe('SimHost', () => {
     // and nobody sets out before the first game minute turns.
     expect(traffic.citizens, 'the HUD counts the people who already live there').toBeGreaterThan(2000);
     expect(traffic.tripsStarted, 'and nobody has set out two seconds in').toBe(0);
-  }, 60_000);
+  }, SIZED_IN_TICKS);
 
   // Stage 3½: the frame carries the people on foot and the trucks, each under an id of its own.
   it('theLivingCityPublishesItsPedestriansAndTrucks', () => {
@@ -437,7 +438,7 @@ describe('SimHost', () => {
     }
     expect(kinds.has(PEDESTRIAN_KIND), `pedestrians among ${[...kinds].join(' ')}`).toBe(true);
     expect(kinds.has(TRUCK_KIND) || kinds.has(PARKED_TRUCK_KIND), 'and trucks').toBe(true);
-  }, 120_000);
+  }, SIZED_IN_TICKS);
 
   // Stage 3½e gate: the cost of every tick is kept, so p50 and p99 are read off the running game, not a bench.
   it('tickStatsReportTheCostOfEachTick', () => {
@@ -473,7 +474,7 @@ describe('SimHost', () => {
       step(w, 1);
     }
     expect(reply).toEqual({ tick: 30, fingerprint: toHex64(fingerprint(w)) });
-  }, 60_000);
+  }, SIZED_IN_TICKS);
 
   // Stage 3½e: the metropolis is as large as its map, and opening it keeps the speed the player chose.
   it('theMetropolisOpensOnAMapOfItsOwnSize', () => {
@@ -488,7 +489,7 @@ describe('SimHost', () => {
     expect(snapshot).toMatchObject({ speed: 'X10', appState: 'InGame' });
     expect(snapshot.traffic.citizens, 'lived in from the start').toBeGreaterThan(1000);
     expect(snapshot.lights.length, 'its arterial crossings lit').toBeGreaterThan(0);
-  }, 120_000);
+  }, SIZED_IN_TICKS);
 
   // Stage 3½d: the frame holds what the camera can see, with a margin for a pan, and nothing of it is lost.
   it('publishKeepsOnlyWhatIsInView', () => {
@@ -520,7 +521,7 @@ describe('SimHost', () => {
     host.handle({ t: 'setView', view: null });
     host.handle({ t: 'step', ticks: 0 });
     expect(drawn().length, 'without a view, the whole city again').toBe(full.length);
-  }, 120_000);
+  }, SIZED_IN_TICKS);
 
   // Stage 3½d: at ×60 and above the roads show their load and a sample of the cars drives on them.
   it('fastSpeedsPublishASampleAndTheLinkLoads', () => {
@@ -548,7 +549,7 @@ describe('SimHost', () => {
     host.handle({ t: 'step', ticks: 0 });
     reader.readInto(out);
     expect(out.links, 'at ×1 the cars themselves').toBe(0);
-  }, 120_000);
+  }, SIZED_IN_TICKS);
 
   it('aScenarioSeesEveryTickOfAFastFrame', () => {
     // At ×3 a frame runs several ticks; a scenario fed once a frame missed the arrivals of all but the
@@ -557,15 +558,22 @@ describe('SimHost', () => {
     host.handle({ t: 'setState', state: 'InGame' });
     host.handle({ t: 'scenario', name: 'city' });
     host.handle({ t: 'setSpeed', speed: 'X10' });
-    // Fifteen seconds at ×10: up to fifteen hundred ticks. How many the tick budget lets through depends on how busy the
-    // machine is (983 under a parallel suite), so the check is only that frames run several ticks.
-    for (let frame = 0; frame < 150; frame++) host.update(frame * 100);
+    // The host times its ticks on `performance.now`, and the driver cuts a frame to what that cost affords: on a busy
+    // machine 670 of these ticks ran instead of 1 490. A stopped clock makes every tick free, so the frames carry exactly
+    // what their game time owes; the budget itself is the driver's to test.
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(0);
+    try {
+      // Fifteen seconds at ×10: ten ticks in each of the 149 frames after the first.
+      for (let frame = 0; frame < 150; frame++) host.update(frame * 100);
+    } finally {
+      clock.mockRestore();
+    }
 
     const { tick, traffic } = host.handle({ t: 'snapshot' });
-    expect(tick, 'several ticks a frame').toBeGreaterThan(2 * 150);
+    expect(tick, 'ten ticks a frame').toBe(149 * 10);
     expect(traffic.tripsDone!, 'commutes finish').toBeGreaterThan(0);
     expect(traffic.travelling, 'everyone on the road is driving or waiting to leave').toBe(traffic.driving + traffic.backlog);
-  }, 120_000);
+  }, SIZED_IN_TICKS);
 
   // TS (stage 3½): the worker must not die. A frame that throws is logged in the snapshot and the next frames run.
   it('hostSurvivesAFrameError', () => {

@@ -3,6 +3,7 @@
 // test city it builds. Not ported, with the reason in the S4 handoff: `no_mass_freeze_by_day_18` and
 // `demo_bus_gets_a_lanelet_planned_route_with_sidecar`.
 import { describe, expect, it } from 'vitest';
+import { SIZED_IN_TICKS } from './sizedInTicks';
 import { frame, step } from '../../src/app';
 import { blockHas } from '../../src/buildings/blockers';
 import type { TilePos } from '../../src/commands';
@@ -124,7 +125,7 @@ describe('test city', () => {
     const w = headlessTestCity();
     expect(w.laneletGraph.lanelets.length, 'the FourLane test city must produce lanelets').toBeGreaterThan(0);
     expect(w.laneletConflicts.byIntersection.size, 'conflict matrices must be built for the FourLane intersections').toBeGreaterThan(0);
-  }, 60_000);
+  }, SIZED_IN_TICKS);
 
   it('loadTestCitySeedsOneBusRouteAndSpawnsABus', () => {
     const w = headlessTestCity();
@@ -133,7 +134,7 @@ describe('test city', () => {
     expect(w.busRoutes.routes[0]!.stops.length, 'route has >=2 stops').toBeGreaterThanOrEqual(2);
     step(w, 40);
     expect(w.fleet.buses.length, 'at least one bus must spawn from the demo route').toBeGreaterThanOrEqual(1);
-  }, 60_000);
+  }, SIZED_IN_TICKS);
 
   /** The demo bus reaches stops and keeps advancing around the loop: it dwells and targets at least four stops. */
   it('demoBusToursAtLeastTwoStops', () => {
@@ -148,7 +149,7 @@ describe('test city', () => {
       if (bus.state === 'Dwelling') dwelled = true;
     }
     expect({ targets: targets.size >= 4, dwelled }, `bus never toured: distinct targets ${[...targets].join(',')}`).toEqual({ targets: true, dwelled: true });
-  }, 180_000);
+  }, SIZED_IN_TICKS);
 
   /**
    * The buses go with the routes they ran (rust-final mod.rs:121-135): a survivor keeps a stale-map leg, and its route
@@ -168,7 +169,7 @@ describe('test city', () => {
     expect(legsOf(w, old), 'no leg of the old bus is left, pending or on the road').toEqual([]);
     const at = w.grid.get(w.fleet.buses[0]!.at)!;
     expect(at.road.kind !== 'None' && !at.water, 'the bus stands on a road').toBe(true);
-  }, 120_000);
+  }, SIZED_IN_TICKS);
 
   it('aNewMapTakesTheBusesWithItsRoutes', () => {
     const w = headlessTestCity();
@@ -180,7 +181,7 @@ describe('test city', () => {
     expect(w.fleet.buses.length).toBe(1);
     expect(w.fleet.buses[0]!.id).not.toBe(old);
     expect(legsOf(w, old)).toEqual([]);
-  }, 120_000);
+  }, SIZED_IN_TICKS);
 
   it('generateMapAloneTakesTheBusesAndTheirLegs', () => {
     const w = headlessTestCity();
@@ -190,7 +191,7 @@ describe('test city', () => {
     step(w, 40);
     expect(w.fleet.buses).toEqual([]);
     expect(legsOf(w, old)).toEqual([]);
-  }, 120_000);
+  }, SIZED_IN_TICKS);
 
   /** Rust's generator reset the treasury and the calendar with the map. */
   it('loadTestCityStartsTheTreasuryAndTheCalendarOver', () => {

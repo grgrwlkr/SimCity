@@ -1,5 +1,6 @@
 // The signalized cross scenarios that drive the live view (`?scenario=signalized`, `?scenario=signalized4`).
 import { describe, expect, it } from 'vitest';
+import { SIZED_IN_TICKS } from './sizedInTicks';
 import { frame, step } from '../../src/app';
 import { dirLeft, dirRight, isLeftmostForDir, isRightmostForDir } from '../../src/map/roads';
 import { SignalizedCrossScenario, buildSignalizedCross, signalizedCrossRoutes } from '../../src/scenarios/signalizedCross';
@@ -66,7 +67,7 @@ describe('signalized cross scenario', () => {
         })
         .sort(),
     );
-  });
+  }, SIZED_IN_TICKS);
 
   it('scenarioPlacesTheLightAndSendsWavesThatDrive', () => {
     const w = inGameWorld();
@@ -106,5 +107,5 @@ describe('signalized cross scenario', () => {
     expect(scenario.spawned, 'the scenario sends traffic').toBeGreaterThanOrEqual(100);
     const overdue = [...bornAt].filter(([ref, born]) => w.tick - born > 1200 && resolveVehicle(w.vehicles, ref) !== undefined);
     expect(overdue.length, `cars older than 120 s still on the map (of ${bornAt.size})`).toBe(0);
-  });
+  }, SIZED_IN_TICKS);
 });

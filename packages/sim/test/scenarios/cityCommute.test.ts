@@ -1,6 +1,7 @@
 // The city scenario behind `?scenario=city`: commuters drive their own cars between home and work on the
 // test city, park there, and drive back later.
 import { describe, expect, it } from 'vitest';
+import { SIZED_IN_TICKS } from './sizedInTicks';
 import { step } from '../../src/app';
 import { CityCommuteScenario } from '../../src/scenarios/cityCommute';
 import { routeDirectionOk } from '../../src/traffic/reroute';
@@ -25,8 +26,7 @@ describe('city commute scenario', () => {
     expect(driving.length, 'while others drive').toBeGreaterThan(50);
     const wrongWay = driving.filter((slot) => !routeDirectionOk(w.pathPool.remainingFrom(v.pathHandle[slot]!, v.pathCursor[slot]!) ?? [], w.grid));
     expect(wrongWay.length, 'no route against a lane').toBe(0);
-    // 1.6 s alone; the whole parallel suite pushed it past the 5 s default.
-  }, 60_000);
+  }, SIZED_IN_TICKS);
 
   it('departuresSpreadOverTheWindow', () => {
     // A thousand commuters leaving within one minute is a flood no road network takes.
@@ -41,7 +41,7 @@ describe('city commute scenario', () => {
     const stats = scenario.stats(w);
     expect(stats.citizens).toBe(1000);
     expect(stats.travelling).toBe(stats.requested - stats.arrived);
-  }, 60_000);
+  }, SIZED_IN_TICKS);
 
   // The host snapshots after a frame's ticks and feeds the scenario only before the next one: the arrivals of the last
   // tick belong in the numbers already, or the HUD shows them still on the road.
@@ -56,7 +56,7 @@ describe('city commute scenario', () => {
     }
     expect(arrivals, 'the run saw a tick with arrivals').toBeGreaterThan(0);
     expect(scenario.stats(w).arrived).toBe(scenario.arrived + arrivals);
-  }, 60_000);
+  }, SIZED_IN_TICKS);
 
   it('anArrivalCountsOnceWhenTheHostAdvancesWithoutATick', () => {
     // The host feeds a scenario before every step tick and again once per frame.
@@ -71,5 +71,5 @@ describe('city commute scenario', () => {
       expect(scenario.arrived, `tick ${w.tick}: advance twice, count once`).toBe(seen);
     }
     expect(seen, 'the run saw an arrival').toBeGreaterThan(0);
-  });
+  }, SIZED_IN_TICKS);
 });
