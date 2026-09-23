@@ -1,7 +1,7 @@
 import { RenderReader, SimClient, scenarioByQuery, type WorldSnapshot } from '@simcity/bridge';
 import { DebugRenderer, SceneRenderer, installViewControls, type Renderer } from '@simcity/render';
-import { SIGNALIZED_CROSS, crossBoxSize, tileToWorld, type MapConfig } from '@simcity/sim';
-import { Hud, useSimStore, type HudActions } from '@simcity/ui';
+import { SIGNALIZED_CROSS, crossBoxSize, defaultTrafficConfig, tileToWorld, toRustCommand, type MapConfig } from '@simcity/sim';
+import { Hud, useSimStore, useToolStore, type HudActions } from '@simcity/ui';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { installGamepad } from './gamepad';
@@ -34,7 +34,15 @@ let mapConfig: MapConfig | null = null;
 const renderer = client.ready.then(async (sab) => {
   const r: Renderer = useScene ? await SceneRenderer.create(canvas) : await DebugRenderer.create(canvas);
   r.attachRenderBuffer(new RenderReader(sab));
-  installViewControls(canvas, r, () => mapConfig);
+  // The tool in hand paints the map with world commands; the same channel as every panel's.
+  installViewControls(canvas, r, () => mapConfig, {
+    brush: () => useToolStore.getState(),
+    send: (commands) => commands.forEach((cmd) => actions.command(cmd)),
+    hasTrafficLight: ({ x, y }) =>
+      (useSimStore.getState().snapshot?.lights ?? []).some((l) => x >= l.minX && x <= l.maxX && y >= l.minY && y <= l.maxY),
+    driveOnRight: defaultTrafficConfig().driveOnRight,
+    pointerOverride: () => api.pointerOverride(),
+  });
   // The frame holds only what the camera sees; at ×60 and above it carries the load of links the renderer draws.
   r.onViewChange = (view) => void client.request({ t: 'setView', view });
   r.onLinksNeeded = () => void client.request({ t: 'mesoLinks' }).then((links) => r.setLinks(links));
@@ -129,6 +137,8 @@ const actions: HudActions = {
     if (rendererParam !== null) query.set('renderer', rendererParam);
     return `?${query.toString()}`;
   },
+  command: (cmd) => void api.cmd(toRustCommand(cmd)),
+  undoRedo: (redo) => void api.undoRedo(redo),
 };
 
 const root = document.getElementById('root');

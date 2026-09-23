@@ -67,6 +67,10 @@ export interface SimApi {
   /** p50, p99 and the longest of the last ticks the worker ran, and how many since the reset. */
   tickStats(): Promise<TickStatsReply>;
   resetTickStats(): Promise<null>;
+  /** Hover a tile from inside the game without moving the pointer (`PointerOverride`); `null` hands it back to the pointer. */
+  hoverTile(tile: TilePos | null): Promise<TilePos | null>;
+  /** The tile `hoverTile` holds; `null` while the pointer leads. */
+  pointerOverride(): TilePos | null;
 }
 
 declare global {
@@ -98,6 +102,7 @@ export function installSimApi(
     width: r.view.viewport.width,
     height: r.view.viewport.height,
   });
+  let pointerOverride: TilePos | null = null;
   const api: SimApi = {
     debug,
     ready: client.ready.then(() => undefined),
@@ -145,6 +150,13 @@ export function installSimApi(
     debugEmergency: (kind, x, y) => client.request({ t: 'debugEmergency', kind, x, y }),
     tickStats: () => client.request({ t: 'tickStats' }),
     resetTickStats: () => client.request({ t: 'resetTickStats' }),
+    hoverTile: async (tile) => {
+      pointerOverride = tile;
+      const r = await renderer;
+      r.hovered = tile;
+      return tile;
+    },
+    pointerOverride: () => pointerOverride,
   };
   window.__sim = api;
   return api;
