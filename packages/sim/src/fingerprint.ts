@@ -418,8 +418,16 @@ function hashNotifications(h: Fnv64, n: Notifications): void {
 }
 
 /** JSON with bigints spelled out; JSON number formatting is fully specified, so engines agree. */
-function stableJson(value: unknown): string {
-  return JSON.stringify(value, (_key, v: unknown) => (typeof v === 'bigint' ? `${v}n` : v));
+/** The fields of `CitizenTripCounter` the fingerprint leaves out. */
+const TRIP_COUNTER_FIELDS: ReadonlySet<string> = new Set(['requested', 'arrived', 'lastTick']);
+
+/** `value` as JSON; `omit`: keys of `value` itself left out. */
+function stableJson(value: unknown, omit?: ReadonlySet<string>): string {
+  return JSON.stringify(value, function (this: unknown, key, v: unknown) {
+    // Own keys of `value` are the only ones whose holder is `value` itself.
+    if (omit !== undefined && this === value && omit.has(key)) return undefined;
+    return typeof v === 'bigint' ? `${v}n` : v;
+  });
 }
 
 function commandKey(cmd: GameCommand): string {
@@ -557,12 +565,12 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
     'scenario',
     (h, w) => {
       h.str(stableJson(w.scenario));
-      // The runtime's class by its save name, which a minified build keeps. A commute or a crossing drives traffic:
-      // every own field of it, its private ones and its generator's state words included. The trip counters of a
-      // living city are the HUD's, fed by the host alone, and stay out like the other observability.
+      // The runtime's class by its save name, which a minified build keeps, then every own field of it, its private
+      // ones and its generator's state words included; but the trip counters of `CitizenTripCounter`, which the host
+      // alone feeds for the HUD, stay out like the other observability. A field of a subclass is hashed.
       const run = w.scenarioRuntime;
       h.str(run === null ? '' : (savedClassName(run) ?? ''));
-      if (run !== null && !(run instanceof CitizenTripCounter)) h.str(stableJson(run));
+      h.str(stableJson(run, run instanceof CitizenTripCounter ? TRIP_COUNTER_FIELDS : undefined));
     },
   ],
   [

@@ -139,6 +139,13 @@ const SCENARIO_BUILDERS: Readonly<Record<ScenarioName, (w: World, seed: bigint |
   signalizedCross4: (w) => new SignalizedCrossScenario(w, undefined, CROSS_LAYOUT.signalizedCross4),
 };
 
+/** A map seed as the request spells it: a `u64` in decimal digits. */
+function parseSeed(text: string): bigint {
+  const seed = /^\d+$/.test(text) ? BigInt(text) : -1n;
+  if (seed < 0n || seed > 0xffff_ffff_ffff_ffffn) throw new RangeError(`scenario: seed ${JSON.stringify(text)} is not a u64 in decimal digits`);
+  return seed;
+}
+
 function scenarioView(w: World): ScenarioProgressView | null {
   const s = w.scenario;
   if (s.activeId === null) return null;
@@ -299,10 +306,12 @@ export class SimHost {
       case 'debugOverlay':
         return debugOverlayOf(this.world);
       case 'scenario': {
+        // Read before the running game is replaced: a bad seed leaves it as it was.
+        const seed = req.seed === undefined ? undefined : parseSeed(req.seed);
         // Every scenario in a fresh world: the same game whatever ran before it in this tab, never its map, seed,
         // treasury, hour or objectives.
         this.replaceWorld(req.size ?? SCENARIOS.find((s) => s.name === req.name)?.mapSize);
-        this.world.scenarioRuntime = SCENARIO_BUILDERS[req.name](this.world, req.seed === undefined ? undefined : BigInt(req.seed));
+        this.world.scenarioRuntime = SCENARIO_BUILDERS[req.name](this.world, seed);
         // Settled into its first frame here: whether the loop ran an empty frame before the next request cannot matter.
         frame(this.world, 0);
         return null;

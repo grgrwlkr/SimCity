@@ -464,6 +464,19 @@ describe('SimHost', () => {
     }
   }, SIZED_IN_TICKS);
 
+  it('aBadSeedIsRefusedBeforeTheGameIsTouched', () => {
+    const host = new SimHost(RENDER_CAPACITY);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'scenario', name: 'starter' });
+    const before = host.handle({ t: 'step', ticks: 10 });
+    for (const seed of ['x1', '', '-1', '1.5', ' 7', '18446744073709551616']) {
+      expect(() => host.handle({ t: 'scenario', name: 'sandbox', seed }), JSON.stringify(seed)).toThrow(/^scenario: seed /);
+      expect(host.handle({ t: 'fingerprint' }), `${JSON.stringify(seed)}: the game stays`).toEqual(before);
+    }
+    host.handle({ t: 'scenario', name: 'sandbox', seed: '18446744073709551615' });
+    expect(host.handle({ t: 'snapshot' }).mapSeed, 'the largest u64 is a seed').toBe('18446744073709551615');
+  });
+
   it('aSaveWithAForeignRuntimeIsRefusedAndTheWorldStays', () => {
     const host = new SimHost(RENDER_CAPACITY);
     host.handle({ t: 'setState', state: 'InGame' });

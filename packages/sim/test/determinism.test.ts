@@ -10,6 +10,7 @@ import { buildHeadlessGame, reseed } from '../src/headless';
 import { firstDivergence } from '../src/probe';
 import { CityCommuteScenario } from '../src/scenarios/cityCommute';
 import { CitizenTripCounter, LivingCityScenario } from '../src/scenarios/livingCity';
+import { MetropolisScenario } from '../src/scenarios/metropolis';
 import { requestState } from '../src/state';
 import { refSlot, spawnVehicle } from '../src/traffic/vehicles';
 import type { World } from '../src/world';
@@ -226,6 +227,18 @@ describe('determinism', () => {
           commute.advance(w);
           w.tick -= 1;
           expect(fingerprint(w), 'fingerprint is blind to the state of the scenario runtime').not.toBe(before);
+        },
+      ],
+      [
+        'scenarioRuntime.plan',
+        (w) => {
+          // A field a runtime has beyond the trip counters: the metropolis's plan, and whatever a later runtime adds.
+          const counters = { requested: 0, arrived: 0, lastTick: -1 };
+          const run = Object.assign(Object.create(MetropolisScenario.prototype) as MetropolisScenario, counters, { plan: { lights: [], first: 3, last: 9 } });
+          w.scenarioRuntime = run;
+          const before = fingerprint(w);
+          (run as { plan: { first: number } }).plan.first = 4;
+          expect(fingerprint(w), 'fingerprint is blind to the plan of the metropolis').not.toBe(before);
         },
       ],
       [
