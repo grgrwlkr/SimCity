@@ -13,12 +13,20 @@ test.describe.configure({ timeout: 240_000 });
 const NOON_SUN_INTENSITY = 3;
 const NOT_MOUNTED = 'DataMapPanel is not mounted in the HUD: wired by the integrator (Hud.tsx, main.tsx, protocol.ts, host.ts)';
 
+/** The panel starts collapsed to its header (left column, layout.md §5): a click on the header opens the maps. */
+async function expandDataMaps(page: Page): Promise<void> {
+  const toggle = page.getByTestId('datamap-toggle');
+  if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+}
+
 async function openCity(page: Page, query = ''): Promise<void> {
   page.on('pageerror', (e) => console.log(`pageerror: ${e.message}`));
   await page.goto(`/?scenario=city${query}`);
   await page.waitForFunction(() => typeof window.__sim !== 'undefined');
   await page.evaluate(() => window.__sim.ready);
   await expect(page.getByTestId('datamap'), NOT_MOUNTED).toBeVisible({ timeout: 60_000 });
+  await expandDataMaps(page);
   // Held still, with the indexes computed over the whole map: land value publishes a chunk a tick.
   await page.evaluate(async () => {
     await window.__sim.setSpeed('Paused');
@@ -107,4 +115,43 @@ test('while a data map is open the scene is lit at noon and drawn without the vi
 
   await page.getByTestId('overlay-None').click();
   await expect.poll(() => stats().then((s) => [s.dataMap, s.vignette, s.sunIntensity < NOON_SUN_INTENSITY / 2]), { timeout: 120_000 }).toEqual(['None', true, true]);
+});
+
+test.describe('the left column at the desktop window size', () => {
+  test.use({ viewport: { width: 1280, height: 800 } });
+
+  test('the data maps and the advisor share the left column one at a time', async ({ page }) => {
+    await page.goto('/?scenario=city');
+    await page.waitForFunction(() => typeof window.__sim !== 'undefined');
+    await page.evaluate(() => window.__sim.ready);
+    const panel = page.getByTestId('datamap');
+    const toggle = page.getByTestId('datamap-toggle');
+    await expect(panel, NOT_MOUNTED).toBeVisible({ timeout: 60_000 });
+
+    // Collapsed by default, 260 px wide and short enough to clear the advisor at top 352 (layout.md §5, §8).
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByTestId('overlay-LandValue')).toHaveCount(0);
+    const collapsed = (await panel.boundingBox())!;
+    expect(collapsed.width).toBe(260);
+    expect(collapsed.height, 'a collapsed panel leaves room for the advisor').toBeLessThanOrEqual(280);
+    expect(collapsed.y + collapsed.height).toBeLessThanOrEqual(352);
+
+    // A picked map stays painted and named in the header once the panel folds.
+    await expandDataMaps(page);
+    await page.getByTestId('overlay-LandValue').click();
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(toggle).toHaveText(/Карты данных\s*Стоимость земли/);
+    await expect.poll(() => page.evaluate(() => window.__sim.renderStats()).then((s) => s.dataMap)).toBe('LandValue');
+
+    // Opening the advisor folds the data maps; unfolding them closes the advisor (states.md «Левая колонка»).
+    await expandDataMaps(page);
+    await page.getByTestId('advisor-toggle').click();
+    await expect(page.getByTestId('advisor')).toBeVisible();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await page.getByTestId('advisor').hover();
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.getByTestId('advisor')).toHaveCount(0);
+  });
 });

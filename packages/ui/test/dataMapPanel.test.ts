@@ -59,12 +59,20 @@ function inputs(): DataMapInputs {
 }
 
 /** The panel as the HUD mounts it: the legend and the reading of the active overlay at the hovered tile. */
-function panel(overlay: PlayerOverlay, hovered: { x: number; y: number } | null = null, selected: PlayerOverlay[] = []): ReactNode {
+function panel(
+  overlay: PlayerOverlay,
+  hovered: { x: number; y: number } | null = null,
+  selected: PlayerOverlay[] = [],
+  expanded = true,
+  toggled: boolean[] = [],
+): ReactNode {
   const props: DataMapPanelProps = {
     overlay,
     legend: legendFor(overlay),
     reading: panelReading(overlay, hovered, inputs()),
     onSelect: (mode) => selected.push(mode),
+    expanded,
+    onToggle: (next) => toggled.push(next),
   };
   return createElement(DataMapPanel, props);
 }
@@ -81,7 +89,8 @@ describe('data map panel', () => {
       expect(found[0]!.type).toBe('button');
     }
     expect(button(tree, 'Path'), 'the vehicle path view is a developer tool').toHaveLength(0);
-    expect(elements(tree).filter((el) => el.type === 'button')).toHaveLength(EVERY_PLAYER_OVERLAY.length);
+    // One button per map, plus the header's collapse toggle.
+    expect(elements(tree).filter((el) => el.type === 'button' && el.props['data-testid'] !== 'datamap-toggle')).toHaveLength(EVERY_PLAYER_OVERLAY.length);
     expect(PLAYER_OVERLAYS.map(([mode]) => mode)).toHaveLength(EVERY_PLAYER_OVERLAY.length);
   });
 
@@ -135,5 +144,35 @@ describe('data map panel', () => {
     expect(root.props.className).toBe('datamap-root');
     expect(rule('datamap-root'), 'the layout root lets the pointer through to the map').toMatch(/pointer-events:\s*none/);
     expect(rule('datamap-panel'), 'the panel itself takes clicks').toMatch(/pointer-events:\s*auto/);
+  });
+
+  // Left column (orchestrator ruling, layout.md §5, states.md «Левая колонка»): collapsed, the panel is its header alone
+  // and leaves the column to the advisor at top 352; the map it picked stays painted and its name stays in view.
+  it('aCollapsedPanelIsItsHeaderAloneAndNamesThePickedMap', () => {
+    const tree = panel('LandValue', { x: 4, y: 4 }, [], false);
+    const toggle = byTestId(tree, 'datamap-toggle')[0]!;
+    expect(toggle.props['aria-expanded']).toBe(false);
+    expect(texts(toggle).join(' ')).toBe('Карты данных Стоимость земли');
+    for (const id of ['overlay-None', 'overlay-LandValue', 'datamap-legend', 'datamap-reading']) expect(byTestId(tree, id), id).toHaveLength(0);
+    expect(texts(byTestId(panel('None', null, [], false), 'datamap-toggle')[0]).join(' '), 'no map, no name').toBe('Карты данных');
+  });
+
+  it('theHeaderExpandsAndCollapsesThePanel', () => {
+    const toggled: boolean[] = [];
+    (byTestId(panel('None', null, [], false, toggled), 'datamap-toggle')[0]!.props.onClick as () => void)();
+    const open = panel('Pollution', null, [], true, toggled);
+    expect(byTestId(open, 'datamap-toggle')[0]!.props['aria-expanded']).toBe(true);
+    expect(byTestId(open, 'overlay-Pollution')).toHaveLength(1);
+    expect(byTestId(open, 'datamap-legend')).toHaveLength(1);
+    (byTestId(open, 'datamap-toggle')[0]!.props.onClick as () => void)();
+    expect(toggled).toEqual([true, false]);
+  });
+
+  it('thePanelIs260PixelsWideBorderIncluded', () => {
+    // layout.md §5: 260 px is the outer width; with the default content-box, padding and border made it 278.
+    const css = readFileSync(new URL('../src/dataMap.css', import.meta.url), 'utf8');
+    const rule = /\.datamap-panel\s*\{[^}]*\}/.exec(css)?.[0] ?? '';
+    expect(rule).toMatch(/width:\s*260px/);
+    expect(rule).toMatch(/box-sizing:\s*border-box/);
   });
 });
