@@ -1,9 +1,12 @@
-// Stage R2: the scene the player sees, forced with `?renderer=scene` (automation opens the debug renderer by default).
-// The frame is not empty and carries buildings, the draw calls do not grow with the number of buildings, and the atlas
-// read on the GPU at its last mip keeps every cell to itself.
+// Stages R2 and R3: the scene the player sees, forced with `?renderer=scene` (automation opens the debug renderer by
+// default). The frame is not empty and carries buildings, the draw calls do not grow with the number of buildings, the
+// atlas read on the GPU at its last mip keeps every cell to itself, and the light follows the hour (`?hour=` pins it):
+// midnight is darker than noon, with lit windows, and the post-processing of the config is in the frame.
 import { expect, test, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { ATLAS_CELLS, atlasCellIndex, buildAtlasImage } from '../packages/render/src/atlas';
+import { profileHeight } from '../packages/render/src/buildingLook';
+import { OrthoView, SCENE_TILT } from '../packages/render/src/camera';
 import type { SceneStats } from '../packages/render/src/scene/sceneRenderer';
 import { MAX_CELL_LOD, atlasMipChain } from '../packages/render/src/scene/atlasTexture';
 import { tileToWorld } from '../packages/sim/src/index';
@@ -18,6 +21,14 @@ const road = JSON.parse(readFileSync(new URL('../packages/sim/src/scenarios/test
 test.use({ viewport: { width: 800, height: 800 } });
 // SwiftShader draws the lit scene on the processor: a frame takes far longer than the debug renderer's flat one.
 test.describe.configure({ timeout: 240_000 });
+
+/**
+ * The R2 gates read geometry and colour, not the effects: under SwiftShader the full chain costs seconds a frame (a
+ * probe at load 55-80 measured 0.09 fps with everything, 0.92 fps with these off), so they draw without it.
+ */
+const PLAIN = '&off=ao,shadows,fxaa,grade,vignette';
+/** Cascaded shadows render the city four more times: on the processor that alone is 4× the frame, so only the GPU runs them. */
+const SHADOWS = process.env.E2E_GPU === '1' ? '' : '&off=shadows';
 
 const sceneStats = (page: Page) => page.evaluate(() => window.__sim.renderStats()) as Promise<SceneStats>;
 
@@ -51,8 +62,11 @@ async function waitForDrawn(page: Page): Promise<SceneStats> {
   return sceneStats(page);
 }
 
-/** Share of pixels off the most common colour, and how many distinct colours the frame has. */
-async function frameVariety(page: Page, png: Buffer): Promise<{ offMode: number; colours: number }> {
+/**
+ * Share of pixels off the most common colour, the same share among the rest once that colour is set aside (the sky
+ * round a tilted map), and how many distinct colours the frame has.
+ */
+async function frameVariety(page: Page, png: Buffer): Promise<{ offMode: number; offModeOfRest: number; colours: number }> {
   return page.evaluate(async (b64) => {
     const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
     const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d')!;
@@ -63,8 +77,28 @@ async function frameVariety(page: Page, png: Buffer): Promise<{ offMode: number;
       const key = (data[o]! << 16) | (data[o + 1]! << 8) | data[o + 2]!;
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
-    const mode = Math.max(...counts.values());
-    return { offMode: 1 - mode / (data.length / 4), colours: counts.size };
+    const [mode, second] = [...counts.values()].sort((a, b) => b - a);
+    const total = data.length / 4;
+    return { offMode: 1 - mode! / total, offModeOfRest: 1 - (second ?? 0) / Math.max(total - mode!, 1), colours: counts.size };
+  }, png.toString('base64'));
+}
+
+/** Mean Rec. 709 luma of the frame, 0..255, and the share of pixels lit warm and bright (a glowing window's colour). */
+async function frameLight(page: Page, png: Buffer): Promise<{ luma: number; warm: number }> {
+  return page.evaluate(async (b64) => {
+    const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+    const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d')!;
+    ctx.drawImage(bitmap, 0, 0);
+    const { data } = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+    let sum = 0;
+    let warm = 0;
+    for (let o = 0; o < data.length; o += 4) {
+      const [r, g, b] = [data[o]!, data[o + 1]!, data[o + 2]!];
+      sum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      // Lit glass after tone mapping: bright, red over blue, green over blue (a red car or sign is not warm white).
+      if (r > 200 && r - b > 40 && g - b > 20) warm += 1;
+    }
+    return { luma: sum / (data.length / 4), warm: warm / (data.length / 4) };
   }, png.toString('base64'));
 }
 
@@ -90,7 +124,8 @@ const hex = (s: string) => Array.from({ length: s.length / 2 }, (_, i) => parseI
 const FIRE_STATION = 4;
 
 test('sceneDrawsTheTestCity', async ({ page }, testInfo) => {
-  await openScene(page);
+  // Noon: the roof colours read as the palette has them.
+  await openScene(page, `&hour=12${PLAIN}`);
   await loadGrid(page, road.rawGrid);
   const cam = await page.evaluate(() => window.__sim.fitMap());
   const stats = await waitForDrawn(page);
@@ -102,14 +137,18 @@ test('sceneDrawsTheTestCity', async ({ page }, testInfo) => {
   expect(stats.props, 'street furniture in the frame').toBeGreaterThan(0);
   expect(stats.drawCalls).toBeGreaterThan(0);
   const png = await page.locator('#view').screenshot({ path: testInfo.outputPath('scene-test-city.png') });
-  // A fire station's roof is red where the ground under it is grey pavement: read the tile centres (between the rails and
-  // rungs of the ladder glyph) back from the frame.
+  // A fire station's roof is red where the ground under it is grey pavement: read the roof centres (between the rails
+  // and rungs of the ladder glyph) back from the frame, placed by the tilted view the scene draws with.
   const cfg = { width: road.width, height: road.height, tileSize: 16 };
   const fire = hex(road.rawGrid.building).flatMap((b, i) => (b === FIRE_STATION ? [i] : []));
   expect(fire.length).toBeGreaterThan(0);
+  const view = new OrthoView({ width: cam.width, height: cam.height });
+  view.tilt = SCENE_TILT;
+  Object.assign(view, { centerX: cam.centerX, centerY: cam.centerY, worldPerPixel: cam.worldPerPixel });
+  const roof = profileHeight('FireStation', 1, { density: 'Medium', class: 'Middle' });
   const points = fire.map((i) => {
     const w = tileToWorld(cfg, { x: i % cfg.width, y: Math.floor(i / cfg.width) });
-    return { x: cam.width / 2 + (w.x - cam.centerX) / cam.worldPerPixel, y: cam.height / 2 - (w.y - cam.centerY) / cam.worldPerPixel };
+    return view.worldToScreen(w.x, w.y, roof);
   });
   const red = (await pixelsAt(page, png, points)).filter(([r, g]) => r - g > 60).length;
   expect(red, `${red} of ${fire.length} fire station tiles read red`).toBeGreaterThanOrEqual(fire.length * 0.8);
@@ -122,13 +161,68 @@ test('sceneDrawsTheTestCity', async ({ page }, testInfo) => {
   await waitForDrawn(page);
   const close = await frameVariety(page, await page.locator('#view').screenshot({ path: testInfo.outputPath('scene-test-city-close.png') }));
   console.log(`scene variety: far ${JSON.stringify(variety)} close ${JSON.stringify(close)}`);
-  expect(variety.offMode, 'most of the frame is not one flat colour').toBeGreaterThan(0.5);
+  // Tilted, the fitted map is a diamond and the sky fills the corners: the map itself is not one flat colour.
+  expect(variety.offMode, 'the map fills a good part of the frame').toBeGreaterThan(0.3);
+  // Grass is about half the test city and reads as one shade from this far out; the close view below carries the detail.
+  expect(variety.offModeOfRest, 'the map is not one flat colour').toBeGreaterThan(0.4);
   // Flat fills would give a colour per ground class and a few for the props; the atlas detail gives many more.
   expect(close.colours, 'the atlas breaks up the fills').toBeGreaterThan(60);
 });
 
+test('sceneNoonAndMidnightDifferInLight', async ({ page }, testInfo) => {
+  test.setTimeout(900_000);
+  const shots: Record<string, { luma: number; warm: number; post: readonly string[]; hour: number }> = {};
+  for (const hour of [12, 0]) {
+    await openScene(page, `&hour=${hour}${SHADOWS}`);
+    await loadGrid(page, road.rawGrid);
+    // Close enough that windows are more than a pixel, over the fire station's block, in the perspective half of the zoom.
+    const fire = hex(road.rawGrid.building).findIndex((b) => b === FIRE_STATION);
+    const at = tileToWorld({ width: road.width, height: road.height, tileSize: 16 }, { x: fire % road.width, y: Math.floor(fire / road.width) });
+    await page.evaluate((c) => window.__sim.setCamera({ centerX: c.x, centerY: c.y, worldPerPixel: 0.2 }), at);
+    const stats = await waitForDrawn(page);
+    const png = await page.locator('#view').screenshot({ path: testInfo.outputPath(`scene-hour-${hour}.png`) });
+    shots[hour] = { ...(await frameLight(page, png)), post: stats.post, hour: stats.hour };
+  }
+  const [noon, midnight] = [shots[12]!, shots[0]!];
+  console.log(`scene light: ${JSON.stringify({ noon, midnight })}`);
+  testInfo.annotations.push({ type: 'light', description: JSON.stringify({ noon, midnight }) });
+  expect(noon.hour).toBe(12);
+  expect(midnight.hour).toBe(0);
+  // The shipped config: occlusion, tone mapping, grade, vignette and FXAA are in the graph, bloom is off.
+  expect(noon.post).toEqual(['scene', 'ao', 'tonemap', 'grade', 'vignette', 'fxaa']);
+  // GTAO is known to draw black under a software renderer (docs/research/2026-09-21-q8-q9-render-pack.md, Q8): here
+  // the pass is built and the frame is not black; its look is pinned on the GPU below.
+  expect(noon.luma, 'the frame with occlusion is not black').toBeGreaterThan(40);
+  expect(noon.luma - midnight.luma, 'midnight is darker than noon').toBeGreaterThan(8);
+  // The city stays readable at night: a new game opens at 00:00.
+  expect(midnight.luma, 'midnight still shows the city').toBeGreaterThan(20);
+  // One block of buildings in view: its lit window bands are a few hundred pixels, none of them at noon.
+  expect(midnight.warm, 'windows glow at midnight').toBeGreaterThan(Math.max(noon.warm * 4, 1e-4));
+});
+
+// On the GPU only (E2E_GPU=1): GTAO darkens the frame against the same frame with `?off=ao`, and a disabled effect
+// leaves its pass out of the graph the frame is drawn from.
+test('sceneOcclusionDarkensTheFrameOnTheGpu', async ({ page }, testInfo) => {
+  test.skip(process.env.E2E_GPU !== '1', 'GTAO draws black under SwiftShader: pinned on the GPU (E2E_GPU=1)');
+  const light: Record<string, number> = {};
+  for (const off of ['', 'ao']) {
+    await openScene(page, `&hour=12&off=${off}`);
+    await loadGrid(page, road.rawGrid);
+    const fire = hex(road.rawGrid.building).findIndex((b) => b === FIRE_STATION);
+    const at = tileToWorld({ width: road.width, height: road.height, tileSize: 16 }, { x: fire % road.width, y: Math.floor(fire / road.width) });
+    await page.evaluate((c) => window.__sim.setCamera({ centerX: c.x, centerY: c.y, worldPerPixel: 0.2 }), at);
+    const stats = await waitForDrawn(page);
+    expect(stats.post.includes('ao')).toBe(off === '');
+    const key = off === '' ? 'on' : 'off';
+    light[key] = (await frameLight(page, await page.locator('#view').screenshot({ path: testInfo.outputPath(`scene-ao-${key}.png`) }))).luma;
+  }
+  console.log(`scene ao: ${JSON.stringify(light)}`);
+  // Occlusion shades only where walls meet the ground, a small part of this frame: darker, not dark.
+  expect(light.on!, 'occlusion darkens').toBeLessThan(light.off! - 0.1);
+});
+
 test('sceneDrawCallsDoNotGrowWithBuildings', async ({ page }, testInfo) => {
-  await openScene(page);
+  await openScene(page, PLAIN);
   await loadGrid(page, road.rawGrid);
   await page.evaluate(() => window.__sim.fitMap());
   const before = await waitForDrawn(page);
@@ -154,7 +248,7 @@ test('sceneDrawCallsDoNotGrowWithBuildings', async ({ page }, testInfo) => {
 });
 
 test('sceneAtlasCellsDoNotBleedOnTheLastMip', async ({ page }, testInfo) => {
-  await openScene(page);
+  await openScene(page, PLAIN);
   const SIDE = 48;
   const probe = new URL('../packages/render/src/scene/atlasProbe.ts', import.meta.url).pathname;
   const backend = await page.evaluate(
@@ -208,7 +302,7 @@ test('sceneAtlasCellsDoNotBleedOnTheLastMip', async ({ page }, testInfo) => {
 // finer level lets the coarser one read a fifth of a texel of black next door: Plain drops below 255 at its edges and
 // its neighbours light up.
 test('sceneAtlasClampHoldsBetweenTwoLevels', async ({ page }, testInfo) => {
-  await openScene(page);
+  await openScene(page, PLAIN);
   const SIDE = 90;
   const probe = new URL('../packages/render/src/scene/atlasProbe.ts', import.meta.url).pathname;
   const backend = await page.evaluate(
@@ -252,7 +346,7 @@ test('sceneAtlasClampHoldsBetweenTwoLevels', async ({ page }, testInfo) => {
 test('sceneDrawsTheMetropolis', async ({ page }, testInfo) => {
   test.setTimeout(180_000);
   const size = process.env.SCENE_METROPOLIS_SIZE ?? '128';
-  await openScene(page, `&scenario=metropolis&size=${size}`);
+  await openScene(page, `&scenario=metropolis&size=${size}${PLAIN}`);
   await expect.poll(() => sceneStats(page).then((s) => s.buildings), { timeout: 150_000 }).toBeGreaterThan(0);
   await page.evaluate(() => window.__sim.setSpeed('Paused'));
   const stats = await waitForDrawn(page);
@@ -268,12 +362,12 @@ test.describe('@perf scene frame rate', () => {
   test.describe.configure({ timeout: 300_000 });
 
   /** Frames drawn over ten seconds of wall clock, and the draw calls of the last one. */
-  async function measure(page: Page): Promise<{ fps: number; drawCalls: number; buildings: number; props: number; backend: string }> {
+  async function measure(page: Page): Promise<{ fps: number; drawCalls: number; groundMeshes: number; buildings: number; props: number; post: readonly string[]; backend: string }> {
     const a = await sceneStats(page);
     const t0 = Date.now();
     await page.waitForTimeout(10_000);
     const b = await sceneStats(page);
-    return { fps: Math.round(((b.frames - a.frames) * 1000) / (Date.now() - t0)), drawCalls: b.drawCalls, buildings: b.buildings, props: b.props, backend: b.backend };
+    return { fps: Math.round(((b.frames - a.frames) * 1000) / (Date.now() - t0)), drawCalls: b.drawCalls, groundMeshes: b.chunks, buildings: b.buildings, props: b.props, post: b.post, backend: b.backend };
   }
 
   test('sceneFrameRateOnTheTestCityAndTheMetropolis', async ({ page }, testInfo) => {
@@ -304,5 +398,10 @@ test.describe('@perf scene frame rate', () => {
     const edited = await waitForDrawn(page);
     console.log(`scene setMap: ${JSON.stringify({ loadMs, editMs: edited.setMapMs, tile })}`);
     console.log(`scene fps: ${JSON.stringify({ city, metropolis })}`);
+    // The same fitted metropolis without the effects and shadows: the ground's share of the draw calls, as R2 measured it.
+    await openScene(page, `&scenario=metropolis${PLAIN}`);
+    await expect.poll(() => sceneStats(page).then((s) => s.buildings), { timeout: 240_000 }).toBeGreaterThan(0);
+    await waitForDrawn(page);
+    console.log(`scene fps plain: ${JSON.stringify({ metropolis: await measure(page) })}`);
   });
 });
