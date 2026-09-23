@@ -13,6 +13,7 @@
   display: flex;
   flex-direction: column;
   row-gap: var(--hud-space-8);
+  box-sizing: border-box;
   width: 260px;
   max-width: calc(100vw - 2 * var(--hud-safe-edge));
   padding: var(--hud-space-8);
@@ -26,11 +27,42 @@
   pointer-events: auto;
 }
 
-.datamap-title {
+/* The header toggles the panel: the caption, and the picked map's name so a collapsed panel still says what is painted. */
+.datamap-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  column-gap: var(--hud-space-8);
   margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.datamap-header:focus-visible {
+  outline: var(--hud-focus-ring);
+  outline-offset: var(--hud-focus-ring-offset);
+}
+
+.datamap-title {
   font-size: var(--hud-size-caption);
   font-weight: var(--hud-weight-regular);
   color: var(--hud-ink-muted);
+}
+
+.datamap-picked {
+  font-size: var(--hud-size-caption);
+  color: var(--hud-ink);
+}
+
+.datamap-body {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--hud-space-8);
 }
 
 .datamap-buttons,

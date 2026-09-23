@@ -70,6 +70,9 @@ export interface DataMapPanelProps {
   /** `null` hides the line: no data map, nothing to read. */
   readonly reading: DataMapReading | null;
   onSelect(overlay: PlayerOverlay): void;
+  /** Collapsed, the panel is its header alone and leaves the left column to the advisor; the map stays painted. */
+  readonly expanded: boolean;
+  onToggle(expanded: boolean): void;
 }
 
 export function cssColor([r, g, b, a]: Colour): string {
@@ -107,35 +110,50 @@ function Legend({ legend }: { legend: DataMapLegend }) {
   );
 }
 
-export function DataMapPanel({ overlay, legend, reading, onSelect }: DataMapPanelProps) {
+export function DataMapPanel({ overlay, legend, reading, onSelect, expanded, onToggle }: DataMapPanelProps) {
+  const picked = overlay === 'None' ? null : (PLAYER_OVERLAYS.find(([mode]) => mode === overlay)?.[1] ?? null);
   return (
     <div className="datamap-root" data-testid="datamap-root">
       <section className="datamap-panel" data-testid="datamap" aria-label="Карты данных">
-        <h2 className="datamap-title">Карты данных</h2>
-        <div className="datamap-buttons">
-          {OVERLAY_GROUPS.map((group) => (
-            <div key={group.name} className="datamap-group" role="group" aria-label={group.name}>
-              {group.overlays.map(([mode, label]) => (
-                <button
-                  key={mode}
-                  type="button"
-                  className={mode === overlay ? 'datamap-button is-active' : 'datamap-button'}
-                  data-testid={`overlay-${mode}`}
-                  aria-pressed={mode === overlay}
-                  onClick={() => onSelect(mode)}
-                >
-                  {label}
-                </button>
+        <button
+          type="button"
+          className="datamap-header"
+          data-testid="datamap-toggle"
+          aria-expanded={expanded}
+          aria-controls="datamap-body"
+          onClick={() => onToggle(!expanded)}
+        >
+          <span className="datamap-title">Карты данных</span>
+          {picked === null ? null : <span className="datamap-picked">{picked}</span>}
+        </button>
+        {expanded ? (
+          <div id="datamap-body" className="datamap-body">
+            <div className="datamap-buttons">
+              {OVERLAY_GROUPS.map((group) => (
+                <div key={group.name} className="datamap-group" role="group" aria-label={group.name}>
+                  {group.overlays.map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={mode === overlay ? 'datamap-button is-active' : 'datamap-button'}
+                      data-testid={`overlay-${mode}`}
+                      aria-pressed={mode === overlay}
+                      onClick={() => onSelect(mode)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
               ))}
             </div>
-          ))}
-        </div>
-        {legend === null ? null : <Legend legend={legend} />}
-        {reading === null ? null : (
-          <p className={reading.muted ? 'datamap-reading is-muted' : 'datamap-reading'} data-testid="datamap-reading" aria-live="polite">
-            {reading.text}
-          </p>
-        )}
+            {legend === null ? null : <Legend legend={legend} />}
+            {reading === null ? null : (
+              <p className={reading.muted ? 'datamap-reading is-muted' : 'datamap-reading'} data-testid="datamap-reading" aria-live="polite">
+                {reading.text}
+              </p>
+            )}
+          </div>
+        ) : null}
       </section>
     </div>
   );
