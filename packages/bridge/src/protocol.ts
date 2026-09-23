@@ -80,6 +80,7 @@ export interface ObjectiveView {
 
 export interface ScenarioProgressView {
   readonly id: string;
+  /** The title the menu lists it under. */
   readonly name: string;
   readonly objectives: readonly ObjectiveView[];
   readonly completed: number;

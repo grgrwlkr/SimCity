@@ -145,7 +145,8 @@ function scenarioView(w: World): ScenarioProgressView | null {
   if (s.activeId === null) return null;
   return {
     id: s.activeId,
-    name: s.activeName ?? s.activeId,
+    // The menu's title: the preset's own name is the English of the Rust catalog.
+    name: SCENARIOS.find((info) => info.name === s.activeId)?.title ?? s.activeName ?? s.activeId,
     objectives: s.objectives.map((o, i) => ({ kind: o.kind, target: o.target, current: objectiveValue(w.city, o), met: s.met[i] ?? false })),
     completed: s.objectivesCompleted,
     isCompleted: s.isCompleted,

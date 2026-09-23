@@ -42,7 +42,7 @@ describe('scenario list', () => {
     expect([snapshot.city.money, snapshot.city.day, snapshot.city.hour]).toEqual([1500, 1, 8]);
     expect(snapshot.scenario).toEqual({
       id: 'starter',
-      name: 'Starter Town',
+      name: 'Первый город',
       objectives: [
         { kind: 'PopulationAtLeast', target: 50, current: 0, met: false },
         { kind: 'HappinessAtLeast', target: Math.fround(0.6), current: snapshot.city.happiness, met: snapshot.city.happiness >= Math.fround(0.6) },
