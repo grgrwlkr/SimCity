@@ -12,6 +12,14 @@ async function openMenu(page: Page, query = ''): Promise<void> {
   await expect(page.getByTestId('hud-menu'), 'the start screen is mounted in the menu').toBeVisible();
 }
 
+/** Press a menu button: the app opens the choice on a fresh page, so wait for that page's `__sim`. */
+async function pick(page: Page, testId: string, url: RegExp): Promise<void> {
+  await page.getByTestId(testId).click();
+  await page.waitForURL(url);
+  await page.waitForFunction(() => typeof window.__sim !== 'undefined');
+  await page.evaluate(() => window.__sim.ready);
+}
+
 const appState = (page: Page) => page.evaluate(() => window.__sim.snapshot().then((s) => s.appState));
 const scenarioId = (page: Page) => page.evaluate(() => window.__sim.snapshot().then((s) => s.scenario?.id ?? null));
 
@@ -31,7 +39,7 @@ test('menuFirstStartupShowsTheStartScreenWithEveryScenarioAndNoDeveloperElement'
 
 test('uiShellPickingAScenarioStartsItWithItsGoalsOnScreen', async ({ page }) => {
   await openMenu(page);
-  await page.getByTestId('menu-scenario-starter').click();
+  await pick(page, 'menu-scenario-starter', /scenario=starter/);
   await expect.poll(() => appState(page)).toBe('InGame');
   await expect.poll(() => scenarioId(page)).toBe('starter');
   await expect(page.getByTestId('hud-menu')).toHaveCount(0);
@@ -42,7 +50,7 @@ test('uiShellPickingAScenarioStartsItWithItsGoalsOnScreen', async ({ page }) => 
 
 test('uiShellANewMapStartsTheSandboxWithoutAGoalsPanel', async ({ page }) => {
   await openMenu(page);
-  await page.getByTestId('menu-new-map').click();
+  await pick(page, 'menu-new-map', /scenario=sandbox&seed=\d+/);
   await expect.poll(() => appState(page)).toBe('InGame');
   await expect.poll(() => scenarioId(page)).toBe('sandbox');
   await expect(page.getByTestId('hud')).toBeVisible();
@@ -52,7 +60,7 @@ test('uiShellANewMapStartsTheSandboxWithoutAGoalsPanel', async ({ page }) => {
 test('uiShellTheDemoCityOpensFromTheMenu', async ({ page }) => {
   await openMenu(page);
   const before = await page.evaluate(() => window.__sim.snapshot().then((s) => s.mapEditVersion));
-  await page.getByTestId('menu-demo-city').click();
+  await pick(page, 'menu-demo-city', /demo=1/);
   await expect.poll(() => appState(page)).toBe('InGame');
   await expect.poll(() => page.evaluate(() => window.__sim.snapshot().then((s) => s.mapEditVersion))).toBeGreaterThan(before);
   await expect(page.getByTestId('hud')).toBeVisible();
