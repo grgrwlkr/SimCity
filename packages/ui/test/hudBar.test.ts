@@ -63,7 +63,7 @@ describe('HUD bar', () => {
     const html = bar(snapshot(), false);
     for (const id of ['hud', 'money', 'clock', 'population']) expect(count(html, `data-testid="${id}"`), id).toBe(1);
     // The port's ladder has six speeds, not Rust's pause and three (layout.md §2); the current one is pressed.
-    const buttons = [...html.matchAll(/<button[^>]*aria-pressed="(true|false)"[^>]*>([^<]+)<\/button>/g)].map((m) => [m[2], m[1]]);
+    const buttons = [...html.slice(html.indexOf('class="hud-speeds"')).split('</nav>')[0]!.matchAll(/<button[^>]*aria-pressed="(true|false)"[^>]*>([^<]+)<\/button>/g)].map((m) => [m[2], m[1]]);
     expect(buttons).toEqual([['Стоп', 'false'], ['×1', 'false'], ['×3', 'true'], ['×10', 'false'], ['×60', 'false'], ['×360', 'false']]);
   });
 
