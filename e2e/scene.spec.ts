@@ -122,6 +122,8 @@ const hex = (s: string) => Array.from({ length: s.length / 2 }, (_, i) => parseI
 const FIRE_STATION = 4;
 
 test('sceneDrawsTheTestCity', async ({ page }, testInfo) => {
+  // Two views and three frame reads, each queued behind SwiftShader frames of about a second at this machine's load.
+  test.setTimeout(480_000);
   // Noon: the roof colours read as the palette has them.
   await openScene(page, `&hour=12${PLAIN}`);
   await loadGrid(page, road.rawGrid);
