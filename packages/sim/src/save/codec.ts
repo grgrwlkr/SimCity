@@ -173,13 +173,38 @@ const isTagged = (node: object): node is TaggedNode => Object.hasOwn(node, '$');
 const isPlainTemplate = (t: unknown): t is Record<string, unknown> =>
   typeof t === 'object' && t !== null && !Array.isArray(t) && !ArrayBuffer.isView(t) && !(t instanceof Map) && !(t instanceof Set);
 
+/** What a value is, as far as a save can tell: a primitive type, a typed array, a collection or a saved class. */
+function kindOf(v: unknown): string {
+  if (v === null) return 'null';
+  if (typeof v !== 'object') return typeof v;
+  if (ArrayBuffer.isView(v)) return typedArrayName(v) ?? 'DataView';
+  if (Array.isArray(v)) return 'array';
+  if (v instanceof Map) return 'Map';
+  if (v instanceof Set) return 'Set';
+  const proto: unknown = Object.getPrototypeOf(v);
+  return proto === Object.prototype ? 'object' : `class ${CLASS_NAMES.get(proto as object) ?? '(unsaved)'}`;
+}
+
+/**
+ * A value must be of the kind the fresh world holds at its place. A fresh `null` (a graph not built yet, a sweep not
+ * started) takes anything: the running world fills those in.
+ */
+function checkKind(value: unknown, template: unknown, path: string): void {
+  if (template === null || template === undefined) return;
+  const want = kindOf(template);
+  const got = kindOf(value);
+  if (want !== got) throw new SaveError(`${path}: expected ${want}, found ${got}`);
+}
+
+/**
+ * Strict against a fresh world: an object with a counterpart there (the world, its resources and their fields) must
+ * have exactly its fields, each of its kind. Inside arrays, maps and sets nothing stands at the same place to hold a
+ * value against; zod has checked their structure.
+ */
 class Decoder {
   private readonly byId = new Map<number, unknown>();
 
-  /**
-   * `template` is the value at the same place in a fresh world: an object field the save lacks keeps the template's,
-   * as a field added after the save was written would.
-   */
+  /** `template` is the value at the same place in a fresh world of the save's options, `undefined` where none is. */
   node(node: SaveNode, template: unknown, path: string): unknown {
     if (node === null || typeof node !== 'object') return node;
     if (Array.isArray(node)) return this.array([], node, path);
@@ -216,6 +241,9 @@ class Decoder {
       case 'cls': {
         const cls = Object.hasOwn(SAVED_CLASSES, node.c) ? SAVED_CLASSES[node.c] : undefined;
         if (cls === undefined) throw new SaveError(`${path}: unknown class ${JSON.stringify(node.c)}`);
+        if (template !== null && template !== undefined && kindOf(template) !== `class ${node.c}`) {
+          throw new SaveError(`${path}: expected ${kindOf(template)}, found class ${node.c}`);
+        }
         const instance = this.keep(node.id, Object.create(cls.prototype) as Record<string, unknown>, path);
         return this.fields(instance, node.v, template, path);
       }
@@ -239,16 +267,26 @@ class Decoder {
   }
 
   private fields(out: Record<string, unknown>, fields: { readonly [key: string]: SaveNode }, template: unknown, path: string): Record<string, unknown> {
-    const plain = isPlainTemplate(template);
-    for (const key of Object.keys(fields)) out[key] = this.node(fields[key]!, plain ? template[key] : undefined, `${path}.${key}`);
-    if (plain) for (const key of Object.keys(template)) if (!Object.hasOwn(fields, key)) out[key] = template[key];
+    if (!isPlainTemplate(template)) {
+      for (const key of Object.keys(fields)) out[key] = this.node(fields[key]!, undefined, `${path}.${key}`);
+      return out;
+    }
+    for (const key of Object.keys(template)) if (!Object.hasOwn(fields, key)) throw new SaveError(`${path}.${key}: missing`);
+    for (const key of Object.keys(fields)) {
+      if (!Object.hasOwn(template, key)) throw new SaveError(`${path}.${key}: no such field in the world`);
+      const value = this.node(fields[key]!, template[key], `${path}.${key}`);
+      checkKind(value, template[key], `${path}.${key}`);
+      out[key] = value;
+    }
     return out;
   }
 }
 
-/** The value a save tree describes, with `template` filling what the save lacks. */
+/** The value a save tree describes, checked field by field against `template`, its counterpart in a fresh world. */
 export function decodeNode(node: SaveNode, template: unknown, path: string): unknown {
-  return new Decoder().node(node, template, path);
+  const value = new Decoder().node(node, template, path);
+  checkKind(value, template, path);
+  return value;
 }
 
 const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';

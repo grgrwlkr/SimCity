@@ -57,6 +57,45 @@ export function saveWorld(w: World): string {
   return JSON.stringify(file);
 }
 
+/** A step from one save version to the next: it takes a file of its version and returns one of a later version. */
+export type SaveMigration = (file: Record<string, unknown>) => Record<string, unknown>;
+
+/**
+ * The steps that bring an older save up to `SAVE_VERSION`, by the version each starts from. v1 is the first save of the
+ * TS game and Rust `.ron` saves are not read: nothing to migrate yet. The Rust saves' way with an added field (a
+ * `#[serde(default)]` value) is a step here, never a silent default in the loader.
+ */
+export const SAVE_MIGRATIONS: Readonly<Record<number, SaveMigration>> = {};
+
+function migrate(json: unknown, migrations: Readonly<Record<number, SaveMigration>>): unknown {
+  if (typeof json !== 'object' || json === null || Array.isArray(json)) return json;
+  let file = json as Record<string, unknown>;
+  while (typeof file.version === 'number' && file.version < SAVE_VERSION) {
+    const from = file.version;
+    const step = Object.hasOwn(migrations, from) ? migrations[from] : undefined;
+    if (step === undefined) throw new SaveError(`save rejected: version: ${from} is older than ${SAVE_VERSION} and no migration takes it further`);
+    file = step(file);
+    if (!(typeof file.version === 'number' && file.version > from)) throw new SaveError(`save rejected: version: the migration from ${from} did not raise it`);
+  }
+  return file;
+}
+
+/** A zod path as the decoder spells places: the `v` of a tagged node left out, array and entry indices in brackets. */
+function readablePath(json: unknown, path: readonly PropertyKey[]): string {
+  let out = '';
+  let at: unknown = json;
+  for (const key of path) {
+    const node = typeof at === 'object' && at !== null ? (at as Record<PropertyKey, unknown>) : undefined;
+    if (key === 'v' && node !== undefined && !Array.isArray(node) && Object.hasOwn(node, '$')) {
+      at = node.v;
+      continue;
+    }
+    out += typeof key === 'number' ? `[${key}]` : out === '' ? String(key) : `.${String(key)}`;
+    at = node?.[key];
+  }
+  return out === '' ? 'file' : out;
+}
+
 /** The deepest issue zod found: of a union, the branch that got furthest, which is where the file went wrong. */
 function deepest(issue: z.core.$ZodIssue, prefix: readonly PropertyKey[]): { path: PropertyKey[]; message: string } {
   const path = [...prefix, ...issue.path];
@@ -73,18 +112,18 @@ function deepest(issue: z.core.$ZodIssue, prefix: readonly PropertyKey[]): { pat
 }
 
 /** A save file's text, checked; a `SaveError` naming the first place it is wrong otherwise. */
-export function parseSave(text: string): SaveFile {
+export function parseSave(text: string, migrations: Readonly<Record<number, SaveMigration>> = SAVE_MIGRATIONS): SaveFile {
   let json: unknown;
   try {
     json = JSON.parse(text);
   } catch (error) {
-    throw new SaveError(`save rejected: not JSON (${error instanceof Error ? error.message : String(error)})`);
+    throw new SaveError(`save rejected: not JSON (${error instanceof Error ? error.message : String(error)})`, { cause: error });
   }
+  json = migrate(json, migrations);
   const parsed = saveFile.safeParse(json);
   if (!parsed.success) {
-    const issue = parsed.error.issues[0]!;
-    const { path, message } = deepest(issue, []);
-    throw new SaveError(`save rejected: ${path.map(String).join('.') || 'file'}: ${message}`);
+    const { path, message } = deepest(parsed.error.issues[0]!, []);
+    throw new SaveError(`save rejected: ${readablePath(json, path)}: ${message}`);
   }
   return parsed.data;
 }
@@ -103,6 +142,21 @@ export function worldFromSave(file: SaveFile): World {
   } catch (error) {
     throw error instanceof SaveError ? new SaveError(`save rejected: ${error.message}`) : error;
   }
-  if (typeof world !== 'object' || world === null || Array.isArray(world)) throw new SaveError('save rejected: world: not an object');
-  return world as World;
+  const w = world as World;
+  const { options } = file;
+  const differs = (name: string, saved: unknown, world: unknown) => {
+    throw new SaveError(`save rejected: options.${name}: ${String(saved)}, but the world saved has ${String(world)}`);
+  };
+  if (w.mapConfig.width !== options.mapWidth) differs('mapWidth', options.mapWidth, w.mapConfig.width);
+  if (w.mapConfig.height !== options.mapHeight) differs('mapHeight', options.mapHeight, w.mapConfig.height);
+  if (w.gameHourNs !== options.gameHourNs) differs('gameHourNs', options.gameHourNs, w.gameHourNs);
+  if (w.microTraffic !== options.microTraffic) differs('microTraffic', options.microTraffic, w.microTraffic);
+  if (w.grid.width !== w.mapConfig.width || w.grid.height !== w.mapConfig.height) {
+    throw new SaveError(`save rejected: world.grid: ${w.grid.width}×${w.grid.height} on a map of ${w.mapConfig.width}×${w.mapConfig.height}`);
+  }
+  const tiles = w.grid.width * w.grid.height;
+  for (const layer of w.grid.layers()) {
+    if (layer.length !== tiles) throw new SaveError(`save rejected: world.grid: a layer of ${layer.length} tiles on a map of ${tiles}`);
+  }
+  return w;
 }
