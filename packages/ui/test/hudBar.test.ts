@@ -32,7 +32,7 @@ function snapshot(city: Partial<WorldSnapshot['city']> = {}, rest: Partial<World
   } as WorldSnapshot;
 }
 
-const bar = (s: WorldSnapshot, debug: boolean, fps: number | null = 60) => renderToStaticMarkup(createElement(HudBar, { snapshot: s, fps, debug, actions, budgetOpen: false, onBudgetToggle: () => {} }));
+const bar = (s: WorldSnapshot, debug: boolean, fps: number | null = 60) => renderToStaticMarkup(createElement(HudBar, { snapshot: s, fps, debug, actions, budgetOpen: false, onBudgetToggle: () => {}, advisorOpen: false, onAdvisorToggle: () => {} }));
 const text = (html: string) => html.replace(/<[^>]+>/g, ' ');
 const count = (html: string, needle: string) => html.split(needle).length - 1;
 const DEV_IDS = ['fps', 'tick', 'sim-tick', 'citizens', 'driving', 'emergencies'];

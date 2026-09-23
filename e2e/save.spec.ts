@@ -61,6 +61,43 @@ test('theBytesOfASaveComeOutAndGoBackIn', async ({ page }) => {
   expect(run.loaded).toEqual(run.at);
 });
 
+test('aLoadedWorldIsDrawnWithItsOwnMapEvenAtTheSameEditVersion', async ({ page }) => {
+  // Decision p1-save (c): the page re-reads the map after a load. The edit version alone cannot tell: two builds of one
+  // scenario on fresh worlds reach the same version, so the screen would keep the other size's map.
+  const chunks = async () => (await page.evaluate(() => window.__sim.renderStats())).chunks;
+  const drawn = (version: number) => page.evaluate(async () => (await window.__sim.renderStats()).mapEditVersion).then((v) => v === version);
+  const big = await page.evaluate(async () => {
+    const sim = window.__sim;
+    await sim.setSpeed('Paused');
+    await sim.setState('InGame');
+    await sim.scenario('livingCity', 160);
+    await sim.step(1);
+    return (await sim.snapshot()).mapEditVersion;
+  });
+  await expect.poll(() => drawn(big), 'the 160-tile map is on screen').toBe(true);
+  const bigChunks = await chunks();
+  expect(bigChunks, '16-tile chunks of a 160-tile map').toBe(100);
+
+  const small = await page.evaluate(async () => {
+    const sim = window.__sim;
+    await sim.scenario('livingCity', 128);
+    await sim.step(1);
+    const bytes = await sim.exportSave();
+    await sim.scenario('livingCity', 160);
+    await sim.step(1);
+    return { bytes: Array.from(new Uint8Array(bytes)), version: (await sim.snapshot()).mapEditVersion };
+  });
+  const loaded = await page.evaluate(async (bytes) => {
+    const reply = await window.__sim.importSave(new Uint8Array(bytes).buffer);
+    return { reply, version: (await window.__sim.snapshot()).mapEditVersion };
+  }, small.bytes);
+  expect(loaded.version, 'the case this guards: the loaded world has the edit version on screen').toBe(big);
+  await expect.poll(chunks, 'the loaded 128-tile map replaces the 160-tile one').toBe(64);
+  const camera = await page.evaluate(() => window.__sim.camera());
+  const fitted = await page.evaluate(() => window.__sim.fitMap());
+  expect(camera, 'a map of another size is fitted on screen').toEqual(fitted);
+});
+
 test('aBrokenOrEmptySlotIsRefusedAndTheWorldStays', async ({ page }) => {
   const run = await page.evaluate(async () => {
     const sim = window.__sim;

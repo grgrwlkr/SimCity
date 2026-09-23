@@ -234,6 +234,8 @@ export interface FingerprintReply {
   readonly fingerprint: string;
 }
 
+export type { DataMapOverlay, DataMapReply, DataMapRequest } from './requests/dataMap';
+
 export type Request =
   /** `GameCommand` in its serde-JSON form, validated in the worker. */
   | { readonly t: 'cmd'; readonly cmd: unknown }
@@ -278,6 +280,8 @@ export type Request =
   | { readonly t: 'save' }
   /** A save file's bytes in place of the world; a broken file is an error and the world stays as it was. */
   | { readonly t: 'load'; readonly bytes: ArrayBuffer }
+  /** One data map's numbers per tile (U4): only reads the world, the renderer paints them. */
+  | import('./requests/dataMap').DataMapRequest
   | SlotRequest;
 
 /** Save slots the worker keeps itself (OPFS): the save never crosses to the main thread. Answered asynchronously. */
@@ -330,6 +334,7 @@ export interface ReplyByRequest {
   readonly save: ArrayBuffer;
   /** The loaded world's tick and fingerprint: those of the world the save was taken of. */
   readonly load: FingerprintReply;
+  readonly dataMap: import('./requests/dataMap').DataMapReply;
   readonly saveSlot: SaveSlotInfo;
   readonly loadSlot: FingerprintReply;
   /** By slot name. */

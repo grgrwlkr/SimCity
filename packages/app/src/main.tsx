@@ -1,7 +1,7 @@
-import { RenderReader, SimClient, scenarioByQuery, type WorldSnapshot } from '@simcity/bridge';
-import { DebugRenderer, SceneRenderer, installViewControls, type Renderer } from '@simcity/render';
+import { RenderReader, SimClient, scenarioByQuery, type MapLayersReply, type WorldSnapshot } from '@simcity/bridge';
+import { DebugRenderer, SceneRenderer, dataMapInputs, installViewControls, legendFor, panelReading, type DataMapLayer, type Renderer } from '@simcity/render';
 import { SIGNALIZED_CROSS, crossBoxSize, defaultTrafficConfig, tileToWorld, toRustCommand, type MapConfig } from '@simcity/sim';
-import { Hud, focusViewOn, useSimStore, useToolStore, type HudActions } from '@simcity/ui';
+import { Hud, focusViewOn, useSimStore, useToolStore, type DataMapActions, type HudActions, type PlayerOverlay } from '@simcity/ui';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { installGamepad } from './gamepad';
@@ -49,6 +49,10 @@ const renderer = client.ready.then(async (sab) => {
   return r;
 });
 const api = installSimApi(client, debug, renderer, () => mapConfig);
+/** The renderer once it exists, and the map it drew last: the data map panel reads them synchronously. */
+let shownRenderer: Renderer | null = null;
+let shownMap: MapLayersReply | null = null;
+void renderer.then((r) => (shownRenderer = r));
 installGamepad({
   renderer,
   api,
@@ -62,16 +66,23 @@ installGamepad({
 // (debug only) once the lanelets are built for the current graph version. One sync at a time.
 let shownMapEditVersion: number | null = null;
 let shownOverlayGraphVersion: number | null = null;
+/** A save was loaded: the next map read is another world's, fitted on screen if its size differs. */
+let mapLoaded = false;
 let sync = Promise.resolve();
 function syncRender(snapshot: WorldSnapshot): void {
   sync = sync.then(async () => {
     const r = await renderer;
     if (snapshot.mapEditVersion !== shownMapEditVersion) {
       const map = await client.request({ t: 'mapLayers' });
-      const first = mapConfig === null;
+      const shown = mapConfig;
+      const first = shown === null;
+      const resized = shown !== null && (shown.width !== map.width || shown.height !== map.height);
       mapConfig = { width: map.width, height: map.height, tileSize: map.tileSize };
       r.setMap(map);
-      if (first) {
+      shownMap = map;
+      const fitLoaded = mapLoaded && resized;
+      mapLoaded = false;
+      if (first || fitLoaded) {
         // A page opened in a hidden pane starts with a 0×0 canvas: fit the map once it has a size.
         const cfg = mapConfig;
         void r.whenSized().then(() => r.view.fitMap(cfg));
@@ -107,12 +118,66 @@ function syncRender(snapshot: WorldSnapshot): void {
   });
 }
 
+// The data map on screen (U4): the overlay picked in the panel and the worker's numbers for it, asked for again while
+// it is open. Requests are numbered: a reply overtaken by a newer pick or refresh is dropped, so a slow reply for the
+// previous map never paints over the current one.
+/** How often an open data map asks for fresh numbers: land value moves a chunk a tick, a second is enough to read. */
+const DATA_MAP_REFRESH_MS = 1000;
+let dataMapOverlay: PlayerOverlay = 'None';
+let dataMapLayer: DataMapLayer | null = null;
+let dataMapAsked = 0;
+let dataMapInFlight = false;
+let dataMapAskedAtMs = 0;
+function refreshDataMap(): void {
+  const overlay = dataMapOverlay;
+  const asked = ++dataMapAsked;
+  dataMapAskedAtMs = performance.now();
+  dataMapInFlight = overlay !== 'None';
+  void renderer
+    .then(async (r) => {
+      const layer = overlay === 'None' ? null : await client.request({ t: 'dataMap', overlay });
+      if (asked !== dataMapAsked) return;
+      dataMapLayer = layer;
+      r.setDataMap(overlay, layer);
+    })
+    // A failed request leaves the map as it was and is asked again on the next refresh.
+    .catch((error: unknown) => console.warn('data map request failed', error))
+    .finally(() => {
+      if (asked === dataMapAsked) dataMapInFlight = false;
+    });
+}
+const dataMap: DataMapActions = {
+  select: (overlay) => {
+    dataMapOverlay = overlay;
+    refreshDataMap();
+  },
+  legend: legendFor,
+  read: () =>
+    panelReading(dataMapOverlay, shownRenderer?.hovered ?? null, shownMap === null ? null : dataMapInputs(shownMap, dataMapLayer)),
+};
+
+// A loaded world may carry the edit version of the map on screen (P1, decision (c)): its map and size are read again
+// whatever the version says, and an open data map asks for the loaded world's numbers.
+function reloadMap<T>(reply: T): T {
+  mapLoaded = true;
+  shownMapEditVersion = null;
+  shownOverlayGraphVersion = null;
+  void api.snapshot().then(syncRender);
+  if (dataMapOverlay !== 'None') refreshDataMap();
+  return reply;
+}
+const loadSlot = api.load;
+api.load = (slot) => loadSlot(slot).then(reloadMap);
+const importSave = api.importSave;
+api.importSave = (bytes) => importSave(bytes).then(reloadMap);
+
 const { setSnapshot, setFps } = useSimStore.getState();
 // The HUD frame rate: twice a second is enough to read and costs no re-render per frame.
 void renderer.then((r) => setInterval(() => setFps(r.stats().fps), 500));
 client.onFrame((snapshot) => {
   setSnapshot(snapshot);
   syncRender(snapshot);
+  if (dataMapOverlay !== 'None' && !dataMapInFlight && performance.now() - dataMapAskedAtMs >= DATA_MAP_REFRESH_MS) refreshDataMap();
 });
 void api.ready
   .then(async () => {
@@ -151,6 +216,6 @@ if (root === null) throw new Error('#root is missing from index.html');
 
 createRoot(root).render(
   <StrictMode>
-    <Hud actions={actions} />
+    <Hud actions={actions} dataMap={dataMap} />
   </StrictMode>,
 );

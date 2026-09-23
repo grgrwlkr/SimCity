@@ -75,6 +75,7 @@ import {
   type RenderExtras,
 } from './renderBuffer';
 import { debugOverlayOf, renderLayersOf } from './renderLayers';
+import { dataMapLayer } from './requests/dataMap';
 import { SAMPLE_CARS, sampleCutoff, sampled } from './sample';
 import { createOpfsSaveFiles, type SaveFiles } from './saveFiles';
 import { SCENARIOS, type ScenarioName } from './scenarios';
@@ -294,6 +295,8 @@ export class SimHost {
       case 'resetTickStats':
         this.tickSampleCount = 0;
         return null;
+      case 'dataMap':
+        return dataMapLayer(this.world, req.overlay);
       case 'save':
         return UTF8_ENCODER.encode(saveWorld(this.world)).buffer;
       case 'load':

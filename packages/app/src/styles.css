@@ -3,6 +3,8 @@
 @import '../../ui/src/hud.css';
 @import '../../ui/src/budget.css';
 @import '../../ui/src/toasts.css';
+@import '../../ui/src/advisorPanel.css';
+@import '../../ui/src/dataMap.css';
 
 :root {
   color-scheme: light dark;
