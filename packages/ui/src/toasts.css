@@ -1,0 +1,112 @@
+/* The toast feed: docs/design/hud/layout.md §6, states.md. Values are tokens of hud-tokens.css. */
+
+/* Layout only: the lines take clicks, the column between them is map (toasts.rs `Pickable::IGNORE`). */
+.hud-toasts {
+  position: fixed;
+  top: 72px; /* layout.md §1: under the 56 px top band */
+  right: var(--hud-safe-edge);
+  z-index: var(--hud-z-toast);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  row-gap: var(--hud-space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  pointer-events: none;
+}
+
+.hud-toasts > li {
+  display: flex;
+  max-width: 320px;
+}
+
+.hud-toast {
+  --hud-toast-edge: var(--hud-accent);
+  display: flex;
+  align-items: center;
+  gap: var(--hud-space-8);
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  padding: var(--hud-space-6) var(--hud-space-12);
+  background: var(--hud-glass-strong);
+  border: 1px solid var(--hud-glass-border);
+  border-left: 3px solid var(--hud-toast-edge);
+  border-radius: var(--hud-radius-control);
+  box-shadow: var(--hud-shadow-tooltip);
+  color: var(--hud-accent-ink);
+  font-family: var(--hud-font);
+  font-size: var(--hud-size-body);
+  line-height: var(--hud-leading-tight);
+  text-align: left;
+  cursor: pointer;
+  pointer-events: auto;
+  animation: hud-toast-in var(--hud-motion-panel) var(--hud-ease);
+}
+
+.hud-toast[data-kind='Warning'] {
+  --hud-toast-edge: var(--hud-warning);
+}
+
+.hud-toast[data-kind='Error'] {
+  --hud-toast-edge: var(--hud-negative);
+}
+
+.hud-toast[data-kind='Achievement'] {
+  --hud-toast-edge: var(--hud-positive);
+}
+
+/* A line with no place takes no click and keeps the cursor. */
+.hud-toast:disabled {
+  color: var(--hud-ink);
+  cursor: default;
+}
+
+.hud-toast:focus-visible {
+  outline: var(--hud-focus-ring);
+  outline-offset: var(--hud-focus-ring-offset);
+  box-shadow: var(--hud-focus-halo);
+}
+
+.hud-toast-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: var(--hud-toast-edge);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.hud-toast-icon .solid {
+  fill: var(--hud-toast-edge);
+  stroke: none;
+}
+
+.hud-toast-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.hud-toast-count {
+  flex: none;
+  padding: 0 var(--hud-space-6);
+  border-radius: var(--hud-radius-pill);
+  background: var(--hud-accent-fill);
+  color: var(--hud-ink);
+  font-size: var(--hud-size-caption);
+  font-variant-numeric: var(--hud-numeric);
+  white-space: nowrap;
+}
+
+/* Comes in from 8 px to the right; under reduced motion --hud-motion-panel is 0 and it just appears. */
+@keyframes hud-toast-in {
+  from {
+    transform: translateX(8px);
+    opacity: 0;
+  }
+}
