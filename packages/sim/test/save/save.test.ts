@@ -43,9 +43,8 @@ function exercisedWorld(): World {
 
 describe('save', () => {
   it('everySectionOfTheFingerprintComesBackFromTheSave', () => {
-    const w = exercisedWorld();
-    const back = loadWorld(saveWorld(w));
-    expect(fingerprint(w), 'the copy is the world the save was taken of').toBe(fingerprint(exercised!.world));
+    const back = exercisedWorld();
+    const { world: w, text } = exercised!;
     const after = fingerprintSections(back);
     // The sections come from fingerprint.ts: a new one is checked here without touching this test.
     for (const [i, section] of fingerprintSections(w).entries()) {
@@ -53,6 +52,7 @@ describe('save', () => {
       expect(after[i]!.digest, `section ${section.name} differs after a save and a load`).toBe(section.digest);
     }
     expect(fingerprint(back)).toBe(fingerprint(w));
+    expect(saveWorld(back) === text, 'a loaded world saves to the file it came from').toBe(true);
   }, SIZED_IN_TICKS);
 
   it('aSectionTheSaveDoesNotCarryFailsTheCheck', () => {
