@@ -1,0 +1,211 @@
+/* The budget screen: docs/design/hud/layout.md §7, states.md. Every value is a token of hud-tokens.css. */
+
+/* Layout only: it centres the panel; the scrim under it takes the clicks off the map (a modal). */
+.budget-root {
+  position: fixed;
+  inset: 0;
+  z-index: var(--hud-z-modal);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 72px;
+  pointer-events: none;
+}
+
+.budget-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--hud-z-scrim);
+  background: var(--hud-scrim);
+  pointer-events: auto;
+}
+
+.budget-panel {
+  position: relative;
+  z-index: var(--hud-z-modal);
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--hud-space-12);
+  width: 560px;
+  max-width: calc(100vw - 2 * var(--hud-safe-edge));
+  max-height: calc(100vh - 72px - var(--hud-safe-edge));
+  overflow-y: auto;
+  padding: var(--hud-space-16);
+  box-shadow: var(--hud-shadow-panel);
+  font-size: var(--hud-size-body);
+  font-variant-numeric: var(--hud-numeric);
+  pointer-events: auto;
+}
+
+.budget-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--hud-space-8);
+}
+
+.budget-header h2 {
+  margin: 0;
+  margin-right: auto;
+  font-size: var(--hud-size-title);
+  font-weight: var(--hud-weight-strong);
+}
+
+.budget-month {
+  font-size: var(--hud-size-caption);
+  color: var(--hud-ink-muted);
+}
+
+.budget-treasury {
+  white-space: nowrap;
+}
+
+.budget-treasury[data-negative='true'] {
+  color: var(--hud-negative);
+}
+
+.budget-panel h3 {
+  margin: 0;
+  font-size: var(--hud-size-caption);
+  font-weight: var(--hud-weight-regular);
+  color: var(--hud-ink-muted);
+}
+
+/* Columns 180 / 120 / 120, gap 8 (`BudgetUi::cell`, budget_panel.rs:284-300). */
+.budget-lines {
+  border-collapse: separate;
+  border-spacing: var(--hud-space-8) 0;
+  margin: 0 calc(-1 * var(--hud-space-8));
+  table-layout: fixed;
+}
+
+.budget-lines th,
+.budget-lines td {
+  padding: var(--hud-space-2) 0;
+  font-weight: var(--hud-weight-regular);
+  text-align: left;
+}
+
+.budget-lines th[scope='row'] {
+  width: 180px;
+}
+
+.budget-lines thead th {
+  width: 120px;
+  font-size: var(--hud-size-caption);
+  color: var(--hud-ink-muted);
+  text-align: right;
+}
+
+.budget-amount {
+  width: 120px;
+  text-align: right !important;
+  white-space: nowrap;
+}
+
+.budget-amount[data-negative='true'] {
+  color: var(--hud-negative);
+}
+
+.budget-amount[data-empty='true'] {
+  color: var(--hud-ink-muted);
+}
+
+.budget-lines tfoot th,
+.budget-lines tfoot td {
+  border-top: 1px solid var(--hud-glass-border);
+  padding-top: var(--hud-space-6);
+  font-weight: var(--hud-weight-strong);
+}
+
+.budget-grid {
+  border-collapse: collapse;
+}
+
+.budget-grid th {
+  padding-right: var(--hud-space-8);
+  font-weight: var(--hud-weight-regular);
+  text-align: left;
+}
+
+.budget-grid thead th {
+  font-size: var(--hud-size-caption);
+  color: var(--hud-ink-muted);
+}
+
+.budget-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--hud-space-4);
+  margin-right: var(--hud-space-8);
+}
+
+/* `−` and `+`: neutral fill, a square of the minimum target. */
+.budget-panel .budget-stepper button {
+  width: var(--hud-target-min);
+  padding: 0;
+  background: var(--hud-glass-highlight);
+}
+
+/* The value does not jump from 9 % to 10 %. */
+.budget-value {
+  width: 48px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.budget-panel button[aria-disabled='true'] {
+  color: var(--hud-ink-disabled);
+  cursor: not-allowed;
+}
+
+.budget-panel button[aria-disabled='true']:hover,
+.budget-panel button[aria-disabled='true']:active {
+  background: var(--hud-glass-highlight);
+  transform: none;
+}
+
+.budget-offers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--hud-space-8);
+}
+
+.budget-offers button {
+  background: var(--hud-glass-highlight);
+}
+
+.budget-refused {
+  margin: 0;
+  color: var(--hud-warning);
+}
+
+.budget-note {
+  margin: 0;
+  font-size: var(--hud-size-caption);
+  color: var(--hud-ink-muted);
+}
+
+.budget-loans {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-wrap: break-word;
+}
+
+/* Narrow window (states.md): the last month goes first, the panel narrows to 420 px. */
+@media (max-width: 1099px) {
+  .budget-panel {
+    width: 420px;
+  }
+
+  .budget-last,
+  .budget-lines [data-testid='budget-last'] {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .budget-panel button:active {
+    transform: none;
+  }
+}
