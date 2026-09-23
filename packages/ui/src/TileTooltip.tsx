@@ -19,7 +19,8 @@ export interface TilePreviewView {
 
 /** The worker's answer for one tool at one tile: `TilePreviewReply` of the bridge. */
 export interface TileReplyView {
-  readonly tool: ToolMode;
+  /** The tool it was asked for, in the shape of `ToolMode` (the render package's also allows a `None` road). */
+  readonly tool: { readonly kind: string; readonly road?: string };
   readonly tile: { readonly x: number; readonly y: number };
   readonly preview: TilePreviewView | null;
   readonly diagnosis: readonly [zone: string, reason: string] | null;
@@ -101,8 +102,10 @@ export interface TileTooltipProps {
 // would stop the very click it explains. Inline as well as in the stylesheet, so no rule order can undo it.
 const THROUGH: CSSProperties = { pointerEvents: 'none' };
 
+const replyFor = (reply: TileReplyView, tool: ToolMode) => (reply.tool.kind === 'Road' ? `Road:${reply.tool.road}` : reply.tool.kind) === toolKey(tool);
+
 export function TileTooltip({ tool, hovered, pointer, overHud, reply, viewport }: TileTooltipProps) {
-  if (hovered === null || pointer === null || overHud || reply === null || toolKey(reply.tool) !== toolKey(tool)) return null;
+  if (hovered === null || pointer === null || overHud || reply === null || !replyFor(reply, tool)) return null;
   const lines = tooltipContent(reply.preview, reply.diagnosis);
   if (lines === null) return null;
   const place = tooltipPlacement(pointer, viewport);
