@@ -15,7 +15,7 @@ import {
   toHex64,
   type World,
 } from '@simcity/sim';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { SIZED_IN_TICKS } from '../../sim/test/scenarios/sizedInTicks';
 import { loadTestCity } from '../../sim/test/testCity';
 import { RENDER_CAPACITY, SimHost } from '../src/host';
@@ -558,12 +558,19 @@ describe('SimHost', { timeout: SIZED_IN_TICKS }, () => {
     host.handle({ t: 'setState', state: 'InGame' });
     host.handle({ t: 'scenario', name: 'city' });
     host.handle({ t: 'setSpeed', speed: 'X10' });
-    // Fifteen seconds at ×10: up to fifteen hundred ticks. How many the tick budget lets through depends on how busy the
-    // machine is (983 under a parallel suite), so the check is only that frames run several ticks.
-    for (let frame = 0; frame < 150; frame++) host.update(frame * 100);
+    // The host times its ticks on `performance.now`, and the driver cuts a frame to what that cost affords: on a busy
+    // machine 670 of these ticks ran instead of 1 490. A stopped clock makes every tick free, so the frames carry exactly
+    // what their game time owes; the budget itself is the driver's to test.
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(0);
+    try {
+      // Fifteen seconds at ×10: ten ticks in each of the 149 frames after the first.
+      for (let frame = 0; frame < 150; frame++) host.update(frame * 100);
+    } finally {
+      clock.mockRestore();
+    }
 
     const { tick, traffic } = host.handle({ t: 'snapshot' });
-    expect(tick, 'several ticks a frame').toBeGreaterThan(2 * 150);
+    expect(tick, 'ten ticks a frame').toBe(149 * 10);
     expect(traffic.tripsDone!, 'commutes finish').toBeGreaterThan(0);
     expect(traffic.travelling, 'everyone on the road is driving or waiting to leave').toBe(traffic.driving + traffic.backlog);
   }, SIZED_IN_TICKS);
