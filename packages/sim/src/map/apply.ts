@@ -375,6 +375,17 @@ export function applyGameCommandsToGrid(w: World, commands: readonly GameCommand
       case 'PlaceTrafficLight':
       case 'RemoveTrafficLight':
         break;
+      // The budget screen's levers (`on_budget_action`, budget_panel.rs): the models clamp, and a refused loan
+      // leaves everything as it was.
+      case 'AdjustTaxRate':
+        w.taxRates.set(cmd.zone, cmd.wealth, w.taxRates.get(cmd.zone, cmd.wealth) + cmd.delta);
+        break;
+      case 'AdjustServiceFunding':
+        w.serviceFunding.set(cmd.service, w.serviceFunding.get(cmd.service) + cmd.delta);
+        break;
+      case 'TakeLoan':
+        w.loans.take(cmd.principal, w.budget, w.city);
+        break;
     }
   }
 
