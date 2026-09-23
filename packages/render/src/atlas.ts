@@ -1,6 +1,24 @@
 // One procedural texture atlas for every surface in the city: port of crates/simcity_sim/src/game/atlas.rs.
 // The atlas carries detail, not colour: every cell is a grey pattern around white that multiplies the material's
 // colour, so zone colours, data maps and decay tints keep working and the texture only breaks up the flat fill.
+//
+// Textures (the note of the deleted assets/README.md, b156c3e). There are no texture files, deliberately: the atlas is
+// generated here by `buildAtlasImage`. Nothing is downloaded, imported or vendored, so there is no third-party licence
+// to honour — the patterns are our own code, under the repository's licence.
+//
+// A cell is selected two ways, and that is not duplication. A material that wears one cell carries it in its
+// `MaterialSpec.uv`, so a shared mesh stays shared and the mesh count does not grow per surface. The ground and the
+// building bodies bake their cells into the vertices (`materialVertexMapped`), because one mesh wears several patterns
+// under one material — tiles of different classes in a ground chunk, walls and roof on a building — which a single
+// per-material transform cannot express; building faces are split into sub-quads so a cell repeats instead of
+// stretching (density: `RENDER_CONFIG.atlas`).
+//
+// How far the pattern shows through an overlay is the overlay's business, not the atlas's: a mode that paints the
+// ground near-black hides it. Two do. `Water` dims everything that is not water, which is most of the map. `Height`
+// paints `height / 255`, and the test city's terrain (the `height` layer of `packages/sim/src/scenarios/testCity.json`,
+// frozen from the Rust generator: rolling hills plus a rise near the lake, capped at 50) came out 0..29, mean 10.86,
+// when the note was written — so the ramp never passes about 0.11 and the ground reads nearly black. The relief is
+// there; the range simply does not reach the top of the ramp.
 import type { TileKind } from '@simcity/sim';
 
 /** Cells per side. */
