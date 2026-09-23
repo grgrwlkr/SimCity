@@ -3,6 +3,7 @@
 // longer, no route runs against a lane, recovery removes no car, nothing is left in the trip backlog, and
 // the number of driving cars does not grow in the second half.
 import { describe, expect, it } from 'vitest';
+import { SIZED_IN_TICKS } from '../scenarios/sizedInTicks';
 import type { TilePos } from '../../src/commands';
 import { step } from '../../src/app';
 import { rangeU32, stdRngSeedFromU64 } from '../../src/rng';
@@ -14,7 +15,7 @@ const TICKS = 6000;
 const CITIZENS = 300;
 const WINDOW = 600;
 
-describe('stage 2c gate', () => {
+describe('stage 2c gate', { timeout: SIZED_IN_TICKS }, () => {
   it('testCityCommuteDrivesWithoutJams', () => {
     // Without zones: from stage 3b the city would grow and its citizens would drive too.
     const w = loadTestCity({ zones: false });
@@ -98,5 +99,5 @@ describe('stage 2c gate', () => {
     expect(mean(drivingPerWindow.slice(half)), `driving cars per window: ${drivingPerWindow.join(' ')}`).toBeLessThanOrEqual(
       mean(drivingPerWindow.slice(0, half)) * 1.1,
     );
-  }, 120_000);
+  }, SIZED_IN_TICKS);
 });

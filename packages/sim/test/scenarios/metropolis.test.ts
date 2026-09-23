@@ -2,6 +2,7 @@
 // centre and fields at its edge, opened built and lived in. Built once on a map of 256 tiles; the city of a million is
 // measured by `bun run bench`.
 import { beforeAll, describe, expect, it } from 'vitest';
+import { SIZED_IN_TICKS } from './sizedInTicks';
 import { frame, step } from '../../src/app';
 import { isOperational, type Building } from '../../src/buildings/building';
 import type { BuildingKind, TilePos } from '../../src/commands';
@@ -23,14 +24,14 @@ beforeAll(() => {
   new MetropolisScenario(w);
   // The lights are placed by the first frame's commands; the graphs are built on the tick after.
   step(w, 2);
-}, 120_000);
+}, SIZED_IN_TICKS);
 
 const ofKind = (kind: BuildingKind) => w.buildings.all().filter((b) => b.kind === kind);
 const centreDistance = (b: Building) => Math.max(Math.abs(b.anchor.x + b.width / 2 - SIZE / 2), Math.abs(b.anchor.y + b.length / 2 - SIZE / 2));
 const mean = (values: readonly number[]) => values.reduce((sum, v) => sum + v, 0) / values.length;
 const ARTERIAL = new Set([2, 3]); // FourLane, SixLane by `ROAD_KINDS` index
 
-describe('metropolis', () => {
+describe('metropolis', { timeout: SIZED_IN_TICKS }, () => {
   it('theMetropolisDrivesOnTheRightAndOnlyArterialsLeaveTheMap', () => {
     const offenders = rightHandOffenders(w.grid);
     expect(offenders.slice(0, 6), `${offenders.length} lane tiles break right-hand traffic`).toEqual([]);

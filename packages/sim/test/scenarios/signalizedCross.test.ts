@@ -1,5 +1,6 @@
 // The signalized cross scenarios that drive the live view (`?scenario=signalized`, `?scenario=signalized4`).
 import { describe, expect, it } from 'vitest';
+import { SIZED_IN_TICKS } from './sizedInTicks';
 import { frame, step } from '../../src/app';
 import { dirLeft, dirRight, isLeftmostForDir, isRightmostForDir } from '../../src/map/roads';
 import { SignalizedCrossScenario, buildSignalizedCross, signalizedCrossRoutes } from '../../src/scenarios/signalizedCross';
@@ -16,7 +17,7 @@ function inGameWorld() {
   return w;
 }
 
-describe('signalized cross scenario', () => {
+describe('signalized cross scenario', { timeout: SIZED_IN_TICKS }, () => {
   it('crossDrivesOnTheRight', () => {
     const w = createWorld();
     buildSignalizedCross(w.grid);

@@ -1,6 +1,7 @@
 // The generated city behind `?scenario=city`: arterials with lit crossings, local streets between them,
 // a commercial centre, residential districts, an industrial district, a park; commuters drive across it.
 import { describe, expect, it } from 'vitest';
+import { SIZED_IN_TICKS } from './sizedInTicks';
 import { frame, step } from '../../src/app';
 import type { TilePos } from '../../src/commands';
 import { buildCity, type CityOptions } from '../../src/scenarios/cityGen';
@@ -30,7 +31,7 @@ const tilesOf = (w: World, zone: string) => {
 const meanDistanceToCentre = (w: World, tiles: readonly TilePos[]) =>
   tiles.reduce((sum, t) => sum + Math.hypot(t.x - w.grid.width / 2, t.y - w.grid.height / 2), 0) / tiles.length;
 
-describe('generated city', () => {
+describe('generated city', { timeout: SIZED_IN_TICKS }, () => {
   it('cityDrivesOnTheRight', () => {
     const { w } = city();
     const offenders = rightHandOffenders(w.grid);
@@ -129,5 +130,5 @@ describe('generated city', () => {
     expect(driving.filter((slot) => v.stoppedSecs[slot]! >= 180).length, 'no car frozen for three minutes').toBe(0);
     const wrongWay = driving.filter((slot) => !routeDirectionOk(w.pathPool.remainingFrom(v.pathHandle[slot]!, v.pathCursor[slot]!) ?? [], w.grid));
     expect(wrongWay.length, 'no route against a lane').toBe(0);
-  }, 60_000);
+  }, SIZED_IN_TICKS);
 });
