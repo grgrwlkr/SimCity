@@ -23,7 +23,7 @@ bun tools/metropolis-day.ts [size] [hourSeconds] [hours]   # сутки часо
 
 ### Правила порта
 
-- **Rust в дереве нет.** Фикстуры `packages/sim/test/fixtures/*.json`, данные тестового города `packages/sim/src/scenarios/road-routes.json` и `e2e/fixtures/debug-layout.json` заморожены; их генераторы `tools/rand-vectors` (Rust) и `tools/rust-layout.ts` (против живой Rust-игры) остались только в истории и не восстанавливаются.
+- **Rust в дереве нет.** Фикстуры `packages/sim/test/fixtures/*.json`, данные тестового города `packages/sim/src/scenarios/testCity.json` (маршрутные пины — `packages/sim/test/fixtures/road-routes.json`) и `e2e/fixtures/debug-layout.json` заморожены; их генераторы `tools/rand-vectors` (Rust) и `tools/rust-layout.ts` (против живой Rust-игры) остались только в истории и не восстанавливаются.
 - **bun и проверки только в Chromium** — канон `~/.claude/CLAUDE.md` («Dev tooling», «When the task is code»). Местное: десктоп-оболочка — Electron, тот же Chromium, поэтому отдельного прогона в Safari нет и у собранного приложения.
 - WASM не предлагается до профиля с недостачей и не пишется без «да» пользователя на конкретный участок.
 - В `packages/sim` ESLint запрещает `Math.random`, `Date`, `performance`, `window`, таймеры, float-функции `Math.*` (`sin`, `sqrt`, `pow`…), импорт `three`/`react`/`zustand`, `TODO`/`FIXME`, `unimplemented` и `any`: состояние сходится между движками JS.
