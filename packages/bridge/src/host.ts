@@ -152,6 +152,8 @@ export class SimHost {
     switch (req.t) {
       case 'cmd':
         this.world.commands.push(parseRustCommand(req.cmd));
+        // The publish key does not see money, rates, funding or loans: the frame that applies the command reports it.
+        this.lastReported = null;
         return null;
       case 'step':
         for (let i = 0; i < req.ticks; i++) {
