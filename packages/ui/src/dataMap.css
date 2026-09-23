@@ -1,0 +1,137 @@
+/* The data map panel: docs/design/hud/layout.md §5, data-map-legend.md. Every value is a token of hud-tokens.css. */
+
+/* Layout only: the panel takes clicks, the space around it is map. */
+.datamap-root {
+  position: fixed;
+  top: 72px;
+  left: var(--hud-space-12);
+  z-index: var(--hud-z-panel);
+  pointer-events: none;
+}
+
+.datamap-panel {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--hud-space-8);
+  width: 260px;
+  max-width: calc(100vw - 2 * var(--hud-safe-edge));
+  padding: var(--hud-space-8);
+  border: 1px solid var(--hud-glass-border);
+  border-radius: var(--hud-radius-panel);
+  background: var(--hud-glass-strong);
+  backdrop-filter: blur(var(--hud-glass-blur));
+  box-shadow: var(--hud-shadow-panel);
+  color: var(--hud-ink);
+  font-family: var(--hud-font);
+  pointer-events: auto;
+}
+
+.datamap-title {
+  margin: 0;
+  font-size: var(--hud-size-caption);
+  font-weight: var(--hud-weight-regular);
+  color: var(--hud-ink-muted);
+}
+
+.datamap-buttons,
+.datamap-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--hud-space-4);
+}
+
+.datamap-button {
+  padding: var(--hud-space-4) var(--hud-space-8);
+  border: 1px solid transparent;
+  border-radius: var(--hud-radius-control);
+  background: none;
+  color: var(--hud-ink);
+  font: inherit;
+  font-size: var(--hud-size-caption);
+  cursor: pointer;
+  transition: background var(--hud-motion-fast) var(--hud-ease);
+}
+
+.datamap-button:hover {
+  background: var(--hud-hover);
+}
+
+.datamap-button:active {
+  background: var(--hud-press);
+}
+
+.datamap-button:focus-visible {
+  outline: var(--hud-focus-ring);
+  outline-offset: var(--hud-focus-ring-offset);
+}
+
+.datamap-button.is-active {
+  background: var(--hud-accent-fill);
+  border-color: var(--hud-accent);
+}
+
+/* Form 1: a 10 px bar of nine stops, the two words of its ends under it. */
+.datamap-gradient {
+  display: flex;
+  height: 10px;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.datamap-stop {
+  flex: 1 1 0;
+}
+
+.datamap-ends {
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--hud-space-4);
+  font-size: var(--hud-size-caption);
+  color: var(--hud-ink-muted);
+}
+
+/* Form 2: a 12 px square on an opaque bed with a light ring, so a dark swatch stays visible over any map. */
+.datamap-swatches {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--hud-space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.datamap-swatch-row {
+  display: flex;
+  align-items: center;
+  column-gap: var(--hud-space-6);
+  font-size: var(--hud-size-body);
+  color: var(--hud-ink);
+}
+
+.datamap-swatch-bed {
+  flex: none;
+  display: block;
+  width: 12px;
+  height: 12px;
+  border-radius: var(--hud-radius-swatch);
+  background: var(--hud-glass-solid);
+}
+
+.datamap-swatch {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.45);
+}
+
+.datamap-reading {
+  margin: 0;
+  font-size: var(--hud-size-body);
+  font-variant-numeric: tabular-nums;
+  color: var(--hud-ink);
+}
+
+.datamap-reading.is-muted {
+  color: var(--hud-ink-muted);
+}

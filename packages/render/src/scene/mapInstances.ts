@@ -20,6 +20,16 @@ const GRID_PROFILE: BuildingProfile = { density: 'Medium', class: 'Middle' };
  */
 export const SCENE_MAP_SEED = 0n;
 
+const WHITE = [1, 1, 1] as const;
+
+/** Every tile of the chunks `changed`, row by row inside each chunk. */
+export function* tilesOfChunks(map: MapLayersReply, changed: readonly number[]): Generator<number> {
+  for (const index of changed) {
+    const a = chunkArea(map, index);
+    for (let y = a.y0; y < a.y1; y++) for (let x = a.x0; x < a.x1; x++) yield y * map.width + x;
+  }
+}
+
 /** Tiles of chunk `index`. */
 function chunkArea(map: MapLayersReply, index: number): TileArea {
   const { cols } = chunkGrid(map.width, map.height);
@@ -51,6 +61,8 @@ export class MapInstances {
   private readonly propBatches = new Map<PropMeshKind, InstanceBatch>();
   /** The kinds of prop each tile owns instances of. */
   private readonly propsOf = new Map<number, PropMeshKind[]>();
+  /** Lit white, no vertex colour: under a data map a body is its instance colour and the scene's light, nothing else. */
+  private tintMaterial: THREE.MeshLambertNodeMaterial | null = null;
 
   constructor(
     private readonly prims: RenderPrimitives,
@@ -77,6 +89,23 @@ export class MapInstances {
 
   get props(): number {
     return [...this.propBatches.values()].reduce((n, b) => n + b.count, 0);
+  }
+
+  /**
+   * Tints the building bodies with the colour `of` their tile gives (linear rgb; `null` leaves a body white), or back to
+   * plain with `null`: under a data map the rooftops carry the map, since they cover most of a built city's tiles.
+   * `tiles` narrows the re-tint to those tiles' buildings (an edit, a refresh); without it every body is re-tinted.
+   */
+  tintBuildings(of: ((tile: number) => readonly [number, number, number] | null) | null, tiles?: Iterable<number>): void {
+    // White bodies while tinted: a roof's own colour times the map's would shade the map, a blue roof under yellow black.
+    // The shared white material still reads the geometry's vertex colours, so the tint has its own without them.
+    const white = of === null ? null : (this.tintMaterial ??= new THREE.MeshLambertNodeMaterial());
+    for (const batch of this.buildingBatches()) batch.useMaterial(white);
+    if (of === null || tiles === undefined) {
+      for (const batch of this.buildingBatches()) batch.tint(of);
+      return;
+    }
+    for (const tile of tiles) this.buildingBatchOf.get(tile)?.tintOwner(tile, of(tile) ?? WHITE);
   }
 
   buildingBatches(): InstanceBatch[] {

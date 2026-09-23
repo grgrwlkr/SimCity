@@ -2,9 +2,14 @@
 // chunks whose tiles changed.
 import type { MapLayersReply } from '@simcity/bridge';
 import { tileToWorld } from '@simcity/sim';
-import { CLASS_COLORS, tileClass } from './palette';
+import type { Rgb } from './buildingLook';
+import type { TilePaint } from './dataMap';
+import { CLASS_COLORS, tileClass, type TileClass } from './palette';
 
 export const CHUNK_TILES = 16;
+
+/** `CLASS_COLORS` as 0..1, made once: a repaint of the metropolis visits 640 000 tiles. */
+const PLAIN = Object.fromEntries(Object.entries(CLASS_COLORS).map(([k, [r, g, b]]) => [k, [r / 255, g / 255, b / 255]])) as unknown as Record<TileClass, Rgb>;
 
 export function chunkGrid(width: number, height: number): { cols: number; rows: number } {
   return { cols: Math.ceil(width / CHUNK_TILES), rows: Math.ceil(height / CHUNK_TILES) };
@@ -24,7 +29,8 @@ function chunkTiles(map: MapLayersReply, cx: number, cy: number) {
   return { x0, y0, x1: Math.min(x0 + CHUNK_TILES, map.width), y1: Math.min(y0 + CHUNK_TILES, map.height) };
 }
 
-export function buildChunkGeometry(map: MapLayersReply, cx: number, cy: number): ChunkGeometry {
+/** A data map's paint over the chunk (`dataMapPaint`), or `null` for the plain map. */
+export function buildChunkGeometry(map: MapLayersReply, cx: number, cy: number, paint: TilePaint | null = null): ChunkGeometry {
   const { x0, y0, x1, y1 } = chunkTiles(map, cx, cy);
   const tiles = Math.max(x1 - x0, 0) * Math.max(y1 - y0, 0);
   const positions = new Float32Array(tiles * 18);
@@ -35,7 +41,6 @@ export function buildChunkGeometry(map: MapLayersReply, cx: number, cy: number):
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       const c = tileToWorld(cfg, { x, y });
-      const [r, g, b] = CLASS_COLORS[tileClass(map, y * map.width + x)];
       const corners = [
         [c.x - half, c.y - half],
         [c.x + half, c.y - half],
@@ -47,14 +52,30 @@ export function buildChunkGeometry(map: MapLayersReply, cx: number, cy: number):
       for (const [px, py] of corners) {
         positions[v] = px;
         positions[v + 1] = py;
-        colors[v] = r / 255;
-        colors[v + 1] = g / 255;
-        colors[v + 2] = b / 255;
         v += 3;
       }
     }
   }
+  chunkColors(map, cx, cy, colors, paint);
   return { positions, colors, tiles };
+}
+
+/** Writes the chunk's vertex colours into `colors` in place: the plain map's, or a data map's over it. */
+export function chunkColors(map: MapLayersReply, cx: number, cy: number, colors: Float32Array, paint: TilePaint | null): void {
+  const { x0, y0, x1, y1 } = chunkTiles(map, cx, cy);
+  let v = 0;
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const idx = y * map.width + x;
+      const plain = PLAIN[tileClass(map, idx)];
+      const [r, g, b] = paint === null ? plain : paint(idx, plain);
+      for (let k = 0; k < 6; k++, v += 3) {
+        colors[v] = r;
+        colors[v + 1] = g;
+        colors[v + 2] = b;
+      }
+    }
+  }
 }
 
 const COMPARED_LAYERS = ['water', 'roadKind', 'roadDir', 'zone', 'building'] as const;

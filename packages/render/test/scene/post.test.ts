@@ -8,7 +8,7 @@ import GTAONode from 'three/addons/tsl/display/GTAONode.js';
 import Lut3DNode from 'three/addons/tsl/display/Lut3DNode.js';
 import { RENDER_CONFIG, type RenderConfig } from '../../src/renderConfig';
 import { resolveRenderSettings } from '../../src/renderSettings';
-import { GRADE_LUT_SIZE, configWithout, effectsOffFromQuery, gradeLutData, gradeRgb, postGraph } from '../../src/scene/post';
+import { GRADE_LUT_SIZE, configWithout, effectsOffFromQuery, gradeLutData, gradeRgb, postGraph, vignetteGateFor } from '../../src/scene/post';
 
 type NodeLike = { getChildren(): Iterable<NodeLike> };
 
@@ -100,6 +100,17 @@ describe('colour grade', () => {
       const out = gradeRgb(c, id);
       out.forEach((v, i) => expect(v).toBeCloseTo(c[i]!, 6));
     }
+  });
+
+  it('theVignetteHasAGateADataMapClosesWithoutRebuildingTheGraph', () => {
+    const { g } = graphOf(RENDER_CONFIG);
+    expect(g.vignetteGate, 'the shipped look draws a vignette').not.toBeNull();
+    expect(g.vignetteGate!.value).toBe(1);
+    expect(nodesOf(g.output as unknown as NodeLike).has(g.vignetteGate as unknown as NodeLike), 'the gate is in the frame').toBe(true);
+    expect(vignetteGateFor(RENDER_CONFIG.vignette, 'None')).toBe(1);
+    expect(vignetteGateFor(RENDER_CONFIG.vignette, 'LandValue'), 'a data map needs its corners read like its centre').toBe(0);
+    expect(vignetteGateFor(RENDER_CONFIG.vignette, 'Path')).toBe(1);
+    expect(graphOf(configWithout(RENDER_CONFIG, new Set(['vignette']))).g.vignetteGate, 'no vignette, no gate').toBeNull();
   });
 
   it('contrastSpreadsAroundMidGreyAndSaturationAwayFromGrey', () => {

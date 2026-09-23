@@ -6,6 +6,8 @@ import { SlotTable } from './slots';
 export class InstanceBatch {
   private readonly slots = new SlotTable();
   private mesh: THREE.InstancedMesh;
+  /** A material drawn in place of the batch's own (a data map's white), `null` for its own. */
+  private override: THREE.Material | null = null;
 
   constructor(
     private readonly group: THREE.Group,
@@ -28,12 +30,14 @@ export class InstanceBatch {
   }
 
   private make(capacity: number): THREE.InstancedMesh {
-    const mesh = new THREE.InstancedMesh(this.geometry, this.material, capacity);
+    const mesh = new THREE.InstancedMesh(this.geometry, this.override ?? this.material, capacity);
     mesh.name = this.name;
     mesh.count = 0;
     mesh.visible = false;
     // A batch spans the whole map: culling it as a whole saves nothing and its bounds would need a pass per edit.
     mesh.frustumCulled = false;
+    // Created with the mesh, white: a material compiled before the first colour would ignore instance colours.
+    mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 3).fill(1), 3);
     this.group.add(mesh);
     return mesh;
   }
@@ -43,16 +47,56 @@ export class InstanceBatch {
     if (slot >= this.mesh.instanceMatrix.count) {
       const grown = this.make(this.mesh.instanceMatrix.count * 2);
       (grown.instanceMatrix.array as Float32Array).set(this.mesh.instanceMatrix.array as Float32Array);
+      (grown.instanceColor!.array as Float32Array).set(this.mesh.instanceColor!.array as Float32Array);
       this.group.remove(this.mesh);
       this.mesh.dispose();
       this.mesh = grown;
     }
     this.mesh.setMatrixAt(slot, matrix);
+    (this.mesh.instanceColor!.array as Float32Array).fill(1, slot * 3, slot * 3 + 3);
   }
 
   remove(owner: number): void {
     const m = this.mesh.instanceMatrix.array as Float32Array;
-    for (const [from, to] of this.slots.remove(owner)) m.copyWithin(to * 16, from * 16, from * 16 + 16);
+    const c = this.mesh.instanceColor!.array as Float32Array;
+    for (const [from, to] of this.slots.remove(owner)) {
+      m.copyWithin(to * 16, from * 16, from * 16 + 16);
+      c.copyWithin(to * 3, from * 3, from * 3 + 3);
+    }
+  }
+
+  /**
+   * Multiplies every instance by the colour `of` its owner gives (linear rgb), white where it gives `null`; `null` for
+   * `of` gives every instance its own colour back. A data map tints the buildings standing on its tiles with this.
+   */
+  tint(of: ((owner: number) => readonly [number, number, number] | null) | null): void {
+    const c = this.mesh.instanceColor!.array as Float32Array;
+    for (let slot = 0; slot < this.slots.count; slot++) {
+      const rgb = of === null ? null : of(this.slots.ownerOf(slot)!);
+      c.set(rgb ?? [1, 1, 1], slot * 3);
+    }
+    this.mesh.instanceColor!.needsUpdate = true;
+  }
+
+  /** Multiplies every instance of `owner` by `rgb` (linear): one tile's re-tint, uploaded with the next frame. */
+  tintOwner(owner: number, rgb: readonly [number, number, number]): void {
+    const c = this.mesh.instanceColor!.array as Float32Array;
+    for (const slot of this.slots.slotsOf(owner)) c.set(rgb, slot * 3);
+    this.mesh.instanceColor!.needsUpdate = true;
+  }
+
+  /** Draws every instance with `material` instead of the batch's own; `null` gives the batch its own back. */
+  useMaterial(material: THREE.Material | null): void {
+    this.override = material;
+    this.mesh.material = material ?? this.material;
+  }
+
+  /** The colour the first instance of `owner` is multiplied by; `null` when it has none. */
+  tintOf(owner: number): [number, number, number] | null {
+    const slot = this.slots.slotsOf(owner)[0];
+    if (slot === undefined) return null;
+    const c = this.mesh.instanceColor!.array as Float32Array;
+    return [c[slot * 3]!, c[slot * 3 + 1]!, c[slot * 3 + 2]!];
   }
 
   /** Every instance as `owner|matrix`, matrix elements rounded to 1e-3: what the GPU buffer holds, slot by slot. */
@@ -66,6 +110,7 @@ export class InstanceBatch {
     this.mesh.count = this.slots.count;
     this.mesh.visible = this.slots.count > 0;
     this.mesh.instanceMatrix.needsUpdate = true;
+    this.mesh.instanceColor!.needsUpdate = true;
   }
 
   /** Leaves the scene; the geometry and the material are shared and stay. */

@@ -21,7 +21,9 @@ import { EmergencyMarkers, type EmergencyView } from '../emergencyMarkers';
 import { FpsMeter } from '../fpsMeter';
 import { interpolateHeading, interpolatePositions, pairVehicles } from '../interpolate';
 import { lampSignal } from '../lamps';
+import { areaChanged, changedTiles, dataMapInputs, dataMapPaint, type DataMapLayer, type TilePaint } from '../dataMap';
 import { changedChunks, chunkGrid, groupTiles, groupsOfChunks } from '../mapChunks';
+import type { OverlayMode } from '../overlays';
 import { LAMP_COLORS, VEHICLE_COLORS } from '../palette';
 import { PlaybackClock } from '../playback';
 import { RENDER_CONFIG } from '../renderConfig';
@@ -29,10 +31,10 @@ import { resolveRenderSettings } from '../renderSettings';
 import { RenderPrimitives, type CompositeMesh } from '../renderPrimitives';
 import { drawnScale, vehicleScale } from '../vehicleLook';
 import { SceneMaterials, createAtlasTexture } from './atlasNode';
-import { MapInstances } from './mapInstances';
-import { buildGroundArea } from './ground';
+import { MapInstances, tilesOfChunks } from './mapInstances';
+import { buildGroundArea, groundColors } from './ground';
 import { SceneLighting, hourFromQuery } from './lighting';
-import { configWithout, effectsOffFromQuery, exposureOf, postGraph, type PostPassName } from './post';
+import { configWithout, effectsOffFromQuery, exposureOf, postGraph, vignetteGateFor, type PostPassName, type VignetteGate } from './post';
 import type { Renderer } from './renderer';
 
 /** Sim frames kept for playback: the display draws a gap or two behind the newest one. */
@@ -43,6 +45,12 @@ const VIEW_REPORT_MS = 100;
 const MARKER_Z = 48;
 const MARKER_TILES = 0.6;
 export { SCENE_MAP_SEED } from './mapInstances';
+const WHITE = [1, 1, 1] as const;
+const linear = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+/** The tiles marked 1 in `changed`. */
+function* markedTiles(changed: Uint8Array): Generator<number> {
+  for (let i = 0; i < changed.length; i++) if (changed[i] === 1) yield i;
+}
 
 export interface SceneStats extends RenderStats {
   readonly renderer: 'scene';
@@ -60,6 +68,10 @@ export interface SceneStats extends RenderStats {
   readonly post: readonly PostPassName[];
   /** The hour the light was last drawn at (the world's clock, or `?hour=` when pinned). */
   readonly hour: number;
+  /** The sun's three.js intensity in the last frame: noon's while a data map is open. */
+  readonly sunIntensity: number;
+  /** Whether the last frame darkened its corners: never under a data map. */
+  readonly vignette: boolean;
 }
 
 /** A turn arrow along +x, `size` world units long, centred on the origin (the debug renderer's). */
@@ -85,7 +97,11 @@ export class SceneRenderer implements Renderer {
   private readonly config = configWithout(RENDER_CONFIG, this.off);
   private readonly settings = resolveRenderSettings(this.config);
   private readonly lighting = new SceneLighting(this.settings);
-  private readonly pipelines = new Map<THREE.Camera, { pipeline: THREE.RenderPipeline; passes: readonly PostPassName[] }>();
+  private readonly pipelines = new Map<THREE.Camera, { pipeline: THREE.RenderPipeline; passes: readonly PostPassName[]; vignetteGate: VignetteGate | null }>();
+  private vignetteDrawn = false;
+  /** The data map on screen and the numbers it is painted from; `None` draws the plain ground. */
+  private dataMap: { readonly overlay: OverlayMode; readonly layer: DataMapLayer | null } = { overlay: 'None', layer: null };
+  private dataMapMs = 0;
   private postPasses: readonly PostPassName[] = [];
   /** Noon until the world's clock arrives; `?hour=` overrides the clock while it is in the address. */
   private worldHour = 12;
@@ -230,7 +246,7 @@ export class SceneRenderer implements Renderer {
     for (const index of groups) {
       const old = this.chunkMeshes.get(index);
       if (old !== undefined) this.removeChunk(old);
-      const g = buildGroundArea(map, groupTiles(map.width, map.height, index));
+      const g = buildGroundArea(map, groupTiles(map.width, map.height, index), this.paintFor(map));
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.BufferAttribute(g.positions, 3));
       geometry.setAttribute('normal', new THREE.BufferAttribute(g.normals, 3));
@@ -245,6 +261,9 @@ export class SceneRenderer implements Renderer {
     }
     this.chunksRebuiltLast = groups.length;
     this.instances.apply(map, changed, resized);
+    // New buildings start plain: under an open data map the edited chunks' buildings take its colour like the rest.
+    const paint = this.paintFor(map);
+    if (changed.length > 0 && paint !== null) this.tintBuildings(paint, tilesOfChunks(map, changed));
     for (const group of [this.instances.buildingGroup, this.instances.propGroup]) {
       for (const child of group.children) child.castShadow = child.receiveShadow = true;
     }
@@ -254,8 +273,44 @@ export class SceneRenderer implements Renderer {
     if (this.cars === null) this.createVehicleMeshes(map.tileSize);
   }
 
-  /** Load colouring of links is the data-map stage's (U4): the scene draws none yet. */
+  /** Load colouring of links is the debug renderer's; the scene's traffic map paints the roads instead. */
   setLinks(): void {}
+
+  /**
+   * Paints the ground with a data map (or back to plain with `None`), and lights the frame for reading it: noon and no
+   * vignette. Only the colour attributes are rewritten; the same overlay at the same version paints nothing.
+   */
+  setDataMap(overlay: OverlayMode, layer: DataMapLayer | null): void {
+    const prev = this.dataMap;
+    const same = overlay === prev.overlay && layer?.version !== undefined && layer.version === prev.layer?.version;
+    this.dataMap = { overlay, layer };
+    if (same || this.map === null) return;
+    const started = performance.now();
+    const map = this.map;
+    // Only the groups whose numbers moved, unless the overlay itself changed.
+    const changed = overlay === prev.overlay ? changedTiles(prev.layer, layer, map.width * map.height) : null;
+    const paint = this.paintFor(map);
+    for (const [index, mesh] of this.chunkMeshes) {
+      const area = groupTiles(map.width, map.height, index);
+      if (!areaChanged(changed, map.width, area)) continue;
+      const colors = mesh.geometry.getAttribute('color') as THREE.BufferAttribute;
+      groundColors(map, area, colors.array as Float32Array, paint);
+      colors.needsUpdate = true;
+    }
+    // Only the buildings on tiles whose numbers moved; the whole map on a new overlay, and plain again once it closes.
+    if (paint !== null) this.tintBuildings(paint, changed === null ? undefined : markedTiles(changed));
+    else if (prev.overlay !== 'None') this.instances.tintBuildings(null);
+    this.dataMapMs = performance.now() - started;
+  }
+
+  /** Rooftops take their tile's map colour laid over white, in linear light; `tiles` narrows it to those tiles. */
+  private tintBuildings(paint: TilePaint, tiles?: Iterable<number>): void {
+    this.instances.tintBuildings((tile) => paint(tile, WHITE).map(linear) as [number, number, number], tiles);
+  }
+
+  private paintFor(map: MapLayersReply): TilePaint | null {
+    return dataMapPaint(this.dataMap.overlay, dataMapInputs(map, this.dataMap.layer));
+  }
 
   /** Grid, boxes and lanelets are the debug renderer's (`?debug=1`). */
   setOverlay(): void {}
@@ -336,6 +391,10 @@ export class SceneRenderer implements Renderer {
       setMapMs: Math.round(this.setMapMs),
       post: this.postPasses,
       hour: this.lighting.litHour,
+      sunIntensity: this.lighting.sun.intensity,
+      vignette: this.vignetteDrawn,
+      dataMap: this.dataMap.overlay,
+      dataMapMs: Math.round(this.dataMapMs * 10) / 10,
     };
   }
 
@@ -431,7 +490,8 @@ export class SceneRenderer implements Renderer {
     this.updateMarkers(nowMs);
     this.reportView(this.view.bounds(), nowMs);
     const camera = this.frameCamera();
-    this.lighting.apply(this.pinnedHour ?? this.worldHour);
+    // A data map is read at noon and without the vignette: night and dark corners would change the colours it reads by.
+    this.lighting.apply(this.pinnedHour ?? this.worldHour, this.dataMap.overlay);
     this.lighting.useCamera(camera);
     this.renderer.info.reset();
     this.pipelineFor(camera).render();
@@ -452,10 +512,12 @@ export class SceneRenderer implements Renderer {
       const pipeline = new THREE.RenderPipeline(this.renderer);
       pipeline.outputColorTransform = false;
       pipeline.outputNode = graph.output;
-      entry = { pipeline, passes: graph.passes };
+      entry = { pipeline, passes: graph.passes, vignetteGate: graph.vignetteGate };
       this.pipelines.set(camera, entry);
     }
     this.postPasses = entry.passes;
+    if (entry.vignetteGate !== null) entry.vignetteGate.value = vignetteGateFor(this.config.vignette, this.dataMap.overlay);
+    this.vignetteDrawn = entry.vignetteGate?.value === 1;
     return entry.pipeline;
   }
 

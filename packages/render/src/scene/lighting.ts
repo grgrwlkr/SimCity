@@ -114,6 +114,11 @@ export class SceneLighting {
     return this.hour;
   }
 
+  /** The overlay the light was last set for: a data map is lit at noon. */
+  get overlayShown(): OverlayMode {
+    return this.overlay;
+  }
+
   /** Lights and glow materials at `hour`; nothing is written when neither the hour nor the overlay moved. */
   apply(hour: number, overlay: OverlayMode = this.overlay): void {
     if (hour === this.hour && overlay === this.overlay) return;
