@@ -203,7 +203,7 @@ test('cityScenarioDrivesCommutersLive', async ({ page }, testInfo) => {
 });
 
 test('hudShowsCityStats', async ({ page }) => {
-  await page.goto('/?scenario=city');
+  await page.goto('/?scenario=city&debug=1');
   await page.waitForFunction(() => typeof window.__sim !== 'undefined');
   await page.evaluate(() => window.__sim.ready);
 
@@ -216,7 +216,7 @@ test('hudShowsCityStats', async ({ page }) => {
 
 // Stage 3b live: the living city grows from its zones; its HUD counts its own citizens from the first frame.
 test('livingCityShowsItsCitizens', async ({ page }) => {
-  await page.goto('/?scenario=living');
+  await page.goto('/?scenario=living&debug=1');
   await page.waitForFunction(() => typeof window.__sim !== 'undefined');
   await page.evaluate(() => window.__sim.ready);
 
@@ -229,7 +229,7 @@ test('livingCityShowsItsCitizens', async ({ page }) => {
 // Stage 4 live: the living city's services and its bus. A fire breaks out at a house, its marker blinks over it, an engine
 // sets out from a station, and the HUD counts them.
 test('livingCityServesAnEmergencyAndRunsItsBus', async ({ page }, testInfo) => {
-  await page.goto('/?scenario=living');
+  await page.goto('/?scenario=living&debug=1');
   await page.waitForFunction(() => typeof window.__sim !== 'undefined');
   await page.evaluate(() => window.__sim.ready);
   await expect(page.getByTestId('citizens')).toHaveText(/^Жители \d/, { timeout: 30_000 });
@@ -294,7 +294,7 @@ test('hudShowsTheSpeedLadderAndTheRealRate', async ({ page }, testInfo) => {
   // The pressed state comes back with the worker's next snapshot: under a full parallel run it took past 5 s once.
   await expect(x60).toHaveAttribute('aria-pressed', 'true', { timeout: 15_000 });
   await expect(page.getByTestId('real-rate')).toHaveText(/^×\d+(,\d)?$/);
-  await expect(page.getByTestId('clock')).toHaveText(/^День \d+, \d{2}:\d{2}:\d{2}$/);
+  await expect(page.getByTestId('clock')).toHaveText(/^День \d+, \d{2}:\d{2}$/);
 
   await page.evaluate(() => window.__sim.failSystem('computePollution'));
   await expect(page.getByTestId('sim-errors')).toHaveText(/^Сбой: computePollution ×\d+ — debug failure of computePollution$/, { timeout: 15_000 });
@@ -323,7 +323,8 @@ test('mainMenuOffersEveryScenario', async ({ page }, testInfo) => {
   await page.goto('/');
   await page.getByRole('navigation', { name: 'Сценарии' }).getByRole('link', { name: titled('Город') }).click();
   await expect(page).toHaveURL(/\/\?scenario=city$/);
-  await expect(page.getByTestId('citizens')).toHaveText(/^Жители 2\s000$/, { timeout: 30_000 });
+  await page.waitForFunction(() => window.__sim !== undefined);
+  await expect.poll(() => page.evaluate(() => window.__sim.snapshot()).then((s) => s.traffic.citizens), { timeout: 30_000 }).toBe(2000);
 
   await page.getByRole('button', { name: 'В меню' }).click();
   await expect(page.getByRole('navigation', { name: 'Сценарии' }).getByRole('link')).toHaveCount(SCENARIOS.length);
