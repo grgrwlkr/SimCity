@@ -8,8 +8,9 @@
 
 - `bun run desktop:dev` — `tools/desktop-dev.ts`: `electron:install`, сборка main и preload, Vite на `PORT` (5174 по умолчанию), Electron над ним. С выходом Electron обёртка гасит Vite.
 - `bun run desktop:build` — `electron:install`, `bun build` для `src/main.ts` (ESM) и `src/preload.ts` (CJS) в `packages/desktop/out`, `vite build packages/app` в `out/renderer`, `electron-builder --mac --arm64`. Результат: `packages/desktop/release/mac-arm64/SimCity.app`.
-- `bun run desktop:e2e` — `packages/desktop/e2e/shell.spec.ts` на собранном `.app` через Playwright `_electron.launch` с `SIMCITY_TEST_WINDOW=1`.
-- `bun run desktop:build:obfuscated` — то же, что `desktop:build`, с `packages/desktop/vite.obfuscated.config.ts` (опционально, на Electron не перемерялся).
+- `bun run desktop:e2e` — `packages/desktop/e2e/package.spec.ts` (иконка и фьюзы релизного `.app`) и `shell.spec.ts` (Playwright `_electron.launch` на клоне того же `.app`, см. «Иконка и фьюзы»), всё с `SIMCITY_TEST_WINDOW=1`.
+- `bun run desktop:build:obfuscated` — то же, что `desktop:build`, с `packages/desktop/vite.obfuscated.config.ts`. Перемер на Electron — в «Иконка и фьюзы».
+- `bun run --cwd packages/desktop build:icon` — `build/icon.svg` → `build/icon.icns` (`scripts/build-icon.ts`).
 
 ## Решения
 
@@ -21,7 +22,7 @@
 - **Запуск без окна** (`SIMCITY_TEST_WINDOW=1`, требование пользователя: никаких окон поверх его окон и никакого фокуса). `app.dock.hide()`, `show: false`, `webPreferences.offscreen.useSharedTexture: true`, `backgroundThrottling: false`, `setFrameRate(60)`. Каждый кадр `paint` считается в `simcityPaintCount`, и его shared texture сразу освобождается.
 - **Бинарник Electron.** bun не запускает `install.js` пакета `electron`: ни `bun install`, ни `bun install --force`, ни `trustedDependencies` не вернули удалённый `dist` (замер). Скрипт `electron:install` зовёт его явно, повторный запуск ничего не делает.
 - **asar без `node_modules`.** С `files: ["out/**"]` electron-builder брал продакшн-зависимости корневого workspace, и `app.asar` весил 30 011 411 байт. С `"!node_modules/**"` осталось 10 записей: рендерер уже собран в бандл.
-- **Подписи нет** (`mac.sign: null`), иконка — стандартная Electron.
+- **Подписи нет** (`mac.sign: null`). Иконка и фьюзы — раздел «Иконка и фьюзы».
 - **Геймпад** (`packages/app/src/gamepad.ts`, перенесён как есть): чистая `mapGamepad` для стандартной раскладки W3C и опрос через rAF в `installGamepad`, одна точка подключения в `main.tsx`.
 
   | Вход | Команда | Аналог |
@@ -45,13 +46,48 @@
   ```
 
   Замер: из `/tmp` отработала за 2,4 с (npx взял `@electron/asar` 4.3.0). Внутри репозитория npx падает на `sh: asar: command not found`, там работает `bunx @electron/asar extract` (1,3 с). Обе выгрузки одинаковы, `index-*.js` байт в байт совпадает со сборкой. Выходят `index.html` (424 байта), `index-*.css` (1 882), `index-*.js` (1 083 617), `worker-*.js` (275 012), `main.js` (2 785 — сборка до режима без окна, сейчас 2 931), `preload.cjs` (236), `package.json` (257).
-- ASAR integrity (фьюз `EnableEmbeddedAsarIntegrityValidation`) по документации Electron по умолчанию выключен и проверяет целостность, а не прячет код. Не включали.
+- ASAR integrity (фьюз `EnableEmbeddedAsarIntegrityValidation`) проверяет целостность, а не прячет код: извлечение выше работает и с ним. Включён в волне 6 (раздел «Иконка и фьюзы»).
+
+## Иконка и фьюзы (волна 6, E4)
+
+- **Иконка.** `packages/desktop/build/icon.svg`: стекло HUD (`--hud-glass-solid`, блик 10 % белого до 35 % высоты, кромка 12 %) и три корпуса по сетке спрайта инструментов (24 единицы, обводка 1,5, круглые концы), окна `--hud-warning`, улица `--hud-accent`. `sips` SVG не читает (замер: `sips -s format png icon.svg` — «not a valid file»), поэтому `scripts/build-icon.ts` растрирует мастер 1024 в headless Chromium Playwright, `sips -z` режет 10 размеров, `iconutil` собирает `build/icon.icns`. `.icns` лежит в дереве, сборке Chromium не нужен. `mac.icon` указан явно: без него electron-builder сам конвертирует `build/icon.svg` своим icon-tool. В `.app` — `Contents/Resources/icon.icns`, `CFBundleIconFile = icon.icns`.
+- **Фьюзы** ставит `scripts/after-pack.mjs` (хук `afterPack`) через `@electron/fuses` 2.1.3 — `latest` в npm на 2026-09-23, пин точной версией; у electron-builder 26.15.3 своя 1.8.0. Хук идёт после записи Info.plist с `ElectronAsarIntegrity`, со `strictlyRequireAllFuses` (фьюз из будущего Electron валит сборку, пока не решён) и с ad-hoc переподписью `resetAdHocDarwinSignature`: arm64 без подписи не запускается, а правка байтов её ломает.
+
+  | Фьюз | Значение | Почему |
+  |---|---|---|
+  | `RunAsNode` | off | `ELECTRON_RUN_AS_NODE` превращал бинарник в node |
+  | `EnableNodeOptionsEnvironmentVariable` | off | `NODE_OPTIONS` не читается |
+  | `EnableNodeCliInspectArguments` | off | `--inspect` не открывает отладчик main |
+  | `EnableEmbeddedAsarIntegrityValidation` | on | подменённый asar не стартует |
+  | `OnlyLoadAppFromAsar` | on | код только из `app.asar` |
+  | `GrantFileProtocolExtraPrivileges` | off | страница идёт с `app://bundle`, не с `file://` |
+  | `EnableCookieEncryption` | off | на macOS идёт через Keychain и может поднять системный запрос; cookie у игры нет |
+  | `LoadBrowserProcessSpecificV8Snapshot` | off | своего снапшота нет |
+  | `WasmTrapHandlers` | on | дефолт; выключение замедляет WASM |
+
+- **Playwright и `--inspect`.** `_electron.launch` всегда передаёт `--inspect=0` и ждёт `Debugger listening` (playwright-core 1.63.0), с релизными фьюзами он не стартует. Поэтому `makeInspectableClone` (`e2e/inspectableClone.ts`) перед `shell.spec.ts` делает APFS-клон (`cp -c`) текущего `release/mac-arm64/SimCity.app` в `release/e2e-inspectable/`, переворачивает только этот фьюз и переподписывает ad-hoc. Клон не отгружается: electron-builder о нём не знает, каждый прогон пересоздаёт его из текущей сборки. Разницу ровно в один фьюз проверяет тест `theTestCloneDiffersFromTheReleaseByTheInspectFuseOnly`. Тот же приём годится для `__sim` в E2. Свежий клон `makeInspectableClone` один раз запускает сам (без окна, до строки `DevTools listening`) и закрывает: при load average 70–87 первый Playwright-запуск свежего клона занял 12,0 с против 5,3 с у следующих (одна выборка), а внутри спеки он дважды подряд упёрся в 30-секундный лимит шага `launch the app`. С прогревом — 9/9 при load average 76–104.
+- **Проверка поведением** (`package.spec.ts`, релизный бинарник без окна). С `--inspect=0` приложение стартует без `Debugger listening`. С `ELECTRON_RUN_AS_NODE=1` стартует приложение, а не node (до фьюзов — `bad option: --remote-debugging-port=0`). С `NODE_OPTIONS=--require=…` нет строки `Most NODE_OPTIONs are not supported in packaged apps`: переменная не читается. Integrity проверена вручную: клон с нулевым хэшем в `ElectronAsarIntegrity` падает при старте с `FATAL … Integrity check failed for asar archive entry '<header>'`, код 133.
+- **Тесты (B/R/G).** B — `desktop:e2e` 3/3 на сборке без правок. R — 6 новых тестов, 5 красных: `CFBundleIconFile` = `electron.icns`, фьюзы по умолчанию, у клона нет разницы, `Debugger listening`, `bad option`; тест `NODE_OPTIONS` в первой редакции (искал путь `--require`) прошёл и на сборке без фьюзов — packaged Electron сам отбрасывает `--require`, поэтому тест переписан на строку-предупреждение и покраснел. G — 9/9 на обычной и на обфусцированной сборке; `typecheck` и `lint` — код 0.
+
+**Перемер обфускации на Electron** (2026-09-23, Apple M5, фьюзы включены). Параллельно шли чужие сборки, load average 56–62 на 10 ядрах.
+
+| Что | `desktop:build` | `desktop:build:obfuscated` |
+|---|---|---|
+| wall сборки, тёплый кэш, два прогона | 34,4 с; 22,4 с | 27,3 с; 33,9 с |
+| шаг Vite-рендерера («built in») | 2,29 с; 0,95 с | 1,58 с; 3,39 с |
+| `app.asar`, байт | 1 965 679 во всех сборках | 1 972 709–1 972 770 в трёх сборках |
+| `SimCity.app`, `du -sk` | 294 628–297 064 | 294 636–296 116 |
+| чанки рендерера | `index` 1 261,23 kB, `worker` 686,05 kB | `vendor` 1 154,03, `index` 79,97, `ui` 32,63 (обфусцирован), `worker` 686,05 kB |
+| fps тестового города, страница | 60 на 10 из 10; повтор — 59–60 | 60 на 9 из 10 (первая выборка 50); повтор — 60 на 10 из 10 |
+| fps, скомпоновано | 59–64; повтор 58–63; медиана 60 | 52–64; повтор 59–60; медиана 60 |
+| `desktop:e2e` | 9/9 за 1,1 мин; повтор с прогревом клона 9/9 за 1,9 мин | 9/9 за 47,7 с; повтор с прогревом 9/9 за 1,8 мин |
+
+Разница во времени сборки тонет в шуме нагрузки: тот же `desktop:build` без `afterPack` дал 164,3 и 116,0 с, а с ним в третий раз — 149,5 с. Прежние 3,09 с сегодня не воспроизводятся; первая, холодная сборка worktree с загрузкой Electron — 234,1 с. Обфускация добавляет 7 030 байт к asar и не трогает fps: обфусцируется только чанк `ui`, горячий путь остаётся чистым.
 
 ## Зависимости и отложенное
 
 - **Файловые сейвы** ждут сейвов v1 этапа 6 (эквивалент `SaveGameV3`). В Electron это `ipcMain` с выбором каталога и мост в preload.
-- **Обфускация на Electron** не перемерялась. Прошлые числа сняты на отклонённом Tauri.
-- **`.exe`, подпись, нотаризация, иконки, фьюзы Electron** не делались.
+- **`.exe`, подпись, нотаризация** не делались.
 - **`window.__sim` в релизе** остаётся (раздел «Защита кода от разбора» в программе).
 - **`live/*` как Playwright-хелперы** из строки этапа 7 в эту часть не входили.
 
