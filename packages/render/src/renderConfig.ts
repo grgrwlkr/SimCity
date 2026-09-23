@@ -130,7 +130,10 @@ export const RENDER_CONFIG: RenderConfig = {
     maxDistance: 900,
     orthoDistance: 500,
   },
-  shadows: { maximumDistance: 900, cascades: 4, firstSliceDepth: 90, overlapProportion: 0.2, softSize: 0 },
+  // Off by default (render.ron had 4 cascades): every cascade redraws all building instances, and on the fitted
+  // metropolis that took the scene from 60 to 23 fps on the GPU (docs/oracle-deviations.md, 2026-09-23). Set a count to
+  // bring them back; the other values are the ones they would use.
+  shadows: { maximumDistance: 900, cascades: 0, firstSliceDepth: 90, overlapProportion: 0.2, softSize: 0 },
   atlas: { worldUnitsPerCell: 12, maxRepeats: 4 },
 };
 
