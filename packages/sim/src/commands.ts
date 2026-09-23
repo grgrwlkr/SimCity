@@ -1,6 +1,9 @@
 // Mirror of simcity_core::commands::GameCommand and the payload types it carries, one variant for
 // one variant. The single channel for structural edits to the world: UI, input and the oracle's
 // command fixtures all go through it. The serde-JSON form lives in commandCodec.ts.
+import type { LOAN_SIZES, TaxZone } from './economy/economy';
+import type { WealthClass } from './economy/wealth';
+import type { ServiceKind } from './services/stations';
 
 /** `TilePos`: tile coordinates, `i32` each. */
 export interface TilePos {
@@ -66,4 +69,10 @@ export type GameCommand =
   | { readonly kind: 'LoadGame'; readonly slot: number }
   | { readonly kind: 'PlaceTrafficLight'; readonly pos: TilePos }
   | { readonly kind: 'RemoveTrafficLight'; readonly pos: TilePos }
-  | { readonly kind: 'LoadTestCity' };
+  | { readonly kind: 'LoadTestCity' }
+  // TS only (U6, Q4 (a) of docs/plans/2026-09-15-web-remaining-work.md): the budget screen's levers, which Rust
+  // changed in the UI observer (`on_budget_action`, budget_panel.rs). A delta, not a value, so two clicks on one
+  // snapshot are two steps; the model clamps.
+  | { readonly kind: 'AdjustTaxRate'; readonly zone: TaxZone; readonly wealth: WealthClass; readonly delta: number }
+  | { readonly kind: 'AdjustServiceFunding'; readonly service: ServiceKind; readonly delta: number }
+  | { readonly kind: 'TakeLoan'; readonly principal: (typeof LOAN_SIZES)[number] };

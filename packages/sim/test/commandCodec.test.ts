@@ -42,6 +42,13 @@ const EVERY_VARIANT: ReadonlyArray<readonly [unknown, GameCommand]> = [
   [{ PlaceTrafficLight: { pos } }, { kind: 'PlaceTrafficLight', pos }],
   [{ RemoveTrafficLight: { pos: { x: -1, y: 2147483647 } } }, { kind: 'RemoveTrafficLight', pos: { x: -1, y: 2147483647 } }],
   ['LoadTestCity', { kind: 'LoadTestCity' }],
+  // TS only (U6, Q4 (a)): the budget screen's levers, so a replay carries them.
+  [
+    { AdjustTaxRate: { zone: 'Commercial', class: 'High', delta: 1 } },
+    { kind: 'AdjustTaxRate', zone: 'Commercial', wealth: 'High', delta: 1 },
+  ],
+  [{ AdjustServiceFunding: { service: 'Police', delta: -10 } }, { kind: 'AdjustServiceFunding', service: 'Police', delta: -10 }],
+  [{ TakeLoan: { principal: 25_000 } }, { kind: 'TakeLoan', principal: 25_000 }],
 ];
 
 describe('commandCodec', () => {
@@ -77,6 +84,11 @@ describe('commandCodec', () => {
       { SetZone: { pos, zone: 'Park' } },
       { EraseTile: { pos }, LoadTestCity: null },
       'SetRoad',
+      { AdjustTaxRate: { zone: 'Park', class: 'High', delta: 1 } },
+      { AdjustTaxRate: { zone: 'Residential', class: 'Rich', delta: 1 } },
+      { AdjustTaxRate: { zone: 'Residential', class: 'Low', delta: 0.5 } },
+      { AdjustServiceFunding: { service: 'Transit', delta: 10 } },
+      { TakeLoan: { principal: 12_345 } },
     ];
     for (const json of invalid) {
       expect(() => parseRustCommand(json), JSON.stringify(json)).toThrow();

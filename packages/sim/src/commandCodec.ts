@@ -11,6 +11,9 @@ import {
   type GameCommand,
   type RoadFlow,
 } from './commands';
+import { LOAN_SIZES, TAX_ZONES } from './economy/economy';
+import { WEALTH_CLASSES } from './economy/wealth';
+import { SERVICE_KINDS } from './services/stations';
 
 const I32 = z.int().min(-2147483648).max(2147483647);
 const U8 = z.int().min(0).max(255);
@@ -42,6 +45,10 @@ const rustCommand = z.union([
   z.strictObject({ PlaceTrafficLight: z.object({ pos: tilePos }) }),
   z.strictObject({ RemoveTrafficLight: z.object({ pos: tilePos }) }),
   z.literal('LoadTestCity'),
+  // TS only: Rust has no such variants; `class` is the Rust name of the wealth class (`TaxRates::get(zone, class)`).
+  z.strictObject({ AdjustTaxRate: z.object({ zone: z.enum(TAX_ZONES), class: z.enum(WEALTH_CLASSES), delta: I32 }) }),
+  z.strictObject({ AdjustServiceFunding: z.object({ service: z.enum(SERVICE_KINDS), delta: I32 }) }),
+  z.strictObject({ TakeLoan: z.object({ principal: z.literal(LOAN_SIZES) }) }),
 ]);
 
 /** A command as Rust's serde reads it. */
@@ -75,6 +82,12 @@ export function parseRustCommand(json: unknown): GameCommand {
   if ('SaveGame' in c) return { kind: 'SaveGame', slot: c.SaveGame.slot };
   if ('LoadGame' in c) return { kind: 'LoadGame', slot: c.LoadGame.slot };
   if ('PlaceTrafficLight' in c) return { kind: 'PlaceTrafficLight', pos: c.PlaceTrafficLight.pos };
+  if ('AdjustTaxRate' in c) {
+    const { zone, class: wealth, delta } = c.AdjustTaxRate;
+    return { kind: 'AdjustTaxRate', zone, wealth, delta };
+  }
+  if ('AdjustServiceFunding' in c) return { kind: 'AdjustServiceFunding', ...c.AdjustServiceFunding };
+  if ('TakeLoan' in c) return { kind: 'TakeLoan', principal: c.TakeLoan.principal };
   return { kind: 'RemoveTrafficLight', pos: c.RemoveTrafficLight.pos };
 }
 
@@ -112,5 +125,11 @@ export function toRustCommand(cmd: GameCommand): RustCommandJson {
       return { RemoveTrafficLight: { pos: cmd.pos } };
     case 'LoadTestCity':
       return 'LoadTestCity';
+    case 'AdjustTaxRate':
+      return { AdjustTaxRate: { zone: cmd.zone, class: cmd.wealth, delta: cmd.delta } };
+    case 'AdjustServiceFunding':
+      return { AdjustServiceFunding: { service: cmd.service, delta: cmd.delta } };
+    case 'TakeLoan':
+      return { TakeLoan: { principal: cmd.principal } };
   }
 }
