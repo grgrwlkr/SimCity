@@ -8,7 +8,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
-import { INSPECTABLE_APP, RELEASE_APP, binaryOf, makeInspectableClone } from './inspectableClone';
+import { INSPECTABLE_APP, RELEASE_APP, TEST_APP, binaryOf, makeInspectableClone, requireBuild } from './inspectableClone';
 
 const BUILD_ICNS = fileURLToPath(new URL('../build/icon.icns', import.meta.url));
 
@@ -84,6 +84,11 @@ test('theReleaseBinaryCarriesTheChosenFuses', async () => {
     GrantFileProtocolExtraPrivileges: 'off',
     WasmTrapHandlers: 'on',
   });
+});
+
+test('theTestBuildCarriesTheReleaseFuses', async () => {
+  requireBuild(TEST_APP);
+  expect(await fusesOf(TEST_APP)).toEqual(await fusesOf(RELEASE_APP));
 });
 
 test('theTestCloneDiffersFromTheReleaseByTheInspectFuseOnly', async () => {

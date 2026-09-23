@@ -1,19 +1,24 @@
 // The packaged Electron shell: it starts without taking focus, the game answers, saves go to files and
 // come back, and the test city holds its frame rate. `SIMCITY_TEST_WINDOW=1` keeps the window hidden.
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
-import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type {} from '../../app/src/saves/desktopSaveStore';
 import type {} from '../../app/src/simApi';
-import { TEST_APP, binaryOf, makeInspectableClone } from './inspectableClone';
-
-test.skip(!existsSync(binaryOf(TEST_APP)), 'build the test app first: bun run --cwd packages/desktop build:test');
+import { RELEASE_APP, TEST_APP, buildInfoOf, makeInspectableClone, requireBuild } from './inspectableClone';
 
 // Playwright needs `--inspect`, which the release fuses refuse: drive a clone of the test build, the
 // release shell with `window.__sim` in its page.
 let APP = '';
 test.beforeAll(async () => {
+  // No skipping: without the test build, or with one from another commit than the release, the shell is untested.
+  requireBuild(TEST_APP);
+  requireBuild(RELEASE_APP);
+  const { test: isTest, ...tested } = buildInfoOf(TEST_APP);
+  const { test: isRelease, ...release } = buildInfoOf(RELEASE_APP);
+  expect({ isTest, isRelease }).toEqual({ isTest: true, isRelease: false });
+  expect(tested, 'the test build and the release come from one commit: rebuild both').toEqual(release);
   APP = await makeInspectableClone(TEST_APP);
 });
 
@@ -45,6 +50,19 @@ test('startsWithNothingOnScreenAndTheSimAnswers', async () => {
       return (await window.__sim.snapshot()).tick;
     });
     await expect.poll(() => page.evaluate(() => window.__sim.snapshot().then((s) => s.tick))).toBeGreaterThan(before);
+  } finally {
+    await app.close();
+  }
+});
+
+test('theTestBuildKeepsDevToolsAndItsMenu', async () => {
+  // The release has neither (main.ts `devToolsAllowed`, `RELEASE_MENU`); this build must keep both, or the flag in
+  // build-info.json is not what main reads.
+  const { app } = await launch();
+  try {
+    // `webPreferences.devTools` is not readable back (no typed getter); the menu follows the same `devTools` value.
+    const menu = await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.items.map((item) => item.role) ?? []);
+    expect(menu).toContain('viewmenu');
   } finally {
     await app.close();
   }
@@ -119,9 +137,9 @@ async function measureFrameRate(app: ElectronApplication, page: Page, seconds: n
 const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
 
 // The bar is unchanged (page 58, composited 55). What changed is how the city is measured: a longer warm-up, then up to
-// three windows of 10 s each, and the median over the windows. One window taken while another process holds the GPU
-// (the Pro gave 22–47 on the same commit that gives 60) no longer decides alone: two windows of three must hold the bar.
-// Two passing windows settle it, so a quiet machine measures twice.
+// three windows of 10 s each. One window taken while another process holds the GPU (the Pro gave 22–47 on the same
+// commit that gives 60) no longer decides alone: two windows of three must each hold both bars. Two passing windows
+// settle it, so a quiet machine measures twice.
 const FPS_BAR = 58;
 const COMPOSITED_BAR = 55;
 const WINDOWS = 3;
@@ -141,6 +159,7 @@ test('theTestCityHoldsItsFrameRate', async () => {
     await page.waitForTimeout(5000);
     // Two counts per second: frames the page drew (its FPS meter) and frames the GPU composited (`paint`).
     const windows: Awaited<ReturnType<typeof measureFrameRate>>[] = [];
+    // A window passes when both of its medians hold the bar in it.
     const passing = () => windows.filter((w) => w.fpsMedian >= FPS_BAR && w.compositedMedian >= COMPOSITED_BAR).length;
     while (windows.length < WINDOWS && passing() < Math.ceil(WINDOWS / 2)) windows.push(await measureFrameRate(app, page, 10));
     const citizens = await page.evaluate(() => window.__sim.snapshot().then((s) => s.traffic.citizens));
@@ -149,11 +168,8 @@ test('theTestCityHoldsItsFrameRate', async () => {
     const line = `${shown.join(' | ')} (${backend}, citizens ${citizens})`;
     test.info().annotations.push({ type: 'fps', description: line });
     console.log(`test city: ${line}`);
-    // Median over the windows; windows not taken (two passed already) count as passing, the median is the same.
-    const overWindows = (pick: (w: (typeof windows)[number]) => number, bar: number) =>
-      median([...windows.map(pick), ...Array<number>(WINDOWS - windows.length).fill(bar)]);
-    expect(overWindows((w) => w.fpsMedian, FPS_BAR)).toBeGreaterThanOrEqual(FPS_BAR);
-    expect(overWindows((w) => w.compositedMedian, COMPOSITED_BAR)).toBeGreaterThanOrEqual(COMPOSITED_BAR);
+    // The median over the windows of "both bars held": most windows must hold both.
+    expect(passing(), line).toBeGreaterThanOrEqual(Math.ceil(WINDOWS / 2));
   } finally {
     await app.close();
   }
