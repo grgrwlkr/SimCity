@@ -117,6 +117,25 @@ test('theTooltipStandsDownOverTheHudAndForInspect', async ({ page }) => {
   await expect(tooltip(page)).toHaveCount(0);
 });
 
+test('theTooltipGoesWithTheCursorOutOfTheWindowAndUnderAPanelOpenedFromTheKeyboard', async ({ page }) => {
+  await openBlankCity(page);
+  await toolButton(page, '2 полосы').click();
+  await page.mouse.move(MAP_POINT.x, MAP_POINT.y, { steps: 4 });
+  await expect(tooltip(page), NOT_MOUNTED).toBeVisible({ timeout: 30_000 });
+
+  // Out through the left edge, where the map runs to the window's border: no panel on the way.
+  await page.mouse.move(-20, MAP_POINT.y, { steps: 8 });
+  await expect(tooltip(page)).toHaveCount(0);
+  await page.mouse.move(MAP_POINT.x, MAP_POINT.y, { steps: 8 });
+  await expect(tooltip(page)).toBeVisible();
+
+  // The budget opened from the keyboard lays its scrim under the still cursor: the click there is the panel's now.
+  await page.getByTestId('budget-toggle').focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('dialog', { name: 'Бюджет' })).toBeVisible();
+  await expect(tooltip(page)).toHaveCount(0);
+});
+
 test('underInspectAZonedTileThatDoesNotGrowSaysWhy', async ({ page }) => {
   await openBlankCity(page);
   // A road across the view and a residential tile two rows below it: zoned, within reach, and no power anywhere.
