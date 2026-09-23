@@ -32,8 +32,9 @@ describe('scene lighting', () => {
     expect(lighting.sun.intensity).toBeGreaterThan(midnightSun);
   });
 
-  it('theSunComesFromTheConfiguredDirectionAndCastsShadows', () => {
-    const settings = resolveRenderSettings(RENDER_CONFIG);
+  it('theSunComesFromTheConfiguredDirectionAndCastsShadowsOnlyWithCascades', () => {
+    expect(new SceneLighting(resolveRenderSettings(RENDER_CONFIG)).sun.castShadow, 'shadows are off in the shipped config').toBe(false);
+    const settings = resolveRenderSettings({ ...RENDER_CONFIG, shadows: { ...RENDER_CONFIG.shadows, cascades: 4 } });
     const lighting = new SceneLighting(settings);
     expect(lighting.sun.castShadow).toBe(true);
     const d = lighting.sun.position.clone().sub(lighting.sun.target.position).normalize();
@@ -45,7 +46,7 @@ describe('scene lighting', () => {
   });
 
   it('cascadesStartAtTheFirstSliceAndReachTheMaximumDistance', () => {
-    const { cascades } = resolveRenderSettings(RENDER_CONFIG).sun;
+    const { cascades } = resolveRenderSettings({ ...RENDER_CONFIG, shadows: { ...RENDER_CONFIG.shadows, cascades: 4 } }).sun;
     const splits = cascadeSplits(cascades);
     expect(splits).toHaveLength(cascades.cascades);
     expect(splits[0]).toBeCloseTo(cascades.firstCascadeFarBound / cascades.maximumDistance);

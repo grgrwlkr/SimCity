@@ -26,9 +26,7 @@ test.describe.configure({ timeout: 240_000 });
  * The R2 gates read geometry and colour, not the effects: under SwiftShader the full chain costs seconds a frame (a
  * probe at load 55-80 measured 0.09 fps with everything, 0.92 fps with these off), so they draw without it.
  */
-const PLAIN = '&off=ao,shadows,fxaa,grade,vignette';
-/** Cascaded shadows render the city four more times: on the processor that alone is 4× the frame, so only the GPU runs them. */
-const SHADOWS = process.env.E2E_GPU === '1' ? '' : '&off=shadows';
+const PLAIN = '&off=ao,fxaa,grade,vignette';
 
 const sceneStats = (page: Page) => page.evaluate(() => window.__sim.renderStats()) as Promise<SceneStats>;
 
@@ -173,7 +171,7 @@ test('sceneNoonAndMidnightDifferInLight', async ({ page }, testInfo) => {
   test.setTimeout(900_000);
   const shots: Record<string, { luma: number; warm: number; post: readonly string[]; hour: number }> = {};
   for (const hour of [12, 0]) {
-    await openScene(page, `&hour=${hour}${SHADOWS}`);
+    await openScene(page, `&hour=${hour}`);
     await loadGrid(page, road.rawGrid);
     // Close enough that windows are more than a pixel, over the fire station's block, in the perspective half of the zoom.
     const fire = hex(road.rawGrid.building).findIndex((b) => b === FIRE_STATION);
