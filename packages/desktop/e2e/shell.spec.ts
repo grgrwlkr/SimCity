@@ -2,12 +2,16 @@
 // holds its frame rate. `SIMCITY_TEST_WINDOW=1` keeps the window unfocused, on top and click-through.
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import type {} from '../../app/src/simApi';
+import { RELEASE_APP, binaryOf, makeInspectableClone } from './inspectableClone';
 
-const APP = fileURLToPath(new URL('../release/mac-arm64/SimCity.app/Contents/MacOS/SimCity', import.meta.url));
+test.skip(!existsSync(binaryOf(RELEASE_APP)), 'build the app first: bun run desktop:build');
 
-test.skip(!existsSync(APP), 'build the app first: bun run desktop:build');
+// Playwright needs `--inspect`, which the release fuses refuse: drive a clone of the same build.
+let APP = '';
+test.beforeAll(async () => {
+  APP = await makeInspectableClone();
+});
 
 /** Each start-up step has a limit of its own, so a hang names the step instead of the test timeout. */
 async function launch(): Promise<{ app: ElectronApplication; page: Page }> {
