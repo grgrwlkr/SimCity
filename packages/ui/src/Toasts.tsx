@@ -53,11 +53,14 @@ export interface ToastFeedProps {
   onFocus(at: TilePos): void;
 }
 
+/** A press or a wheel on a line is the feed's: it never reaches the map (as `keepOffTheMap` in HudBar.tsx). */
+const keepOffTheMap = (event: { stopPropagation(): void }) => event.stopPropagation();
+
 /** The feed over the given lines. No hooks: it is a plain function of its props. */
 export function ToastFeed({ toasts, onFocus }: ToastFeedProps) {
   const newest = toasts.slice(-MAX_TOASTS).reverse();
   return (
-    <ol className="hud-toasts" data-testid="toasts" aria-label="События">
+    <ol className="hud-toasts" data-testid="toasts" aria-label="События" onPointerDown={keepOffTheMap} onWheel={keepOffTheMap}>
       {newest.map((toast) => {
         const label = toastLabel(toast.text, toast.count);
         const at = toast.at;

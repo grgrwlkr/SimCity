@@ -126,6 +126,15 @@ describe('toast feed', () => {
     expect(rule('.hud-toast'), 'the line itself takes the click').toMatch(/pointer-events:\s*auto/);
     expect(rule('.hud-toasts')).toMatch(/z-index:\s*var\(--hud-z-toast\)/);
     expect(html.match(/<button type="button"/g), 'a shown line is a button a click can activate').toHaveLength(1);
+    // A press or a wheel on a line is the feed's: it never reaches the map (HudBar's `keepOffTheMap`).
+    const root = ToastFeed({ toasts: screenOf((feed) => notify(feed, 'event', 1)), onFocus: () => {} }) as unknown as {
+      props: { onPointerDown?: (e: { stopPropagation(): void }) => void; onWheel?: (e: { stopPropagation(): void }) => void };
+    };
+    for (const handler of [root.props.onPointerDown, root.props.onWheel]) {
+      let stopped = false;
+      handler?.({ stopPropagation: () => (stopped = true) });
+      expect(stopped).toBe(true);
+    }
   });
 
   // rust-final toasts.rs ui_shell_a_toast_stays_on_one_line
