@@ -9,7 +9,7 @@ import { MAX_CELL_LOD, atlasMipChain } from '../packages/render/src/scene/atlasT
 import { tileToWorld } from '../packages/sim/src/index';
 
 type LayerName = 'height' | 'water' | 'terrain' | 'roadKind' | 'roadDir' | 'roadLane' | 'roadFlow' | 'laneType' | 'zone' | 'density' | 'building';
-const road = JSON.parse(readFileSync(new URL('../packages/sim/test/fixtures/road-routes.json', import.meta.url), 'utf8')) as {
+const road = JSON.parse(readFileSync(new URL('../packages/sim/src/scenarios/testCity.json', import.meta.url), 'utf8')) as {
   width: number;
   height: number;
   rawGrid: Record<LayerName, string>;
