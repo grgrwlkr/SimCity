@@ -160,6 +160,23 @@ test.describe('setClock', () => {
   });
 });
 
+test.describe('input', () => {
+  /** A tile hovered from inside the game, no pointer moved; `null` hands hovering back to the pointer. */
+  test('hoverTileSetsAndClearsThePointerOverride', async ({ page }) => {
+    await openStillCity(page);
+    expect(await page.evaluate(() => window.__sim.hoverTile({ x: 3, y: 4 }))).toEqual({ x: 3, y: 4 });
+    expect(await page.evaluate(() => window.__sim.pointerOverride())).toEqual({ x: 3, y: 4 });
+    await page.evaluate(() => window.__sim.hoverTile(null));
+    expect(await page.evaluate(() => window.__sim.pointerOverride())).toBeNull();
+  });
+
+  test('hoverTileOffTheMapIsRefused', async ({ page }) => {
+    await openStillCity(page);
+    await expect(page.evaluate(() => window.__sim.hoverTile({ x: 900, y: 4 }))).rejects.toThrow(/off the map/);
+    expect(await page.evaluate(() => window.__sim.pointerOverride())).toBeNull();
+  });
+});
+
 test.describe('capture', () => {
   test('aCaptureLooksRenderedAndLandsAtItsPath', async ({ page }, testInfo) => {
     await openStillCity(page);

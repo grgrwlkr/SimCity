@@ -170,6 +170,11 @@ export function installSimApi(
     tickStats: () => client.request({ t: 'tickStats' }),
     resetTickStats: () => client.request({ t: 'resetTickStats' }),
     hoverTile: async (tile) => {
+      // The pointer can never rest off the map, so neither may the override.
+      const cfg = mapConfig();
+      if (tile !== null && cfg !== null && (tile.x < 0 || tile.y < 0 || tile.x >= cfg.width || tile.y >= cfg.height)) {
+        throw new RangeError(`tile (${tile.x}, ${tile.y}) is off the map, where the pointer can never rest`);
+      }
       pointerOverride = tile;
       const r = await renderer;
       r.hovered = tile;

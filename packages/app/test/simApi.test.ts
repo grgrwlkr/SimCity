@@ -35,3 +35,17 @@ describe('sim api live requests', () => {
     ]);
   });
 });
+
+describe('sim api hover', () => {
+  /** The pointer can never rest off the map, so neither may the override: a tile out there is refused, the old one kept. */
+  it('hoverTileOffTheMapIsRefused', async () => {
+    const client = { ready: new Promise<never>(() => {}), request: async () => null } as unknown as Parameters<typeof installSimApi>[0];
+    (globalThis as { window?: unknown }).window ??= {};
+    const cfg = { width: 64, height: 64 } as ReturnType<Parameters<typeof installSimApi>[3]>;
+    const api = installSimApi(client, false, new Promise<Renderer>(() => {}), () => cfg);
+    for (const tile of [{ x: 900, y: 4 }, { x: -1, y: 4 }, { x: 4, y: 64 }]) {
+      await expect(api.hoverTile(tile), JSON.stringify(tile)).rejects.toThrow(/off the map/);
+    }
+    expect(api.pointerOverride()).toBeNull();
+  });
+});
