@@ -34,10 +34,11 @@ describe('scene lighting', () => {
   });
 
   it('theSunComesFromTheConfiguredDirectionAndCastsShadowsOnlyWithCascades', () => {
-    expect(new SceneLighting(resolveRenderSettings(RENDER_CONFIG)).sun.castShadow, 'shadows are off in the shipped config').toBe(false);
-    const settings = resolveRenderSettings({ ...RENDER_CONFIG, shadows: { ...RENDER_CONFIG.shadows, cascades: 4 } });
-    const lighting = new SceneLighting(settings);
-    expect(lighting.sun.castShadow).toBe(true);
+    const lighting = new SceneLighting(resolveRenderSettings(RENDER_CONFIG));
+    expect(lighting.sun.castShadow, 'the shipped config casts shadows').toBe(true);
+    const none = resolveRenderSettings({ ...RENDER_CONFIG, shadows: { ...RENDER_CONFIG.shadows, cascades: 0 } });
+    expect(new SceneLighting(none).sun.castShadow, 'no cascades, no shadow pass').toBe(false);
+    const settings = resolveRenderSettings(RENDER_CONFIG);
     const d = lighting.sun.position.clone().sub(lighting.sun.target.position).normalize();
     const want = settings.sun.position;
     const len = Math.hypot(...want);
