@@ -9,6 +9,7 @@
   "main": "out/main.js",
   "scripts": {
     "electron:install": "node node_modules/electron/install.js",
+    "build:icon": "bun scripts/build-icon.ts",
     "build:main":"bun build src/main.ts --target=node --format=esm --external electron --outfile out/main.js && bun build src/preload.ts --target=node --format=cjs --external electron --outfile out/preload.cjs",
     "build:renderer": "bunx vite build ../app --outDir ../desktop/out/renderer --emptyOutDir",
     "build:renderer:obfuscated": "bunx vite build ../app --config vite.obfuscated.config.ts --outDir ../desktop/out/renderer --emptyOutDir",
@@ -16,6 +17,7 @@
     "build:obfuscated": "bun run electron:install && bun run build:main && bun run build:renderer:obfuscated && electron-builder --mac --arm64"
   },
   "devDependencies": {
+    "@electron/fuses": "2.1.3",
     "electron": "44.3.0",
     "electron-builder": "26.15.3",
     "javascript-obfuscator": "5.7.0"
@@ -27,9 +29,11 @@
     "files": ["out/**", "!node_modules/**"],
     "asar": true,
     "npmRebuild": false,
+    "afterPack": "./scripts/after-pack.mjs",
     "mac": {
       "target": [{ "target": "dir", "arch": ["arm64"] }],
-      "sign": null
+      "icon": "build/icon.icns",
+      "identity": null
     }
   }
 }
