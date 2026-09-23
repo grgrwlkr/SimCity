@@ -27,6 +27,12 @@ const SHADOW_MAP_SIZE = 2048;
  * ground off: a slice of the orthographic view spans the map's width in light space, an 800 map is 12 800 units wide.
  */
 const SHADOW_DEPTH = 40_000;
+/**
+ * How far behind a receiver's depth the first cascade still counts it lit, world units (the second doubles it). three
+ * adds the bias to normalised depth, so it is divided by the box's depth: -0.0005 of 40 000 put shadows 20-40 units away
+ * from their casters.
+ */
+const SHADOW_BIAS_UNITS = 0.25;
 
 export interface SceneLightLevels {
   /** 0 by day, 1 at the darkest night. */
@@ -90,8 +96,8 @@ export class SceneLighting {
     // No cascades configured (or `?off=shadows`): no shadow pass at all.
     this.sun.castShadow = s.cascades.cascades > 0;
     this.sun.shadow.mapSize.set(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
-    this.sun.shadow.bias = -0.0005;
     this.sun.shadow.camera.far = SHADOW_DEPTH;
+    this.sun.shadow.bias = -SHADOW_BIAS_UNITS / (SHADOW_DEPTH - this.sun.shadow.camera.near);
     if (s.softShadowSize !== null) this.sun.shadow.radius = s.softShadowSize;
     this.group.add(this.sun, this.sun.target, this.sky);
     for (const m of [this.windows, this.signs]) m.emissiveIntensity = 1;

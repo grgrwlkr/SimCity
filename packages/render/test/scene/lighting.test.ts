@@ -125,6 +125,10 @@ describe('scene lighting', () => {
         return [p.x, p.y, p.z].every((v) => v >= 0 && v <= 1);
       });
       expect(csm.camera, 'the cascades follow the camera of the frame').toBe(camera);
+      // The bias is normalised depth, and the node multiplies it by the cascade's number: in world units along the light
+      // it must stay well under a building's footprint, or a shadow starts metres behind its caster.
+      const offsets = csm.lights.map((l) => Math.abs(l.shadow.bias) * ((l.shadow.camera as THREE.OrthographicCamera).far - (l.shadow.camera as THREE.OrthographicCamera).near));
+      expect(Math.max(...offsets), `bias in world units per cascade: ${offsets.map((o) => o.toFixed(2))}`).toBeLessThan(1);
       expect(inside, `worldPerPixel ${worldPerPixel}: the ground at the focus is in a cascade`).toContain(true);
     }
   });
