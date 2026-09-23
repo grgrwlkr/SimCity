@@ -2,7 +2,7 @@
 // crates/simcity_frontend/src/game/hud/tool_palette.rs and the hotkeys of crates/simcity_sim/src/game/map/input.rs;
 // layout docs/design/hud/layout.md §3, states states.md.
 import type { MilestonesView } from '@simcity/bridge';
-import { unlockPopulation, type BuildingKind, type RoadKind, type ZoneDensity } from '@simcity/sim';
+import { thousands, unlockPopulation, type BuildingKind, type RoadKind, type ZoneDensity } from '@simcity/sim';
 import { useEffect, useRef, type PointerEvent, type WheelEvent } from 'react';
 import { create } from 'zustand';
 import { ICONS, type IconId } from './icons';
@@ -304,7 +304,7 @@ export function ToolPaletteView({ state, milestones, onTool, onDensity, onOneWay
                 );
               }
               const locked = isLocked(entry.tool, milestones);
-              const caption = locked ? `Откроется при ${opensAt(entry.tool)} жителях` : undefined;
+              const caption = locked ? `Откроется при ${thousands(opensAt(entry.tool))} жителях` : undefined;
               const code = hotkeyFor(entry.tool);
               return (
                 <button

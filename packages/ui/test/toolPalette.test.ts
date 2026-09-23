@@ -1,7 +1,7 @@
 // The tool palette and its hotkeys: layout of docs/design/hud/layout.md §3, states of states.md. Ports the tests of
 // rust-final crates/simcity_frontend/src/game/hud/tool_palette.rs and the hotkey and focus-gate tests of
 // crates/simcity_sim/src/game/map/tests.rs under their camelCase names.
-import { ZONE_DENSITIES } from '@simcity/sim';
+import { thousands, ZONE_DENSITIES } from '@simcity/sim';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
@@ -68,6 +68,10 @@ describe('tool palette', () => {
     expect(school.attrs).not.toMatch(/\sdisabled(=|\s|$)/);
     expect(school.text).toContain('Откроется при 250 жителях');
     expect(school.attrs).toContain('title="Откроется при 250 жителях"');
+    // Thousands grouped as everywhere in the interface: «1 000», not «1000».
+    const university = buttonFor(html, 'University');
+    expect(university.text).toContain(`Откроется при ${thousands(1000)} жителях`);
+    expect(university.text).not.toContain('при 1000 ');
     const park = buttonFor(html, 'Park');
     expect(park.attrs, 'a park is open from the start').not.toContain('aria-disabled');
     expect(park.text).not.toContain('Откроется');
