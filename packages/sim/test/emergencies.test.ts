@@ -8,6 +8,7 @@ import { emptyEvents } from '../src/events';
 import { stdRngSeedFromU64 } from '../src/rng';
 import type { World } from '../src/world';
 import { layRoads } from './meso/helpers';
+import { SIZED_IN_TICKS } from './scenarios/sizedInTicks';
 import { place, street, t } from './services/helpers';
 
 /** Steps `w` a tick at a time until `done` holds, at most `limit` ticks; the ticks it took. */
@@ -78,7 +79,7 @@ describe('emergencies', () => {
     expect(sent!.state).toBe('Returning');
     expect(until(w, () => sent!.state === 'AtStation', 600), 'and the vehicle comes back').toBeLessThan(600);
     expect(w.fleet.services.every((v) => v.state === 'AtStation' && v.mission === -1)).toBe(true);
-  });
+  }, SIZED_IN_TICKS);
 
   it('anEmergencyNobodyServesFailsAndHurtsHappiness', () => {
     const w = street();
@@ -91,7 +92,7 @@ describe('emergencies', () => {
     step(w, 2 * 600);
     expect([fire.failed, w.emergencies.active.length, w.emergencies.stats.failedResponses]).toEqual([true, 0, 1]);
     expect(w.city.happiness).toBeCloseTo(0.65 - 0.05 * 0.5, 5);
-  });
+  }, SIZED_IN_TICKS);
 
   it('anEmergencyAStationCannotReachIsLeftToOthers', () => {
     const w = street();

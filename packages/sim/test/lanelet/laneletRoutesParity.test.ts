@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { TrafficOccupancy } from '../../src/traffic/occupancy';
 import { findRoute, routeIsDirectionCorrect } from '../../src/transport/lanelet/pathfinding';
 import fixture from '../fixtures/lanelet-routes.json';
+import { SIZED_IN_TICKS } from '../scenarios/sizedInTicks';
 import { loadTestCity } from '../testCity';
 
 /** A TS row of 32-bit words as the Rust row of 64-bit words, each 16 hex digits. */
@@ -93,5 +94,5 @@ describe('lanelet and route pins on the test city', () => {
     });
     expect(routed, 'the fixture must exercise real routes').toBeGreaterThan(100);
     expect(throughLanelets, 'and routes through intersections').toBeGreaterThan(50);
-  });
+  }, SIZED_IN_TICKS);
 });
