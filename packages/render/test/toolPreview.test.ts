@@ -147,6 +147,20 @@ describe('tool preview', () => {
     expect(preview({ kind: 'School' }, at(10, 11), grid, RICH, opened).refusal).toBeNull();
   });
 
+  /** Not in Rust: the tooltip's first line is «эффект, $N» (layout.md §4), so no effect carries its own clause. */
+  it('toolPreviewEffectsCarryAPriceCleanly', () => {
+    const grid = town();
+    const tools: ToolMode[] = [
+      { kind: 'Road', road: 'TwoLane' },
+      ...(['Residential', 'Commercial', 'Industrial', 'FireStation', 'PoliceStation', 'Hospital', 'PowerPlant', 'WaterPump', 'Landfill'] as const).map((kind) => ({ kind })),
+      ...(['School', 'University', 'Park', 'TrafficLight', 'Erase'] as const).map((kind) => ({ kind })),
+    ];
+    for (const tool of tools) {
+      const { effect } = preview(tool, at(10, 11), grid, RICH);
+      expect(effect, tool.kind).not.toMatch(/[:,]/);
+    }
+  });
+
   it('serviceBuildingToolsShowPriceAndRadius', () => {
     const grid = town();
     for (const kind of ['School', 'University', 'Park'] as const satisfies readonly BuildingKind[]) {
