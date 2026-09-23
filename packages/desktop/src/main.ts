@@ -1,9 +1,10 @@
 // The desktop shell: one Chromium window over packages/app. `bun run desktop:dev` points it at the
 // Vite dev server; the packaged app serves the Vite build from its asar through the `app://` scheme,
 // with the headers cross-origin isolation (and so the sim's SharedArrayBuffer) needs.
-import { app, BrowserWindow, net, protocol } from 'electron';
+import { app, BrowserWindow, ipcMain, net, protocol } from 'electron';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { registerSaveHandlers } from './saves';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const RENDERER_DIR = path.join(here, 'renderer');
@@ -101,5 +102,6 @@ app.on('window-all-closed', () => app.quit());
 void app.whenReady().then(() => {
   if (testWindow) app.dock?.hide();
   protocol.handle('app', serveRenderer);
+  registerSaveHandlers(ipcMain, path.join(app.getPath('userData'), 'saves'));
   createWindow();
 });
