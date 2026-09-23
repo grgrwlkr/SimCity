@@ -150,7 +150,7 @@ describe('data map request', () => {
     const tile = tiles[0]!;
     expect(dataMapTileColor('Traffic', tile, inputs)).toEqual(trafficHeatColor(load));
     expect(dataMapTileColor('Traffic', tile, inputs)![0], 'red rises with the queue').toBeGreaterThan(0);
-    const percent = Number(/(\d+) %/.exec(overlayReading('Traffic', { x: tile % 200, y: Math.floor(tile / 200) }, inputs)!)![1]);
+    const percent = Number(/(\d+)\s%/.exec(overlayReading('Traffic', { x: tile % 200, y: Math.floor(tile / 200) }, inputs)!)![1]);
     expect(percent).toBe(Math.round(load * 100));
     expect(percent).toBeGreaterThan(0);
   });

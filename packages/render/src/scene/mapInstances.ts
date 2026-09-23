@@ -79,6 +79,14 @@ export class MapInstances {
     return [...this.propBatches.values()].reduce((n, b) => n + b.count, 0);
   }
 
+  /**
+   * Tints every building body with the colour `of` its tile gives (linear rgb; `null` leaves it plain), or back to plain
+   * with `null`: under a data map the rooftops carry the map, since they cover most of a built city's tiles.
+   */
+  tintBuildings(of: ((tile: number) => readonly [number, number, number] | null) | null): void {
+    for (const batch of this.buildingBatches()) batch.tint(of);
+  }
+
   buildingBatches(): InstanceBatch[] {
     return [...this.buildingBatchByKey.values()].flatMap((m) => [...m.values()]);
   }

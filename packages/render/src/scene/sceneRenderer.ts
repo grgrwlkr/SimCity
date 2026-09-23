@@ -45,6 +45,8 @@ const VIEW_REPORT_MS = 100;
 const MARKER_Z = 48;
 const MARKER_TILES = 0.6;
 export { SCENE_MAP_SEED } from './mapInstances';
+const WHITE = [1, 1, 1] as const;
+const linear = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
 
 export interface SceneStats extends RenderStats {
   readonly renderer: 'scene';
@@ -255,6 +257,8 @@ export class SceneRenderer implements Renderer {
     }
     this.chunksRebuiltLast = groups.length;
     this.instances.apply(map, changed, resized);
+    // New buildings start plain: under an open data map they take its colour like the rest.
+    if (changed.length > 0) this.tintBuildings(this.paintFor(map));
     for (const group of [this.instances.buildingGroup, this.instances.propGroup]) {
       for (const child of group.children) child.castShadow = child.receiveShadow = true;
     }
@@ -288,7 +292,13 @@ export class SceneRenderer implements Renderer {
       groundColors(map, area, colors.array as Float32Array, paint);
       colors.needsUpdate = true;
     }
+    this.tintBuildings(paint);
     this.dataMapMs = performance.now() - started;
+  }
+
+  /** Rooftops take their tile's map colour laid over white, in linear light; plain again without a data map. */
+  private tintBuildings(paint: TilePaint | null): void {
+    this.instances.tintBuildings(paint === null ? null : (tile) => paint(tile, WHITE).map(linear) as [number, number, number]);
   }
 
   private paintFor(map: MapLayersReply): TilePaint | null {
