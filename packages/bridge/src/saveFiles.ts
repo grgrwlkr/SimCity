@@ -51,6 +51,14 @@ export function checkSlot(slot: string): string {
 
 const isNotFound = (error: unknown): boolean => error instanceof Error && error.name === 'NotFoundError';
 
+async function removeIfThere(dir: SaveDirectory, name: string): Promise<void> {
+  try {
+    await dir.removeEntry(name);
+  } catch (error) {
+    if (!isNotFound(error)) throw error;
+  }
+}
+
 const opfsRoot = async (): Promise<SaveDirectory> => (await navigator.storage.getDirectory()) as unknown as SaveDirectory;
 
 export function createOpfsSaveFiles(root: () => Promise<SaveDirectory> = opfsRoot): SaveFiles {
@@ -81,16 +89,23 @@ export function createOpfsSaveFiles(root: () => Promise<SaveDirectory> = opfsRoo
     },
     async write(slot, bytes) {
       const name = checkSlot(slot) + SUFFIX;
-      const handle = await (await saves()).getFileHandle(name + PARTIAL, { create: true });
-      const access = await handle.createSyncAccessHandle();
+      const d = await saves();
+      const handle = await d.getFileHandle(name + PARTIAL, { create: true });
       try {
-        access.truncate(0);
-        if (access.write(bytes, { at: 0 }) !== bytes.length) throw new Error(`save slot ${JSON.stringify(slot)}: the file took fewer bytes than the save`);
-        access.flush();
-      } finally {
-        access.close();
+        const access = await handle.createSyncAccessHandle();
+        try {
+          access.truncate(0);
+          if (access.write(bytes, { at: 0 }) !== bytes.length) throw new Error(`save slot ${JSON.stringify(slot)}: the file took fewer bytes than the save`);
+          access.flush();
+        } finally {
+          access.close();
+        }
+        await handle.move(name);
+      } catch (error) {
+        // A save cut short must not hold on to the quota: the slot keeps its last whole save.
+        await removeIfThere(d, name + PARTIAL);
+        throw error;
       }
-      await handle.move(name);
       return info(slot, handle);
     },
     async read(slot) {
@@ -111,11 +126,10 @@ export function createOpfsSaveFiles(root: () => Promise<SaveDirectory> = opfsRoo
       }
     },
     async remove(slot) {
-      try {
-        await (await saves()).removeEntry(checkSlot(slot) + SUFFIX);
-      } catch (error) {
-        if (!isNotFound(error)) throw error;
-      }
+      const d = await saves();
+      const name = checkSlot(slot) + SUFFIX;
+      await removeIfThere(d, name);
+      await removeIfThere(d, name + PARTIAL);
     },
   };
 }

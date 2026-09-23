@@ -82,6 +82,33 @@ describe('save through the host', () => {
     await expect(other.handleSlot({ t: 'loadSlot', slot: 'copy' })).rejects.toThrow('save slot "copy" is empty');
   }, SIZED_IN_TICKS);
 
+  it('requestsAreAnsweredInTheOrderTheyCame', async () => {
+    // A load waiting on its file holds back the scenario and the step sent after it: they apply to the loaded world.
+    const files = memoryFiles();
+    const { host, at } = running({ t: 'scenario', name: 'signalizedCross4' }, 20, files);
+    await host.handleSlot({ t: 'saveSlot', slot: 'order' });
+    let release = (): void => {};
+    const opened = new Promise<void>((resolve) => (release = resolve));
+    const slow: SaveFiles = { ...files, read: async (slot) => (await opened, files.read(slot)) };
+    const other = otherHost(slow);
+    const loaded = other.answer({ t: 'loadSlot', slot: 'order' });
+    const built = other.answer({ t: 'scenario', name: 'signalizedCross' });
+    const stepped = other.answer({ t: 'step', ticks: 5 });
+    release();
+    expect(await loaded).toEqual(at);
+    await built;
+    const after = (await stepped) as { tick: number; fingerprint: string };
+
+    const reference = otherHost(memoryFiles());
+    reference.handle({ t: 'load', bytes: host.handle({ t: 'save' }) });
+    reference.handle({ t: 'scenario', name: 'signalizedCross' });
+    expect(after).toEqual(reference.handle({ t: 'step', ticks: 5 }));
+    expect(after.tick).toBe(at.tick + 5);
+    // Nothing waiting: an immediate request is answered at once, a failing one rejects.
+    expect(await other.answer({ t: 'fingerprint' })).toEqual(after);
+    await expect(other.answer({ t: 'load', bytes: new ArrayBuffer(1) })).rejects.toThrow(SaveError);
+  }, SIZED_IN_TICKS);
+
   it('aBrokenFileIsRejectedAndTheWorldIsUntouched', async () => {
     const { host } = running({ t: 'scenario', name: 'signalizedCross4' }, 20, memoryFiles());
     const text = new TextDecoder().decode(host.handle({ t: 'save' }));

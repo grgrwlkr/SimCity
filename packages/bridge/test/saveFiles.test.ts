@@ -114,10 +114,15 @@ describe('OPFS save files', () => {
     dir.room = 2;
     await expect(files.write('keep', bytes('newer'))).rejects.toThrow('full');
     expect(text(await files.read('keep'))).toBe('old');
-    expect(dir.files.get('keep.json.partial')!.locked, 'the partial file is closed, not left locked').toBe(false);
+    expect(dir.files.has('keep.json.partial'), 'the partial file goes, and its quota with it').toBe(false);
     dir.room = Infinity;
     await files.write('keep', bytes('newer'));
     expect(text(await files.read('keep'))).toBe('newer');
+
+    // One left over from a save the worker never finished (a closed tab) goes with its slot.
+    dir.files.set('keep.json.partial', { bytes: bytes('cut'), modified: 0, locked: false });
+    await files.remove('keep');
+    expect([...dir.files.keys()]).toEqual([]);
   });
 
   it('aFailedOpenIsTriedAgain', async () => {

@@ -49,9 +49,11 @@ import {
   type FingerprintReply,
   type GridLayers,
   type MesoLinksReply,
+  isSlotRequest,
   type ImmediateRequest,
   type Reply,
   type ReplyByRequest,
+  type Request,
   type SlotRequest,
   type TickStatsReply,
   type WorldSnapshot,
@@ -143,6 +145,9 @@ export class SimHost {
   private shownToasts: readonly ShownToast[] = [];
   /** A toast came up or retired since the last snapshot `update` reported. */
   private toastsChanged = false;
+  /** The requests `answer` holds back behind a slot request, and the end of the last of them. */
+  private waiting = 0;
+  private queue: Promise<void> = Promise.resolve();
 
   /** `saves`: where the game's save slots live; OPFS unless a test gives another. */
   constructor(
@@ -158,6 +163,28 @@ export class SimHost {
 
   handle<T extends ImmediateRequest['t']>(req: Extract<ImmediateRequest, { t: T }>): ReplyByRequest[T] {
     return this.dispatch(req) as ReplyByRequest[T];
+  }
+
+  /**
+   * Any request, strictly in arrival order: while a slot request waits on its file, the requests after it wait too, so
+   * a `loadSlot` sent before a `scenario` is applied before it. Nothing waiting, an immediate request runs at once.
+   */
+  answer(req: Request): Promise<Reply> {
+    const run = (): Reply | Promise<Reply> => (isSlotRequest(req) ? this.dispatchSlot(req) : this.dispatch(req));
+    if (this.waiting === 0 && !isSlotRequest(req)) {
+      try {
+        return Promise.resolve(run());
+      } catch (error) {
+        return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+    this.waiting += 1;
+    const result = this.queue.then(run);
+    this.queue = result.then(
+      () => void (this.waiting -= 1),
+      () => void (this.waiting -= 1),
+    );
+    return result;
   }
 
   /** A save slot request: the world is saved at once, the file written or read after. */

@@ -1,5 +1,5 @@
-// Where the game's saves live, by slot. The browser build keeps them in the worker's OPFS (`workerStore.ts`), so a save
-// never crosses to the main thread; the desktop shell may keep files (E1) behind the same interface, taking a save's
+// Where the game's saves live, by slot. The browser build asks the worker, which keeps them in OPFS
+// (packages/bridge/src/saveFiles.ts), so a save never crosses to the main thread; the desktop shell may keep files (E1) behind the same interface, taking a save's
 // bytes from the worker's `save` request and handing them back to `load`.
 import type { FingerprintReply, SaveSlotInfo, SimClient } from '@simcity/bridge';
 
