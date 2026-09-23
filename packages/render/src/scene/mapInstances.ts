@@ -84,7 +84,12 @@ export class MapInstances {
    * with `null`: under a data map the rooftops carry the map, since they cover most of a built city's tiles.
    */
   tintBuildings(of: ((tile: number) => readonly [number, number, number] | null) | null): void {
-    for (const batch of this.buildingBatches()) batch.tint(of);
+    // White bodies while tinted: a roof's own colour times the map's would shade the map, a blue roof under yellow black.
+    const white = of === null ? null : this.materials.get(this.prims.material([1, 1, 1]));
+    for (const batch of this.buildingBatches()) {
+      batch.useMaterial(white);
+      batch.tint(of);
+    }
   }
 
   buildingBatches(): InstanceBatch[] {

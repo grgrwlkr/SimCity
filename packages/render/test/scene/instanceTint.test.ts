@@ -27,4 +27,17 @@ describe('instance tint', () => {
     batch.tint(null);
     expect([7, 9, 11].map((o) => batch.tintOf(o))).toEqual([[1, 1, 1], [1, 1, 1], [1, 1, 1]]);
   });
+
+  it('underADataMapTheBodiesDrawWhiteSoTheTintIsTheMapsColourNotAShadeOfTheRoof', () => {
+    // A blue roof times a yellow map is black: the body swaps to a white material while the map is open.
+    const own = new THREE.MeshBasicNodeMaterial();
+    const white = new THREE.MeshBasicNodeMaterial();
+    const batch = new InstanceBatch(new THREE.Group(), new THREE.BoxGeometry(), own, 'buildings', 1);
+    batch.put(3, at);
+    batch.useMaterial(white);
+    batch.put(4, at); // grows the buffer: the new mesh keeps the swap
+    expect(batch.drawn.material).toBe(white);
+    batch.useMaterial(null);
+    expect(batch.drawn.material, 'its own material back').toBe(own);
+  });
 });

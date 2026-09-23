@@ -6,6 +6,8 @@ import { SlotTable } from './slots';
 export class InstanceBatch {
   private readonly slots = new SlotTable();
   private mesh: THREE.InstancedMesh;
+  /** A material drawn in place of the batch's own (a data map's white), `null` for its own. */
+  private override: THREE.Material | null = null;
 
   constructor(
     private readonly group: THREE.Group,
@@ -28,7 +30,7 @@ export class InstanceBatch {
   }
 
   private make(capacity: number): THREE.InstancedMesh {
-    const mesh = new THREE.InstancedMesh(this.geometry, this.material, capacity);
+    const mesh = new THREE.InstancedMesh(this.geometry, this.override ?? this.material, capacity);
     mesh.name = this.name;
     mesh.count = 0;
     mesh.visible = false;
@@ -74,6 +76,12 @@ export class InstanceBatch {
       c.set(rgb ?? [1, 1, 1], slot * 3);
     }
     this.mesh.instanceColor!.needsUpdate = true;
+  }
+
+  /** Draws every instance with `material` instead of the batch's own; `null` gives the batch its own back. */
+  useMaterial(material: THREE.Material | null): void {
+    this.override = material;
+    this.mesh.material = material ?? this.material;
   }
 
   /** The colour the first instance of `owner` is multiplied by; `null` when it has none. */
