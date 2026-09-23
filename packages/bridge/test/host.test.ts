@@ -26,7 +26,7 @@ import { SCENARIOS } from '../src/scenarios';
 
 const worldOf = (host: SimHost): World => (host as unknown as { world: World }).world;
 
-describe('SimHost', { timeout: SIZED_IN_TICKS }, () => {
+describe('SimHost', () => {
   // Stage 4: the HUD and the markers read the services from the snapshot; the frame draws the city's vehicles in their kinds.
   it('snapshotCarriesTheServicesOfTheCity', () => {
     const host = new SimHost(RENDER_CAPACITY);
@@ -224,7 +224,7 @@ describe('SimHost', { timeout: SIZED_IN_TICKS }, () => {
     requestState(w, 'InGame');
     step(w, 500);
     expect(reply).toEqual({ tick: 500, fingerprint: toHex64(fingerprint(w)) });
-  });
+  }, SIZED_IN_TICKS);
 
   it('commandsGoThroughTheRustJsonCodec', () => {
     const host = new SimHost(16);
@@ -332,7 +332,7 @@ describe('SimHost', { timeout: SIZED_IN_TICKS }, () => {
     expect(overlay.lanelets.length, 'the lanelets of the test city are built on the next tick').toBe(
       loadTestCity().laneletGraph.lanelets.length,
     );
-  });
+  }, SIZED_IN_TICKS);
 
   it('loadGridRejectsTheWrongSize', () => {
     const host = new SimHost(16);
@@ -366,7 +366,7 @@ describe('SimHost', { timeout: SIZED_IN_TICKS }, () => {
         (p) => [p.x, p.y],
       ),
     });
-  });
+  }, SIZED_IN_TICKS);
 
   it('signalizedScenarioDrivesVehiclesAndReportsTheLight', () => {
     const host = new SimHost(256);
@@ -381,7 +381,7 @@ describe('SimHost', { timeout: SIZED_IN_TICKS }, () => {
     const { lights, mapEditVersion } = host.handle({ t: 'snapshot' });
     expect(mapEditVersion, 'the cross is on the map').toBeGreaterThan(0);
     expect(lights).toEqual([{ minX: 40, minY: 40, maxX: 41, maxY: 41, phase: expect.any(String) }]);
-  });
+  }, SIZED_IN_TICKS);
 
   it('everyScenarioOfTheMenuStartsInTheHost', () => {
     for (const { name } of SCENARIOS) {

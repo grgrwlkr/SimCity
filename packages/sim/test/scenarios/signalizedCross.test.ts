@@ -17,7 +17,7 @@ function inGameWorld() {
   return w;
 }
 
-describe('signalized cross scenario', { timeout: SIZED_IN_TICKS }, () => {
+describe('signalized cross scenario', () => {
   it('crossDrivesOnTheRight', () => {
     const w = createWorld();
     buildSignalizedCross(w.grid);
@@ -67,7 +67,7 @@ describe('signalized cross scenario', { timeout: SIZED_IN_TICKS }, () => {
         })
         .sort(),
     );
-  });
+  }, SIZED_IN_TICKS);
 
   it('scenarioPlacesTheLightAndSendsWavesThatDrive', () => {
     const w = inGameWorld();
@@ -107,5 +107,5 @@ describe('signalized cross scenario', { timeout: SIZED_IN_TICKS }, () => {
     expect(scenario.spawned, 'the scenario sends traffic').toBeGreaterThanOrEqual(100);
     const overdue = [...bornAt].filter(([ref, born]) => w.tick - born > 1200 && resolveVehicle(w.vehicles, ref) !== undefined);
     expect(overdue.length, `cars older than 120 s still on the map (of ${bornAt.size})`).toBe(0);
-  });
+  }, SIZED_IN_TICKS);
 });

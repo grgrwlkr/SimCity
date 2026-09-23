@@ -31,7 +31,7 @@ const centreDistance = (b: Building) => Math.max(Math.abs(b.anchor.x + b.width /
 const mean = (values: readonly number[]) => values.reduce((sum, v) => sum + v, 0) / values.length;
 const ARTERIAL = new Set([2, 3]); // FourLane, SixLane by `ROAD_KINDS` index
 
-describe('metropolis', { timeout: SIZED_IN_TICKS }, () => {
+describe('metropolis', () => {
   it('theMetropolisDrivesOnTheRightAndOnlyArterialsLeaveTheMap', () => {
     const offenders = rightHandOffenders(w.grid);
     expect(offenders.slice(0, 6), `${offenders.length} lane tiles break right-hand traffic`).toEqual([]);

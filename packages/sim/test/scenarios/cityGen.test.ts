@@ -31,7 +31,7 @@ const tilesOf = (w: World, zone: string) => {
 const meanDistanceToCentre = (w: World, tiles: readonly TilePos[]) =>
   tiles.reduce((sum, t) => sum + Math.hypot(t.x - w.grid.width / 2, t.y - w.grid.height / 2), 0) / tiles.length;
 
-describe('generated city', { timeout: SIZED_IN_TICKS }, () => {
+describe('generated city', () => {
   it('cityDrivesOnTheRight', () => {
     const { w } = city();
     const offenders = rightHandOffenders(w.grid);
@@ -39,7 +39,7 @@ describe('generated city', { timeout: SIZED_IN_TICKS }, () => {
     let roads = 0;
     for (let i = 0; i < w.grid.len(); i++) if (w.grid.roadKind[i] !== 0) roads += 1;
     expect(roads, 'a road network, not a single street').toBeGreaterThan(1500);
-  });
+  }, SIZED_IN_TICKS);
 
   it('arterialCrossingsAreLit', () => {
     const { w, plan } = city();
@@ -50,7 +50,7 @@ describe('generated city', { timeout: SIZED_IN_TICKS }, () => {
       const box = w.intersections.clusterById(light.intersectionId)!;
       expect(box.tiles.length, `the box at (${box.aabbMin.x},${box.aabbMin.y}) spans both arterials`).toBeGreaterThanOrEqual(16);
     }
-  });
+  }, SIZED_IN_TICKS);
 
   it('zonesLookLikeACity', () => {
     const { w } = city();
@@ -77,7 +77,7 @@ describe('generated city', { timeout: SIZED_IN_TICKS }, () => {
       expect(Math.abs(road!.x - lot.x) + Math.abs(road!.y - lot.y), `lot (${lot.x},${lot.y}) touches its road`).toBe(1);
       expect(isIntersectionTile(w.grid, road!)).toBe(false);
     }
-  });
+  }, SIZED_IN_TICKS);
 
   it('theTrafficCityHasNoZonesAndStillItsLotsBesideTheRoads', () => {
     const { w, plan } = city({ zones: false });
@@ -101,7 +101,7 @@ describe('generated city', { timeout: SIZED_IN_TICKS }, () => {
       const route = planTilesLaneletFirst(w, start, goal);
       expect(route?.producer, `home (${home.x},${home.y}) to work (${work.x},${work.y})`).toBe('Lanelet');
     }
-  });
+  }, SIZED_IN_TICKS);
 
   it('commutersCrossTheCityWithoutJams', () => {
     // The traffic city: grown citizens would add their own trips and share the commuters' ids.

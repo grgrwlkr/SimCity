@@ -49,7 +49,7 @@ function allTiles(w: World): TilePos[] {
   return tiles;
 }
 
-describe('test city', { timeout: SIZED_IN_TICKS }, () => {
+describe('test city', () => {
   /** B3 pin: stale history entries would let Ctrl+Z write tile state from the previous map into the loaded one. */
   it('loadTestCityClearsCommandHistory', () => {
     const w = createWorld();

@@ -7,7 +7,7 @@ import { CityCommuteScenario } from '../../src/scenarios/cityCommute';
 import { routeDirectionOk } from '../../src/traffic/reroute';
 import { loadTestCity } from '../testCity';
 
-describe('city commute scenario', { timeout: SIZED_IN_TICKS }, () => {
+describe('city commute scenario', () => {
   it('commutersDriveParkAndComeBack', () => {
     const w = loadTestCity({ zones: false });
     const scenario = new CityCommuteScenario(w, { citizens: 300 });
@@ -26,7 +26,6 @@ describe('city commute scenario', { timeout: SIZED_IN_TICKS }, () => {
     expect(driving.length, 'while others drive').toBeGreaterThan(50);
     const wrongWay = driving.filter((slot) => !routeDirectionOk(w.pathPool.remainingFrom(v.pathHandle[slot]!, v.pathCursor[slot]!) ?? [], w.grid));
     expect(wrongWay.length, 'no route against a lane').toBe(0);
-    // 1.6 s alone; the whole parallel suite pushed it past the 5 s default.
   }, SIZED_IN_TICKS);
 
   it('departuresSpreadOverTheWindow', () => {
@@ -72,5 +71,5 @@ describe('city commute scenario', { timeout: SIZED_IN_TICKS }, () => {
       expect(scenario.arrived, `tick ${w.tick}: advance twice, count once`).toBe(seen);
     }
     expect(seen, 'the run saw an arrival').toBeGreaterThan(0);
-  });
+  }, SIZED_IN_TICKS);
 });

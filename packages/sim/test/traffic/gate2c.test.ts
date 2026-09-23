@@ -15,7 +15,7 @@ const TICKS = 6000;
 const CITIZENS = 300;
 const WINDOW = 600;
 
-describe('stage 2c gate', { timeout: SIZED_IN_TICKS }, () => {
+describe('stage 2c gate', () => {
   it('testCityCommuteDrivesWithoutJams', () => {
     // Without zones: from stage 3b the city would grow and its citizens would drive too.
     const w = loadTestCity({ zones: false });
