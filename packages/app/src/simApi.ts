@@ -13,6 +13,8 @@ import {
 } from '@simcity/bridge';
 import type { RenderStats, Renderer } from '@simcity/render';
 import type { AppState, EmergencyKind, MapCell, MapConfig, TilePos } from '@simcity/sim';
+import type { ClockReply } from '../../bridge/src/requests/clock';
+import type { ObserveParams, ObserveReply } from '../../bridge/src/requests/observe';
 import { createWorkerSaveStore, type SaveSlotInfo, type SaveStore } from './saves/saveStore';
 
 export interface RenderFrameSummary {
@@ -80,6 +82,10 @@ export interface SimApi {
   exportSave(): Promise<ArrayBuffer>;
   /** A save file's bytes in place of the world; rejects on a broken file, the world as it was. */
   importSave(bytes: ArrayBuffer): Promise<FingerprintReply>;
+  /** The sections of the city a live check judges a run by, read from one tick (E3; e2e/helpers/live.ts). */
+  observe(params: ObserveParams): Promise<ObserveReply>;
+  /** The clock stood at `hour`:00 of `day`, or of the next day that shows `hour`; forward only (E3). */
+  setClock(hour: number, day?: number): Promise<ClockReply>;
 }
 
 declare global {
@@ -113,6 +119,9 @@ export function installSimApi(
     height: r.view.viewport.height,
   });
   let pointerOverride: TilePos | null = null;
+  // `observe` and `setClock` join `Request` in protocol.ts at integration (dev-live handoff); until then they go out
+  // through this untyped door, which stays correct after.
+  const live = client as unknown as { request(req: { readonly t: string; readonly [key: string]: unknown }): Promise<unknown> };
   const api: SimApi = {
     debug,
     ready: client.ready.then(() => undefined),
@@ -171,6 +180,8 @@ export function installSimApi(
     load: (slot) => saves.load(slot),
     exportSave: () => client.request({ t: 'save' }),
     importSave: (bytes) => client.request({ t: 'load', bytes }),
+    observe: (params) => live.request({ t: 'observe', ...params }) as Promise<ObserveReply>,
+    setClock: (hour, day) => live.request(day === undefined ? { t: 'setClock', hour } : { t: 'setClock', hour, day }) as Promise<ClockReply>,
   };
   window.__sim = api;
   return api;
