@@ -23,4 +23,17 @@ describe('a command while paused', () => {
     expect(snapshot?.city.money).toBe(worldOf(host).city.money);
     expect(host.update(48), 'and only that frame').toBeNull();
   });
+
+  // An undo or redo while paused goes the same way: once the budget commands exist, one may change only the money.
+  it('anUndoWhilePausedReachesTheNextFrame', () => {
+    const host = new SimHost(16);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'setSpeed', speed: 'Paused' });
+    host.update(0);
+    expect(host.update(16), 'paused, nothing changed').toBeNull();
+
+    host.handle({ t: 'undoRedo', redo: false });
+    expect(host.update(32), 'the frame that applies the undo publishes').not.toBeNull();
+    expect(host.update(48), 'and only that frame').toBeNull();
+  });
 });

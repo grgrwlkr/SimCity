@@ -180,6 +180,8 @@ export class SimHost {
         return rngProbeDigest(BigInt(req.seed), req.draws);
       case 'undoRedo':
         this.world.undoRedo.push(req.redo);
+        // As with a command: an undo may change only what the publish key does not see.
+        this.lastReported = null;
         return null;
       case 'tile':
         return this.world.grid.get(req.pos) ?? null;
@@ -201,6 +203,8 @@ export class SimHost {
       case 'scenario': {
         const size = req.size ?? SCENARIOS.find((s) => s.name === req.name)?.mapSize;
         if (size !== undefined && (size !== this.world.grid.width || size !== this.world.grid.height)) this.replaceWorld(size);
+        // A world of the same size is reused: the previous city's advice must not stand until the next hour.
+        this.world.advisor.reset();
         this.scenario = SCENARIO_BUILDERS[req.name](this.world);
         // Settled into its first frame here: whether the loop ran an empty frame before the next request cannot matter.
         frame(this.world, 0);
