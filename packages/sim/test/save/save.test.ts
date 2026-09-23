@@ -6,9 +6,14 @@ import { frame, step } from '../../src/app';
 import { monthlyPayment } from '../../src/economy/economy';
 import { fingerprint, fingerprintSections } from '../../src/fingerprint';
 import { SaveError, SAVE_MIGRATIONS, SAVE_VERSION, loadWorld, parseSave, saveWorld, worldFromSave, type SaveFile, type SaveMigration } from '../../src/save/save';
-import type { SaveNode } from '../../src/save/codec';
+import { base64ToBytes, bytesToBase64, type SaveNode, type TypedArrayName } from '../../src/save/codec';
 import { SCENARIO_PRESETS } from '../../src/scenarios/catalogData';
+import { buildCity } from '../../src/scenarios/cityGen';
+import { CityCommuteScenario } from '../../src/scenarios/cityCommute';
 import { LivingCityScenario } from '../../src/scenarios/livingCity';
+import { MetropolisScenario } from '../../src/scenarios/metropolis';
+import { SignalizedCrossScenario } from '../../src/scenarios/signalizedCross';
+import { startEmergency } from '../../src/emergencies';
 import { requestState } from '../../src/state';
 import { SECOND_NS } from '../../src/timer';
 import { spawnVehicle } from '../../src/traffic/vehicles';
@@ -284,5 +289,198 @@ describe('save', () => {
     expect(back.trafficLights).toEqual([]);
     expect(back.intersections.trafficLightKeys.size).toBe(0);
     expect(back.tick).toBe(w.tick);
+  }, SIZED_IN_TICKS);
+});
+
+let busy: ReadonlyArray<readonly [string, World, string]> | null = null;
+
+/**
+ * Worlds with something in the collections a save carries, each with its save: the living city above with an
+ * emergency, a redo step, a queued command and queued trips; the `city` of commuters and a signalized crossing, which
+ * drive micro traffic; a small metropolis, which drives by meso only.
+ */
+function busyWorlds(): ReadonlyArray<readonly [string, World, string]> {
+  if (busy === null) {
+    const living = exercisedWorld();
+    const home = living.buildings.all().find((b) => b.kind === 'Residential')!;
+    startEmergency(living, 'Fire', home.anchor, 1);
+    step(living, 300);
+    const road = { kind: 'TwoLane', dir: 'East', lane: 0, flow: { kind: 'OneWay', dir: 'East' }, laneType: 'Regular' } as const;
+    living.history.push({ kind: 'SetRoad', pos: { x: 2, y: 2 }, old: { ...road, kind: 'None', flow: { kind: 'TwoWay' } }, new: road });
+    living.history.undo();
+    living.undoRedo.push(true);
+    living.commands.push({ kind: 'PlaceBuilding', pos: { x: 3, y: 3 }, building: 'Park' });
+    const trip = { citizen: 1, from: home.anchor, carParkedAt: null, to: home.anchor, purpose: 'Shop', mode: 'Car' } as const;
+    living.tripBacklog.push(trip);
+    living.mesoTraffic.pending.push({ ...trip, pocket: true, vehicle: 'Fire' });
+    living.pendingEvents.hourAdvanced.push({ hour: 3, day: 1 });
+    living.pendingEvents.tripFinished.push({ citizen: 1, purpose: 'Work' });
+    living.systemErrors.set('growth', { system: 'growth', count: 1, firstTick: 1, lastTick: 1, message: 'x' });
+    living.loans.active.push({ principal: 25_000, monthlyPayment: monthlyPayment(25_000), monthsLeft: 7 });
+
+    const city = createWorld({ gameHourNs: 60 * SECOND_NS });
+    requestState(city, 'InGame');
+    frame(city, 0);
+    const plan = buildCity(city, { zones: false });
+    new CityCommuteScenario(city, { citizens: 2000, departureWindowTicks: 3000, stayTicks: [1200, 3600], homes: plan.homes, workplaces: plan.workplaces });
+    step(city, 900);
+    // Reservations last a tick; one held across the save stands for them.
+    const box = city.intersections.clusters[0]!.id;
+    city.reservations.byIntersection.set(box, [{ vehicle: 1, state: 'Approaching', createdAtSec: 0, maneuver: 'Straight', localIdx: null, coarse: true }]);
+
+    const cross = createWorld({ mapWidth: 32, mapHeight: 32 });
+    requestState(cross, 'InGame');
+    frame(cross, 0);
+    new SignalizedCrossScenario(cross);
+    step(cross, 600);
+
+    const metropolis = createWorld({ mapWidth: 128, mapHeight: 128 });
+    requestState(metropolis, 'InGame');
+    frame(metropolis, 0);
+    new MetropolisScenario(metropolis);
+    step(metropolis, 600);
+
+    busy = [
+      ['livingCity', living, saveWorld(living)],
+      ['city', city, saveWorld(city)],
+      ['signalizedCross', cross, saveWorld(cross)],
+      ['metropolis', metropolis, saveWorld(metropolis)],
+    ];
+  }
+  return busy;
+}
+
+/** What a node holds: the `v` of a tagged node, the node itself otherwise. */
+const inner = (node: unknown): Record<string | number, SaveNode> => {
+  const n = node as Record<string, unknown>;
+  return (!Array.isArray(n) && Object.hasOwn(n, '$') ? n.v : n) as Record<string | number, SaveNode>;
+};
+const items = (node: unknown): SaveNode[] => inner(node) as unknown as SaveNode[];
+
+/** `text` with the node at `path` (keys and indices, tagged nodes looked through) replaced by `edit` of it; `undefined` drops it. */
+const at = (text: string, path: ReadonlyArray<string | number>, edit: (node: SaveNode) => SaveNode | undefined): string =>
+  edited(text, (f) => {
+    let parent = inner(f);
+    for (const key of path.slice(0, -1)) parent = inner(parent[key]);
+    const last = path.at(-1)!;
+    parent[last] = edit(parent[last]!) as SaveNode;
+  });
+
+const TYPED_ARRAY_BYTES: Readonly<Record<TypedArrayName, number>> = {
+  Int8Array: 1,
+  Uint8Array: 1,
+  Uint8ClampedArray: 1,
+  Int16Array: 2,
+  Uint16Array: 2,
+  Int32Array: 4,
+  Uint32Array: 4,
+  Float32Array: 4,
+  Float64Array: 8,
+  BigInt64Array: 8,
+  BigUint64Array: 8,
+};
+const lengthOf = (node: SaveNode): number => {
+  const ta = node as { t: TypedArrayName; v: string };
+  return base64ToBytes(ta.v, 'test').length / TYPED_ARRAY_BYTES[ta.t];
+};
+/** A typed array node cut to its first `keep` elements, or grown by zeros to them. */
+const resized = (node: SaveNode, keep: number): SaveNode => {
+  const ta = node as { $: 'ta'; t: TypedArrayName; v: string };
+  const bytes = new Uint8Array(keep * TYPED_ARRAY_BYTES[ta.t]);
+  bytes.set(base64ToBytes(ta.v, 'test').subarray(0, bytes.length));
+  return { ...ta, v: bytesToBase64(bytes) };
+};
+
+/** Each broken file is refused with its message; the world the file came from is as it was and loads as before. */
+function expectRefused(world: World, text: string, cases: ReadonlyArray<readonly [string, string, RegExp]>): void {
+  const before = fingerprint(world);
+  for (const [what, broken, message] of cases) expect(() => loadWorld(broken), what).toThrow(message);
+  expect(fingerprint(world), 'a refused load leaves the world as it was').toBe(before);
+  expect(fingerprint(loadWorld(text))).toBe(before);
+}
+
+describe('save schemas', () => {
+  it('everyCollectionOfASaveHasItsShape', () => {
+    // Mirror of `fingerprintCoversEveryStateField`: every array, map, set, object and class instance a load meets is held
+    // to a template, so a new collection or union fails here until `save/rules.ts` gives it a shape.
+    const unchecked = new Set<string>();
+    for (const [name, , text] of busyWorlds()) {
+      worldFromSave(parseSave(text), (path) => void unchecked.add(`${name}: ${path.replace(/\[\d+\]/g, '[]').replace(/\{(?:key )?\d+\}/g, '{}')}`));
+    }
+    expect([...unchecked].sort()).toEqual([]);
+  }, SIZED_IN_TICKS);
+
+  it('everyUnionInASaveIsHeldToItsVariant', () => {
+    const [, living, text] = busyWorlds()[0]!;
+    const tile = { x: 1, y: 1 };
+    const world = inner(parseSave(text).world);
+    const zoneStep = items(inner(world.history).undoStack).findIndex((n) => inner(n).kind === 'SetZone');
+    expect(zoneStep, 'the undo stack holds a SetZone').toBeGreaterThanOrEqual(0);
+    // A tile the file shares: the anchor of the first building refers to one defined before it.
+    const anchor = inner(items(inner(world.buildings).list)[0]).anchor as { $: string; id: number };
+    expect(anchor.$).toBe('ref');
+    const state = ['world', 'vehicles', 'trafficState', 3] as const;
+    expectRefused(living, text, [
+      ['a traffic state of no kind', at(text, state, () => ({ kind: 'Parked' })), /^save rejected: world\.vehicles\.trafficState\[3\]\.kind: expected one of FreeFlow \| Approaching \| Stopped \| WaitingForGreen \| Accelerating \| CrossingIntersection, found "Parked"$/],
+      ['a Stopped state without its queue position', at(text, state, () => ({ kind: 'Stopped', intersection: 'a', stopTile: tile })), /^save rejected: world\.vehicles\.trafficState\[3\]\.queuePosition: missing$/],
+      ['a FreeFlow state with a stop tile', at(text, state, () => ({ kind: 'FreeFlow', stopTile: tile })), /^save rejected: world\.vehicles\.trafficState\[3\]\.stopTile: no such field in the world$/],
+      ['a traffic state that is a tile', at(text, state, () => ({ $: 'ref', id: anchor.id })), /^save rejected: world\.vehicles\.trafficState\[3\]: refers to object #\d+, which is not of the shape this place holds$/],
+      ['a queued command of no kind', at(text, ['world', 'commands', 0], () => ({ kind: 'Nuke', pos: tile })), /^save rejected: world\.commands\[0\]\.kind: expected one of GenerateMap \| SetRoad \| .* \| TakeLoan, found "Nuke"$/],
+      ['a PlaceBuilding command without its building', at(text, ['world', 'commands', 0, 'building'], () => undefined), /^save rejected: world\.commands\[0\]\.building: missing$/],
+      ['an undo step of no kind', at(text, ['world', 'history', 'undoStack', 0], () => ({ kind: 'LoadGame', slot: 1 })), /^save rejected: world\.history\.undoStack\[0\]\.kind: expected one of SetRoad \| SetZone \| PlaceBuilding \| EraseTile, found "LoadGame"$/],
+      ['a SetZone undo step without its old density', at(text, ['world', 'history', 'undoStack', zoneStep, 'oldDensity'], () => undefined), new RegExp(`^save rejected: world\\.history\\.undoStack\\[${zoneStep}\\]\\.oldDensity: missing$`)],
+      ['a one-way road of no direction', at(text, ['world', 'history', 'redoStack', 0, 'new', 'flow'], () => ({ kind: 'OneWay' })), /^save rejected: world\.history\.redoStack\[0\]\.new\.flow\.dir: missing$/],
+      ['a road flow of no kind', at(text, ['world', 'history', 'redoStack', 0, 'old', 'flow'], () => ({ kind: 'Roundabout' })), /^save rejected: world\.history\.redoStack\[0\]\.old\.flow\.kind: expected one of TwoWay \| OneWay, found "Roundabout"$/],
+      ['a building in no phase', at(text, ['world', 'buildings', 'list', 0, 'phase'], () => ({ kind: 'Ruined' })), /^save rejected: world\.buildings\.list\[0\]\.phase\.kind: expected one of UnderConstruction \| Operational, found "Ruined"$/],
+      ['a building under construction for no hours', at(text, ['world', 'buildings', 'list', 0, 'phase'], () => ({ kind: 'UnderConstruction' })), /^save rejected: world\.buildings\.list\[0\]\.phase\.hoursRemaining: missing$/],
+      ['a trip by bike', at(text, ['world', 'tripBacklog', 0, 'mode'], () => 'Bike'), /^save rejected: world\.tripBacklog\[0\]\.mode: expected one of Walk \| Car, found "Bike"$/],
+      ['a pending trip in a tank', at(text, ['world', 'mesoTraffic', 'pending', 0, 'vehicle'], () => 'Tank'), /^save rejected: world\.mesoTraffic\.pending\[0\]\.vehicle: expected one of Truck \| Bus \| Fire \| Police \| Ambulance, found "Tank"$/],
+      ['a trip finished for no purpose', at(text, ['world', 'pendingEvents', 'tripFinished', 0, 'purpose'], () => 'Joyride'), /^save rejected: world\.pendingEvents\.tripFinished\[0\]\.purpose: expected one of Work \| .* \| Transit, found "Joyride"$/],
+      ['a flood', at(text, ['world', 'emergencies', 'active', 0, 'kind'], () => 'Flood'), /^save rejected: world\.emergencies\.active\[0\]\.kind: expected one of Fire \| Crime \| Medical, found "Flood"$/],
+      ['an emergency without the stations it tried', at(text, ['world', 'emergencies', 'active', 0, 'triedStations'], () => undefined), /^save rejected: world\.emergencies\.active\[0\]\.triedStations: missing$/],
+      ['a service vehicle in flight', at(text, ['world', 'fleet', 'services', 0, 'state'], () => 'Flying'), /^save rejected: world\.fleet\.services\[0\]\.state: expected one of AtStation \| EnRoute \| OnScene \| Returning, found "Flying"$/],
+      ['a bus parked', at(text, ['world', 'fleet', 'buses', 0, 'state'], () => 'Parked'), /^save rejected: world\.fleet\.buses\[0\]\.state: expected one of Driving \| Dwelling \| Waiting, found "Parked"$/],
+      ['a light in no phase', at(text, ['world', 'trafficLights', 0, 'phase'], () => 'Blue'), /^save rejected: world\.trafficLights\[0\]\.phase: expected one of .*, found "Blue"$/],
+    ]);
+    const [, city, cityText] = busyWorlds()[1]!;
+    expectRefused(city, cityText, [
+      [
+        'a reservation neither approaching nor inside',
+        at(cityText, ['world', 'reservations', 'byIntersection', 0, 1, 0, 'state'], () => 'Parked'),
+        /^save rejected: world\.reservations\.byIntersection\{0\}\[0\]\.state: expected one of Approaching \| Inside, found "Parked"$/,
+      ],
+    ]);
+  }, SIZED_IN_TICKS);
+
+  it('mesoLengthsMatchTheGraphAndTheCars', () => {
+    const [, w, text] = busyWorlds()[3]!;
+    const world = inner(parseSave(text).world);
+    const meso = inner(world.meso);
+    const traffic = inner(world.mesoTraffic);
+    const links = meso.linkCount as number;
+    const cars = lengthOf(traffic.citizen!);
+    const tiles = (meso.width as number) * (meso.height as number);
+    const successors = lengthOf(meso.succLink!);
+    expect(links, 'the metropolis has links').toBeGreaterThan(0);
+    expect(traffic.linksFor, 'its traffic is sized for its graph').toBe(meso.builtFor);
+    const cut = (resource: string, field: string, keep: number) => at(text, ['world', resource, field], (n) => resized(n, keep));
+    expectRefused(w, text, [
+      ['a graph layer a link short', cut('meso', 'lanes', links - 1), new RegExp(`^save rejected: world\\.meso\\.lanes: ${links - 1} links, the graph has ${links}$`)],
+      ['a graph layer a link long', cut('meso', 'startX', links + 1), new RegExp(`^save rejected: world\\.meso\\.startX: ${links + 1} links, the graph has ${links}$`)],
+      ['successor starts one short', cut('meso', 'succStart', links), new RegExp(`^save rejected: world\\.meso\\.succStart: ${links} entries for ${links} links$`)],
+      ['successors cut short', cut('meso', 'succCluster', successors - 1), new RegExp(`^save rejected: world\\.meso\\.succCluster: ${successors - 1} successors, succStart ends at ${successors}$`)],
+      ['a tile layer cut short', cut('meso', 'tileOffset', tiles - 1), new RegExp(`^save rejected: world\\.meso\\.tileOffset: ${tiles - 1} tiles on a graph of ${tiles}$`)],
+      ['a link layer of traffic a link short', cut('mesoTraffic', 'head', links - 1), new RegExp(`^save rejected: world\\.mesoTraffic\\.head: ${links - 1} links, the graph has ${links}$`)],
+      ['link times cut short', cut('mesoTraffic', 'linkSeconds', 3), new RegExp(`^save rejected: world\\.mesoTraffic\\.linkSeconds: 3 links, the graph has ${links}$`)],
+      ['a car layer cut short', cut('mesoTraffic', 'next', cars - 1), new RegExp(`^save rejected: world\\.mesoTraffic\\.next: ${cars - 1} cars, the other car layers ${cars}$`)],
+      [
+        'more routes than cars',
+        at(text, ['world', 'mesoTraffic', 'routes'], (n) => [...items(n), ...Array.from({ length: cars }, () => ({ $: 'ta', t: 'Int32Array', v: '' }) as SaveNode)]),
+        new RegExp(`^save rejected: world\\.mesoTraffic\\.routes: \\d+ routes for ${cars} cars$`),
+      ],
+      ['a high-water mark past the cars', at(text, ['world', 'mesoTraffic', 'highWater'], () => cars + 1), new RegExp(`^save rejected: world\\.mesoTraffic\\.highWater: ${cars + 1} in ${cars} cars$`)],
+      ['more cars than ever came', at(text, ['world', 'mesoTraffic', 'count'], () => (traffic.highWater as number) + 1), /^save rejected: world\.mesoTraffic\.count: \d+ above the high-water mark \d+$/],
+      ['a due heap with a key too many', at(text, ['world', 'mesoTraffic', 'due', 'keys'], (n) => [...items(n), 1]), /^save rejected: world\.mesoTraffic\.due: \d+ keys for \d+ links$/],
+    ]);
   }, SIZED_IN_TICKS);
 });
