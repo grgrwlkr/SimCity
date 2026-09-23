@@ -19,7 +19,25 @@ const GROUND: Readonly<Record<TileClass, readonly [number, number, number, Atlas
   building: [0.66, 0.66, 0.64, 'Sidewalk'],
 };
 
-const lin = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+/** The tile colours without their atlas cell: the base a data map is laid over, read without a copy per tile. */
+const GROUND_RGB = Object.fromEntries(Object.entries(GROUND).map(([k, [r, g, b]]) => [k, [r, g, b] as const])) as Record<TileClass, readonly [number, number, number]>;
+
+const linExact = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+/** `linExact` sampled over 0..1: a data map's first repaint of an 800 map converts millions of channels, a power each. */
+const LIN_STEPS = 4096;
+const LIN_TABLE = Float64Array.from({ length: LIN_STEPS + 1 }, (_, i) => linExact(i / LIN_STEPS));
+
+/**
+ * sRGB 0..1 to linear light. Between samples of the table the curve is interpolated, within 3e-8 of the power; the
+ * straight toe below the knee (and one sample past it, where a step would straddle the knee) and 1 and above are exact.
+ */
+export function srgbToLinear(c: number): number {
+  if (c < 0.041 || c >= 1) return linExact(c);
+  const x = c * LIN_STEPS;
+  const i = Math.floor(x);
+  const a = LIN_TABLE[i]!;
+  return a + (LIN_TABLE[i + 1]! - a) * (x - i);
+}
 
 export interface GroundGeometry {
   readonly positions: Float32Array;
@@ -78,9 +96,9 @@ export function groundColors(map: MapLayersReply, { x0, y0, x1, y1 }: Area, colo
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       const idx = y * map.width + x;
-      const plain = GROUND[tileClass(map, idx)];
-      const [r, g, b] = paint === null ? plain : paint(idx, [plain[0], plain[1], plain[2]]);
-      const [lr, lg, lb] = [lin(r), lin(g), lin(b)];
+      const plain = GROUND_RGB[tileClass(map, idx)];
+      const [r, g, b] = paint === null ? plain : paint(idx, plain);
+      const [lr, lg, lb] = [srgbToLinear(r), srgbToLinear(g), srgbToLinear(b)];
       for (let k = 0; k < 6; k++, v += 3) {
         colors[v] = lr;
         colors[v + 1] = lg;
