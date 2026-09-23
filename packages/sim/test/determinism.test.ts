@@ -8,6 +8,7 @@ import { buildingPlace, streetPlace } from '../src/parking';
 import { fingerprint, fingerprintSections } from '../src/fingerprint';
 import { buildHeadlessGame, reseed } from '../src/headless';
 import { firstDivergence } from '../src/probe';
+import { CitizenTripCounter } from '../src/scenarios/livingCity';
 import { requestState } from '../src/state';
 import { refSlot, spawnVehicle } from '../src/traffic/vehicles';
 import type { World } from '../src/world';
@@ -209,6 +210,23 @@ describe('determinism', () => {
       ['shoppingStats', (w) => void (w.shoppingStats.demandEvents += 1)],
       ['commuteStats', (w) => void (w.commuteStats.samples += 1)],
       ['classDemand', (w) => void (w.classDemand.byClass.Commercial.Low = 0.5)],
+      ['scenario.activeId', (w) => void (w.scenario.activeId = 'starter')],
+      ['scenario.objectives', (w) => void w.scenario.objectives.push({ kind: 'MoneyAtLeast', target: 1 })],
+      ['scenario.met', (w) => void w.scenario.met.push(true)],
+      ['scenario.isCompleted', (w) => void (w.scenario.isCompleted = true)],
+      ['scenarioRuntime', (w) => void (w.scenarioRuntime = new CitizenTripCounter())],
+      [
+        'scenarioRuntime.state',
+        (w) => {
+          const counter = new CitizenTripCounter();
+          w.scenarioRuntime = counter;
+          const before = fingerprint(w);
+          w.tick += 1;
+          counter.advance(w);
+          w.tick -= 1;
+          expect(fingerprint(w), 'fingerprint is blind to the state of the scenario runtime').not.toBe(before);
+        },
+      ],
     );
 
     for (const [label, mutate] of mutations) {

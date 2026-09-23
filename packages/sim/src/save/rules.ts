@@ -25,6 +25,10 @@ export const NULLABLE_FIELDS: DecodeRules['nullable'] = {
   'world.motionStats.worstTile': tile(),
   'world.nextState': { state: 'InGame', ifNeq: false },
   'world.debugFailSystem': '',
+  'world.scenario.activeId': '',
+  'world.scenario.activeName': '',
+  // One of the runtimes of `ScenarioRuntime`: its class is named in the save and held to the fields it saved.
+  'world.scenarioRuntime': undefined,
 };
 
 /** A building as `newBuilding` makes it; its phase is a union and any of its shapes passes. */
@@ -41,4 +45,7 @@ const building = {
 export const ELEMENT_TEMPLATES: DecodeRules['elements'] = {
   'world.buildings.list': building,
   'world.buildings.byId': building,
+  // Every `ScenarioObjective` is a kind and a target.
+  'world.scenario.objectives': { kind: 'PopulationAtLeast', target: 0 },
+  'world.scenario.met': false,
 };

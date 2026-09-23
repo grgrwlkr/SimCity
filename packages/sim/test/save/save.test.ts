@@ -7,6 +7,7 @@ import { monthlyPayment } from '../../src/economy/economy';
 import { fingerprint, fingerprintSections } from '../../src/fingerprint';
 import { SaveError, SAVE_VERSION, loadWorld, parseSave, saveWorld, worldFromSave, type SaveFile, type SaveMigration } from '../../src/save/save';
 import type { SaveNode } from '../../src/save/codec';
+import { SCENARIO_PRESETS } from '../../src/scenarios/catalogData';
 import { LivingCityScenario } from '../../src/scenarios/livingCity';
 import { requestState } from '../../src/state';
 import { SECOND_NS } from '../../src/timer';
@@ -37,7 +38,9 @@ function exercisedWorld(): World {
     const w = createWorld({ gameHourNs: 60 * SECOND_NS });
     requestState(w, 'InGame');
     frame(w, 0);
-    new LivingCityScenario(w);
+    // The scenario is the world's to keep, and the city is measured against the objectives of a preset.
+    w.scenarioRuntime = new LivingCityScenario(w);
+    Object.assign(w.scenario, { activeId: 'starter', activeName: 'Starter Town', objectives: SCENARIO_PRESETS[1]!.objectives.map((o) => ({ ...o })) });
     step(w, 700);
     // What a living city leaves empty between ticks: a queued command, an undo step, a micro vehicle, an event, a toast.
     w.commands.push({ kind: 'SetZone', pos: { x: 1, y: 1 }, zone: 'Residential', density: 'High' });

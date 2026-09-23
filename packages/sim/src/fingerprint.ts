@@ -552,6 +552,14 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
   ['notifications', (h, w) => hashNotifications(h, w.notifications)],
   ['milestones', (h, w) => h.u32(w.milestones.bestPopulation)],
   [
+    'scenario',
+    (h, w) => {
+      h.str(stableJson(w.scenario));
+      // Every own field of the runtime, its private ones and its generator's state words included.
+      h.str(stableJson(w.scenarioRuntime));
+    },
+  ],
+  [
     'advisor',
     (h, w) => {
       h.int(w.advisor.version);
