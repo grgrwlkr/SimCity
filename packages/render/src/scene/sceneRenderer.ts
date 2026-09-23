@@ -21,7 +21,9 @@ import { EmergencyMarkers, type EmergencyView } from '../emergencyMarkers';
 import { FpsMeter } from '../fpsMeter';
 import { interpolateHeading, interpolatePositions, pairVehicles } from '../interpolate';
 import { lampSignal } from '../lamps';
+import { dataMapInputs, dataMapPaint, type DataMapLayer, type TilePaint } from '../dataMap';
 import { changedChunks, chunkGrid, groupTiles, groupsOfChunks } from '../mapChunks';
+import type { OverlayMode } from '../overlays';
 import { LAMP_COLORS, VEHICLE_COLORS } from '../palette';
 import { PlaybackClock } from '../playback';
 import { RENDER_CONFIG } from '../renderConfig';
@@ -30,9 +32,9 @@ import { RenderPrimitives, type CompositeMesh } from '../renderPrimitives';
 import { drawnScale, vehicleScale } from '../vehicleLook';
 import { SceneMaterials, createAtlasTexture } from './atlasNode';
 import { MapInstances } from './mapInstances';
-import { buildGroundArea } from './ground';
+import { buildGroundArea, groundColors } from './ground';
 import { SceneLighting, hourFromQuery } from './lighting';
-import { configWithout, effectsOffFromQuery, exposureOf, postGraph, type PostPassName } from './post';
+import { configWithout, effectsOffFromQuery, exposureOf, postGraph, vignetteGateFor, type PostPassName, type VignetteGate } from './post';
 import type { Renderer } from './renderer';
 
 /** Sim frames kept for playback: the display draws a gap or two behind the newest one. */
@@ -60,6 +62,10 @@ export interface SceneStats extends RenderStats {
   readonly post: readonly PostPassName[];
   /** The hour the light was last drawn at (the world's clock, or `?hour=` when pinned). */
   readonly hour: number;
+  /** The sun's three.js intensity in the last frame: noon's while a data map is open. */
+  readonly sunIntensity: number;
+  /** Whether the last frame darkened its corners: never under a data map. */
+  readonly vignette: boolean;
 }
 
 /** A turn arrow along +x, `size` world units long, centred on the origin (the debug renderer's). */
@@ -85,7 +91,11 @@ export class SceneRenderer implements Renderer {
   private readonly config = configWithout(RENDER_CONFIG, this.off);
   private readonly settings = resolveRenderSettings(this.config);
   private readonly lighting = new SceneLighting(this.settings);
-  private readonly pipelines = new Map<THREE.Camera, { pipeline: THREE.RenderPipeline; passes: readonly PostPassName[] }>();
+  private readonly pipelines = new Map<THREE.Camera, { pipeline: THREE.RenderPipeline; passes: readonly PostPassName[]; vignetteGate: VignetteGate | null }>();
+  private vignetteDrawn = false;
+  /** The data map on screen and the numbers it is painted from; `None` draws the plain ground. */
+  private dataMap: { readonly overlay: OverlayMode; readonly layer: DataMapLayer | null } = { overlay: 'None', layer: null };
+  private dataMapMs = 0;
   private postPasses: readonly PostPassName[] = [];
   /** Noon until the world's clock arrives; `?hour=` overrides the clock while it is in the address. */
   private worldHour = 12;
@@ -230,7 +240,7 @@ export class SceneRenderer implements Renderer {
     for (const index of groups) {
       const old = this.chunkMeshes.get(index);
       if (old !== undefined) this.removeChunk(old);
-      const g = buildGroundArea(map, groupTiles(map.width, map.height, index));
+      const g = buildGroundArea(map, groupTiles(map.width, map.height, index), this.paintFor(map));
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.BufferAttribute(g.positions, 3));
       geometry.setAttribute('normal', new THREE.BufferAttribute(g.normals, 3));
@@ -254,8 +264,31 @@ export class SceneRenderer implements Renderer {
     if (this.cars === null) this.createVehicleMeshes(map.tileSize);
   }
 
-  /** Load colouring of links is the data-map stage's (U4): the scene draws none yet. */
+  /** Load colouring of links is the debug renderer's; the scene's traffic map paints the roads instead. */
   setLinks(): void {}
+
+  /**
+   * Paints the ground with a data map (or back to plain with `None`), and lights the frame for reading it: noon and no
+   * vignette. Only the colour attributes are rewritten; the same overlay at the same version paints nothing.
+   */
+  setDataMap(overlay: OverlayMode, layer: DataMapLayer | null): void {
+    const same = overlay === this.dataMap.overlay && layer?.version !== undefined && layer.version === this.dataMap.layer?.version;
+    this.dataMap = { overlay, layer };
+    if (same || this.map === null) return;
+    const started = performance.now();
+    const map = this.map;
+    const paint = this.paintFor(map);
+    for (const [index, mesh] of this.chunkMeshes) {
+      const colors = mesh.geometry.getAttribute('color') as THREE.BufferAttribute;
+      groundColors(map, groupTiles(map.width, map.height, index), colors.array as Float32Array, paint);
+      colors.needsUpdate = true;
+    }
+    this.dataMapMs = performance.now() - started;
+  }
+
+  private paintFor(map: MapLayersReply): TilePaint | null {
+    return dataMapPaint(this.dataMap.overlay, dataMapInputs(map, this.dataMap.layer));
+  }
 
   /** Grid, boxes and lanelets are the debug renderer's (`?debug=1`). */
   setOverlay(): void {}
@@ -336,6 +369,10 @@ export class SceneRenderer implements Renderer {
       setMapMs: Math.round(this.setMapMs),
       post: this.postPasses,
       hour: this.lighting.litHour,
+      sunIntensity: this.lighting.sun.intensity,
+      vignette: this.vignetteDrawn,
+      dataMap: this.dataMap.overlay,
+      dataMapMs: Math.round(this.dataMapMs * 10) / 10,
     };
   }
 
@@ -431,7 +468,8 @@ export class SceneRenderer implements Renderer {
     this.updateMarkers(nowMs);
     this.reportView(this.view.bounds(), nowMs);
     const camera = this.frameCamera();
-    this.lighting.apply(this.pinnedHour ?? this.worldHour);
+    // A data map is read at noon and without the vignette: night and dark corners would change the colours it reads by.
+    this.lighting.apply(this.pinnedHour ?? this.worldHour, this.dataMap.overlay);
     this.lighting.useCamera(camera);
     this.renderer.info.reset();
     this.pipelineFor(camera).render();
@@ -452,10 +490,12 @@ export class SceneRenderer implements Renderer {
       const pipeline = new THREE.RenderPipeline(this.renderer);
       pipeline.outputColorTransform = false;
       pipeline.outputNode = graph.output;
-      entry = { pipeline, passes: graph.passes };
+      entry = { pipeline, passes: graph.passes, vignetteGate: graph.vignetteGate };
       this.pipelines.set(camera, entry);
     }
     this.postPasses = entry.passes;
+    if (entry.vignetteGate !== null) entry.vignetteGate.value = vignetteGateFor(this.config.vignette, this.dataMap.overlay);
+    this.vignetteDrawn = entry.vignetteGate?.value === 1;
     return entry.pipeline;
   }
 

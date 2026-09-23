@@ -55,6 +55,20 @@ describe('scene lighting', () => {
     for (let i = 1; i < splits.length; i++) expect(splits[i]!).toBeGreaterThan(splits[i - 1]!);
   });
 
+  it('aDataMapIsLitAtNoonWhateverTheClockSays', () => {
+    const lighting = new SceneLighting(resolveRenderSettings(RENDER_CONFIG));
+    lighting.apply(12);
+    const noon = lighting.sun.intensity;
+    lighting.apply(0);
+    const midnight = lighting.sun.intensity;
+    expect(midnight).toBeLessThan(noon / 2);
+    lighting.apply(0, 'LandValue');
+    expect(lighting.sun.intensity, 'a data map is read in daylight').toBe(noon);
+    expect(lighting.overlayShown).toBe('LandValue');
+    lighting.apply(0, 'Path');
+    expect(lighting.sun.intensity, 'the path view is not a data map').toBe(midnight);
+  });
+
   it('theHourCanBePinnedFromTheAddressBar', () => {
     expect(hourFromQuery('?renderer=scene&hour=12')).toBe(12);
     expect(hourFromQuery('?hour=0')).toBe(0);

@@ -3,6 +3,7 @@
 import type { MapLayersReply } from '@simcity/bridge';
 import { tileToWorld } from '@simcity/sim';
 import { uvIn, type AtlasCell } from '../atlas';
+import type { TilePaint } from '../dataMap';
 import { CHUNK_TILES } from '../mapChunks';
 import { tileClass, type TileClass } from '../palette';
 
@@ -34,8 +35,11 @@ export function buildGroundChunk(map: MapLayersReply, cx: number, cy: number): G
   return buildGroundArea(map, { x0, y0, x1: Math.min(x0 + CHUNK_TILES, map.width), y1: Math.min(y0 + CHUNK_TILES, map.height) });
 }
 
-/** The ground of tiles `x0..x1` × `y0..y1`: what the scene draws per group of `mapChunks.ts`. */
-export function buildGroundArea(map: MapLayersReply, { x0, y0, x1, y1 }: { x0: number; y0: number; x1: number; y1: number }): GroundGeometry {
+type Area = { x0: number; y0: number; x1: number; y1: number };
+
+/** The ground of tiles `x0..x1` × `y0..y1`: what the scene draws per group of `mapChunks.ts`; `paint` is a data map's. */
+export function buildGroundArea(map: MapLayersReply, area: Area, paint: TilePaint | null = null): GroundGeometry {
+  const { x0, y0, x1, y1 } = area;
   const tiles = Math.max(x1 - x0, 0) * Math.max(y1 - y0, 0);
   const positions = new Float32Array(tiles * 18);
   const colors = new Float32Array(tiles * 18);
@@ -55,15 +59,33 @@ export function buildGroundArea(map: MapLayersReply, { x0, y0, x1, y1 }: { x0: n
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       const c = tileToWorld(cfg, { x, y });
-      const [r, g, b, cell] = GROUND[tileClass(map, y * map.width + x)];
+      const cell = GROUND[tileClass(map, y * map.width + x)][3];
       for (const [sx, sy] of corners) {
         positions.set([c.x + sx * half, c.y + sy * half, 0], v * 3);
-        colors.set([lin(r), lin(g), lin(b)], v * 3);
         normals.set([0, 0, 1], v * 3);
         uvs.set(uvIn(cell, (sx + 1) / 2, (sy + 1) / 2), v * 2);
         v += 1;
       }
     }
   }
+  groundColors(map, area, colors, paint);
   return { positions, uvs, colors, normals };
+}
+
+/** Writes the area's vertex colours into `colors` in place, linear: the ground's own, or a data map's over it. */
+export function groundColors(map: MapLayersReply, { x0, y0, x1, y1 }: Area, colors: Float32Array, paint: TilePaint | null): void {
+  let v = 0;
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const idx = y * map.width + x;
+      const [r0, g0, b0] = GROUND[tileClass(map, idx)];
+      const [r, g, b] = paint === null ? [r0, g0, b0] : paint(idx, [r0, g0, b0]);
+      const [lr, lg, lb] = [lin(r), lin(g), lin(b)];
+      for (let k = 0; k < 6; k++, v += 3) {
+        colors[v] = lr;
+        colors[v + 1] = lg;
+        colors[v + 2] = lb;
+      }
+    }
+  }
 }

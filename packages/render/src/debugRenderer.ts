@@ -25,7 +25,9 @@ import { FpsMeter } from './fpsMeter';
 import { interpolateHeading, interpolatePositions, pairVehicles } from './interpolate';
 import { lampSignal } from './lamps';
 import { linkRect, loadColor } from './linkLoad';
-import { buildChunkGeometry, changedChunks, chunkGrid } from './mapChunks';
+import { dataMapInputs, dataMapPaint, type DataMapLayer, type TilePaint } from './dataMap';
+import { buildChunkGeometry, changedChunks, chunkColors, chunkGrid } from './mapChunks';
+import type { OverlayMode } from './overlays';
 import { LAMP_COLORS, VEHICLE_COLORS } from './palette';
 import { PlaybackClock } from './playback';
 import { drawnScale, vehicleScale } from './vehicleLook';
@@ -72,6 +74,10 @@ export interface RenderStats {
    * camera came from, and a check reading it back could not fail. Measure it through the pick path instead.
    */
   readonly projection: ProjectionPlan['kind'];
+  /** The data map the ground is painted with; `None` is the plain map. */
+  readonly dataMap: OverlayMode;
+  /** Main-thread milliseconds the last data map took to paint over the whole map. */
+  readonly dataMapMs: number;
 }
 
 /** A turn arrow along +x, `size` world units long, centred on the origin. */
@@ -146,6 +152,8 @@ export class DebugRenderer {
   private emergencies: readonly EmergencyView[] = [];
   private markerMesh: THREE.InstancedMesh | null = null;
   private lastDrawMs: number | null = null;
+  private dataMap: { readonly overlay: OverlayMode; readonly layer: DataMapLayer | null } = { overlay: 'None', layer: null };
+  private dataMapMs = 0;
 
   private constructor(
     private readonly renderer: THREE.WebGPURenderer,
@@ -217,7 +225,7 @@ export class DebugRenderer {
     for (const index of changed) {
       const old = this.chunkMeshes.get(index);
       if (old !== undefined) this.removeMesh(old);
-      const g = buildChunkGeometry(map, index % cols, Math.floor(index / cols));
+      const g = buildChunkGeometry(map, index % cols, Math.floor(index / cols), this.paintFor(map));
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.BufferAttribute(g.positions, 3));
       geometry.setAttribute('color', new THREE.BufferAttribute(g.colors, 3));
@@ -230,6 +238,30 @@ export class DebugRenderer {
     this.map = map;
     this.pendingMapEditVersion = map.mapEditVersion;
     if (this.vehicles === null) this.createVehicleMesh(map.tileSize);
+  }
+
+  /**
+   * Paints the map with a data map (`None` back to plain), colours exactly as the legend gives them: the screenshot reads
+   * a tile's value back. Rewrites the chunks' colour attributes only; the same overlay at the same version paints nothing.
+   */
+  setDataMap(overlay: OverlayMode, layer: DataMapLayer | null): void {
+    const same = overlay === this.dataMap.overlay && layer?.version !== undefined && layer.version === this.dataMap.layer?.version;
+    this.dataMap = { overlay, layer };
+    if (same || this.map === null) return;
+    const started = performance.now();
+    const map = this.map;
+    const paint = this.paintFor(map);
+    const { cols } = chunkGrid(map.width, map.height);
+    for (const [index, mesh] of this.chunkMeshes) {
+      const colors = mesh.geometry.getAttribute('color') as THREE.BufferAttribute;
+      chunkColors(map, index % cols, Math.floor(index / cols), colors.array as Float32Array, paint);
+      colors.needsUpdate = true;
+    }
+    this.dataMapMs = performance.now() - started;
+  }
+
+  private paintFor(map: MapLayersReply): TilePaint | null {
+    return dataMapPaint(this.dataMap.overlay, dataMapInputs(map, this.dataMap.layer));
   }
 
   /** A rectangle for every meso link, coloured by the loads frames carry; replaces those of an older graph. */
@@ -398,6 +430,8 @@ export class DebugRenderer {
       playbackTick: Number.isNaN(this.playbackTick) ? null : this.playbackTick,
       emergencyMarkers: this.markerMesh?.count ?? 0,
       hovered: this.hovered,
+      dataMap: this.dataMap.overlay,
+      dataMapMs: Math.round(this.dataMapMs * 10) / 10,
     };
   }
 

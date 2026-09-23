@@ -4,11 +4,11 @@
 // describe colours the map does not show. Everything here is pure: the numbers come from the worker's data-map reply
 // laid over the map layers the renderer already holds, and nothing is written back to the world.
 import { CIVIC_KINDS, MASK_FIRE, MASK_MEDICAL, MASK_POLICE, utilityMask, type CityField, type CivicKind, type TilePos, type UtilityKind } from '@simcity/sim';
+import type { Rgb } from './buildingLook';
 import { isDataMap, type OverlayMode } from './overlays';
 
 /** sRGB 0..1 and alpha. */
 export type Srgba = readonly [number, number, number, number];
-export type Rgb = readonly [number, number, number];
 
 /** Land value from low (red) through yellow to high (green). */
 export function landValueColor(value: number): Srgba {
@@ -228,8 +228,11 @@ export interface DataMapInputs {
   readonly civic?: readonly Float32Array[];
 }
 
-/** What a data-map reply adds to the map layers: the worker's arrays, under the names of `DataMapInputs`. */
-export type DataMapLayer = Omit<DataMapInputs, 'width' | 'height' | 'water' | 'roadKind' | 'zone'>;
+/**
+ * What a data-map reply adds to the map layers: the worker's arrays, under the names of `DataMapInputs`, and the version
+ * of what they were read from (the same version paints the same picture).
+ */
+export type DataMapLayer = Omit<DataMapInputs, 'width' | 'height' | 'water' | 'roadKind' | 'zone'> & { readonly version?: string };
 
 /** The map layers a renderer holds (`MapLayersReply`) with a data-map reply laid over them. */
 export function dataMapInputs(
@@ -308,8 +311,22 @@ export function paintOver(color: Srgba, base: Rgb): Rgb {
   return [color[0] * a + base[0] * (1 - a), color[1] * a + base[1] * (1 - a), color[2] * a + base[2] * (1 - a)];
 }
 
+/** A tile's colour under a data map, from the plain colour the renderer gives it; sRGB 0..1. */
+export type TilePaint = (idx: number, base: Rgb) => Rgb;
+
+/** How the renderers paint tiles under `mode`; `null` without a data map, where the plain map is drawn. */
+export function dataMapPaint(mode: OverlayMode, inputs: DataMapInputs): TilePaint | null {
+  if (!isDataMap(mode)) return null;
+  return (idx, base) => {
+    const color = dataMapTileColor(mode, idx, inputs);
+    return color === null ? base : paintOver(color, base);
+  };
+}
+
+/** A no-break space: a number never parts from its unit. */
+const NBSP = String.fromCharCode(0xa0);
 /** A share as the panel prints it: whole percent, a no-break space before the sign. */
-const percent = (value: number) => `${Math.round(Math.min(Math.max(value, 0), 1) * 100)} %`;
+const percent = (value: number) => `${Math.round(Math.min(Math.max(value, 0), 1) * 100)}${NBSP}%`;
 const notComputed = (name: string) => `${name}: ещё не рассчитано`;
 
 const ROAD_NAMES = ['Нет дороги', 'Двухполосная дорога', 'Четырёхполосная дорога', 'Шестиполосная дорога'];

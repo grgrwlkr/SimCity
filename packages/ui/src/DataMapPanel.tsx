@@ -47,7 +47,7 @@ export const OVERLAY_GROUPS = [
 ] as const;
 
 export type PlayerOverlay = (typeof OVERLAY_GROUPS)[number]['overlays'][number][0];
-export const PLAYER_OVERLAYS: ReadonlyArray<readonly [PlayerOverlay, string]> = OVERLAY_GROUPS.flatMap((g) => g.overlays);
+export const PLAYER_OVERLAYS: ReadonlyArray<readonly [PlayerOverlay, string]> = OVERLAY_GROUPS.flatMap((g): ReadonlyArray<readonly [PlayerOverlay, string]> => g.overlays);
 
 /** sRGB 0..1 and alpha: `Srgba` of the render package. */
 type Colour = readonly [number, number, number, number];
