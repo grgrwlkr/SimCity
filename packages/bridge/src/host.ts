@@ -3,6 +3,7 @@
 import {
   buildCity,
   bumpVersion,
+  CitizenTripCounter,
   CityCommuteScenario,
   createWorld,
   CROSS_LAYOUT,
@@ -15,12 +16,14 @@ import {
   frame,
   linkRoomMeters,
   LivingCityScenario,
+  loadWorld,
   MetropolisScenario,
   parseRustCommand,
   recordSystemError,
   refSlot,
   requestState,
   rngProbeDigest,
+  saveWorld,
   SignalizedCrossScenario,
   spawnVehicle,
   stampAndExpire,
@@ -46,9 +49,12 @@ import {
   type FingerprintReply,
   type GridLayers,
   type MesoLinksReply,
+  isSlotRequest,
+  type ImmediateRequest,
   type Reply,
   type ReplyByRequest,
   type Request,
+  type SlotRequest,
   type TickStatsReply,
   type WorldSnapshot,
   type WorldView,
@@ -70,6 +76,7 @@ import {
 } from './renderBuffer';
 import { debugOverlayOf, renderLayersOf } from './renderLayers';
 import { SAMPLE_CARS, sampleCutoff, sampled } from './sample';
+import { createOpfsSaveFiles, type SaveFiles } from './saveFiles';
 import { SCENARIOS, type ScenarioName } from './scenarios';
 
 /** Vehicles a frame holds: the micro vehicles, meso traffic, parked cars, standing trucks and people on foot. */
@@ -88,6 +95,9 @@ const STANDING_ID_BASE = (1 << 22) + (1 << 21);
 const MESO_KINDS = [0, TRUCK_KIND, BUS_KIND, FIRE_KIND, POLICE_KIND, AMBULANCE_KIND] as const;
 /** Ticks whose cost `tickStats` reads. */
 const TICK_SAMPLES = 4096;
+/** A save file is UTF-8 JSON; the text never leaves the worker. */
+const UTF8_ENCODER = new TextEncoder();
+const UTF8_DECODER = new TextDecoder();
 /** From this speed up a frame shows the load of the roads and a sample of the cars on them. */
 const LOAD_VIEW_MULTIPLIER = 60;
 /** The part of the view's width and height added on every side, so a pan does not show an empty edge. */
@@ -135,8 +145,15 @@ export class SimHost {
   private shownToasts: readonly ShownToast[] = [];
   /** A toast came up or retired since the last snapshot `update` reported. */
   private toastsChanged = false;
+  /** The requests `answer` holds back behind a slot request, and the end of the last of them. */
+  private waiting = 0;
+  private queue: Promise<void> = Promise.resolve();
 
-  constructor(renderCapacity: number) {
+  /** `saves`: where the game's save slots live; OPFS unless a test gives another. */
+  constructor(
+    renderCapacity: number,
+    private readonly saves: SaveFiles = createOpfsSaveFiles(),
+  ) {
     this.world = createWorld();
     this.driver = new FixedStepDriver(this.world);
     this.render = createRenderBuffer(renderCapacity, RENDER_LINK_CAPACITY);
@@ -144,11 +161,62 @@ export class SimHost {
     this.extras = extraCars(renderCapacity);
   }
 
-  handle<T extends Request['t']>(req: Extract<Request, { t: T }>): ReplyByRequest[T] {
+  handle<T extends ImmediateRequest['t']>(req: Extract<ImmediateRequest, { t: T }>): ReplyByRequest[T] {
     return this.dispatch(req) as ReplyByRequest[T];
   }
 
-  private dispatch(req: Request): Reply {
+  /**
+   * Any request, strictly in arrival order: while a slot request waits on its file, the requests after it wait too, so
+   * a `loadSlot` sent before a `scenario` is applied before it. Nothing waiting, an immediate request runs at once.
+   */
+  answer(req: Request): Promise<Reply> {
+    const run = (): Reply | Promise<Reply> => (isSlotRequest(req) ? this.dispatchSlot(req) : this.dispatch(req));
+    if (this.waiting === 0 && !isSlotRequest(req)) {
+      try {
+        return Promise.resolve(run());
+      } catch (error) {
+        return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+    this.waiting += 1;
+    const result = this.queue.then(run);
+    this.queue = result.then(
+      () => void (this.waiting -= 1),
+      () => void (this.waiting -= 1),
+    );
+    return result;
+  }
+
+  /** A save slot request: the world is saved at once, the file written or read after. */
+  async handleSlot<T extends SlotRequest['t']>(req: Extract<SlotRequest, { t: T }>): Promise<ReplyByRequest[T]> {
+    return (await this.dispatchSlot(req)) as ReplyByRequest[T];
+  }
+
+  private async dispatchSlot(req: SlotRequest): Promise<Reply> {
+    switch (req.t) {
+      case 'saveSlot': {
+        const bytes = UTF8_ENCODER.encode(saveWorld(this.world));
+        return this.saves.write(req.slot, bytes);
+      }
+      case 'loadSlot':
+        return this.loadBytes(await this.saves.read(req.slot));
+      case 'listSlots':
+        return this.saves.list();
+      case 'removeSlot':
+        await this.saves.remove(req.slot);
+        return null;
+    }
+  }
+
+  /** Built aside and swapped in only whole: a file that fails leaves the running world untouched. */
+  private loadBytes(bytes: Uint8Array): FingerprintReply {
+    this.adoptWorld(loadWorld(UTF8_DECODER.decode(bytes)));
+    // A scenario's own state is not the world's and is not saved: the trips of the HUD count on from the load.
+    this.scenario = new CitizenTripCounter();
+    return this.fingerprintReply();
+  }
+
+  private dispatch(req: ImmediateRequest): Reply {
     switch (req.t) {
       case 'cmd':
         this.world.commands.push(parseRustCommand(req.cmd));
@@ -226,6 +294,10 @@ export class SimHost {
       case 'resetTickStats':
         this.tickSampleCount = 0;
         return null;
+      case 'save':
+        return UTF8_ENCODER.encode(saveWorld(this.world)).buffer;
+      case 'load':
+        return this.loadBytes(new Uint8Array(req.bytes));
     }
   }
 
@@ -235,6 +307,11 @@ export class SimHost {
     const w = createWorld({ mapWidth: size, mapHeight: size });
     const state = old.nextState?.state ?? old.appState;
     if (state !== 'MainMenu') requestState(w, state);
+    this.adoptWorld(w);
+  }
+
+  /** `w` in place of the running world, at the running speed and without a scenario. */
+  private adoptWorld(w: World): void {
     const driver = new FixedStepDriver(w);
     driver.speed = this.driver.speed;
     this.world = w;

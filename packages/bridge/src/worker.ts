@@ -7,18 +7,18 @@ const LOOP_MS = 16;
 
 const host = new SimHost(RENDER_CAPACITY);
 
-function send(message: FromWorker): void {
-  postMessage(message);
+function send(message: FromWorker, transfer: Transferable[] = []): void {
+  postMessage(message, transfer);
 }
 
 addEventListener('message', (event: MessageEvent<ToWorker>) => {
   const { id, req } = event.data;
-  // Reply with the failure so the awaiting promise rejects instead of hanging.
-  try {
-    send({ t: 'reply', id, value: host.handle(req) });
-  } catch (error) {
-    send({ t: 'error', id, message: error instanceof Error ? error.message : String(error) });
-  }
+  // In arrival order, a slot request holding back those after it; the failure is a reply too, so no promise hangs.
+  host.answer(req).then(
+    // A save's bytes move to the main thread rather than being copied.
+    (value) => send({ t: 'reply', id, value }, value instanceof ArrayBuffer ? [value] : []),
+    (error: unknown) => send({ t: 'error', id, message: error instanceof Error ? error.message : String(error) }),
+  );
 });
 
 function loop(): void {

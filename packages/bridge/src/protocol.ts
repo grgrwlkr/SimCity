@@ -270,7 +270,38 @@ export type Request =
   | { readonly t: 'debugEmergency'; readonly kind: EmergencyKind; readonly x: number; readonly y: number }
   /** The cost of the last 4 096 ticks at most, since the last reset. */
   | { readonly t: 'tickStats' }
-  | { readonly t: 'resetTickStats' };
+  | { readonly t: 'resetTickStats' }
+  /**
+   * The whole world as a save file (packages/sim/src/save), UTF-8 bytes transferred, not copied: for a store outside the
+   * worker, such as the desktop shell's files. The game's own slots are the `…Slot` requests.
+   */
+  | { readonly t: 'save' }
+  /** A save file's bytes in place of the world; a broken file is an error and the world stays as it was. */
+  | { readonly t: 'load'; readonly bytes: ArrayBuffer }
+  | SlotRequest;
+
+/** Save slots the worker keeps itself (OPFS): the save never crosses to the main thread. Answered asynchronously. */
+export type SlotRequest =
+  | { readonly t: 'saveSlot'; readonly slot: string }
+  | { readonly t: 'loadSlot'; readonly slot: string }
+  | { readonly t: 'listSlots' }
+  | { readonly t: 'removeSlot'; readonly slot: string };
+
+const SLOT_REQUESTS: ReadonlySet<string> = new Set<SlotRequest['t']>(['saveSlot', 'loadSlot', 'listSlots', 'removeSlot']);
+
+export const isSlotRequest = (req: Request): req is SlotRequest => SLOT_REQUESTS.has(req.t);
+
+/** Every request the host answers at once. */
+export type ImmediateRequest = Exclude<Request, SlotRequest>;
+
+/** One saved slot. */
+export interface SaveSlotInfo {
+  readonly slot: string;
+  /** Size of the save file. */
+  readonly bytes: number;
+  /** When it was last written, ms since the epoch. */
+  readonly modifiedMs: number;
+}
 
 export interface ReplyByRequest {
   readonly cmd: null;
@@ -296,6 +327,14 @@ export interface ReplyByRequest {
   readonly debugEmergency: null;
   readonly tickStats: TickStatsReply;
   readonly resetTickStats: null;
+  readonly save: ArrayBuffer;
+  /** The loaded world's tick and fingerprint: those of the world the save was taken of. */
+  readonly load: FingerprintReply;
+  readonly saveSlot: SaveSlotInfo;
+  readonly loadSlot: FingerprintReply;
+  /** By slot name. */
+  readonly listSlots: SaveSlotInfo[];
+  readonly removeSlot: null;
 }
 
 export type Reply = ReplyByRequest[keyof ReplyByRequest];

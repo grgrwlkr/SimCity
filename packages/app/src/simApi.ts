@@ -13,6 +13,7 @@ import {
 } from '@simcity/bridge';
 import type { RenderStats, Renderer } from '@simcity/render';
 import type { AppState, EmergencyKind, MapCell, MapConfig, TilePos } from '@simcity/sim';
+import { createWorkerSaveStore, type SaveSlotInfo, type SaveStore } from './saves/saveStore';
 
 export interface RenderFrameSummary {
   readonly tick: number;
@@ -71,6 +72,14 @@ export interface SimApi {
   hoverTile(tile: TilePos | null): Promise<TilePos | null>;
   /** The tile `hoverTile` holds; `null` while the pointer leads. */
   pointerOverride(): TilePos | null;
+  /** The world into save slot `slot` (save v1, packages/sim/src/save). */
+  save(slot: string): Promise<SaveSlotInfo>;
+  /** The world saved in `slot` in place of this one; rejects on an empty slot or a broken file, the world as it was. */
+  load(slot: string): Promise<FingerprintReply>;
+  /** The world as a save file's bytes, moved out of the worker: what a store outside it (E1's files) writes. */
+  exportSave(): Promise<ArrayBuffer>;
+  /** A save file's bytes in place of the world; rejects on a broken file, the world as it was. */
+  importSave(bytes: ArrayBuffer): Promise<FingerprintReply>;
 }
 
 declare global {
@@ -90,6 +99,7 @@ export function installSimApi(
   debug: boolean,
   renderer: Promise<Renderer>,
   mapConfig: () => MapConfig | null,
+  saves: SaveStore = createWorkerSaveStore(client),
 ): SimApi {
   const reader = client.ready.then((render) => {
     const r = new RenderReader(render);
@@ -157,6 +167,10 @@ export function installSimApi(
       return tile;
     },
     pointerOverride: () => pointerOverride,
+    save: (slot) => saves.save(slot),
+    load: (slot) => saves.load(slot),
+    exportSave: () => client.request({ t: 'save' }),
+    importSave: (bytes) => client.request({ t: 'load', bytes }),
   };
   window.__sim = api;
   return api;
