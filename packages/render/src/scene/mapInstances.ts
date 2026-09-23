@@ -20,7 +20,6 @@ const GRID_PROFILE: BuildingProfile = { density: 'Medium', class: 'Middle' };
  */
 export const SCENE_MAP_SEED = 0n;
 
-/** Tiles of chunk `index`. */
 const WHITE = [1, 1, 1] as const;
 
 /** Every tile of the chunks `changed`, row by row inside each chunk. */
@@ -31,6 +30,7 @@ export function* tilesOfChunks(map: MapLayersReply, changed: readonly number[]):
   }
 }
 
+/** Tiles of chunk `index`. */
 function chunkArea(map: MapLayersReply, index: number): TileArea {
   const { cols } = chunkGrid(map.width, map.height);
   const x0 = (index % cols) * CHUNK_TILES;
