@@ -21,7 +21,7 @@ import { EmergencyMarkers, type EmergencyView } from '../emergencyMarkers';
 import { FpsMeter } from '../fpsMeter';
 import { interpolateHeading, interpolatePositions, pairVehicles } from '../interpolate';
 import { lampSignal } from '../lamps';
-import { dataMapInputs, dataMapPaint, type DataMapLayer, type TilePaint } from '../dataMap';
+import { areaChanged, changedTiles, dataMapInputs, dataMapPaint, type DataMapLayer, type TilePaint } from '../dataMap';
 import { changedChunks, chunkGrid, groupTiles, groupsOfChunks } from '../mapChunks';
 import type { OverlayMode } from '../overlays';
 import { LAMP_COLORS, VEHICLE_COLORS } from '../palette';
@@ -272,15 +272,20 @@ export class SceneRenderer implements Renderer {
    * vignette. Only the colour attributes are rewritten; the same overlay at the same version paints nothing.
    */
   setDataMap(overlay: OverlayMode, layer: DataMapLayer | null): void {
-    const same = overlay === this.dataMap.overlay && layer?.version !== undefined && layer.version === this.dataMap.layer?.version;
+    const prev = this.dataMap;
+    const same = overlay === prev.overlay && layer?.version !== undefined && layer.version === prev.layer?.version;
     this.dataMap = { overlay, layer };
     if (same || this.map === null) return;
     const started = performance.now();
     const map = this.map;
+    // Only the groups whose numbers moved, unless the overlay itself changed.
+    const changed = overlay === prev.overlay ? changedTiles(prev.layer, layer, map.width * map.height) : null;
     const paint = this.paintFor(map);
     for (const [index, mesh] of this.chunkMeshes) {
+      const area = groupTiles(map.width, map.height, index);
+      if (!areaChanged(changed, map.width, area)) continue;
       const colors = mesh.geometry.getAttribute('color') as THREE.BufferAttribute;
-      groundColors(map, groupTiles(map.width, map.height, index), colors.array as Float32Array, paint);
+      groundColors(map, area, colors.array as Float32Array, paint);
       colors.needsUpdate = true;
     }
     this.dataMapMs = performance.now() - started;

@@ -78,8 +78,8 @@ export function groundColors(map: MapLayersReply, { x0, y0, x1, y1 }: Area, colo
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       const idx = y * map.width + x;
-      const [r0, g0, b0] = GROUND[tileClass(map, idx)];
-      const [r, g, b] = paint === null ? [r0, g0, b0] : paint(idx, [r0, g0, b0]);
+      const plain = GROUND[tileClass(map, idx)];
+      const [r, g, b] = paint === null ? plain : paint(idx, [plain[0], plain[1], plain[2]]);
       const [lr, lg, lb] = [lin(r), lin(g), lin(b)];
       for (let k = 0; k < 6; k++, v += 3) {
         colors[v] = lr;

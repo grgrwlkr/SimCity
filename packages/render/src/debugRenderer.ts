@@ -25,8 +25,8 @@ import { FpsMeter } from './fpsMeter';
 import { interpolateHeading, interpolatePositions, pairVehicles } from './interpolate';
 import { lampSignal } from './lamps';
 import { linkRect, loadColor } from './linkLoad';
-import { dataMapInputs, dataMapPaint, type DataMapLayer, type TilePaint } from './dataMap';
-import { buildChunkGeometry, changedChunks, chunkColors, chunkGrid } from './mapChunks';
+import { areaChanged, changedTiles, dataMapInputs, dataMapPaint, type DataMapLayer, type TilePaint } from './dataMap';
+import { CHUNK_TILES, buildChunkGeometry, changedChunks, chunkColors, chunkGrid } from './mapChunks';
 import type { OverlayMode } from './overlays';
 import { LAMP_COLORS, VEHICLE_COLORS } from './palette';
 import { PlaybackClock } from './playback';
@@ -242,19 +242,25 @@ export class DebugRenderer {
 
   /**
    * Paints the map with a data map (`None` back to plain), colours exactly as the legend gives them: the screenshot reads
-   * a tile's value back. Rewrites the chunks' colour attributes only; the same overlay at the same version paints nothing.
+   * a tile's value back. Rewrites the colour attributes of the chunks whose numbers moved (all of them on a switch); the
+   * same overlay at the same version paints nothing.
    */
   setDataMap(overlay: OverlayMode, layer: DataMapLayer | null): void {
-    const same = overlay === this.dataMap.overlay && layer?.version !== undefined && layer.version === this.dataMap.layer?.version;
+    const prev = this.dataMap;
+    const same = overlay === prev.overlay && layer?.version !== undefined && layer.version === prev.layer?.version;
     this.dataMap = { overlay, layer };
     if (same || this.map === null) return;
     const started = performance.now();
     const map = this.map;
+    const changed = overlay === prev.overlay ? changedTiles(prev.layer, layer, map.width * map.height) : null;
     const paint = this.paintFor(map);
     const { cols } = chunkGrid(map.width, map.height);
     for (const [index, mesh] of this.chunkMeshes) {
+      const [cx, cy] = [index % cols, Math.floor(index / cols)];
+      const area = { x0: cx * CHUNK_TILES, y0: cy * CHUNK_TILES, x1: Math.min((cx + 1) * CHUNK_TILES, map.width), y1: Math.min((cy + 1) * CHUNK_TILES, map.height) };
+      if (!areaChanged(changed, map.width, area)) continue;
       const colors = mesh.geometry.getAttribute('color') as THREE.BufferAttribute;
-      chunkColors(map, index % cols, Math.floor(index / cols), colors.array as Float32Array, paint);
+      chunkColors(map, cx, cy, colors.array as Float32Array, paint);
       colors.needsUpdate = true;
     }
     this.dataMapMs = performance.now() - started;

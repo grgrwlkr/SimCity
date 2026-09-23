@@ -7,6 +7,8 @@ import { CITY_FIELDS, MASK_FIRE, MASK_POLICE, utilityMask, type CityField } from
 import { describe, expect, it } from 'vitest';
 import {
   CIVIC_COLORS,
+  areaChanged,
+  changedTiles,
   UNSUPPLIED_ZONE_COLOR,
   ZONE_COLORS,
   cityFieldColor,
@@ -265,6 +267,25 @@ describe('data maps', () => {
     // Water stays water on a city field.
     const wet = { ...inputs, water: new Uint8Array(64).fill(1) };
     expect(dataMapTileColor('Crime', idx(m, 4, 4), wet)).toBeNull();
+  });
+
+  it('aRefreshRepaintsOnlyTheTilesWhoseNumbersMoved', () => {
+    const a = { landValue: new Float32Array([0.1, 0.2, 0.3, 0.4]) };
+    const b = { landValue: new Float32Array([0.1, 0.25, 0.3, 0.4]) };
+    expect(Array.from(changedTiles(a, b, 4)!)).toEqual([0, 1, 0, 0]);
+    expect(Array.from(changedTiles(a, a, 4)!)).toEqual([0, 0, 0, 0]);
+    expect(changedTiles(null, b, 4), 'nothing shown yet').toBeNull();
+    expect(changedTiles({}, b, 4), 'an index that just arrived').toBeNull();
+    const civic = (v: number) => ({ civic: [new Float32Array(4), new Float32Array(4), new Float32Array([0, 0, 0, v])] });
+    expect(Array.from(changedTiles(civic(0), civic(1), 4)!)).toEqual([0, 0, 0, 1]);
+    const fields = (v: number) => ({ fields: { Crime: new Float32Array([v, 0, 0, 0]) } });
+    expect(Array.from(changedTiles(fields(0), fields(0.5), 4)!)).toEqual([1, 0, 0, 0]);
+    // A 2 × 2 map: tile 1 is (1, 0).
+    const moved = changedTiles(a, b, 4)!;
+    expect(areaChanged(moved, 2, { x0: 1, y0: 0, x1: 2, y1: 1 })).toBe(true);
+    expect(areaChanged(moved, 2, { x0: 0, y0: 1, x1: 2, y1: 2 })).toBe(false);
+    expect(areaChanged(moved, 2, { x0: 0, y0: 0, x1: 1, y1: 2 })).toBe(false);
+    expect(areaChanged(null, 2, { x0: 0, y0: 0, x1: 1, y1: 1 }), 'null repaints everything').toBe(true);
   });
 
   it('aTranslucentOverlayColourIsLaidOverTheTileUnderIt', () => {

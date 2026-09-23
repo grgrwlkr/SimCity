@@ -311,6 +311,44 @@ export function paintOver(color: Srgba, base: Rgb): Rgb {
   return [color[0] * a + base[0] * (1 - a), color[1] * a + base[1] * (1 - a), color[2] * a + base[2] * (1 - a)];
 }
 
+/** Every per-tile array of a reply, keyed by where it sits in it. */
+function arraysOf(layer: DataMapLayer): Map<string, ArrayLike<number>> {
+  const out = new Map<string, ArrayLike<number>>();
+  for (const key of ['heights', 'landValue', 'pollution', 'traffic', 'coverage', 'utilities'] as const) {
+    const values = layer[key];
+    if (values !== undefined) out.set(key, values);
+  }
+  for (const [field, values] of Object.entries(layer.fields ?? {})) if (values !== undefined) out.set(`fields.${field}`, values);
+  layer.civic?.forEach((values, k) => out.set(`civic.${k}`, values));
+  return out;
+}
+
+/**
+ * The tiles whose numbers differ between two replies of one overlay, 1 per changed tile; `null` when the replies do not
+ * compare (either missing, or a different set of arrays) and everything has to be repainted. A refresh repaints only
+ * the chunks it touches: land value publishes a chunk a tick, so a second at ×1 moves a few chunks, not the map.
+ */
+export function changedTiles(prev: DataMapLayer | null, next: DataMapLayer | null, len: number): Uint8Array | null {
+  if (prev === null || next === null) return null;
+  const before = arraysOf(prev);
+  const after = arraysOf(next);
+  if (before.size !== after.size) return null;
+  const changed = new Uint8Array(len);
+  for (const [key, b] of after) {
+    const a = before.get(key);
+    if (a === undefined || a.length !== len || b.length !== len) return null;
+    for (let i = 0; i < len; i++) if (a[i] !== b[i]) changed[i] = 1;
+  }
+  return changed;
+}
+
+/** Whether any tile of `x0..x1` × `y0..y1` is marked in `changed` (`null` marks everything). */
+export function areaChanged(changed: Uint8Array | null, width: number, { x0, y0, x1, y1 }: { x0: number; y0: number; x1: number; y1: number }): boolean {
+  if (changed === null) return true;
+  for (let y = y0; y < y1; y++) for (let i = y * width + x0, end = y * width + x1; i < end; i++) if (changed[i] === 1) return true;
+  return false;
+}
+
 /** A tile's colour under a data map, from the plain colour the renderer gives it; sRGB 0..1. */
 export type TilePaint = (idx: number, base: Rgb) => Rgb;
 

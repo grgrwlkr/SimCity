@@ -87,31 +87,28 @@ export function utilityReaches(grid: MapGrid, network: UtilityNetwork, tile: Til
   return grid.zone[idx] !== 0 && grid.water[idx] === 0 && blockHas(grid, network, tile, kind);
 }
 
-/**
- * `utilityReaches` over the whole map. A zoned tile asks `blockHas` only when a row within zone depth holds a supplied
- * road at all: the rows are scanned once up front, and a zone far from every supplied road costs nothing more.
- */
+/** `utilityReaches` over the whole map, tile for tile (the handler's test checks every tile of a map against it). */
 function utilityReach(grid: MapGrid, network: UtilityNetwork, kind: UtilityKind): Uint8Array {
   const { width, height } = grid;
+  const len = width * height;
   const mask = utilityMask(kind);
-  const out = new Uint8Array(width * height);
-  // Supplied roads per row: a row with none cannot supply a zone through it.
-  const rowHasSuppliedRoad = new Uint8Array(height);
-  for (let y = 0; y < height; y++) {
-    for (let i = y * width, end = i + width; i < end; i++) {
-      if (grid.roadKind[i] !== 0 && (network.served[i]! & mask) !== 0) {
-        rowHasSuppliedRoad[y] = 1;
-        break;
+  // `blockHas` looks for a supplied road within a diamond of zone depth: the supplied roads grown by one tile in the
+  // four directions, zone-depth times, are exactly the tiles that diamond reaches. Three passes instead of a diamond
+  // search per zoned tile (a second on the metropolis).
+  let near = new Uint8Array(len);
+  for (let i = 0; i < len; i++) if (grid.roadKind[i] !== 0 && (network.served[i]! & mask) !== 0) near[i] = 1;
+  let next = new Uint8Array(len);
+  for (let step = 0; step < MAX_ZONE_DEPTH; step++) {
+    for (let y = 0, i = 0; y < height; y++) {
+      for (let x = 0; x < width; x++, i++) {
+        next[i] = near[i]! | (x > 0 ? near[i - 1]! : 0) | (x < width - 1 ? near[i + 1]! : 0) | (y > 0 ? near[i - width]! : 0) | (y < height - 1 ? near[i + width]! : 0);
       }
     }
+    [near, next] = [next, near];
   }
-  for (let y = 0; y < height; y++) {
-    let nearRows = false;
-    for (let dy = -MAX_ZONE_DEPTH; dy <= MAX_ZONE_DEPTH && !nearRows; dy++) nearRows = rowHasSuppliedRoad[y + dy] === 1;
-    for (let x = 0, i = y * width; x < width; x++, i++) {
-      if ((network.served[i]! & mask) !== 0) out[i] = mask;
-      else if (nearRows && grid.zone[i] !== 0 && grid.water[i] === 0 && blockHas(grid, network, { x, y }, kind)) out[i] = mask;
-    }
+  const out = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    if ((network.served[i]! & mask) !== 0 || (near[i] === 1 && grid.zone[i] !== 0 && grid.water[i] === 0)) out[i] = mask;
   }
   return out;
 }

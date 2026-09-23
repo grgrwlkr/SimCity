@@ -4,9 +4,12 @@ import type { MapLayersReply } from '@simcity/bridge';
 import { tileToWorld } from '@simcity/sim';
 import type { Rgb } from './buildingLook';
 import type { TilePaint } from './dataMap';
-import { CLASS_COLORS, tileClass } from './palette';
+import { CLASS_COLORS, tileClass, type TileClass } from './palette';
 
 export const CHUNK_TILES = 16;
+
+/** `CLASS_COLORS` as 0..1, made once: a repaint of the metropolis visits 640 000 tiles. */
+const PLAIN = Object.fromEntries(Object.entries(CLASS_COLORS).map(([k, [r, g, b]]) => [k, [r / 255, g / 255, b / 255]])) as unknown as Record<TileClass, Rgb>;
 
 export function chunkGrid(width: number, height: number): { cols: number; rows: number } {
   return { cols: Math.ceil(width / CHUNK_TILES), rows: Math.ceil(height / CHUNK_TILES) };
@@ -64,8 +67,7 @@ export function chunkColors(map: MapLayersReply, cx: number, cy: number, colors:
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       const idx = y * map.width + x;
-      const [r8, g8, b8] = CLASS_COLORS[tileClass(map, idx)];
-      const plain: Rgb = [r8 / 255, g8 / 255, b8 / 255];
+      const plain = PLAIN[tileClass(map, idx)];
       const [r, g, b] = paint === null ? plain : paint(idx, plain);
       for (let k = 0; k < 6; k++, v += 3) {
         colors[v] = r;

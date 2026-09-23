@@ -46,6 +46,16 @@ describe('data map request', () => {
     expect(layer.utilities![g.idx(at(0, 5))!]).toBe(utilityMask('Power'));
     expect(layer.utilities![g.idx(at(4, 6))!]).toBe(0);
     expect(dataMapLayer(w, 'WaterSupply').utilities![g.idx(at(0, 5))!]).toBe(0);
+
+    // The whole-map reach is `utilityReaches` tile by tile, on a map with zones everywhere and water in it.
+    g.zone.fill(1);
+    g.water[g.idx(at(2, 3))!] = 1;
+    g.roadKind[g.idx(at(7, 7))!] = 1;
+    served[g.idx(at(7, 7))!] = utilityMask('Power');
+    const reach = dataMapLayer(w, 'Power').utilities!;
+    for (let y = 0; y < 8; y++) {
+      for (let x = 0; x < 8; x++) expect(reach[g.idx(at(x, y))!] !== 0, `(${x}, ${y})`).toBe(utilityReaches(g, w.utilityNetwork, at(x, y), 'Power'));
+    }
   });
 
   it('eachDataMapCarriesTheNumbersItIsPaintedFromAndNothingElse', () => {
