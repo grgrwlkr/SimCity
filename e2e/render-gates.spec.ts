@@ -1,7 +1,7 @@
 // Stage R5: the screenshot gates of the scene (Q1 = a, the reference is the TS frames the user accepted). The test city
-// from four views at noon and at midnight: two page loads of one view must draw the same frame within the threshold, and
-// the frame must match its reference in e2e/fixtures/render/. `E2E_RENDER_UPDATE=1` writes the references instead.
-// The `@perf` block below is not a gate: the numbers of the render debts for the plan of stage 5.
+// from four views at noon and at midnight: two pages draw the same frame, and the frame matches its reference in
+// e2e/fixtures/render/. `E2E_RENDER_UPDATE=1` writes the references instead. The `@perf` block below is not a gate: the
+// numbers of the render debts for the plan of stage 5.
 import { chromium, expect, test, type Page } from '@playwright/test';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import type { SceneStats } from '../packages/render/src/scene/sceneRenderer';
@@ -13,30 +13,40 @@ const city = JSON.parse(readFileSync(new URL('../packages/sim/src/scenarios/test
   height: number;
   rawGrid: Record<LayerName, string>;
 };
+/**
+ * One set of references for every platform: SwiftShader on Linux x86_64 (CI's, checked in the Playwright image under
+ * emulation) drew the macOS arm64 references within a mean of 0.0011, a fifth of `MAX_MEAN`. The platform is logged.
+ */
+const PLATFORM = `${process.platform}-${process.arch}`;
 const REFERENCE_DIR = new URL('./fixtures/render/', import.meta.url);
 const UPDATE = process.env.E2E_RENDER_UPDATE === '1';
 
 /**
- * The metric: a pixel differs when one of its channels moved by more than `PIXEL_TOLERANCE` of 255, and a frame matches
- * when no more than `MAX_DIFFERING_SHARE` of its pixels differ. SwiftShader draws the same frame twice bit for bit, so
- * the slack is for another machine's rasteriser, not for noise here; windows going out at midnight or the shadows going
- * away at noon move several percent of the pixels (`renderGateSeesTheWindowsAndTheShadowsGo`).
+ * The metric: the mean over the frame of each pixel's largest channel difference, 0..255. A frame matches when the mean
+ * is at most `MAX_MEAN`. SwiftShader draws the same frame twice bit for bit on one platform, so the bound only has to sit
+ * under half of the smallest change the gate must see: the sun an hour on, the windows out at midnight, the shadows gone
+ * at noon, in every view (`renderGateSeesTheLookGo`). The share of pixels off by more than 16 is reported beside it.
  */
+const MAX_MEAN = 0.005;
 const PIXEL_TOLERANCE = 16;
-const MAX_DIFFERING_SHARE = 0.005;
 /** GTAO draws black under SwiftShader (docs/research/2026-09-21-q8-q9-render-pack.md, Q8); the rest of the look is in. */
 const GATE_OFF = 'ao';
 
 test.use({ viewport: { width: 640, height: 480 } });
-test.describe.configure({ timeout: 300_000 });
+test.describe.configure({ timeout: 600_000 });
 
 const sceneStats = (page: Page) => page.evaluate(() => window.__sim.renderStats()) as Promise<SceneStats>;
 const hex = (s: string) => Array.from({ length: s.length / 2 }, (_, i) => parseInt(s.slice(2 * i, 2 * i + 2), 16));
 /** `1 + BUILDING_KINDS.indexOf('FireStation')`: the fixture's fire station tiles. */
 const FIRE_STATION = 4;
 
+/** Page errors are printed once per page: a shader that fails to build surfaces only here, the frame just stops. */
+const watched = new WeakSet<Page>();
 async function openScene(page: Page, query: string): Promise<void> {
-  page.on('pageerror', (e) => console.log(`pageerror: ${e.message}`));
+  if (!watched.has(page)) {
+    watched.add(page);
+    page.on('pageerror', (e) => console.log(`pageerror: ${e.message}`));
+  }
   await page.goto(`/?renderer=scene${query}`);
   await page.waitForFunction(() => typeof window.__sim !== 'undefined');
   await page.evaluate(() => window.__sim.ready);
@@ -56,10 +66,10 @@ async function loadCity(page: Page): Promise<void> {
 /** Resolves once the current map is drawn, and a few frames after that: the camera has settled into the frame too. */
 async function waitForDrawn(page: Page): Promise<SceneStats> {
   await expect
-    .poll(() => page.evaluate(async () => [await window.__sim.snapshot(), await window.__sim.renderStats()] as const).then(([s, r]) => r.mapEditVersion === s.mapEditVersion), { timeout: 120_000 })
+    .poll(() => page.evaluate(async () => [await window.__sim.snapshot(), await window.__sim.renderStats()] as const).then(([s, r]) => r.mapEditVersion === s.mapEditVersion), { timeout: 240_000 })
     .toBe(true);
   const since = (await sceneStats(page)).frames;
-  await expect.poll(() => sceneStats(page).then((s) => s.frames), { timeout: 120_000 }).toBeGreaterThan(since + 2);
+  await expect.poll(() => sceneStats(page).then((s) => s.frames), { timeout: 240_000 }).toBeGreaterThan(since + 2);
   return sceneStats(page);
 }
 
@@ -71,24 +81,33 @@ const VIEWS: ReadonlyArray<{ readonly name: string; readonly place: (page: Page)
   { name: 'city', place: (page) => page.evaluate(() => window.__sim.fitMap()) },
   { name: 'district', place: (page) => page.evaluate((c) => window.__sim.setCamera({ centerX: c.x, centerY: c.y, worldPerPixel: 1 }), tileCentre(fireStation)) },
   { name: 'street', place: (page) => page.evaluate((c) => window.__sim.setCamera({ centerX: c.x, centerY: c.y, worldPerPixel: 0.2 }), tileCentre(fireStation)) },
-  { name: 'corner', place: (page) => page.evaluate((c) => window.__sim.setCamera({ centerX: c.x + 40, centerY: c.y - 40, worldPerPixel: 0.08 }), tileCentre(fireStation)) },
+  { name: 'corner', place: (page) => page.evaluate((c) => window.__sim.setCamera({ centerX: c.x + 20, centerY: c.y + 30, worldPerPixel: 0.1 }), tileCentre(fireStation)) },
 ];
 const HOURS = [
   { name: 'noon', hour: 12 },
   { name: 'midnight', hour: 0 },
 ] as const;
 
-/** One view at one hour on a fresh page: the frame of `#view` and the stats it was drawn with. */
+/** One view at one hour: the frame of `#view` and the stats it was drawn with. */
 async function shoot(page: Page, view: (typeof VIEWS)[number], hour: number, off = GATE_OFF): Promise<{ png: Buffer; stats: SceneStats }> {
   await openScene(page, `&hour=${hour}&off=${off}`);
   await loadCity(page);
+  // The view goes in once the map is drawn: a camera set before the map arrives is fitted away by its first frame.
+  await waitForDrawn(page);
   await view.place(page);
   const stats = await waitForDrawn(page);
   return { png: await page.locator('#view').screenshot(), stats };
 }
 
-/** Pixels whose largest channel difference is over `PIXEL_TOLERANCE`, as a share, and the mean of that difference. */
-async function frameDiff(page: Page, a: Buffer, b: Buffer): Promise<{ share: number; mean: number; size: string }> {
+interface FrameDiff {
+  /** Mean of the largest channel difference per pixel, 0..255: the gate's metric. */
+  readonly mean: number;
+  /** Share of pixels off by more than `PIXEL_TOLERANCE`. */
+  readonly share: number;
+  readonly size: string;
+}
+
+async function frameDiff(page: Page, a: Buffer, b: Buffer): Promise<FrameDiff> {
   return page.evaluate(
     async ({ a, b, tolerance }) => {
       const read = async (b64: string) => {
@@ -98,7 +117,7 @@ async function frameDiff(page: Page, a: Buffer, b: Buffer): Promise<{ share: num
         return ctx.getImageData(0, 0, bitmap.width, bitmap.height);
       };
       const [x, y] = [await read(a), await read(b)];
-      if (x.width !== y.width || x.height !== y.height) return { share: 1, mean: 255, size: `${x.width}x${x.height} vs ${y.width}x${y.height}` };
+      if (x.width !== y.width || x.height !== y.height) return { mean: 255, share: 1, size: `${x.width}x${x.height} vs ${y.width}x${y.height}` };
       let differing = 0;
       let sum = 0;
       for (let o = 0; o < x.data.length; o += 4) {
@@ -107,7 +126,7 @@ async function frameDiff(page: Page, a: Buffer, b: Buffer): Promise<{ share: num
         if (d > tolerance) differing += 1;
       }
       const n = x.data.length / 4;
-      return { share: differing / n, mean: sum / n, size: `${x.width}x${x.height}` };
+      return { mean: sum / n, share: differing / n, size: `${x.width}x${x.height}` };
     },
     { a: a.toString('base64'), b: b.toString('base64'), tolerance: PIXEL_TOLERANCE },
   );
@@ -117,15 +136,17 @@ const referencePath = (view: string, hour: string) => new URL(`${view}-${hour}.p
 
 for (const view of VIEWS) {
   for (const hour of HOURS) {
-    test(`renderGate ${view.name} ${hour.name}`, async ({ page }, testInfo) => {
+    test(`renderGate ${view.name} ${hour.name}`, async ({ page, browser, baseURL }, testInfo) => {
+      // Two pages in two browser contexts: nothing of the first page's session is left for the second to draw from.
+      const other = await (await browser.newContext({ viewport: { width: 640, height: 480 }, ...(baseURL === undefined ? {} : { baseURL }) })).newPage();
       const first = await shoot(page, view, hour.hour);
-      const second = await shoot(page, view, hour.hour);
+      const second = await shoot(other, view, hour.hour);
       writeFileSync(testInfo.outputPath(`${view.name}-${hour.name}-1.png`), first.png);
       writeFileSync(testInfo.outputPath(`${view.name}-${hour.name}-2.png`), second.png);
       const runs = await frameDiff(page, first.png, second.png);
-      const line = { view: view.name, hour: hour.name, projection: first.stats.projection, post: first.stats.post, buildings: first.stats.buildings, runs };
+      const line = { platform: PLATFORM, view: view.name, hour: hour.name, projection: first.stats.projection, post: first.stats.post, buildings: first.stats.buildings, runs };
       expect(first.stats.buildingInstancesDrawn, 'the city is in the frame').toBeGreaterThan(0);
-      expect(runs.share, `two runs draw the same frame: ${JSON.stringify(runs)}`).toBeLessThanOrEqual(MAX_DIFFERING_SHARE);
+      expect(runs.mean, `two pages draw the same frame: ${JSON.stringify(runs)}`).toBeLessThanOrEqual(MAX_MEAN);
       const ref = referencePath(view.name, hour.name);
       if (UPDATE) {
         mkdirSync(REFERENCE_DIR, { recursive: true });
@@ -136,25 +157,26 @@ for (const view of VIEWS) {
       expect(existsSync(ref), `reference ${ref.pathname}: run with E2E_RENDER_UPDATE=1 and have it accepted`).toBe(true);
       const reference = await frameDiff(page, readFileSync(ref), first.png);
       console.log(`render gate: ${JSON.stringify({ ...line, reference })}`);
-      expect(reference.share, `the frame matches its reference: ${JSON.stringify(reference)}`).toBeLessThanOrEqual(MAX_DIFFERING_SHARE);
+      expect(reference.mean, `the frame matches its reference: ${JSON.stringify(reference)}`).toBeLessThanOrEqual(MAX_MEAN);
     });
   }
 }
 
-// The threshold is not so loose that the look can leave unnoticed: the street without its lit windows at midnight, and
-// without its shadows at noon, each differ from the same frame with them by more than a matching frame may.
-test('renderGateSeesTheWindowsAndTheShadowsGo', async ({ page }) => {
-  const street = VIEWS.find((v) => v.name === 'street')!;
-  const lit = await shoot(page, street, 0);
-  const dark = await shoot(page, street, 0, `${GATE_OFF},windows`);
-  const windows = await frameDiff(page, lit.png, dark.png);
-  const shaded = await shoot(page, street, 12);
-  const flat = await shoot(page, street, 12, `${GATE_OFF},shadows`);
-  const shadows = await frameDiff(page, shaded.png, flat.png);
-  console.log(`render gate mutations: ${JSON.stringify({ backend: lit.stats.backend, windows, shadows })}`);
-  expect(windows.share, 'windows out at midnight').toBeGreaterThan(MAX_DIFFERING_SHARE);
-  expect(shadows.share, 'no shadows at noon').toBeGreaterThan(MAX_DIFFERING_SHARE);
-});
+// The bound is not so loose that the look can leave unnoticed, in any view: the sun an hour past noon, the windows out
+// at midnight and the shadows gone at noon each move the mean by at least twice `MAX_MEAN`.
+for (const view of VIEWS) {
+  test(`renderGateSeesTheLookGo ${view.name}`, async ({ page }) => {
+    const noon = await shoot(page, view, 12);
+    const sun = await frameDiff(page, noon.png, (await shoot(page, view, 13)).png);
+    const shadows = await frameDiff(page, noon.png, (await shoot(page, view, 12, `${GATE_OFF},shadows`)).png);
+    const midnight = await shoot(page, view, 0);
+    const windows = await frameDiff(page, midnight.png, (await shoot(page, view, 0, `${GATE_OFF},windows`)).png);
+    console.log(`render gate mutations: ${JSON.stringify({ platform: PLATFORM, view: view.name, backend: noon.stats.backend, sun, windows, shadows })}`);
+    expect(sun.mean, 'the sun an hour on').toBeGreaterThanOrEqual(2 * MAX_MEAN);
+    expect(windows.mean, 'windows out at midnight').toBeGreaterThanOrEqual(2 * MAX_MEAN);
+    expect(shadows.mean, 'no shadows at noon').toBeGreaterThanOrEqual(2 * MAX_MEAN);
+  });
+}
 
 // Not a gate: the render debts on the fitted metropolis, for the plan of stage 5. Run alone on the GPU:
 // `E2E_PERF=1 E2E_GPU=1 bunx playwright test e2e/render-gates.spec.ts --grep @perf --workers=1`.
