@@ -56,6 +56,8 @@ export * from './rates';
 export * from './regional';
 export * from './rng';
 export * from './save/save';
+export * from './objectives';
+export * from './scenarios/catalogData';
 export * from './scenarios/cityCommute';
 export * from './scenarios/cityGen';
 export * from './scenarios/livingCity';

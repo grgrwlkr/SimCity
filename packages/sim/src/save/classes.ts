@@ -42,6 +42,10 @@ import { OpenSet } from '../transport/openSet';
 import { PathCache } from '../transport/pathfinding';
 import { RegionGraph } from '../transport/regionGraph';
 import { RoadGraph } from '../transport/roadGraph';
+import { CityCommuteScenario } from '../scenarios/cityCommute';
+import { CitizenTripCounter, LivingCityScenario } from '../scenarios/livingCity';
+import { MetropolisScenario } from '../scenarios/metropolis';
+import { SignalizedCrossScenario } from '../scenarios/signalizedCross';
 import { UtilityNetwork, UtilitySupply } from '../utilities';
 
 /** A name is written into every save: renaming one breaks the saves that carry it. */
@@ -52,7 +56,9 @@ export const SAVED_CLASSES: Readonly<Record<string, { readonly prototype: object
   BudgetLines,
   Buildings,
   BusRoutes,
+  CitizenTripCounter,
   Citizens,
+  CityCommuteScenario,
   CityFields,
   CivicCoverage,
   ClassDemand,
@@ -70,10 +76,12 @@ export const SAVED_CLASSES: Readonly<Record<string, { readonly prototype: object
   LaneletConflictMatrices,
   LaneletGraph,
   LinkHeap,
+  LivingCityScenario,
   Loans,
   MapGrid,
   MesoGraph,
   MesoTraffic,
+  MetropolisScenario,
   Milestones,
   MinuteQueue,
   NearestBuildings,
@@ -90,6 +98,7 @@ export const SAVED_CLASSES: Readonly<Record<string, { readonly prototype: object
   RoadGraph,
   ServiceCoverageIndex,
   ServiceFunding,
+  SignalizedCrossScenario,
   StdRng,
   TaxRates,
   TileSet,

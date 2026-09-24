@@ -8,6 +8,9 @@ import { buildingPlace, streetPlace } from '../src/parking';
 import { fingerprint, fingerprintSections } from '../src/fingerprint';
 import { buildHeadlessGame, reseed } from '../src/headless';
 import { firstDivergence } from '../src/probe';
+import { CityCommuteScenario } from '../src/scenarios/cityCommute';
+import { CitizenTripCounter, LivingCityScenario } from '../src/scenarios/livingCity';
+import { MetropolisScenario } from '../src/scenarios/metropolis';
 import { requestState } from '../src/state';
 import { refSlot, spawnVehicle } from '../src/traffic/vehicles';
 import type { World } from '../src/world';
@@ -209,6 +212,45 @@ describe('determinism', () => {
       ['shoppingStats', (w) => void (w.shoppingStats.demandEvents += 1)],
       ['commuteStats', (w) => void (w.commuteStats.samples += 1)],
       ['classDemand', (w) => void (w.classDemand.byClass.Commercial.Low = 0.5)],
+      ['scenario.activeId', (w) => void (w.scenario.activeId = 'starter')],
+      ['scenario.objectives', (w) => void w.scenario.objectives.push({ kind: 'MoneyAtLeast', target: 1 })],
+      ['scenario.met', (w) => void w.scenario.met.push(true)],
+      ['scenario.isCompleted', (w) => void (w.scenario.isCompleted = true)],
+      ['scenarioRuntime', (w) => void (w.scenarioRuntime = new CitizenTripCounter())],
+      [
+        'scenarioRuntime.state',
+        (w) => {
+          // What a commute keeps drives traffic: its generator, commuters and the last tick it fed.
+          const commute = new CityCommuteScenario(w, { citizens: 3 });
+          const before = fingerprint(w);
+          w.tick += 1;
+          commute.advance(w);
+          w.tick -= 1;
+          expect(fingerprint(w), 'fingerprint is blind to the state of the scenario runtime').not.toBe(before);
+        },
+      ],
+      [
+        'scenarioRuntime.plan',
+        (w) => {
+          // A field a runtime has beyond the trip counters: the metropolis's plan, and whatever a later runtime adds.
+          const counters = { requested: 0, arrived: 0, lastTick: -1 };
+          const run = Object.assign(Object.create(MetropolisScenario.prototype) as MetropolisScenario, counters, { plan: { lights: [], first: 3, last: 9 } });
+          w.scenarioRuntime = run;
+          const before = fingerprint(w);
+          (run as { plan: { first: number } }).plan.first = 4;
+          expect(fingerprint(w), 'fingerprint is blind to the plan of the metropolis').not.toBe(before);
+        },
+      ],
+      [
+        'scenarioRuntime.class',
+        (w) => {
+          w.scenarioRuntime = new CitizenTripCounter();
+          const before = fingerprint(w);
+          // The same fields under another runtime's class.
+          w.scenarioRuntime = Object.assign(Object.create(LivingCityScenario.prototype) as LivingCityScenario, w.scenarioRuntime);
+          expect(fingerprint(w), 'fingerprint is blind to the class of the scenario runtime').not.toBe(before);
+        },
+      ],
     );
 
     for (const [label, mutate] of mutations) {

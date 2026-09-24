@@ -261,5 +261,7 @@ export class MetropolisScenario extends CitizenTripCounter {
     recordGrownPopulation(w, w.city.population);
     seedDemoBusRoute(w.grid, w.busRoutes);
     w.city.hour = LIVING_CITY_START_HOUR;
+    // The world keeps its scenario, so a save carries it and the fingerprint sees it.
+    w.scenarioRuntime = this;
   }
 }

@@ -10,6 +10,7 @@ import type {
   MapCell,
   MapGrid,
   Milestone,
+  ScenarioObjective,
   ServiceKind,
   ShownToast,
   SystemError,
@@ -63,6 +64,28 @@ export interface WorldSnapshot {
   readonly milestones: MilestonesView;
   /** The advisor's first three problems, worst first; empty until the first tick of a game (or of a scenario) assesses it. */
   readonly advisor: readonly AdvisorProblemView[];
+  /** The catalog preset running and its objectives; `null` for the other scenarios and a plain game. */
+  readonly scenario: ScenarioProgressView | null;
+}
+
+/** An objective of the running preset against the city now. */
+export interface ObjectiveView {
+  readonly kind: ScenarioObjective['kind'];
+  readonly target: number;
+  /** What the objective measures now: citizens, dollars, happiness 0..1. */
+  readonly current: number;
+  /** Met on the last tick. */
+  readonly met: boolean;
+}
+
+export interface ScenarioProgressView {
+  readonly id: string;
+  /** The title the menu lists it under. */
+  readonly name: string;
+  readonly objectives: readonly ObjectiveView[];
+  readonly completed: number;
+  /** Every objective met; never for a preset without any. */
+  readonly isCompleted: boolean;
 }
 
 /** One budget line of a month, whole dollars: income positive, spending negative. */
@@ -262,7 +285,11 @@ export type Request =
   | { readonly t: 'debugVehicles'; readonly vehicles: readonly DebugVehicle[] }
   | { readonly t: 'debugOverlay' }
   /** Build a scenario into the world; the host feeds it before every fixed tick from then on. */
-  | { readonly t: 'scenario'; readonly name: ScenarioName; readonly size?: number }
+  /**
+   * `seed`: a catalog preset's map on this seed instead of its own (`u64` as a decimal string); the other scenarios build
+   * maps of their own and do not read it.
+   */
+  | { readonly t: 'scenario'; readonly name: ScenarioName; readonly size?: number; readonly seed?: string }
   /** Make a system throw on every call (`null` stops it): the worker's resilience from DevTools and Playwright. */
   | { readonly t: 'debugFailSystem'; readonly system: string | null }
   /** What the camera sees (`null` for everything): the render frame holds only what lies in it, with a margin. */
@@ -343,6 +370,23 @@ export interface ReplyByRequest {
 }
 
 export type Reply = ReplyByRequest[keyof ReplyByRequest];
+
+function buffersOf(value: unknown, out: Set<ArrayBuffer>): Set<ArrayBuffer> {
+  if (ArrayBuffer.isView(value)) out.add(value.buffer as ArrayBuffer);
+  else if (typeof value === 'object' && value !== null) for (const v of Object.values(value)) buffersOf(v, out);
+  return out;
+}
+
+/**
+ * The buffers a reply to `t` moves to the main thread rather than copies: the save's bytes and the layers of a data
+ * map, made for the reply alone. A moved buffer is gone from the worker, so a reply holding the world's own arrays
+ * never moves them.
+ */
+export function transferablesOf(t: Request['t'], value: Reply): ArrayBuffer[] {
+  if (t === 'save') return [value as ArrayBuffer];
+  if (t === 'dataMap') return [...buffersOf(value, new Set())];
+  return [];
+}
 
 export interface ToWorker {
   readonly id: number;

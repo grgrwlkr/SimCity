@@ -28,6 +28,7 @@ import { MesoGraph } from './meso/graph';
 import { MesoTraffic } from './meso/traffic';
 import { Milestones } from './milestones';
 import { Notifications } from './notifications';
+import { emptyScenarioProgress, type ScenarioProgress } from './objectives';
 import { Parking, defaultCitizenConfig, type CitizenConfig } from './parking';
 import { PedestrianGraph, defaultPedestrianConfig, type PedestrianConfig } from './pedestrians/graph';
 import { RegionalTrips, defaultRegionalConfig, type RegionalConfig } from './regional';
@@ -51,6 +52,9 @@ import type { RouteInvalidation } from './traffic/reroute';
 import { emptyMotionStats, type VehicleMotionStats } from './traffic/stuck';
 import { RegionGraph } from './transport/regionGraph';
 import { RoadGraph } from './transport/roadGraph';
+import type { CityCommuteScenario } from './scenarios/cityCommute';
+import type { CitizenTripCounter } from './scenarios/livingCity';
+import type { SignalizedCrossScenario } from './scenarios/signalizedCross';
 
 export { VEHICLE_CAPACITY, type VehicleLayers } from './traffic/vehicles';
 
@@ -67,6 +71,12 @@ export interface SystemError {
   lastTick: number;
   message: string;
 }
+
+/**
+ * What a scenario keeps beyond the city and feeds it before every fixed tick: the commuters of `city`, the waves of a
+ * crossing, the trips a living city counts for the HUD. In the world so a save carries it.
+ */
+export type ScenarioRuntime = CityCommuteScenario | SignalizedCrossScenario | CitizenTripCounter;
 
 export interface World {
   readonly mapConfig: MapConfig;
@@ -220,6 +230,10 @@ export interface World {
   employmentStats: EmploymentStats;
   shoppingStats: ShoppingDemandStats;
   commuteStats: CommuteStats;
+  /** The catalog preset running and its objectives' progress, counted by `updateScenarioProgress`. */
+  scenario: ScenarioProgress;
+  /** The running scenario's own state; `null` without one. */
+  scenarioRuntime: ScenarioRuntime | null;
 }
 
 export interface WorldOptions {
@@ -330,5 +344,7 @@ export function createWorld(options: WorldOptions = {}): World {
     employmentStats: emptyEmploymentStats(),
     shoppingStats: emptyShoppingStats(),
     commuteStats: emptyCommuteStats(),
+    scenario: emptyScenarioProgress(),
+    scenarioRuntime: null,
   };
 }

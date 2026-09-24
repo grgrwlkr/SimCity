@@ -73,7 +73,7 @@ describe('save through the host', () => {
     const { host, at } = running({ t: 'scenario', name: 'signalizedCross4' }, 20, memoryFiles());
     const bytes = host.handle({ t: 'save' });
     expect(bytes).toBeInstanceOf(ArrayBuffer);
-    expect(new TextDecoder().decode(bytes.slice(0, 40))).toMatch(/^\{"format":"simcity-save","version":1,/);
+    expect(new TextDecoder().decode(bytes.slice(0, 40))).toMatch(/^\{"format":"simcity-save","version":2,/);
     const other = otherHost(memoryFiles());
     expect(other.handle({ t: 'load', bytes })).toEqual(at);
     await other.handleSlot({ t: 'saveSlot', slot: 'copy' });
@@ -103,7 +103,8 @@ describe('save through the host', () => {
     reference.handle({ t: 'load', bytes: host.handle({ t: 'save' }) });
     reference.handle({ t: 'scenario', name: 'signalizedCross' });
     expect(after).toEqual(reference.handle({ t: 'step', ticks: 5 }));
-    expect(after.tick).toBe(at.tick + 5);
+    // The scenario sent after the load opens afresh on top of it; sent before, the step would have ended at tick 25.
+    expect(after.tick).toBe(5);
     // Nothing waiting: an immediate request is answered at once, a failing one rejects.
     expect(await other.answer({ t: 'fingerprint' })).toEqual(after);
     await expect(other.answer({ t: 'load', bytes: new ArrayBuffer(1) })).rejects.toThrow(SaveError);

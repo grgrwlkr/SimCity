@@ -173,8 +173,13 @@ const isTagged = (node: object): node is TaggedNode => Object.hasOwn(node, '$');
 const isPlainTemplate = (t: unknown): t is Record<string, unknown> =>
   typeof t === 'object' && t !== null && !Array.isArray(t) && !ArrayBuffer.isView(t) && !(t instanceof Map) && !(t instanceof Set);
 
+/** The name `SAVED_CLASSES` gives the class of `v`; `undefined` for anything else. */
+export function savedClassName(v: object): string | undefined {
+  return CLASS_NAMES.get(Object.getPrototypeOf(v) as object);
+}
+
 /** What a value is, as far as a save can tell: a primitive type, a typed array, a collection or a saved class. */
-function kindOf(v: unknown): string {
+export function kindOf(v: unknown): string {
   if (v === null) return 'null';
   if (typeof v !== 'object') return typeof v;
   if (ArrayBuffer.isView(v)) return typedArrayName(v) ?? 'DataView';

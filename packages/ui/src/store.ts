@@ -29,3 +29,4 @@ export const selectToasts = (s: SimStore): WorldSnapshot['toasts'] => s.snapshot
 export const selectHistory = (s: SimStore): WorldSnapshot['history'] => s.snapshot?.history ?? NONE;
 export const selectMilestones = (s: SimStore) => s.snapshot?.milestones ?? null;
 export const selectAdvisor = (s: SimStore): WorldSnapshot['advisor'] => s.snapshot?.advisor ?? NONE;
+export const selectScenario = (s: SimStore) => s.snapshot?.scenario ?? null;

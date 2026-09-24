@@ -5,8 +5,9 @@ import { describe, expect, it } from 'vitest';
 import { frame, step } from '../../src/app';
 import { monthlyPayment } from '../../src/economy/economy';
 import { fingerprint, fingerprintSections } from '../../src/fingerprint';
-import { SaveError, SAVE_VERSION, loadWorld, parseSave, saveWorld, worldFromSave, type SaveFile, type SaveMigration } from '../../src/save/save';
+import { SaveError, SAVE_MIGRATIONS, SAVE_VERSION, loadWorld, parseSave, saveWorld, worldFromSave, type SaveFile, type SaveMigration } from '../../src/save/save';
 import type { SaveNode } from '../../src/save/codec';
+import { SCENARIO_PRESETS } from '../../src/scenarios/catalogData';
 import { LivingCityScenario } from '../../src/scenarios/livingCity';
 import { requestState } from '../../src/state';
 import { SECOND_NS } from '../../src/timer';
@@ -37,7 +38,9 @@ function exercisedWorld(): World {
     const w = createWorld({ gameHourNs: 60 * SECOND_NS });
     requestState(w, 'InGame');
     frame(w, 0);
+    // The scenario is the world's to keep, and the city is measured against the objectives of a preset.
     new LivingCityScenario(w);
+    Object.assign(w.scenario, { activeId: 'starter', activeName: 'Starter Town', objectives: SCENARIO_PRESETS[1]!.objectives.map((o) => ({ ...o })) });
     step(w, 700);
     // What a living city leaves empty between ticks: a queued command, an undo step, a micro vehicle, an event, a toast.
     w.commands.push({ kind: 'SetZone', pos: { x: 1, y: 1 }, zone: 'Residential', density: 'High' });
@@ -148,7 +151,7 @@ describe('save', () => {
     const text = saveWorld(createWorld({ mapWidth: 8, mapHeight: 8 }));
     expect((JSON.parse(text) as Json).version).toBe(SAVE_VERSION);
     expect(() => loadWorld(text.slice(0, text.length / 2))).toThrow(/^save rejected: not JSON/);
-    expect(() => loadWorld(edited(text, (f) => void (f.version = 2)))).toThrow(/^save rejected: version: /);
+    expect(() => loadWorld(edited(text, (f) => void (f.version = SAVE_VERSION + 1)))).toThrow(/^save rejected: version: /);
     expect(() => loadWorld('(save_version: 3, seed: 1)')).toThrow(SaveError);
     expect(() => loadWorld(edited(text, (f) => void (classFields(f.world.grid).elevation = { $: 'ta', t: 'Uint9Array', v: '' })))).toThrow(
       /^save rejected: world\.grid\.elevation\.t: Invalid option/,
@@ -171,9 +174,10 @@ describe('save', () => {
   it('anOlderVersionLoadsOnlyThroughItsMigration', () => {
     const text = saveWorld(createWorld({ mapWidth: 4, mapHeight: 4 }));
     const v0 = edited(text, (f) => void (f.version = 0));
-    expect(() => loadWorld(v0), 'v1 is the first TS save: nothing migrates to it yet').toThrow(/^save rejected: version: 0 is older than 1 and no migration takes it further$/);
-    expect(() => parseSave(v0, { 0: (f) => f })).toThrow(/^save rejected: version: the migration from 0 did not raise it$/);
-    expect(worldFromSave(parseSave(v0, { 0: (f) => ({ ...f, version: 1 }) })).grid.width).toBe(4);
+    expect(() => loadWorld(v0), 'v1 is the first TS save: nothing migrates to it').toThrow(new RegExp(`^save rejected: version: 0 is older than ${SAVE_VERSION} and no migration takes it further$`));
+    expect(() => parseSave(v0, { ...SAVE_MIGRATIONS, 0: (f) => f })).toThrow(/^save rejected: version: the migration from 0 did not raise it$/);
+    // A step to v1 hands the file on to the steps after it.
+    expect(worldFromSave(parseSave(v0, { ...SAVE_MIGRATIONS, 0: (f) => ({ ...f, version: 1 }) })).grid.width).toBe(4);
   }, SIZED_IN_TICKS);
 
   it('budgetReportTheBudgetIsPartOfTheSave', () => {
@@ -233,7 +237,7 @@ describe('save', () => {
       classFields(file.world.grid).density = mediumLayer;
       return { ...file, version: 1 };
     };
-    const legacy = worldFromSave(parseSave(v0, { 0: zoneAtMedium }));
+    const legacy = worldFromSave(parseSave(v0, { ...SAVE_MIGRATIONS, 0: zoneAtMedium }));
     expect(legacy.grid.get(pos)!.zone).toBe('Residential');
     expect(legacy.grid.get(pos)!.density).toBe('Medium');
   }, SIZED_IN_TICKS);
@@ -276,7 +280,7 @@ describe('save', () => {
       classFields(file.world.intersections).trafficLightKeys = { $: 'set', v: [] };
       return { ...file, version: 1, world: { ...file.world, trafficLights: [] } };
     };
-    const back = worldFromSave(parseSave(v0, { 0: noLights }));
+    const back = worldFromSave(parseSave(v0, { ...SAVE_MIGRATIONS, 0: noLights }));
     expect(back.trafficLights).toEqual([]);
     expect(back.intersections.trafficLightKeys.size).toBe(0);
     expect(back.tick).toBe(w.tick);
