@@ -69,9 +69,12 @@ async function waitForDrawn(page: Page): Promise<SceneStats> {
   await expect
     .poll(
       () =>
-        page
-          .evaluate(async () => [await window.__sim.snapshot(), (await window.__sim.renderStats()) as SceneStats] as const)
-          .then(([s, r]) => `${r.mapEditVersion}/${s.mapEditVersion} frames ${r.frames} windows ${r.windowsPending}`),
+        page.evaluate(async () => {
+          // The worker's snapshot waits at most 5 s: a stalled worker reads as `worker?`, a stalled page never returns.
+          const r = (await window.__sim.renderStats()) as SceneStats;
+          const s = await Promise.race([window.__sim.snapshot(), new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000))]);
+          return `${r.mapEditVersion}/${s === null ? 'worker?' : s.mapEditVersion} frames ${r.frames} windows ${r.windowsPending}`;
+        }),
       { timeout: 240_000 },
     )
     .toMatch(/^(\d+)\/\1 /);
@@ -145,9 +148,13 @@ for (const view of VIEWS) {
   for (const hour of HOURS) {
     test(`renderGate ${view.name} ${hour.name}`, async ({ page, browser, baseURL }, testInfo) => {
       // Two pages in two browser contexts: nothing of the first page's session is left for the second to draw from.
-      const other = await (await browser.newContext({ viewport: { width: 640, height: 480 }, ...(baseURL === undefined ? {} : { baseURL }) })).newPage();
+      const context = await browser.newContext({ viewport: { width: 640, height: 480 }, ...(baseURL === undefined ? {} : { baseURL }) });
       const first = await shoot(page, view, hour.hour);
-      const second = await shoot(other, view, hour.hour);
+      // The first page stops drawing: both share the browser's GPU process, and under SwiftShader a scene still drawing
+      // there starved the second page's shader builds past four minutes.
+      await page.goto('about:blank');
+      const second = await shoot(await context.newPage(), view, hour.hour);
+      await context.close();
       writeFileSync(testInfo.outputPath(`${view.name}-${hour.name}-1.png`), first.png);
       writeFileSync(testInfo.outputPath(`${view.name}-${hour.name}-2.png`), second.png);
       const runs = await frameDiff(page, first.png, second.png);
