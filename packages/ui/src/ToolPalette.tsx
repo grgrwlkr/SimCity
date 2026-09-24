@@ -2,8 +2,8 @@
 // crates/simcity_frontend/src/game/hud/tool_palette.rs and the hotkeys of crates/simcity_sim/src/game/map/input.rs;
 // layout docs/design/hud/layout.md §3, states states.md.
 import type { MilestonesView } from '@simcity/bridge';
-import { unlockPopulation, type BuildingKind, type RoadKind, type ZoneDensity } from '@simcity/sim';
-import { useEffect, type PointerEvent, type WheelEvent } from 'react';
+import { thousands, unlockPopulation, type BuildingKind, type RoadKind, type ZoneDensity } from '@simcity/sim';
+import { useEffect, useRef, type PointerEvent, type WheelEvent } from 'react';
 import { create } from 'zustand';
 import { ICONS, type IconId } from './icons';
 import { useSimStore } from './store';
@@ -227,6 +227,29 @@ function Hotkey({ code }: { code: string | undefined }) {
   );
 }
 
+/** The palette's height, border included, for the panels that stop above it (advisorPanel.css). */
+export const PALETTE_HEIGHT_TOKEN = '--hud-palette-height';
+
+interface SizeObserver {
+  observe(target: Element): void;
+  disconnect(): void;
+}
+
+/**
+ * Keeps `PALETTE_HEIGHT_TOKEN` on `root` at the height of `panel`: the observer fires when the groups wrap into a
+ * second row or back, whatever resized the window. Returns the teardown.
+ */
+export function trackPaletteHeight(panel: Element, root: HTMLElement, Observer: new (callback: () => void) => SizeObserver = ResizeObserver): () => void {
+  const update = () => root.style.setProperty(PALETTE_HEIGHT_TOKEN, `${panel.getBoundingClientRect().height}px`);
+  const observer = new Observer(update);
+  observer.observe(panel);
+  update();
+  return () => {
+    observer.disconnect();
+    root.style.removeProperty(PALETTE_HEIGHT_TOKEN);
+  };
+}
+
 /** A press or a wheel on the palette is the palette's: it never reaches the map (`PointerOverGameUi`). */
 const keepOffTheMap = (event: PointerEvent | WheelEvent) => event.stopPropagation();
 
@@ -240,9 +263,11 @@ export interface ToolPaletteViewProps {
 
 /** The palette at the bottom centre: a layout-only root and one glass toolbar of five groups. */
 export function ToolPaletteView({ state, milestones, onTool, onDensity, onOneWay }: ToolPaletteViewProps) {
+  const panel = useRef<HTMLDivElement>(null);
+  useEffect(() => (panel.current === null ? undefined : trackPaletteHeight(panel.current, document.documentElement)), []);
   return (
     <div className="hud-tools">
-      <div className="hud-tools-panel hud-glass" role="toolbar" aria-label="Инструменты" onPointerDown={keepOffTheMap} onWheel={keepOffTheMap}>
+      <div ref={panel} className="hud-tools-panel hud-glass" role="toolbar" aria-label="Инструменты" onPointerDown={keepOffTheMap} onWheel={keepOffTheMap}>
         {GROUPS.map(([group, entries]) => (
           <div key={group} className="hud-tools-group" role="group" aria-label={group}>
             {entries.map((entry) => {
@@ -279,7 +304,7 @@ export function ToolPaletteView({ state, milestones, onTool, onDensity, onOneWay
                 );
               }
               const locked = isLocked(entry.tool, milestones);
-              const caption = locked ? `Откроется при ${opensAt(entry.tool)} жителях` : undefined;
+              const caption = locked ? `Откроется при ${thousands(opensAt(entry.tool))} жителях` : undefined;
               const code = hotkeyFor(entry.tool);
               return (
                 <button
