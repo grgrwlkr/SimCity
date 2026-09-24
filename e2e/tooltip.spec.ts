@@ -26,7 +26,7 @@ async function openBlankCity(page: Page): Promise<void> {
   await page.goto('/');
   await page.waitForFunction(() => typeof window.__sim !== 'undefined');
   await page.evaluate(() => window.__sim.ready);
-  await page.getByTestId('start').click();
+  await page.evaluate(() => window.__sim.setState('InGame'));
   await expect(page.getByTestId('hud')).toBeVisible();
   const blank = Object.fromEntries(GRID_LAYER_NAMES.map((name) => [name, '00'.repeat(SIZE * SIZE)]));
   await page.evaluate(async (layers) => {

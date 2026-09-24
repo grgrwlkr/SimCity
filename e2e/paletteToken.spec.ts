@@ -26,7 +26,7 @@ test('thePaletteHeightTokenFollowsItsRowsAndTheAdvisorClearsThePalette', async (
   await page.goto('/');
   await page.waitForFunction(() => typeof window.__sim !== 'undefined');
   await page.evaluate(() => window.__sim.ready);
-  await page.getByTestId('start').click();
+  await page.evaluate(() => window.__sim.setState('InGame'));
   await expect(page.getByTestId('hud')).toBeVisible();
   await page.getByTestId('advisor-toggle').click();
   await expect(page.getByTestId('advisor')).toBeVisible();
