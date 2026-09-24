@@ -2,6 +2,7 @@
 // objectives panel of a catalogue preset in the city it starts. Every test first checks the screen is mounted: on a
 // branch without the HUD wiring that is the one thing that fails.
 import { SCENARIOS } from '../packages/bridge/src/scenarios';
+import { TEST_CITY_MONEY } from '../packages/sim/src/index';
 import { expect, test, type Page } from '@playwright/test';
 import type {} from '../packages/app/src/simApi';
 
@@ -57,12 +58,57 @@ test('uiShellANewMapStartsTheSandboxWithoutAGoalsPanel', async ({ page }) => {
   await expect(page.getByTestId('objectives')).toHaveCount(0);
 });
 
+// The demo city is `LoadTestCity` on a page of its own: its treasury and roads, and nothing to undo behind it.
 test('uiShellTheDemoCityOpensFromTheMenu', async ({ page }) => {
   await openMenu(page);
-  const before = await page.evaluate(() => window.__sim.snapshot().then((s) => s.mapEditVersion));
   await pick(page, 'menu-demo-city', /demo=1/);
   await expect.poll(() => appState(page)).toBe('InGame');
-  await expect.poll(() => page.evaluate(() => window.__sim.snapshot().then((s) => s.mapEditVersion))).toBeGreaterThan(before);
+  await expect.poll(() => page.evaluate(() => window.__sim.snapshot().then((s) => s.city.money))).toBe(TEST_CITY_MONEY);
+  const roads = await page.evaluate(async () => {
+    let found = 0;
+    for (const y of [32, 64, 96]) for (let x = 0; x < 128; x++) if ((await window.__sim.tile(x, y))?.road.kind !== 'None') found++;
+    return found;
+  });
+  expect(roads, 'the demo city has its streets').toBeGreaterThan(0);
+  const loaded = await page.evaluate(() => window.__sim.snapshot().then((s) => s.mapEditVersion));
+  await page.evaluate(() => window.__sim.undoRedo(false));
+  await page.evaluate(() => window.__sim.step(2));
+  expect(await page.evaluate(() => window.__sim.snapshot().then((s) => s.mapEditVersion)), 'nothing to undo').toBe(loaded);
   await expect(page.getByTestId('hud')).toBeVisible();
   await expect(page.getByTestId('hud-menu')).toHaveCount(0);
+});
+
+// Enter is not a menu choice of its own: with nothing focused it does nothing, on a button it presses that button.
+test('enterOnTheMenuPressesOnlyTheFocusedButton', async ({ page }) => {
+  await openMenu(page);
+  const url = page.url();
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(500);
+  expect(await appState(page), 'no city without a choice').toBe('MainMenu');
+  expect(page.url()).toBe(url);
+  await expect(page.getByTestId('hud-menu')).toBeVisible();
+
+  await page.getByTestId('menu-scenario-starter').focus();
+  await page.keyboard.press('Enter');
+  await page.waitForURL(/scenario=starter/);
+  await page.waitForFunction(() => typeof window.__sim !== 'undefined');
+  await page.evaluate(() => window.__sim.ready);
+  await expect.poll(() => scenarioId(page)).toBe('starter');
+  expect(await appState(page)).toBe('InGame');
+});
+
+// A hand-made `&seed=` the host would refuse: the page stays in the menu and says why in the console.
+test('aBadSeedInTheAddressLeavesThePlayerInTheMenu', async ({ page }) => {
+  const errors: string[] = [];
+  const thrown: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text());
+  });
+  page.on('pageerror', (error) => thrown.push(error.message));
+  await openMenu(page, '?scenario=sandbox&seed=x1');
+  await page.waitForTimeout(500);
+  expect(await appState(page)).toBe('MainMenu');
+  expect(await scenarioId(page)).toBe(null);
+  expect(errors.some((text) => text.includes('seed')), errors.join('\n')).toBe(true);
+  expect(thrown, 'no unhandled rejection').toEqual([]);
 });
