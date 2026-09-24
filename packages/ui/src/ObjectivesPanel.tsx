@@ -1,16 +1,15 @@
 // The goals of the scenario that runs (docs/design/hud/layout.md §10): each with its progress and a mark once met,
 // from the snapshot's `scenario`. A plain game, a scenario outside the catalogue or a preset without goals shows none.
 import type { ObjectiveView, ScenarioProgressView } from '@simcity/bridge';
+import { thousands } from '@simcity/sim';
 import { formatMoney } from './HudBar';
-
-const grouped = (value: number) => String(Math.trunc(value)).replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0');
 const percent = (share: number) => `${Math.round(share * 100)}\u00a0%`;
 
 /** «Население 1 234 из 50»: the city now against the goal, in the goal's own unit. */
 export function objectiveLine(o: ObjectiveView): string {
   switch (o.kind) {
     case 'PopulationAtLeast':
-      return `Население ${grouped(o.current)} из ${grouped(o.target)}`;
+      return `Население ${thousands(o.current)} из ${thousands(o.target)}`;
     case 'MoneyAtLeast':
       return `Казна ${formatMoney(o.current)} из ${formatMoney(o.target)}`;
     case 'HappinessAtLeast':
@@ -32,9 +31,12 @@ export function ObjectivesPanel({ scenario }: { scenario: ScenarioProgressView |
         {scenario.objectives.map((o, index) => (
           <li key={index} data-met={o.met ? 'true' : 'false'}>
             {o.met && (
-              <span className="hud-objectives-mark" aria-label="выполнено">
-                ✓
-              </span>
+              <>
+                <span className="hud-objectives-mark" aria-hidden="true">
+                  ✓
+                </span>
+                <span className="hud-objectives-sr">выполнено: </span>
+              </>
             )}
             {objectiveLine(o)}
           </li>

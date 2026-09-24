@@ -5,6 +5,7 @@ import type { ObjectiveView, ScenarioProgressView } from '@simcity/bridge';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
+import { thousands } from '@simcity/sim';
 import { ObjectivesPanel } from '../src/ObjectivesPanel';
 
 const css = readFileSync(new URL('../src/objectives.css', import.meta.url), 'utf8');
@@ -33,15 +34,18 @@ describe('objectives panel', () => {
     );
     expect(markup).toContain('Первый город');
     expect(markup).toContain('1 из 2');
-    expect(rows(markup)).toEqual(['✓ Население 1\u00a0234 из 50', 'Счастье 55\u00a0% из 60\u00a0%']);
+    expect(rows(markup)).toEqual([`✓ выполнено: Население ${thousands(1234)} из 50`, 'Счастье 55\u00a0% из 60\u00a0%']);
     const met = [...markup.matchAll(/<li[^>]*data-met="(true|false)"/g)].map((m) => m[1]);
     expect(met).toEqual(['true', 'false']);
+    // The mark is for the eye, the words for a screen reader: a generic span carries no name of its own.
+    expect(markup).toContain('<span class="hud-objectives-mark" aria-hidden="true">✓</span><span class="hud-objectives-sr">выполнено: </span>');
+    expect(css).toMatch(/\.hud-objectives-sr\s*\{[^}]*clip-path:\s*inset\(50%\)/);
     expect(markup).not.toContain('Сценарий пройден');
   });
 
   it('saysSoWhenEveryGoalIsMet', () => {
     const markup = html(starter([{ kind: 'MoneyAtLeast', target: 5000, current: 7300, met: true }], 1, true));
-    expect(rows(markup)).toEqual(['✓ Казна $7\u00a0300 из $5\u00a0000']);
+    expect(rows(markup)).toEqual(['✓ выполнено: Казна $7\u00a0300 из $5\u00a0000']);
     expect(markup).toContain('Сценарий пройден');
   });
 

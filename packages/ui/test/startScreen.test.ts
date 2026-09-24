@@ -4,8 +4,8 @@
 // `<button>` found by its test id, `Activate` is its `onClick`, and what the button asks for reaches the props, which
 // is where `ScenarioSelection`, `AutoStartTestCity` and `NextState` were.
 import { readFileSync } from 'node:fs';
-import { RENDER_CAPACITY, SCENARIOS, SimHost } from '@simcity/bridge';
-import { SCENARIO_PRESETS, type World } from '@simcity/sim';
+import { RENDER_CAPACITY, SCENARIOS, SimHost, type WorldSnapshot } from '@simcity/bridge';
+import { SCENARIO_PRESETS, defaultCity, thousands, type AppState, type World } from '@simcity/sim';
 import { createElement, isValidElement, type ReactElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
@@ -14,11 +14,45 @@ import {
   freshSeed,
   goalsLine,
   menuScenarios,
-  showsGameInterface,
-  showsStartScreen,
   type StartScreenEntry,
   type StartScreenProps,
 } from '../src/StartScreen';
+import { Hud, type HudActions } from '../src/Hud';
+import { useSimStore } from '../src/store';
+
+/** The whole HUD in `appState`, as a server render of the store's initial state (the way hudBar.test.ts renders it). */
+function renderHud(appState: AppState): string {
+  const snapshot = {
+    tick: 10,
+    appState,
+    speed: 'X1',
+    realRate: 1,
+    errors: [],
+    mapSeed: '1',
+    city: defaultCity(),
+    mapEditVersion: 1,
+    graphVersion: 1,
+    lights: [],
+    traffic: {
+      driving: 0, parked: 0, waitingAtLights: 0, stuckOverMinute: 0, avgSpeedKmh: 0, backlog: 0, avgCongestionPct: 0,
+      trucks: 0, pedestrians: 0, regional: 0, citizens: 0, travelling: 0, tripsStarted: 0, tripsDone: 0, simTickMs: 0,
+    },
+    services: { emergencies: [], vehicles: 0, vehiclesOut: 0, buses: 0, resolved: 0, failed: 0 },
+    scenario: null,
+  } as unknown as WorldSnapshot;
+  // Both shapes of `HudActions`, before the start screen is wired into the HUD and after.
+  const actions = {
+    setState: () => {}, setSpeed: () => {}, start: () => {}, demoCity: () => {}, scenarioHref: () => '',
+    command: () => {}, undoRedo: () => {}, focusTile: () => {},
+  } as unknown as HudActions;
+  const initial = useSimStore.getInitialState() as { snapshot: WorldSnapshot | null; fps: number | null };
+  Object.assign(initial, { snapshot, fps: 60 });
+  try {
+    return renderToStaticMarkup(createElement(Hud, { actions, debug: false }));
+  } finally {
+    Object.assign(initial, { snapshot: null, fps: null });
+  }
+}
 
 const css = readFileSync(new URL('../src/startScreen.css', import.meta.url), 'utf8');
 
@@ -127,12 +161,15 @@ describe('start screen', () => {
   });
 
   // `show_screens_for_state`: the HUD shows the start screen in the menu and the game interface in a running city.
+  // Rendered through the HUD itself, so it pins what the player gets, not a predicate beside it.
   it('uiShellTheMenuShowsOnlyTheStartScreenAndACityOnlyTheGameInterface', () => {
-    expect(showsStartScreen('MainMenu')).toBe(true);
-    expect(showsGameInterface('MainMenu')).toBe(false);
+    const menu = renderHud('MainMenu');
+    expect(menu, 'the menu shows the start screen').toContain('data-testid="hud-menu"');
+    expect(menu, 'and none of the game interface').not.toContain('data-testid="hud"');
     for (const state of ['InGame', 'Paused'] as const) {
-      expect(showsStartScreen(state), state).toBe(false);
-      expect(showsGameInterface(state), state).toBe(true);
+      const city = renderHud(state);
+      expect(city, `${state} shows the game interface`).toContain('data-testid="hud"');
+      expect(city, `${state} hides the start screen`).not.toContain('data-testid="hud-menu"');
     }
   });
 
@@ -162,7 +199,7 @@ describe('start screen', () => {
     expect(goalsLine([])).toBe('Свободная игра');
     expect(goalsLine(SCENARIO_PRESETS.find((p) => p.id === 'starter')!.objectives)).toBe('Цели: население 50, счастье 60\u00a0%');
     expect(goalsLine([{ kind: 'MoneyAtLeast', target: 12000 }, { kind: 'PopulationAtLeast', target: 5000 }])).toBe(
-      'Цели: казна $12\u00a0000, население 5\u00a0000',
+      `Цели: казна $12\u00a0000, население ${thousands(5000)}`,
     );
   });
 

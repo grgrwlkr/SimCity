@@ -49,6 +49,16 @@
   color: var(--hud-positive);
 }
 
+/* Words for a screen reader only: the ✓ beside them is hidden from it (a generic span has no name of its own). */
+.hud-objectives-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
 .hud-objectives-done {
   margin: var(--hud-space-8) 0 0;
   color: var(--hud-positive);

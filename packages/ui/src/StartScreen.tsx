@@ -2,7 +2,7 @@
 // (docs/design/hud/layout.md §9; `start_screen.rs` at rust-final). What a button asks for goes to the props: the app
 // turns it into requests, the screen knows nothing of the worker.
 import { SCENARIOS, type ScenarioName } from '@simcity/bridge';
-import { SCENARIO_PRESETS, type AppState, type ScenarioObjective } from '@simcity/sim';
+import { SCENARIO_PRESETS, thousands, type AppState, type ScenarioObjective } from '@simcity/sim';
 import { formatMoney } from './HudBar';
 
 /** A city to start: a scenario of the menu, and for a new map the seed it is generated on (`u64` in decimal digits). */
@@ -40,15 +40,13 @@ export function freshSeed(): string {
   return crypto.getRandomValues(new BigUint64Array(1))[0]!.toString();
 }
 
-const grouped = (value: number) => String(Math.trunc(value)).replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0');
-
 /** A scenario's goals in a line, or what it offers when it has none (`goals_line`). */
 export function goalsLine(objectives: readonly ScenarioObjective[]): string {
   if (objectives.length === 0) return 'Свободная игра';
   const goals = objectives.map((goal) => {
     switch (goal.kind) {
       case 'PopulationAtLeast':
-        return `население ${grouped(goal.target)}`;
+        return `население ${thousands(goal.target)}`;
       case 'MoneyAtLeast':
         return `казна ${formatMoney(goal.target)}`;
       case 'HappinessAtLeast':
@@ -58,10 +56,8 @@ export function goalsLine(objectives: readonly ScenarioObjective[]): string {
   return `Цели: ${goals.join(', ')}`;
 }
 
-/** The start screen belongs to the menu (`show_screens_for_state`). */
+/** The start screen belongs to the menu, every other part of the game interface to a running city (`show_screens_for_state`). */
 export const showsStartScreen = (state: AppState): boolean => state === 'MainMenu';
-/** Every other part of the game interface belongs to a running city. */
-export const showsGameInterface = (state: AppState): boolean => state === 'InGame' || state === 'Paused';
 
 function menuButton({ testId, label, detail, onClick }: { testId: string; label: string; detail: string; onClick: () => void }) {
   return (
