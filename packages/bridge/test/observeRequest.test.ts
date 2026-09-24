@@ -110,14 +110,14 @@ describe('observe request', () => {
       blockers: ['NoPower'],
       diagnosis: tileDiagnosis(g, w.utilityNetwork, w.rciDemand, at(8, 4), w.cityFields),
     });
-    expect(supply.at!.diagnosis).toEqual(['Residential zone', "Won't grow: No power"]);
+    expect(supply.at!.diagnosis).toEqual(['Жилая зона', 'Не растёт: нет электричества']);
 
     // Over a standing building growth blockers would describe an empty zone the tile is not: only the diagnosis.
     g.set(at(5, 4), { ...g.get(at(5, 4))!, building: 'Residential' });
     const built = observeWorld(w, { sections: ['supply'], at: at(5, 4) }).supply!.at!;
     expect(built.built).toBe(true);
     expect(built.blockers).toBeNull();
-    expect(built.diagnosis).toEqual(['Residential zone', 'No power: occupants are leaving']);
+    expect(built.diagnosis).toEqual(['Жилая зона', 'Нет электричества: здание пустеет']);
   });
 
   it('utilityNetworkSupplyAndDemandAreReportedSoAShortageRunCanBeJudged', () => {
@@ -159,7 +159,7 @@ describe('observe request', () => {
     const locked = preview(2, 5);
     expect(locked.tool).toEqual({ kind: 'School' });
     expect(locked.tile).toEqual(at(2, 5));
-    expect(locked.verdict).toBe('Unlocks at 250 residents');
+    expect(locked.verdict).toBe('Откроется при 250 жителях');
     expect(locked.cost).toBe(700);
     expect(locked.radius).toBe(18);
 

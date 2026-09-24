@@ -122,7 +122,7 @@ test.describe('observe', () => {
   test('toolPreviewIsReportedSoAPlacementRunCanChooseItsTile', async ({ page }) => {
     await openStillCity(page);
     const off = await observe(page, { sections: ['preview'], at: { x: -1, y: 0 }, tool: { kind: 'Park' } });
-    expect(off.preview).toMatchObject({ tile: { x: -1, y: 0 }, tool: { kind: 'Park' }, verdict: 'Off the map' });
+    expect(off.preview).toMatchObject({ tile: { x: -1, y: 0 }, tool: { kind: 'Park' }, verdict: 'Вне карты' });
     const inspect = await observe(page, { sections: ['preview'], at: { x: 5, y: 5 }, tool: { kind: 'Inspect' } });
     expect(inspect.preview!.verdict, 'inspect edits nothing').toBeNull();
   });
