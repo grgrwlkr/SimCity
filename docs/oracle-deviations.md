@@ -122,3 +122,40 @@ upgraded», — но вызывать по зоне стало нечего, а 
 веб на GPU без потолка кадров, 3 раунда × 5 окон по 1 с, тени вкл/выкл через `?off=shadows`: с перекрытием время кадра
 +37,4 % (2,94 против 2,14 мс), один каскад +13,0 % (2,83 против 2,51), два каскада без перекрытия +9,6 % (1,88 против
 1,71). Граница каскадов теперь резкая; остальные поля прежние.
+
+## 2026-09-24 — пины текста игрока переведены на русский (l10n-ru)
+
+Волна 7, единица l10n-ru. Пины текста для игрока, портированные из Rust, переведены на русский. Имя и смысл каждого
+теста сохранены, меняется только язык литерала. Переведены: `advisor.test.ts` (`advisorAHealthyCityGetsNoAdvice` —
+разделитель разрядов `thousands()` теперь U+00A0, как у `formatMoney`; `advisorNamesTheWaterShortageWithItsNumbers`,
+`advisorWithoutAStationSaysWhichAndCountsTheBuildings`, `advisorNamesUnemploymentAndWhoIsOutOfWork`,
+`advisorNamesHousingAndJobsDemand`, `advisorNamesSchoolsOnceTheyCanBeBuilt`, `advisorNamesCrimeFireAndHealthWithTheirCover`,
+`advisorNamesTheBudgetDeficitAndAnEmptyTreasury`, `advisorCountsServiceCoverOverTheBuildingsStandingNow`,
+`advisorNamesTheLowerClassOnATie`), `buildings/blockers.test.ts` (`utilityNetworkGrowthBlockersNameTheMissingUtility`,
+`utilityNetworkTileDiagnosisNamesTheReasonForAPlayer`, `cityFieldsFireHazardHoldsBuildingsBack`,
+`cityFieldsPoorHealthKeepsHomesBelowLevelThree`, `cityFieldsUnattractiveZoneDoesNotGrowAndSaysWhy`), `milestones.test.ts`
+(`milestoneSchoolOpensAt250ResidentsAndUniversityAt1000`, `milestoneReachingAMilestonePutsOneLineInTheFeed`),
+`render/test/toolPreview.test.ts` (`toolPreviewPricesARoadTileItsUpgradeAndACrossing`,
+`toolPreviewRefusesARoadOnWaterAndADowngradeButNotDebt`, `toolPreviewZoneVerdictIsTheZoningRule`,
+`toolPreviewServiceShowsPriceRadiusAndWhyItCannotGoHere`, `utilityNetworkStationToolsShowPriceAndSupplyNotARadius`,
+`milestoneLockedBuildingPreviewSaysWhenItUnlocks`, `toolPreviewSignalBulldozerInspectAndOffTheMap`),
+`emergencies.test.ts` (`aBigCityHasAnEmergencyAnHourAndNeverMoreThanItsCap`), `bridge/test/advisorSnapshot.test.ts`
+(`snapshotCarriesTheFirstThreeProblemsOfTheAdvisor`), `e2e/toasts.spec.ts` (`eightIdenticalEventsAreOneLineWithACount`,
+`clickingAToastTakesTheCameraToTheEvent`). Новые пины без аналога в Rust: `advisorCountsAgreeWithTheirNouns`,
+`toolPreviewEffectsCarryAPriceCleanly`, `emergencyNamesLiveInALeafModule`, `format.test.ts`, строка «1 000 жителей:
+открыт университет».
+
+При слиянии волны интегратор перевёл пины веток, написанных до l10n-ru, по таблице было → стало dev-l10n и сверил с
+выводом слитого кода: `bridge/test/observeRequest.test.ts` (`utilityNetworkIsReportedSoASupplyRunCanBeJudged`,
+`toolPreviewIsReportedSoAPlacementRunCanChooseItsTile`) и `e2e/live.spec.ts`
+(`toolPreviewIsReportedSoAPlacementRunCanChooseItsTile`, «Вне карты») — перенос `observe.rs`;
+`bridge/test/tilePreviewRequest.test.ts` (`utilityNetworkTooltipNamesWhyAZonedTileDoesNotGrow`) сравнивает причину в
+нижнем регистре: посреди фразы `tileDiagnosis` пишет её со строчной (`lowerFirst`, `blockers.ts`).
+
+## 2026-09-24 — gate4 `theCityOfCommutersKeepsItsLightsFlowing`: выезд за 1 200 тиков из 1 500
+
+Волна 7, долг w6 wallclock-2 (`packages/sim/test/gate4.test.ts`, 64f77f8 + 6592269). 2 000 жителей выезжают за 1 200
+тиков прогона в 1 500 тиков и остаются на работе 200–800 тиков — вместо 3 000 из 3 000 и 1 200–3 600. Пороги прежние
+(запрошено > 1 000, доехали > 0, ожидание зелёного < 600 тиков, никто не едет против движения, нет ошибок систем), плюс
+новое: жители едут домой (запрошено > 0, доехали > 0). Потолок машин (1 500) достигается к ~900-му тику и держится
+весь хвост прогона. Прогон стоит ~0,53× прежнего.
