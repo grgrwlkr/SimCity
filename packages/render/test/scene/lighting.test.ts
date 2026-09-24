@@ -125,6 +125,11 @@ describe('scene lighting', () => {
         return [p.x, p.y, p.z].every((v) => v >= 0 && v <= 1);
       });
       expect(csm.camera, 'the cascades follow the camera of the frame').toBe(camera);
+      // A pixel picks its cascade by its view depth up to the node's far (min of `maxFar` and the camera's): the ground at
+      // the focus lies ~950 units down an orthographic boom, past the 900 of a perspective one, and was shaded by none.
+      const depth = -new THREE.Vector3(0, 0, 0).applyMatrix4(camera.matrixWorldInverse).z;
+      const far = Math.min((csm as unknown as { maxFar: number }).maxFar, (camera as THREE.PerspectiveCamera).far);
+      expect(depth, `worldPerPixel ${worldPerPixel}: the focus is within the shadows' reach (${far.toFixed(0)})`).toBeLessThan(far);
       // The bias is normalised depth, and the node multiplies it by the cascade's number: in world units along the light
       // it must stay well under a building's footprint, or a shadow starts metres behind its caster.
       const offsets = csm.lights.map((l) => Math.abs(l.shadow.bias) * ((l.shadow.camera as THREE.OrthographicCamera).far - (l.shadow.camera as THREE.OrthographicCamera).near));

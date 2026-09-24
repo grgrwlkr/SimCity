@@ -3,9 +3,12 @@
 import * as THREE from 'three/webgpu';
 import { SlotTable } from './slots';
 
-/** Queues `start..start+count` of `a` for the next upload; a range from 0 replaces what was queued, it covers it all. */
-function queueRange(a: THREE.BufferAttribute, start: number, count: number): void {
-  if (start === 0) a.clearUpdateRanges();
+/**
+ * Queues `start..start+count` of `a` for the next upload. Only a range over every used slot (`whole`) replaces what was
+ * queued: a range that merely starts at 0 (one instance in slot 0) would drop ranges queued for other slots.
+ */
+function queueRange(a: THREE.BufferAttribute, start: number, count: number, whole = false): void {
+  if (whole) a.clearUpdateRanges();
   a.addUpdateRange(start, count);
   a.needsUpdate = true;
 }
@@ -95,7 +98,7 @@ export class InstanceBatch {
       const rgb = of === null ? null : of(this.slots.ownerOf(slot)!);
       c.set(rgb ?? [1, 1, 1], slot * 3);
     }
-    queueRange(this.mesh.instanceColor!, 0, this.slots.count * 3);
+    queueRange(this.mesh.instanceColor!, 0, this.slots.count * 3, true);
   }
 
   /** Multiplies every instance of `owner` by `rgb` (linear): one tile's re-tint, uploaded with the next frame. */
@@ -134,8 +137,8 @@ export class InstanceBatch {
     this.mesh.visible = count > 0;
     const from = this.dirtyFrom;
     if (from < count) {
-      queueRange(this.mesh.instanceMatrix, from * 16, (count - from) * 16);
-      queueRange(this.mesh.instanceColor!, from * 3, (count - from) * 3);
+      queueRange(this.mesh.instanceMatrix, from * 16, (count - from) * 16, from === 0);
+      queueRange(this.mesh.instanceColor!, from * 3, (count - from) * 3, from === 0);
     }
     this.dirtyFrom = Infinity;
   }

@@ -127,4 +127,18 @@ describe('instance tint', () => {
     batch.flush();
     expect(ranges()).toEqual([[[4 * 16, 16]], [[0, 4 * 3], [4 * 3, 3]]]);
   });
+
+  it('reTintingTheOwnerInSlotZeroKeepsTheRangesQueuedBeforeIt', () => {
+    // Review round 2's probe: the instance a removal moved into slot 1 must still go up after slot 0 is re-tinted.
+    const batch = new InstanceBatch(new THREE.Group(), new THREE.BoxGeometry(), new THREE.MeshBasicNodeMaterial(), 'buildings', 8);
+    for (const owner of [1, 2, 3]) batch.put(owner, at);
+    batch.flush();
+    [batch.drawn.instanceMatrix, batch.drawn.instanceColor!].forEach((a) => a.clearUpdateRanges());
+    batch.remove(2);
+    batch.flush();
+    const colours = () => batch.drawn.instanceColor!.updateRanges.map((r) => [r.start, r.count]);
+    expect(colours()).toEqual([[3, 3]]);
+    batch.tintOwner(1, [1, 0, 0]);
+    expect(colours()).toEqual([[3, 3], [0, 3]]);
+  });
 });

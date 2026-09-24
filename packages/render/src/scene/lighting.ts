@@ -122,7 +122,11 @@ export class SceneLighting {
       this.csm.fade = c.overlapProportion > 0;
       this.sun.shadow.shadowNode = this.csm;
     }
-    // Until the first build the node takes its camera from the builder; after that it is ours to move.
+    // A pixel picks its cascade by its view depth up to `maxFar`. The orthographic camera hangs its boom far above the
+    // ground (~950 units in the district view, more when fitted), past the 900 the perspective side is tuned for: there
+    // the cascades reach the camera's own far plane, or the ground falls behind every cascade and nothing is shaded.
+    this.csm.maxFar = (camera as THREE.OrthographicCamera).isOrthographicCamera === true ? (camera as THREE.OrthographicCamera).far : this.settings.sun.cascades.maximumDistance;
+    // Until the first build the node takes its camera from the builder (this frame's); after that it is ours to move.
     if (this.csm.camera === null) return;
     if (camera === this.csm.camera && camera.projectionMatrix.equals(this.csmProjection)) return;
     this.csm.camera = camera;
