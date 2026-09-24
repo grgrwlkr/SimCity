@@ -258,6 +258,9 @@ export interface FingerprintReply {
 }
 
 export type { DataMapOverlay, DataMapReply, DataMapRequest } from './requests/dataMap';
+export type { ClockReply, ClockRequest } from './requests/clock';
+export type { ObserveParams, ObserveReply, ObserveRequest, ObserveSection } from './requests/observe';
+export type { TilePreviewReply, TilePreviewRequest } from './requests/tilePreview';
 
 export type Request =
   /** `GameCommand` in its serde-JSON form, validated in the worker. */
@@ -309,6 +312,12 @@ export type Request =
   | { readonly t: 'load'; readonly bytes: ArrayBuffer }
   /** One data map's numbers per tile (U4): only reads the world, the renderer paints them. */
   | import('./requests/dataMap').DataMapRequest
+  /** The sections of the city a live check reads (E3); only reads the world. */
+  | import('./requests/observe').ObserveRequest
+  /** The clock stood at an hour, forward only (E3). */
+  | import('./requests/clock').ClockRequest
+  /** What the tool in hand would do at a tile, and why a zoned tile there does not grow (U3): only reads the world. */
+  | import('./requests/tilePreview').TilePreviewRequest
   | SlotRequest;
 
 /** Save slots the worker keeps itself (OPFS): the save never crosses to the main thread. Answered asynchronously. */
@@ -362,6 +371,9 @@ export interface ReplyByRequest {
   /** The loaded world's tick and fingerprint: those of the world the save was taken of. */
   readonly load: FingerprintReply;
   readonly dataMap: import('./requests/dataMap').DataMapReply;
+  readonly observe: import('./requests/observe').ObserveReply;
+  readonly setClock: import('./requests/clock').ClockReply;
+  readonly tilePreview: import('./requests/tilePreview').TilePreviewReply;
   readonly saveSlot: SaveSlotInfo;
   readonly loadSlot: FingerprintReply;
   /** By slot name. */

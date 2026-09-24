@@ -63,7 +63,7 @@ export interface SimApi {
   pickTile(x: number, y: number): Promise<TilePos | null>;
   renderStats(): Promise<RenderStats>;
   /** Build a scenario into the running world (`?scenario=signalized` does this on load). */
-  scenario(name: ScenarioName, size?: number): Promise<null>;
+  scenario(name: ScenarioName, size?: number, seed?: string): Promise<null>;
   /** Make a system throw on every call (`null` stops it): the HUD reports it and the world goes on. */
   failSystem(system: string | null): Promise<null>;
   /** An emergency of `kind` breaks out at the tile, with its notification, as one that broke out by itself (stage 4). */
@@ -202,7 +202,8 @@ export function createSimApi(
       return cfg === null ? null : (r.view.pickTile(cfg, x, y) ?? null);
     },
     renderStats: async () => (await renderer).stats(),
-    scenario: (name, size) => client.request(size === undefined ? { t: 'scenario', name } : { t: 'scenario', name, size }),
+    scenario: (name, size, seed) =>
+      client.request({ t: 'scenario', name, ...(size === undefined ? {} : { size }), ...(seed === undefined ? {} : { seed }) }),
     failSystem: (system) => client.request({ t: 'debugFailSystem', system }),
     debugEmergency: (kind, x, y) => client.request({ t: 'debugEmergency', kind, x, y }),
     tickStats: () => client.request({ t: 'tickStats' }),

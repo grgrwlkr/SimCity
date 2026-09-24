@@ -1,11 +1,14 @@
-import { SCENARIOS, type Scenario, type SimSpeed } from '@simcity/bridge';
+import type { SimSpeed } from '@simcity/bridge';
 import type { AppState, GameCommand, TilePos } from '@simcity/sim';
 import { useEffect, useState } from 'react';
+import { ObjectivesPanel } from './ObjectivesPanel';
+import { StartScreen, menuScenarios, showsStartScreen, type StartChoice } from './StartScreen';
 import { AdvisorPanel } from './AdvisorPanel';
 import { BudgetPanel } from './BudgetPanel';
 import { DataMapPanelLive, type DataMapLegend, type DataMapReading, type PlayerOverlay } from './DataMapPanel';
 import { HudBar, windowTitle } from './HudBar';
 import { useSimStore } from './store';
+import { TileTooltipLive } from './TileTooltip';
 import { Toasts } from './Toasts';
 import { ToolPalette } from './ToolPalette';
 
@@ -25,8 +28,10 @@ export interface DataMapActions {
 export interface HudActions {
   setState(state: AppState): void;
   setSpeed(speed: SimSpeed): void;
-  /** The link that opens a scenario: a fresh page, so nothing of the current world carries over. */
-  scenarioHref(scenario: Scenario): string;
+  /** Start a city from the menu on a fresh page, so nothing of the current world carries over. */
+  start(choice: StartChoice): void;
+  /** The demo city (`LoadTestCity`), on a fresh page too. */
+  demoCity(): void;
   /** A structural edit of the world, applied with the next tick's commands. */
   command(cmd: GameCommand): void;
   /** Undo (`false`) or redo (`true`) the last map edit. */
@@ -35,7 +40,10 @@ export interface HudActions {
   focusTile(at: TilePos): void;
 }
 
-/** `handle_state_hotkeys` (sim.rs): Escape to the menu, Enter starts from the menu, Space pauses and resumes. */
+/**
+ * `handle_state_hotkeys` (sim.rs): Escape to the menu, Space pauses and resumes. Enter is not a way out of the menu:
+ * the start screen has no city without a choice, and a focused menu button takes Enter itself.
+ */
 function useStateHotkeys(appState: AppState | undefined, actions: HudActions): void {
   useEffect(() => {
     if (appState === undefined) return;
@@ -43,8 +51,6 @@ function useStateHotkeys(appState: AppState | undefined, actions: HudActions): v
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
       if (event.code === 'Escape') {
         actions.setState('MainMenu');
-      } else if (event.code === 'Enter' && appState === 'MainMenu') {
-        actions.setState('InGame');
       } else if (event.code === 'Space' && appState !== 'MainMenu') {
         event.preventDefault();
         actions.setState(appState === 'InGame' ? 'Paused' : 'InGame');
@@ -54,6 +60,8 @@ function useStateHotkeys(appState: AppState | undefined, actions: HudActions): v
     return () => window.removeEventListener('keydown', onKey);
   }, [appState, actions]);
 }
+
+const MENU_SCENARIOS = menuScenarios();
 
 /** `?debug=1` on the page: the dev elements of the HUD show only then (`dev_ui_gate.rs`). */
 function debugFlag(): boolean {
@@ -79,25 +87,8 @@ export function Hud({ actions, dataMap, debug = debugFlag() }: { actions: HudAct
     return <p className="hud-status">Запуск симуляции…</p>;
   }
 
-  if (snapshot.appState === 'MainMenu') {
-    return (
-      <main className="menu">
-        <h1>SimCity</h1>
-        <button type="button" data-testid="start" onClick={() => actions.setState('InGame')}>
-          Новая игра
-        </button>
-        <p className="hint">Enter — начать</p>
-        <nav className="scenarios" aria-label="Сценарии">
-          <h2>Сценарии</h2>
-          {SCENARIOS.map((scenario) => (
-            <a key={scenario.name} className="scenario" href={actions.scenarioHref(scenario)}>
-              <strong>{scenario.title}</strong>
-              <span>{scenario.description}</span>
-            </a>
-          ))}
-        </nav>
-      </main>
-    );
+  if (showsStartScreen(snapshot.appState)) {
+    return <StartScreen scenarios={MENU_SCENARIOS} onStart={actions.start} onDemoCity={actions.demoCity} />;
   }
 
   return (
@@ -119,6 +110,8 @@ export function Hud({ actions, dataMap, debug = debugFlag() }: { actions: HudAct
       <BudgetPanel snapshot={snapshot} open={budgetOpen} onClose={() => setBudgetOpen(false)} command={actions.command} />
       <AdvisorPanel snapshot={snapshot} open={advisorOpen} onClose={() => setAdvisorOpen(false)} onFocus={actions.focusTile} />
       <Toasts onFocus={actions.focusTile} />
+      <ObjectivesPanel scenario={snapshot.scenario} />
+      <TileTooltipLive />
       {dataMap !== undefined && (
         <DataMapPanelLive
           overlay={overlay}

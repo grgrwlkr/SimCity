@@ -80,7 +80,10 @@ import {
   type RenderExtras,
 } from './renderBuffer';
 import { debugOverlayOf, renderLayersOf } from './renderLayers';
+import { setClock } from './requests/clock';
 import { dataMapLayer } from './requests/dataMap';
+import { observeWorld } from './requests/observe';
+import { tilePreview } from './requests/tilePreview';
 import { SAMPLE_CARS, sampleCutoff, sampled } from './sample';
 import { createOpfsSaveFiles, type SaveFiles } from './saveFiles';
 import { SCENARIOS, type ScenarioName } from './scenarios';
@@ -334,6 +337,14 @@ export class SimHost {
         return null;
       case 'dataMap':
         return dataMapLayer(this.world, req.overlay);
+      case 'tilePreview':
+        return tilePreview(this.world, req.tool, req.tile);
+      case 'observe':
+        return observeWorld(this.world, req);
+      case 'setClock':
+        // The publish key does not see the hour: the next frame reports it, so a paused scene is lit at the new hour.
+        this.lastReported = null;
+        return setClock(this.world, req);
       case 'save':
         return UTF8_ENCODER.encode(saveWorld(this.world)).buffer;
       case 'load':

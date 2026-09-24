@@ -1,7 +1,7 @@
-import { RenderReader, SimClient, scenarioByQuery, type MapLayersReply, type WorldSnapshot } from '@simcity/bridge';
+import { RenderReader, SCENARIOS, SimClient, scenarioByQuery, type MapLayersReply, type WorldSnapshot } from '@simcity/bridge';
 import { DebugRenderer, SceneRenderer, dataMapInputs, installViewControls, legendFor, panelReading, type DataMapLayer, type Renderer } from '@simcity/render';
 import { SIGNALIZED_CROSS, crossBoxSize, defaultTrafficConfig, tileToWorld, toRustCommand, type MapConfig } from '@simcity/sim';
-import { Hud, focusViewOn, useSimStore, useToolStore, type DataMapActions, type HudActions, type PlayerOverlay } from '@simcity/ui';
+import { Hud, createTileTooltipAsker, focusViewOn, useSimStore, useTileTooltipStore, useToolStore, type DataMapActions, type HudActions, type PlayerOverlay } from '@simcity/ui';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { installGamepad } from './gamepad';
@@ -20,6 +20,12 @@ const params = new URLSearchParams(location.search);
 const debug = params.get('debug') === '1';
 /** `?scenario=<query>`: a scenario of the main menu, built on load; a lit cross opens with the camera on its box. */
 const scenario = scenarioByQuery(params.get('scenario'));
+/** `&seed=<u64>`: a new map of the start screen, the sandbox generated on this seed. */
+const seedParam = params.get('seed');
+/** The seed as the host takes it (`parseSeed`, host.ts): decimal digits within a u64; anything else keeps the menu. */
+const seed = seedParam !== null && /^\d{1,20}$/.test(seedParam) && BigInt(seedParam) < 2n ** 64n ? seedParam : undefined;
+/** `?demo=1`: the demo city of the start screen. */
+const demo = params.get('demo') === '1';
 /**
  * The player sees the scene. The debug renderer draws under `?debug=1` or `?renderer=debug`, and by default under
  * automation (`navigator.webdriver`): the e2e gates read tile classes back from its flat colours. `?renderer=scene`
@@ -162,6 +168,56 @@ const dataMap: DataMapActions = {
     panelReading(dataMapOverlay, shownRenderer?.hovered ?? null, shownMap === null ? null : dataMapInputs(shownMap, dataMapLayer)),
 };
 
+// The tile tooltip (U3): what the tool in hand would do at the tile under the cursor, asked of the worker one ask at a
+// time and never while the tooltip is hidden (`createTileTooltipAsker`). The page tells it where the cursor is, whether
+// a panel is under it and how big the window is; frames tell it the map moved.
+const tooltip = useTileTooltipStore.getState();
+const tooltipAsker = createTileTooltipAsker((tool, tile) => client.request({ t: 'tilePreview', tool, tile }), () => performance.now());
+/** A panel rather than the map under the cursor: the tooltip itself has no pointer events and never answers. */
+const overHudAt = (p: { x: number; y: number }) => document.elementFromPoint(p.x, p.y) !== canvas;
+/**
+ * The tile under the cursor, picked here rather than taken from the renderer's `hovered`, which moves only with a
+ * pointer move over the canvas: the verdict shown must be the one a click at the cursor gets, after a panel closed
+ * over a still cursor or the camera moved under it too.
+ */
+const tileUnder = (p: { x: number; y: number }): { x: number; y: number } | null => {
+  if (shownRenderer === null || mapConfig === null) return null;
+  const rect = canvas.getBoundingClientRect();
+  return shownRenderer.view.pickTile(mapConfig, p.x - rect.left, p.y - rect.top) ?? null;
+};
+/** Writes what lies under `pointer` (or that the cursor left the window) and asks when the tooltip can show. */
+function followPointer(pointer: { x: number; y: number } | null): void {
+  const s = useTileTooltipStore.getState();
+  const overHud = pointer === null ? s.overHud : overHudAt(pointer);
+  // Over a panel the tile stays the last one on the map: nothing is shown there anyway.
+  const hovered = pointer === null || overHud ? s.hovered : tileUnder(pointer);
+  if (pointer !== s.pointer || overHud !== s.overHud || hovered?.x !== s.hovered?.x || hovered?.y !== s.hovered?.y) {
+    tooltip.set({ pointer, overHud, hovered });
+    tooltipAsker.refresh();
+  }
+}
+window.addEventListener(
+  'pointermove',
+  (e) => {
+    tooltip.set({ viewport: { width: window.innerWidth, height: window.innerHeight } });
+    followPointer({ x: e.clientX, y: e.clientY });
+  },
+  { passive: true },
+);
+// Out of the window: a pointerout with nothing on the other side.
+document.addEventListener('pointerout', (e) => {
+  if (e.relatedTarget === null) followPointer(null);
+});
+// Once a frame the still cursor is looked under again: a panel opened or closed from the keyboard, the camera moved
+// (gamepad, `__sim.setCamera`, fitMap, a toast's focus). One `elementFromPoint` and one pick: e2e measures the pick.
+function followStillPointer(): void {
+  requestAnimationFrame(followStillPointer);
+  const { pointer } = useTileTooltipStore.getState();
+  if (pointer !== null) followPointer(pointer);
+}
+requestAnimationFrame(followStillPointer);
+useToolStore.subscribe(() => tooltipAsker.refresh());
+
 // A loaded world may carry the edit version of the map on screen (P1, decision (c)): its map and size are read again
 // whatever the version says, and an open data map asks for the loaded world's numbers.
 function reloadMap<T>(reply: T): T {
@@ -184,31 +240,49 @@ client.onFrame((snapshot) => {
   setSnapshot(snapshot);
   syncRender(snapshot);
   if (dataMapOverlay !== 'None' && !dataMapInFlight && performance.now() - dataMapAskedAtMs >= DATA_MAP_REFRESH_MS) refreshDataMap();
+  tooltipAsker.frame(snapshot.mapEditVersion);
 });
 void api.ready
   .then(async () => {
-    if (scenario !== undefined) {
+    if (seedParam !== null && seed === undefined) {
+      console.error(`start: seed "${seedParam}" is not a u64 in decimal digits; the game stays in the menu`);
+    } else if (scenario !== undefined) {
       await api.setState('InGame');
       // `&size=<tiles>` builds a scenario of its own map on another size.
       const size = params.get('size');
-      await api.scenario(scenario.name, size === null ? undefined : Number(size));
+      await api.scenario(scenario.name, size === null ? undefined : Number(size), seed);
+    } else if (demo) {
+      await api.setState('InGame');
+      await api.cmd('LoadTestCity');
     }
     return api.snapshot();
   })
   .then((snapshot) => {
     setSnapshot(snapshot);
     syncRender(snapshot);
+  })
+  .catch((error: unknown) => {
+    // A city the host refused to build: back to the menu, and the reason in the console.
+    console.error('start: the city did not open', error);
+    void api.setState('MainMenu');
   });
+
+/** A fresh page of the app with `params`, keeping the debug and renderer switches of this one. */
+function pageHref(params: Record<string, string>): string {
+  const query = new URLSearchParams(params);
+  if (debug) query.set('debug', '1');
+  if (rendererParam !== null) query.set('renderer', rendererParam);
+  return `?${query.toString()}`;
+}
 
 const actions: HudActions = {
   setState: (state) => void api.setState(state),
   setSpeed: (speed) => void api.setSpeed(speed),
-  scenarioHref: (s) => {
-    const query = new URLSearchParams({ scenario: s.query });
-    if (debug) query.set('debug', '1');
-    if (rendererParam !== null) query.set('renderer', rendererParam);
-    return `?${query.toString()}`;
+  start: (choice) => {
+    const query = SCENARIOS.find((s) => s.name === choice.name)?.query ?? choice.name;
+    location.assign(pageHref(choice.seed === undefined ? { scenario: query } : { scenario: query, seed: choice.seed }));
   },
+  demoCity: () => location.assign(pageHref({ demo: '1' })),
   command: (cmd) => void api.cmd(toRustCommand(cmd)),
   undoRedo: (redo) => void api.undoRedo(redo),
   focusTile: (at) =>

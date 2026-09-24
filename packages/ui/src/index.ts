@@ -2,5 +2,8 @@ export * from './AdvisorPanel';
 export * from './BudgetPanel';
 export * from './DataMapPanel';
 export * from './Hud';
+export * from './ObjectivesPanel';
+export * from './StartScreen';
 export * from './store';
+export * from './TileTooltip';
 export * from './toasts.index';
