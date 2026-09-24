@@ -39,7 +39,7 @@ async function openGame(page: Page): Promise<void> {
   });
 }
 
-/** Eight fires at one tile, sent together: eight identical `Fire emergency` events with a place. */
+/** Eight fires at one tile, sent together: eight identical `Пожар` events with a place. */
 async function eightFires(page: Page): Promise<void> {
   await page.evaluate((at) => Promise.all(Array.from({ length: 8 }, () => window.__sim.debugEmergency('Fire', at.x, at.y))), FIRE);
 }
@@ -56,7 +56,7 @@ const centreTile = (page: Page) =>
 test('eightIdenticalEventsAreOneLineWithACount', async ({ page }) => {
   await openGame(page);
   await eightFires(page);
-  await expect.poll(async () => (await toastLog(page)).some((lines) => lines.includes('Fire emergency ×8|×8')), { message: 'the feed drew «Fire emergency ×8»' }).toBe(true);
+  await expect.poll(async () => (await toastLog(page)).some((lines) => lines.includes('Пожар ×8|×8')), { message: 'the feed drew «Пожар ×8»' }).toBe(true);
   const log = await toastLog(page);
   expect(log.every((lines) => lines.length <= 1), `eight identical events are never two lines: ${JSON.stringify(log)}`).toBe(true);
 });
@@ -68,7 +68,7 @@ test('clickingAToastTakesTheCameraToTheEvent', async ({ page }) => {
   // Fire and click in one go; a line that expired before the click is fired again, which only raises its count.
   await expect(async () => {
     await eightFires(page);
-    await page.getByTestId('toast').filter({ hasText: 'Fire emergency' }).click({ timeout: 2_000 });
+    await page.getByTestId('toast').filter({ hasText: 'Пожар' }).click({ timeout: 2_000 });
   }).toPass({ timeout: 60_000 });
   await expect.poll(() => centreTile(page)).toEqual(FIRE);
 });

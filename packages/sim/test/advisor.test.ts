@@ -46,8 +46,8 @@ describe('advisor', () => {
   // advisor.rs `advisor_a_healthy_city_gets_no_advice`
   it('advisorAHealthyCityGetsNoAdvice', () => {
     expect(assess(healthy())).toEqual([]);
-    expect(thousands(6200)).toBe('6 200');
-    expect(thousands(-1_234_567)).toBe('-1 234 567');
+    expect(thousands(6200)).toBe('6 200');
+    expect(thousands(-1_234_567)).toBe('-1 234 567');
     expect(thousands(12)).toBe('12');
   });
 
@@ -59,7 +59,7 @@ describe('advisor', () => {
     const problems = assess(inputs);
     const worst = problems[0];
     expect(worst?.kind).toBe('WaterShortage');
-    expect(worst?.text).toBe('Water shortage: pumps supply 5 000, the city needs 6 200');
+    expect(worst?.text).toBe('Не хватает воды: водокачки дают 5 000, городу нужно 6 200');
     expect(worst?.at).toEqual({ x: 9, y: 4 });
     expect(problems).toHaveLength(1);
   });
@@ -68,13 +68,30 @@ describe('advisor', () => {
   it('advisorWithoutAStationSaysWhichAndCountsTheBuildings', () => {
     let inputs = healthy();
     inputs.utilities[1] = reading(0, 0, 0, 245);
-    expect(texts(inputs)).toEqual(['No water: the city has no water pump, 245 buildings go without']);
+    expect(texts(inputs)).toEqual(['В городе нет водокачки: 245 зданий без воды']);
     inputs = healthy();
     inputs.utilities[0] = reading(5000, 1000, 1000, 12);
-    expect(texts(inputs)).toEqual(['12 buildings have no power: no road links them to a power plant']);
+    expect(texts(inputs)).toEqual(['12 зданий без электричества: нет дороги до электростанции']);
     inputs = healthy();
     inputs.utilities[2] = reading(4000, 4900, 3900, 30);
-    expect(texts(inputs)).toEqual(['Garbage collection shortage: landfills take 4 000, the city needs 4 900']);
+    expect(texts(inputs)).toEqual(['Не хватает вывоза мусора: свалки принимают 4 000, городу нужно 4 900']);
+  });
+
+  // Not in Rust: Russian counts agree with their nouns — 1 здание, 3 здания, 245 зданий.
+  it('advisorCountsAgreeWithTheirNouns', () => {
+    let inputs = healthy();
+    inputs.utilities[1] = reading(0, 0, 0, 1);
+    expect(texts(inputs)).toEqual(['В городе нет водокачки: 1 здание без воды']);
+    inputs = healthy();
+    inputs.utilities[0] = reading(5000, 1000, 1000, 3);
+    expect(texts(inputs)).toEqual(['3 здания без электричества: нет дороги до электростанции']);
+    inputs = healthy();
+    inputs.population = 5000;
+    inputs.residentsBeyondSchool = 101;
+    inputs.crowdedSchool = { residents: 1022, places: 21, at: { x: 1, y: 1 } };
+    const shown = texts(inputs);
+    expect(shown).toContain('Нет школы рядом: 101 житель вне охвата школ');
+    expect(shown).toContain('Школа переполнена: 1 022 жителя на 21 место');
   });
 
   // advisor.rs `advisor_puts_the_worst_problem_first`
@@ -101,7 +118,7 @@ describe('advisor', () => {
     inputs.workers = 1000;
     inputs.unemployed = 180;
     inputs.unemployedByClass = [120, 50, 10];
-    expect(texts(inputs)).toEqual(['Unemployment 18%: 180 residents have no job, most of them low-income']);
+    expect(texts(inputs)).toEqual(['Безработица 18 %: 180 жителей без работы, больше всего бедных']);
   });
 
   // advisor.rs `advisor_names_housing_and_jobs_demand`
@@ -111,8 +128,8 @@ describe('advisor', () => {
     inputs.demandCommercial = 0.64;
     inputs.demandIndustrial = 0.58;
     const shown = texts(inputs);
-    expect(shown).toContain('Homes wanted: residential demand is 72%');
-    expect(shown).toContain('Jobs wanted: commercial demand is 64%, industrial 58%');
+    expect(shown).toContain('Нужно жильё: жилой спрос 72 %');
+    expect(shown).toContain('Нужны рабочие места: торговый спрос 64 %, промышленный 58 %');
   });
 
   // advisor.rs `advisor_names_schools_once_they_can_be_built`
@@ -127,8 +144,8 @@ describe('advisor', () => {
     inputs.schoolOpen = true;
     const problems = assess(inputs);
     const shown = problems.map((problem) => problem.text);
-    expect(shown).toContain("No school nearby: 450 residents live beyond a school's reach");
-    expect(shown).toContain('School overcrowded: 800 residents for 400 places');
+    expect(shown).toContain('Нет школы рядом: 450 жителей вне охвата школ');
+    expect(shown).toContain('Школа переполнена: 800 жителей на 400 мест');
     expect(problems.find((problem) => problem.kind === 'SchoolOvercrowded')?.at).toEqual({ x: 30, y: 12 });
   });
 
@@ -143,9 +160,9 @@ describe('advisor', () => {
     inputs.medicalCover = 0.2;
     const shown = texts(inputs);
     for (const expected of [
-      'High crime in 23% of the city: police cover 40% of buildings',
-      'Fire risk in 15% of the city: fire stations cover 30% of buildings',
-      'Poor health in 35% of homes: hospitals cover 20% of buildings',
+      'Высокая преступность в 23 % города: полиция охватывает 40 % зданий',
+      'Пожароопасно в 15 % города: пожарные части охватывают 30 % зданий',
+      'Плохое здоровье в 35 % домов: больницы охватывают 20 % зданий',
     ]) {
       expect(shown).toContain(expected);
     }
@@ -155,11 +172,11 @@ describe('advisor', () => {
   it('advisorNamesTheBudgetDeficitAndAnEmptyTreasury', () => {
     const inputs = healthy();
     inputs.monthRunningNet = -1200;
-    expect(texts(inputs)).toEqual(['Budget deficit: upkeep and loan payments exceed taxes by $1 200 this month']);
+    expect(texts(inputs)).toEqual(['Дефицит бюджета: содержание и выплаты по займам превышают налоги на $1 200 за этот месяц']);
     inputs.money = -3000;
     const problems = assess(inputs);
     expect(problems[0]?.kind).toBe('EmptyTreasury');
-    expect(problems[0]?.text).toBe('The treasury is empty: $3 000 in debt');
+    expect(problems[0]?.text).toBe('Казна пуста: долг $3 000');
   });
 
   // advisor.rs `advisor_counts_service_cover_over_the_buildings_standing_now`: the cover the advisor quotes is the cover
@@ -181,7 +198,7 @@ describe('advisor', () => {
 
     updateAdvisor(w);
     const crime = w.advisor.problems.find((problem) => problem.kind === 'Crime');
-    expect(crime?.text, 'crime everywhere is a problem').toBe('High crime in 100% of the city: police cover 50% of buildings');
+    expect(crime?.text, 'crime everywhere is a problem').toBe('Высокая преступность в 100 % города: полиция охватывает 50 % зданий');
     expect(advisorInputs(w).buildings).toBe(2);
   });
 
@@ -305,9 +322,9 @@ describe('advisor', () => {
     inputs.workers = 1000;
     inputs.unemployed = 180;
     inputs.unemployedByClass = [10, 80, 80];
-    expect(texts(inputs)).toEqual(['Unemployment 18%: 180 residents have no job, most of them middle-income']);
+    expect(texts(inputs)).toEqual(['Безработица 18 %: 180 жителей без работы, больше всего из среднего класса']);
     inputs.unemployedByClass = [80, 80, 20];
-    expect(texts(inputs)).toEqual(['Unemployment 18%: 180 residents have no job, most of them low-income']);
+    expect(texts(inputs)).toEqual(['Безработица 18 %: 180 жителей без работы, больше всего бедных']);
   });
 
   // The rewritten reading of the city: whole footprints, the first building top row first, every cover, health, schools

@@ -21,6 +21,12 @@ function until(w: World, done: () => boolean, limit: number): number {
 }
 
 describe('emergencies', () => {
+  // Not in Rust: the feed's names live in a leaf module, so the service vehicles read them without importing this one.
+  it('emergencyNamesLiveInALeafModule', async () => {
+    const { EMERGENCY_NAMES } = await import('../src/emergencyNames');
+    expect(EMERGENCY_NAMES).toEqual({ Fire: 'Пожар', Crime: 'Преступление', Medical: 'Вызов скорой' });
+  });
+
   it('cityFieldsFireHazardSetsWhereFiresBreakOut', () => {
     const [risky, safe] = [t(1, 1), t(9, 9)];
     const sites = [
@@ -50,7 +56,7 @@ describe('emergencies', () => {
     };
     hour();
     expect(w.emergencies.active, 'a hundred times the chance of a village: one an hour').toHaveLength(1);
-    expect(w.notifications.history().at(-1)!.text).toMatch(/^(Fire|Crime|Medical) emergency$/);
+    expect(w.notifications.history().at(-1)!.text).toMatch(/^(Пожар|Преступление|Вызов скорой)$/);
     for (let i = 0; i < 20; i++) hour();
     expect(w.emergencies.active).toHaveLength(EMERGENCY_MAX_ACTIVE);
     w.events = emptyEvents();

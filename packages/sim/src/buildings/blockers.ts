@@ -15,15 +15,15 @@ export const GROWTH_BLOCKERS = ['NotZoned', 'NoRoad', 'NoPower', 'NoWater', 'NoD
 export type GrowthBlocker = (typeof GROWTH_BLOCKERS)[number];
 
 const REASONS: Readonly<Record<GrowthBlocker, string>> = {
-  NotZoned: 'Not zoned',
-  NoRoad: 'No road within reach',
-  NoPower: 'No power',
-  NoWater: 'No water',
-  NoDemand: 'No demand',
-  TopLevel: 'Top level',
-  FireHazard: 'High fire hazard',
-  PoorHealth: 'Poor health',
-  Unattractive: 'Unattractive location',
+  NotZoned: 'Нет зоны',
+  NoRoad: 'Нет дороги поблизости',
+  NoPower: 'Нет электричества',
+  NoWater: 'Нет воды',
+  NoDemand: 'Нет спроса',
+  TopLevel: 'Высший уровень',
+  FireHazard: 'Высокая пожароопасность',
+  PoorHealth: 'Плохое здоровье',
+  Unattractive: 'Непривлекательное место',
 };
 
 /** The words a player reads. */
@@ -77,9 +77,9 @@ export function upgradeBlocker(b: Building, grid: MapGrid, network: UtilityNetwo
 }
 
 /** The feed line for zoned buildings that lost their power. */
-export const BUILDINGS_WITHOUT_POWER = 'Buildings without power';
+export const BUILDINGS_WITHOUT_POWER = 'Здания без электричества';
 
-const ZONE_NAMES = { Residential: 'Residential zone', Commercial: 'Commercial zone', Industrial: 'Industrial zone' } as const;
+const ZONE_NAMES = { Residential: 'Жилая зона', Commercial: 'Торговая зона', Industrial: 'Промзона' } as const;
 
 /**
  * What a hovered zoned tile tells the player: its zone and the reason it is held back; `null` for an
@@ -101,17 +101,22 @@ export function tileDiagnosis(
     // A standing building: power keeps it occupied, water lets it rise, fire hazard and poor health hold it back.
     const hazard = field('FireHazard');
     const health = field('Health');
-    if (!blockHas(grid, network, tile, 'Power')) reason = 'No power: occupants are leaving';
-    else if (!blockHas(grid, network, tile, 'Water')) reason = 'No water: cannot rise above level 1';
-    else if (hazard !== undefined && hazard >= FIRE_HAZARD_LIMIT) reason = 'High fire hazard: cannot rise';
-    else if (cell.building === 'Residential' && health !== undefined && health < HEALTH_FOR_LEVEL_THREE) reason = 'Poor health: cannot reach level 3';
+    if (!blockHas(grid, network, tile, 'Power')) reason = 'Нет электричества: здание пустеет';
+    else if (!blockHas(grid, network, tile, 'Water')) reason = 'Нет воды: выше уровня 1 не вырастет';
+    else if (hazard !== undefined && hazard >= FIRE_HAZARD_LIMIT) reason = 'Высокая пожароопасность: не растёт';
+    else if (cell.building === 'Residential' && health !== undefined && health < HEALTH_FOR_LEVEL_THREE) reason = 'Плохое здоровье: до уровня 3 не дорастёт';
     else return null;
   } else {
     const blockers = growthBlockers(grid, network, demand, tile, fields);
     if (blockers.length === 0) return null;
-    reason = `Won't grow: ${blockers.map(blockerReason).join(', ')}`;
+    // Mid-sentence the reasons start lower-case: «Не растёт: нет электричества, нет спроса».
+    reason = `Не растёт: ${blockers.map((blocker) => lowerFirst(blockerReason(blocker))).join(', ')}`;
   }
   return [ZONE_NAMES[cell.zone], reason];
+}
+
+function lowerFirst(text: string): string {
+  return text.length === 0 ? text : text[0]!.toLowerCase() + text.slice(1);
 }
 
 /** Once a game day: one feed line for zoned buildings without power, placed on the top-left of them. */

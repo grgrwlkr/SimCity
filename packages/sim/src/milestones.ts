@@ -1,6 +1,7 @@
 // Port of crates/simcity_sim/src/game/milestones.rs (B8): the city's population opens new buildings.
 // A milestone once reached stays reached, so a city that shrinks keeps what it opened; a new map
 // starts over.
+import { thousands } from './format';
 import type { BuildingKind } from './commands';
 import type { World } from './world';
 
@@ -27,14 +28,15 @@ export function unlockPopulation(kind: BuildingKind): number {
 /** What the player reads on a building a milestone opens; `null` for one open from the start. */
 export function lockedReason(kind: BuildingKind): string | null {
   const population = unlockPopulation(kind);
-  return population === 0 ? null : `Unlocks at ${population} residents`;
+  return population === 0 ? null : `Откроется при ${thousands(population)} жителях`;
 }
 
-const BUILDING_NAMES: Partial<Record<BuildingKind, string>> = { School: 'School', University: 'University' };
+/** The building with its verb: the participle agrees with the noun's gender. */
+const OPENED: Partial<Record<BuildingKind, string>> = { School: 'открыта школа', University: 'открыт университет' };
 
 /** The feed line a milestone announces itself with. */
 export function milestoneLine(milestone: Milestone): string {
-  return `${milestone.population} residents: ${BUILDING_NAMES[milestone.unlocks] ?? 'A building'} unlocked`;
+  return `${thousands(milestone.population)} жителей: ${OPENED[milestone.unlocks] ?? 'открыто здание'}`;
 }
 
 /** How far the city has come. */

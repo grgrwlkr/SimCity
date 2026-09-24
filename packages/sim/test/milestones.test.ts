@@ -2,6 +2,7 @@
 // opens buildings, a milestone once reached stays reached, and reaching one puts a single Achievement
 // line in the feed.
 import { describe, expect, it } from 'vitest';
+import { thousands } from '../src/format';
 import { frame, step } from '../src/app';
 import { updateCityPopulation } from '../src/buildings/population';
 import { fingerprint } from '../src/fingerprint';
@@ -20,7 +21,7 @@ describe('milestones', () => {
     for (const open of ['Park', 'FireStation', 'PowerPlant'] as const) {
       expect(milestones.isUnlocked(open), `${open} is open from the start`).toBe(true);
     }
-    expect(milestones.lock('School')).toBe('Unlocks at 250 residents');
+    expect(milestones.lock('School')).toBe('Откроется при 250 жителях');
 
     expect(milestones.reach(249)).toEqual([]);
     expect(milestones.isUnlocked('School')).toBe(false);
@@ -35,7 +36,7 @@ describe('milestones', () => {
     expect(milestones.next()).toBeUndefined();
 
     for (const milestone of MILESTONES) {
-      expect(lockedReason(milestone.unlocks), 'the words match the number').toBe(`Unlocks at ${milestone.population} residents`);
+      expect(lockedReason(milestone.unlocks), 'the words match the number').toBe(`Откроется при ${thousands(milestone.population)} жителях`);
       expect(unlockPopulation(milestone.unlocks)).toBe(milestone.population);
     }
   });
@@ -49,11 +50,12 @@ describe('milestones', () => {
 
     const lines = w.notifications.messages();
     expect(lines.length, JSON.stringify(lines)).toBe(1);
-    expect(lines[0]!.text).toBe('250 residents: School unlocked');
+    expect(lines[0]!.text).toBe('250 жителей: открыта школа');
     expect(lines[0]!.kind).toBe('Achievement');
     expect(lines[0]!.count, 'announced once, not every tick').toBe(1);
     expect(w.milestones.isUnlocked('School')).toBe(true);
-    expect(milestoneLine(MILESTONES[0]!)).toBe('250 residents: School unlocked');
+    expect(milestoneLine(MILESTONES[0]!)).toBe('250 жителей: открыта школа');
+    expect(milestoneLine(MILESTONES[1]!), 'the verb agrees with the building').toBe('1 000 жителей: открыт университет');
   });
 
   /** A milestone is state: the fingerprint carries it, so two engines cannot drift apart on it. */

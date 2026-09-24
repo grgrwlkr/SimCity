@@ -5,6 +5,7 @@
 import { vehicleCapacity } from '../buildings/building';
 import { gameMinute } from '../city';
 import type { TilePos } from '../commands';
+import { EMERGENCY_NAMES } from '../emergencyNames';
 import { fleetIdOfTrip, fleetTripId } from '../fleet';
 import { adjacentRoadTowardsFootprint } from '../transport/anchors';
 import type { World } from '../world';
@@ -116,7 +117,7 @@ export function handleServiceArrivals(w: World): void {
     }
     v.state = 'OnScene';
     emergency.responded = true;
-    w.notifications.addAt(`${emergency.kind} emergency responded`, 'Info', 3, emergency.pos);
+    w.notifications.addAt(`${EMERGENCY_NAMES[emergency.kind]}: служба на месте`, 'Info', 3, emergency.pos);
   };
   for (const arrival of events.tripFinished) settle(arrival.citizen, true);
   for (const trip of events.tripDropped) settle(trip, false);

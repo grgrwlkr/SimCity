@@ -67,7 +67,7 @@ describe('tool preview', () => {
     const fresh = preview({ kind: 'Road', road: 'FourLane' }, at(5, 20), grid, RICH);
     expect(fresh.cost).toBe(buildCostPerLaneTile('FourLane'));
     expect(fresh.refusal).toBeNull();
-    expect(fresh.effect).toContain('road');
+    expect(fresh.effect).toBe('Дорога 4 полосы');
 
     const upgrade = preview({ kind: 'Road', road: 'SixLane' }, at(5, 10), grid, RICH);
     expect(upgrade.cost, 'an upgrade costs the difference, as the command charges it').toBe(buildCostPerLaneTile('SixLane') - buildCostPerLaneTile('TwoLane'));
@@ -78,10 +78,10 @@ describe('tool preview', () => {
 
   it('toolPreviewRefusesARoadOnWaterAndADowngradeButNotDebt', () => {
     const grid = town();
-    expect(refusal(preview({ kind: 'Road', road: 'TwoLane' }, at(3, 11), grid, RICH))).toContain('water');
+    expect(refusal(preview({ kind: 'Road', road: 'TwoLane' }, at(3, 11), grid, RICH))).toContain('воду');
 
     grid.set(at(8, 20), road(grid, 'SixLane', 'East'));
-    expect(refusal(preview({ kind: 'Road', road: 'TwoLane' }, at(8, 20), grid, RICH))).toContain('downgrade');
+    expect(refusal(preview({ kind: 'Road', road: 'TwoLane' }, at(8, 20), grid, RICH))).toContain('Сузить');
 
     expect(preview({ kind: 'Road', road: 'TwoLane' }, at(5, 20), grid, -5_000).refusal, 'roads may be built in debt').toBeNull();
   });
@@ -96,7 +96,7 @@ describe('tool preview', () => {
         if (zone.refusal !== null) expect(zone.refusal).not.toBe('');
       }
     }
-    expect(refusal(preview({ kind: 'Commercial' }, at(10, 20), grid, RICH))).toContain('road');
+    expect(refusal(preview({ kind: 'Commercial' }, at(10, 20), grid, RICH))).toContain('дорог');
   });
 
   it('toolPreviewServiceShowsPriceRadiusAndWhyItCannotGoHere', () => {
@@ -104,23 +104,23 @@ describe('tool preview', () => {
     const far = preview({ kind: 'FireStation' }, at(20, 20), grid, RICH);
     expect(far.cost).toBe(buildCost('FireStation'));
     expect(far.radius).toBe(serviceRadius('FireStation'));
-    expect(refusal(far)).toContain('road');
+    expect(refusal(far)).toContain('дорог');
 
     const beside = preview({ kind: 'Hospital' }, at(10, 11), grid, RICH);
     expect(beside.refusal).toBeNull();
     expect(beside.radius).toBe(serviceRadius('Hospital'));
 
-    expect(refusal(preview({ kind: 'Hospital' }, at(10, 11), grid, 100))).toContain('money');
-    expect(refusal(preview({ kind: 'PoliceStation' }, at(5, 11), grid, RICH))).toContain('clear');
-    expect(refusal(preview({ kind: 'PoliceStation' }, at(30, 30), grid, RICH))).toContain('map');
+    expect(refusal(preview({ kind: 'Hospital' }, at(10, 11), grid, 100))).toContain('денег');
+    expect(refusal(preview({ kind: 'PoliceStation' }, at(5, 11), grid, RICH))).toContain('свободн');
+    expect(refusal(preview({ kind: 'PoliceStation' }, at(30, 30), grid, RICH))).toContain('карт');
   });
 
   it('utilityNetworkStationToolsShowPriceAndSupplyNotARadius', () => {
     const grid = town();
     for (const [tool, kind, word] of [
-      ['PowerPlant', 'PowerPlant', 'power'],
-      ['WaterPump', 'WaterPump', 'water'],
-      ['Landfill', 'Landfill', 'garbage'],
+      ['PowerPlant', 'PowerPlant', 'электр'],
+      ['WaterPump', 'WaterPump', 'вод'],
+      ['Landfill', 'Landfill', 'мусор'],
     ] as const) {
       expect(placedBuildingKind({ kind: tool })).toBe(kind);
       const beside = preview({ kind: tool }, at(10, 11), grid, RICH);
@@ -128,7 +128,7 @@ describe('tool preview', () => {
       expect(beside.refusal, tool).toBeNull();
       expect(beside.radius, 'supply follows roads, not a radius').toBeUndefined();
       expect(beside.effect.toLowerCase(), `${tool} says ${beside.effect}`).toContain(word);
-      expect(refusal(preview({ kind: tool }, at(20, 20), grid, RICH)), tool).toContain('road');
+      expect(refusal(preview({ kind: tool }, at(20, 20), grid, RICH)), tool).toContain('дорог');
     }
   });
 
@@ -137,7 +137,7 @@ describe('tool preview', () => {
     const grid = town();
     const fresh = new Milestones();
     const school = preview({ kind: 'School' }, at(10, 11), grid, RICH, fresh);
-    expect(school.refusal).toBe('Unlocks at 250 residents');
+    expect(school.refusal).toBe('Откроется при 250 жителях');
     expect(school.cost, 'the price still shows').toBe(buildCost('School'));
     const park = preview({ kind: 'Park' }, at(10, 11), grid, RICH, fresh);
     expect(park.refusal, 'a park is open from the start').toBeNull();
@@ -145,6 +145,20 @@ describe('tool preview', () => {
     const opened = new Milestones();
     opened.reach(300);
     expect(preview({ kind: 'School' }, at(10, 11), grid, RICH, opened).refusal).toBeNull();
+  });
+
+  /** Not in Rust: the tooltip's first line is «эффект, $N» (layout.md §4), so no effect carries its own clause. */
+  it('toolPreviewEffectsCarryAPriceCleanly', () => {
+    const grid = town();
+    const tools: ToolMode[] = [
+      { kind: 'Road', road: 'TwoLane' },
+      ...(['Residential', 'Commercial', 'Industrial', 'FireStation', 'PoliceStation', 'Hospital', 'PowerPlant', 'WaterPump', 'Landfill'] as const).map((kind) => ({ kind })),
+      ...(['School', 'University', 'Park', 'TrafficLight', 'Erase'] as const).map((kind) => ({ kind })),
+    ];
+    for (const tool of tools) {
+      const { effect } = preview(tool, at(10, 11), grid, RICH);
+      expect(effect, tool.kind).not.toMatch(/[:,]/);
+    }
   });
 
   it('serviceBuildingToolsShowPriceAndRadius', () => {
@@ -176,14 +190,14 @@ describe('tool preview', () => {
     const grid = town();
     grid.set(at(12, 10), road(grid, 'TwoLane', 'None'));
     expect(preview({ kind: 'TrafficLight' }, at(12, 10), grid, RICH).refusal).toBeNull();
-    expect(refusal(preview({ kind: 'TrafficLight' }, at(5, 10), grid, RICH))).toContain('intersection');
+    expect(refusal(preview({ kind: 'TrafficLight' }, at(5, 10), grid, RICH))).toContain('перекрёсток');
 
-    expect(refusal(preview({ kind: 'Erase' }, at(10, 20), grid, RICH))).toContain('Nothing');
-    expect(refusal(preview({ kind: 'Erase' }, at(3, 11), grid, RICH))).toContain('water');
+    expect(refusal(preview({ kind: 'Erase' }, at(10, 20), grid, RICH))).toContain('нечего');
+    expect(refusal(preview({ kind: 'Erase' }, at(3, 11), grid, RICH))).toContain('Воду');
     expect(preview({ kind: 'Erase' }, at(5, 10), grid, RICH).refusal).toBeNull();
 
     expect(previewToolAt({ kind: 'Inspect' }, at(5, 10), grid, RICH, grown())).toBeUndefined();
 
-    expect(refusal(preview({ kind: 'Residential' }, at(-1, 4), grid, RICH))).toContain('map');
+    expect(refusal(preview({ kind: 'Residential' }, at(-1, 4), grid, RICH))).toContain('карт');
   });
 });
