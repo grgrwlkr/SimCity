@@ -308,26 +308,21 @@ test('mainMenuOffersEveryScenario', async ({ page }, testInfo) => {
   await page.goto('/?debug=1');
   await page.waitForFunction(() => typeof window.__sim !== 'undefined');
   const scenarios = page.getByRole('navigation', { name: 'Сценарии' });
-  await expect(scenarios.getByRole('link')).toHaveCount(SCENARIOS.length);
-  // A link's name is its title and description; a name given as a string matches any link containing it, and
-  // «Город» is inside «Живой город».
-  const titled = (title: string) => new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`);
+  await expect(scenarios.getByRole('button')).toHaveCount(SCENARIOS.length);
   for (const s of SCENARIOS) {
-    await expect(scenarios.getByRole('link', { name: titled(s.title) }), 'the debug flag survives the jump').toHaveAttribute(
-      'href',
-      `?scenario=${s.query}&debug=1`,
-    );
+    await expect(scenarios.getByTestId(`menu-scenario-${s.name}`).locator('.hud-menu-item-label'), s.name).toHaveText(s.title);
   }
   await page.screenshot({ path: testInfo.outputPath('menu.png') });
 
-  await page.goto('/');
-  await page.getByRole('navigation', { name: 'Сценарии' }).getByRole('link', { name: titled('Город') }).click();
-  await expect(page).toHaveURL(/\/\?scenario=city$/);
+  const city = SCENARIOS.find((s) => s.name === 'city')!;
+  await scenarios.getByTestId('menu-scenario-city').click();
+  await expect(page, 'the debug flag survives the jump').toHaveURL(new RegExp(`/\\?scenario=${city.query}&debug=1$`));
   await page.waitForFunction(() => window.__sim !== undefined);
   await expect.poll(() => page.evaluate(() => window.__sim.snapshot()).then((s) => s.traffic.citizens), { timeout: 30_000 }).toBe(2000);
 
   await page.getByRole('button', { name: 'В меню' }).click();
-  await expect(page.getByRole('navigation', { name: 'Сценарии' }).getByRole('link')).toHaveCount(SCENARIOS.length);
+  await expect(page.getByTestId('hud-menu')).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Сценарии' }).getByRole('button')).toHaveCount(SCENARIOS.length);
 });
 
 // A scenario link opens in the same tab. WebKit revalidated the worker script, got a 304 without COEP
