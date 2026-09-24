@@ -3,10 +3,12 @@
 // (SaveGameV3, crates/simcity_data/src/game/persistence_contract.rs in rust-final) are not read.
 import { z } from 'zod';
 import { AGENDA_STOPS, LAYER_NAMES as CITIZEN_LAYER_NAMES, STOP_LAYER_NAMES } from '../citizens';
+import type { MesoGraph } from '../meso/graph';
+import type { MesoTraffic } from '../meso/traffic';
 import { createWorld, type World } from '../world';
 import { emptyScenarioProgress } from '../objectives';
 import { SaveError, TYPED_ARRAY_NAMES, classInstances, decodeNode, encodeNode, kindOf, savedClassName, type SaveNode } from './codec';
-import { ELEMENT_TEMPLATES, NULLABLE_FIELDS, SCENARIO_RUNTIMES, runtimeSamples } from './rules';
+import { CLASS_SAMPLES, ELEMENT_TEMPLATES, NULLABLE_FIELDS, SCENARIO_RUNTIMES, runtimeSamples } from './rules';
 
 export { SaveError } from './codec';
 
@@ -149,13 +151,89 @@ export function loadWorld(text: string): World {
 
 const isCount = (n: number): boolean => Number.isSafeInteger(n) && n >= 0;
 
-/** A new world from a checked save file. */
-export function worldFromSave(file: SaveFile): World {
+/** The layers of the meso graph by what they run over, and those of its traffic by link and by car (`growCars`). */
+const MESO_LINK_LAYERS = ['dir', 'lanes', 'length', 'speedKmh', 'startX', 'startY', 'endX', 'endY'] as const satisfies ReadonlyArray<keyof MesoGraph>;
+const MESO_SUCCESSOR_LAYERS = ['succLink', 'succBoxTiles', 'succCluster'] as const satisfies ReadonlyArray<keyof MesoGraph>;
+const MESO_TILE_LAYERS = ['tileLink', 'tileOffset'] as const satisfies ReadonlyArray<keyof MesoGraph>;
+const TRAFFIC_LINK_LAYERS = ['head', 'tail', 'onLink', 'usedMeters', 'tokens', 'tokensAt', 'exits', 'linkSeconds', 'measuredSum', 'measuredCount'] as const satisfies ReadonlyArray<keyof MesoTraffic>;
+const TRAFFIC_CAR_LAYERS = [
+  'citizen',
+  'vehicle',
+  'purpose',
+  'link',
+  'enterSec',
+  'readySec',
+  'goalLink',
+  'goalOffset',
+  'next',
+  'heldSince',
+  'atRed',
+  'yieldSince',
+  'fromOffset',
+  'prevLink',
+  'generation',
+  'routeCursor',
+] as const satisfies ReadonlyArray<keyof MesoTraffic>;
+
+/** The layers `checkMesoLengths` sizes, by resource; a test holds every array of a meso resource to this list. */
+export const MESO_LENGTHS_CHECKED: Readonly<Record<string, readonly string[]>> = {
+  MesoGraph: [...MESO_LINK_LAYERS, 'succStart', ...MESO_SUCCESSOR_LAYERS, ...MESO_TILE_LAYERS],
+  MesoTraffic: [...TRAFFIC_LINK_LAYERS, ...TRAFFIC_CAR_LAYERS, 'routes'],
+  DistrictTimes: ['matrix', 'rowBuiltFor', 'entries', 'secondsPerTile'],
+};
+
+/** The meso graph, its traffic and its district times sized alike: a layer cut short would be read past its end. */
+function checkMesoLengths(w: World): void {
+  const g = w.meso;
+  const links = g.linkCount;
+  for (const name of MESO_LINK_LAYERS) {
+    if (g[name].length !== links) throw new SaveError(`save rejected: world.meso.${name}: ${g[name].length} links, the graph has ${links}`);
+  }
+  if (g.succStart.length !== links + 1) throw new SaveError(`save rejected: world.meso.succStart: ${g.succStart.length} entries for ${links} links`);
+  const successors = g.succStart[links]!;
+  for (const name of MESO_SUCCESSOR_LAYERS) {
+    if (g[name].length !== successors) throw new SaveError(`save rejected: world.meso.${name}: ${g[name].length} successors, succStart ends at ${successors}`);
+  }
+  const tiles = g.width * g.height;
+  for (const name of MESO_TILE_LAYERS) {
+    if (g[name].length !== tiles) throw new SaveError(`save rejected: world.meso.${name}: ${g[name].length} tiles on a graph of ${tiles}`);
+  }
+  const m = w.mesoTraffic;
+  // The link layers are sized for the graph they were built for; for another one the next tick sizes them anew.
+  if (m.linksFor === g.builtFor) {
+    for (const name of TRAFFIC_LINK_LAYERS) {
+      if (m[name].length !== links) throw new SaveError(`save rejected: world.mesoTraffic.${name}: ${m[name].length} links, the graph has ${links}`);
+    }
+  }
+  if (m.due.keys.length !== m.due.links.length) throw new SaveError(`save rejected: world.mesoTraffic.due: ${m.due.keys.length} keys for ${m.due.links.length} links`);
+  // The longest car layer sets the cars, so the message names the layer cut short.
+  const cars = TRAFFIC_CAR_LAYERS.reduce((most, name) => (m[name].length > most ? m[name].length : most), 0);
+  for (const name of TRAFFIC_CAR_LAYERS) {
+    if (m[name].length !== cars) throw new SaveError(`save rejected: world.mesoTraffic.${name}: ${m[name].length} cars, the other car layers ${cars}`);
+  }
+  if (!isCount(m.highWater) || m.highWater > cars) throw new SaveError(`save rejected: world.mesoTraffic.highWater: ${m.highWater} in ${cars} cars`);
+  // Every slot a car ever took keeps its route (an empty one once the car is gone).
+  if (m.routes.length !== m.highWater) throw new SaveError(`save rejected: world.mesoTraffic.routes: ${m.routes.length} routes for a high-water mark of ${m.highWater}`);
+  if (!isCount(m.count) || m.count > m.highWater) throw new SaveError(`save rejected: world.mesoTraffic.count: ${m.count} above the high-water mark ${m.highWater}`);
+  const d = w.districtTimes;
+  const districts = d.count;
+  if (districts !== d.districtsW * d.districtsH) throw new SaveError(`save rejected: world.districtTimes.count: ${districts} for ${d.districtsW}×${d.districtsH} districts`);
+  if (d.matrix.length !== districts * districts) throw new SaveError(`save rejected: world.districtTimes.matrix: ${d.matrix.length} pairs for ${districts} districts`);
+  if (d.rowBuiltFor.length !== districts) throw new SaveError(`save rejected: world.districtTimes.rowBuiltFor: ${d.rowBuiltFor.length} rows for ${districts} districts`);
+  // The entries and the seconds a tile are those of the graph the rows are built for; for another the next tick redoes them.
+  if (d.graphVersion === g.builtFor) {
+    if (d.entries.length !== districts) throw new SaveError(`save rejected: world.districtTimes.entries: ${d.entries.length} rows for ${districts} districts`);
+    if (d.secondsPerTile.length !== links) throw new SaveError(`save rejected: world.districtTimes.secondsPerTile: ${d.secondsPerTile.length} links, the graph has ${links}`);
+  }
+}
+
+/** A new world from a checked save file. `unchecked` hears of every place the load had no template to hold to. */
+export function worldFromSave(file: SaveFile, unchecked?: (path: string) => void): World {
   const template = createWorld(file.options);
   let world: unknown;
   try {
-    const classes = new Map([...classInstances(template), ...runtimeSamples(template.simRng)]);
-    world = decodeNode(file.world, template, 'world', { nullable: NULLABLE_FIELDS, elements: ELEMENT_TEMPLATES, classes });
+    const classes = new Map([...CLASS_SAMPLES, ...classInstances(template), ...runtimeSamples(template.simRng)]);
+    world = decodeNode(file.world, template, 'world', { nullable: NULLABLE_FIELDS, elements: ELEMENT_TEMPLATES, classes, unchecked });
   } catch (error) {
     throw error instanceof SaveError ? new SaveError(`save rejected: ${error.message}`) : error;
   }
@@ -192,5 +270,6 @@ export function worldFromSave(file: SaveFile): World {
   for (const layer of w.grid.layers()) {
     if (layer.length !== tiles) throw new SaveError(`save rejected: world.grid: a layer of ${layer.length} tiles on a map of ${tiles}`);
   }
+  checkMesoLengths(w);
   return w;
 }

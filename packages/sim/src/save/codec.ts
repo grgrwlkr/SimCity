@@ -198,6 +198,47 @@ export class NullOr {
   constructor(readonly sample: unknown) {}
 }
 
+/** In a template, an array whose every item is shaped like `item`. */
+export class ListOf {
+  constructor(readonly item: unknown) {}
+}
+
+/** In a template, an array of exactly these items, each shaped like its own. */
+export class TupleOf {
+  constructor(readonly items: readonly unknown[]) {}
+}
+
+/** In a template, a Map of keys shaped like `key` to values shaped like `value`. */
+export class MapOf {
+  constructor(
+    readonly key: unknown,
+    readonly value: unknown,
+  ) {}
+}
+
+/** In a template, a Set of items shaped like `item`. */
+export class SetOf {
+  constructor(readonly item: unknown) {}
+}
+
+/** In a template, a plain object whose `tag` field names one of `variants`, and which has exactly that variant's fields. */
+export class OneOf {
+  constructor(
+    readonly tag: string,
+    readonly variants: Readonly<Record<string, Readonly<Record<string, unknown>>>>,
+  ) {}
+}
+
+/** In a template, a string that is one of `values`: a union of string literals. */
+export class Literal {
+  constructor(readonly values: readonly string[]) {}
+}
+
+/** In a template, a field an object may leave out (`field?: T`), shaped like `sample` when present. */
+export class Optional {
+  constructor(readonly sample: unknown) {}
+}
+
 /** What a load holds the save against besides the fresh world itself. */
 export interface DecodeRules {
   /**
@@ -205,10 +246,16 @@ export interface DecodeRules {
    * (`world.nextState`) otherwise. Without a sample, such a field must stay `null`.
    */
   readonly nullable: Readonly<Record<string, unknown>>;
-  /** Templates for the items of arrays and the values of maps, by the collection's path. */
+  /**
+   * The shape of a collection (`ListOf`, `TupleOf`, `MapOf`, `SetOf`) the fresh world holds, by its path
+   * (`world.commands`) or as `Class.field` for a field of a saved class. A collection nested in a template carries its
+   * shape in the template itself.
+   */
   readonly elements: Readonly<Record<string, unknown>>;
   /** An instance of each saved class, for one met where the fresh world has nothing, as an element of a collection. */
   readonly classes: ReadonlyMap<string, object>;
+  /** Told the path of every collection, object and class instance the load took without a template to hold it to. */
+  readonly unchecked?: ((path: string) => void) | undefined;
 }
 
 /** Every instance of a saved class in `root`, one per class. */
@@ -230,6 +277,54 @@ export function classInstances(root: unknown): Map<string, object> {
   return found;
 }
 
+/** The kind of value a template holds. */
+function templateKind(template: unknown): string {
+  if (template instanceof ListOf || template instanceof TupleOf) return 'array';
+  if (template instanceof MapOf) return 'Map';
+  if (template instanceof SetOf) return 'Set';
+  if (template instanceof OneOf) return 'object';
+  if (template instanceof Literal) return 'string';
+  return kindOf(template);
+}
+
+/** A template that fixes an object's shape: a value reached again by reference must have been read against it. */
+const isShape = (t: unknown): boolean =>
+  t instanceof ListOf ||
+  t instanceof TupleOf ||
+  t instanceof MapOf ||
+  t instanceof SetOf ||
+  t instanceof OneOf ||
+  (typeof t === 'object' && t !== null && Object.getPrototypeOf(t) === Object.prototype);
+
+const plainKeys = (t: object): string => Object.keys(t).sort().join(',');
+
+/**
+ * Whether two templates describe one shape: a shared object read against one of them may stand where the other is.
+ * `proven` holds pairs already taken as equal, which also ends the walk on a template that refers back to itself.
+ */
+function sameShape(a: unknown, b: unknown, proven: Map<unknown, Set<unknown>>): boolean {
+  if (a === b || proven.get(a)?.has(b) === true) return true;
+  const pairs = proven.get(a) ?? new Set<unknown>();
+  proven.set(a, pairs.add(b));
+  const same = (x: unknown, y: unknown) => sameShape(x, y, proven);
+  let equal: boolean;
+  if (a instanceof NullOr || a instanceof Optional) equal = b instanceof a.constructor && same(a.sample, (b as NullOr).sample);
+  else if (a instanceof ListOf || a instanceof SetOf) equal = b instanceof a.constructor && same(a.item, (b as ListOf).item);
+  else if (a instanceof MapOf) equal = b instanceof MapOf && same(a.key, b.key) && same(a.value, b.value);
+  else if (a instanceof TupleOf) equal = b instanceof TupleOf && a.items.length === b.items.length && a.items.every((t, i) => same(t, b.items[i]));
+  else if (a instanceof Literal) equal = b instanceof Literal && a.values.join('|') === b.values.join('|');
+  else if (a instanceof OneOf) {
+    equal = b instanceof OneOf && a.tag === b.tag && plainKeys(a.variants) === plainKeys(b.variants) && Object.keys(a.variants).every((k) => same(a.variants[k], b.variants[k]));
+  } else if (isShape(a) || isShape(b)) {
+    const x = a as Record<string, unknown>;
+    const y = b as Record<string, unknown>;
+    equal = isShape(a) && isShape(b) && !(b instanceof ListOf || b instanceof SetOf || b instanceof MapOf || b instanceof TupleOf || b instanceof OneOf);
+    equal = equal && plainKeys(x) === plainKeys(y) && Object.keys(x).every((k) => same(x[k], y[k]));
+  } else equal = a !== undefined && b !== undefined && templateKind(a) === templateKind(b);
+  if (!equal) pairs.delete(b);
+  return equal;
+}
+
 /** A value must be of the kind its template holds; no template, no check. */
 function checkKind(value: unknown, template: unknown, path: string): void {
   if (template instanceof NullOr) {
@@ -237,9 +332,12 @@ function checkKind(value: unknown, template: unknown, path: string): void {
     return;
   }
   if (template === undefined) return;
-  const want = kindOf(template);
+  const want = templateKind(template);
   const got = kindOf(value);
   if (want !== got) throw new SaveError(`${path}: expected ${want}, found ${got}`);
+  if (template instanceof Literal && !template.values.includes(value as string)) {
+    throw new SaveError(`${path}: expected one of ${template.values.join(' | ')}, found ${JSON.stringify(value)}`);
+  }
 }
 
 /**
@@ -248,14 +346,17 @@ function checkKind(value: unknown, template: unknown, path: string): void {
  */
 class Decoder {
   private readonly byId = new Map<number, unknown>();
+  /** The template each object with an id was read against, for the references to it. */
+  private readonly readAs = new Map<number, unknown>();
+  private readonly proven = new Map<unknown, Set<unknown>>();
 
   constructor(private readonly rules: DecodeRules) {}
 
   /** `template` is the value at the same place in a fresh world of the save's options, `undefined` where none is. */
   node(node: SaveNode, template: unknown, path: string): unknown {
     if (node === null || typeof node !== 'object') return node;
-    if (Array.isArray(node)) return this.array([], node, path);
-    if (!isTagged(node)) return this.fields({}, node, template, path);
+    if (Array.isArray(node)) return this.array([], node, template, path);
+    if (!isTagged(node)) return this.object({}, node, template, path);
     switch (node.$) {
       case 'num':
         return Number(node.v);
@@ -269,21 +370,24 @@ class Decoder {
         if (bytes.byteLength % Ctor.BYTES_PER_ELEMENT !== 0) {
           throw new SaveError(`${path}: ${bytes.byteLength} bytes are not a whole number of ${node.t} elements`);
         }
-        return this.keep(node.id, new Ctor(bytes.buffer as ArrayBuffer) as TypedArray, path);
+        return this.keep(node.id, new Ctor(bytes.buffer as ArrayBuffer) as TypedArray, template, path);
       }
       case 'arr':
-        return this.array(this.keep(node.id, [], path), node.v, path);
+        return this.array(this.keep(node.id, [], template, path), node.v, template, path);
       case 'obj':
-        return this.fields(this.keep(node.id, {}, path), node.v, template, path);
+        return this.object(this.keep(node.id, {}, template, path), node.v, template, path);
       case 'map': {
-        const map = this.keep(node.id, new Map<unknown, unknown>(), path);
-        const element = this.rules.elements[path];
-        node.v.forEach(([key, value], i) => map.set(this.node(key, undefined, `${path}{key ${i}}`), this.checked(value, element, `${path}{${i}}`)));
+        const map = this.keep(node.id, new Map<unknown, unknown>(), template, path);
+        const shape = template instanceof MapOf ? template : undefined;
+        if (shape === undefined) this.rules.unchecked?.(path);
+        node.v.forEach(([key, value], i) => map.set(this.checked(key, shape?.key, `${path}{key ${i}}`), this.checked(value, shape?.value, `${path}{${i}}`)));
         return map;
       }
       case 'set': {
-        const set = this.keep(node.id, new Set<unknown>(), path);
-        node.v.forEach((value, i) => set.add(this.node(value, undefined, `${path}{${i}}`)));
+        const set = this.keep(node.id, new Set<unknown>(), template, path);
+        const item = template instanceof SetOf ? template.item : undefined;
+        if (item === undefined) this.rules.unchecked?.(path);
+        node.v.forEach((value, i) => set.add(this.checked(value, item, `${path}{${i}}`)));
         return set;
       }
       case 'cls': {
@@ -291,22 +395,30 @@ class Decoder {
         if (cls === undefined) throw new SaveError(`${path}: unknown class ${JSON.stringify(node.c)}`);
         const expected = template instanceof NullOr ? template.sample : template;
         if (expected !== null && expected !== undefined && kindOf(expected) !== `class ${node.c}`) {
-          throw new SaveError(`${path}: expected ${kindOf(expected)}, found class ${node.c}`);
+          throw new SaveError(`${path}: expected ${templateKind(expected)}, found class ${node.c}`);
         }
-        const instance = this.keep(node.id, Object.create(cls.prototype) as Record<string, unknown>, path);
-        return this.fields(instance, node.v, expected ?? this.rules.classes.get(node.c), path, node.c);
+        const instance = this.keep(node.id, Object.create(cls.prototype) as Record<string, unknown>, template, path);
+        const sample = expected ?? this.rules.classes.get(node.c);
+        if (sample === undefined) this.rules.unchecked?.(path);
+        return this.object(instance, node.v, sample, path, node.c);
       }
       case 'ref': {
         if (!this.byId.has(node.id)) throw new SaveError(`${path}: refers to object #${node.id}, which comes nowhere before it`);
+        // An object first read without a template is reported there (`unchecked`); one read against a shape must fit here.
+        const readAs = this.readAs.get(node.id);
+        if (readAs !== undefined && isShape(template) && !sameShape(readAs, template, this.proven)) {
+          throw new SaveError(`${path}: refers to object #${node.id}, which is not of the shape this place holds`);
+        }
         return this.byId.get(node.id);
       }
     }
   }
 
-  private keep<T>(id: number | undefined, value: T, path: string): T {
+  private keep<T>(id: number | undefined, value: T, template: unknown, path: string): T {
     if (id === undefined) return value;
     if (this.byId.has(id)) throw new SaveError(`${path}: object #${id} is defined twice`);
     this.byId.set(id, value);
+    this.readAs.set(id, template);
     return value;
   }
 
@@ -318,25 +430,49 @@ class Decoder {
     return value;
   }
 
-  private array(out: unknown[], items: readonly SaveNode[], path: string): unknown[] {
-    const element = this.rules.elements[path];
-    items.forEach((item, i) => out.push(this.checked(item, element, `${path}[${i}]`)));
+  private array(out: unknown[], items: readonly SaveNode[], template: unknown, path: string): unknown[] {
+    if (template instanceof TupleOf) {
+      if (items.length !== template.items.length) throw new SaveError(`${path}: ${items.length} items, expected ${template.items.length}`);
+      items.forEach((item, i) => out.push(this.checked(item, template.items[i], `${path}[${i}]`)));
+      return out;
+    }
+    const item = template instanceof ListOf ? template.item : undefined;
+    if (item === undefined) this.rules.unchecked?.(path);
+    items.forEach((value, i) => out.push(this.checked(value, item, `${path}[${i}]`)));
     return out;
   }
 
   /** `className`: the saved class `out` is an instance of, whose `null` fields the rules name as `Class.field`. */
-  private fields(out: Record<string, unknown>, fields: { readonly [key: string]: SaveNode }, template: unknown, path: string, className?: string): Record<string, unknown> {
+  private object(out: Record<string, unknown>, fields: { readonly [key: string]: SaveNode }, template: unknown, path: string, className?: string): Record<string, unknown> {
+    if (template instanceof OneOf) {
+      const tag = fields[template.tag];
+      if (tag === undefined) throw new SaveError(`${path}.${template.tag}: missing`);
+      if (typeof tag !== 'string' || !Object.hasOwn(template.variants, tag)) {
+        throw new SaveError(`${path}.${template.tag}: expected one of ${Object.keys(template.variants).join(' | ')}, found ${JSON.stringify(tag)}`);
+      }
+      template = template.variants[tag];
+    }
     if (!isPlainTemplate(template)) {
+      this.rules.unchecked?.(path);
       for (const key of Object.keys(fields)) out[key] = this.node(fields[key]!, undefined, `${path}.${key}`);
       return out;
     }
-    for (const key of Object.keys(template)) if (!Object.hasOwn(fields, key)) throw new SaveError(`${path}.${key}: missing`);
+    for (const key of Object.keys(template)) {
+      if (!Object.hasOwn(fields, key) && !(template[key] instanceof Optional)) throw new SaveError(`${path}.${key}: missing`);
+    }
     for (const key of Object.keys(fields)) {
       if (!Object.hasOwn(template, key)) throw new SaveError(`${path}.${key}: no such field in the world`);
       let expected = template[key];
+      if (expected instanceof Optional) expected = expected.sample;
       if (expected === null || expected === undefined) {
         const rule = className === undefined ? `${path}.${key}` : `${className}.${key}`;
         expected = Object.hasOwn(this.rules.nullable, rule) ? new NullOr(this.rules.nullable[rule]) : null;
+      } else if (Array.isArray(expected) || expected instanceof Map || expected instanceof Set) {
+        // A collection of the fresh world: its items are held to the shape the rules give it.
+        const byPath = `${path}.${key}`;
+        const byClass = className === undefined ? undefined : `${className}.${key}`;
+        if (Object.hasOwn(this.rules.elements, byPath)) expected = this.rules.elements[byPath];
+        else if (byClass !== undefined && Object.hasOwn(this.rules.elements, byClass)) expected = this.rules.elements[byClass];
       }
       out[key] = this.checked(fields[key]!, expected, `${path}.${key}`);
     }
