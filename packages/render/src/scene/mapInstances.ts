@@ -2,7 +2,7 @@
 // by edit: a map edit swaps out the tiles of the chunks it changed (and, for props, the ring of chunks around them) and
 // leaves the rest of every buffer alone. No renderer here, so a test can compare an edited map with a fresh build.
 import type { MapLayersReply } from '@simcity/bridge';
-import { BUILDING_KINDS, tileToWorld, type BuildingProfile, type MapConfig } from '@simcity/sim';
+import { BUILDING_KINDS, tileToWorld, type BuildingKind, type BuildingProfile, type MapConfig } from '@simcity/sim';
 import * as THREE from 'three/webgpu';
 import { CHUNK_TILES, chunkGrid } from '../mapChunks';
 import { PARKED_CAR_TINTS, PROPS_CONFIG } from '../props';
@@ -55,6 +55,12 @@ export class MapInstances {
   /** Window instances by window mesh, all on the one window material, and the batch each tile's windows sit in. */
   private readonly windowBatchByMesh = new Map<CompositeMesh, InstanceBatch>();
   private readonly windowBatchOf = new Map<number, InstanceBatch>();
+  /**
+   * Tiles whose body stands but whose windows are not placed yet, by building kind: `apply` leaves the windows to
+   * `fillWindows`, which the scene runs a slice per frame, so a whole map does not pay for them in one main-thread stall.
+   */
+  private readonly pendingWindows = new Map<number, BuildingKind>();
+  private windowCfg: MapConfig | null = null;
   private glyphBatch: InstanceBatch | null = null;
   /** One unit quad for every glyph piece, sized per instance. */
   private readonly glyphGeometry = new THREE.PlaneGeometry(1, 1);
@@ -85,6 +91,36 @@ export class MapInstances {
 
   get buildings(): number {
     return this.visuals?.size ?? 0;
+  }
+
+  /** Buildings whose windows `fillWindows` has yet to place. */
+  get windowsPending(): number {
+    return this.pendingWindows.size;
+  }
+
+  /**
+   * Places the pending windows until `budgetMs` of wall clock is spent (checked every 256 buildings, so a spent budget
+   * still places a slice) and returns how many buildings still wait for theirs.
+   */
+  fillWindows(budgetMs = Infinity): number {
+    const visuals = this.visuals;
+    const cfg = this.windowCfg;
+    if (this.pendingWindows.size === 0 || visuals === null || cfg === null) return this.pendingWindows.size;
+    const started = performance.now();
+    const touched = new Set<InstanceBatch>();
+    const matrix = new THREE.Matrix4();
+    let placed = 0;
+    for (const [i, kind] of this.pendingWindows) {
+      this.pendingWindows.delete(i);
+      const c = tileToWorld(cfg, { x: i % cfg.width, y: Math.floor(i / cfg.width) });
+      const windows = this.windowBatch(visuals.get(i)!.windows, `windows ${kind} L1`);
+      windows.put(i, matrix.makeTranslation(c.x, c.y, 0));
+      touched.add(windows);
+      this.windowBatchOf.set(i, windows);
+      if (++placed % 256 === 0 && performance.now() - started >= budgetMs) break;
+    }
+    for (const batch of touched) batch.flush();
+    return this.pendingWindows.size;
   }
 
   get props(): number {
@@ -142,6 +178,7 @@ export class MapInstances {
     this.buildingBatchOf.clear();
     this.windowBatchByMesh.clear();
     this.windowBatchOf.clear();
+    this.pendingWindows.clear();
     this.propBatches.clear();
     this.propsOf.clear();
     this.glyphBatch = null;
@@ -152,7 +189,9 @@ export class MapInstances {
     let byMaterial = this.buildingBatchByKey.get(body);
     if (byMaterial === undefined) this.buildingBatchByKey.set(body, (byMaterial = new Map()));
     let batch = byMaterial.get(material);
-    if (batch === undefined) byMaterial.set(material, (batch = new InstanceBatch(this.buildingGroup, this.geometryOf(body), this.materials.get(material), label)));
+    // Only the bodies cast: windows sit on their walls, glyphs on their roofs, and furniture is too small to throw a
+    // shadow worth another pass over hundreds of thousands of instances.
+    if (batch === undefined) byMaterial.set(material, (batch = new InstanceBatch(this.buildingGroup, this.geometryOf(body), this.materials.get(material), label, 64, true)));
     return batch;
   }
 
@@ -172,6 +211,7 @@ export class MapInstances {
    */
   private updateBuildings(map: MapLayersReply, visuals: BuildingVisuals, changed: readonly number[]): void {
     const cfg: MapConfig = { width: map.width, height: map.height, tileSize: map.tileSize };
+    this.windowCfg = cfg;
     const glyphs = (this.glyphBatch ??= new InstanceBatch(this.buildingGroup, this.glyphGeometry, this.materials.get(visuals.glyphMaterial), 'glyphs'));
     const touched = new Set<InstanceBatch>([glyphs]);
     const matrix = new THREE.Matrix4();
@@ -195,6 +235,7 @@ export class MapInstances {
             touched.add(oldWindows);
             this.windowBatchOf.delete(i);
           }
+          this.pendingWindows.delete(i);
           glyphs.remove(i);
           const code = map.layers.building[i]!;
           if (code === 0) continue;
@@ -205,10 +246,7 @@ export class MapInstances {
           batch.put(i, matrix.makeTranslation(c.x, c.y, 0));
           touched.add(batch);
           this.buildingBatchOf.set(i, batch);
-          const windows = this.windowBatch(v.windows, `windows ${kind} L1`);
-          windows.put(i, matrix);
-          touched.add(windows);
-          this.windowBatchOf.set(i, windows);
+          this.pendingWindows.set(i, kind);
           for (const p of v.glyph) {
             glyphs.put(i, matrix.compose(new THREE.Vector3(c.x + p.offset[0], c.y + p.offset[1], v.glyphZ), turn.setFromAxisAngle(z, p.rotation), new THREE.Vector3(p.size[0], p.size[1], 1)));
           }

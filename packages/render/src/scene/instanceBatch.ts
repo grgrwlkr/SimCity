@@ -3,11 +3,27 @@
 import * as THREE from 'three/webgpu';
 import { SlotTable } from './slots';
 
+/**
+ * Queues `start..start+count` of `a` for the next upload. Only a range over every used slot (`whole`) replaces what was
+ * queued: a range that merely starts at 0 (one instance in slot 0) would drop ranges queued for other slots.
+ */
+function queueRange(a: THREE.BufferAttribute, start: number, count: number, whole = false): void {
+  if (whole) a.clearUpdateRanges();
+  a.addUpdateRange(start, count);
+  a.needsUpdate = true;
+}
+
 export class InstanceBatch {
   private readonly slots = new SlotTable();
   private mesh: THREE.InstancedMesh;
   /** A material drawn in place of the batch's own (a data map's white), `null` for its own. */
   private override: THREE.Material | null = null;
+  /**
+   * The lowest slot written since the last flush: an edit that appends or moves a few instances uploads the buffers from
+   * there on, not whole (the windows arrive a slice per frame). Ranges pile up until the renderer uploads and clears
+   * them, so two flushes before a frame lose nothing.
+   */
+  private dirtyFrom = 0;
 
   constructor(
     private readonly group: THREE.Group,
@@ -15,6 +31,8 @@ export class InstanceBatch {
     private readonly material: THREE.Material,
     readonly name: string,
     capacity = 64,
+    /** Whether the instances draw into the sun's shadow map; every instance receives shadows either way. */
+    private readonly castsShadow = false,
   ) {
     this.mesh = this.make(capacity);
   }
@@ -34,6 +52,8 @@ export class InstanceBatch {
     mesh.name = this.name;
     mesh.count = 0;
     mesh.visible = false;
+    mesh.castShadow = this.castsShadow;
+    mesh.receiveShadow = true;
     // A batch spans the whole map: culling it as a whole saves nothing and its bounds would need a pass per edit.
     mesh.frustumCulled = false;
     // Created with the mesh, white: a material compiled before the first colour would ignore instance colours.
@@ -51,7 +71,9 @@ export class InstanceBatch {
       this.group.remove(this.mesh);
       this.mesh.dispose();
       this.mesh = grown;
+      this.dirtyFrom = 0;
     }
+    this.dirtyFrom = Math.min(this.dirtyFrom, slot);
     this.mesh.setMatrixAt(slot, matrix);
     (this.mesh.instanceColor!.array as Float32Array).fill(1, slot * 3, slot * 3 + 3);
   }
@@ -60,6 +82,7 @@ export class InstanceBatch {
     const m = this.mesh.instanceMatrix.array as Float32Array;
     const c = this.mesh.instanceColor!.array as Float32Array;
     for (const [from, to] of this.slots.remove(owner)) {
+      this.dirtyFrom = Math.min(this.dirtyFrom, to);
       m.copyWithin(to * 16, from * 16, from * 16 + 16);
       c.copyWithin(to * 3, from * 3, from * 3 + 3);
     }
@@ -75,14 +98,16 @@ export class InstanceBatch {
       const rgb = of === null ? null : of(this.slots.ownerOf(slot)!);
       c.set(rgb ?? [1, 1, 1], slot * 3);
     }
-    this.mesh.instanceColor!.needsUpdate = true;
+    queueRange(this.mesh.instanceColor!, 0, this.slots.count * 3, true);
   }
 
   /** Multiplies every instance of `owner` by `rgb` (linear): one tile's re-tint, uploaded with the next frame. */
   tintOwner(owner: number, rgb: readonly [number, number, number]): void {
     const c = this.mesh.instanceColor!.array as Float32Array;
-    for (const slot of this.slots.slotsOf(owner)) c.set(rgb, slot * 3);
-    this.mesh.instanceColor!.needsUpdate = true;
+    for (const slot of this.slots.slotsOf(owner)) {
+      c.set(rgb, slot * 3);
+      queueRange(this.mesh.instanceColor!, slot * 3, 3);
+    }
   }
 
   /** Draws every instance with `material` instead of the batch's own; `null` gives the batch its own back. */
@@ -107,10 +132,15 @@ export class InstanceBatch {
 
   /** Publishes the edits of this pass to the GPU. */
   flush(): void {
-    this.mesh.count = this.slots.count;
-    this.mesh.visible = this.slots.count > 0;
-    this.mesh.instanceMatrix.needsUpdate = true;
-    this.mesh.instanceColor!.needsUpdate = true;
+    const count = this.slots.count;
+    this.mesh.count = count;
+    this.mesh.visible = count > 0;
+    const from = this.dirtyFrom;
+    if (from < count) {
+      queueRange(this.mesh.instanceMatrix, from * 16, (count - from) * 16, from === 0);
+      queueRange(this.mesh.instanceColor!, from * 3, (count - from) * 3, from === 0);
+    }
+    this.dirtyFrom = Infinity;
   }
 
   /** Leaves the scene; the geometry and the material are shared and stay. */

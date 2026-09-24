@@ -1,7 +1,10 @@
 // The scene's light by the world's clock: the sun and sky of `dayNight.ts` turned into three.js lights, and the shared
 // window and sign materials that glow after dark (the checks of `night_glow_follows_the_clock` in
 // crates/simcity_sim/src/game/day_night.rs, tag rust-final, made on the scene's own materials).
+import * as THREE from 'three/webgpu';
 import { describe, expect, it } from 'vitest';
+import { OrthoView, SCENE_TILT } from '../../src/camera';
+import { orthographicFrustum, perspectiveFovDeg } from '../../src/cameraProjection';
 import { RENDER_CONFIG } from '../../src/renderConfig';
 import { resolveRenderSettings } from '../../src/renderSettings';
 import { SceneLighting, cascadeSplits, hourFromQuery, sceneLightLevels } from '../../src/scene/lighting';
@@ -34,10 +37,11 @@ describe('scene lighting', () => {
   });
 
   it('theSunComesFromTheConfiguredDirectionAndCastsShadowsOnlyWithCascades', () => {
-    expect(new SceneLighting(resolveRenderSettings(RENDER_CONFIG)).sun.castShadow, 'shadows are off in the shipped config').toBe(false);
-    const settings = resolveRenderSettings({ ...RENDER_CONFIG, shadows: { ...RENDER_CONFIG.shadows, cascades: 4 } });
-    const lighting = new SceneLighting(settings);
-    expect(lighting.sun.castShadow).toBe(true);
+    const lighting = new SceneLighting(resolveRenderSettings(RENDER_CONFIG));
+    expect(lighting.sun.castShadow, 'the shipped config casts shadows').toBe(true);
+    const none = resolveRenderSettings({ ...RENDER_CONFIG, shadows: { ...RENDER_CONFIG.shadows, cascades: 0 } });
+    expect(new SceneLighting(none).sun.castShadow, 'no cascades, no shadow pass').toBe(false);
+    const settings = resolveRenderSettings(RENDER_CONFIG);
     const d = lighting.sun.position.clone().sub(lighting.sun.target.position).normalize();
     const want = settings.sun.position;
     const len = Math.hypot(...want);
@@ -75,5 +79,62 @@ describe('scene lighting', () => {
     expect(hourFromQuery('?hour=25.5')).toBe(1.5);
     expect(hourFromQuery('?hour=noon')).toBeNull();
     expect(hourFromQuery('?renderer=scene')).toBeNull();
+  });
+
+  /** The scene's camera for a view, set up as `SceneRenderer.frameCamera` does. */
+  function sceneCamera(worldPerPixel: number): THREE.Camera {
+    const view = new OrthoView({ width: 640, height: 480 });
+    view.tilt = SCENE_TILT;
+    view.worldPerPixel = worldPerPixel;
+    const plan = view.plan();
+    let camera: THREE.OrthographicCamera | THREE.PerspectiveCamera;
+    if (plan.kind === 'orthographic') {
+      const f = orthographicFrustum(plan, 640, 480);
+      camera = new THREE.OrthographicCamera(f.left, f.right, f.top, f.bottom, 0.1, 2 * view.eyeDistance() + plan.distance);
+    } else {
+      camera = new THREE.PerspectiveCamera(perspectiveFovDeg(plan), 640 / 480, plan.distance / 50, plan.distance * 4);
+    }
+    camera.up.set(0, 0, 1);
+    camera.position.set(...view.eye());
+    camera.lookAt(view.centerX, view.centerY, 0);
+    camera.updateMatrixWorld(true);
+    camera.updateProjectionMatrix();
+    return camera;
+  }
+
+  it('theGroundInTheMiddleOfTheFrameFallsInsideAShadowCascade', () => {
+    // The district and street views of the render gates, orthographic then perspective, and back out: the light builds
+    // its shadow once, so the one shadow node must follow each camera and each zoom.
+    const lighting = new SceneLighting(resolveRenderSettings(RENDER_CONFIG));
+    const scene = new THREE.Scene().add(lighting.group);
+    // What of `CSMShadowNode` the renderer drives each frame: its first build, the pass before a frame, the cascade lights.
+    type Cascades = { camera: THREE.Camera | null; lights: Array<THREE.Object3D & { shadow: THREE.LightShadow }>; _init(builder: unknown): void; updateBefore(): void };
+    const node = () => lighting.sun.shadow.shadowNode as unknown as Cascades;
+    for (const [k, worldPerPixel] of [1, 0.2, 0.15, 1].entries()) {
+      const camera = sceneCamera(worldPerPixel);
+      lighting.useCamera(camera);
+      const csm = node();
+      // The first build hands the node the camera being drawn.
+      if (k === 0) csm._init({ camera, renderer: { coordinateSystem: THREE.WebGLCoordinateSystem, reversedDepthBuffer: false } });
+      csm.updateBefore();
+      scene.updateMatrixWorld(true);
+      // Shadow-map coordinates of the point, 0..1 on every axis inside the cascade's box, depth included.
+      const inside = csm.lights.map((l) => {
+        l.shadow.updateMatrices(l as unknown as THREE.Light);
+        const p = new THREE.Vector3(0, 0, 0).applyMatrix4(l.shadow.matrix);
+        return [p.x, p.y, p.z].every((v) => v >= 0 && v <= 1);
+      });
+      expect(csm.camera, 'the cascades follow the camera of the frame').toBe(camera);
+      // A pixel picks its cascade by its view depth up to the node's far (min of `maxFar` and the camera's): the ground at
+      // the focus lies ~950 units down an orthographic boom, past the 900 of a perspective one, and was shaded by none.
+      const depth = -new THREE.Vector3(0, 0, 0).applyMatrix4(camera.matrixWorldInverse).z;
+      const far = Math.min((csm as unknown as { maxFar: number }).maxFar, (camera as THREE.PerspectiveCamera).far);
+      expect(depth, `worldPerPixel ${worldPerPixel}: the focus is within the shadows' reach (${far.toFixed(0)})`).toBeLessThan(far);
+      // The bias is normalised depth, and the node multiplies it by the cascade's number: in world units along the light
+      // it must stay well under a building's footprint, or a shadow starts metres behind its caster.
+      const offsets = csm.lights.map((l) => Math.abs(l.shadow.bias) * ((l.shadow.camera as THREE.OrthographicCamera).far - (l.shadow.camera as THREE.OrthographicCamera).near));
+      expect(Math.max(...offsets), `bias in world units per cascade: ${offsets.map((o) => o.toFixed(2))}`).toBeLessThan(1);
+      expect(inside, `worldPerPixel ${worldPerPixel}: the ground at the focus is in a cascade`).toContain(true);
+    }
   });
 });

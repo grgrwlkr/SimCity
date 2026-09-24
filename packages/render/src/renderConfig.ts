@@ -130,10 +130,11 @@ export const RENDER_CONFIG: RenderConfig = {
     maxDistance: 900,
     orthoDistance: 500,
   },
-  // Off by default (render.ron had 4 cascades): every cascade redraws all building instances, and on the fitted
-  // metropolis that took the scene from 60 to 23 fps on the GPU (docs/oracle-deviations.md, 2026-09-23). Set a count to
-  // bring them back; the other values are the ones they would use.
-  shadows: { maximumDistance: 900, cascades: 0, firstSliceDepth: 90, overlapProportion: 0.2, softSize: 0 },
+  // Two cascades, not render.ron's 4: every cascade redraws all building bodies (only bodies cast, see mapInstances.ts),
+  // and on the fitted metropolis four took the frame from 118 to 50 fps, two keep it at 89-114. No overlap: a blended
+  // border samples both cascades on every pixel, +37 % frame time on the test city against +10 % without
+  // (docs/oracle-deviations.md, 2026-09-24).
+  shadows: { maximumDistance: 900, cascades: 2, firstSliceDepth: 90, overlapProportion: 0, softSize: 0 },
   atlas: { worldUnitsPerCell: 12, maxRepeats: 4 },
 };
 

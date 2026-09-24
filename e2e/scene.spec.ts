@@ -24,9 +24,10 @@ test.describe.configure({ timeout: 240_000 });
 
 /**
  * The R2 gates read geometry and colour, not the effects: under SwiftShader the full chain costs seconds a frame (a
- * probe at load 55-80 measured 0.09 fps with everything, 0.92 fps with these off), so they draw without it.
+ * probe at load 55-80 measured 0.09 fps with everything, 0.92 fps with these off), so they draw without it. The sun's
+ * shadows are on by default since wave 7 and would shade the colours these gates read.
  */
-const PLAIN = '&off=ao,fxaa,grade,vignette';
+const PLAIN = '&off=ao,fxaa,grade,vignette,shadows';
 
 const sceneStats = (page: Page) => page.evaluate(() => window.__sim.renderStats()) as Promise<SceneStats>;
 

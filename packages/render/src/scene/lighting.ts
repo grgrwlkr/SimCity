@@ -21,6 +21,18 @@ export const NOON_SKY_INTENSITY = 2;
 const GROUND_BOUNCE = 0.55;
 /** Shadow map side per cascade, texels. */
 const SHADOW_MAP_SIZE = 2048;
+/**
+ * Depth of every cascade's shadow box, world units. `CSMShadowNode` clones the sun's shadow camera and places each copy
+ * `lightMargin` (200) behind its slice, but leaves near and far as they are, and three's default far of 500 cut the
+ * ground off: a slice of the orthographic view spans the map's width in light space, an 800 map is 12 800 units wide.
+ */
+const SHADOW_DEPTH = 40_000;
+/**
+ * How far behind a receiver's depth the first cascade still counts it lit, world units (the second doubles it). three
+ * adds the bias to normalised depth, so it is divided by the box's depth: -0.0005 of 40 000 put shadows 20-40 units away
+ * from their casters.
+ */
+const SHADOW_BIAS_UNITS = 0.25;
 
 export interface SceneLightLevels {
   /** 0 by day, 1 at the darkest night. */
@@ -72,7 +84,8 @@ export class SceneLighting {
   /** Every shop sign: a painted board by day, lit after dark. */
   readonly signs = new THREE.MeshLambertNodeMaterial();
   private csm: CSMShadowNode | null = null;
-  private csmCamera: THREE.Camera | null = null;
+  /** The projection the cascades were last split for: a zoom changes it, and stale slices shade nothing. */
+  private readonly csmProjection = new THREE.Matrix4();
   private hour = NaN;
   private overlay: OverlayMode = 'None';
 
@@ -83,7 +96,8 @@ export class SceneLighting {
     // No cascades configured (or `?off=shadows`): no shadow pass at all.
     this.sun.castShadow = s.cascades.cascades > 0;
     this.sun.shadow.mapSize.set(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
-    this.sun.shadow.bias = -0.0005;
+    this.sun.shadow.camera.far = SHADOW_DEPTH;
+    this.sun.shadow.bias = -SHADOW_BIAS_UNITS / (SHADOW_DEPTH - this.sun.shadow.camera.near);
     if (s.softShadowSize !== null) this.sun.shadow.radius = s.softShadowSize;
     this.group.add(this.sun, this.sun.target, this.sky);
     for (const m of [this.windows, this.signs]) m.emissiveIntensity = 1;
@@ -91,22 +105,33 @@ export class SceneLighting {
   }
 
   /**
-   * The cascades follow one camera from their first frame on; the scene swaps cameras where the zoom turns the
-   * projection, so the shadow node is rebuilt for the new one (a handful of times per session, not per frame).
+   * The cascades follow the camera of the frame. The light node builds its shadow once, round the first shadow node it
+   * meets, so there is one `CSMShadowNode` for the session: a new camera (the scene swaps them where the zoom turns the
+   * projection) or a new projection (every zoom) re-splits its cascades instead of replacing it.
    */
   useCamera(camera: THREE.Camera): void {
-    if (camera === this.csmCamera || !this.sun.castShadow) return;
-    this.csmCamera = camera;
-    this.csm?.dispose();
-    const c = this.settings.sun.cascades;
-    this.csm = new CSMShadowNode(this.sun, {
-      cascades: c.cascades,
-      maxFar: c.maximumDistance,
-      mode: 'custom',
-      customSplitsCallback: (_n: number, _near: number, _far: number, breaks: number[]) => breaks.push(...cascadeSplits(c)),
-    });
-    this.csm.fade = c.overlapProportion > 0;
-    this.sun.shadow.shadowNode = this.csm;
+    if (!this.sun.castShadow) return;
+    if (this.csm === null) {
+      const c = this.settings.sun.cascades;
+      this.csm = new CSMShadowNode(this.sun, {
+        cascades: c.cascades,
+        maxFar: c.maximumDistance,
+        mode: 'custom',
+        customSplitsCallback: (_n: number, _near: number, _far: number, breaks: number[]) => breaks.push(...cascadeSplits(c)),
+      });
+      this.csm.fade = c.overlapProportion > 0;
+      this.sun.shadow.shadowNode = this.csm;
+    }
+    // A pixel picks its cascade by its view depth up to `maxFar`. The orthographic camera hangs its boom far above the
+    // ground (~950 units in the district view, more when fitted), past the 900 the perspective side is tuned for: there
+    // the cascades reach the camera's own far plane, or the ground falls behind every cascade and nothing is shaded.
+    this.csm.maxFar = (camera as THREE.OrthographicCamera).isOrthographicCamera === true ? (camera as THREE.OrthographicCamera).far : this.settings.sun.cascades.maximumDistance;
+    // Until the first build the node takes its camera from the builder (this frame's); after that it is ours to move.
+    if (this.csm.camera === null) return;
+    if (camera === this.csm.camera && camera.projectionMatrix.equals(this.csmProjection)) return;
+    this.csm.camera = camera;
+    this.csm.updateFrustums();
+    this.csmProjection.copy(camera.projectionMatrix);
   }
 
   /** The hour the light is drawn at now. */

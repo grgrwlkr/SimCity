@@ -4,7 +4,7 @@ import { renderLayersOf } from '@simcity/bridge';
 import { MapGrid } from '@simcity/sim';
 import { describe, expect, it } from 'vitest';
 import { dataMapInputs, dataMapPaint, pollutionColor } from '../../src/dataMap';
-import { buildGroundArea, groundColors } from '../../src/scene/ground';
+import { buildGroundArea, groundColors, srgbToLinear } from '../../src/scene/ground';
 
 const lin = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
 
@@ -25,5 +25,14 @@ describe('scene ground', () => {
     expect(Array.from(colors)).toEqual(Array.from(painted.colors));
     groundColors(map, area, colors, null);
     expect(Array.from(colors)).toEqual(Array.from(plain.colors));
+  });
+
+  it('theTabledLinearLightStaysOnThePowerCurve', () => {
+    // A million steps over 0..1 and the knee's neighbourhood: the table must not show as a colour step anywhere.
+    let worst = 0;
+    for (let k = 0; k <= 1_000_000; k++) worst = Math.max(worst, Math.abs(srgbToLinear(k / 1_000_000) - lin(k / 1_000_000)));
+    for (let c = 0.039; c < 0.043; c += 1e-6) worst = Math.max(worst, Math.abs(srgbToLinear(c) - lin(c)));
+    expect(worst).toBeLessThan(1e-7);
+    for (const c of [0, 0.04045, 0.5, 1]) expect(srgbToLinear(c)).toBeCloseTo(lin(c), 12);
   });
 });

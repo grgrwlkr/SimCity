@@ -32,7 +32,7 @@ import { RenderPrimitives, type CompositeMesh } from '../renderPrimitives';
 import { drawnScale, vehicleScale } from '../vehicleLook';
 import { SceneMaterials, createAtlasTexture } from './atlasNode';
 import { MapInstances, tilesOfChunks } from './mapInstances';
-import { buildGroundArea, groundColors } from './ground';
+import { buildGroundArea, groundColors, srgbToLinear } from './ground';
 import { SceneLighting, hourFromQuery } from './lighting';
 import { configWithout, effectsOffFromQuery, exposureOf, postGraph, vignetteGateFor, type PostPassName, type VignetteGate } from './post';
 import type { Renderer } from './renderer';
@@ -44,9 +44,10 @@ const VIEW_REPORT_MS = 100;
 /** Emergency markers float above the tallest buildings. */
 const MARKER_Z = 48;
 const MARKER_TILES = 0.6;
+/** Main-thread milliseconds a frame spends placing windows after a map arrives (`MapInstances.fillWindows`). */
+const WINDOW_FILL_BUDGET_MS = 4;
 export { SCENE_MAP_SEED } from './mapInstances';
 const WHITE = [1, 1, 1] as const;
-const linear = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
 /** The tiles marked 1 in `changed`. */
 function* markedTiles(changed: Uint8Array): Generator<number> {
   for (let i = 0; i < changed.length; i++) if (changed[i] === 1) yield i;
@@ -64,6 +65,8 @@ export interface SceneStats extends RenderStats {
   readonly props: number;
   /** Main-thread milliseconds the last map took to apply: an edit must not stall the frame. */
   readonly setMapMs: number;
+  /** Buildings whose windows are still to be placed, a slice per frame; the map counts as drawn once this is 0. */
+  readonly windowsPending: number;
   /** The post-processing effects in the frame's graph, in order. */
   readonly post: readonly PostPassName[];
   /** The hour the light was last drawn at (the world's clock, or `?hour=` when pinned). */
@@ -264,9 +267,6 @@ export class SceneRenderer implements Renderer {
     // New buildings start plain: under an open data map the edited chunks' buildings take its colour like the rest.
     const paint = this.paintFor(map);
     if (changed.length > 0 && paint !== null) this.tintBuildings(paint, tilesOfChunks(map, changed));
-    for (const group of [this.instances.buildingGroup, this.instances.propGroup]) {
-      for (const child of group.children) child.castShadow = child.receiveShadow = true;
-    }
     this.tileSize = map.tileSize;
     this.map = map;
     this.pendingMapEditVersion = map.mapEditVersion;
@@ -305,7 +305,10 @@ export class SceneRenderer implements Renderer {
 
   /** Rooftops take their tile's map colour laid over white, in linear light; `tiles` narrows it to those tiles. */
   private tintBuildings(paint: TilePaint, tiles?: Iterable<number>): void {
-    this.instances.tintBuildings((tile) => paint(tile, WHITE).map(linear) as [number, number, number], tiles);
+    this.instances.tintBuildings((tile) => {
+      const [r, g, b] = paint(tile, WHITE);
+      return [srgbToLinear(r), srgbToLinear(g), srgbToLinear(b)];
+    }, tiles);
   }
 
   private paintFor(map: MapLayersReply): TilePaint | null {
@@ -389,6 +392,7 @@ export class SceneRenderer implements Renderer {
       buildingInstancesDrawn: this.instances.buildingBatches().reduce((n, b) => n + (this.inScene(b.drawn) && b.drawn.visible ? b.drawn.count : 0), 0),
       props: this.instances.props,
       setMapMs: Math.round(this.setMapMs),
+      windowsPending: this.instances.windowsPending,
       post: this.postPasses,
       hour: this.lighting.litHour,
       sunIntensity: this.lighting.sun.intensity,
@@ -486,6 +490,7 @@ export class SceneRenderer implements Renderer {
       this.fpsMeter.idle(nowMs);
       return;
     }
+    const windowsPending = this.instances.fillWindows(WINDOW_FILL_BUDGET_MS);
     this.updateVehicles(nowMs);
     this.updateMarkers(nowMs);
     this.reportView(this.view.bounds(), nowMs);
@@ -498,7 +503,7 @@ export class SceneRenderer implements Renderer {
     this.drawCalls = this.renderer.info.render.drawCalls;
     this.frames += 1;
     this.fpsMeter.frame(nowMs);
-    if (this.pendingMapEditVersion !== null) {
+    if (this.pendingMapEditVersion !== null && windowsPending === 0) {
       this.drawnMapEditVersion = this.pendingMapEditVersion;
       this.pendingMapEditVersion = null;
     }
