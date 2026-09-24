@@ -1,0 +1,90 @@
+/* The start screen: docs/design/hud/layout.md §9, states.md. Values are tokens of hud-tokens.css. */
+
+/* Layout only: it centres the card, and the card takes the clicks (start_screen.rs `Pickable::IGNORE`). */
+.hud-menu {
+  position: fixed;
+  inset: 0;
+  z-index: var(--hud-z-menu);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.hud-menu-card {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--hud-space-12);
+  box-sizing: border-box;
+  width: min(420px, calc(100vw - 2 * var(--hud-safe-edge)));
+  max-height: calc(100vh - 2 * var(--hud-safe-edge));
+  overflow-y: auto;
+  padding: var(--hud-space-24);
+  box-shadow: var(--hud-shadow-panel);
+  pointer-events: auto;
+}
+
+/* The card scrolls when it is taller than the window: its rows keep their height instead of shrinking. */
+.hud-menu-card > * {
+  flex-shrink: 0;
+}
+
+.hud-menu-title {
+  margin: 0;
+  font-size: var(--hud-size-hero);
+  font-weight: var(--hud-weight-strong);
+}
+
+.hud-menu-tagline {
+  margin: 0;
+  color: var(--hud-ink-muted);
+  font-size: var(--hud-size-body);
+}
+
+.hud-menu-scenarios {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--hud-space-8);
+}
+
+.hud-menu-heading {
+  margin: 0;
+  color: var(--hud-ink-muted);
+  font-size: var(--hud-size-caption);
+  font-weight: var(--hud-weight-regular);
+}
+
+.hud-menu-empty {
+  margin: 0;
+  color: var(--hud-ink-muted);
+  font-size: var(--hud-size-body);
+}
+
+/* Neutral fill: the accent is kept for what is selected, and nothing here is yet (start_screen.rs:148). */
+.hud-glass button.hud-menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  row-gap: var(--hud-space-2);
+  padding: 10px var(--hud-space-16);
+  background: var(--hud-glass-highlight);
+  text-align: left;
+}
+
+.hud-glass button.hud-menu-item:hover {
+  background: var(--hud-hover);
+}
+
+.hud-glass button.hud-menu-item:active {
+  background: var(--hud-press);
+}
+
+.hud-menu-item-label {
+  font-size: var(--hud-size-display);
+  font-weight: var(--hud-weight-strong);
+}
+
+.hud-menu-item-detail {
+  color: var(--hud-ink-muted);
+  font-size: var(--hud-size-caption);
+}

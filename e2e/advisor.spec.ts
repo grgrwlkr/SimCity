@@ -15,7 +15,7 @@ async function openGame(page: Page, url = '/'): Promise<void> {
   await page.waitForFunction(() => typeof window.__sim !== 'undefined');
   await page.evaluate(() => window.__sim.ready);
   // A scenario opens straight into the game (hud.spec.ts `openGame`).
-  if (!url.includes('scenario=')) await page.getByTestId('start').click();
+  if (!url.includes('scenario=')) await page.evaluate(() => window.__sim.setState('InGame'));
   await expect(page.getByTestId('hud')).toBeVisible();
 }
 
