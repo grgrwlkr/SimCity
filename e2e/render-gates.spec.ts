@@ -15,7 +15,7 @@ const city = JSON.parse(readFileSync(new URL('../packages/sim/src/scenarios/test
 };
 /**
  * One set of references for every platform: SwiftShader on Linux x86_64 (CI's, checked in the Playwright image under
- * emulation) drew the macOS arm64 references within a mean of 0.0011, a fifth of `MAX_MEAN`. The platform is logged.
+ * emulation) drew the macOS arm64 references within a mean of 0.0016, a third of `MAX_MEAN`. The platform is logged.
  */
 const PLATFORM = `${process.platform}-${process.arch}`;
 const REFERENCE_DIR = new URL('./fixtures/render/', import.meta.url);
