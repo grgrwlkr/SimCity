@@ -2,7 +2,7 @@
 // objectives panel of a catalogue preset in the city it starts. Every test first checks the screen is mounted: on a
 // branch without the HUD wiring that is the one thing that fails.
 import { SCENARIOS } from '../packages/bridge/src/scenarios';
-import { TEST_CITY_MONEY } from '../packages/sim/src/index';
+import { TEST_CITY_MONEY } from '../packages/sim/src/scenarios/testCity';
 import { expect, test, type Page } from '@playwright/test';
 import type {} from '../packages/app/src/simApi';
 
@@ -63,7 +63,10 @@ test('uiShellTheDemoCityOpensFromTheMenu', async ({ page }) => {
   await openMenu(page);
   await pick(page, 'menu-demo-city', /demo=1/);
   await expect.poll(() => appState(page)).toBe('InGame');
-  await expect.poll(() => page.evaluate(() => window.__sim.snapshot().then((s) => s.city.money))).toBe(TEST_CITY_MONEY);
+  // The treasury starts at TEST_CITY_MONEY; the game runs, so the first upkeep may already be paid.
+  const money = await page.evaluate(() => window.__sim.snapshot().then((s) => s.city.money));
+  expect(money, "the demo city's treasury").toBeLessThanOrEqual(TEST_CITY_MONEY);
+  expect(money, "the demo city's treasury").toBeGreaterThan(TEST_CITY_MONEY / 2);
   const roads = await page.evaluate(async () => {
     let found = 0;
     for (const y of [32, 64, 96]) for (let x = 0; x < 128; x++) if ((await window.__sim.tile(x, y))?.road.kind !== 'None') found++;
