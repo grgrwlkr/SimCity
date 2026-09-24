@@ -65,9 +65,16 @@ async function loadCity(page: Page): Promise<void> {
 
 /** Resolves once the current map is drawn, and a few frames after that: the camera has settled into the frame too. */
 async function waitForDrawn(page: Page): Promise<SceneStats> {
+  // `drawn/sent frames windows`: a timeout shows which of them stopped.
   await expect
-    .poll(() => page.evaluate(async () => [await window.__sim.snapshot(), await window.__sim.renderStats()] as const).then(([s, r]) => r.mapEditVersion === s.mapEditVersion), { timeout: 240_000 })
-    .toBe(true);
+    .poll(
+      () =>
+        page
+          .evaluate(async () => [await window.__sim.snapshot(), (await window.__sim.renderStats()) as SceneStats] as const)
+          .then(([s, r]) => `${r.mapEditVersion}/${s.mapEditVersion} frames ${r.frames} windows ${r.windowsPending}`),
+      { timeout: 240_000 },
+    )
+    .toMatch(/^(\d+)\/\1 /);
   const since = (await sceneStats(page)).frames;
   await expect.poll(() => sceneStats(page).then((s) => s.frames), { timeout: 240_000 }).toBeGreaterThan(since + 2);
   return sceneStats(page);
