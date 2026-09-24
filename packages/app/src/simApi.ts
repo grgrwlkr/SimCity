@@ -13,6 +13,8 @@ import {
 } from '@simcity/bridge';
 import type { RenderStats, Renderer } from '@simcity/render';
 import type { AppState, EmergencyKind, MapCell, MapConfig, TilePos } from '@simcity/sim';
+import type { ClockReply } from '../../bridge/src/requests/clock';
+import type { ObserveParams, ObserveReply } from '../../bridge/src/requests/observe';
 import { createWorkerSaveStore, type SaveSlotInfo, type SaveStore } from './saves/saveStore';
 
 export interface RenderFrameSummary {
@@ -80,7 +82,48 @@ export interface SimApi {
   exportSave(): Promise<ArrayBuffer>;
   /** A save file's bytes in place of the world; rejects on a broken file, the world as it was. */
   importSave(bytes: ArrayBuffer): Promise<FingerprintReply>;
+  /** The sections of the city a live check judges a run by, read from one tick (E3; e2e/helpers/live.ts). */
+  observe(params: ObserveParams): Promise<ObserveReply>;
+  /** The clock stood at `hour`:00 of `day`, or of the next day that shows `hour`; forward only (E3). */
+  setClock(hour: number, day?: number): Promise<ClockReply>;
 }
+
+/**
+ * Every method of `window.__sim`, in the order of `SimApi`: the catalogue the live skill and CLAUDE.md list; a unit test holds
+ * it equal to the object's methods.
+ */
+export const SIM_API_METHODS = [
+  'snapshot',
+  'step',
+  'fingerprint',
+  'cmd',
+  'setState',
+  'setSpeed',
+  'rngProbe',
+  'undoRedo',
+  'tile',
+  'renderFrame',
+  'loadGridHex',
+  'debugVehicles',
+  'camera',
+  'setCamera',
+  'fitMap',
+  'pickTile',
+  'renderStats',
+  'scenario',
+  'failSystem',
+  'debugEmergency',
+  'tickStats',
+  'resetTickStats',
+  'hoverTile',
+  'pointerOverride',
+  'save',
+  'load',
+  'exportSave',
+  'importSave',
+  'observe',
+  'setClock',
+] as const satisfies ReadonlyArray<keyof SimApi>;
 
 declare global {
   interface Window {
@@ -113,6 +156,9 @@ export function installSimApi(
     height: r.view.viewport.height,
   });
   let pointerOverride: TilePos | null = null;
+  // `observe` and `setClock` join `Request` in protocol.ts at integration (dev-live handoff); until then they go out
+  // through this untyped door, which stays correct after.
+  const live = client as unknown as { request(req: { readonly t: string; readonly [key: string]: unknown }): Promise<unknown> };
   const api: SimApi = {
     debug,
     ready: client.ready.then(() => undefined),
@@ -161,6 +207,16 @@ export function installSimApi(
     tickStats: () => client.request({ t: 'tickStats' }),
     resetTickStats: () => client.request({ t: 'resetTickStats' }),
     hoverTile: async (tile) => {
+      // The pointer can never rest off the map, so neither may the override; `__sim` takes any JSON, so a tile is checked
+      // for two whole numbers first (the rule of observe's `at`).
+      if (tile !== null) {
+        if (!Number.isInteger(tile.x) || !Number.isInteger(tile.y)) throw new TypeError(`a tile is { x, y } of whole numbers, got ${JSON.stringify(tile)}`);
+        const cfg = mapConfig();
+        if (cfg === null) throw new RangeError('there is no map yet, so no tile to hover');
+        if (tile.x < 0 || tile.y < 0 || tile.x >= cfg.width || tile.y >= cfg.height) {
+          throw new RangeError(`tile (${tile.x}, ${tile.y}) is off the map, where the pointer can never rest`);
+        }
+      }
       pointerOverride = tile;
       const r = await renderer;
       r.hovered = tile;
@@ -171,6 +227,8 @@ export function installSimApi(
     load: (slot) => saves.load(slot),
     exportSave: () => client.request({ t: 'save' }),
     importSave: (bytes) => client.request({ t: 'load', bytes }),
+    observe: (params) => live.request({ t: 'observe', ...params }) as Promise<ObserveReply>,
+    setClock: (hour, day) => live.request(day === undefined ? { t: 'setClock', hour } : { t: 'setClock', hour, day }) as Promise<ClockReply>,
   };
   window.__sim = api;
   return api;
