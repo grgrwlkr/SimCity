@@ -16,6 +16,7 @@
     "desktop:dev": "bun tools/desktop-dev.ts",
     "desktop:build": "bun run --cwd packages/desktop build",
     "desktop:build:obfuscated": "bun run --cwd packages/desktop build:obfuscated",
+    "desktop:build:test": "bun run --cwd packages/desktop build:test",
     "desktop:e2e": "playwright test -c packages/desktop/playwright.config.ts"
   },
   "dependencies": {
