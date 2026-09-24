@@ -91,15 +91,15 @@ test('aSaveGoesToItsSlotFileAndLoadsBackToTheSameWorld', async () => {
       await window.__sim.setSpeed('Paused');
       await window.__sim.step(50);
       const before = await window.__sim.fingerprint();
-      const info = await window.simcityDesktop!.save!(1, await window.__sim.exportSave());
+      const info = await window.__sim.save('1');
       return { before, info };
     });
     const file = path.join(userData, 'saves', 'slot1.json');
     expect(readdirSync(path.dirname(file))).toEqual(['slot1.json']);
-    expect(saved.info).toMatchObject({ slot: 1, bytes: statSync(file).size });
+    expect(saved.info).toMatchObject({ slot: '1', bytes: statSync(file).size });
     const after = await page.evaluate(async () => {
       const moved = await window.__sim.step(50);
-      const loaded = await window.__sim.importSave((await window.simcityDesktop!.load!(1)).slice().buffer);
+      const loaded = await window.__sim.load('1');
       return { moved, loaded, now: await window.__sim.fingerprint() };
     });
     expect(after.moved.fingerprint).not.toBe(saved.before.fingerprint);

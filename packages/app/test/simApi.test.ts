@@ -3,7 +3,18 @@
 import type { Request } from '@simcity/bridge';
 import type { Renderer } from '@simcity/render';
 import { describe, expect, it } from 'vitest';
-import { SIM_API_METHODS, installSimApi } from '../src/simApi';
+import { installSimApi as exposeSimApi } from '../src/exposeSimApi';
+import { SIM_API_METHODS, createSimApi } from '../src/simApi';
+
+/**
+ * The one-step install these tests call (E2 split it): the api created, then exposed on `window`. Every call site, and
+ * any added later, keeps working unchanged.
+ */
+function installSimApi(...args: Parameters<typeof createSimApi>): ReturnType<typeof createSimApi> {
+  const api = createSimApi(...args);
+  exposeSimApi(api);
+  return api;
+}
 
 function apiSending(sent: unknown[], reply: unknown) {
   const client = { ready: new Promise<never>(() => {}), request: async (req: Request) => (sent.push(req), reply) } as unknown as Parameters<typeof installSimApi>[0];

@@ -1,4 +1,5 @@
-// `window.__sim`: everything the Rust build exposed over BRP, reachable from DevTools and Playwright.
+// The game's API: everything the Rust build exposed over BRP. main.tsx drives the game through it; `window.__sim`
+// (exposeSimApi.ts) hands it to DevTools and Playwright only in a build with `__SIM_API__`.
 import {
   RenderReader,
   type DebugVehicle,
@@ -137,7 +138,7 @@ function hexToBytes(text: string): Uint8Array {
   return out;
 }
 
-export function installSimApi(
+export function createSimApi(
   client: SimClient,
   debug: boolean,
   renderer: Promise<Renderer>,
@@ -230,6 +231,5 @@ export function installSimApi(
     observe: (params) => live.request({ t: 'observe', ...params }) as Promise<ObserveReply>,
     setClock: (hour, day) => live.request(day === undefined ? { t: 'setClock', hour } : { t: 'setClock', hour, day }) as Promise<ClockReply>,
   };
-  window.__sim = api;
   return api;
 }

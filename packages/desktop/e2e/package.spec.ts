@@ -155,3 +155,18 @@ test('theReleaseBinaryIgnoresNodeOptions', async () => {
     nodeOptionsRead: false,
   });
 });
+
+/** How often `text` occurs in the app's asar (asar stores files as they are, so this reads every file of the bundle). */
+function countInAsar(app: string, text: string): number {
+  const asar = readFileSync(`${app}/Contents/Resources/app.asar`);
+  let count = 0;
+  for (let at = asar.indexOf(text); at !== -1; at = asar.indexOf(text, at + 1)) count++;
+  return count;
+}
+
+test('theReleaseCarriesNoSimApi', () => {
+  requireBuild(TEST_APP);
+  expect(countInAsar(RELEASE_APP, '__sim')).toBe(0);
+  // The same search finds it where it is meant to be.
+  expect(countInAsar(TEST_APP, '__sim')).toBeGreaterThan(0);
+});

@@ -5,8 +5,12 @@ import { Hud, focusViewOn, useSimStore, useToolStore, type DataMapActions, type 
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { installGamepad } from './gamepad';
-import { installSimApi } from './simApi';
+import { createSaveStore } from './saves/desktopSaveStore';
+import { createSimApi } from './simApi';
 import './styles.css';
+
+/** `window.__sim` in this build: the dev server and the desktop test build (packages/app/vite.config.ts). */
+declare const __SIM_API__: boolean;
 
 if (!crossOriginIsolated) {
   throw new Error('SharedArrayBuffer needs a cross-origin isolated page: serve with COOP/COEP headers (README).');
@@ -48,7 +52,9 @@ const renderer = client.ready.then(async (sab) => {
   r.onLinksNeeded = () => void client.request({ t: 'mesoLinks' }).then((links) => r.setLinks(links));
   return r;
 });
-const api = installSimApi(client, debug, renderer, () => mapConfig);
+// Saves: files in the desktop shell, the worker's OPFS slots in a browser.
+const api = createSimApi(client, debug, renderer, () => mapConfig, createSaveStore(client, window.simcityDesktop));
+if (__SIM_API__) void import('./exposeSimApi').then((m) => m.installSimApi(api));
 /** The renderer once it exists, and the map it drew last: the data map panel reads them synchronously. */
 let shownRenderer: Renderer | null = null;
 let shownMap: MapLayersReply | null = null;
