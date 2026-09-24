@@ -71,8 +71,9 @@ describe('tile preview request', () => {
     const expected = tileDiagnosis(w.grid, w.utilityNetwork, w.rciDemand, tile, w.cityFields);
     expect(expected, 'no powered road reaches the zone').not.toBeNull();
     expect(reply.diagnosis).toEqual(expected);
-    expect(reply.diagnosis![1], 'the reason is blockers.ts own: no power').toContain(blockerReason('NoPower'));
-    expect(reply.diagnosis![1]).not.toContain(blockerReason('NoDemand'));
+    // Mid-sentence the reason reads lower-case (blockers.ts `lowerFirst`): «Не растёт: нет электричества».
+    expect(reply.diagnosis![1], 'the reason is blockers.ts own: no power').toContain(blockerReason('NoPower').toLowerCase());
+    expect(reply.diagnosis![1]).not.toContain(blockerReason('NoDemand').toLowerCase());
 
     // A tool in hand keeps the diagnosis beside its own preview; the tooltip decides which to show.
     expect(tilePreview(w, { kind: 'FireStation' }, tile).diagnosis).toEqual(expected);
