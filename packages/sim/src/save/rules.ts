@@ -188,8 +188,14 @@ export const CLASS_SAMPLES: ReadonlyMap<string, object> = new Map([
 export const ELEMENT_TEMPLATES: DecodeRules['elements'] = {
   'world.buildings.list': new ListOf(building),
   'world.buildings.byId': new MapOf(0, building),
-  // Every `ScenarioObjective` is a kind and a target.
-  'world.scenario.objectives': new ListOf({ kind: 'PopulationAtLeast', target: 0 }),
+  // `ScenarioObjective`: every variant is its kind and a target.
+  'world.scenario.objectives': new ListOf(
+    new OneOf('kind', {
+      PopulationAtLeast: { kind: 'PopulationAtLeast', target: 0 },
+      MoneyAtLeast: { kind: 'MoneyAtLeast', target: 0 },
+      HappinessAtLeast: { kind: 'HappinessAtLeast', target: 0 },
+    }),
+  ),
   'world.scenario.met': new ListOf(false),
   'world.scenarioRuntime.commuters': new ListOf({ home: tile(), work: tile(), atWork: false, driving: false, departAt: 0 }),
   'world.scenarioRuntime.plan.lights': new ListOf(tile()),

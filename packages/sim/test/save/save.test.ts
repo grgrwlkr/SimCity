@@ -5,7 +5,10 @@ import { describe, expect, it } from 'vitest';
 import { frame, step } from '../../src/app';
 import { monthlyPayment } from '../../src/economy/economy';
 import { fingerprint, fingerprintSections } from '../../src/fingerprint';
-import { SaveError, SAVE_MIGRATIONS, SAVE_VERSION, loadWorld, parseSave, saveWorld, worldFromSave, type SaveFile, type SaveMigration } from '../../src/save/save';
+import { MESO_LENGTHS_CHECKED, SaveError, SAVE_MIGRATIONS, SAVE_VERSION, loadWorld, parseSave, saveWorld, worldFromSave, type SaveFile, type SaveMigration } from '../../src/save/save';
+import { DistrictTimes } from '../../src/meso/districts';
+import { MesoGraph } from '../../src/meso/graph';
+import { MesoTraffic } from '../../src/meso/traffic';
 import { base64ToBytes, bytesToBase64, type SaveNode, type TypedArrayName } from '../../src/save/codec';
 import { SCENARIO_PRESETS } from '../../src/scenarios/catalogData';
 import { buildCity } from '../../src/scenarios/cityGen';
@@ -441,6 +444,8 @@ describe('save schemas', () => {
       ['a service vehicle in flight', at(text, ['world', 'fleet', 'services', 0, 'state'], () => 'Flying'), /^save rejected: world\.fleet\.services\[0\]\.state: expected one of AtStation \| EnRoute \| OnScene \| Returning, found "Flying"$/],
       ['a bus parked', at(text, ['world', 'fleet', 'buses', 0, 'state'], () => 'Parked'), /^save rejected: world\.fleet\.buses\[0\]\.state: expected one of Driving \| Dwelling \| Waiting, found "Parked"$/],
       ['a light in no phase', at(text, ['world', 'trafficLights', 0, 'phase'], () => 'Blue'), /^save rejected: world\.trafficLights\[0\]\.phase: expected one of .*, found "Blue"$/],
+      ['an objective of no kind', at(text, ['world', 'scenario', 'objectives', 0, 'kind'], () => 'Nuke'), /^save rejected: world\.scenario\.objectives\[0\]\.kind: expected one of PopulationAtLeast \| MoneyAtLeast \| HappinessAtLeast, found "Nuke"$/],
+      ['an objective without its target', at(text, ['world', 'scenario', 'objectives', 0, 'target'], () => undefined), /^save rejected: world\.scenario\.objectives\[0\]\.target: missing$/],
     ]);
     const [, city, cityText] = busyWorlds()[1]!;
     expectRefused(city, cityText, [
@@ -461,7 +466,12 @@ describe('save schemas', () => {
     const cars = lengthOf(traffic.citizen!);
     const tiles = (meso.width as number) * (meso.height as number);
     const successors = lengthOf(meso.succLink!);
+    const highWater = traffic.highWater as number;
+    const districtTimes = inner(world.districtTimes);
+    const districts = districtTimes.count as number;
     expect(links, 'the metropolis has links').toBeGreaterThan(0);
+    expect(highWater, 'the metropolis has had cars').toBeGreaterThan(1);
+    expect(districtTimes.graphVersion, 'its district times are built for its graph').toBe(meso.builtFor);
     expect(traffic.linksFor, 'its traffic is sized for its graph').toBe(meso.builtFor);
     const cut = (resource: string, field: string, keep: number) => at(text, ['world', resource, field], (n) => resized(n, keep));
     expectRefused(w, text, [
@@ -474,13 +484,40 @@ describe('save schemas', () => {
       ['link times cut short', cut('mesoTraffic', 'linkSeconds', 3), new RegExp(`^save rejected: world\\.mesoTraffic\\.linkSeconds: 3 links, the graph has ${links}$`)],
       ['a car layer cut short', cut('mesoTraffic', 'next', cars - 1), new RegExp(`^save rejected: world\\.mesoTraffic\\.next: ${cars - 1} cars, the other car layers ${cars}$`)],
       [
-        'more routes than cars',
-        at(text, ['world', 'mesoTraffic', 'routes'], (n) => [...items(n), ...Array.from({ length: cars }, () => ({ $: 'ta', t: 'Int32Array', v: '' }) as SaveNode)]),
-        new RegExp(`^save rejected: world\\.mesoTraffic\\.routes: \\d+ routes for ${cars} cars$`),
+        'a route more than the cars that came',
+        at(text, ['world', 'mesoTraffic', 'routes'], (n) => [...items(n), { $: 'ta', t: 'Int32Array', v: '' }]),
+        new RegExp(`^save rejected: world\\.mesoTraffic\\.routes: ${highWater + 1} routes for a high-water mark of ${highWater}$`),
       ],
+      ['a route short', at(text, ['world', 'mesoTraffic', 'routes'], (n) => items(n).slice(0, -1)), new RegExp(`^save rejected: world\\.mesoTraffic\\.routes: ${highWater - 1} routes for a high-water mark of ${highWater}$`)],
+      ['no routes', at(text, ['world', 'mesoTraffic', 'routes'], () => []), new RegExp(`^save rejected: world\\.mesoTraffic\\.routes: 0 routes for a high-water mark of ${highWater}$`)],
       ['a high-water mark past the cars', at(text, ['world', 'mesoTraffic', 'highWater'], () => cars + 1), new RegExp(`^save rejected: world\\.mesoTraffic\\.highWater: ${cars + 1} in ${cars} cars$`)],
       ['more cars than ever came', at(text, ['world', 'mesoTraffic', 'count'], () => (traffic.highWater as number) + 1), /^save rejected: world\.mesoTraffic\.count: \d+ above the high-water mark \d+$/],
       ['a due heap with a key too many', at(text, ['world', 'mesoTraffic', 'due', 'keys'], (n) => [...items(n), 1]), /^save rejected: world\.mesoTraffic\.due: \d+ keys for \d+ links$/],
+      // The district times: per district a row, per pair a time, per link its seconds a tile.
+      ['no district entries', at(text, ['world', 'districtTimes', 'entries'], () => []), new RegExp(`^save rejected: world\\.districtTimes\\.entries: 0 rows for ${districts} districts$`)],
+      ['a district matrix cut short', cut('districtTimes', 'matrix', districts), new RegExp(`^save rejected: world\\.districtTimes\\.matrix: ${districts} pairs for ${districts} districts$`)],
+      ['district rows cut short', cut('districtTimes', 'rowBuiltFor', districts - 1), new RegExp(`^save rejected: world\\.districtTimes\\.rowBuiltFor: ${districts - 1} rows for ${districts} districts$`)],
+      ['district seconds a link short', cut('districtTimes', 'secondsPerTile', links - 1), new RegExp(`^save rejected: world\\.districtTimes\\.secondsPerTile: ${links - 1} links, the graph has ${links}$`)],
+      ['districts that are not the grid of them', at(text, ['world', 'districtTimes', 'count'], () => districts + 1), new RegExp(`^save rejected: world\\.districtTimes\\.count: ${districts + 1} for \\d+×\\d+ districts$`)],
     ]);
   }, SIZED_IN_TICKS);
+
+  it('everyLayerOfTheMesoResourcesHasItsLength', () => {
+    // A layer added to a meso resource fails here until `checkMesoLengths` sizes it; the pending trips and the free
+    // slots are lists of values, not layers.
+    const values: Readonly<Record<string, readonly string[]>> = { MesoTraffic: ['pending', 'freeSlots'] };
+    const resources: ReadonlyArray<readonly [string, object]> = [
+      ['MesoGraph', new MesoGraph()],
+      ['MesoTraffic', new MesoTraffic()],
+      ['DistrictTimes', new DistrictTimes()],
+    ];
+    for (const [name, resource] of resources) {
+      const layers = Object.keys(resource).filter((key) => {
+        const v = (resource as Record<string, unknown>)[key];
+        return ArrayBuffer.isView(v) || Array.isArray(v);
+      });
+      const sized = new Set([...(MESO_LENGTHS_CHECKED[name] ?? []), ...(values[name] ?? [])]);
+      expect(layers.filter((layer) => !sized.has(layer)), `${name}: layers without a length check`).toEqual([]);
+    }
+  });
 });

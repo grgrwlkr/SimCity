@@ -175,7 +175,14 @@ const TRAFFIC_CAR_LAYERS = [
   'routeCursor',
 ] as const satisfies ReadonlyArray<keyof MesoTraffic>;
 
-/** The meso graph and its traffic sized alike: a layer cut short would be read past its end. */
+/** The layers `checkMesoLengths` sizes, by resource; a test holds every array of a meso resource to this list. */
+export const MESO_LENGTHS_CHECKED: Readonly<Record<string, readonly string[]>> = {
+  MesoGraph: [...MESO_LINK_LAYERS, 'succStart', ...MESO_SUCCESSOR_LAYERS, ...MESO_TILE_LAYERS],
+  MesoTraffic: [...TRAFFIC_LINK_LAYERS, ...TRAFFIC_CAR_LAYERS, 'routes'],
+  DistrictTimes: ['matrix', 'rowBuiltFor', 'entries', 'secondsPerTile'],
+};
+
+/** The meso graph, its traffic and its district times sized alike: a layer cut short would be read past its end. */
 function checkMesoLengths(w: World): void {
   const g = w.meso;
   const links = g.linkCount;
@@ -204,9 +211,20 @@ function checkMesoLengths(w: World): void {
   for (const name of TRAFFIC_CAR_LAYERS) {
     if (m[name].length !== cars) throw new SaveError(`save rejected: world.mesoTraffic.${name}: ${m[name].length} cars, the other car layers ${cars}`);
   }
-  if (m.routes.length > cars) throw new SaveError(`save rejected: world.mesoTraffic.routes: ${m.routes.length} routes for ${cars} cars`);
   if (!isCount(m.highWater) || m.highWater > cars) throw new SaveError(`save rejected: world.mesoTraffic.highWater: ${m.highWater} in ${cars} cars`);
+  // Every slot a car ever took keeps its route (an empty one once the car is gone).
+  if (m.routes.length !== m.highWater) throw new SaveError(`save rejected: world.mesoTraffic.routes: ${m.routes.length} routes for a high-water mark of ${m.highWater}`);
   if (!isCount(m.count) || m.count > m.highWater) throw new SaveError(`save rejected: world.mesoTraffic.count: ${m.count} above the high-water mark ${m.highWater}`);
+  const d = w.districtTimes;
+  const districts = d.count;
+  if (districts !== d.districtsW * d.districtsH) throw new SaveError(`save rejected: world.districtTimes.count: ${districts} for ${d.districtsW}×${d.districtsH} districts`);
+  if (d.matrix.length !== districts * districts) throw new SaveError(`save rejected: world.districtTimes.matrix: ${d.matrix.length} pairs for ${districts} districts`);
+  if (d.rowBuiltFor.length !== districts) throw new SaveError(`save rejected: world.districtTimes.rowBuiltFor: ${d.rowBuiltFor.length} rows for ${districts} districts`);
+  // The entries and the seconds a tile are those of the graph the rows are built for; for another the next tick redoes them.
+  if (d.graphVersion === g.builtFor) {
+    if (d.entries.length !== districts) throw new SaveError(`save rejected: world.districtTimes.entries: ${d.entries.length} rows for ${districts} districts`);
+    if (d.secondsPerTile.length !== links) throw new SaveError(`save rejected: world.districtTimes.secondsPerTile: ${d.secondsPerTile.length} links, the graph has ${links}`);
+  }
 }
 
 /** A new world from a checked save file. `unchecked` hears of every place the load had no template to hold to. */
