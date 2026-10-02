@@ -1,7 +1,16 @@
 // The desktop shell: one Chromium window over packages/app. `bun run desktop:dev` points it at the
 // Vite dev server; the packaged app serves the Vite build from its asar through the `app://` scheme,
 // with the headers cross-origin isolation (and so the sim's SharedArrayBuffer) needs.
-import { app, BrowserWindow, ipcMain, Menu, net, protocol, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  Menu,
+  net,
+  protocol,
+  type IpcMainInvokeEvent,
+  type MenuItemConstructorOptions,
+} from 'electron';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -28,7 +37,8 @@ export interface BuildInfo {
 
 function readBuildInfo(): BuildInfo | null {
   try {
-    return (JSON.parse(readFileSync(path.join(here, 'build-info.json'), 'utf8')) as { simcityBuild: BuildInfo }).simcityBuild;
+    return (JSON.parse(readFileSync(path.join(here, 'build-info.json'), 'utf8')) as { simcityBuild: BuildInfo })
+      .simcityBuild;
   } catch {
     return null;
   }
@@ -40,7 +50,11 @@ export function devToolsAllowed(info: BuildInfo | null, isPackaged: boolean): bo
 }
 
 /** The release's menu: the app (about, hide, quit), editing and windows; no View, so no reload and no DevTools. */
-export const RELEASE_MENU: MenuItemConstructorOptions[] = [{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }];
+export const RELEASE_MENU: MenuItemConstructorOptions[] = [
+  { role: 'appMenu' },
+  { role: 'editMenu' },
+  { role: 'windowMenu' },
+];
 
 /** The release refuses Chromium's remote debugging (a switch on the command line); the test build and dev keep it. */
 export function remoteDebuggingRefused(devTools: boolean, hasSwitch: (name: string) => boolean): boolean {
@@ -49,7 +63,9 @@ export function remoteDebuggingRefused(devTools: boolean, hasSwitch: (name: stri
 
 const devTools = devToolsAllowed(readBuildInfo(), app.isPackaged);
 const refused = remoteDebuggingRefused(devTools, (name) => app.commandLine.hasSwitch(name));
-if (refused) app.exit(1);
+if (refused) {
+  app.exit(1);
+}
 
 const MIME: Readonly<Record<string, string>> = {
   '.html': 'text/html',
@@ -82,7 +98,9 @@ async function serveRenderer(request: Request): Promise<Response> {
   }
   // A file that is not in the bundle makes `net.fetch` throw rather than answer with an error status.
   const response = await net.fetch(pathToFileURL(file).toString()).catch(() => null);
-  if (response === null || !response.ok) return new Response('not found', { status: 404 });
+  if (response === null || !response.ok) {
+    return new Response('not found', { status: 404 });
+  }
   return new Response(response.body, {
     headers: {
       'Content-Type': MIME[path.extname(file)] ?? 'application/octet-stream',
@@ -95,7 +113,9 @@ async function serveRenderer(request: Request): Promise<Response> {
 /** The only origin the window may show: the dev server or the bundled build. */
 function allowedOrigin(url: string): boolean {
   const target = new URL(url);
-  if (devServerUrl !== undefined) return target.origin === new URL(devServerUrl).origin;
+  if (devServerUrl !== undefined) {
+    return target.origin === new URL(devServerUrl).origin;
+  }
   return target.protocol === 'app:' && target.host === APP_HOST;
 }
 
@@ -128,22 +148,39 @@ function createWindow(): void {
   }
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event, url) => {
-    if (!allowedOrigin(url)) event.preventDefault();
+    if (!allowedOrigin(url)) {
+      event.preventDefault();
+    }
   });
-  void window.loadURL(devServerUrl ?? `app://${APP_HOST}/index.html`);
+  void window.loadURL(devServerUrl ?? `app://${APP_HOST}/index.html`).catch((error: unknown) => {
+    console.error('Failed to load the game window', error);
+    app.exit(1);
+  });
 }
 
 app.on('window-all-closed', () => app.quit());
 
-void app.whenReady().then(() => {
-  if (refused) return;
-  if (testWindow) app.dock?.hide();
-  if (!devTools) Menu.setApplicationMenu(Menu.buildFromTemplate(RELEASE_MENU));
-  protocol.handle('app', serveRenderer);
-  registerSaveHandlers(ipcMain, path.join(app.getPath('userData'), 'saves'), (event) => {
-    // Only the main frame of the game's own page: not a subframe, not a page the window was steered to.
-    const { sender, senderFrame } = event as IpcMainInvokeEvent;
-    return senderFrame !== null && senderFrame === sender.mainFrame && allowedOrigin(senderFrame.url);
+void app
+  .whenReady()
+  .then(() => {
+    if (refused) {
+      return;
+    }
+    if (testWindow) {
+      app.dock?.hide();
+    }
+    if (!devTools) {
+      Menu.setApplicationMenu(Menu.buildFromTemplate(RELEASE_MENU));
+    }
+    protocol.handle('app', serveRenderer);
+    registerSaveHandlers(ipcMain, path.join(app.getPath('userData'), 'saves'), (event) => {
+      // Only the main frame of the game's own page: not a subframe, not a page the window was steered to.
+      const { sender, senderFrame } = event as IpcMainInvokeEvent;
+      return senderFrame !== null && senderFrame === sender.mainFrame && allowedOrigin(senderFrame.url);
+    });
+    createWindow();
+  })
+  .catch((error: unknown) => {
+    console.error('Failed to initialize Electron', error);
+    app.exit(1);
   });
-  createWindow();
-});

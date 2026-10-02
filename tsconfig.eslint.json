@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node", "vite/client"]
+  },
+  "include": [
+    "packages/app/src/**/*.ts",
+    "packages/desktop/src/**/*.ts",
+    "packages/desktop/scripts/**/*.ts",
+    "packages/*/test/**/*.ts",
+    "packages/desktop/e2e/**/*.ts",
+    "packages/*/*.config.ts",
+    "e2e/**/*.ts",
+    "tools/**/*.ts",
+    "*.config.ts"
+  ],
+  "exclude": ["deprecated", "node_modules", "**/out", "**/release", "packages/app/src/city/life/worker.ts"]
+}

@@ -11,7 +11,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const kind = process.argv[2];
-if (kind !== 'release' && kind !== 'test') throw new Error(`build-info: release or test, got ${String(kind)}`);
+if (kind !== 'release' && kind !== 'test') {
+  throw new Error(`build-info: release or test, got ${String(kind)}`);
+}
 const desktop = fileURLToPath(new URL('..', import.meta.url));
 const packages = path.dirname(desktop);
 const git = (...args: string[]) => execFileSync('git', args, { cwd: desktop, encoding: 'utf8' }).trim();
@@ -20,12 +22,25 @@ const git = (...args: string[]) => execFileSync('git', args, { cwd: desktop, enc
 function hashOf(roots: string[]): string {
   const files: string[] = [];
   const walk = (at: string) => {
-    if (statSync(at).isFile()) return void files.push(at);
-    for (const name of readdirSync(at)) if (name !== 'node_modules') walk(path.join(at, name));
+    if (statSync(at).isFile()) {
+      return void files.push(at);
+    }
+    for (const name of readdirSync(at)) {
+      if (name !== 'node_modules') {
+        walk(path.join(at, name));
+      }
+    }
   };
-  for (const root of roots) walk(root);
+  for (const root of roots) {
+    walk(root);
+  }
   const hash = createHash('sha256');
-  for (const file of files.sort()) hash.update(`${path.relative(packages, file)}\0`).update(readFileSync(file)).update('\0');
+  for (const file of files.sort()) {
+    hash
+      .update(`${path.relative(packages, file)}\0`)
+      .update(readFileSync(file))
+      .update('\0');
+  }
   return hash.digest('hex');
 }
 
@@ -36,7 +51,11 @@ const info = {
   simcityBuild: {
     commit: git('rev-parse', 'HEAD'),
     dirty: git('status', '--porcelain') !== '',
-    sources: hashOf([...sourceRoots, path.join(packages, 'app', 'index.html'), path.join(packages, 'app', 'vite.config.ts')]),
+    sources: hashOf([
+      ...sourceRoots,
+      path.join(packages, 'app', 'index.html'),
+      path.join(packages, 'app', 'vite.config.ts'),
+    ]),
     shell: hashOf([path.join(desktop, 'out', 'main.js'), path.join(desktop, 'out', 'preload.cjs')]),
     test: kind === 'test',
   },

@@ -4,7 +4,7 @@ _Last updated: 2026-10-02._
 
 ## Current project
 
-Read `README.md` first. The active game is **«Город у воды»**, developed from the procedural Three.js city. The previous worker-based game is deprecated; its source, scenarios, fixtures, documentation and tests live in `deprecated/`.
+Read `README.md` first, then `CODESTYLE.md` before code changes. The only target platform is desktop Electron/Chromium. The active game is **«Город у воды»**, developed from the procedural Three.js city. The previous worker-based game is deprecated; its source, scenarios, fixtures, documentation and tests live in `deprecated/`.
 
 Preserve the approved city's appearance, including modular buildings, cars, pedestrians, ships, port logistics and construction sites. Develop gameplay here by reusing appropriate archived systems or implementing them anew. Do not restore the old scenario menu as the primary game.
 
@@ -15,18 +15,19 @@ Preserve the approved city's appearance, including modular buildings, cars, pede
 - `primitives.ts`, `assetKits.ts`, `assetParts.ts`, `buildingModules.ts`: shared geometry, palette and modular assets. The scene uses Y-up and `WebGLRenderer`.
 - `trafficRoutes.ts`, `trafficFlow.ts`, `harbor.ts`, `harborView.ts`: lane traffic, cargo transfers, ships, cranes and trucks.
 - `construction.ts`, `constructionSite.ts`: bottom-up building reveal, animated cranes and temporary fenced sites. Completed buildings retain their original geometry.
+- `packages/app/src/city/life/`: the active worker simulation, residents, families, parking, snapshots and their views. Shared protocol types live in `protocol.ts` and `types.ts`.
 - `packages/desktop/`: the Electron shell, packaging and local save-file infrastructure. The old simulation is not started by the current app.
 - `packages/app/test/`, `packages/desktop/test/`, `e2e/`: active checks. Archive checks run separately from `deprecated/`.
 
 ## Commands and verification
 
-Use bun; `bun run test` runs Vitest, while `bun test` is a different runner. The normal checks are `bun run typecheck`, `bun run lint`, `bun run test` and `bun run e2e`. Browser checks use Chromium. `E2E_PORT` selects an isolated test port; `E2E_GPU=1` enables ANGLE Metal locally.
+Use bun; `bun run test` runs Vitest, while `bun test` is a different runner. Run `bun run check` for formatting, strict typechecking (including the worker), typed ESLint and unit tests. `bun run e2e` verifies browser behavior; `bun run build` verifies production bundles. See `CODESTYLE.md` for the development workflow. Browser checks use Chromium. `E2E_PORT` selects an isolated test port; `E2E_GPU=1` enables ANGLE Metal locally.
 
 `bun run dev` starts the current game. `bunx vite build packages/app` builds both the menu and the city. Keep the preview server independent of temporary test servers.
 
 For packaged checks, build both `bun run desktop:build` and `bun run desktop:build:test`, then run `bun run desktop:e2e`. All agent launches of Electron must use `SIMCITY_TEST_WINDOW=1` and close their test instance afterward. Preserve the release's debugging restrictions and fuses; the existing test helper uses a disposable inspectable copy of the test build.
 
-Check UI changes in the affected view; motion needs successive frames. Keep `README.md` and the visible hints synchronized with controls. Current mouse controls: left drag pans, right drag rotates, wheel zooms, short left click selects a building.
+Check UI changes in the affected view; motion needs successive frames. Keep `README.md` and the visible hints synchronized with controls. Current mouse controls: left drag pans, right drag rotates, wheel zooms, short left click selects a resident, a vehicle or a building.
 
 ## Archived systems and conventions
 

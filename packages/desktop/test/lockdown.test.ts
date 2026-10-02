@@ -2,7 +2,13 @@
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', () => ({
-  app: { on: () => undefined, whenReady: () => new Promise(() => undefined), isPackaged: true, exit: () => undefined, commandLine: { hasSwitch: () => false } },
+  app: {
+    on: () => undefined,
+    whenReady: () => new Promise(() => undefined),
+    isPackaged: true,
+    exit: () => undefined,
+    commandLine: { hasSwitch: () => false },
+  },
   protocol: { registerSchemesAsPrivileged: () => undefined },
   BrowserWindow: class {},
   ipcMain: { handle: () => undefined },
@@ -21,7 +27,10 @@ describe('release lockdown', () => {
   });
 
   it('theReleaseRefusesRemoteDebuggingAndTheTestBuildDoesNot', () => {
-    const switches = (...on: string[]) => (name: string) => on.includes(name);
+    const switches =
+      (...on: string[]) =>
+      (name: string) =>
+        on.includes(name);
     expect(remoteDebuggingRefused(false, switches('remote-debugging-port'))).toBe(true);
     expect(remoteDebuggingRefused(false, switches('remote-debugging-pipe'))).toBe(true);
     expect(remoteDebuggingRefused(false, switches())).toBe(false);

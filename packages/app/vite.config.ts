@@ -33,7 +33,8 @@ export default defineConfig({
   // The one engine the game runs in: the Chromium of the desktop Electron (44.3.0 ships 152).
   // No source maps in a production build (Vite's default, pinned: the shipped app must not carry them).
   build: {
-    target: 'chrome152', sourcemap: false,
+    target: 'chrome152',
+    sourcemap: false,
     rolldownOptions: {
       input: {
         menu: fileURLToPath(new URL('./index.html', import.meta.url)),

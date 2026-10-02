@@ -22,14 +22,18 @@ export const binaryOf = (app: string): string => `${app}/Contents/MacOS/SimCity`
 export function buildInfoOf(app: string): { commit: string; dirty: boolean; test: boolean } {
   const asar = readFileSync(`${app}/Contents/Resources/app.asar`, 'latin1');
   const found = /\{"simcityBuild":(\{[^}]*\})\}/.exec(asar);
-  if (found === null) throw new Error(`${app} carries no build info: rebuild it`);
+  if (found === null) {
+    throw new Error(`${app} carries no build info: rebuild it`);
+  }
   return JSON.parse(found[1]!) as { commit: string; dirty: boolean; test: boolean };
 }
 
 /** Fails, naming the command, when the build `app` is missing. */
 export function requireBuild(app: string): void {
   const command = app === TEST_APP ? 'bun run desktop:build:test' : 'bun run desktop:build';
-  if (!existsSync(binaryOf(app))) throw new Error(`${app} is missing: build it first with \`${command}\``);
+  if (!existsSync(binaryOf(app))) {
+    throw new Error(`${app} is missing: build it first with \`${command}\``);
+  }
 }
 
 /** APFS clone (`cp -c`) of `source` at INSPECTABLE_APP with only the inspect fuse flipped; returns its binary. */
@@ -58,7 +62,7 @@ async function warmUp(bin: string): Promise<void> {
   const child = spawn(bin, [], { env });
   const exited = once(child, 'exit');
   let output = '';
-  const cameUp = await new Promise<boolean>((resolve) => {
+  const cameUp = await new Promise<boolean>((resolve, reject) => {
     const timer = setTimeout(() => resolve(false), 60_000);
     const onData = (chunk: Buffer) => {
       output += chunk.toString();
@@ -69,10 +73,16 @@ async function warmUp(bin: string): Promise<void> {
     };
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
-    void exited.then(() => {
-      clearTimeout(timer);
-      resolve(false);
-    });
+    void exited.then(
+      () => {
+        clearTimeout(timer);
+        resolve(false);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error('Electron failed to start', { cause: error }));
+      },
+    );
   });
   if (child.exitCode === null && child.signalCode === null) {
     child.kill('SIGTERM');
@@ -80,5 +90,7 @@ async function warmUp(bin: string): Promise<void> {
     await exited;
     clearTimeout(killer);
   }
-  if (!cameUp) throw new Error(`the inspectable clone did not start:\n${output}`);
+  if (!cameUp) {
+    throw new Error(`the inspectable clone did not start:\n${output}`);
+  }
 }

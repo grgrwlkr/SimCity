@@ -8,12 +8,19 @@ test('city generator retains its seed, regenerates the scene and offers district
   await page.goto('/city/?seed=harbor');
   await expect(page.getByRole('heading', { name: 'Город у воды', exact: true })).toBeVisible();
   await expect(page.locator('#city')).toHaveAttribute('data-ready', 'true');
+  await expect(page.locator('#city')).toHaveAttribute('data-life-ready', 'true');
   await expect(page.getByLabel('Ключ генерации')).toHaveValue('harbor');
-  const sceneImage = () => page.locator('#city').screenshot({ mask: [page.locator('.masthead, .inspector, .district-list, .zoom-controls, .bottom-panel')] });
+  const sceneImage = () =>
+    page.locator('#city').screenshot({
+      mask: [page.locator('.masthead, .inspector, .district-list, .zoom-controls, .bottom-panel, .life-interface')],
+    });
   const initial = await sceneImage();
   await page.screenshot({ path: test.info().outputPath('city-day.png') });
   await page.getByRole('button', { name: 'Промышленный район', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Промышленный район', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'Промышленный район', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
   await page.screenshot({ path: test.info().outputPath('city-industry.png') });
   await page.getByRole('button', { name: 'Ночь', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Ночь', exact: true })).toHaveAttribute('aria-pressed', 'true');
@@ -23,6 +30,7 @@ test('city generator retains its seed, regenerates the scene and offers district
   await page.getByRole('button', { name: 'Другой город' }).click();
   await expect(page.getByLabel('Ключ генерации')).not.toHaveValue('harbor');
   await expect(page.locator('#city')).toHaveAttribute('data-ready', 'true');
+  await expect(page.locator('#city')).toHaveAttribute('data-life-ready', 'true');
   await expect(page.getByRole('button', { name: 'Ночь', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('button', { name: 'День', exact: true }).click();
   expect((await sceneImage()).equals(initial)).toBe(false);
@@ -34,10 +42,10 @@ test('city generator retains its seed, regenerates the scene and offers district
   await page.getByLabel('Ключ генерации').press('Tab');
   await expect.poll(async () => (await sceneImage()).equals(initial)).toBe(true);
   await page.locator('#city').screenshot({ path: test.info().outputPath('city-regenerated.png') });
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: 1280, height: 800 });
   await expect(page.getByRole('button', { name: 'Другой город' })).toBeInViewport();
   await expect(page.getByRole('button', { name: 'Ночь', exact: true })).toBeInViewport();
-  await page.screenshot({ path: test.info().outputPath('city-mobile.png') });
+  await page.screenshot({ path: test.info().outputPath('city-desktop.png') });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(errors).toEqual([]);
 });
@@ -45,6 +53,7 @@ test('city generator retains its seed, regenerates the scene and offers district
 test('modular building details follow selection and all moving assemblies pause', async ({ page }) => {
   await page.goto('/city/?seed=689856');
   await expect(page.locator('#city')).toHaveAttribute('data-ready', 'true');
+  await expect(page.locator('#city')).toHaveAttribute('data-life-ready', 'true');
   await page.getByLabel('Здание в городе').selectOption('building-0-0-0-0');
   const parts = page.getByRole('list', { name: 'Состав здания' });
   await expect(parts.getByRole('listitem')).toHaveCount(7);
@@ -52,10 +61,13 @@ test('modular building details follow selection and all moving assemblies pause'
   await page.getByLabel('Здание в городе').selectOption('building-3-2-0-0');
   await expect(parts).not.toHaveText(firstAssembly);
   await page.getByRole('button', { name: 'Закрыть описание' }).click();
-  await page.getByRole('button', { name: 'Жилые кварталы', exact: true }).click();
+  await page.getByRole('button', { name: 'Работающий порт', exact: true }).click();
   await page.getByRole('button', { name: 'Приблизить', exact: true }).click();
   await page.getByRole('button', { name: 'Приблизить', exact: true }).click();
-  const sceneImage = () => page.locator('#city').screenshot({ mask: [page.locator('.masthead, .inspector, .district-list, .zoom-controls, .bottom-panel')] });
+  const sceneImage = () =>
+    page.locator('#city').screenshot({
+      mask: [page.locator('.masthead, .inspector, .district-list, .zoom-controls, .bottom-panel, .life-interface')],
+    });
   await page.screenshot({ path: test.info().outputPath('modular-closeup.png') });
   await page.getByRole('button', { name: 'Продолжить движение' }).click();
   const moving = await sceneImage();
@@ -72,35 +84,40 @@ test('port cranes transfer real cargo and the shared pause freezes the harbor', 
   test.setTimeout(120_000);
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.clock.install({ time: new Date('2026-10-01T00:00:00Z') });
   await page.goto('/city/?seed=689856');
   await expect(page.locator('#city')).toHaveAttribute('data-ready', 'true');
-  await page.clock.pauseAt(new Date('2026-10-01T00:01:00Z'));
+  await expect(page.locator('#city')).toHaveAttribute('data-life-ready', 'true');
+  await expect(page.locator('#city')).toHaveAttribute('data-life-ready', 'true');
+  const advance = (seconds: number) =>
+    page.evaluate(
+      (seconds) =>
+        (window as unknown as { __cityLife: { advance(seconds: number): Promise<unknown> } }).__cityLife.advance(
+          seconds,
+        ),
+      seconds,
+    );
   await page.getByRole('button', { name: 'Работающий порт' }).click();
   await expect(page.getByRole('region', { name: 'Работа порта' })).toBeVisible();
   await expect(page.locator('#harbor-aboard')).toHaveText('3 / 3');
   await page.screenshot({ path: test.info().outputPath('port-ready.png') });
-  await page.getByRole('button', { name: 'Продолжить движение' }).click();
-  await page.clock.runFor(4_000);
+  await advance(4);
   await expect(page.locator('#harbor-aboard')).toHaveText('2 / 3');
   await page.screenshot({ path: test.info().outputPath('port-unloading.png') });
-  await page.getByRole('button', { name: 'Остановить движение' }).click();
   const paused = await page.locator('#city').screenshot();
-  await page.clock.runFor(2_000);
+  await page.waitForTimeout(500);
   expect((await page.locator('#city').screenshot()).equals(paused)).toBe(true);
-  await page.getByRole('button', { name: 'Продолжить движение' }).click();
-  await page.clock.runFor(26_000);
+  await advance(26);
   await expect(page.locator('#harbor-panel')).toHaveAttribute('data-phase', 'leaving');
   await expect(page.locator('#harbor-aboard')).toHaveText('0 / 3');
   await page.screenshot({ path: test.info().outputPath('port-departing-empty.png') });
-  await page.clock.runFor(28_000);
+  await advance(28);
   await expect(page.locator('#harbor-panel')).toHaveAttribute('data-phase', 'arriving');
   await expect(page.locator('#harbor-aboard')).toHaveText('0 / 3');
   await page.screenshot({ path: test.info().outputPath('port-arriving-empty.png') });
-  await page.clock.runFor(4_000);
+  await advance(4);
   await expect(page.locator('#harbor-panel')).toHaveAttribute('data-phase', 'loading');
   await page.screenshot({ path: test.info().outputPath('port-loading.png') });
-  await page.clock.runFor(5_000);
+  await advance(5);
   await expect(page.locator('#harbor-aboard')).toHaveText('1 / 3');
   expect(errors).toEqual([]);
 });

@@ -1,0 +1,20 @@
+# Archived code and frozen historical documents have their own conventions.
+deprecated/
+docs/
+AGENTS.md
+CLAUDE.md
+.claude/
+.superpowers/
+.orchestrator/
+.scratch/
+.worktrees/
+node_modules/
+**/node_modules/
+**/dist/
+**/out/
+**/release/
+**/test-results/
+**/playwright-report/
+bun.lock
+
+CODESTYLE.md

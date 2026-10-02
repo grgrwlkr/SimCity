@@ -1,1 +1,4 @@
 model_context_window = 1000000
+
+[plugins."product-management@claude-cowork"]
+enabled = true

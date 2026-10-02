@@ -7,7 +7,9 @@ const port = Number(process.env.E2E_PORT ?? 5174);
 // frame-rate measurements; the gate itself runs on the default.
 const chromium = {
   ...devices['Desktop Chrome'],
-  ...(process.env.E2E_GPU === '1' ? { launchOptions: { args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] } } : {}),
+  ...(process.env.E2E_GPU === '1'
+    ? { launchOptions: { args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] } }
+    : {}),
 };
 
 export default defineConfig({
@@ -16,9 +18,7 @@ export default defineConfig({
   reporter: [['list']],
   use: { baseURL: `http://localhost:${port}` },
   // The stage gate: the same numbers in Chromium as in Node.
-  projects: [
-    { name: 'chromium', use: chromium },
-  ],
+  projects: [{ name: 'chromium', use: chromium }],
   webServer: {
     command: 'bun run dev',
     url: `http://localhost:${port}`,

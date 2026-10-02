@@ -14,7 +14,8 @@ function run(command: string, args: string[], cwd: string, env: NodeJS.ProcessEn
   return spawn(command, args, { cwd, env, stdio: 'inherit' });
 }
 
-const exited = (child: ChildProcess) => new Promise<number>((resolve) => child.on('exit', (code) => resolve(code ?? 1)));
+const exited = (child: ChildProcess) =>
+  new Promise<number>((resolve) => child.on('exit', (code) => resolve(code ?? 1)));
 
 /**
  * Whether anything, HTTP or not, already accepts connections on the dev port. `localhost` is both
@@ -50,23 +51,29 @@ if (await portTaken()) {
 // bun does not run Electron's own postinstall, which downloads the binary: do it here, idempotently.
 for (const script of ['electron:install', 'build:main']) {
   const code = await exited(run('bun', ['run', script], desktop));
-  if (code !== 0) process.exit(code);
+  if (code !== 0) {
+    process.exit(code);
+  }
 }
 
 const vite = run('bun', ['run', 'dev'], root, { ...process.env, PORT: String(port) });
 const viteExited = exited(vite);
 const answering = (async () => {
   for (let i = 0; i < 300; i++) {
-    if (await fetch(url).then(() => true, () => false)) return true;
+    if (
+      await fetch(url).then(
+        () => true,
+        () => false,
+      )
+    ) {
+      return true;
+    }
     await sleep(100);
   }
   return false;
 })();
 // Vite leaving first (a port taken in the meantime, a config error) ends the script at once.
-const first = await Promise.race([
-  viteExited.then((code) => ({ viteExit: code })),
-  answering.then((up) => ({ up })),
-]);
+const first = await Promise.race([viteExited.then((code) => ({ viteExit: code })), answering.then((up) => ({ up }))]);
 if ('viteExit' in first) {
   console.error(`desktop:dev: the Vite dev server exited with code ${first.viteExit} before answering on ${url}`);
   process.exit(first.viteExit === 0 ? 1 : first.viteExit);

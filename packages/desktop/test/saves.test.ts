@@ -1,6 +1,16 @@
 // The shell's save files (E1): `<dir>/slot<n>.json` by slot number, the number checked in the main process before
 // anything touches the disk, and a preload that hands the page nothing but the four slot calls.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -13,7 +23,9 @@ function tempDir(): string {
   return path.join(dir, 'saves');
 }
 afterEach(() => {
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of dirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 const bytesOf = (text: string) => new TextEncoder().encode(text);
@@ -24,7 +36,7 @@ describe('desktop save files', () => {
     expect(slotNumber(1)).toBe(1);
     expect(slotNumber(MAX_SLOT)).toBe(MAX_SLOT);
     for (const bad of [0, -1, MAX_SLOT + 1, 1.5, Number.NaN, Infinity, '1', '../slot1', null, undefined, {}]) {
-      expect(() => slotNumber(bad), String(bad)).toThrow(RangeError);
+      expect(() => slotNumber(bad), JSON.stringify(bad) ?? 'undefined').toThrow(RangeError);
     }
   });
 
@@ -90,9 +102,14 @@ describe('desktop save files', () => {
   it('theHandlersRefuseABadSlotBeforeTouchingTheDisk', async () => {
     const dir = tempDir();
     const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
-    registerSaveHandlers({ handle: (channel, handler) => void handlers.set(channel, handler) }, dir, (event) => event === TRUSTED);
+    registerSaveHandlers(
+      { handle: (channel, handler) => void handlers.set(channel, handler) },
+      dir,
+      (event) => event === TRUSTED,
+    );
     expect([...handlers.keys()].sort()).toEqual(Object.values(SAVE_CHANNELS).sort());
-    const call = (channel: string, ...args: unknown[]) => Promise.resolve().then(() => handlers.get(channel)!(TRUSTED, ...args));
+    const call = (channel: string, ...args: unknown[]) =>
+      Promise.resolve().then(() => handlers.get(channel)!(TRUSTED, ...args));
     for (const slot of ['../../escape', 0, 256, 1.5, '1']) {
       await expect(call(SAVE_CHANNELS.save, slot, new ArrayBuffer(2)), String(slot)).rejects.toThrow(RangeError);
       await expect(call(SAVE_CHANNELS.load, slot)).rejects.toThrow(RangeError);
@@ -101,7 +118,9 @@ describe('desktop save files', () => {
     await expect(call(SAVE_CHANNELS.save, 1, 'not bytes')).rejects.toThrow(TypeError);
     // A sender other than the game's own page is refused before anything else.
     for (const channel of Object.values(SAVE_CHANNELS)) {
-      await expect(Promise.resolve().then(() => handlers.get(channel)!({}, 1, new ArrayBuffer(1)))).rejects.toThrow(/sender/);
+      await expect(Promise.resolve().then(() => handlers.get(channel)!({}, 1, new ArrayBuffer(1)))).rejects.toThrow(
+        /sender/,
+      );
     }
     expect(existsSync(dir)).toBe(false);
     // A good slot takes an ArrayBuffer (what the page sends) and gives the bytes back.
@@ -114,7 +133,7 @@ describe('desktop save files', () => {
 describe('desktop preload', () => {
   it('exposesOnlyTheVersionsAndTheFourSlotCalls', async () => {
     const exposed = new Map<string, Record<string, unknown>>();
-    const invoke = vi.fn(async () => null);
+    const invoke = vi.fn(() => Promise.resolve(null));
     vi.doMock('electron', () => ({
       contextBridge: { exposeInMainWorld: (key: string, api: Record<string, unknown>) => void exposed.set(key, api) },
       ipcRenderer: { invoke },

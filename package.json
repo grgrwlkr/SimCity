@@ -8,8 +8,8 @@
     "deprecated/packages/*"
   ],
   "scripts": {
-    "typecheck": "tsc -p packages/app && tsc -p packages/desktop && tsc -p tsconfig.test.json",
-    "lint": "eslint .",
+    "typecheck": "tsc -p packages/app && tsc -p packages/app/tsconfig.worker.json && tsc -p packages/desktop && tsc -p tsconfig.test.json",
+    "lint": "eslint . --max-warnings=0",
     "test": "vitest run",
     "e2e": "playwright test",
     "dev": "vite packages/app",
@@ -17,7 +17,13 @@
     "desktop:build": "bun run --cwd packages/desktop build",
     "desktop:build:obfuscated": "bun run --cwd packages/desktop build:obfuscated",
     "desktop:build:test": "bun run --cwd packages/desktop build:test",
-    "desktop:e2e": "playwright test -c packages/desktop/playwright.config.ts"
+    "desktop:e2e": "playwright test -c packages/desktop/playwright.config.ts",
+    "lint:fix": "eslint . --fix --max-warnings=0",
+    "format": "prettier . --write",
+    "format:check": "prettier . --check",
+    "build": "vite build packages/app",
+    "check": "bun run format:check && bun run typecheck && bun run lint && bun run test && bun run test:life-week",
+    "test:life-week": "bun tools/test-life-week.ts"
   },
   "dependencies": {
     "react": "19.2.8",
@@ -35,6 +41,7 @@
     "@types/three": "0.185.4",
     "@vitejs/plugin-react": "6.1.1",
     "eslint": "10.10.0",
+    "prettier": "3.9.9",
     "typescript": "6.0.3",
     "typescript-eslint": "8.70.0",
     "vite": "8.3.0",

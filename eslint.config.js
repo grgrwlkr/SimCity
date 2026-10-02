@@ -2,66 +2,77 @@ import js from '@eslint/js';
 import { defineConfig, globalIgnores } from 'eslint/config';
 import tseslint from 'typescript-eslint';
 
-// Float Math.* results are implementation-approximated and may differ between JS engines, which
-// would break the cross-engine fingerprint. Exact operations (abs, floor, fround, imul, ...) stay
-// allowed. `sqrt` is decided in stage 1 against the spec text.
-const ENGINE_DEPENDENT_MATH = [
-  'random', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2', 'sinh', 'cosh', 'tanh',
-  'asinh', 'acosh', 'atanh', 'exp', 'expm1', 'log', 'log1p', 'log2', 'log10', 'pow', 'hypot',
-  'cbrt', 'sqrt',
-];
-
 export default defineConfig([
   globalIgnores([
     '**/node_modules/**',
     '**/dist/**',
-    'test-results/**',
-    'playwright-report/**',
-    'packages/desktop/out/**',
-    'packages/desktop/release/**',
-    'packages/desktop/test-results/**',
-    'packages/desktop/playwright-report/**',
-    // Local tool state is not part of the port.
+    '**/out/**',
+    '**/release/**',
+    '**/test-results/**',
+    '**/playwright-report/**',
     '.claude/**',
-    // Per-session scratch files and logs inside a worktree.
     '.scratch/**',
-    // Archived game code has its own unchanged lint configuration.
+    '.orchestrator/**',
+    // The archived game retains its original rules and frozen fixtures.
     'deprecated/**',
+    'docs/**',
   ]),
   js.configs.recommended,
-  tseslint.configs.recommended,
   {
+    files: ['**/*.ts', '**/*.tsx'],
+    extends: [tseslint.configs.recommendedTypeChecked],
+    languageOptions: {
+      parserOptions: {
+        project: ['./packages/app/tsconfig.worker.json', './tsconfig.eslint.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
     rules: {
       '@typescript-eslint/no-explicit-any': 'error',
+      '@typescript-eslint/no-floating-promises': ['error', { ignoreVoid: false }],
+      '@typescript-eslint/no-misused-promises': 'error',
+      '@typescript-eslint/switch-exhaustiveness-check': 'error',
+      '@typescript-eslint/consistent-type-imports': ['error', { fixStyle: 'inline-type-imports' }],
+      '@typescript-eslint/return-await': ['error', 'in-try-catch'],
     },
   },
   {
-    files: ['packages/sim/src/**/*.ts'],
+    rules: {
+      curly: ['error', 'all'],
+      eqeqeq: ['error', 'always'],
+      'no-var': 'error',
+      'prefer-const': 'error',
+      'object-shorthand': ['error', 'always'],
+    },
+    linterOptions: { reportUnusedDisableDirectives: 'error' },
+  },
+  {
+    files: [
+      'packages/app/src/city/life/{world,population,parking,network,streetParking,types,protocol}.ts',
+      'packages/app/src/city/{generator,assetKits,cityGrid,trafficRoutes,trafficFlow,harbor,harborLayout,railway,railwayLayout}.ts',
+    ],
     rules: {
       'no-restricted-properties': [
         'error',
-        ...ENGINE_DEPENDENT_MATH.map((property) => ({
-          object: 'Math',
-          property,
-          message: 'Engine-dependent float math in the simulation; use integer arithmetic or tabulated values.',
-        })),
+        { object: 'Math', property: 'random', message: 'Use the seeded city RNG.' },
       ],
       'no-restricted-globals': [
         'error',
-        ...['window', 'document', 'self', 'performance', 'crypto', 'Date', 'setTimeout', 'setInterval',
-          'requestAnimationFrame'].map((name) => ({
-          name,
-          message: 'The simulation has no clock, no host and no DOM: time comes in as dtNs, randomness from the seeded Rng.',
-        })),
+        ...[
+          'window',
+          'document',
+          'self',
+          'performance',
+          'crypto',
+          'Date',
+          'setTimeout',
+          'setInterval',
+          'requestAnimationFrame',
+        ].map((name) => ({ name, message: 'Simulation time and randomness must come from the world state.' })),
       ],
       'no-restricted-imports': [
         'error',
-        { patterns: ['three', 'three/*', 'react', 'react/*', 'react-dom', 'react-dom/*', 'zustand'] },
-      ],
-      'no-warning-comments': ['error', { terms: ['todo', 'fixme', 'xxx'], location: 'anywhere' }],
-      'no-restricted-syntax': [
-        'error',
-        { selector: "Identifier[name='unimplemented']", message: 'No stubs in simulation code.' },
+        { patterns: ['three', 'three/*', 'react', 'react/*', 'react-dom', 'react-dom/*', 'zustand', 'node:*'] },
       ],
     },
   },

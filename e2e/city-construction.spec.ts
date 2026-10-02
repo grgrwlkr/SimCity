@@ -27,7 +27,10 @@ test('construction grows from an empty site, pauses and restores the original bu
   const progress = page.getByLabel('Готовность здания');
   await expect(panel).toBeVisible();
   await expect(progress).toHaveValue('0');
-  const sceneImage = () => page.locator('#city').screenshot({ mask: [page.locator('.masthead, .inspector, .district-list, .zoom-controls, .bottom-panel, #construction-panel')] });
+  const sceneImage = () =>
+    page.locator('#city').screenshot({
+      mask: [page.locator('.masthead, .inspector, .district-list, .zoom-controls, .bottom-panel, #construction-panel')],
+    });
   const empty = await sceneImage();
   await page.screenshot({ path: test.info().outputPath('construction-empty.png') });
   await progress.fill('20');
@@ -56,7 +59,8 @@ test('construction grows from an empty site, pauses and restores the original bu
   await page.clock.runFor(1200);
   expect(Number(await progress.inputValue())).toBeGreaterThan(50);
   await page.getByRole('button', { name: 'Остановить движение', exact: true }).click();
-  const paused = await sceneImage(), value = await progress.inputValue();
+  const paused = await sceneImage(),
+    value = await progress.inputValue();
   await page.clock.runFor(1000);
   await expect(progress).toHaveValue(value);
   expect((await sceneImage()).equals(paused)).toBe(true);
@@ -73,13 +77,13 @@ test('construction grows from an empty site, pauses and restores the original bu
   await page.getByRole('button', { name: 'Ночь', exact: true }).click();
   await page.clock.runFor(100);
   await page.screenshot({ path: test.info().outputPath('construction-night.png') });
-  await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.locator('#city')).toHaveAttribute('width', '390');
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(page.locator('#city')).toHaveAttribute('width', '1280');
   await page.clock.runFor(100);
   await expect(progress).toBeInViewport();
   await expect(page.getByRole('button', { name: 'Закрыть строительство', exact: true })).toBeInViewport();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({ path: test.info().outputPath('construction-mobile.png') });
+  await page.screenshot({ path: test.info().outputPath('construction-desktop.png') });
   await page.getByRole('button', { name: 'Закрыть строительство', exact: true }).click();
   await page.getByRole('button', { name: 'Другой город' }).click();
   await page.clock.runFor(100);

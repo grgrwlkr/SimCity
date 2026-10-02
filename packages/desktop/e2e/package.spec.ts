@@ -9,7 +9,14 @@ import { createServer } from 'node:net';
 import { existsSync, readFileSync } from 'node:fs';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
-import { INSPECTABLE_APP, RELEASE_APP, TEST_APP, binaryOf, makeInspectableClone, requireBuild } from './inspectableClone';
+import {
+  INSPECTABLE_APP,
+  RELEASE_APP,
+  TEST_APP,
+  binaryOf,
+  makeInspectableClone,
+  requireBuild,
+} from './inspectableClone';
 
 const BUILD_ICNS = fileURLToPath(new URL('../build/icon.icns', import.meta.url));
 
@@ -17,10 +24,12 @@ test.skip(!existsSync(binaryOf(RELEASE_APP)), 'build the app first: bun run desk
 
 /** Fuse name -> 'on' | 'off' as read from the Electron Framework binary of `app`. */
 async function fusesOf(app: string): Promise<Record<string, string>> {
-  const wire = (await getCurrentFuseWire(app)) as unknown as Record<string, number>;
+  const wire: Record<string, FuseState | string | boolean | undefined> = await getCurrentFuseWire(app);
   const named: Record<string, string> = {};
   for (const [index, value] of Object.entries(wire)) {
-    if (index === 'version') continue;
+    if (typeof value !== 'number') {
+      continue;
+    }
     const name = FuseV1Options[Number(index)] ?? `fuse${index}`;
     named[name] = value === FuseState.ENABLE ? 'on' : value === FuseState.DISABLE ? 'off' : `state ${value}`;
   }
@@ -32,7 +41,10 @@ async function fusesOf(app: string): Promise<Record<string, string>> {
  * app (not a Node process) prints once its page loaded. The release refuses a debugging port, so that is the signal.
  * Returns whether it came and everything printed.
  */
-async function startRelease(args: string[], env: Record<string, string> = {}): Promise<{ app: boolean; output: string }> {
+async function startRelease(
+  args: string[],
+  env: Record<string, string> = {},
+): Promise<{ app: boolean; output: string }> {
   const base = { ...process.env };
   delete base.NODE_OPTIONS;
   const child = spawn(binaryOf(RELEASE_APP), args, {
@@ -40,7 +52,7 @@ async function startRelease(args: string[], env: Record<string, string> = {}): P
   });
   let output = '';
   const exited = once(child, 'exit');
-  const cameUp = await new Promise<boolean>((resolve) => {
+  const cameUp = await new Promise<boolean>((resolve, reject) => {
     const timer = setTimeout(() => resolve(false), 30_000);
     const onData = (chunk: Buffer) => {
       output += chunk.toString();
@@ -52,10 +64,16 @@ async function startRelease(args: string[], env: Record<string, string> = {}): P
     };
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
-    void exited.then(() => {
-      clearTimeout(timer);
-      resolve(false);
-    });
+    void exited.then(
+      () => {
+        clearTimeout(timer);
+        resolve(false);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error('Electron failed to start', { cause: error }));
+      },
+    );
   });
   if (child.exitCode === null && child.signalCode === null) {
     child.kill('SIGTERM');
@@ -126,7 +144,10 @@ test('theReleaseRefusesRemoteDebugging', async () => {
     const killer = setTimeout(() => child.kill('SIGKILL'), 30_000);
     const [code] = (await once(child, 'exit')) as [number | null];
     clearTimeout(killer);
-    const listed = await fetch(`http://127.0.0.1:${port}/json/list`).then((r) => r.status, () => 'refused');
+    const listed = await fetch(`http://127.0.0.1:${port}/json/list`).then(
+      (r) => r.status,
+      () => 'refused',
+    );
     expect({ flag, code, listed, loaded: /simcity: test window loaded/.test(output) }, output).toEqual({
       flag,
       code: 1,
@@ -138,7 +159,10 @@ test('theReleaseRefusesRemoteDebugging', async () => {
 
 test('theReleaseBinaryIgnoresNodeInspectFlags', async () => {
   const { app, output } = await startRelease(['--inspect=0']);
-  expect({ app, nodeInspector: /Debugger listening/.test(output) }, output).toEqual({ app: true, nodeInspector: false });
+  expect({ app, nodeInspector: /Debugger listening/.test(output) }, output).toEqual({
+    app: true,
+    nodeInspector: false,
+  });
 });
 
 test('theReleaseBinaryDoesNotRunAsNode', async () => {
@@ -160,7 +184,9 @@ test('theReleaseBinaryIgnoresNodeOptions', async () => {
 function countInAsar(app: string, text: string): number {
   const asar = readFileSync(`${app}/Contents/Resources/app.asar`);
   let count = 0;
-  for (let at = asar.indexOf(text); at !== -1; at = asar.indexOf(text, at + 1)) count++;
+  for (let at = asar.indexOf(text); at !== -1; at = asar.indexOf(text, at + 1)) {
+    count++;
+  }
   return count;
 }
 

@@ -21,9 +21,9 @@ test('private homes have a district view, a one-storey profile and a complete co
   await page.getByRole('button', { name: 'Частные дома', exact: true }).click();
   await page.getByRole('button', { name: 'Ночь', exact: true }).click();
   await page.screenshot({ path: test.info().outputPath('private-houses-night.png') });
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: 1280, height: 800 });
   await expect(page.getByRole('button', { name: 'Частные дома', exact: true })).toBeInViewport();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({ path: test.info().outputPath('private-houses-mobile.png') });
+  await page.screenshot({ path: test.info().outputPath('private-houses-desktop.png') });
   expect(errors).toEqual([]);
 });

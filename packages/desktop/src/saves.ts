@@ -46,22 +46,30 @@ export function createSaveFiles(dir: string) {
   const queues = new Map<number, Promise<unknown>>();
   const queued = <T>(slot: number, work: () => Promise<T>): Promise<T> => {
     const done = (queues.get(slot) ?? Promise.resolve()).then(work, work);
-    const settled = done.catch(() => undefined);
+    const release = () => {
+      if (queues.get(slot) === settled) {
+        queues.delete(slot);
+      }
+    };
+    const settled = done.then(release, release);
     queues.set(slot, settled);
-    void settled.then(() => {
-      if (queues.get(slot) === settled) queues.delete(slot);
-    });
     return done;
   };
   return {
     /** Removes temporary files a crashed save left behind (older than a minute); a save in progress keeps its own. */
     async sweep(): Promise<void> {
-      const names = await readdir(dir).catch((e: unknown) => (isNotFound(e) ? [] : Promise.reject(e)));
+      const names = await readdir(dir).catch((e: unknown) =>
+        isNotFound(e)
+          ? []
+          : Promise.reject(e instanceof Error ? e : new Error('Save file operation failed', { cause: e })),
+      );
       const before = Date.now() - STALE_PARTIAL_MS;
       for (const name of names.filter((n) => PARTIAL.test(n))) {
         const file = path.join(dir, name);
         const s = await stat(file).catch(() => null);
-        if (s !== null && s.mtimeMs < before) await rm(file, { force: true });
+        if (s !== null && s.mtimeMs < before) {
+          await rm(file, { force: true });
+        }
       }
     },
     async list(): Promise<SaveFileInfo[]> {
@@ -70,12 +78,24 @@ export function createSaveFiles(dir: string) {
       try {
         names = await readdir(dir);
       } catch (error) {
-        if (isNotFound(error)) return [];
+        if (isNotFound(error)) {
+          return [];
+        }
         throw error;
       }
       const slots = names.map((n) => Number(FILE.exec(n)?.[1])).filter((n) => Number.isInteger(n) && n <= MAX_SLOT);
       // A slot removed between readdir and stat is simply not there any more.
-      const found = await Promise.all(slots.sort((a, b) => a - b).map((n) => info(n).catch((e: unknown) => (isNotFound(e) ? null : Promise.reject(e)))));
+      const found = await Promise.all(
+        slots
+          .sort((a, b) => a - b)
+          .map((n) =>
+            info(n).catch((e: unknown) =>
+              isNotFound(e)
+                ? null
+                : Promise.reject(e instanceof Error ? e : new Error('Save file operation failed', { cause: e })),
+            ),
+          ),
+      );
       return found.filter((f) => f !== null);
     },
     /** `bytes` into `slot`, replacing what it held only once they are all written. */
@@ -105,7 +125,9 @@ export function createSaveFiles(dir: string) {
       try {
         return await readFile(fileOf(dir, slot));
       } catch (error) {
-        if (isNotFound(error)) throw new Error(`save slot ${slot} is empty`, { cause: error });
+        if (isNotFound(error)) {
+          throw new Error(`save slot ${slot} is empty`, { cause: error });
+        }
         throw error;
       }
     },
@@ -118,8 +140,12 @@ export function createSaveFiles(dir: string) {
 }
 
 function bytesOf(value: unknown): Uint8Array {
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  if (value instanceof ArrayBuffer) {
+    return new Uint8Array(value);
+  }
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
   throw new TypeError('a save is an ArrayBuffer');
 }
 
@@ -136,7 +162,9 @@ export function registerSaveHandlers(ipc: IpcHandle, dir: string, trusted: (even
   const files = createSaveFiles(dir);
   void files.sweep().catch((error: unknown) => console.warn('saves: sweeping temporary files failed', error));
   const from = (event: unknown) => {
-    if (!trusted(event)) throw new Error('saves: refused a sender that is not the game page');
+    if (!trusted(event)) {
+      throw new Error('saves: refused a sender that is not the game page');
+    }
   };
   ipc.handle(SAVE_CHANNELS.save, async (event, slot, bytes) => {
     from(event);

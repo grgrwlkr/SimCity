@@ -19,10 +19,14 @@ const obfuscateUiChunk: Plugin = {
   name: 'obfuscate-ui-chunk',
   apply: 'build',
   renderChunk(code, chunk) {
-    if (chunk.name !== UI_CHUNK) return null;
+    if (chunk.name !== UI_CHUNK) {
+      return null;
+    }
     // Rolldown's own helpers are virtual (`\0…`); anything else outside app/ui must not be obfuscated.
     const foreign = chunk.moduleIds.filter((id) => !id.startsWith('\0') && !UI_MODULE.test(id));
-    if (foreign.length > 0) this.error(`the ${UI_CHUNK} chunk holds modules outside the current app: ${foreign.join(', ')}`);
+    if (foreign.length > 0) {
+      this.error(`the ${UI_CHUNK} chunk holds modules outside the current app: ${foreign.join(', ')}`);
+    }
     return { code: JavaScriptObfuscator.obfuscate(code, OPTIONS).getObfuscatedCode(), map: null };
   },
 };

@@ -14,7 +14,9 @@ describe('city layout generation', () => {
       expect(city.buildings.filter((b) => b.district === district).length).toBeGreaterThan(10);
     }
     expect(city.buildings.filter((b) => b.height > 65).length).toBeGreaterThan(8);
-    expect(new Set(city.buildings.filter((b) => b.district === 'industrial').map((b) => b.variant)).size).toBeGreaterThanOrEqual(4);
+    expect(
+      new Set(city.buildings.filter((b) => b.district === 'industrial').map((b) => b.variant)).size,
+    ).toBeGreaterThanOrEqual(4);
     expect(new Set(city.buildings.map((b) => b.id)).size).toBe(city.buildings.length);
     for (const building of city.buildings) {
       const block = city.blocks.find((b) => b.id === building.blockId)!;
@@ -26,7 +28,9 @@ describe('city layout generation', () => {
     for (let i = 0; i < city.buildings.length; i++) {
       const a = city.buildings[i]!;
       for (const b of city.buildings.slice(i + 1).filter((b) => b.blockId === a.blockId)) {
-        expect(Math.abs(a.x - b.x) >= (a.width + b.width) / 2 + 0.4 || Math.abs(a.z - b.z) >= (a.depth + b.depth) / 2 + 0.4).toBe(true);
+        expect(
+          Math.abs(a.x - b.x) >= (a.width + b.width) / 2 + 0.4 || Math.abs(a.z - b.z) >= (a.depth + b.depth) / 2 + 0.4,
+        ).toBe(true);
       }
     }
   });
