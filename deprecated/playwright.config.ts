@@ -5,6 +5,8 @@ const port = Number(process.env.E2E_PORT ?? 5174);
 
 /** The metropolis builds a million citizens in the browser and in Node: it runs after the rest, whose time limits it starved. */
 const METROPOLIS = /metropolis\.spec\.ts/;
+/** Every scenario of the menu opens: the metropolis case runs in the metropolis project, the others in `chromium`. */
+const SCENARIOS = /scenarios\.spec\.ts/;
 // `E2E_GPU=1`: headless Chromium draws on the GPU through ANGLE Metal instead of SwiftShader on the processor, for the
 // frame-rate measurements; the gate itself runs on the default.
 const chromium = {
@@ -20,7 +22,7 @@ export default defineConfig({
   // The stage gate: the same numbers in Chromium as in Node.
   projects: [
     { name: 'chromium', testIgnore: METROPOLIS, use: chromium },
-    { name: 'metropolis-chromium', testMatch: METROPOLIS, dependencies: ['chromium'], use: chromium },
+    { name: 'metropolis-chromium', testMatch: [METROPOLIS, SCENARIOS], dependencies: ['chromium'], use: chromium },
   ],
   webServer: {
     command: 'bun run dev',

@@ -57,10 +57,11 @@ Vite собирает обе страницы: главное меню и гор
 ```bash
 bun run desktop:dev
 bun run desktop:build
+bun run desktop:build:test
 SIMCITY_TEST_WINDOW=1 bun run desktop:e2e
 ```
 
-Собранное приложение: `packages/desktop/release/mac-arm64/SimCity.app`. Агентские проверки Electron идут без видимого окна.
+Собранное приложение: `packages/desktop/release/mac-arm64/SimCity.app`. Для проверок Electron нужны обычная и тестовая сборки одного коммита; проверки идут без видимого окна. В релизе сохранены ограничения отладки и защитные настройки Electron. Устаревший `window.__sim` не входит ни в одну сборку текущей игры.
 
 ## История
 

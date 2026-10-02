@@ -67,23 +67,23 @@ export function placedBuildingKind(tool: ToolMode): BuildingKind | undefined {
   return PLACED_KINDS[tool.kind];
 }
 
-const ROAD_NAMES: Readonly<Record<RoadKind, string>> = { None: 'blank', TwoLane: '2-lane', FourLane: '4-lane', SixLane: '6-lane' };
+const ROAD_NAMES: Readonly<Record<RoadKind, string>> = { None: 'без полос', TwoLane: '2 полосы', FourLane: '4 полосы', SixLane: '6 полос' };
 
 const EFFECTS: Readonly<Record<Exclude<ToolMode['kind'], 'Road' | 'Inspect'>, string>> = {
-  Residential: 'Zones residential',
-  Commercial: 'Zones commercial',
-  Industrial: 'Zones industrial',
-  FireStation: 'Builds a fire station',
-  PoliceStation: 'Builds a police station',
-  Hospital: 'Builds a hospital',
-  PowerPlant: 'Builds a power plant: power runs along the roads it touches',
-  WaterPump: 'Builds a water pump: water runs along the roads it touches',
-  Landfill: 'Builds a landfill: garbage is collected along the roads it touches',
-  School: 'Builds a school: raises education around it',
-  University: 'Builds a university: raises education far around it',
-  Park: 'Builds a park: raises health around it',
-  TrafficLight: 'Toggles a traffic signal',
-  Erase: 'Bulldozes this tile',
+  Residential: 'Жилая зона',
+  Commercial: 'Торговая зона',
+  Industrial: 'Промзона',
+  FireStation: 'Пожарная часть',
+  PoliceStation: 'Полицейский участок',
+  Hospital: 'Больница',
+  PowerPlant: 'Электростанция (ток вдоль дорог)',
+  WaterPump: 'Водокачка (вода вдоль дорог)',
+  Landfill: 'Свалка (вывоз мусора вдоль дорог)',
+  School: 'Школа (образование вокруг)',
+  University: 'Университет (образование далеко вокруг)',
+  Park: 'Парк (здоровье вокруг)',
+  TrafficLight: 'Ставит или снимает светофор',
+  Erase: 'Сносит эту клетку',
 };
 
 /** Why a footprint that failed placement failed, in the order the rule checks it. */
@@ -92,11 +92,11 @@ function footprintProblem(grid: MapGrid, anchor: TilePos, width: number, length:
   for (let dx = 0; dx < width; dx++) {
     for (let dy = 0; dy < length; dy++) {
       const cell = grid.get({ x: anchor.x + dx, y: anchor.y + dy });
-      if (cell === undefined) return `The ${width}x${length} footprint runs off the map`;
+      if (cell === undefined) return `Участок ${width}×${length} выходит за карту`;
       if (cell.water || roadCellIsSome(cell.road) || cell.building !== null) blocked = true;
     }
   }
-  return blocked ? `The ${width}x${length} footprint needs clear land` : 'Needs a road next to it';
+  return blocked ? `Участку ${width}×${length} нужна свободная земля` : 'Нужна дорога рядом';
 }
 
 /**
@@ -106,36 +106,36 @@ function footprintProblem(grid: MapGrid, anchor: TilePos, width: number, length:
  */
 export function previewToolAt(tool: ToolMode, tile: TilePos, grid: MapGrid, money: number, milestones: Milestones): ToolPreview | undefined {
   if (tool.kind === 'Inspect') return undefined;
-  const effect = tool.kind === 'Road' ? `Builds a ${ROAD_NAMES[tool.road]} road tile` : EFFECTS[tool.kind];
+  const effect = tool.kind === 'Road' ? `Дорога ${ROAD_NAMES[tool.road]}` : EFFECTS[tool.kind];
   const placed = placedBuildingKind(tool);
   const radius = placed === undefined ? undefined : serviceRadius(placed);
   const cell = grid.get(tile);
-  if (cell === undefined) return { cost: placed === undefined ? undefined : buildCost(placed), effect, refusal: 'Off the map', radius };
+  if (cell === undefined) return { cost: placed === undefined ? undefined : buildCost(placed), effect, refusal: 'Вне карты', radius };
 
   const result = (cost: number | undefined, refusal: string | null): ToolPreview => ({ cost, effect, refusal, radius });
   switch (tool.kind) {
     case 'Road': {
       const fresh = buildCostPerLaneTile(tool.road);
-      if (cell.water) return result(fresh, "Roads can't cross water yet");
+      if (cell.water) return result(fresh, 'Через воду дорогу пока не проложить');
       if (!roadCellIsSome(cell.road)) return result(fresh, null);
       if (cell.road.kind === tool.road) return result(0, null);
       if (isUpgrade(cell.road.kind, tool.road)) return result(Math.max(fresh - buildCostPerLaneTile(cell.road.kind), 0), null);
-      return result(undefined, 'Bulldoze this road first to downgrade it');
+      return result(undefined, 'Сузить дорогу можно только сносом');
     }
     case 'Residential':
     case 'Commercial':
     case 'Industrial': {
-      if (cell.water) return result(0, "Water can't be zoned");
-      if (roadCellIsSome(cell.road)) return result(0, 'A road is already here');
-      if (cell.building !== null) return result(0, 'A building is already here');
-      return result(0, canZoneTile(grid, tile) ? null : 'Zones need a road within 3 tiles');
+      if (cell.water) return result(0, 'Воду нельзя зонировать');
+      if (roadCellIsSome(cell.road)) return result(0, 'Здесь уже дорога');
+      if (cell.building !== null) return result(0, 'Здесь уже здание');
+      return result(0, canZoneTile(grid, tile) ? null : 'Зоне нужна дорога в пределах 3 клеток');
     }
     case 'TrafficLight':
-      return result(0, roadCellIsSome(cell.road) && cell.road.dir === 'None' ? null : 'Signals go on intersections');
+      return result(0, roadCellIsSome(cell.road) && cell.road.dir === 'None' ? null : 'Светофор ставится только на перекрёсток');
     case 'Erase': {
-      if (cell.water) return result(undefined, "Can't bulldoze water");
+      if (cell.water) return result(undefined, 'Воду не снести');
       const empty = !roadCellIsSome(cell.road) && cell.zone === 'None' && cell.building === null;
-      return result(undefined, empty ? 'Nothing to bulldoze here' : null);
+      return result(undefined, empty ? 'Здесь нечего сносить' : null);
     }
     default: {
       // Every remaining tool places a building.
@@ -145,7 +145,7 @@ export function previewToolAt(tool: ToolMode, tile: TilePos, grid: MapGrid, mone
       if (lock !== null) return result(cost, lock);
       const [width, length] = MANUAL_BUILDING_FOOTPRINT;
       if (validateBuildingPlacement(grid, tile, width, length) === undefined) return result(cost, footprintProblem(grid, tile, width, length));
-      return result(cost, money < cost ? 'Not enough money' : null);
+      return result(cost, money < cost ? 'Не хватает денег' : null);
     }
   }
 }

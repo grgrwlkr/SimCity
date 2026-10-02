@@ -3,6 +3,7 @@
 import {
   buildCity,
   bumpVersion,
+  CitizenTripCounter,
   CityCommuteScenario,
   createWorld,
   CROSS_LAYOUT,
@@ -15,21 +16,27 @@ import {
   frame,
   linkRoomMeters,
   LivingCityScenario,
+  loadWorld,
   MetropolisScenario,
+  objectiveValue,
   parseRustCommand,
+  presetById,
   recordSystemError,
   refSlot,
   requestState,
   rngProbeDigest,
+  saveWorld,
   SignalizedCrossScenario,
   spawnVehicle,
   stampAndExpire,
   startEmergency,
+  startScenario,
   step,
   summarizeTraffic,
   tileDiagnosis,
   toHex64,
   type BudgetLines,
+  type ScenarioRuntime,
   type ShownToast,
   VEHICLE_CAPACITY,
   vehicleRef,
@@ -46,9 +53,13 @@ import {
   type FingerprintReply,
   type GridLayers,
   type MesoLinksReply,
+  isSlotRequest,
+  type ScenarioProgressView,
+  type ImmediateRequest,
   type Reply,
   type ReplyByRequest,
   type Request,
+  type SlotRequest,
   type TickStatsReply,
   type WorldSnapshot,
   type WorldView,
@@ -69,7 +80,12 @@ import {
   type RenderExtras,
 } from './renderBuffer';
 import { debugOverlayOf, renderLayersOf } from './renderLayers';
+import { setClock } from './requests/clock';
+import { dataMapLayer } from './requests/dataMap';
+import { observeWorld } from './requests/observe';
+import { tilePreview } from './requests/tilePreview';
 import { SAMPLE_CARS, sampleCutoff, sampled } from './sample';
+import { createOpfsSaveFiles, type SaveFiles } from './saveFiles';
 import { SCENARIOS, type ScenarioName } from './scenarios';
 
 /** Vehicles a frame holds: the micro vehicles, meso traffic, parked cars, standing trucks and people on foot. */
@@ -88,6 +104,9 @@ const STANDING_ID_BASE = (1 << 22) + (1 << 21);
 const MESO_KINDS = [0, TRUCK_KIND, BUS_KIND, FIRE_KIND, POLICE_KIND, AMBULANCE_KIND] as const;
 /** Ticks whose cost `tickStats` reads. */
 const TICK_SAMPLES = 4096;
+/** A save file is UTF-8 JSON; the text never leaves the worker. */
+const UTF8_ENCODER = new TextEncoder();
+const UTF8_DECODER = new TextDecoder();
 /** From this speed up a frame shows the load of the roads and a sample of the cars on them. */
 const LOAD_VIEW_MULTIPLIER = 60;
 /** The part of the view's width and height added on every side, so a pan does not show an empty edge. */
@@ -102,8 +121,16 @@ interface HostScenario {
 /** `?scenario=city`: commuters, their departures spread over five minutes, a stay of two to six. */
 const CITY_COMMUTE = { citizens: 2000, departureWindowTicks: 3000, stayTicks: [1200, 3600] } as const;
 
+/** A catalog preset on its own seed or `seed`; its runtime only counts the trips of its citizens for the HUD. */
+const preset = (id: string) => (w: World, seed: bigint | undefined) => {
+  startScenario(w, presetById(id)!, seed);
+  return new CitizenTripCounter();
+};
+
 /** A builder for every scenario of the menu: a listed name without one fails the typecheck. */
-const SCENARIO_BUILDERS: Readonly<Record<ScenarioName, (w: World) => HostScenario>> = {
+const SCENARIO_BUILDERS: Readonly<Record<ScenarioName, (w: World, seed: bigint | undefined) => ScenarioRuntime>> = {
+  sandbox: preset('sandbox'),
+  starter: preset('starter'),
   // Without zones: grown citizens would drive among the commuters and share their ids.
   city: (w) => {
     const plan = buildCity(w, { zones: false });
@@ -115,6 +142,26 @@ const SCENARIO_BUILDERS: Readonly<Record<ScenarioName, (w: World) => HostScenari
   signalizedCross4: (w) => new SignalizedCrossScenario(w, undefined, CROSS_LAYOUT.signalizedCross4),
 };
 
+/** A map seed as the request spells it: a `u64` in decimal digits. */
+function parseSeed(text: string): bigint {
+  const seed = /^\d+$/.test(text) ? BigInt(text) : -1n;
+  if (seed < 0n || seed > 0xffff_ffff_ffff_ffffn) throw new RangeError(`scenario: seed ${JSON.stringify(text)} is not a u64 in decimal digits`);
+  return seed;
+}
+
+function scenarioView(w: World): ScenarioProgressView | null {
+  const s = w.scenario;
+  if (s.activeId === null) return null;
+  return {
+    id: s.activeId,
+    // The menu's title: the preset's own name is the English of the Rust catalog.
+    name: SCENARIOS.find((info) => info.name === s.activeId)?.title ?? s.activeName ?? s.activeId,
+    objectives: s.objectives.map((o, i) => ({ kind: o.kind, target: o.target, current: objectiveValue(w.city, o), met: s.met[i] ?? false })),
+    completed: s.objectivesCompleted,
+    isCompleted: s.isCompleted,
+  };
+}
+
 export class SimHost {
   readonly render: SharedArrayBuffer;
   private world: World;
@@ -125,7 +172,6 @@ export class SimHost {
   /** What the camera sees with its margin, in world coordinates and in tiles; `null` for everything. */
   private view: { readonly world: WorldView; readonly tiles: TileView } | null = null;
   private lastReported: string | null = null;
-  private scenario: HostScenario | null = null;
   /** Recent average cost of a fixed tick, ms. */
   private tickMs: number | null = null;
   /** The cost of each of the last ticks, a ring. */
@@ -135,8 +181,20 @@ export class SimHost {
   private shownToasts: readonly ShownToast[] = [];
   /** A toast came up or retired since the last snapshot `update` reported. */
   private toastsChanged = false;
+  /** The requests `answer` holds back behind a slot request, and the end of the last of them. */
+  private waiting = 0;
+  private queue: Promise<void> = Promise.resolve();
 
-  constructor(renderCapacity: number) {
+  /** The running scenario, which the world keeps so a save carries it. */
+  private get scenario(): HostScenario | null {
+    return this.world.scenarioRuntime;
+  }
+
+  /** `saves`: where the game's save slots live; OPFS unless a test gives another. */
+  constructor(
+    renderCapacity: number,
+    private readonly saves: SaveFiles = createOpfsSaveFiles(),
+  ) {
     this.world = createWorld();
     this.driver = new FixedStepDriver(this.world);
     this.render = createRenderBuffer(renderCapacity, RENDER_LINK_CAPACITY);
@@ -144,11 +202,61 @@ export class SimHost {
     this.extras = extraCars(renderCapacity);
   }
 
-  handle<T extends Request['t']>(req: Extract<Request, { t: T }>): ReplyByRequest[T] {
+  handle<T extends ImmediateRequest['t']>(req: Extract<ImmediateRequest, { t: T }>): ReplyByRequest[T] {
     return this.dispatch(req) as ReplyByRequest[T];
   }
 
-  private dispatch(req: Request): Reply {
+  /**
+   * Any request, strictly in arrival order: while a slot request waits on its file, the requests after it wait too, so
+   * a `loadSlot` sent before a `scenario` is applied before it. Nothing waiting, an immediate request runs at once.
+   */
+  answer(req: Request): Promise<Reply> {
+    const run = (): Reply | Promise<Reply> => (isSlotRequest(req) ? this.dispatchSlot(req) : this.dispatch(req));
+    if (this.waiting === 0 && !isSlotRequest(req)) {
+      try {
+        return Promise.resolve(run());
+      } catch (error) {
+        return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+    this.waiting += 1;
+    const result = this.queue.then(run);
+    this.queue = result.then(
+      () => void (this.waiting -= 1),
+      () => void (this.waiting -= 1),
+    );
+    return result;
+  }
+
+  /** A save slot request: the world is saved at once, the file written or read after. */
+  async handleSlot<T extends SlotRequest['t']>(req: Extract<SlotRequest, { t: T }>): Promise<ReplyByRequest[T]> {
+    return (await this.dispatchSlot(req)) as ReplyByRequest[T];
+  }
+
+  private async dispatchSlot(req: SlotRequest): Promise<Reply> {
+    switch (req.t) {
+      case 'saveSlot': {
+        const bytes = UTF8_ENCODER.encode(saveWorld(this.world));
+        return this.saves.write(req.slot, bytes);
+      }
+      case 'loadSlot':
+        return this.loadBytes(await this.saves.read(req.slot));
+      case 'listSlots':
+        return this.saves.list();
+      case 'removeSlot':
+        await this.saves.remove(req.slot);
+        return null;
+    }
+  }
+
+  /** Built aside and swapped in only whole: a file that fails leaves the running world untouched. */
+  private loadBytes(bytes: Uint8Array): FingerprintReply {
+    // The world brings its scenario with it.
+    this.adoptWorld(loadWorld(UTF8_DECODER.decode(bytes)));
+    return this.fingerprintReply();
+  }
+
+  private dispatch(req: ImmediateRequest): Reply {
     switch (req.t) {
       case 'cmd':
         this.world.commands.push(parseRustCommand(req.cmd));
@@ -201,11 +309,12 @@ export class SimHost {
       case 'debugOverlay':
         return debugOverlayOf(this.world);
       case 'scenario': {
-        const size = req.size ?? SCENARIOS.find((s) => s.name === req.name)?.mapSize;
-        if (size !== undefined && (size !== this.world.grid.width || size !== this.world.grid.height)) this.replaceWorld(size);
-        // A world of the same size is reused: the previous city's advice must not stand until the next hour.
-        this.world.advisor.reset();
-        this.scenario = SCENARIO_BUILDERS[req.name](this.world);
+        // Read before the running game is replaced: a bad seed leaves it as it was.
+        const seed = req.seed === undefined ? undefined : parseSeed(req.seed);
+        // Every scenario in a fresh world: the same game whatever ran before it in this tab, never its map, seed,
+        // treasury, hour or objectives.
+        this.replaceWorld(req.size ?? SCENARIOS.find((s) => s.name === req.name)?.mapSize);
+        this.world.scenarioRuntime = SCENARIO_BUILDERS[req.name](this.world, seed);
         // Settled into its first frame here: whether the loop ran an empty frame before the next request cannot matter.
         frame(this.world, 0);
         return null;
@@ -226,22 +335,43 @@ export class SimHost {
       case 'resetTickStats':
         this.tickSampleCount = 0;
         return null;
+      case 'dataMap':
+        return dataMapLayer(this.world, req.overlay);
+      case 'tilePreview':
+        return tilePreview(this.world, req.tool, req.tile);
+      case 'observe':
+        return observeWorld(this.world, req);
+      case 'setClock':
+        // The publish key does not see the hour: the next frame reports it, so a paused scene is lit at the new hour.
+        this.lastReported = null;
+        return setClock(this.world, req);
+      case 'save':
+        return UTF8_ENCODER.encode(saveWorld(this.world)).buffer;
+      case 'load':
+        return this.loadBytes(new Uint8Array(req.bytes));
     }
   }
 
-  /** A fresh world of `size` tiles a side for a scenario of its own map, in the state the old one was heading for, at its speed. */
-  private replaceWorld(size: number): void {
+  /**
+   * A fresh world of `size` tiles a side (the default map without one) for a scenario of its own map, in the state the
+   * old one was heading for, at its speed.
+   */
+  private replaceWorld(size: number | undefined): void {
     const old = this.world;
-    const w = createWorld({ mapWidth: size, mapHeight: size });
+    const w = createWorld(size === undefined ? {} : { mapWidth: size, mapHeight: size });
     const state = old.nextState?.state ?? old.appState;
     if (state !== 'MainMenu') requestState(w, state);
+    this.adoptWorld(w);
+  }
+
+  /** `w` in place of the running world, at the running speed, with the scenario it carries. */
+  private adoptWorld(w: World): void {
     const driver = new FixedStepDriver(w);
     driver.speed = this.driver.speed;
     this.world = w;
     this.driver = driver;
     this.tickMs = null;
     this.lastReported = null;
-    this.scenario = null;
     this.shownToasts = [];
   }
 
@@ -379,6 +509,7 @@ export class SimHost {
       history: w.notifications.history().map((line) => ({ ...line })),
       milestones: { bestPopulation: w.milestones.bestPopulation, next: w.milestones.next() ?? null },
       advisor: w.advisor.problems.slice(0, 3).map((problem) => ({ ...problem, at: problem.at === null ? null : { ...problem.at } })),
+      scenario: scenarioView(w),
     };
   }
 

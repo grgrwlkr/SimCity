@@ -5,7 +5,7 @@ import { upgradeBlocker } from './blockers';
 import { buildingArea, profileCapacity } from './building';
 
 /** One kind of event is one feed line: neither the zone nor the level enters it. */
-export const UPGRADE_NOTICE = 'Building upgraded';
+export const UPGRADE_NOTICE = 'Здание выросло';
 /** Chance a building nothing holds back rises on one check. */
 const UPGRADE_CHANCE = 0.05;
 

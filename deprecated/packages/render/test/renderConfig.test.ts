@@ -17,7 +17,7 @@ describe('render config', () => {
       night: { sunFloor: 0.3, ambientFloor: 1 },
       perspective: { orthoAboveZoom: 0.25, nearFovDeg: 42, farFovDeg: 12, ramp: 1.6, minDistance: 40, maxDistance: 900, orthoDistance: 500 },
       atlas: { worldUnitsPerCell: 12, maxRepeats: 4 },
-      shadows: { maximumDistance: 900, cascades: 0, firstSliceDepth: 90, overlapProportion: 0.2, softSize: 0 },
+      shadows: { maximumDistance: 900, cascades: 2, firstSliceDepth: 90, overlapProportion: 0, softSize: 0 },
     });
   });
 

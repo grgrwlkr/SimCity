@@ -20,8 +20,8 @@ describe('advisor in the snapshot', () => {
     expect(w.advisor.problems.map((problem) => problem.kind)).toEqual(['EmptyTreasury', 'Unemployment', 'HousingWanted', 'JobsWanted']);
     const advisor = host.handle({ t: 'snapshot' }).advisor;
     expect(advisor.map((problem) => problem.kind)).toEqual(['EmptyTreasury', 'Unemployment', 'HousingWanted']);
-    expect(advisor[0]).toEqual({ kind: 'EmptyTreasury', severity: 1, text: 'The treasury is empty: $3 000 in debt', at: null });
-    expect(advisor[1]?.text).toBe('Unemployment 30%: 300 residents have no job, most of them low-income');
+    expect(advisor[0]).toEqual({ kind: 'EmptyTreasury', severity: 1, text: 'Казна пуста: долг $3 000', at: null });
+    expect(advisor[1]?.text).toBe('Безработица 30 %: 300 жителей без работы, больше всего бедных');
   });
 
   // Review S3 #1: the first-tick assessment reads employment, demand and coverage before their first minute has run;
@@ -46,15 +46,16 @@ describe('advisor in the snapshot', () => {
     const w = worldOf(host);
     host.handle({ t: 'step', ticks: 1 });
     // The advice of a city played for a while, standing until its next hour.
-    w.advisor.problems = [{ kind: 'EmptyTreasury', severity: 1, text: 'The treasury is empty: $3 000 in debt', at: null }];
+    w.advisor.problems = [{ kind: 'EmptyTreasury', severity: 1, text: 'Казна пуста: долг $3 000', at: null }];
     w.advisor.version = 7;
     expect(host.handle({ t: 'snapshot' }).advisor.map((problem) => problem.kind)).toEqual(['EmptyTreasury']);
 
+    // Whether the host reuses the world or builds a fresh one, the world it runs now holds no old advice.
     host.handle({ t: 'scenario', name: 'livingCity' });
-    expect(worldOf(host), 'the same world').toBe(w);
-    expect(w.advisor.version).toBe(0);
+    const now = worldOf(host);
+    expect(now.advisor.version).toBe(0);
     expect(host.handle({ t: 'snapshot' }).advisor).toEqual([]);
     host.handle({ t: 'step', ticks: 1 });
-    expect(w.advisor.version).toBe(1);
+    expect(now.advisor.version).toBe(1);
   }, 300_000);
 });

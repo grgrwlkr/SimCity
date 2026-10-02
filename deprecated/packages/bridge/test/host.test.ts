@@ -2,6 +2,7 @@ import {
   ROAD_DIRS,
   ROAD_KINDS,
   LivingCityScenario,
+  SCENARIO_PRESETS,
   createWorld,
   fingerprint,
   frame,
@@ -166,6 +167,7 @@ describe('SimHost', () => {
         'history',
         'milestones',
         'advisor',
+        'scenario',
       ].sort(),
     );
   });
@@ -392,9 +394,100 @@ describe('SimHost', () => {
       host.handle({ t: 'step', ticks: 20 });
       const { mapEditVersion, lights } = host.handle({ t: 'snapshot' });
       expect(mapEditVersion, `${name} builds its map`).toBeGreaterThan(0);
-      expect(lights.length, `${name} lights its crossings`).toBeGreaterThan(0);
+      // The presets of the catalog generate a map of land and water, without roads.
+      if (!SCENARIO_PRESETS.some((p) => p.id === name)) expect(lights.length, `${name} lights its crossings`).toBeGreaterThan(0);
     }
   }, SIZED_IN_TICKS);
+
+  // Debt (b) of p1-save: what a scenario keeps outside the city (its objectives, the commuters of `city`, the waves of a
+  // crossing) is part of the save, so the loaded world goes on as the saved one.
+  it('aScenarioWithObjectivesLoadsWithItsFingerprintAndProgress', () => {
+    const host = new SimHost(RENDER_CAPACITY);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'scenario', name: 'starter' });
+    worldOf(host).city.population = 60;
+    const at = host.handle({ t: 'step', ticks: 20 });
+    const progress = host.handle({ t: 'snapshot' }).scenario;
+    expect(progress?.objectives[0]?.met, 'the population objective is met before the save').toBe(true);
+    const other = new SimHost(RENDER_CAPACITY);
+    other.handle({ t: 'setState', state: 'InGame' });
+    other.handle({ t: 'scenario', name: 'livingCity' });
+    expect(other.handle({ t: 'load', bytes: host.handle({ t: 'save' }) })).toEqual(at);
+    expect(other.handle({ t: 'snapshot' }).scenario).toEqual(progress);
+    expect(other.handle({ t: 'step', ticks: 100 })).toEqual(host.handle({ t: 'step', ticks: 100 }));
+    expect(other.handle({ t: 'snapshot' }).scenario).toEqual(host.handle({ t: 'snapshot' }).scenario);
+  }, SIZED_IN_TICKS);
+
+  it('theStateOfAScenarioOutsideTheCityComesBackWithASave', () => {
+    for (const name of ['city', 'signalizedCross'] as const) {
+      const host = new SimHost(RENDER_CAPACITY);
+      host.handle({ t: 'setState', state: 'InGame' });
+      host.handle({ t: 'scenario', name });
+      host.handle({ t: 'step', ticks: 150 });
+      const other = new SimHost(RENDER_CAPACITY);
+      other.handle({ t: 'setState', state: 'InGame' });
+      other.handle({ t: 'load', bytes: host.handle({ t: 'save' }) });
+      expect(other.handle({ t: 'step', ticks: 450 }), `${name} goes on after the load as before it`).toEqual(host.handle({ t: 'step', ticks: 450 }));
+      expect(other.handle({ t: 'snapshot' }).traffic.tripsStarted, `${name}: the trips counted`).toBe(host.handle({ t: 'snapshot' }).traffic.tripsStarted);
+    }
+  }, SIZED_IN_TICKS);
+
+  // Rust `reset_scenario_runtime` on `OnEnter(MainMenu)` (rust-final scenarios.rs:30, 116-119).
+  it('theMainMenuEndsTheScenario', () => {
+    const host = new SimHost(RENDER_CAPACITY);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'scenario', name: 'starter' });
+    Object.assign(worldOf(host).city, { population: 60, happiness: Math.fround(0.9) });
+    host.handle({ t: 'step', ticks: 2 });
+    expect(host.handle({ t: 'snapshot' }).scenario?.isCompleted).toBe(true);
+    host.handle({ t: 'setState', state: 'MainMenu' });
+    host.handle({ t: 'step', ticks: 2 });
+    expect(host.handle({ t: 'snapshot' }).scenario, 'in the menu').toBeNull();
+    expect(worldOf(host).scenarioRuntime).toBeNull();
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'step', ticks: 2 });
+    expect(host.handle({ t: 'snapshot' }).scenario, 'the next game is not measured against the last').toBeNull();
+  });
+
+  it('aScenarioOpensTheSameWhateverRanBefore', () => {
+    for (const name of ['signalizedCross', 'city'] as const) {
+      const fresh = new SimHost(RENDER_CAPACITY);
+      fresh.handle({ t: 'setState', state: 'InGame' });
+      fresh.handle({ t: 'scenario', name });
+      const after = new SimHost(RENDER_CAPACITY);
+      after.handle({ t: 'setState', state: 'InGame' });
+      after.handle({ t: 'scenario', name: 'starter' });
+      after.handle({ t: 'step', ticks: 30 });
+      after.handle({ t: 'scenario', name });
+      expect(after.handle({ t: 'fingerprint' }), `${name} after a preset`).toEqual(fresh.handle({ t: 'fingerprint' }));
+      expect(after.handle({ t: 'step', ticks: 600 }), `${name} runs the same`).toEqual(fresh.handle({ t: 'step', ticks: 600 }));
+    }
+  }, SIZED_IN_TICKS);
+
+  it('aBadSeedIsRefusedBeforeTheGameIsTouched', () => {
+    const host = new SimHost(RENDER_CAPACITY);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'scenario', name: 'starter' });
+    const before = host.handle({ t: 'step', ticks: 10 });
+    for (const seed of ['x1', '', '-1', '1.5', ' 7', '18446744073709551616']) {
+      expect(() => host.handle({ t: 'scenario', name: 'sandbox', seed }), JSON.stringify(seed)).toThrow(/^scenario: seed /);
+      expect(host.handle({ t: 'fingerprint' }), `${JSON.stringify(seed)}: the game stays`).toEqual(before);
+    }
+    host.handle({ t: 'scenario', name: 'sandbox', seed: '18446744073709551615' });
+    expect(host.handle({ t: 'snapshot' }).mapSeed, 'the largest u64 is a seed').toBe('18446744073709551615');
+  });
+
+  it('aSaveWithAForeignRuntimeIsRefusedAndTheWorldStays', () => {
+    const host = new SimHost(RENDER_CAPACITY);
+    host.handle({ t: 'setState', state: 'InGame' });
+    host.handle({ t: 'scenario', name: 'starter' });
+    const file = JSON.parse(new TextDecoder().decode(host.handle({ t: 'save' }))) as { world: Record<string, unknown> };
+    file.world.scenarioRuntime = { hello: 1 };
+    const before = host.handle({ t: 'fingerprint' });
+    expect(() => host.handle({ t: 'load', bytes: new TextEncoder().encode(JSON.stringify(file)).buffer })).toThrow(/world\.scenarioRuntime/);
+    expect(host.handle({ t: 'fingerprint' })).toEqual(before);
+    expect(host.handle({ t: 'step', ticks: 2 }).tick).toBe(2);
+  });
 
   it('snapshotReportsCitizensTrafficAndTickCost', () => {
     const host = new SimHost(4096);

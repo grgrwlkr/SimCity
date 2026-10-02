@@ -1,7 +1,7 @@
 // The tool palette and its hotkeys: layout of docs/design/hud/layout.md §3, states of states.md. Ports the tests of
 // rust-final crates/simcity_frontend/src/game/hud/tool_palette.rs and the hotkey and focus-gate tests of
 // crates/simcity_sim/src/game/map/tests.rs under their camelCase names.
-import { ZONE_DENSITIES } from '@simcity/sim';
+import { thousands, ZONE_DENSITIES } from '@simcity/sim';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
@@ -14,7 +14,9 @@ import {
   buildModeHotkey,
   hotkeyFor,
   keyboardCaptured,
+  PALETTE_HEIGHT_TOKEN,
   toolKey,
+  trackPaletteHeight,
   toggleOneWay,
   undoRedoHotkey,
   type ToolMode,
@@ -66,6 +68,10 @@ describe('tool palette', () => {
     expect(school.attrs).not.toMatch(/\sdisabled(=|\s|$)/);
     expect(school.text).toContain('Откроется при 250 жителях');
     expect(school.attrs).toContain('title="Откроется при 250 жителях"');
+    // Thousands grouped as everywhere in the interface: «1 000», not «1000».
+    const university = buttonFor(html, 'University');
+    expect(university.text).toContain(`Откроется при ${thousands(1000)} жителях`);
+    expect(university.text).not.toContain('при 1000 ');
     const park = buttonFor(html, 'Park');
     expect(park.attrs, 'a park is open from the start').not.toContain('aria-disabled');
     expect(park.text).not.toContain('Откроется');
@@ -205,5 +211,42 @@ describe('tool hotkeys', () => {
     expect(keyboardCaptured({ tagName: 'DIV', isContentEditable: true } as unknown as EventTarget)).toBe(true);
     expect(keyboardCaptured({ tagName: 'BUTTON' } as unknown as EventTarget)).toBe(false);
     expect(keyboardCaptured(null)).toBe(false);
+  });
+});
+
+describe('palette height token', () => {
+  // The advisor's panel stops above the palette by this token (advisorPanel.css): it follows the palette from one row
+  // to two and back, whatever resized the window, and leaves with the palette.
+  it('paletteHeightTokenFollowsThePaletteWhenItsRowsChange', () => {
+    let height = 103.5;
+    const panel = { getBoundingClientRect: () => ({ height }) } as unknown as Element;
+    const props = new Map<string, string>();
+    const root = { style: { setProperty: (k: string, v: string) => props.set(k, v), removeProperty: (k: string) => props.delete(k) } } as unknown as HTMLElement;
+    let resized = () => {};
+    let observed: Element | null = null;
+    let disconnected = false;
+    class FakeObserver {
+      constructor(callback: () => void) {
+        resized = callback;
+      }
+      observe(target: Element) {
+        observed = target;
+      }
+      disconnect() {
+        disconnected = true;
+      }
+    }
+    const stop = trackPaletteHeight(panel, root, FakeObserver);
+    expect(observed).toBe(panel);
+    expect(props.get(PALETTE_HEIGHT_TOKEN), 'one row, set on mount').toBe('103.5px');
+    height = 182;
+    resized();
+    expect(props.get(PALETTE_HEIGHT_TOKEN), 'the groups wrapped into a second row').toBe('182px');
+    height = 103.5;
+    resized();
+    expect(props.get(PALETTE_HEIGHT_TOKEN), 'back to one row').toBe('103.5px');
+    stop();
+    expect(disconnected).toBe(true);
+    expect(props.has(PALETTE_HEIGHT_TOKEN)).toBe(false);
   });
 });

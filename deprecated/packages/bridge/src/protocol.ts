@@ -10,6 +10,7 @@ import type {
   MapCell,
   MapGrid,
   Milestone,
+  ScenarioObjective,
   ServiceKind,
   ShownToast,
   SystemError,
@@ -63,6 +64,28 @@ export interface WorldSnapshot {
   readonly milestones: MilestonesView;
   /** The advisor's first three problems, worst first; empty until the first tick of a game (or of a scenario) assesses it. */
   readonly advisor: readonly AdvisorProblemView[];
+  /** The catalog preset running and its objectives; `null` for the other scenarios and a plain game. */
+  readonly scenario: ScenarioProgressView | null;
+}
+
+/** An objective of the running preset against the city now. */
+export interface ObjectiveView {
+  readonly kind: ScenarioObjective['kind'];
+  readonly target: number;
+  /** What the objective measures now: citizens, dollars, happiness 0..1. */
+  readonly current: number;
+  /** Met on the last tick. */
+  readonly met: boolean;
+}
+
+export interface ScenarioProgressView {
+  readonly id: string;
+  /** The title the menu lists it under. */
+  readonly name: string;
+  readonly objectives: readonly ObjectiveView[];
+  readonly completed: number;
+  /** Every objective met; never for a preset without any. */
+  readonly isCompleted: boolean;
 }
 
 /** One budget line of a month, whole dollars: income positive, spending negative. */
@@ -234,6 +257,11 @@ export interface FingerprintReply {
   readonly fingerprint: string;
 }
 
+export type { DataMapOverlay, DataMapReply, DataMapRequest } from './requests/dataMap';
+export type { ClockReply, ClockRequest } from './requests/clock';
+export type { ObserveParams, ObserveReply, ObserveRequest, ObserveSection } from './requests/observe';
+export type { TilePreviewReply, TilePreviewRequest } from './requests/tilePreview';
+
 export type Request =
   /** `GameCommand` in its serde-JSON form, validated in the worker. */
   | { readonly t: 'cmd'; readonly cmd: unknown }
@@ -260,7 +288,11 @@ export type Request =
   | { readonly t: 'debugVehicles'; readonly vehicles: readonly DebugVehicle[] }
   | { readonly t: 'debugOverlay' }
   /** Build a scenario into the world; the host feeds it before every fixed tick from then on. */
-  | { readonly t: 'scenario'; readonly name: ScenarioName; readonly size?: number }
+  /**
+   * `seed`: a catalog preset's map on this seed instead of its own (`u64` as a decimal string); the other scenarios build
+   * maps of their own and do not read it.
+   */
+  | { readonly t: 'scenario'; readonly name: ScenarioName; readonly size?: number; readonly seed?: string }
   /** Make a system throw on every call (`null` stops it): the worker's resilience from DevTools and Playwright. */
   | { readonly t: 'debugFailSystem'; readonly system: string | null }
   /** What the camera sees (`null` for everything): the render frame holds only what lies in it, with a margin. */
@@ -270,7 +302,46 @@ export type Request =
   | { readonly t: 'debugEmergency'; readonly kind: EmergencyKind; readonly x: number; readonly y: number }
   /** The cost of the last 4 096 ticks at most, since the last reset. */
   | { readonly t: 'tickStats' }
-  | { readonly t: 'resetTickStats' };
+  | { readonly t: 'resetTickStats' }
+  /**
+   * The whole world as a save file (packages/sim/src/save), UTF-8 bytes transferred, not copied: for a store outside the
+   * worker, such as the desktop shell's files. The game's own slots are the `…Slot` requests.
+   */
+  | { readonly t: 'save' }
+  /** A save file's bytes in place of the world; a broken file is an error and the world stays as it was. */
+  | { readonly t: 'load'; readonly bytes: ArrayBuffer }
+  /** One data map's numbers per tile (U4): only reads the world, the renderer paints them. */
+  | import('./requests/dataMap').DataMapRequest
+  /** The sections of the city a live check reads (E3); only reads the world. */
+  | import('./requests/observe').ObserveRequest
+  /** The clock stood at an hour, forward only (E3). */
+  | import('./requests/clock').ClockRequest
+  /** What the tool in hand would do at a tile, and why a zoned tile there does not grow (U3): only reads the world. */
+  | import('./requests/tilePreview').TilePreviewRequest
+  | SlotRequest;
+
+/** Save slots the worker keeps itself (OPFS): the save never crosses to the main thread. Answered asynchronously. */
+export type SlotRequest =
+  | { readonly t: 'saveSlot'; readonly slot: string }
+  | { readonly t: 'loadSlot'; readonly slot: string }
+  | { readonly t: 'listSlots' }
+  | { readonly t: 'removeSlot'; readonly slot: string };
+
+const SLOT_REQUESTS: ReadonlySet<string> = new Set<SlotRequest['t']>(['saveSlot', 'loadSlot', 'listSlots', 'removeSlot']);
+
+export const isSlotRequest = (req: Request): req is SlotRequest => SLOT_REQUESTS.has(req.t);
+
+/** Every request the host answers at once. */
+export type ImmediateRequest = Exclude<Request, SlotRequest>;
+
+/** One saved slot. */
+export interface SaveSlotInfo {
+  readonly slot: string;
+  /** Size of the save file. */
+  readonly bytes: number;
+  /** When it was last written, ms since the epoch. */
+  readonly modifiedMs: number;
+}
 
 export interface ReplyByRequest {
   readonly cmd: null;
@@ -296,9 +367,38 @@ export interface ReplyByRequest {
   readonly debugEmergency: null;
   readonly tickStats: TickStatsReply;
   readonly resetTickStats: null;
+  readonly save: ArrayBuffer;
+  /** The loaded world's tick and fingerprint: those of the world the save was taken of. */
+  readonly load: FingerprintReply;
+  readonly dataMap: import('./requests/dataMap').DataMapReply;
+  readonly observe: import('./requests/observe').ObserveReply;
+  readonly setClock: import('./requests/clock').ClockReply;
+  readonly tilePreview: import('./requests/tilePreview').TilePreviewReply;
+  readonly saveSlot: SaveSlotInfo;
+  readonly loadSlot: FingerprintReply;
+  /** By slot name. */
+  readonly listSlots: SaveSlotInfo[];
+  readonly removeSlot: null;
 }
 
 export type Reply = ReplyByRequest[keyof ReplyByRequest];
+
+function buffersOf(value: unknown, out: Set<ArrayBuffer>): Set<ArrayBuffer> {
+  if (ArrayBuffer.isView(value)) out.add(value.buffer as ArrayBuffer);
+  else if (typeof value === 'object' && value !== null) for (const v of Object.values(value)) buffersOf(v, out);
+  return out;
+}
+
+/**
+ * The buffers a reply to `t` moves to the main thread rather than copies: the save's bytes and the layers of a data
+ * map, made for the reply alone. A moved buffer is gone from the worker, so a reply holding the world's own arrays
+ * never moves them.
+ */
+export function transferablesOf(t: Request['t'], value: Reply): ArrayBuffer[] {
+  if (t === 'save') return [value as ArrayBuffer];
+  if (t === 'dataMap') return [...buffersOf(value, new Set())];
+  return [];
+}
 
 export interface ToWorker {
   readonly id: number;

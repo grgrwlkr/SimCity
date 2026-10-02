@@ -7,7 +7,7 @@ async function openGame(page: Page): Promise<void> {
   await page.goto('/');
   await page.waitForFunction(() => typeof window.__sim !== 'undefined');
   await page.evaluate(() => window.__sim.ready);
-  await page.getByTestId('start').click();
+  await page.evaluate(() => window.__sim.setState('InGame'));
   await expect(page.getByTestId('hud')).toBeVisible();
   // At ×1 a game day is a real day: the daily economy does not run in a test, so the treasury moves only by clicks.
   expect((await page.evaluate(() => window.__sim.snapshot())).speed).toBe('X1');

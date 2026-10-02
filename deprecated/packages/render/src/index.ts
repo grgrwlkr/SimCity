@@ -11,6 +11,7 @@ export * from './atlas';
 export * from './renderPrimitives';
 export * from './renderConfig';
 export * from './overlays';
+export * from './dataMap';
 export * from './dayNight';
 export * from './cameraProjection';
 export * from './renderSettings';

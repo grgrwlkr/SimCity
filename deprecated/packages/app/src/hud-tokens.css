@@ -91,6 +91,7 @@
   --hud-target-touch: 44px; /* when the window reports a coarse pointer */
   --hud-safe-edge: 12px;    /* distance from the window edge to any HUD panel */
   --hud-safe-edge-wide: 16px;
+  --hud-palette-height: 182px; /* the tool palette's height, border included; ToolPalette.tsx keeps it live (two rows at 1280–1600 px) */
 }
 
 @media (pointer: coarse) {

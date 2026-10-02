@@ -32,6 +32,7 @@ import { beginTickEvents } from './events';
 import { detectIntersections } from './intersections/index';
 import { computeLandValue } from './landValue';
 import { trackMilestones } from './milestones';
+import { updateScenarioProgress } from './objectives';
 import { applyGameCommandsToGrid } from './map/apply';
 import { updateDistrictTimes } from './meso/districts';
 import { rebuildMesoGraph } from './meso/graph';
@@ -235,6 +236,9 @@ export const FIXED_UPDATE: readonly SystemEntry[] = [
   // Rust `GameSet::PostSim`: reads the population just recomputed and puts the Achievement line in the feed.
   { name: 'trackMilestones', run: trackMilestones, runIn: IN_GAME },
   { name: 'reportBuildingsWithoutPower', run: reportBuildingsWithoutPower, runIn: IN_GAME },
+  // Rust `GameSet::PostSim`, after `PostSimStep::Economy`: the objectives read the population updateCityPopulation just
+  // recomputed and the treasury and happiness of applyDailyEconomy. Every tick: three comparisons at most.
+  { name: 'updateScenarioProgress', run: updateScenarioProgress, runIn: IN_GAME },
   // Rust `GameSet::PostSim`, last: after everything it reads has run this tick — the utility network and supply, the
   // employment stats and demand, the civic and service coverage, the city fields, the ledger after the daily economy,
   // the population and milestones. Every tick, but it assesses only on the tick the hour turns (and on a game's first

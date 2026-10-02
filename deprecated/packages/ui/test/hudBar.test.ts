@@ -9,7 +9,7 @@ import { Hud, type HudActions } from '../src/Hud';
 import { HudBar, formatMoney, windowTitle } from '../src/HudBar';
 import { useSimStore } from '../src/store';
 
-const actions: HudActions = { setState: () => {}, setSpeed: () => {}, scenarioHref: (s) => `?scenario=${s.query}`, command: () => {}, undoRedo: () => {}, focusTile: () => {} };
+const actions: HudActions = { setState: () => {}, setSpeed: () => {}, start: () => {}, demoCity: () => {}, command: () => {}, undoRedo: () => {}, focusTile: () => {} };
 
 function snapshot(city: Partial<WorldSnapshot['city']> = {}, rest: Partial<WorldSnapshot> = {}): WorldSnapshot {
   return {
@@ -28,11 +28,12 @@ function snapshot(city: Partial<WorldSnapshot['city']> = {}, rest: Partial<World
       trucks: 1, pedestrians: 3, regional: 0, citizens: 2000, travelling: 50, tripsStarted: 9, tripsDone: 4, simTickMs: 1.2,
     },
     services: { emergencies: [], vehicles: 0, vehiclesOut: 0, buses: 0, resolved: 0, failed: 0 },
+    scenario: null,
     ...rest,
   } as WorldSnapshot;
 }
 
-const bar = (s: WorldSnapshot, debug: boolean, fps: number | null = 60) => renderToStaticMarkup(createElement(HudBar, { snapshot: s, fps, debug, actions, budgetOpen: false, onBudgetToggle: () => {} }));
+const bar = (s: WorldSnapshot, debug: boolean, fps: number | null = 60) => renderToStaticMarkup(createElement(HudBar, { snapshot: s, fps, debug, actions, budgetOpen: false, onBudgetToggle: () => {}, advisorOpen: false, onAdvisorToggle: () => {} }));
 const text = (html: string) => html.replace(/<[^>]+>/g, ' ');
 const count = (html: string, needle: string) => html.split(needle).length - 1;
 const DEV_IDS = ['fps', 'tick', 'sim-tick', 'citizens', 'driving', 'emergencies'];
@@ -97,7 +98,7 @@ describe('HUD bar', () => {
     // In a city, then in the menu.
     const texts = [text(renderHud(snapshot(), false)), text(renderHud(snapshot({}, { appState: 'MainMenu' }), false))].map((t) => t.toLowerCase());
     // The harness must see the real interface, or an absent element proves nothing.
-    for (const piece of ['$37 994', 'население', 'новая игра', 'сценарии']) expect(texts.some((t) => t.includes(piece)), piece).toBe(true);
+    for (const piece of ['$37 994', 'население', 'новая карта', 'сценарии']) expect(texts.some((t) => t.includes(piece)), piece).toBe(true);
     for (const word of DEV_WORDS) expect(texts.some((t) => t.includes(word)), word).toBe(false);
   });
 

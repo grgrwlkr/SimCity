@@ -15,10 +15,22 @@ import { SECOND_NS } from '../src/timer';
 import { routeDirectionOk } from '../src/traffic/reroute';
 import { vehicleRef } from '../src/traffic/vehicles';
 import { createWorld, type World } from '../src/world';
+import { SIZED_IN_TICKS } from './scenarios/sizedInTicks';
 
 const TICKS = 3000;
 /** The stage 2 soak: 600 ticks, a minute of the real-time clock. */
 const SOAK_TICKS = 600;
+/**
+ * The commuters depart over 1 200 ticks of a 1 500-tick run: the cars on the road near the cap of active cars
+ * (`maxActiveVehicles`, 1 500) by tick 900 — 1 434 there — and hold it a whole soak to the end. Departures spread over
+ * 3 000 ticks neared the cap only in the last soak, where no wait can grow to a soak before the run ends, and cost
+ * twice the time: a tick's cost grows with the cars on the road, most of it in `resolveStuckVehicles` and
+ * `spawnTripVehicles`.
+ */
+const COMMUTE_DEPARTURE_TICKS = 1200;
+const COMMUTE_TICKS = 1500;
+/** A stay at work short enough for the drive back to start within the run: the first arrive by tick ~350. */
+const COMMUTE_STAY_TICKS: readonly [number, number] = [200, 800];
 
 function livingCity(): World {
   const w = createWorld({ gameHourNs: 60 * SECOND_NS });
@@ -78,21 +90,26 @@ describe('stage 4 gate', () => {
     const brokeOut = e.stats.totalFires + e.stats.totalCrimes + e.stats.totalMedical - 1;
     expect(brokeOut, `emergencies break out by themselves: ${summary}`).toBeGreaterThanOrEqual(1);
     expect(dispatched, `service vehicles go out: ${summary}`).toBeGreaterThanOrEqual(1);
-  }, 600_000);
+  }, SIZED_IN_TICKS);
 
   it('theCityOfCommutersKeepsItsLightsFlowing', () => {
     const w = createWorld();
     requestState(w, 'InGame');
     frame(w, 0);
     const plan = buildCity(w, { zones: false });
-    const scenario = new CityCommuteScenario(w, { citizens: 2000, departureWindowTicks: 3000, stayTicks: [1200, 3600], homes: plan.homes, workplaces: plan.workplaces });
+    const scenario = new CityCommuteScenario(w, { citizens: 2000, departureWindowTicks: COMMUTE_DEPARTURE_TICKS, stayTicks: COMMUTE_STAY_TICKS, homes: plan.homes, workplaces: plan.workplaces });
     const v = w.vehicles;
     const waitingSince = new Map<number, number>();
     let longestWaitForGreen = 0;
     let wrongWay = 0;
-    for (let tick = 1; tick <= TICKS; tick++) {
+    let returnHomeRequested = 0;
+    let returnedHome = 0;
+    for (let tick = 1; tick <= COMMUTE_TICKS; tick++) {
+      const requestedBefore = w.pendingEvents.tripRequested.length;
       scenario.advance(w);
+      returnHomeRequested += w.pendingEvents.tripRequested.slice(requestedBefore).filter((t) => t.purpose === 'ReturnHome').length;
       step(w, 1);
+      returnedHome += w.events.tripFinished.filter((t) => t.purpose === 'ReturnHome').length;
       for (const slot of v.order) {
         if (v.parked[slot] === 1) continue;
         const ref = vehicleRef(v, slot);
@@ -100,16 +117,19 @@ describe('stage 4 gate', () => {
           if (!waitingSince.has(ref)) waitingSince.set(ref, tick);
           longestWaitForGreen = Math.max(longestWaitForGreen, tick - waitingSince.get(ref)!);
         } else waitingSince.delete(ref);
-        if (tick % SOAK_TICKS === 0 && !routeDirectionOk(w.pathPool.remainingFrom(v.pathHandle[slot]!, v.pathCursor[slot]!) ?? [], w.grid)) wrongWay += 1;
+        if ((tick % SOAK_TICKS === 0 || tick === COMMUTE_TICKS) && !routeDirectionOk(w.pathPool.remainingFrom(v.pathHandle[slot]!, v.pathCursor[slot]!) ?? [], w.grid)) wrongWay += 1;
       }
     }
-    const summary = `requested ${scenario.requested}, arrived ${scenario.arrived}, longest wait for green ${longestWaitForGreen} ticks, wrong way ${wrongWay}, errors ${[...w.systemErrors.keys()].join(' ')}`;
+    const summary = `requested ${scenario.requested} (${returnHomeRequested} home), arrived ${scenario.arrived} (${returnedHome} home), longest wait for green ${longestWaitForGreen} ticks, wrong way ${wrongWay}, errors ${[...w.systemErrors.keys()].join(' ')}`;
     console.log(`stage 4 gate, micro: ${summary}`);
-    // Departures spread over the whole run: most of the later ones are still on their way at its end.
+    // Most commuters are still on their way at the end: the cap holds the rest of the departures back.
     expect(scenario.requested, summary).toBeGreaterThan(1000);
     expect(scenario.arrived, summary).toBeGreaterThan(0);
+    // The drive back leaves a workplace lot where the car was parked, against the morning's flow.
+    expect(returnHomeRequested, `commuters drive back: ${summary}`).toBeGreaterThan(0);
+    expect(returnedHome, `a drive back reaches home: ${summary}`).toBeGreaterThan(0);
     expect(longestWaitForGreen, summary).toBeLessThan(SOAK_TICKS);
     expect(wrongWay, summary).toBe(0);
     expect([...w.systemErrors.keys()], summary).toEqual([]);
-  }, 600_000);
+  }, SIZED_IN_TICKS);
 });

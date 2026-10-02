@@ -2,6 +2,8 @@
 // the divergence probe and the cross-engine gate compare it: a field missing here is a field no
 // pin can see diverge (test `fingerprintCoversEveryStateField`). Typed arrays are hashed as their
 // little-endian bytes; every target this ships to is little-endian.
+import { savedClassName } from './save/codec';
+import { CitizenTripCounter } from './scenarios/livingCity';
 import { CITY_FIELDS } from './cityFields';
 import type { GameCommand } from './commands';
 import type { TickEvents } from './events';
@@ -415,9 +417,19 @@ function hashNotifications(h: Fnv64, n: Notifications): void {
   }
 }
 
-/** JSON with bigints spelled out; JSON number formatting is fully specified, so engines agree. */
-function stableJson(value: unknown): string {
-  return JSON.stringify(value, (_key, v: unknown) => (typeof v === 'bigint' ? `${v}n` : v));
+/** The fields of `CitizenTripCounter` the fingerprint leaves out. */
+const TRIP_COUNTER_FIELDS: ReadonlySet<string> = new Set(['requested', 'arrived', 'lastTick']);
+
+/**
+ * JSON with bigints spelled out; JSON number formatting is fully specified, so engines agree. `omit`: keys of `value`
+ * itself left out.
+ */
+function stableJson(value: unknown, omit?: ReadonlySet<string>): string {
+  return JSON.stringify(value, function (this: unknown, key, v: unknown) {
+    // Own keys of `value` are the only ones whose holder is `value` itself.
+    if (omit !== undefined && this === value && omit.has(key)) return undefined;
+    return typeof v === 'bigint' ? `${v}n` : v;
+  });
 }
 
 function commandKey(cmd: GameCommand): string {
@@ -551,6 +563,18 @@ const SECTIONS: ReadonlyArray<readonly [string, (h: Fnv64, w: World) => void]> =
   ],
   ['notifications', (h, w) => hashNotifications(h, w.notifications)],
   ['milestones', (h, w) => h.u32(w.milestones.bestPopulation)],
+  [
+    'scenario',
+    (h, w) => {
+      h.str(stableJson(w.scenario));
+      // The runtime's class by its save name, which a minified build keeps, then every own field of it, its private
+      // ones and its generator's state words included; but the trip counters of `CitizenTripCounter`, which the host
+      // alone feeds for the HUD, stay out like the other observability. A field of a subclass is hashed.
+      const run = w.scenarioRuntime;
+      h.str(run === null ? '' : (savedClassName(run) ?? ''));
+      h.str(stableJson(run, run instanceof CitizenTripCounter ? TRIP_COUNTER_FIELDS : undefined));
+    },
+  ],
   [
     'advisor',
     (h, w) => {

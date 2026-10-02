@@ -61,6 +61,8 @@ export class CityCommuteScenario {
       driving: false,
       departAt: w.tick + rangeU32(this.rng, 1, window),
     }));
+    // The world keeps its scenario, so a save carries it and the fingerprint sees it.
+    w.scenarioRuntime = this;
   }
 
   /**

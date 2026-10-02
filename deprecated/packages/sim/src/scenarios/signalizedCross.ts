@@ -171,6 +171,8 @@ export class SignalizedCrossScenario {
     w.roadDirty.markAll();
     detectIntersections(w);
     w.commands.push({ kind: 'PlaceTrafficLight', pos: SIGNALIZED_CROSS.box });
+    // The world keeps its scenario, so a save carries it and the fingerprint sees it.
+    w.scenarioRuntime = this;
   }
 
   /** Call before each fixed tick: routes once the lanelets exist, then a wave whenever one is due. */

@@ -8,9 +8,13 @@ import { buildingPlace, streetPlace } from '../src/parking';
 import { fingerprint, fingerprintSections } from '../src/fingerprint';
 import { buildHeadlessGame, reseed } from '../src/headless';
 import { firstDivergence } from '../src/probe';
+import { CityCommuteScenario } from '../src/scenarios/cityCommute';
+import { CitizenTripCounter, LivingCityScenario } from '../src/scenarios/livingCity';
+import { MetropolisScenario } from '../src/scenarios/metropolis';
 import { requestState } from '../src/state';
 import { refSlot, spawnVehicle } from '../src/traffic/vehicles';
 import type { World } from '../src/world';
+import { SIZED_IN_TICKS } from './scenarios/sizedInTicks';
 
 /** ~12 game days, as in Rust. */
 const TICKS = 2880;
@@ -33,7 +37,7 @@ describe('determinism', () => {
     expect(fingerprint(a), `same seed + ${TICKS} fixed ticks must produce identical sim state`).toBe(fingerprint(b));
     expect(fingerprint(a), `a different seed must diverge within ${TICKS} ticks`).not.toBe(fingerprint(c));
     expect(fingerprint(a), `expected the sim state to change after ${TICKS} ticks`).not.toBe(t0);
-  });
+  }, SIZED_IN_TICKS);
 
   // Rust `probe_first_divergence_tick` is an ignored diagnostic; here the harness is cheap enough to pin.
   it('probeFirstDivergenceTickFindsTheTickAndTheSection', () => {
@@ -47,8 +51,7 @@ describe('determinism', () => {
       if (tick === 250) right.city.money += 1;
     });
     expect(found).toEqual({ tick: 250, sections: ['city'] });
-    // 2 400 ticks with a fingerprint each: 1.7 s alone, past the default 5 s under a parallel suite.
-  }, 60_000);
+  }, SIZED_IN_TICKS);
 
   it('fingerprintCoversEveryStateField', () => {
     const mutations: Array<readonly [string, (w: World) => void]> = [
@@ -209,6 +212,45 @@ describe('determinism', () => {
       ['shoppingStats', (w) => void (w.shoppingStats.demandEvents += 1)],
       ['commuteStats', (w) => void (w.commuteStats.samples += 1)],
       ['classDemand', (w) => void (w.classDemand.byClass.Commercial.Low = 0.5)],
+      ['scenario.activeId', (w) => void (w.scenario.activeId = 'starter')],
+      ['scenario.objectives', (w) => void w.scenario.objectives.push({ kind: 'MoneyAtLeast', target: 1 })],
+      ['scenario.met', (w) => void w.scenario.met.push(true)],
+      ['scenario.isCompleted', (w) => void (w.scenario.isCompleted = true)],
+      ['scenarioRuntime', (w) => void (w.scenarioRuntime = new CitizenTripCounter())],
+      [
+        'scenarioRuntime.state',
+        (w) => {
+          // What a commute keeps drives traffic: its generator, commuters and the last tick it fed.
+          const commute = new CityCommuteScenario(w, { citizens: 3 });
+          const before = fingerprint(w);
+          w.tick += 1;
+          commute.advance(w);
+          w.tick -= 1;
+          expect(fingerprint(w), 'fingerprint is blind to the state of the scenario runtime').not.toBe(before);
+        },
+      ],
+      [
+        'scenarioRuntime.plan',
+        (w) => {
+          // A field a runtime has beyond the trip counters: the metropolis's plan, and whatever a later runtime adds.
+          const counters = { requested: 0, arrived: 0, lastTick: -1 };
+          const run = Object.assign(Object.create(MetropolisScenario.prototype) as MetropolisScenario, counters, { plan: { lights: [], first: 3, last: 9 } });
+          w.scenarioRuntime = run;
+          const before = fingerprint(w);
+          (run as { plan: { first: number } }).plan.first = 4;
+          expect(fingerprint(w), 'fingerprint is blind to the plan of the metropolis').not.toBe(before);
+        },
+      ],
+      [
+        'scenarioRuntime.class',
+        (w) => {
+          w.scenarioRuntime = new CitizenTripCounter();
+          const before = fingerprint(w);
+          // The same fields under another runtime's class.
+          w.scenarioRuntime = Object.assign(Object.create(LivingCityScenario.prototype) as LivingCityScenario, w.scenarioRuntime);
+          expect(fingerprint(w), 'fingerprint is blind to the class of the scenario runtime').not.toBe(before);
+        },
+      ],
     );
 
     for (const [label, mutate] of mutations) {
@@ -217,7 +259,7 @@ describe('determinism', () => {
       mutate(w);
       expect(fingerprint(w), `fingerprint is blind to ${label}`).not.toBe(before);
     }
-  });
+  }, SIZED_IN_TICKS);
 
   it('fingerprintIsTheSameForTwoFreshWorlds', () => {
     expect(fingerprintSections(buildHeadlessGame())).toEqual(fingerprintSections(buildHeadlessGame()));

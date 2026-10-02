@@ -1,24 +1,24 @@
 // Worker entry: owns the world, runs the fixed-step loop, answers `window.__sim`.
 import { RENDER_CAPACITY, SimHost } from './host';
-import type { FromWorker, ToWorker } from './protocol';
+import { transferablesOf, type FromWorker, type ToWorker } from './protocol';
 
 /** Loop period; the driver turns whatever real time passed into fixed ticks. */
 const LOOP_MS = 16;
 
 const host = new SimHost(RENDER_CAPACITY);
 
-function send(message: FromWorker): void {
-  postMessage(message);
+function send(message: FromWorker, transfer: Transferable[] = []): void {
+  postMessage(message, transfer);
 }
 
 addEventListener('message', (event: MessageEvent<ToWorker>) => {
   const { id, req } = event.data;
-  // Reply with the failure so the awaiting promise rejects instead of hanging.
-  try {
-    send({ t: 'reply', id, value: host.handle(req) });
-  } catch (error) {
-    send({ t: 'error', id, message: error instanceof Error ? error.message : String(error) });
-  }
+  // In arrival order, a slot request holding back those after it; the failure is a reply too, so no promise hangs.
+  host.answer(req).then(
+    // A save's bytes and a data map's layers move to the main thread rather than being copied.
+    (value) => send({ t: 'reply', id, value }, transferablesOf(req.t, value)),
+    (error: unknown) => send({ t: 'error', id, message: error instanceof Error ? error.message : String(error) }),
+  );
 });
 
 function loop(): void {

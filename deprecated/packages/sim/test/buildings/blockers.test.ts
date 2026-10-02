@@ -88,7 +88,7 @@ describe('growth blockers', () => {
     zoneRect(grid, 'Residential', 4, 6, 9, 10);
     expect(growthBlockers(grid, network(grid), demand(1), t(5, 10), undefined)).toEqual(['NoRoad']);
     expect(growthBlockers(grid, network(grid), demand(1), t(20, 10), undefined)).toEqual(['NotZoned']);
-    expect(blockerReason('NoPower')).toBe('No power');
+    expect(blockerReason('NoPower')).toBe('Нет электричества');
   });
 
   it('utilityNetworkUnpoweredZoneDoesNotGrow', () => {
@@ -120,21 +120,21 @@ describe('growth blockers', () => {
   it('utilityNetworkTileDiagnosisNamesTheReasonForAPlayer', () => {
     const grid = block();
     const zoned = t(8, 4);
-    expect(tileDiagnosis(grid, network(grid), demand(1), zoned, undefined)).toEqual(['Residential zone', "Won't grow: No power"]);
+    expect(tileDiagnosis(grid, network(grid), demand(1), zoned, undefined)).toEqual(['Жилая зона', 'Не растёт: нет электричества']);
     expect(tileDiagnosis(grid, network(grid), demand(0), zoned, undefined)).toEqual([
-      'Residential zone',
-      "Won't grow: No power, No demand",
+      'Жилая зона',
+      'Не растёт: нет электричества, нет спроса',
     ]);
     expect(tileDiagnosis(grid, network(grid), demand(1), t(20, 10), undefined), 'an unzoned tile has nothing to explain').toBeNull();
 
     standOn(grid, 5, 3);
-    expect(tileDiagnosis(grid, network(grid), demand(1), t(5, 3), undefined)).toEqual(['Residential zone', 'No power: occupants are leaving']);
+    expect(tileDiagnosis(grid, network(grid), demand(1), t(5, 3), undefined)).toEqual(['Жилая зона', 'Нет электричества: здание пустеет']);
 
     station(grid, 'PowerPlant', 16, 3);
     expect(tileDiagnosis(grid, network(grid), demand(1), zoned, undefined)).toBeNull();
     expect(tileDiagnosis(grid, network(grid), demand(1), t(5, 3), undefined)).toEqual([
-      'Residential zone',
-      'No water: cannot rise above level 1',
+      'Жилая зона',
+      'Нет воды: выше уровня 1 не вырастет',
     ]);
   });
 
@@ -261,10 +261,10 @@ describe('upgrade blockers', () => {
     const risky = fieldsOver(grid, 'FireHazard', 0.8);
     expect(upgradeBlocker(house(1), grid, network(grid), demand(0.5), risky)).toBe('FireHazard');
     expect(upgradeBlocker(house(1), grid, network(grid), demand(0.5), fieldsOver(grid, 'FireHazard', 0.2))).toBeNull();
-    expect(blockerReason('FireHazard')).toBe('High fire hazard');
+    expect(blockerReason('FireHazard')).toBe('Высокая пожароопасность');
 
     standOn(grid, 5, 3);
-    expect(tileDiagnosis(grid, network(grid), demand(1), t(5, 3), risky)).toEqual(['Residential zone', 'High fire hazard: cannot rise']);
+    expect(tileDiagnosis(grid, network(grid), demand(1), t(5, 3), risky)).toEqual(['Жилая зона', 'Высокая пожароопасность: не растёт']);
   });
 
   it('cityFieldsPoorHealthKeepsHomesBelowLevelThree', () => {
@@ -274,10 +274,10 @@ describe('upgrade blockers', () => {
     expect(upgradeBlocker(tall, grid, network(grid), demand(0.5), sick)).toBe('PoorHealth');
     expect(upgradeBlocker(tall, grid, network(grid), demand(0.5), fieldsOver(grid, 'Health', 0.8))).toBeNull();
     expect(upgradeBlocker(house(1), grid, network(grid), demand(0.5), sick), 'poor health does not stop a home first step').toBeNull();
-    expect(blockerReason('PoorHealth')).toBe('Poor health');
+    expect(blockerReason('PoorHealth')).toBe('Плохое здоровье');
 
     standOn(grid, 5, 3);
-    expect(tileDiagnosis(grid, network(grid), demand(1), t(5, 3), sick)).toEqual(['Residential zone', 'Poor health: cannot reach level 3']);
+    expect(tileDiagnosis(grid, network(grid), demand(1), t(5, 3), sick)).toEqual(['Жилая зона', 'Плохое здоровье: до уровня 3 не дорастёт']);
   });
 
   it('cityFieldsUnattractiveZoneDoesNotGrowAndSaysWhy', () => {
@@ -291,7 +291,7 @@ describe('upgrade blockers', () => {
     const fair = fieldsOver(grid, 'Attractiveness', 0.8);
     expect(growthBlockers(grid, network(grid), demand(1), t(8, 4), bleak)).toEqual(['Unattractive']);
     expect(growthBlockers(grid, network(grid), demand(1), t(8, 4), fair)).toEqual([]);
-    expect(blockerReason('Unattractive')).toBe('Unattractive location');
+    expect(blockerReason('Unattractive')).toBe('Непривлекательное место');
 
     const shunned = growthWorld(lit());
     shunned.cityFields = bleak;

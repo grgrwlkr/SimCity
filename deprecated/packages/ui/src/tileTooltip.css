@@ -1,0 +1,46 @@
+/* The tile tooltip: docs/design/hud/layout.md §4, states.md, contrast.md. Values are tokens of hud-tokens.css. */
+
+/* The whole tooltip lets the pointer through: it stands at the cursor and must not eat the click it explains
+   (tile_tooltip.rs `Pickable::IGNORE`, states.md «Правило клика сквозь HUD»). */
+.hud-tooltip,
+.hud-tooltip * {
+  pointer-events: none;
+}
+
+.hud-tooltip {
+  position: fixed;
+  z-index: var(--hud-z-tooltip);
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--hud-space-2);
+  box-sizing: border-box;
+  max-width: 320px;
+  margin: 0;
+  padding: var(--hud-space-6) var(--hud-space-12);
+  /* The denser glass: the refusal is the one red text in the game, and it has no background of its own. */
+  background: var(--hud-glass-strong);
+  border: 1px solid var(--hud-glass-border);
+  border-radius: var(--hud-radius-control);
+  box-shadow: var(--hud-shadow-tooltip);
+  font-family: var(--hud-font);
+  line-height: var(--hud-leading-tight);
+  user-select: none;
+  /* The position follows the cursor as it is: no transition, whatever the motion preference (tokens.md «Движение»). */
+  transition: none;
+}
+
+.hud-tooltip-headline {
+  margin: 0;
+  color: var(--hud-ink);
+  font-size: var(--hud-size-body);
+}
+
+.hud-tooltip-detail {
+  margin: 0;
+  color: var(--hud-ink-muted);
+  font-size: var(--hud-size-caption);
+}
+
+.hud-tooltip-detail.is-refusal {
+  color: var(--hud-negative);
+}

@@ -23,7 +23,7 @@ import {
 import { spawnBuilding } from './spawn';
 
 /** One feed line for every zone. */
-export const CONSTRUCTION_NOTICE = 'New building constructed';
+export const CONSTRUCTION_NOTICE = 'Построено новое здание';
 const MAX_SPAWNS_PER_HOUR = 6;
 /** GDD 10.3.3.1: the city's construction capacity. */
 const MAX_PARALLEL_CONSTRUCTIONS = 15;

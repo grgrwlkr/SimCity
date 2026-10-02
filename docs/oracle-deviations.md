@@ -74,6 +74,16 @@ upgraded», — но вызывать по зоне стало нечего, а 
 умолчанию. Число тиков и все ожидания прежние. Скорость тика меряет `bun run bench` (тестовый город,
 «Живой город», мегаполис).
 
+Волна 6 распространила приём на синхронные тесты с фиксированным объёмом работы (миры, маршруты, тексели), по тому же
+правилу — свой таймаут раньше или дольше 1 с под нагрузкой: в `determinism.test.ts` —
+`sameSeedProducesIdenticalFingerprintsAndDifferentSeedDiverges`, `probeFirstDivergenceTickFindsTheTickAndTheSection`,
+`fingerprintCoversEveryStateField`; `speedLadderMultipliesTicks` в `packages/bridge/test/driver.test.ts`;
+`aFireIsServedFromTheNearestStation` и `anEmergencyNobodyServesFailsAndHurtsHappiness` в `emergencies.test.ts`;
+`findRouteRoutesEveryFixturePairLegallyOnTestCity` в `lanelet/laneletRoutesParity.test.ts`; оба теста `gate4.test.ts`
+(было 600 000 мс; `theCityOfCommutersKeepsItsLightsFlowing` шёл 1 860 с при load 64–73 и 314 с при 52–66, ожидания
+выполнены оба раза); в `packages/render/test/scene/atlasMips.test.ts` — проверка билинейного следа, `0` без импорта из
+`packages/sim/test`. Ни одно ожидание не изменено.
+
 ## 2026-09-23 — `aScenarioSeesEveryTickOfAFastFrame`: ровно 1 490 тиков вместо «больше 300»
 
 Волна 5, задача «тесты на реальном времени». Тест (`packages/bridge/test/host.test.ts`) крутит 150 кадров
@@ -93,3 +103,59 @@ upgraded», — но вызывать по зоне стало нечего, а 
 виньетка по отдельности в шуме замера (60–64 fps; таблица в handoff dev-light волны w5, load average 73–214). Условие
 лида: игрок по умолчанию не медленнее `main` (30 fps на вписанном мегаполисе). Остальные поля теней оставлены теми, с
 которыми каскады включаются обратно; цена возврата — отсечение батчей по каскаду (здания чанками), это следующий шаг.
+
+## 2026-09-24 — `renderConfigPinsTheShippedLook`: два каскада теней по умолчанию (`shadows.cascades` 2 вместо 0)
+
+Волна 7, долг w5 r3-light. Запись 2026-09-23 выключила каскады (4 → 0): каждый каскад заново рисовал все экземпляры
+карты. Теперь в карту теней рисуют только корпуса зданий (`InstanceBatch` с `castsShadow`, `mapInstances.ts`); окна
+лежат на стенах, глифы на крышах, мебель улиц слишком мала для отдельного прохода по 234 244 экземплярам. Каскадов два,
+а не четыре из `rust-final:assets/config/render.ron`; остальные поля прежние (900, 90, 0.2, 0). Вписанный мегаполис 800,
+`E2E_GPU=1`, WebGPU на Apple Metal, без vsync и потолка кадров (`@perf` в `e2e/render-gates.spec.ts`): main без теней
+118 fps и 86 draw calls, main с 4 каскадами 50 и 214, эта ветка с 4 каскадами 82 и 130, с 2 каскадами 89–114 и 108.
+Таблица и нагрузка машины — в плане этапа 5. Пин `theSunComesFromTheConfiguredDirectionAndCastsShadowsOnlyWithCascades`
+теперь ждёт тени в поставляемом конфиге и их отсутствие при 0 каскадах.
+
+## 2026-09-24 — `renderConfigPinsTheShippedLook`: каскады без перекрытия (`shadows.overlapProportion` 0 вместо 0.2)
+
+Волна 7, ревью раунда 1 (desktop-гейт `theTestCityHoldsItsFrameRate`). С перекрытием `CSMShadowNode` строит плавный
+переход (`_setupFade`) и читает оба каскада на каждом пикселе. A/B в одном запуске, тестовый город (`?scenario=city`),
+веб на GPU без потолка кадров, 3 раунда × 5 окон по 1 с, тени вкл/выкл через `?off=shadows`: с перекрытием время кадра
++37,4 % (2,94 против 2,14 мс), один каскад +13,0 % (2,83 против 2,51), два каскада без перекрытия +9,6 % (1,88 против
+1,71). Граница каскадов теперь резкая; остальные поля прежние.
+
+## 2026-09-24 — пины текста игрока переведены на русский (l10n-ru)
+
+Волна 7, единица l10n-ru. Пины текста для игрока, портированные из Rust, переведены на русский. Имя и смысл каждого
+теста сохранены, меняется только язык литерала. Переведены: `advisor.test.ts` (`advisorAHealthyCityGetsNoAdvice` —
+разделитель разрядов `thousands()` теперь U+00A0, как у `formatMoney`; `advisorNamesTheWaterShortageWithItsNumbers`,
+`advisorWithoutAStationSaysWhichAndCountsTheBuildings`, `advisorNamesUnemploymentAndWhoIsOutOfWork`,
+`advisorNamesHousingAndJobsDemand`, `advisorNamesSchoolsOnceTheyCanBeBuilt`, `advisorNamesCrimeFireAndHealthWithTheirCover`,
+`advisorNamesTheBudgetDeficitAndAnEmptyTreasury`, `advisorCountsServiceCoverOverTheBuildingsStandingNow`,
+`advisorNamesTheLowerClassOnATie`), `buildings/blockers.test.ts` (`utilityNetworkGrowthBlockersNameTheMissingUtility`,
+`utilityNetworkTileDiagnosisNamesTheReasonForAPlayer`, `cityFieldsFireHazardHoldsBuildingsBack`,
+`cityFieldsPoorHealthKeepsHomesBelowLevelThree`, `cityFieldsUnattractiveZoneDoesNotGrowAndSaysWhy`), `milestones.test.ts`
+(`milestoneSchoolOpensAt250ResidentsAndUniversityAt1000`, `milestoneReachingAMilestonePutsOneLineInTheFeed`),
+`render/test/toolPreview.test.ts` (`toolPreviewPricesARoadTileItsUpgradeAndACrossing`,
+`toolPreviewRefusesARoadOnWaterAndADowngradeButNotDebt`, `toolPreviewZoneVerdictIsTheZoningRule`,
+`toolPreviewServiceShowsPriceRadiusAndWhyItCannotGoHere`, `utilityNetworkStationToolsShowPriceAndSupplyNotARadius`,
+`milestoneLockedBuildingPreviewSaysWhenItUnlocks`, `toolPreviewSignalBulldozerInspectAndOffTheMap`),
+`emergencies.test.ts` (`aBigCityHasAnEmergencyAnHourAndNeverMoreThanItsCap`), `bridge/test/advisorSnapshot.test.ts`
+(`snapshotCarriesTheFirstThreeProblemsOfTheAdvisor`), `e2e/toasts.spec.ts` (`eightIdenticalEventsAreOneLineWithACount`,
+`clickingAToastTakesTheCameraToTheEvent`). Новые пины без аналога в Rust: `advisorCountsAgreeWithTheirNouns`,
+`toolPreviewEffectsCarryAPriceCleanly`, `emergencyNamesLiveInALeafModule`, `format.test.ts`, строка «1 000 жителей:
+открыт университет».
+
+При слиянии волны интегратор перевёл пины веток, написанных до l10n-ru, по таблице было → стало dev-l10n и сверил с
+выводом слитого кода: `bridge/test/observeRequest.test.ts` (`utilityNetworkIsReportedSoASupplyRunCanBeJudged`,
+`toolPreviewIsReportedSoAPlacementRunCanChooseItsTile`) и `e2e/live.spec.ts`
+(`toolPreviewIsReportedSoAPlacementRunCanChooseItsTile`, «Вне карты») — перенос `observe.rs`;
+`bridge/test/tilePreviewRequest.test.ts` (`utilityNetworkTooltipNamesWhyAZonedTileDoesNotGrow`) сравнивает причину в
+нижнем регистре: посреди фразы `tileDiagnosis` пишет её со строчной (`lowerFirst`, `blockers.ts`).
+
+## 2026-09-24 — gate4 `theCityOfCommutersKeepsItsLightsFlowing`: выезд за 1 200 тиков из 1 500
+
+Волна 7, долг w6 wallclock-2 (`packages/sim/test/gate4.test.ts`, 64f77f8 + 6592269). 2 000 жителей выезжают за 1 200
+тиков прогона в 1 500 тиков и остаются на работе 200–800 тиков — вместо 3 000 из 3 000 и 1 200–3 600. Пороги прежние
+(запрошено > 1 000, доехали > 0, ожидание зелёного < 600 тиков, никто не едет против движения, нет ошибок систем), плюс
+новое: жители едут домой (запрошено > 0, доехали > 0). Потолок машин (1 500) достигается к ~900-му тику и держится
+весь хвост прогона. Прогон стоит ~0,53× прежнего.

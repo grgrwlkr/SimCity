@@ -23,11 +23,23 @@ const alwaysFullResponses: Plugin = {
   configurePreviewServer: (server) => void server.middlewares.use(stripConditionalRequest),
 };
 
+/**
+ * `__SIM_API__`: whether the page installs `window.__sim` (main.tsx imports it dynamically under this flag, so a build
+ * without it carries neither the code nor the name). On for the dev server (web e2e, `desktop:dev`); a build turns it on
+ * only with `SIMCITY_SIM_API=1`, the desktop test build (`build:test`), never the release.
+ */
+const simApiFlag: Plugin = {
+  name: 'sim-api-flag',
+  config: (_config, { command }) => ({
+    define: { __SIM_API__: JSON.stringify(command === 'serve' || process.env.SIMCITY_SIM_API === '1') },
+  }),
+};
+
 /** 5174, the port the e2e gate opens; a preview beside another dev server gets its own through `PORT`. */
 const port = Number(process.env.PORT ?? 5174);
 
 export default defineConfig({
-  plugins: [alwaysFullResponses, react()],
+  plugins: [alwaysFullResponses, simApiFlag, react()],
   server: { port, strictPort: true, headers: crossOriginIsolation },
   preview: { port, strictPort: true, headers: crossOriginIsolation },
   // The one engine the game runs in: the Chromium of the desktop Electron (44.3.0 ships 152).

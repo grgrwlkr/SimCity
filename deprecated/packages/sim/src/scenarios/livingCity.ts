@@ -81,5 +81,7 @@ export class LivingCityScenario extends CitizenTripCounter {
     if (options.prebuilt ?? true) prebuildCity(w);
     seedDemoBusRoute(w.grid, w.busRoutes);
     w.city.hour = LIVING_CITY_START_HOUR;
+    // The world keeps its scenario, so a save carries it and the fingerprint sees it.
+    w.scenarioRuntime = this;
   }
 }

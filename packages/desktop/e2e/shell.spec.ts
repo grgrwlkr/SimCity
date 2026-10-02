@@ -1,9 +1,15 @@
 import { _electron as electron, expect, test } from '@playwright/test';
-import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { RELEASE_APP, TEST_APP, buildInfoOf, makeInspectableClone, requireBuild } from './inspectableClone';
 
-const APP = fileURLToPath(new URL('../release/mac-arm64/SimCity.app/Contents/MacOS/SimCity', import.meta.url));
-test.skip(!existsSync(APP), 'build the app first: bun run desktop:build');
+let APP = '';
+test.beforeAll(async () => {
+  requireBuild(TEST_APP); requireBuild(RELEASE_APP);
+  const { test: isTest, ...tested } = buildInfoOf(TEST_APP);
+  const { test: isRelease, ...release } = buildInfoOf(RELEASE_APP);
+  expect({ isTest, isRelease }).toEqual({ isTest: true, isRelease: false });
+  expect(tested).toEqual(release);
+  APP = await makeInspectableClone(TEST_APP);
+});
 
 test('the hidden packaged app opens the current city from its only menu item', async () => {
   const app = await electron.launch({ executablePath: APP, env: { ...process.env, SIMCITY_TEST_WINDOW: '1' }, timeout: 30_000 });

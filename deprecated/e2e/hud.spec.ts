@@ -7,7 +7,7 @@ async function openGame(page: Page, query = ''): Promise<void> {
   await page.waitForFunction(() => typeof window.__sim !== 'undefined');
   await page.evaluate(() => window.__sim.ready);
   // A scenario opens in game by itself; the plain page opens on the menu.
-  if (!query.includes('scenario=')) await page.getByTestId('start').click();
+  if (!query.includes('scenario=')) await page.evaluate(() => window.__sim.setState('InGame'));
   await expect(page.getByTestId('hud')).toBeVisible();
 }
 
@@ -34,7 +34,7 @@ test('uiShellOneActivationOfASpeedButtonSetsTheSpeed', async ({ page }) => {
 test('theMenuButtonOnTheBarLeadsToTheMainMenu', async ({ page }) => {
   await openGame(page);
   await page.getByTestId('hud').getByRole('button', { name: 'В меню' }).click();
-  await expect(page.getByTestId('start')).toBeVisible();
+  await expect(page.getByTestId('hud-menu')).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.__sim.snapshot().then((s) => s.appState))).toBe('MainMenu');
 });
 

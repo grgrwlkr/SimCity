@@ -7,6 +7,7 @@ import { Fleet } from './fleet';
 import { resetEconomyPolicy } from './economy/economy';
 import { emptyEmploymentStats } from './employment';
 import { MesoTraffic } from './meso/traffic';
+import { emptyScenarioProgress } from './objectives';
 import { seedGrowthRngFromMap, seedSimRngFromMap } from './seeding';
 import { ServiceCoverageIndex } from './services/coverage';
 import { teardownTraffic } from './traffic/lifecycle';
@@ -91,4 +92,7 @@ function enterMainMenu(w: World): void {
   w.intersections.reset();
   // TrafficPlugin: cleanup_traffic_entities, reset_traffic_aggregates, reset_intersection_reservations.
   teardownTraffic(w);
+  // ScenariosPlugin: reset_scenario_runtime; the next game is not measured against this one's objectives.
+  w.scenario = emptyScenarioProgress();
+  w.scenarioRuntime = null;
 }

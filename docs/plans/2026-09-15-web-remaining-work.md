@@ -91,6 +91,11 @@
 - Критерии: тест сида; цели считаются в симуляции и видны в снимке; e2e «каждый сценарий открывается» — ворота программы «все сценарии грузятся».
 - Пути: `packages/sim/src/scenarios/catalog.ts` (новый), `packages/bridge/src/scenarios.ts`, `host.ts`, `e2e/scenarios.spec.ts` (новый).
 
+### Отклонения
+
+- P3, волна 7 (решение ведущего 2026-09-24): новая игра и пресеты каталога стартуют в 08:00 (`NEW_GAME_START_HOUR`, `packages/sim/src/objectives.ts`), Rust начинал любую игру в полночь (долг w5). `city` и перекрёстки стартуют в 00:00, как `rust-final` sim.rs:90; «Живой город» и мегаполис — в 06:00, как раньше.
+- P3, волна 7: вместо нового `packages/sim/src/scenarios/catalog.ts` — `packages/sim/src/objectives.ts` (старт сценария, цели, прогресс) плюс существующий каталог `packages/sim/src/scenarios/catalogData.ts`.
+
 ## Этап 6c — HUD игрока (`packages/ui`, `packages/bridge`)
 
 Ворота: у каждой панели есть e2e в Chromium на кликах Playwright. Без `?debug=1` в DOM нет FPS, тика и строк трафика — это порт `dev_ui_gated_*`, 5 тестов.

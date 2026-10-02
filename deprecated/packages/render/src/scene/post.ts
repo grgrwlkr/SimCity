@@ -9,11 +9,12 @@ import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import type GTAONode from 'three/addons/tsl/display/GTAONode.js';
 import { ao } from 'three/addons/tsl/display/GTAONode.js';
 import { lut3D } from 'three/addons/tsl/display/Lut3DNode.js';
-import { float, mrt, normalView, output, pass, renderOutput, screenUV, texture, texture3D, vec3, vec4 } from 'three/tsl';
+import { float, mrt, normalView, output, pass, renderOutput, screenUV, texture, texture3D, uniform, vec3, vec4 } from 'three/tsl';
 import * as THREE from 'three/webgpu';
 import type { ColorGradingConfig, RenderConfig, VignetteConfig } from '../renderConfig';
 import type { ResolvedRenderSettings } from '../renderSettings';
-import { vignetteImage } from '../vignette';
+import type { OverlayMode } from '../overlays';
+import { vignetteImage, vignetteVisible } from '../vignette';
 
 export type PostPassName = 'scene' | 'ao' | 'bloom' | 'tonemap' | 'grade' | 'vignette' | 'fxaa';
 
@@ -132,6 +133,18 @@ export interface PostGraph {
   readonly passes: readonly PostPassName[];
   readonly scenePass: ReturnType<typeof pass>;
   readonly ao: GTAONode | null;
+  /** 1 draws the vignette, 0 leaves the corners as they are; `null` when the graph has no vignette. */
+  readonly vignetteGate: VignetteGate | null;
+}
+
+/** The uniform the vignette is multiplied by. */
+export interface VignetteGate {
+  value: number;
+}
+
+/** The vignette gate's value under `overlay`: a data map needs its corners read like its centre (`vignetteVisible`). */
+export function vignetteGateFor(cfg: VignetteConfig, overlay: OverlayMode): 0 | 1 {
+  return vignetteVisible(cfg, overlay) ? 1 : 0;
 }
 
 /** The effect nodes are typed as plain `TempNode`s; each outputs the frame's vec4. */
@@ -162,13 +175,17 @@ export function postGraph(scene: THREE.Scene, camera: THREE.Camera, s: ResolvedR
     out = asColor(lut3D(out, texture3D(gradeTexture(s.colorGrading)), GRADE_LUT_SIZE, float(1)));
     passes.push('grade');
   }
+  let vignetteGate: VignetteGate | null = null;
   if (vignette.enabled && vignette.strength > 0) {
-    out = vec4(out.rgb.mul(texture(vignetteTexture(vignette), screenUV).a.oneMinus()), out.a);
+    // A uniform, not a rebuilt graph: the gate closes while a data map is open and costs one multiply.
+    const gate = uniform(1);
+    vignetteGate = gate;
+    out = vec4(out.rgb.mul(texture(vignetteTexture(vignette), screenUV).a.mul(gate).oneMinus()), out.a);
     passes.push('vignette');
   }
   if (s.antiAliasing.fxaa) {
     out = asColor(fxaa(out));
     passes.push('fxaa');
   }
-  return { output: out, passes, scenePass, ao: aoPass };
+  return { output: out, passes, scenePass, ao: aoPass, vignetteGate };
 }

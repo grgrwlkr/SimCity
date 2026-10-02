@@ -35,7 +35,7 @@ test('rngProbeMatchesNode', async ({ page }) => {
 });
 
 test('menuStartsAGameAndTheClockRuns', async ({ page }, testInfo) => {
-  await page.getByTestId('start').click();
+  await page.evaluate(() => window.__sim.setState('InGame'));
   await expect(page.getByTestId('hud')).toBeVisible();
   // ×1 is real time: a second or two after the start, the clock shows them.
   // The bar shows no seconds (docs/design/hud/layout.md §2): the snapshot says the clock runs.
@@ -46,13 +46,13 @@ test('menuStartsAGameAndTheClockRuns', async ({ page }, testInfo) => {
   await page.keyboard.press('Space');
   await expect(page.getByText('Пауза')).toBeVisible();
   await page.keyboard.press('Escape');
-  await expect(page.getByTestId('start')).toBeVisible();
+  await expect(page.getByTestId('hud-menu')).toBeVisible();
 });
 
 // Stage 3½a: the speed ladder runs the whole simulation faster, the HUD shows the rate the game really runs at, and a
 // failing system is reported while the world goes on.
 test('hudShowsTheSpeedLadderAndTheRealRate', async ({ page }) => {
-  await page.getByTestId('start').click();
+  await page.evaluate(() => window.__sim.setState('InGame'));
   const speeds = page.getByRole('navigation', { name: 'Скорость' });
   await expect(speeds.getByRole('button')).toHaveText(['Стоп', '×1', '×3', '×10', '×60', '×360']);
   await speeds.getByRole('button', { name: '×10', exact: true }).click();
@@ -67,7 +67,7 @@ test('hudShowsTheSpeedLadderAndTheRealRate', async ({ page }) => {
 test('hudShowsTheFrameRate', async ({ page }) => {
   // The frame rate is a dev element: only under `?debug=1` (dev_ui_gate.rs).
   await page.goto('/?debug=1');
-  await page.getByTestId('start').click();
+  await page.evaluate(() => window.__sim.setState('InGame'));
   const fps = page.getByTestId('fps');
   await expect(fps).toHaveText(/^FPS \d+$/);
   await expect.poll(async () => Number((await fps.textContent())?.replace('FPS ', ''))).toBeGreaterThan(0);

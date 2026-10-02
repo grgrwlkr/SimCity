@@ -139,8 +139,8 @@ export class Loans {
 
   /** Borrow one of `LOAN_SIZES`: the money arrives today as a loan line. The refusal, if the bank refuses. */
   take(principal: number, ledger: BudgetLedger, city: City): string | undefined {
-    if (!(LOAN_SIZES as readonly number[]).includes(principal)) return 'the bank lends $10 000, $25 000 or $50 000';
-    if (this.active.length >= MAX_ACTIVE_LOANS) return 'the bank will not lend to a city with three loans open';
+    if (!(LOAN_SIZES as readonly number[]).includes(principal)) return 'банк даёт $10 000, $25 000 или $50 000';
+    if (this.active.length >= MAX_ACTIVE_LOANS) return 'банк не кредитует город с тремя открытыми займами';
     ledger.post('LoanProceeds', principal, city);
     this.active.push({ principal, monthlyPayment: monthlyPayment(principal), monthsLeft: LOAN_TERM_MONTHS });
     return undefined;

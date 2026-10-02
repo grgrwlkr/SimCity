@@ -1,7 +1,8 @@
 import { MapGrid, roadCellNone, tileToWorld, type RoadCell } from '@simcity/sim';
 import { describe, expect, it } from 'vitest';
 import { renderLayersOf } from '@simcity/bridge';
-import { CHUNK_TILES, buildChunkGeometry, changedChunks, chunkGrid, groupGrid, groupOfChunk, groupTiles, groupsOfChunks } from '../src/mapChunks';
+import { dataMapInputs, dataMapPaint, landValueColor, paintOver } from '../src/dataMap';
+import { CHUNK_TILES, buildChunkGeometry, chunkColors, changedChunks, chunkGrid, groupGrid, groupOfChunk, groupTiles, groupsOfChunks } from '../src/mapChunks';
 import { CLASS_COLORS, classifyColor, layoutClass, tileClass, type TileClass } from '../src/palette';
 
 const road = (dir: RoadCell['dir']): RoadCell => ({ ...roadCellNone(), kind: 'TwoLane', dir });
@@ -68,6 +69,34 @@ describe('map chunks', () => {
     expect(Array.from(g.colors.subarray(0, 3)).map((v) => Math.round(v * 255))).toEqual([r, gr, b]);
   });
 
+  it('aDataMapPaintsEachTileInItsScaleColourAndLeavesWhatItDoesNotPaint', () => {
+    const l = layers(20, 20, (grid) => {
+      grid.set({ x: 1, y: 0 }, { ...grid.get({ x: 1, y: 0 })!, water: true });
+    });
+    const landValue = new Float32Array(400).fill(0.25);
+    landValue[2] = 0.9;
+    const paint = dataMapPaint('LandValue', dataMapInputs(l, { landValue }));
+    const g = buildChunkGeometry(l, 0, 0, paint);
+    const tile = (k: number) => Array.from(g.colors.subarray(k * 18, k * 18 + 3));
+    // Every vertex of a tile carries its colour, written unchanged: the screenshot reads it back per tile.
+    expect(tile(0)).toEqual(landValueColor(0.25).slice(0, 3));
+    expect(Array.from(g.colors.subarray(15, 18))).toEqual(tile(0));
+    expect(tile(2)).toEqual(landValueColor(landValue[2]!).slice(0, 3).map((c) => Math.fround(c)));
+    // A translucent colour lies over the plain tile: the water map shades land and tints water.
+    const water = buildChunkGeometry(l, 0, 0, dataMapPaint('Water', dataMapInputs(l, null)));
+    const grass = CLASS_COLORS.grass.map((c) => c / 255) as [number, number, number];
+    tile0Close(Array.from(water.colors.subarray(0, 3)), paintOver([0, 0, 0, 0.1], grass));
+    // No data map, no paint: the plain map.
+    expect(dataMapPaint('None', dataMapInputs(l, { landValue }))).toBeNull();
+    expect(Array.from(buildChunkGeometry(l, 0, 0, null).colors)).toEqual(Array.from(buildChunkGeometry(l, 0, 0).colors));
+    // Repainting in place writes what a fresh build does, and back.
+    const colors = buildChunkGeometry(l, 0, 0).colors;
+    chunkColors(l, 0, 0, colors, paint);
+    expect(Array.from(colors)).toEqual(Array.from(g.colors));
+    chunkColors(l, 0, 0, colors, null);
+    expect(Array.from(colors)).toEqual(Array.from(buildChunkGeometry(l, 0, 0).colors));
+  });
+
   it('edgeChunksClipToTheMap', () => {
     expect(chunkGrid(20, 20)).toEqual({ cols: 2, rows: 2 });
     expect(chunkGrid(128, 128)).toEqual({ cols: 8, rows: 8 });
@@ -123,3 +152,7 @@ describe('ground groups', () => {
     expect(groupsOfChunks([], cols)).toEqual([]);
   });
 });
+
+function tile0Close(got: number[], want: readonly number[]): void {
+  got.forEach((v, i) => expect(v).toBeCloseTo(want[i]!, 6));
+}

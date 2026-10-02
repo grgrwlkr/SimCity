@@ -1,6 +1,7 @@
 import type { ServicesView, SimSpeed, TrafficView, WorldSnapshot } from '@simcity/bridge';
 import type { AppState, City } from '@simcity/sim';
 import type { PointerEvent, WheelEvent } from 'react';
+import { AdvisorToggle } from './AdvisorPanel';
 import { BudgetToggle } from './BudgetPanel';
 import type { HudActions } from './Hud';
 
@@ -89,10 +90,12 @@ export interface HudBarProps {
   readonly actions: HudActions;
   readonly budgetOpen: boolean;
   readonly onBudgetToggle: () => void;
+  readonly advisorOpen: boolean;
+  readonly onAdvisorToggle: () => void;
 }
 
 /** The bar at the top centre (docs/design/hud/layout.md §2), and under `?debug=1` the dev panel below it. */
-export function HudBar({ snapshot, fps, debug, actions, budgetOpen, onBudgetToggle }: HudBarProps) {
+export function HudBar({ snapshot, fps, debug, actions, budgetOpen, onBudgetToggle, advisorOpen, onAdvisorToggle }: HudBarProps) {
   const { city } = snapshot;
   return (
     <div className="hud-top">
@@ -118,6 +121,7 @@ export function HudBar({ snapshot, fps, debug, actions, budgetOpen, onBudgetTogg
           ×{formatRate(snapshot.realRate)}
         </span>
         <BudgetToggle open={budgetOpen} onToggle={onBudgetToggle} />
+        <AdvisorToggle open={advisorOpen} onToggle={onAdvisorToggle} />
         <button type="button" onClick={() => actions.setState('MainMenu')}>
           В меню
         </button>
