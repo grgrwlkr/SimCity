@@ -26,8 +26,8 @@
         "vitest": "5.0.0",
       },
     },
-    "packages/app": {
-      "name": "@simcity/app",
+    "deprecated/packages/app": {
+      "name": "@simcity/deprecated-app",
       "dependencies": {
         "@simcity/bridge": "workspace:*",
         "@simcity/render": "workspace:*",
@@ -35,11 +35,31 @@
         "@simcity/ui": "workspace:*",
       },
     },
-    "packages/bridge": {
+    "deprecated/packages/bridge": {
       "name": "@simcity/bridge",
       "dependencies": {
         "@simcity/sim": "workspace:*",
       },
+    },
+    "deprecated/packages/render": {
+      "name": "@simcity/render",
+      "dependencies": {
+        "@simcity/bridge": "workspace:*",
+        "@simcity/sim": "workspace:*",
+      },
+    },
+    "deprecated/packages/sim": {
+      "name": "@simcity/sim",
+    },
+    "deprecated/packages/ui": {
+      "name": "@simcity/ui",
+      "dependencies": {
+        "@simcity/bridge": "workspace:*",
+        "@simcity/sim": "workspace:*",
+      },
+    },
+    "packages/app": {
+      "name": "@simcity/app",
     },
     "packages/desktop": {
       "name": "@simcity/desktop",
@@ -48,23 +68,6 @@
         "electron": "44.3.0",
         "electron-builder": "26.15.3",
         "javascript-obfuscator": "5.7.0",
-      },
-    },
-    "packages/render": {
-      "name": "@simcity/render",
-      "dependencies": {
-        "@simcity/bridge": "workspace:*",
-        "@simcity/sim": "workspace:*",
-      },
-    },
-    "packages/sim": {
-      "name": "@simcity/sim",
-    },
-    "packages/ui": {
-      "name": "@simcity/ui",
-      "dependencies": {
-        "@simcity/bridge": "workspace:*",
-        "@simcity/sim": "workspace:*",
       },
     },
   },
@@ -199,15 +202,17 @@
 
     "@simcity/app": ["@simcity/app@workspace:packages/app"],
 
-    "@simcity/bridge": ["@simcity/bridge@workspace:packages/bridge"],
+    "@simcity/bridge": ["@simcity/bridge@workspace:deprecated/packages/bridge"],
+
+    "@simcity/deprecated-app": ["@simcity/deprecated-app@workspace:deprecated/packages/app"],
 
     "@simcity/desktop": ["@simcity/desktop@workspace:packages/desktop"],
 
-    "@simcity/render": ["@simcity/render@workspace:packages/render"],
+    "@simcity/render": ["@simcity/render@workspace:deprecated/packages/render"],
 
-    "@simcity/sim": ["@simcity/sim@workspace:packages/sim"],
+    "@simcity/sim": ["@simcity/sim@workspace:deprecated/packages/sim"],
 
-    "@simcity/ui": ["@simcity/ui@workspace:packages/ui"],
+    "@simcity/ui": ["@simcity/ui@workspace:deprecated/packages/ui"],
 
     "@sindresorhus/is": ["@sindresorhus/is@4.6.0", "", {}, "sha512-t09vSN3MdfsyCHoFcTRCH/iUtG7OJ0CsjzB8cjAmKc/va/kIgeDI/TxsigdncE/4be734m0cvIYwNaV4i2XqAw=="],
 

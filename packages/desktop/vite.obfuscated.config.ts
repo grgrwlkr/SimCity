@@ -1,15 +1,12 @@
-// `bun run desktop:build:obfuscated`: the app's own Vite build, with the modules of packages/app and
-// packages/ui in a chunk of their own and only that chunk run through javascript-obfuscator. The
-// simulation, the bridge and the renderer stay plain: obfuscated code is 15–80 % slower (README of
-// the obfuscator), which the hot path cannot afford. The worker bundle gets no plugins from here.
+// Optional obfuscation of the current city's modules. Vendors and page entry points remain separate;
+// the archived game is not included in either build.
 import JavaScriptObfuscator from 'javascript-obfuscator';
 import { defineConfig, mergeConfig, type Plugin } from 'vite';
 import appConfig from '../app/vite.config';
 
 const UI_CHUNK = 'ui';
-// The entry `main.tsx` stays out: it calls the bridge at the top level, and a `ui` chunk holding it
-// would evaluate before the chunk it imports from ("a is not a function" in both engines, measured).
-const UI_MODULE = /\/packages\/(ui\/src\/|app\/src\/(?!main\.tsx))/;
+// Both entries have DOM side effects: a shared chunk must never boot the other page.
+const UI_MODULE = /\/packages\/app\/src\/(?!main\.ts$|city\/main\.ts$).*\.ts$/;
 const VENDOR_MODULE = /\/node_modules\//;
 
 const OPTIONS = {
@@ -25,7 +22,7 @@ const obfuscateUiChunk: Plugin = {
     if (chunk.name !== UI_CHUNK) return null;
     // Rolldown's own helpers are virtual (`\0…`); anything else outside app/ui must not be obfuscated.
     const foreign = chunk.moduleIds.filter((id) => !id.startsWith('\0') && !UI_MODULE.test(id));
-    if (foreign.length > 0) this.error(`the ${UI_CHUNK} chunk holds modules outside packages/app and packages/ui: ${foreign.join(', ')}`);
+    if (foreign.length > 0) this.error(`the ${UI_CHUNK} chunk holds modules outside the current app: ${foreign.join(', ')}`);
     return { code: JavaScriptObfuscator.obfuscate(code, OPTIONS).getObfuscatedCode(), map: null };
   },
 };

@@ -1,5 +1,5 @@
+import react from '@vitejs/plugin-react';
 import { defineConfig, type Connect, type Plugin } from 'vite';
-import { fileURLToPath } from 'node:url';
 
 // SharedArrayBuffer needs a cross-origin isolated page: COOP same-origin + COEP require-corp.
 const crossOriginIsolation = {
@@ -27,19 +27,11 @@ const alwaysFullResponses: Plugin = {
 const port = Number(process.env.PORT ?? 5174);
 
 export default defineConfig({
-  plugins: [alwaysFullResponses],
+  plugins: [alwaysFullResponses, react()],
   server: { port, strictPort: true, headers: crossOriginIsolation },
   preview: { port, strictPort: true, headers: crossOriginIsolation },
   // The one engine the game runs in: the Chromium of the desktop Electron (44.3.0 ships 152).
   // No source maps in a production build (Vite's default, pinned: the shipped app must not carry them).
-  build: {
-    target: 'chrome152', sourcemap: false,
-    rolldownOptions: {
-      input: {
-        menu: fileURLToPath(new URL('./index.html', import.meta.url)),
-        city: fileURLToPath(new URL('./city/index.html', import.meta.url)),
-      },
-    },
-  },
+  build: { target: 'chrome152', sourcemap: false },
   worker: { format: 'es' },
 });

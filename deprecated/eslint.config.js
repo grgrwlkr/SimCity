@@ -25,8 +25,6 @@ export default defineConfig([
     '.claude/**',
     // Per-session scratch files and logs inside a worktree.
     '.scratch/**',
-    // Archived game code has its own unchanged lint configuration.
-    'deprecated/**',
   ]),
   js.configs.recommended,
   tseslint.configs.recommended,

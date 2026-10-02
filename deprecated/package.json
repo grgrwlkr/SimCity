@@ -1,0 +1,13 @@
+{
+  "name": "simcity-deprecated",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p packages/sim && tsc -p packages/bridge && tsc -p packages/render && tsc -p packages/ui && tsc -p packages/app && tsc -p tsconfig.test.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "e2e": "playwright test",
+    "dev": "vite packages/app",
+    "bench": "bun tools/bench.ts"
+  }
+}

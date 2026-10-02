@@ -18,6 +18,8 @@ node_modules/
 dist/
 /test-results/
 /playwright-report/
+/deprecated/test-results/
+/deprecated/playwright-report/
 
 # Electron shell (packages/desktop): bundled main/preload + renderer, and electron-builder output
 /packages/desktop/out/

@@ -1,0 +1,20 @@
+:root { font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif; color: #29483e; background: #dce8e3; color-scheme: light; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+.menu { min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 24px; }
+.brand-mark { display: grid; place-items: center; width: 46px; height: 46px; border-radius: 11px; background: #2b5846; color: #f4e7be; font: italic 43px Georgia, serif; padding-right: 3px; }
+h1 { font-size: clamp(44px, 7vw, 62px); line-height: 1.1; letter-spacing: -.045em; font-weight: 550; margin: 20px 0 42px; }
+nav { width: min(390px, 100%); }
+#open-city { display: flex; flex-direction: column; gap: 9px; padding: 26px 28px; border-radius: 12px; text-align: center; text-decoration: none; color: #fff7e5; background: #2b5846; }
+#open-city strong { font-size: 22px; font-weight: 550; }
+#open-city span { font-size: 13px; line-height: 1.6; color: #d7e4d4; }
+#open-city:hover { background: #37664f; }
+#open-city:focus-visible { outline: 3px solid #ca6c3e; outline-offset: 5px; }
+.hint { color: #60796c; font-size: 12px; margin-top: 24px; }
+@media (prefers-color-scheme: dark) {
+  :root { color-scheme: dark; color: #dce7df; background: #203540; }
+  .brand-mark, #open-city { background: #dec98e; color: #243938; }
+  #open-city span { color: #42574a; }
+  #open-city:hover { background: #eddbab; }
+  .hint { color: #afc4bd; }
+}

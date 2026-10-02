@@ -4,10 +4,20 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SimCity</title>
+    <meta name="theme-color" content="#dce8e3" />
   </head>
   <body>
-    <canvas id="view"></canvas>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <main class="menu">
+      <span class="brand-mark" aria-hidden="true">s</span>
+      <h1>SimCity</h1>
+      <nav aria-label="Главное меню">
+        <a id="open-city" href="/city/?seed=689856" aria-label="Город у воды">
+          <strong>Город у воды</strong>
+          <span>Жилые кварталы, деловой центр и работающий порт</span>
+        </a>
+      </nav>
+      <p class="hint">Enter — открыть город</p>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

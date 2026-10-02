@@ -36,7 +36,7 @@ async function serveRenderer(request: Request): Promise<Response> {
   const { host, pathname } = new URL(request.url);
   let decoded: string;
   try {
-    decoded = decodeURIComponent(pathname === '/' ? '/index.html' : pathname);
+    decoded = decodeURIComponent(pathname.endsWith('/') ? `${pathname}index.html` : pathname);
   } catch {
     // A malformed `%xx` would otherwise reject the handler and surface as a net error.
     return new Response('not found', { status: 404 });
