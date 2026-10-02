@@ -27,19 +27,44 @@ export interface BuildingKit {
 
 export function buildingKit(seed: string, building: Pick<CityBuilding, 'id' | 'district' | 'variant'>): BuildingKit {
   const r = choices(seed, 'building', building.id);
+  const cottage = building.variant === 'cottage';
   const tower = building.district === 'downtown', industrial = building.district === 'industrial';
   const roof = industrial
     ? building.variant === 'tanks' ? r.pick(['dome', 'cone'] as const) : building.variant === 'sawtooth' ? 'sawtooth' : r.pick(['flat', 'solar'] as const)
-    : tower ? r.pick(['flat', 'garden', 'solar'] as const) : r.pick(['gable', 'hip', 'flat', 'garden', 'solar'] as const);
+    : cottage ? r.pick(['gable', 'hip', 'flat', 'solar'] as const) : tower ? r.pick(['flat', 'garden', 'solar'] as const) : r.pick(['gable', 'hip', 'flat', 'garden', 'solar'] as const);
   return {
-    foundation: r.pick(industrial ? ['stone', 'brick'] as const : ['stone', 'brick', 'columns'] as const),
+    foundation: r.pick(industrial || cottage ? ['stone', 'brick'] as const : ['stone', 'brick', 'columns'] as const),
     facade: r.pick(['classic', 'ribbon', 'vertical', 'recessed'] as const), roof,
-    rooftop: roof === 'gable' || roof === 'hip' ? r.pick(['chimney', 'dormers'] as const)
+    rooftop: roof === 'gable' || roof === 'hip' ? cottage ? 'chimney' : r.pick(['chimney', 'dormers'] as const)
       : roof === 'garden' ? 'pergola' : roof === 'cone' || roof === 'dome' ? 'vents' : tower ? r.pick(['vents', 'antenna', 'skylight'] as const) : r.pick(['vents', 'skylight'] as const),
-    balconies: industrial || tower ? 'none' : r.pick(['none', 'alternate', 'rows'] as const),
+    balconies: industrial || tower || cottage ? 'none' : r.pick(['none', 'alternate', 'rows'] as const),
     entrance: r.pick(industrial ? ['plain', 'canopy'] as const : ['plain', 'canopy', 'steps'] as const),
-    accent: r.pick(industrial || tower ? ['trim', 'cream', 'roof', 'dark'] : ['trim', 'cream', 'trim', 'roof']), rhythm: r.integer(2, 4), equipmentCount: r.integer(1, 3),
+    accent: r.pick(industrial || tower ? ['trim', 'cream', 'roof', 'dark'] : ['trim', 'cream', 'trim', 'roof']), rhythm: r.integer(2, cottage ? 3 : 4), equipmentCount: cottage ? 1 : r.integer(1, 3),
   };
+}
+
+export interface PlotKit {
+  fence: 'picket' | 'slats' | 'hedge';
+  garden: 'flowers' | 'orchard' | 'lawn';
+  annex: 'garage' | 'shed' | 'none';
+  porch: 'stoop' | 'deck';
+  plan: 'compact' | 'wide' | 'deep';
+  roofColor: string;
+}
+export function plotKit(seed: string, id: string): PlotKit {
+  const r = choices(seed, 'private-plot', id);
+  return {
+    fence: r.pick(['picket', 'slats', 'hedge'] as const), garden: r.pick(['flowers', 'orchard', 'lawn'] as const),
+    annex: r.pick(['garage', 'shed', 'none'] as const), porch: r.pick(['stoop', 'deck'] as const),
+    plan: r.pick(['compact', 'wide', 'deep'] as const), roofColor: r.pick(['roof', 'brick', 'teal']),
+  };
+}
+export function describePlotKit(kit: PlotKit): string[] {
+  return [
+    { picket: 'Светлый штакетник', slats: 'Деревянный забор', hedge: 'Живая изгородь' }[kit.fence],
+    { flowers: 'Цветник', orchard: 'Плодовый сад', lawn: 'Лужайка и терраса' }[kit.garden],
+    { garage: 'Отдельный гараж', shed: 'Садовый сарай', none: 'Открытый двор' }[kit.annex],
+  ];
 }
 
 export interface VehicleKit {

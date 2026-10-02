@@ -47,7 +47,7 @@ test('modular building details follow selection and all moving assemblies pause'
   await expect(page.locator('#city')).toHaveAttribute('data-ready', 'true');
   await page.getByLabel('Здание в городе').selectOption('building-0-0-0-0');
   const parts = page.getByRole('list', { name: 'Состав здания' });
-  await expect(parts.getByRole('listitem')).toHaveCount(4);
+  await expect(parts.getByRole('listitem')).toHaveCount(7);
   const firstAssembly = await parts.innerText();
   await page.getByLabel('Здание в городе').selectOption('building-3-2-0-0');
   await expect(parts).not.toHaveText(firstAssembly);

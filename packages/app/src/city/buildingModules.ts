@@ -9,14 +9,15 @@ export function buildingTop(b: CityBuilding): number {
 
 export function roofModules(batch: Sink, b: CityBuilding, width: number, depth: number, top: number): void {
   const { x, z, kit } = b, w = width, d = depth;
+  const cottage = b.variant === 'cottage', roofColor = b.plot?.roofColor ?? 'roof';
   if (kit.roof === 'gable' || kit.roof === 'hip') {
-    const rise = Math.min(3, w * 0.42);
-    batch.add(kit.roof === 'gable' ? 'roof' : 'hip', 'roof', x, top + rise / 2, z, w + 0.5, rise, d + 0.5);
+    const rise = cottage ? Math.min(1.9, w * 0.32) : Math.min(3, w * 0.42);
+    batch.add(kit.roof === 'gable' ? 'roof' : 'hip', roofColor, x, top + rise / 2, z, w + 0.5, rise, d + 0.5);
     for (let n = 0; n < kit.equipmentCount; n++) {
       const px = x + ((n + 0.5) / kit.equipmentCount - 0.5) * w * (kit.rooftop === 'dormers' ? 0.8 : 0.55);
       if (kit.rooftop === 'chimney') {
-        batch.add('box', 'brick', px, top + 2.2, z - d * 0.18, 0.55, 3.6, 0.65);
-        batch.add('box', kit.accent, px, top + 4.03, z - d * 0.18, 0.75, 0.16, 0.85);
+        batch.add('box', 'brick', px, top + (cottage ? 1.4 : 2.2), z - d * 0.18, 0.55, cottage ? 1.6 : 3.6, 0.65);
+        batch.add('box', kit.accent, px, top + (cottage ? 2.23 : 4.03), z - d * 0.18, 0.75, 0.16, 0.85);
       } else {
         batch.add('box', b.color, px, top + rise * 0.55, z + d * 0.22, 1.1, 1.25, 1.5);
         batch.add('roof', 'roof', px, top + rise * 0.55 + 0.85, z + d * 0.22, 1.5, 0.65, 1.8);
@@ -25,7 +26,7 @@ export function roofModules(batch: Sink, b: CityBuilding, width: number, depth: 
     }
     return;
   }
-  batch.add('box', 'roof', x, top + 0.12, z, w - 0.15, 0.2, d - 0.15);
+  batch.add('box', roofColor, x, top + 0.12, z, w - 0.15, 0.2, d - 0.15);
   if (b.district !== 'industrial') for (const side of [-1, 1]) {
     batch.add('box', kit.accent, x + side * (w / 2 - 0.1), top + 0.4, z, 0.2, 0.7, d);
     batch.add('box', kit.accent, x, top + 0.4, z + side * (d / 2 - 0.1), w, 0.7, 0.2);
@@ -85,7 +86,8 @@ export function lowriseModules(batch: Sink, b: CityBuilding): void {
       if (floor > 0 && kit.facade !== 'vertical') add(kit.accent, 0, base + floor * h / floors, 0.09, wallWidth + 0.15, kit.facade === 'ribbon' ? 0.3 : 0.14, 0.17);
       for (let col = 0; col < columns; col++) {
         const wx = ((col + 0.5) / columns - 0.5) * wallWidth;
-        const windowWidth = spacing * (kit.facade === 'ribbon' ? 0.88 : 0.62);
+        if (b.plot && axis === 'z' && sign === 1 && floor === 0 && Math.abs(wx) < 0.85) continue;
+        const windowWidth = spacing * (b.plot ? 0.48 : kit.facade === 'ribbon' ? 0.88 : 0.62);
         const glass = (floor * 7 + col * 3 + sign + kit.equipmentCount) % 4 ? 'litWindow' : 'window';
         if (kit.facade !== 'ribbon') add(kit.facade === 'recessed' ? 'dark' : kit.accent, wx, level, 0.09, windowWidth + 0.2, 1.8, 0.2);
         add(glass, wx, level, 0.21, windowWidth, 1.48, 0.06);

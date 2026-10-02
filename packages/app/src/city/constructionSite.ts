@@ -4,7 +4,10 @@ import { Batch, geometries, material } from './primitives';
 export interface ConstructionPlot {
   x: number; z: number; width: number; depth: number;
   minX: number; maxX: number; minZ: number; maxZ: number;
+  craneSide?: -1 | 1;
+  front?: 'north' | 'south';
 }
+interface SiteView { group: THREE.Group; viewHeight: number; update: (height: number, seconds: number) => void }
 
 export function craneCycle(seconds: number): { turn: number; lift: number; loaded: boolean } {
   const t = ((seconds % 7) + 7) % 7 / 7;
@@ -17,7 +20,13 @@ export function craneCycle(seconds: number): { turn: number; lift: number; loade
 }
 
 /** A temporary, parcel-bounded site. All parts reuse the city's original palette. */
-export function createConstructionSite(plot: ConstructionPlot, targetHeight: number, clearance: (x: number, z: number, radius: number) => number) {
+export function createConstructionSite(plot: ConstructionPlot, targetHeight: number, clearance: (x: number, z: number, radius: number) => number): SiteView {
+  if (plot.front === 'north') {
+    const cx = (plot.minX + plot.maxX) / 2, cz = (plot.minZ + plot.maxZ) / 2;
+    const site = createConstructionSite({ ...plot, x: 2 * cx - plot.x, z: 2 * cz - plot.z, front: 'south', craneSide: plot.craneSide === 1 ? -1 : 1 }, targetHeight, (x, z, radius) => clearance(2 * cx - x, 2 * cz - z, radius));
+    site.group.rotation.y = Math.PI; site.group.position.set(2 * cx, 0, 2 * cz);
+    return site;
+  }
   const group = new THREE.Group(); group.name = 'construction-site';
   const ground = 1.08;
   const batch = new Batch();
@@ -49,7 +58,7 @@ export function createConstructionSite(plot: ConstructionPlot, targetHeight: num
   }
 
   const rightGap = plot.maxX - (plot.x + plot.width / 2), leftGap = plot.x - plot.width / 2 - plot.minX;
-  const side = rightGap >= leftGap ? 1 : -1, gap = Math.max(rightGap, leftGap);
+  const side = plot.craneSide ?? (rightGap >= leftGap ? 1 : -1), gap = side > 0 ? rightGap : leftGap;
   const mastWidth = Math.min(0.65, Math.max(0.16, gap * 0.66));
   const mastX = side > 0 ? plot.maxX - gap / 2 : plot.minX + gap / 2;
   const mastZ = plot.z;

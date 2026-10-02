@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { material } from './primitives';
 import { districtNames, generateCity, type CityBuilding, type District } from './generator';
 import { createCity, type GeneratedCity } from './model';
-import { describeBuildingKit } from './assetKits';
+import { describeBuildingKit, describePlotKit } from './assetKits';
 import { buildingTop } from './buildingModules';
 import './style.css';
 
@@ -68,12 +68,13 @@ function start(): void {
       industrial: 'Часть промышленного района: корпуса и оборудование собраны под назначение здания.',
       park: 'Зелёное пространство для отдыха в городе.',
     };
-    element('building-description').textContent = descriptions[building.district];
-    element('building-parts').replaceChildren(...describeBuildingKit(building.kit).map((part) => {
+    element('building-description').textContent = building.plot ? 'Одноэтажный дом со своим участком. Фасад, крыша, ограждение и двор собраны из отдельных деталей.' : descriptions[building.district];
+    const parts = [...describeBuildingKit(building.kit), ...(building.plot ? describePlotKit(building.plot) : [])];
+    element('building-parts').replaceChildren(...parts.map((part) => {
       const item = document.createElement('li'); item.textContent = part; return item;
     }));
     const height = buildingTop(building);
-    selection.box.setFromCenterAndSize(new THREE.Vector3(building.x, height / 2, building.z), new THREE.Vector3(building.width + 0.7, height, building.depth + 0.7));
+    selection.box.setFromCenterAndSize(new THREE.Vector3(building.plot?.x ?? building.x, height / 2, building.plot?.z ?? building.z), new THREE.Vector3((building.plot?.width ?? building.width) + 0.7, height, (building.plot?.depth ?? building.depth) + 0.7));
   }
   select.addEventListener('change', () => selectBuilding(layout.buildings.find((b) => b.id === select.value)));
   element('close-info').addEventListener('click', () => selectBuilding(undefined));
@@ -106,11 +107,12 @@ function start(): void {
     closeConstruction();
     const district = button.dataset['district']!; resetCamera(); selectBuilding(undefined);
     if (district !== 'all') {
-      const centers: Record<Exclude<District, 'park'> | 'harbor', [number, number, number, number]> = {
+      const centers: Record<Exclude<District, 'park'> | 'harbor' | 'houses', [number, number, number, number]> = {
         downtown: [0, 44, -47, 1.75], commercial: [0, 8, 34, 2.6], residential: [-83, 8, 44, 2.5], industrial: [84, 12, 68, 2.05],
         harbor: [86, 6, 135, 4],
+        houses: [-85, 3, 102, 4.7],
       };
-      const [x, y, z, zoom] = centers[district as Exclude<District, 'park'> | 'harbor'];
+      const [x, y, z, zoom] = centers[district as Exclude<District, 'park'> | 'harbor' | 'houses'];
       const offset = camera.position.clone().sub(controls.target);
       controls.target.set(x, y, z); camera.position.copy(controls.target).add(offset); camera.zoom = zoom;
       camera.updateProjectionMatrix(); controls.update();
@@ -281,6 +283,7 @@ function start(): void {
   });
   resize(); syncMotion(); regenerate(layout.seed);
   if (new URLSearchParams(location.search).get('view') === 'harbor') document.querySelector<HTMLButtonElement>('[data-district="harbor"]')!.click();
+  if (new URLSearchParams(location.search).get('view') === 'houses') document.querySelector<HTMLButtonElement>('[data-district="houses"]')!.click();
   if (new URLSearchParams(location.search).get('view') === 'construction') showConstruction(exampleBuilding('residential'));
   let previous = performance.now();
   let lastHarborStatus = '';

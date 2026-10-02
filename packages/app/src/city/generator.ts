@@ -1,14 +1,16 @@
-import { buildingKit, type BuildingKit } from './assetKits';
+import { buildingKit, plotKit, type BuildingKit, type PlotKit } from './assetKits';
 import { WAREHOUSES } from './harborLayout';
 
 export type District = 'downtown' | 'commercial' | 'residential' | 'industrial' | 'park';
-export type Variant = 'glass' | 'stepped' | 'crown' | 'slab' | 'gable' | 'terrace' | 'store' | 'mall' | 'sawtooth' | 'warehouse' | 'tanks' | 'power';
+export type Variant = 'glass' | 'stepped' | 'crown' | 'slab' | 'gable' | 'terrace' | 'store' | 'mall' | 'sawtooth' | 'warehouse' | 'tanks' | 'power' | 'cottage';
+export interface HousePlot extends PlotKit { x: number; z: number; width: number; depth: number; front: 'north' | 'south' }
 export interface CityBlock { id: string; x: number; z: number; district: District }
 export interface CityBuilding {
   id: string; blockId: string; district: District; variant: Variant;
   name: string; x: number; z: number; width: number; depth: number;
   height: number; floors: number; color: string;
   kit: BuildingKit;
+  plot?: HousePlot;
 }
 export interface CityLayout { seed: string; blocks: CityBlock[]; buildings: CityBuilding[] }
 
@@ -89,5 +91,20 @@ export function generateCity(seed: string): CityLayout {
     warehouse.kit = { ...buildingKit(seed, warehouse), rhythm: 2, entrance: 'plain' };
     return warehouse;
   });
-  return { seed, blocks, buildings: workingBuildings };
+  // Convert only these outer residential blocks after generation, preserving every other district's random stream.
+  const houseBlocks = new Set(blocks.filter((b) => b.district === 'residential' && (b.x === -102 || (b.x === -68 && b.z === 102))).map((b) => b.id));
+  const withHouses = workingBuildings.flatMap((b): CityBuilding[] => {
+    if (!houseBlocks.has(b.blockId)) return [b];
+    const block = blocks.find((block) => block.id === b.blockId)!;
+    const column = Number(b.id.split('-')[3]), row = Number(b.id.split('-')[4]);
+    if (column === 2) return [];
+    const kit = plotKit(seed, b.id);
+    const [width, depth] = { compact: [5.2, 4.5], wide: [6.2, 4.4], deep: [5.4, 5.4] }[kit.plan] as [number, number];
+    const plot: HousePlot = { ...kit, x: block.x + (column - 0.5) * 12.5, z: block.z + (row - 0.5) * 12.5, width: 12, depth: 12, front: row === 0 ? 'north' : 'south' };
+    const offset = row === 0 ? 1.4 : -1.4;
+    const house: CityBuilding = { ...b, variant: 'cottage', name: `Дом ${kit.garden === 'orchard' ? 'с садом' : kit.garden === 'flowers' ? 'с цветником' : 'с лужайкой'} ${workingBuildings.indexOf(b) + 1}`, x: plot.x + offset, z: plot.z + offset, width, depth, height: 3.1, floors: 1, plot };
+    house.kit = buildingKit(seed, house);
+    return [house];
+  });
+  return { seed, blocks, buildings: withHouses };
 }

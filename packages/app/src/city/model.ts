@@ -12,6 +12,7 @@ import { Harbor, freightPlans, type HarborStatus } from './harbor';
 import { createHarborView } from './harborView';
 import { Construction } from './construction';
 import type { ConstructionPlot } from './constructionSite';
+import { houseAnnexModules, houseBodyModules, houseGardenModules } from './housePlots';
 
 for (const [key, color] of Object.entries({ glassBlue: 0x789aaf, glassTeal: 0x669b99, glassDark: 0x4c6c7e, glassSilver: 0xa0b6ba, steel: 0xb6c5c5, port: 0xc7c1ac, cargoRed: 0xb85d48, cargoBlue: 0x527d90, cargoGold: 0xcdaa51, waterline: 0x9ccfca, assetColor: 0xffffff, skinLight: 0xefc8a1, skinTan: 0xba8c69, skinDeep: 0x775440 })) {
   materials.set(key, new THREE.MeshStandardMaterial({ color, roughness: key.startsWith('glass') ? 0.34 : 0.75, metalness: key.startsWith('glass') ? 0.25 : 0.05 }));
@@ -164,7 +165,7 @@ export function createCity(layout: CityLayout): GeneratedCity {
       for (const dx of [-8, -4, 5, 9]) for (const dz of [-8, 7]) plant(block.x + dx, block.z + dz, 1.2 + (index % 3) * 0.2);
       addParts(batch, propParts('fountain', propKit(layout.seed, 'fountain', block.id)), block.x, 1.1, block.z);
       bench(block.x - 6, block.z - 3); bench(block.x + 6, block.z + 3, Math.PI);
-    } else if (block.district !== 'industrial') {
+    } else if (block.district !== 'industrial' && !layout.buildings.some((b) => b.blockId === block.id && b.plot)) {
       for (const [dx, dz] of [[-12,-10],[12,10],[-12,10],[12,-10]]) plant(block.x + dx!, block.z + dz!, 0.86);
     }
     for (const side of [-1, 1]) {
@@ -203,16 +204,25 @@ export function createCity(layout: CityLayout): GeneratedCity {
   const buildings = new Map<string, BatchObject>();
   for (const b of layout.buildings) {
     const firstChimney = chimneys.length;
-    buildings.set(b.id, batch.capture((sink) => {
+    const garden = b.plot ? batch.capture((sink) => { treeCount += houseGardenModules(sink, b, layout.seed); }) : undefined;
+    const body = batch.capture((sink) => {
       if (b.district === 'downtown') skyscraper(sink, b);
       else if (b.district === 'industrial') industry(sink, b, chimneys);
+      else if (b.plot) houseBodyModules(sink, b);
       else lowriseModules(sink, b);
-    }));
+      if (b.plot) houseAnnexModules(sink, b);
+    });
+    buildings.set(b.id, garden ? { parts: body.parts, setVisible: (visible) => { body.setVisible(visible); garden.setVisible(visible); } } : body);
     for (let i = firstChimney; i < chimneys.length; i++) chimneyBuildings.push(b.id);
   }
   batch.finish(group);
   const plots = new Map<string, ConstructionPlot>();
   for (const b of layout.buildings) {
+    if (b.plot) {
+      const p = b.plot;
+      plots.set(b.id, { x: b.x, z: b.z, width: b.width, depth: b.depth, minX: p.x - p.width / 2 + 0.3, maxX: p.x + p.width / 2 - 0.3, minZ: p.z - p.depth / 2 + 0.3, maxZ: p.z + p.depth / 2 - 0.3, craneSide: p.front === 'north' ? 1 : -1, front: p.front });
+      continue;
+    }
     const block = layout.blocks.find((block) => block.id === b.blockId)!;
     const neighbours = layout.buildings.filter((other) => other.blockId === b.blockId);
     const left = Math.max(block.x - 12.75, ...neighbours.filter((other) => other.x < b.x).map((other) => (other.x + b.x) / 2));
@@ -239,8 +249,8 @@ export function createCity(layout: CityLayout): GeneratedCity {
   const hitboxes = layout.buildings.map((building) => {
     const height = buildingTop(building);
     const box = new THREE.Mesh(hitGeometry, material('cream'));
-    box.scale.set(building.width, height, building.depth);
-    box.position.set(building.x, height / 2, building.z);
+    box.scale.set(building.plot?.width ?? building.width, height, building.plot?.depth ?? building.depth);
+    box.position.set(building.plot?.x ?? building.x, height / 2, building.plot?.z ?? building.z);
     box.userData['building'] = building; box.updateMatrixWorld(); return box;
   });
 

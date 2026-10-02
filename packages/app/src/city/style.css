@@ -9,7 +9,7 @@
 .district-list i { width: 9px; height: 9px; border-radius: 2px; }
 .dot-all { background: #647d6e; } .dot-downtown { background: #789aaf; } .dot-commercial { background: #daaf66; } .dot-residential { background: #8fae7e; } .dot-industrial { background: #ac745e; }
 .dot-harbor { background: #67a9ac; }
-.harbor-status { position: absolute; top: 370px; left: 30px; width: 230px; padding: 14px; border-radius: 8px; background: #f2f5ed; font-size: 12px; }
+.harbor-status { position: absolute; top: 410px; left: 30px; width: 230px; padding: 14px; border-radius: 8px; background: #f2f5ed; font-size: 12px; }
 .harbor-status strong { font-size: 12px; font-weight: 600; }
 .harbor-status dl { margin: 10px 0 0; padding-top: 9px; gap: 30px; }
 .harbor-status dd { font-size: 16px; }
