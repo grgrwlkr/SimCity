@@ -1,11 +1,15 @@
-import { generateCity } from '../generator';
-import { Harbor, freightPlans } from '../harbor';
-import { AMBIENT_VEHICLES, cityVehicleKits, freightJunctions } from '../harborLayout';
-import { Railway } from '../railway';
-import { RAILWAY_STATION_X, RAILWAY_SPEED } from '../railwayLayout';
-import { gridForLayout } from '../cityGrid';
-import { CityTraffic } from '../trafficFlow';
-import { CITY_ROAD_CENTERS, type LanePose } from '../trafficRoutes';
+import {generateCity} from '../generator';
+import {Harbor, freightPlans} from '../harbor';
+import {
+  AMBIENT_VEHICLES,
+  cityVehicleKits,
+  freightJunctions,
+} from '../harborLayout';
+import {Railway} from '../railway';
+import {RAILWAY_STATION_X, RAILWAY_SPEED} from '../railwayLayout';
+import {gridForLayout} from '../cityGrid';
+import {CityTraffic} from '../trafficFlow';
+import {CITY_ROAD_CENTERS, type LanePose} from '../trafficRoutes';
 import {
   createLifeProfile,
   departureAccess,
@@ -18,8 +22,14 @@ import {
   RouteBuilder,
   sampleWalk,
 } from './network';
-import { ParkingBook } from './parking';
-import { carName, INITIAL_MINUTE, lifeCarKit, MINUTE_SECONDS, Population } from './population';
+import {ParkingBook} from './parking';
+import {
+  carName,
+  INITIAL_MINUTE,
+  lifeCarKit,
+  MINUTE_SECONDS,
+  Population,
+} from './population';
 import type {
   CitizenDetails,
   LifeFrame,
@@ -32,22 +42,29 @@ import type {
   WalkAccess,
 } from './types';
 
-const STEP = 0.05,
-  WALK_SPEED = 1.3;
+const STEP = 0.05;
+const WALK_SPEED = 1.3;
+
 export const BUS_INDEX = AMBIENT_VEHICLES + 4;
 export const CAR_OFFSET = BUS_INDEX + 1;
-export const onRoad = (p: Point, roads: readonly number[] = CITY_ROAD_CENTERS) => {
-  const first = roads[0]!,
-    last = roads.at(-1)!;
+
+export const onRoad = (
+  p: Point,
+  roads: readonly number[] = CITY_ROAD_CENTERS,
+) => {
+  const first = roads[0]!;
+  const last = roads.at(-1)!;
+
   return (
     (p.x >= first - 4 &&
       p.x <= last + 4 &&
       p.z >= first - 4 &&
       p.z <= last + 4 &&
-      roads.some((r) => Math.abs(p.x - r) < 4 || Math.abs(p.z - r) < 4)) ||
+      roads.some(r => Math.abs(p.x - r) < 4 || Math.abs(p.z - r) < 4)) ||
     (p.x >= first - 24 && p.x < first - 4 && Math.abs(p.z + 85) < 4)
   );
 };
+
 interface BusState {
   phase: 'idle' | 'approach' | 'parking' | 'unloading' | 'leaving';
   family: number | null;
@@ -79,7 +96,13 @@ export class CityLife {
   private portals = new Map<number, number>();
   private nextImmigration = 20;
   private nextAssets = 60;
-  private bus: BusState = { phase: 'idle', family: null, slot: null, until: 0, terminal: null };
+  private bus: BusState = {
+    phase: 'idle',
+    family: null,
+    slot: null,
+    until: 0,
+    terminal: null,
+  };
   private railArrival: RailArrival | null = null;
   private readonly terminal: ParkingFacility;
 
@@ -93,9 +116,13 @@ export class CityLife {
     this.railway = new Railway(0, expanded, this.network.roads);
     this.parking = new ParkingBook(this.profile);
     this.population = new Population(this.profile, this.parking, families);
-    const sizes = [...cityVehicleKits(seed), { length: 4.2, width: 1.9 }];
+    const sizes = [...cityVehicleKits(seed), {length: 4.2, width: 1.9}];
+
     this.traffic = new CityTraffic(sizes, {
-      initiallyInactive: new Set([...Array.from({ length: AMBIENT_VEHICLES }, (_, i) => i), BUS_INDEX]),
+      initiallyInactive: new Set([
+        ...Array.from({length: AMBIENT_VEHICLES}, (_, i) => i),
+        BUS_INDEX,
+      ]),
       plans: freightPlans(),
       roads: this.network.roads,
       junctions: freightJunctions(this.network.roads.length ** 2),
@@ -105,49 +132,64 @@ export class CityLife {
       onStep: (time, traffic) => this.harbor.advance(time, traffic),
     });
     this.terminal = this.profile.facilities
-      .filter((f) => f.kind === 'street' && f.road.direction === 1)
+      .filter(f => f.kind === 'street' && f.road.direction === 1)
       .sort(
         (a, b) =>
-          distance(a.road.point, this.profile.arrival.point) - distance(b.road.point, this.profile.arrival.point),
+          distance(a.road.point, this.profile.arrival.point) -
+          distance(b.road.point, this.profile.arrival.point),
       )[0]!;
     this.syncCars();
   }
+
   get seconds(): number {
     return this.tick * STEP;
   }
+
   get day(): number {
     return Math.floor((INITIAL_MINUTE + this.seconds / MINUTE_SECONDS) / 1440);
   }
+
   get minute(): number {
     return (INITIAL_MINUTE + this.seconds / MINUTE_SECONDS) % 1440;
   }
+
   private atMinute(minute: number, day = this.day): number {
     return (day * 1440 + minute - INITIAL_MINUTE) * MINUTE_SECONDS;
   }
+
   advance(seconds: number): void {
     if (!Number.isFinite(seconds) || seconds < 0) {
       throw new Error('Invalid simulation interval');
     }
+
     this.requested = Math.round((this.requested + seconds) * 1e8) / 1e8;
     const target = Math.floor(this.requested / STEP + 1e-7);
+
     while (this.tick < target) {
       this.tick++;
       this.step();
     }
   }
+
   private syncCars(): void {
     while (this.carsAdded < this.population.cars.length) {
       const car = this.population.cars[this.carsAdded]!;
-      const id = this.traffic.addCar(lifeCarKit(this.profile.seed, car.id, car.tier));
+      const id = this.traffic.addCar(
+        lifeCarKit(this.profile.seed, car.id, car.tier),
+      );
+
       if (id !== CAR_OFFSET + car.id) {
         throw new Error('Vehicle identity mismatch');
       }
+
       this.carsAdded++;
     }
   }
+
   private accessAt(p: Resident): WalkAccess {
     return this.population.place(p.location).access;
   }
+
   private walkStart(
     p: Resident,
     from: WalkAccess,
@@ -159,10 +201,11 @@ export class CityLife {
     facility: number | null,
     reason: string,
   ): void {
-    const points = this.network.walk(from, to),
-      length = pathLength(points);
+    const points = this.network.walk(from, to);
+    const length = pathLength(points);
+
     p.activity = 'walk';
-    p.position = { ...from.point };
+    p.position = {...from.point};
     p.nextAt = Infinity;
     p.trip = {
       purpose,
@@ -177,57 +220,116 @@ export class CityLife {
       facility,
     };
     this.population.event(p, this.seconds, reason);
+
     if (length < 0.01) {
       this.walkFinished(p);
     }
   }
-  private destinationParking(p: Resident, destination: LifePlace, car: OwnedCar): ParkingFacility[] {
-    const family = this.population.families[p.family]!,
-      homeBlock = this.population.home(family).blockId;
+
+  private destinationParking(
+    p: Resident,
+    destination: LifePlace,
+    car: OwnedCar,
+  ): ParkingFacility[] {
+    const family = this.population.families[p.family]!;
+    const homeBlock = this.population.home(family).blockId;
+
     return this.profile.facilities
-      .filter((f) => this.parking.available(f.id, family.id, homeBlock, car.id))
-      .sort((a, b) => distance(a.access.point, destination.door) - distance(b.access.point, destination.door))
+      .filter(f => this.parking.available(f.id, family.id, homeBlock, car.id))
+      .sort(
+        (a, b) =>
+          distance(a.access.point, destination.door) -
+          distance(b.access.point, destination.door),
+      )
       .slice(0, 4);
   }
-  startTrip(p: Resident, destination: LifePlace, purpose: Purpose, forceCar: number | null = null): void {
-    const family = this.population.families[p.family]!,
-      from = this.accessAt(p);
-    const walk = this.network.walk(from, destination.access),
-      walkingTime = pathLength(walk) / WALK_SPEED;
+
+  startTrip(
+    p: Resident,
+    destination: LifePlace,
+    purpose: Purpose,
+    forceCar: number | null = null,
+  ): void {
+    const family = this.population.families[p.family]!;
+    const from = this.accessAt(p);
+    const walk = this.network.walk(from, destination.access);
+    const walkingTime = pathLength(walk) / WALK_SPEED;
     let best:
-      { car: OwnedCar; facility: ParkingFacility; fromCar: WalkAccess; cost: number; expense: number } | undefined;
+      | {
+          car: OwnedCar;
+          facility: ParkingFacility;
+          fromCar: WalkAccess;
+          cost: number;
+          expense: number;
+        }
+      | undefined;
+
     if (this.population.age(p, this.day) >= 18) {
       for (const id of family.cars) {
         const car = this.population.cars[id]!;
-        if (car.owner !== family.id || car.driver !== null || car.status !== 'parked' || car.slot === null) {
+
+        if (
+          car.owner !== family.id ||
+          car.driver !== null ||
+          car.status !== 'parked' ||
+          car.slot === null
+        ) {
           continue;
         }
-        const slot = this.parking.slots[car.slot]!,
-          originFacility = this.profile.facilities[slot.facility]!;
+
+        const slot = this.parking.slots[car.slot]!;
+        const originFacility = this.profile.facilities[slot.facility]!;
         const fromCar = parkingWalkAccess(this.network, originFacility, slot);
-        const toCarSeconds = pathLength(this.network.walk(from, fromCar)) / WALK_SPEED;
+        const toCarSeconds =
+          pathLength(this.network.walk(from, fromCar)) / WALK_SPEED;
+
         for (const f of this.destinationParking(p, destination, car)) {
           if (f.id === originFacility.id) {
             continue;
           }
-          const drive = this.network.drive(departureAccess(originFacility, slot, this.network.roads), f.road);
+
+          const drive = this.network.drive(
+            departureAccess(originFacility, slot, this.network.roads),
+            f.road,
+          );
           const expense = Math.ceil(drive.length * 0.55) + f.fee;
+
           if (family.balance < expense + 160) {
             continue;
           }
-          const endSlot = this.parking.available(f.id, family.id, this.population.home(family).blockId, car.id)!;
+
+          const endSlot = this.parking.available(
+            f.id,
+            family.id,
+            this.population.home(family).blockId,
+            car.id,
+          )!;
           const tail =
-            pathLength(this.network.walk(parkingWalkAccess(this.network, f, endSlot), destination.access)) / WALK_SPEED;
+            pathLength(
+              this.network.walk(
+                parkingWalkAccess(this.network, f, endSlot),
+                destination.access,
+              ),
+            ) / WALK_SPEED;
           const cost =
-            (toCarSeconds + drive.length / 5.5 + tail + 10 + expense / Math.max(8, (p.job?.wage ?? 2400) / 160)) *
+            (toCarSeconds +
+              drive.length / 5.5 +
+              tail +
+              10 +
+              expense / Math.max(8, (p.job?.wage ?? 2400) / 160)) *
             (1.2 - p.preference * 0.4);
+
           if (!best || cost < best.cost) {
-            best = { car, facility: f, fromCar, cost, expense };
+            best = {car, facility: f, fromCar, cost, expense};
           }
         }
       }
     }
-    if (best && (best.car.id === forceCar || (walkingTime > 15 && best.cost < walkingTime))) {
+    if (
+      best &&
+      (best.car.id === forceCar ||
+        (walkingTime > 15 && best.cost < walkingTime))
+    ) {
       best.car.driver = p.id;
       best.car.status = 'reserved';
       best.car.facility = best.facility.id;
@@ -243,7 +345,10 @@ export class CityLife {
         `Идёт к своей машине. Поездка удобнее: ${Math.ceil(best.cost / MINUTE_SECONDS)} мин, пешком ${Math.ceil(walkingTime / MINUTE_SECONDS)} мин`,
       );
     } else {
-      const unavailable = family.cars.some((id) => this.population.cars[id]!.driver !== null);
+      const unavailable = family.cars.some(
+        id => this.population.cars[id]!.driver !== null,
+      );
+
       this.walkStart(
         p,
         from,
@@ -257,23 +362,33 @@ export class CityLife {
       );
     }
   }
+
   private driveStart(p: Resident): void {
-    const trip = p.trip!,
-      car = this.population.cars[trip.car!]!,
-      family = this.population.families[p.family]!;
+    const trip = p.trip!;
+    const car = this.population.cars[trip.car!]!;
+    const family = this.population.families[p.family]!;
+
     if (car.slot === null || trip.facility === null) {
       throw new Error('Departure without parked vehicle');
     }
-    const slot = this.parking.slots[car.slot]!,
-      source = this.profile.facilities[slot.facility]!,
-      destination = this.profile.facilities[trip.facility]!;
+
+    const slot = this.parking.slots[car.slot]!;
+    const source = this.profile.facilities[slot.facility]!;
+    const destination = this.profile.facilities[trip.facility]!;
+
     if (this.portals.has(source.id)) {
       p.nextAt = this.seconds + 0.5;
+
       return;
     }
-    const exit = parkingRoute(source, slot, false).route,
-      road = this.network.drive(departureAccess(source, slot, this.network.roads), destination.road);
+
+    const exit = parkingRoute(source, slot, false).route;
+    const road = this.network.drive(
+      departureAccess(source, slot, this.network.roads),
+      destination.road,
+    );
     const expense = Math.ceil(road.length * 0.55) + destination.fee;
+
     if (family.balance < expense) {
       car.driver = null;
       car.status = 'parked';
@@ -288,13 +403,21 @@ export class CityLife {
         null,
         'Идёт пешком: деньги нужны семье',
       );
+
       return;
     }
-    const route = new RouteBuilder(slot.position).append(exit).append(road).route();
+
+    const route = new RouteBuilder(slot.position)
+      .append(exit)
+      .append(road)
+      .route();
+
     if (!this.traffic.beginTrip(CAR_OFFSET + car.id, route, exit.length)) {
       p.nextAt = this.seconds + 0.5;
+
       return;
     }
+
     this.portals.set(source.id, car.id);
     family.balance -= expense;
     this.population.treasury += expense;
@@ -304,31 +427,41 @@ export class CityLife {
     car.waitUntil = 0;
     p.activity = 'drive';
     trip.leg = 'driving';
-    trip.reason = 'Едет на семейной машине. У места назначения найдёт парковку.';
+    trip.reason =
+      'Едет на семейной машине. У места назначения найдёт парковку.';
     this.population.event(
       p,
       this.seconds,
       `Выезжает на своей машине в «${this.population.place(trip.destination).name}»`,
     );
   }
+
   private walkFinished(p: Resident): void {
     const trip = p.trip!;
+
     if (trip.leg === 'to-car') {
       p.activity = 'garage';
       p.nextAt = this.seconds + 2;
+
       return;
     }
+
     this.arrive(p, this.population.place(trip.destination), trip.purpose);
   }
+
   private arrive(p: Resident, destination: LifePlace, purpose: Purpose): void {
     p.location = destination.id;
-    p.position = { ...destination.door };
+    p.position = {...destination.door};
     p.trip = null;
     this.population.event(p, this.seconds, `Прибыл: ${destination.name}`);
+
     if (purpose === 'work' && p.job) {
       p.activity = 'work';
       p.workStarted = this.seconds;
-      p.nextAt = Math.max(this.seconds + 1, this.atMinute(p.job.start + p.job.shift));
+      p.nextAt = Math.max(
+        this.seconds + 1,
+        this.atMinute(p.job.start + p.job.shift),
+      );
     } else if (purpose === 'school') {
       p.activity = 'school';
       p.paidDay = this.day;
@@ -340,11 +473,15 @@ export class CityLife {
     } else if (purpose === 'leisure') {
       p.activity = 'leisure';
       p.nextAt = this.seconds + (25 + (p.id % 30)) * MINUTE_SECONDS;
+
       if (destination.kind === 'cafe') {
-        const f = this.population.families[p.family]!,
-          cost = Math.min(f.balance, 250);
+        const f = this.population.families[p.family]!;
+        const cost = Math.min(f.balance, 250);
+
         f.balance -= cost;
-        this.population.businesses.find((b) => b.building === destination.id)!.balance += cost;
+        this.population.businesses.find(
+          b => b.building === destination.id,
+        )!.balance += cost;
         this.population.event(p, this.seconds, 'Отдыхает в кафе');
       } else {
         this.population.event(p, this.seconds, 'Гуляет в парке');
@@ -353,64 +490,115 @@ export class CityLife {
       p.activity = 'home';
       p.nextAt = this.seconds + 1;
       const f = this.population.families[p.family]!;
+
       if (
         !f.arrived &&
         f.members.every(
-          (id) =>
-            this.population.people[id]!.location === destination.id && this.population.people[id]!.activity === 'home',
+          id =>
+            this.population.people[id]!.location === destination.id &&
+            this.population.people[id]!.activity === 'home',
         )
       ) {
         f.arrived = true;
         this.population.arrivals += f.members.length;
-        this.population.familyEvent(f, this.seconds, 'Семья заселилась в новый дом');
+        this.population.familyEvent(
+          f,
+          this.seconds,
+          'Семья заселилась в новый дом',
+        );
       }
     }
   }
-  private choosePlace(p: Resident, kinds: LifePlace['kind'][]): LifePlace | undefined {
+
+  private choosePlace(
+    p: Resident,
+    kinds: Array<LifePlace['kind']>,
+  ): LifePlace | undefined {
     const origin = this.population.place(p.location).door;
+
     return this.profile.places
       .filter(
-        (place) =>
+        place =>
           kinds.includes(place.kind) &&
           this.minute >= place.open &&
           this.minute < place.close - 15 &&
-          (place.kind !== 'shop' || this.population.businesses.find((b) => b.building === place.id)!.stock > 0),
+          (place.kind !== 'shop' ||
+            this.population.businesses.find(b => b.building === place.id)!
+              .stock > 0),
       )
-      .sort((a, b) => distance(origin, a.door) - distance(origin, b.door) || a.id.localeCompare(b.id))[0];
+      .sort(
+        (a, b) =>
+          distance(origin, a.door) - distance(origin, b.door) ||
+          a.id.localeCompare(b.id),
+      )[0];
   }
+
   private plan(p: Resident): void {
     const family = this.population.families[p.family]!;
+
     if (!family.arrived || p.activity === 'dead') {
       return;
     }
-    const age = this.population.age(p, this.day),
-      home = this.population.home(family);
+
+    const age = this.population.age(p, this.day);
+    const home = this.population.home(family);
+
     if (p.activity === 'work') {
-      this.population.payWage(p, Math.floor((INITIAL_MINUTE + p.workStarted / MINUTE_SECONDS) / 1440), this.seconds);
+      this.population.payWage(
+        p,
+        Math.floor((INITIAL_MINUTE + p.workStarted / MINUTE_SECONDS) / 1440),
+        this.seconds,
+      );
     }
+
     const weekday = this.day % 7 < 5;
+
     if (age < 6) {
       p.nextAt = this.atMinute(7 * 60, this.day + 1);
+
       return;
     }
-    if (age < 18 && weekday && p.paidDay !== this.day && this.minute < 15 * 60) {
-      const school = this.profile.places.find((b) => b.kind === 'school')!;
-      const leave = this.atMinute(9 * 60) - (distance(home.door, school.door) / WALK_SPEED) * 1.5;
+    if (
+      age < 18 &&
+      weekday &&
+      p.paidDay !== this.day &&
+      this.minute < 15 * 60
+    ) {
+      const school = this.profile.places.find(b => b.kind === 'school')!;
+      const leave =
+        this.atMinute(9 * 60) -
+        (distance(home.door, school.door) / WALK_SPEED) * 1.5;
+
       if (this.seconds >= leave) {
         this.startTrip(p, school, 'school');
+
         return;
       }
+
       p.nextAt = leave;
+
       return;
     }
-    if (p.job && weekday && p.paidDay !== this.day && this.minute < p.job.start + p.job.shift) {
-      const work = this.population.place(p.job.building),
-        leave = this.atMinute(p.job.start) - (distance(home.door, work.door) / WALK_SPEED) * 1.45 - 12;
+    if (
+      p.job &&
+      weekday &&
+      p.paidDay !== this.day &&
+      this.minute < p.job.start + p.job.shift
+    ) {
+      const work = this.population.place(p.job.building);
+      const leave =
+        this.atMinute(p.job.start) -
+        (distance(home.door, work.door) / WALK_SPEED) * 1.45 -
+        12;
+
       if (this.seconds >= leave) {
         this.startTrip(p, work, 'work');
+
         return;
       }
+
       p.nextAt = leave;
+
       return;
     }
     if (
@@ -418,17 +606,23 @@ export class CityLife {
       family.food < family.members.length * 3 &&
       p.errandsDay !== this.day &&
       !family.members.some(
-        (id) => this.population.people[id]!.trip?.purpose === 'shop' || this.population.people[id]!.activity === 'shop',
+        id =>
+          this.population.people[id]!.trip?.purpose === 'shop' ||
+          this.population.people[id]!.activity === 'shop',
       )
     ) {
       const shop = this.choosePlace(p, ['shop']);
+
       if (shop) {
         p.errandsDay = this.day;
         this.startTrip(p, shop, 'shop');
+
         return;
       }
     }
+
     const outingStart = p.job && weekday ? 16 * 60 : 10 * 60;
+
     if (
       this.minute >= outingStart &&
       this.minute < 21 * 60 &&
@@ -437,61 +631,90 @@ export class CityLife {
     ) {
       const leisure = this.choosePlace(
         p,
-        age >= 18 && family.balance >= 500 && p.preference > 0.6 ? ['cafe', 'park'] : ['park'],
+        age >= 18 && family.balance >= 500 && p.preference > 0.6
+          ? ['cafe', 'park']
+          : ['park'],
       );
+
       if (leisure) {
         p.leisureDay = this.day;
         this.startTrip(p, leisure, 'leisure');
+
         return;
       }
     }
     if (p.location !== home.id) {
       this.startTrip(p, home, 'home');
+
       return;
     }
+
     p.activity = 'home';
     p.nextAt =
-      this.minute < outingStart ? this.atMinute(outingStart) + (p.id % 60) : this.atMinute(6 * 60, this.day + 1);
+      this.minute < outingStart
+        ? this.atMinute(outingStart) + (p.id % 60)
+        : this.atMinute(6 * 60, this.day + 1);
   }
-  private moveWalker(p: Resident, cars: Array<LanePose & { speed: number; id: number }>): void {
-    const trip = p.trip!,
-      proposed = Math.min(trip.length, trip.distance + WALK_SPEED * STEP),
-      pose = sampleWalk(trip.points, proposed);
+
+  private moveWalker(
+    p: Resident,
+    cars: Array<LanePose & {speed: number; id: number}>,
+  ): void {
+    const trip = p.trip!;
+    const proposed = Math.min(trip.length, trip.distance + WALK_SPEED * STEP);
+    const pose = sampleWalk(trip.points, proposed);
+
     if (this.railway.blocksWalker(pose, p.position)) {
       return;
     }
     if (
       onRoad(pose, this.network.roads) &&
       !onRoad(p.position, this.network.roads) &&
-      cars.some((car) => {
-        const x = pose.x - car.x,
-          z = pose.z - car.z,
-          ahead = x * car.dx + z * car.dz,
-          side = Math.abs(-x * car.dz + z * car.dx);
+      cars.some(car => {
+        const x = pose.x - car.x;
+        const z = pose.z - car.z;
+        const ahead = x * car.dx + z * car.dz;
+        const side = Math.abs(-x * car.dz + z * car.dx);
+
         return side < 1.7 && ahead > -6 && ahead < car.speed * 2 + 8;
       })
     ) {
       return;
     }
+
     trip.distance = proposed;
-    p.position = { x: pose.x, z: pose.z, y: onRoad(pose, this.network.roads) ? 0.88 : (pose.y ?? 1.07) };
+    p.position = {
+      x: pose.x,
+      z: pose.z,
+      y: onRoad(pose, this.network.roads) ? 0.88 : (pose.y ?? 1.07),
+    };
     p.dx = pose.dx;
     p.dz = pose.dz;
+
     if (trip.distance >= trip.length - 1e-7) {
       this.walkFinished(p);
     }
   }
+
   private updateCars(): void {
     for (const car of this.population.cars) {
-      if (car.owner < 0 || car.driver === null || !['driving', 'parking'].includes(car.status)) {
+      if (
+        car.owner < 0 ||
+        car.driver === null ||
+        !['driving', 'parking'].includes(car.status)
+      ) {
         continue;
       }
-      const p = this.population.people[car.driver]!,
-        trip = p.trip!;
+
+      const p = this.population.people[car.driver]!;
+      const trip = p.trip!;
+
       if (this.traffic.atStop(CAR_OFFSET + car.id) !== 1) {
         continue;
       }
+
       const family = this.population.families[p.family]!;
+
       if (car.status === 'driving') {
         if (car.waitUntil === 0) {
           car.waitUntil = this.seconds + 1;
@@ -500,32 +723,61 @@ export class CityLife {
         if (this.seconds < car.waitUntil) {
           continue;
         }
-        const f = this.profile.facilities[car.facility!]!,
-          slot = this.parking.reserve(f.id, car.id, family.id, this.population.home(family).blockId);
+
+        const f = this.profile.facilities[car.facility!]!;
+        const slot = this.parking.reserve(
+          f.id,
+          car.id,
+          family.id,
+          this.population.home(family).blockId,
+        );
+
         if (!slot) {
-          const home = this.population.home(family),
-            alternatives = this.destinationParking(p, this.population.place(trip.destination), car).filter(
-              (candidate) => candidate.id !== f.id,
-            );
-          const next = alternatives[0] ?? this.profile.facilities[home.parking!]!;
+          const home = this.population.home(family);
+          const alternatives = this.destinationParking(
+            p,
+            this.population.place(trip.destination),
+            car,
+          ).filter(candidate => candidate.id !== f.id);
+          const next =
+            alternatives[0] ?? this.profile.facilities[home.parking!]!;
+
           if (!next || next.id === f.id) {
             car.waitUntil = this.seconds + 3;
             continue;
           }
-          if (this.traffic.beginTrip(CAR_OFFSET + car.id, this.network.drive(f.road, next.road))) {
+          if (
+            this.traffic.beginTrip(
+              CAR_OFFSET + car.id,
+              this.network.drive(f.road, next.road),
+            )
+          ) {
             car.facility = next.id;
             trip.facility = next.id;
             car.waitUntil = 0;
-            this.population.event(p, this.seconds, 'Парковка занята — едет к другому месту');
+            this.population.event(
+              p,
+              this.seconds,
+              'Парковка занята — едет к другому месту',
+            );
           }
+
           continue;
         }
         if (this.portals.has(f.id)) {
           this.parking.cancel(car.id);
           continue;
         }
+
         const manoeuvre = parkingRoute(f, slot, true);
-        if (this.traffic.beginTrip(CAR_OFFSET + car.id, manoeuvre.route, manoeuvre.route.length)) {
+
+        if (
+          this.traffic.beginTrip(
+            CAR_OFFSET + car.id,
+            manoeuvre.route,
+            manoeuvre.route.length,
+          )
+        ) {
           this.portals.set(f.id, car.id);
           car.status = 'parking';
           car.targetSlot = slot.id;
@@ -545,23 +797,32 @@ export class CityLife {
         p.activity = 'garage';
         p.nextAt =
           this.seconds +
-          (this.profile.facilities[this.parking.slots[car.slot!]!.facility]!.kind === 'underground' ? 6 : 2);
+          (this.profile.facilities[this.parking.slots[car.slot!]!.facility]!
+            .kind === 'underground'
+            ? 6
+            : 2);
         trip.leg = 'from-car';
         this.population.event(p, this.seconds, 'Оставил машину на парковке');
       }
     }
   }
+
   inviteFamily(): boolean {
     if (this.bus.phase !== 'idle') {
       return false;
     }
+
     const family = this.population.createFamily(this.seconds, true);
+
     if (!family) {
       return false;
     }
+
     this.population.assignJobs(this.day, this.seconds);
+
     for (const id of family.members) {
       const p = this.population.people[id]!;
+
       p.activity = 'drive';
       p.location = this.population.home(family).id;
       p.trip = {
@@ -577,33 +838,57 @@ export class CityLife {
         facility: this.terminal.id,
       };
     }
+
     const route = this.network.drive(this.profile.arrival, this.terminal.road);
+
     if (!this.traffic.beginTrip(BUS_INDEX, route)) {
       throw new Error('Arrival entrance is occupied');
     }
-    this.bus = { phase: 'approach', family: family.id, slot: null, until: 0, terminal: this.terminal.id };
+
+    this.bus = {
+      phase: 'approach',
+      family: family.id,
+      slot: null,
+      until: 0,
+      terminal: this.terminal.id,
+    };
     this.nextImmigration = this.seconds + 900;
+
     return true;
   }
+
   private updateBus(): void {
-    const terminal = this.bus.terminal === null ? this.terminal : this.profile.facilities[this.bus.terminal]!;
+    const terminal =
+      this.bus.terminal === null
+        ? this.terminal
+        : this.profile.facilities[this.bus.terminal]!;
+
     if (this.bus.phase === 'idle') {
-      const trainExpected = this.expanded && this.railway.snapshot().train.phase !== 'away';
+      const trainExpected =
+        this.expanded && this.railway.snapshot().train.phase !== 'away';
+
       if (this.seconds >= this.nextImmigration && !trainExpected) {
         this.inviteFamily();
       }
+
       return;
     }
     if (this.bus.phase === 'unloading') {
       if (this.seconds < this.bus.until) {
         return;
       }
+
       const slot = this.parking.slots[this.bus.slot!]!;
       const exit = parkingRoute(terminal, slot, false).route;
       const road = this.network.drive(
         departureAccess(terminal, slot, this.network.roads),
-        roadAccess({ x: this.profile.arrival.point.x, z: -87, y: 0.91 }, 2, this.network.roads),
+        roadAccess(
+          {x: this.profile.arrival.point.x, z: -87, y: 0.91},
+          2,
+          this.network.roads,
+        ),
       );
+
       if (
         this.traffic.beginTrip(
           BUS_INDEX,
@@ -614,6 +899,7 @@ export class CityLife {
         this.parking.leave(-2);
         this.bus.phase = 'leaving';
       }
+
       return;
     }
     if (this.traffic.atStop(BUS_INDEX) !== 1) {
@@ -622,16 +908,22 @@ export class CityLife {
     if (this.bus.phase === 'approach') {
       const slot = this.parking.reserve(terminal.id, -2, -1, '');
       const entry = slot ? parkingRoute(terminal, slot, true).route : null;
-      if (slot && entry && this.traffic.beginTrip(BUS_INDEX, entry, entry.length)) {
+
+      if (
+        slot &&
+        entry &&
+        this.traffic.beginTrip(BUS_INDEX, entry, entry.length)
+      ) {
         this.bus.phase = 'parking';
         this.bus.slot = slot.id;
       }
     } else if (this.bus.phase === 'parking') {
       this.parking.park(this.bus.slot!, -2);
       this.traffic.park(BUS_INDEX);
-      const family = this.population.families[this.bus.family!]!,
-        slot = this.parking.slots[this.bus.slot!]!,
-        from = parkingWalkAccess(this.network, terminal, slot);
+      const family = this.population.families[this.bus.family!]!;
+      const slot = this.parking.slots[this.bus.slot!]!;
+      const from = parkingWalkAccess(this.network, terminal, slot);
+
       for (const id of family.members) {
         this.walkStart(
           this.population.people[id]!,
@@ -645,18 +937,28 @@ export class CityLife {
           'Приехал в город. Идёт заселяться с семьёй',
         );
       }
+
       this.bus.phase = 'unloading';
       this.bus.until = this.seconds + 8;
     } else {
       this.traffic.park(BUS_INDEX);
-      this.bus = { phase: 'idle', family: null, slot: null, until: 0, terminal: null };
+      this.bus = {
+        phase: 'idle',
+        family: null,
+        slot: null,
+        until: 0,
+        terminal: null,
+      };
     }
   }
+
   private updateRailArrivals(): void {
     if (!this.expanded) {
       return;
     }
+
     const train = this.railway.snapshot().train;
+
     if (
       this.railArrival === null &&
       this.bus.phase === 'idle' &&
@@ -665,10 +967,13 @@ export class CityLife {
       Math.abs(train.x - RAILWAY_STATION_X) / RAILWAY_SPEED < 25
     ) {
       const family = this.population.createFamily(this.seconds, true);
+
       if (family) {
         this.population.assignJobs(this.day, this.seconds);
+
         for (const id of family.members) {
           const p = this.population.people[id]!;
+
           p.activity = 'train';
           p.location = 'railway-station';
           p.nextAt = Infinity;
@@ -684,14 +989,26 @@ export class CityLife {
             length: 0,
             facility: null,
           };
-          this.population.event(p, this.seconds, 'Приезжает с семьёй на городской вокзал');
+          this.population.event(
+            p,
+            this.seconds,
+            'Приезжает с семьёй на городской вокзал',
+          );
         }
+
         this.railway.recordPassengers(family.members.length);
-        this.railArrival = { serial: train.serial, family: family.id, released: 0, nextAt: null };
+        this.railArrival = {
+          serial: train.serial,
+          family: family.id,
+          released: 0,
+          nextAt: null,
+        };
         this.nextImmigration = this.seconds + 900;
       }
     }
+
     const arrival = this.railArrival;
+
     if (!arrival || train.serial !== arrival.serial || !train.doorsOpen) {
       return;
     }
@@ -701,28 +1018,30 @@ export class CityLife {
     if (this.seconds < arrival.nextAt) {
       return;
     }
-    const family = this.population.families[arrival.family]!,
-      id = family.members[arrival.released]!;
+
+    const family = this.population.families[arrival.family]!;
+    const id = family.members[arrival.released]!;
     const y = 1.4;
     const chain: Point[] =
       train.direction === 1
         ? [
-            { x: -34, z: -130, y },
-            { x: -24, z: -130, y },
-            { x: -24, z: -126.5 },
-            { x: -24, z: -123.45 },
+            {x: -34, z: -130, y},
+            {x: -24, z: -130, y},
+            {x: -24, z: -126.5},
+            {x: -24, z: -123.45},
           ]
         : [
-            { x: -34, z: -142, y },
-            { x: -33.7, z: -142, y },
-            { x: -44.5, z: -142, y: 7.35 },
-            { x: -44.5, z: -130, y: 7.35 },
-            { x: -33.7, z: -130, y },
-            { x: -24, z: -130, y },
-            { x: -24, z: -126.5 },
-            { x: -24, z: -123.45 },
+            {x: -34, z: -142, y},
+            {x: -33.7, z: -142, y},
+            {x: -44.5, z: -142, y: 7.35},
+            {x: -44.5, z: -130, y: 7.35},
+            {x: -33.7, z: -130, y},
+            {x: -24, z: -130, y},
+            {x: -24, z: -126.5},
+            {x: -24, z: -123.45},
           ];
     const from = this.network.access(chain[0]!, chain.slice(1));
+
     this.walkStart(
       this.population.people[id]!,
       from,
@@ -737,25 +1056,36 @@ export class CityLife {
     this.railway.disembarkPassenger();
     arrival.released++;
     arrival.nextAt = this.seconds + 1.4;
+
     if (arrival.released >= family.members.length) {
       this.railArrival = null;
     }
   }
+
   private step(): void {
     this.railway.advance(this.seconds, {
       vehicles: this.traffic.movingPoses(),
-      walkers: this.population.people.filter((p) => p.activity === 'walk').map((p) => p.position),
+      walkers: this.population.people
+        .filter(p => p.activity === 'walk')
+        .map(p => p.position),
     });
+
     for (const [facility, id] of this.portals) {
       const car = this.population.cars[id]!;
+
       if (
         car.status === 'parked' ||
-        distance(this.traffic.pose(CAR_OFFSET + id), this.profile.facilities[facility]!.entrance) > 12
+        distance(
+          this.traffic.pose(CAR_OFFSET + id),
+          this.profile.facilities[facility]!.entrance,
+        ) > 12
       ) {
         this.portals.delete(facility);
       }
     }
+
     const day = this.day;
+
     if (day !== this.dayDone) {
       this.population.daily(day, this.seconds);
       this.dayDone = day;
@@ -765,32 +1095,43 @@ export class CityLife {
         if (!f.arrived || !f.members.length) {
           continue;
         }
+
         const person = f.members
-          .map((id) => this.population.people[id]!)
-          .find((p) => p.activity === 'home' && this.population.age(p, day) >= 18);
+          .map(id => this.population.people[id]!)
+          .find(
+            p => p.activity === 'home' && this.population.age(p, day) >= 18,
+          );
+
         if (!person) {
           continue;
         }
+
         const car = this.population.buyCar(f, this.seconds);
+
         if (car) {
           this.syncCars();
           this.startTrip(person, this.population.home(f), 'home', car.id);
         }
       }
+
       this.nextAssets = this.seconds + 180;
     }
+
     const cars = this.traffic.movingPoses();
+
     for (const p of this.population.people) {
       if (p.activity === 'walk') {
         this.moveWalker(p, cars);
       } else if (p.activity === 'garage' && this.seconds >= p.nextAt) {
         const trip = p.trip!;
+
         if (trip.leg === 'to-car') {
           this.driveStart(p);
         } else {
-          const car = this.population.cars[trip.car!]!,
-            slot = this.parking.slots[car.slot!]!,
-            f = this.profile.facilities[slot.facility]!;
+          const car = this.population.cars[trip.car!]!;
+          const slot = this.parking.slots[car.slot!]!;
+          const f = this.profile.facilities[slot.facility]!;
+
           this.walkStart(
             p,
             parkingWalkAccess(this.network, f, slot),
@@ -803,44 +1144,68 @@ export class CityLife {
             'Идёт от машины к месту назначения',
           );
         }
-      } else if (p.activity !== 'drive' && p.activity !== 'dead' && this.seconds >= p.nextAt) {
+      } else if (
+        p.activity !== 'drive' &&
+        p.activity !== 'dead' &&
+        this.seconds >= p.nextAt
+      ) {
         this.plan(p);
       }
     }
+
     this.crossings = this.population.people
-      .filter((p) => p.activity === 'walk' && onRoad(p.position, this.network.roads))
-      .map((p) => p.position);
+      .filter(
+        p => p.activity === 'walk' && onRoad(p.position, this.network.roads),
+      )
+      .map(p => p.position);
     this.traffic.update(this.seconds);
     this.updateCars();
     this.updateRailArrivals();
     this.updateBus();
   }
+
   details(id: number): CitizenDetails | null {
     const p = this.population.people[id];
+
     if (!p) {
       return null;
     }
-    const family = this.population.families[p.family]!,
-      home = this.population.home(family);
+
+    const family = this.population.families[p.family]!;
+    const home = this.population.home(family);
+
     return structuredClone({
       person: p,
       family,
-      members: family.members.map((id) => {
+      members: family.members.map(id => {
         const member = this.population.people[id]!;
-        return { id, name: member.name, age: this.population.age(member, this.day), activity: member.activity };
+
+        return {
+          id,
+          name: member.name,
+          age: this.population.age(member, this.day),
+          activity: member.activity,
+        };
       }),
       age: this.population.age(p, this.day),
       home,
       ownsHome: this.population.units[family.home]!.owner === family.id,
-      cars: family.cars.map((id) => {
+      cars: family.cars.map(id => {
         const c = this.population.cars[id]!;
+
         return {
           ...c,
           name: carName(c.tier),
-          place: c.slot === null ? 'В пути' : this.profile.facilities[this.parking.slots[c.slot]!.facility]!.name,
+          place:
+            c.slot === null
+              ? 'В пути'
+              : this.profile.facilities[this.parking.slots[c.slot]!.facility]!
+                  .name,
         };
       }),
-      destination: p.trip ? this.population.place(p.trip.destination).name : this.population.place(p.location).name,
+      destination: p.trip
+        ? this.population.place(p.trip.destination).name
+        : this.population.place(p.location).name,
       next:
         p.trip?.reason ??
         (p.activity === 'work'
@@ -852,22 +1217,33 @@ export class CityLife {
             : 'Продолжит день после посещения'),
     });
   }
+
   frame(selected: number | null = null): LifeFrame {
     const people = this.population.people
-      .filter((p) => p.activity !== 'dead')
-      .map((p) => {
-        let position = p.position,
-          yaw = Math.atan2(p.dx, p.dz);
-        if (p.activity === 'drive' && p.trip?.car !== null && p.trip?.car !== undefined) {
-          const pose = this.traffic.pose(p.trip.car === -1 ? BUS_INDEX : CAR_OFFSET + p.trip.car);
+      .filter(p => p.activity !== 'dead')
+      .map(p => {
+        let position = p.position;
+        let yaw = Math.atan2(p.dx, p.dz);
+
+        if (
+          p.activity === 'drive' &&
+          p.trip?.car !== null &&
+          p.trip?.car !== undefined
+        ) {
+          const pose = this.traffic.pose(
+            p.trip.car === -1 ? BUS_INDEX : CAR_OFFSET + p.trip.car,
+          );
+
           position = pose;
           yaw = Math.atan2(pose.dx, pose.dz);
         }
         if (p.activity === 'train') {
           const train = this.railway.snapshot().train;
-          position = { x: train.x, z: train.z, y: 1.4 };
+
+          position = {x: train.x, z: train.z, y: 1.4};
           yaw = (train.direction * Math.PI) / 2;
         }
+
         return {
           id: p.id,
           x: position.x,
@@ -875,19 +1251,24 @@ export class CityLife {
           z: position.z,
           yaw,
           visible:
-            p.activity === 'walk' || (p.activity === 'leisure' && this.population.place(p.location).kind === 'park'),
+            p.activity === 'walk' ||
+            (p.activity === 'leisure' &&
+              this.population.place(p.location).kind === 'park'),
           child: this.population.age(p, this.day) < 16,
         };
       });
-    const cars = this.population.cars.map((car) => {
-      const slot = car.slot === null ? undefined : this.parking.slots[car.slot],
-        f = slot ? this.profile.facilities[slot.facility]! : undefined;
+    const cars = this.population.cars.map(car => {
+      const slot = car.slot === null ? undefined : this.parking.slots[car.slot];
+      const f = slot ? this.profile.facilities[slot.facility]! : undefined;
       const pose = slot
-        ? { ...slot.position, dx: Math.sin(slot.yaw), dz: Math.cos(slot.yaw) }
+        ? {...slot.position, dx: Math.sin(slot.yaw), dz: Math.cos(slot.yaw)}
         : this.traffic.pose(CAR_OFFSET + car.id);
       const garage =
         f?.kind === 'underground' ||
-        (f?.kind === 'private' && this.population.place(f.buildingId!).building?.plot?.annex === 'garage');
+        (f?.kind === 'private' &&
+          this.population.place(f.buildingId!).building?.plot?.annex ===
+            'garage');
+
       return {
         id: car.id,
         x: pose.x,
@@ -899,47 +1280,64 @@ export class CityLife {
         tier: car.tier,
       };
     });
-    const positions = Array.from({ length: AMBIENT_VEHICLES + 4 }, (_, id) => this.traffic.pose(id));
+    const positions = Array.from({length: AMBIENT_VEHICLES + 4}, (_, id) =>
+      this.traffic.pose(id),
+    );
     const busPose =
       this.bus.phase === 'unloading'
         ? {
             ...this.parking.slots[this.bus.slot!]!.position,
-            dx: Math.sin(this.profile.facilities[this.bus.terminal ?? this.terminal.id]!.yaw),
-            dz: Math.cos(this.profile.facilities[this.bus.terminal ?? this.terminal.id]!.yaw),
+            dx: Math.sin(
+              this.profile.facilities[this.bus.terminal ?? this.terminal.id]!
+                .yaw,
+            ),
+            dz: Math.cos(
+              this.profile.facilities[this.bus.terminal ?? this.terminal.id]!
+                .yaw,
+            ),
           }
         : this.traffic.pose(BUS_INDEX);
+
     return {
       seconds: this.seconds,
       day: this.day + 1,
       minute: this.minute,
       population: people.length,
-      families: this.population.families.filter((f) => f.members.length).length,
-      employed: this.population.people.filter((p) => p.job && p.activity !== 'dead').length,
+      families: this.population.families.filter(f => f.members.length).length,
+      employed: this.population.people.filter(
+        p => p.job && p.activity !== 'dead',
+      ).length,
       born: this.population.born,
       arrived: this.population.arrivals,
-      walking: this.population.people.filter((p) => p.activity === 'walk').length,
-      driving: this.population.cars.filter((c) => c.driver !== null && c.status !== 'reserved').length,
+      walking: this.population.people.filter(p => p.activity === 'walk').length,
+      driving: this.population.cars.filter(
+        c => c.driver !== null && c.status !== 'reserved',
+      ).length,
       people,
       cars,
       carOwners: Object.fromEntries(
         this.population.cars
-          .filter((c) => c.owner >= 0)
-          .map((c) => [c.id, this.population.families[c.owner]!.members[0]!]),
+          .filter(c => c.owner >= 0)
+          .map(c => [c.id, this.population.families[c.owner]!.members[0]!]),
       ),
       freight: positions.slice(AMBIENT_VEHICLES),
       bus: {
         ...busPose,
-        visible: this.bus.phase !== 'idle' && busPose.x >= gridForLayout(this.profile.layout).bounds.minX + 2,
+        visible:
+          this.bus.phase !== 'idle' &&
+          busPose.x >= gridForLayout(this.profile.layout).bounds.minX + 2,
       },
-      parking: this.parking.slots.map(({ id, occupant, reserved, household }) => ({
-        id,
-        occupant,
-        reserved,
-        household,
-      })),
+      parking: this.parking.slots.map(
+        ({id, occupant, reserved, household}) => ({
+          id,
+          occupant,
+          reserved,
+          household,
+        }),
+      ),
       catalog: this.population.people
-        .filter((p) => p.activity !== 'dead')
-        .map(({ id, name, family }) => ({ id, name, family })),
+        .filter(p => p.activity !== 'dead')
+        .map(({id, name, family}) => ({id, name, family})),
       selected: selected === null ? null : this.details(selected),
       harbor: this.harbor.snapshot(this.seconds, positions),
       harborStatus: this.harbor.status(),
@@ -947,6 +1345,7 @@ export class CityLife {
       railwayStatus: this.railway.status(),
     };
   }
+
   save() {
     return {
       version: 2 as const,
@@ -968,8 +1367,10 @@ export class CityLife {
       harbor: this.harbor.save(),
     };
   }
+
   static fromSave(value: unknown): CityLife {
     const input = value as CurrentSave | LegacySave;
+
     if (
       !input ||
       (input.version !== 1 && input.version !== 2) ||
@@ -981,13 +1382,24 @@ export class CityLife {
     ) {
       throw new Error('Некорректное сохранение города');
     }
-    const world = new CityLife(input.seed, 0, input.version === 1 || input.expanded);
+
+    const world = new CityLife(
+      input.seed,
+      0,
+      input.version === 1 || input.expanded,
+    );
     const s = input.version === 1 ? migrateLegacySave(input, world) : input;
+
     if (s.parking.length !== world.parking.slots.length) {
       throw new Error('Сохранение относится к другой планировке города');
     }
+
     world.population.restore(s.population);
-    world.parking.slots.splice(0, world.parking.slots.length, ...structuredClone(s.parking));
+    world.parking.slots.splice(
+      0,
+      world.parking.slots.length,
+      ...structuredClone(s.parking),
+    );
     world.syncCars();
     world.traffic.restore(s.traffic);
     world.harbor.restore(s.harbor);
@@ -1001,6 +1413,7 @@ export class CityLife {
     world.railway.restore(s.railway);
     world.railArrival = structuredClone(s.railArrival);
     world.portals = new Map(s.portals);
+
     for (const p of world.population.people) {
       if (
         p.id !== world.population.people.indexOf(p) ||
@@ -1010,91 +1423,125 @@ export class CityLife {
       ) {
         throw new Error('Повреждён житель в сохранении');
       }
+
       world.population.place(p.location);
+
       if (p.trip) {
         world.population.place(p.trip.destination);
+
         if (p.nextAt === null) {
           p.nextAt = Infinity;
         }
       }
     }
+
     return world;
   }
 }
 
 type CurrentSave = ReturnType<CityLife['save']>;
-type LegacySave = Omit<CurrentSave, 'version' | 'expanded' | 'railway' | 'railArrival'> & { version: 1 };
+type LegacySave = Omit<
+  CurrentSave,
+  'version' | 'expanded' | 'railway' | 'railArrival'
+> & {version: 1};
 
 /** Spatial identities survive map growth; numeric parking and junction slots do not. */
 function migrateLegacySave(saved: LegacySave, world: CityLife): CurrentSave {
   const legacy = createLifeProfile(generateCity(saved.seed, false));
+
   if (saved.parking.length !== legacy.slots.length) {
-    throw new Error('Сохранение относится к неподдерживаемой старой планировке');
+    throw new Error(
+      'Сохранение относится к неподдерживаемой старой планировке',
+    );
   }
+
   const key = (f: ParkingFacility) => `${f.kind}/${f.buildingId ?? f.blockId}`;
-  const facilities = new Map(world.profile.facilities.map((f) => [key(f), f]));
-  const facilityIds = new Map<number, number>(),
-    slots = new Map<number, number>();
+  const facilities = new Map(world.profile.facilities.map(f => [key(f), f]));
+  const facilityIds = new Map<number, number>();
+  const slots = new Map<number, number>();
+
   for (const old of legacy.facilities) {
     const next = facilities.get(key(old));
+
     if (!next) {
       throw new Error(`Не удалось перенести парковку: ${old.name}`);
     }
+
     facilityIds.set(old.id, next.id);
     old.slots.forEach((id, index) => {
       const nextId = next.slots[index];
+
       if (nextId === undefined) {
         throw new Error('Вместимость старой парковки изменилась');
       }
+
       slots.set(id, nextId);
     });
   }
+
   const slotId = (id: number | null) => (id === null ? null : slots.get(id)!);
-  const facilityId = (id: number | null) => (id === null ? null : facilityIds.get(id)!);
+  const facilityId = (id: number | null) =>
+    id === null ? null : facilityIds.get(id)!;
   const data = structuredClone(saved);
+
   for (const slot of data.parking) {
     const target = world.parking.slots[slots.get(slot.id)!]!;
+
     target.occupant = slot.occupant;
     target.reserved = slot.reserved;
     target.household = slot.household;
   }
+
   for (const person of data.population.people) {
     if (person.trip) {
       person.trip.facility = facilityId(person.trip.facility);
     }
   }
+
   for (const car of data.population.cars) {
     car.slot = slotId(car.slot);
     car.targetSlot = slotId(car.targetSlot);
     car.facility = facilityId(car.facility);
   }
+
   for (const unit of data.population.units) {
     if (world.population.units[unit.id]?.building !== unit.building) {
       throw new Error('Изменились адреса старого жилья');
     }
   }
-  const units = new Set(data.population.units.map((u) => u.id));
-  data.population.units.push(...structuredClone(world.population.units.filter((u) => !units.has(u.id))));
-  const businesses = new Set(data.population.businesses.map((b) => b.building));
-  data.population.businesses.push(
-    ...structuredClone(world.population.businesses.filter((b) => !businesses.has(b.building))),
+
+  const units = new Set(data.population.units.map(u => u.id));
+
+  data.population.units.push(
+    ...structuredClone(world.population.units.filter(u => !units.has(u.id))),
   );
-  const oldRoads = gridForLayout(legacy.layout).roads,
-    roads = world.network.roads;
+  const businesses = new Set(data.population.businesses.map(b => b.building));
+
+  data.population.businesses.push(
+    ...structuredClone(
+      world.population.businesses.filter(b => !businesses.has(b.building)),
+    ),
+  );
+  const oldRoads = gridForLayout(legacy.layout).roads;
+  const roads = world.network.roads;
   const gateId = (gate: number) => {
     if (gate < 0) {
       return gate;
     }
-    const x = oldRoads[gate % oldRoads.length]!,
-      z = oldRoads[Math.floor(gate / oldRoads.length)]!;
-    const col = roads.indexOf(x),
-      row = roads.indexOf(z);
+
+    const x = oldRoads[gate % oldRoads.length]!;
+    const z = oldRoads[Math.floor(gate / oldRoads.length)]!;
+    const col = roads.indexOf(x);
+    const row = roads.indexOf(z);
+
     if (col < 0 || row < 0) {
       throw new Error('Не удалось перенести дорожную резервацию');
     }
+
     return row * roads.length + col;
   };
   const owners = new Array<number>(world.traffic.save().owners.length).fill(-1);
+
   data.traffic.owners.forEach((owner, gate) => {
     if (owner >= 0) {
       owners[gateId(gate)] = owner;
@@ -1105,12 +1552,15 @@ function migrateLegacySave(saved: LegacySave, world: CityLife): CurrentSave {
   const terminal =
     saved.bus.slot === null
       ? legacy.facilities
-          .filter((f) => f.kind === 'street' && f.road.direction === 1)
+          .filter(f => f.kind === 'street' && f.road.direction === 1)
           .sort(
-            (a, b) => distance(a.road.point, legacy.arrival.point) - distance(b.road.point, legacy.arrival.point),
+            (a, b) =>
+              distance(a.road.point, legacy.arrival.point) -
+              distance(b.road.point, legacy.arrival.point),
           )[0]!.id
       : saved.parking[saved.bus.slot]!.facility;
   const railway = new Railway(saved.tick * STEP, true, world.network.roads);
+
   return {
     ...data,
     version: 2,
@@ -1118,7 +1568,11 @@ function migrateLegacySave(saved: LegacySave, world: CityLife): CurrentSave {
     railway: railway.save(),
     railArrival: null,
     parking: structuredClone(world.parking.slots),
-    bus: { ...data.bus, slot: slotId(data.bus.slot), terminal: facilityId(terminal) },
+    bus: {
+      ...data.bus,
+      slot: slotId(data.bus.slot),
+      terminal: facilityId(terminal),
+    },
     portals: data.portals.map(([id, car]) => [facilityIds.get(id)!, car]),
   };
 }

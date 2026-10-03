@@ -1,4 +1,4 @@
-import { CITY_GRID } from './cityGrid';
+import {CITY_GRID} from './cityGrid';
 
 export const CITY_ROAD_CENTERS = CITY_GRID.roads;
 export const CITY_ROAD_WIDTH = 8;
@@ -50,18 +50,27 @@ export interface LanePose {
   y?: number;
 }
 
-export function createLaneRoute(roads: RoadRectangle, direction: 1 | -1): LaneRoute {
+export function createLaneRoute(
+  roads: RoadRectangle,
+  direction: 1 | -1,
+): LaneRoute {
   // In the X/Z ground plane, +X travel keeps to +Z and +Z travel keeps to -X.
   // Clockwise circuits therefore use the inside lane; counterclockwise circuits use the outside.
   const inset = direction * LANE_OFFSET;
-  const west = roads.west + inset,
-    east = roads.east - inset;
-  const north = roads.north + inset,
-    south = roads.south - inset;
+  const west = roads.west + inset;
+  const east = roads.east - inset;
+  const north = roads.north + inset;
+  const south = roads.south - inset;
   const radius = CENTER_TURN_RADIUS - inset;
-  const width = east - west - 2 * radius,
-    depth = south - north - 2 * radius;
-  const line = (x: number, z: number, dx: number, dz: number, length: number): Segment => ({
+  const width = east - west - 2 * radius;
+  const depth = south - north - 2 * radius;
+  const line = (
+    x: number,
+    z: number,
+    dx: number,
+    dz: number,
+    length: number,
+  ): Segment => ({
     kind: 'line',
     x,
     z,
@@ -87,25 +96,33 @@ export function createLaneRoute(roads: RoadRectangle, direction: 1 | -1): LaneRo
     line(west, south - radius, 0, -1, depth),
     arc(west + radius, north + radius, Math.PI),
   ];
-  return { direction, segments, length: segments.reduce((sum, segment) => sum + segment.length, 0) };
+
+  return {
+    direction,
+    segments,
+    length: segments.reduce((sum, segment) => sum + segment.length, 0),
+  };
 }
 
 export function createTrafficRoutes(roads = CITY_ROAD_CENTERS): LaneRoute[] {
-  const first = roads[0]!,
-    last = roads[roads.length - 1]!;
+  const first = roads[0]!;
+  const last = roads[roads.length - 1]!;
   const routes: LaneRoute[] = [];
+
   for (const horizontal of [true, false]) {
     for (let i = 0; i < roads.length - 1; i++) {
-      const low = roads[i]!,
-        high = roads[i + 1]!;
+      const low = roads[i]!;
+      const high = roads[i + 1]!;
       const bounds = horizontal
-        ? { west: first, east: last, north: low, south: high }
-        : { west: low, east: high, north: first, south: last };
+        ? {west: first, east: last, north: low, south: high}
+        : {west: low, east: high, north: first, south: last};
+
       for (const direction of [1, -1] as const) {
         routes.push(createLaneRoute(bounds, direction));
       }
     }
   }
+
   return routes;
 }
 
@@ -114,15 +131,20 @@ export function sampleLaneRoute(route: LaneRoute, distance: number): LanePose {
   let along =
     route.closed === false
       ? Math.max(0, Math.min(distance, route.length))
-      : (((distance * route.direction) % route.length) + route.length) % route.length;
+      : (((distance * route.direction) % route.length) + route.length) %
+        route.length;
   let segment = route.segments[0]!;
+
   for (let i = 0; i < route.segments.length; i++) {
     segment = route.segments[i]!;
+
     if (along < segment.length || i === route.segments.length - 1) {
       break;
     }
+
     along -= segment.length;
   }
+
   if (segment.kind === 'line') {
     return {
       x: segment.x + segment.dx * along,
@@ -131,14 +153,21 @@ export function sampleLaneRoute(route: LaneRoute, distance: number): LanePose {
       dz: segment.dz * route.direction * (segment.backwards ? -1 : 1),
       ...(segment.y === undefined
         ? {}
-        : { y: segment.y + (((segment.endY ?? segment.y) - segment.y) * along) / segment.length }),
+        : {
+            y:
+              segment.y +
+              (((segment.endY ?? segment.y) - segment.y) * along) /
+                segment.length,
+          }),
     };
   }
-  const turn = segment.turn ?? 1,
-    facing = route.direction * turn * (segment.backwards ? -1 : 1);
+
+  const turn = segment.turn ?? 1;
+  const facing = route.direction * turn * (segment.backwards ? -1 : 1);
   const angle = segment.angle + (turn * along) / segment.radius;
-  const sin = Math.sin(angle),
-    cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const cos = Math.cos(angle);
+
   return {
     x: segment.x + cos * segment.radius,
     z: segment.z + sin * segment.radius,

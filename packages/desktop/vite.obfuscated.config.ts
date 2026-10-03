@@ -1,7 +1,7 @@
 // Optional obfuscation of the current city's modules. Vendors and page entry points remain separate;
 // the archived game is not included in either build.
 import JavaScriptObfuscator from 'javascript-obfuscator';
-import { defineConfig, mergeConfig, type Plugin } from 'vite';
+import {defineConfig, mergeConfig, type Plugin} from 'vite';
 import appConfig from '../app/vite.config';
 
 const UI_CHUNK = 'ui';
@@ -22,12 +22,22 @@ const obfuscateUiChunk: Plugin = {
     if (chunk.name !== UI_CHUNK) {
       return null;
     }
+
     // Rolldown's own helpers are virtual (`\0…`); anything else outside app/ui must not be obfuscated.
-    const foreign = chunk.moduleIds.filter((id) => !id.startsWith('\0') && !UI_MODULE.test(id));
+    const foreign = chunk.moduleIds.filter(
+      id => !id.startsWith('\0') && !UI_MODULE.test(id),
+    );
+
     if (foreign.length > 0) {
-      this.error(`the ${UI_CHUNK} chunk holds modules outside the current app: ${foreign.join(', ')}`);
+      this.error(
+        `the ${UI_CHUNK} chunk holds modules outside the current app: ${foreign.join(', ')}`,
+      );
     }
-    return { code: JavaScriptObfuscator.obfuscate(code, OPTIONS).getObfuscatedCode(), map: null };
+
+    return {
+      code: JavaScriptObfuscator.obfuscate(code, OPTIONS).getObfuscatedCode(),
+      map: null,
+    };
   },
 };
 
@@ -41,9 +51,13 @@ export default mergeConfig(
           codeSplitting: {
             groups: [
               // Libraries apart, so the ui chunk and the entry chunk do not import each other's CommonJS wrappers.
-              { name: 'vendor', test: VENDOR_MODULE },
+              {name: 'vendor', test: VENDOR_MODULE},
               // Without `includeDependenciesRecursively: false` the group swallows everything app and ui import.
-              { name: UI_CHUNK, test: UI_MODULE, includeDependenciesRecursively: false },
+              {
+                name: UI_CHUNK,
+                test: UI_MODULE,
+                includeDependenciesRecursively: false,
+              },
             ],
           },
         },

@@ -4,5 +4,11 @@
     "lib": ["ES2023", "DOM"],
     "types": ["node"]
   },
-  "include": ["src", "e2e", "vite.obfuscated.config.ts", "playwright.config.ts", "scripts"]
+  "include": [
+    "src",
+    "e2e",
+    "vite.obfuscated.config.ts",
+    "playwright.config.ts",
+    "scripts"
+  ]
 }

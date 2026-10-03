@@ -5,15 +5,22 @@
 // still carry an ad-hoc signature, which flipping bytes breaks, so the ad-hoc signature is redone.
 // Ad-hoc signed fuses stop casual launch flags and env vars only: anyone can flip them back and
 // re-sign. Tamper resistance comes with a Developer ID signature. Fuse semantics: https://www.electronjs.org/docs/latest/tutorial/fuses
-import { FuseV1Options, FuseVersion, flipFuses } from '@electron/fuses';
+import {FuseV1Options, FuseVersion, flipFuses} from '@electron/fuses';
 import path from 'node:path';
 
 /** @param {{ appOutDir: string, electronPlatformName: string, packager: { appInfo: { productFilename: string } } }} context */
 export default async function afterPack(context) {
   if (context.electronPlatformName !== 'darwin') {
-    throw new Error(`after-pack: fuses are wired for macOS only, got ${context.electronPlatformName}`);
+    throw new Error(
+      `after-pack: fuses are wired for macOS only, got ${context.electronPlatformName}`,
+    );
   }
-  const app = path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`);
+
+  const app = path.join(
+    context.appOutDir,
+    `${context.packager.appInfo.productFilename}.app`,
+  );
+
   await flipFuses(app, {
     version: FuseVersion.V1,
     // A fuse added by a future Electron fails the build until it is decided here.

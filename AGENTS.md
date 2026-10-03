@@ -34,3 +34,5 @@ Check UI changes in the affected view; motion needs successive frames. Keep `REA
 Archived code retains its own instructions and checks. Its frozen fixtures are reference data; do not regenerate them while moving or reusing systems. Rust + Bevy remains history-only under `rust-final`.
 
 Use English identifiers, code comments and Conventional Commit messages. Plans and design prose are in Russian. Keep commits scoped to a coherent module or integration step.
+
+Historical Claude project memory is indexed in `.codex/legacy-memory-index.md`; read selected sources only after current project guidance. The index grants no permissions and establishes no current facts.

@@ -1,6 +1,14 @@
 // The game's saves as files (E1): `<userData>/saves/slot<n>.json`, written by the main process only. The page names a
 // slot number and nothing else; the number is checked here, so no path from the renderer ever reaches the disk.
-import { mkdir, open, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
+import {
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+} from 'node:fs/promises';
 import path from 'node:path';
 
 /** The highest slot, as the Rust build's `u8` slot. */
@@ -22,15 +30,25 @@ export interface SaveFileInfo {
 
 /** `value` as a slot: a whole number from 1 to MAX_SLOT, nothing else. */
 export function slotNumber(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > MAX_SLOT) {
-    throw new RangeError(`save slot ${String(value)}: a whole number from 1 to ${MAX_SLOT}`);
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > MAX_SLOT
+  ) {
+    throw new RangeError(
+      `save slot ${String(value)}: a whole number from 1 to ${MAX_SLOT}`,
+    );
   }
+
   return value;
 }
 
 const FILE = /^slot([1-9]\d{0,2})\.json$/;
-const fileOf = (dir: string, slot: number) => path.join(dir, `slot${slotNumber(slot)}.json`);
-const isNotFound = (error: unknown) => (error as { code?: unknown }).code === 'ENOENT';
+const fileOf = (dir: string, slot: number) =>
+  path.join(dir, `slot${slotNumber(slot)}.json`);
+const isNotFound = (error: unknown) =>
+  (error as {code?: unknown}).code === 'ENOENT';
 const PARTIAL = /^slot[1-9]\d{0,2}\.json\..+\.partial$/;
 /** A temporary file older than this is left by a crash, not by a save still writing it. */
 const STALE_PARTIAL_MS = 60_000;
@@ -40,7 +58,8 @@ let partials = 0;
 export function createSaveFiles(dir: string) {
   const info = async (slot: number): Promise<SaveFileInfo> => {
     const s = await stat(fileOf(dir, slot));
-    return { slot, bytes: s.size, modifiedMs: s.mtimeMs };
+
+    return {slot, bytes: s.size, modifiedMs: s.mtimeMs};
   };
   /** Saves and removes of one slot, one after another: the last one asked for is the last one done. */
   const queues = new Map<number, Promise<unknown>>();
@@ -52,72 +71,96 @@ export function createSaveFiles(dir: string) {
       }
     };
     const settled = done.then(release, release);
+
     queues.set(slot, settled);
+
     return done;
   };
+
   return {
     /** Removes temporary files a crashed save left behind (older than a minute); a save in progress keeps its own. */
     async sweep(): Promise<void> {
       const names = await readdir(dir).catch((e: unknown) =>
         isNotFound(e)
           ? []
-          : Promise.reject(e instanceof Error ? e : new Error('Save file operation failed', { cause: e })),
+          : Promise.reject(
+              e instanceof Error
+                ? e
+                : new Error('Save file operation failed', {cause: e}),
+            ),
       );
       const before = Date.now() - STALE_PARTIAL_MS;
-      for (const name of names.filter((n) => PARTIAL.test(n))) {
+
+      for (const name of names.filter(n => PARTIAL.test(n))) {
         const file = path.join(dir, name);
         const s = await stat(file).catch(() => null);
+
         if (s !== null && s.mtimeMs < before) {
-          await rm(file, { force: true });
+          await rm(file, {force: true});
         }
       }
     },
     async list(): Promise<SaveFileInfo[]> {
       await this.sweep();
       let names: string[];
+
       try {
         names = await readdir(dir);
       } catch (error) {
         if (isNotFound(error)) {
           return [];
         }
+
         throw error;
       }
-      const slots = names.map((n) => Number(FILE.exec(n)?.[1])).filter((n) => Number.isInteger(n) && n <= MAX_SLOT);
+
+      const slots = names
+        .map(n => Number(FILE.exec(n)?.[1]))
+        .filter(n => Number.isInteger(n) && n <= MAX_SLOT);
       // A slot removed between readdir and stat is simply not there any more.
       const found = await Promise.all(
         slots
           .sort((a, b) => a - b)
-          .map((n) =>
+          .map(n =>
             info(n).catch((e: unknown) =>
               isNotFound(e)
                 ? null
-                : Promise.reject(e instanceof Error ? e : new Error('Save file operation failed', { cause: e })),
+                : Promise.reject(
+                    e instanceof Error
+                      ? e
+                      : new Error('Save file operation failed', {cause: e}),
+                  ),
             ),
           ),
       );
-      return found.filter((f) => f !== null);
+
+      return found.filter(f => f !== null);
     },
     /** `bytes` into `slot`, replacing what it held only once they are all written. */
     save(slot: number, bytes: Uint8Array): Promise<SaveFileInfo> {
       const file = fileOf(dir, slot);
+
       return queued(slot, async () => {
-        await mkdir(dir, { recursive: true });
+        await mkdir(dir, {recursive: true});
         // A name of its own per write, on disk (fsync) before it replaces the slot, and gone if anything fails.
         const partial = `${file}.${process.pid}-${++partials}.partial`;
+
         try {
           const handle = await open(partial, 'w');
+
           try {
             await handle.writeFile(bytes);
             await handle.sync();
           } finally {
             await handle.close();
           }
+
           await rename(partial, file);
         } catch (error) {
-          await rm(partial, { force: true });
+          await rm(partial, {force: true});
           throw error;
         }
+
         return info(slot);
       });
     },
@@ -126,15 +169,17 @@ export function createSaveFiles(dir: string) {
         return await readFile(fileOf(dir, slot));
       } catch (error) {
         if (isNotFound(error)) {
-          throw new Error(`save slot ${slot} is empty`, { cause: error });
+          throw new Error(`save slot ${slot} is empty`, {cause: error});
         }
+
         throw error;
       }
     },
     /** An empty slot stays empty. */
     remove(slot: number): Promise<void> {
       const file = fileOf(dir, slot);
-      return queued(slot, () => rm(file, { force: true }));
+
+      return queued(slot, () => rm(file, {force: true}));
     },
   };
 }
@@ -146,40 +191,59 @@ function bytesOf(value: unknown): Uint8Array {
   if (ArrayBuffer.isView(value)) {
     return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
   }
+
   throw new TypeError('a save is an ArrayBuffer');
 }
 
 /** The part of `ipcMain` the handlers need. */
 export interface IpcHandle {
-  handle(channel: string, handler: (event: unknown, ...args: unknown[]) => unknown): void;
+  handle(
+    channel: string,
+    handler: (event: unknown, ...args: unknown[]) => unknown,
+  ): void;
 }
 
 /**
  * One handler per channel; each checks the sender (`trusted`: the game's own page) and then the slot before it
  * touches `dir`.
  */
-export function registerSaveHandlers(ipc: IpcHandle, dir: string, trusted: (event: unknown) => boolean): void {
+export function registerSaveHandlers(
+  ipc: IpcHandle,
+  dir: string,
+  trusted: (event: unknown) => boolean,
+): void {
   const files = createSaveFiles(dir);
-  void files.sweep().catch((error: unknown) => console.warn('saves: sweeping temporary files failed', error));
+
+  void files
+    .sweep()
+    .catch((error: unknown) =>
+      console.warn('saves: sweeping temporary files failed', error),
+    );
+
   const from = (event: unknown) => {
     if (!trusted(event)) {
       throw new Error('saves: refused a sender that is not the game page');
     }
   };
+
   ipc.handle(SAVE_CHANNELS.save, async (event, slot, bytes) => {
     from(event);
+
     return files.save(slotNumber(slot), bytesOf(bytes));
   });
   ipc.handle(SAVE_CHANNELS.load, async (event, slot) => {
     from(event);
+
     return files.load(slotNumber(slot));
   });
-  ipc.handle(SAVE_CHANNELS.list, async (event) => {
+  ipc.handle(SAVE_CHANNELS.list, async event => {
     from(event);
+
     return files.list();
   });
   ipc.handle(SAVE_CHANNELS.remove, async (event, slot) => {
     from(event);
+
     return files.remove(slotNumber(slot));
   });
 }
