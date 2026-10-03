@@ -6,5 +6,5 @@
     "jsx": "react-jsx"
   },
   "include": ["src", "vite.config.ts"],
-  "exclude": ["src/city/life/worker.ts"]
+  "exclude": ["src/city/life/worker.ts", "src/region/worker.ts"]
 }

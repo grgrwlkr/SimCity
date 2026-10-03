@@ -15,5 +15,11 @@
     "tools/**/*.ts",
     "*.config.ts"
   ],
-  "exclude": ["deprecated", "node_modules", "**/out", "**/release", "packages/app/src/city/life/worker.ts"]
+  "exclude": [
+    "deprecated",
+    "node_modules",
+    "**/out",
+    "**/release",
+    "packages/app/src/city/life/worker.ts"
+  ]
 }

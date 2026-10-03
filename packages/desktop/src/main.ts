@@ -11,10 +11,10 @@ import {
   type IpcMainInvokeEvent,
   type MenuItemConstructorOptions,
 } from 'electron';
-import { readFileSync } from 'node:fs';
+import {readFileSync} from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { registerSaveHandlers } from './saves';
+import {fileURLToPath, pathToFileURL} from 'node:url';
+import {registerSaveHandlers} from './saves';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const RENDERER_DIR = path.join(here, 'renderer');
@@ -37,32 +37,47 @@ export interface BuildInfo {
 
 function readBuildInfo(): BuildInfo | null {
   try {
-    return (JSON.parse(readFileSync(path.join(here, 'build-info.json'), 'utf8')) as { simcityBuild: BuildInfo })
-      .simcityBuild;
+    return (
+      JSON.parse(readFileSync(path.join(here, 'build-info.json'), 'utf8')) as {
+        simcityBuild: BuildInfo;
+      }
+    ).simcityBuild;
   } catch {
     return null;
   }
 }
 
 /** DevTools (and the menu that opens them) in the test build and the dev shell only; a release, or a bundle whose build info cannot be read, has none. */
-export function devToolsAllowed(info: BuildInfo | null, isPackaged: boolean): boolean {
+export function devToolsAllowed(
+  info: BuildInfo | null,
+  isPackaged: boolean,
+): boolean {
   return !isPackaged || info?.test === true;
 }
 
 /** The release's menu: the app (about, hide, quit), editing and windows; no View, so no reload and no DevTools. */
 export const RELEASE_MENU: MenuItemConstructorOptions[] = [
-  { role: 'appMenu' },
-  { role: 'editMenu' },
-  { role: 'windowMenu' },
+  {role: 'appMenu'},
+  {role: 'editMenu'},
+  {role: 'windowMenu'},
 ];
 
 /** The release refuses Chromium's remote debugging (a switch on the command line); the test build and dev keep it. */
-export function remoteDebuggingRefused(devTools: boolean, hasSwitch: (name: string) => boolean): boolean {
-  return !devTools && (hasSwitch('remote-debugging-port') || hasSwitch('remote-debugging-pipe'));
+export function remoteDebuggingRefused(
+  devTools: boolean,
+  hasSwitch: (name: string) => boolean,
+): boolean {
+  return (
+    !devTools &&
+    (hasSwitch('remote-debugging-port') || hasSwitch('remote-debugging-pipe'))
+  );
 }
 
 const devTools = devToolsAllowed(readBuildInfo(), app.isPackaged);
-const refused = remoteDebuggingRefused(devTools, (name) => app.commandLine.hasSwitch(name));
+const refused = remoteDebuggingRefused(devTools, name =>
+  app.commandLine.hasSwitch(name),
+);
+
 if (refused) {
   app.exit(1);
 }
@@ -79,28 +94,51 @@ const MIME: Readonly<Record<string, string>> = {
 
 // Must run before `ready`. `standard` and `secure` make it a secure origin that can be isolated.
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
+  {
+    scheme: 'app',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+    },
+  },
 ]);
 
 async function serveRenderer(request: Request): Promise<Response> {
-  const { host, pathname } = new URL(request.url);
+  const {host, pathname} = new URL(request.url);
   let decoded: string;
+
   try {
-    decoded = decodeURIComponent(pathname.endsWith('/') ? `${pathname}index.html` : pathname);
+    decoded = decodeURIComponent(
+      pathname.endsWith('/') ? `${pathname}index.html` : pathname,
+    );
   } catch {
     // A malformed `%xx` would otherwise reject the handler and surface as a net error.
-    return new Response('not found', { status: 404 });
+    return new Response('not found', {status: 404});
   }
+
   const file = path.resolve(RENDERER_DIR, `.${decoded}`);
   const relative = path.relative(RENDERER_DIR, file);
-  if (host !== APP_HOST || relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
-    return new Response('not found', { status: 404 });
+
+  if (
+    host !== APP_HOST ||
+    relative === '' ||
+    relative.startsWith('..') ||
+    path.isAbsolute(relative)
+  ) {
+    return new Response('not found', {status: 404});
   }
+
   // A file that is not in the bundle makes `net.fetch` throw rather than answer with an error status.
-  const response = await net.fetch(pathToFileURL(file).toString()).catch(() => null);
+  const response = await net
+    .fetch(pathToFileURL(file).toString())
+    .catch(() => null);
+
   if (response === null || !response.ok) {
-    return new Response('not found', { status: 404 });
+    return new Response('not found', {status: 404});
   }
+
   return new Response(response.body, {
     headers: {
       'Content-Type': MIME[path.extname(file)] ?? 'application/octet-stream',
@@ -113,9 +151,11 @@ async function serveRenderer(request: Request): Promise<Response> {
 /** The only origin the window may show: the dev server or the bundled build. */
 function allowedOrigin(url: string): boolean {
   const target = new URL(url);
+
   if (devServerUrl !== undefined) {
     return target.origin === new URL(devServerUrl).origin;
   }
+
   return target.protocol === 'app:' && target.host === APP_HOST;
 }
 
@@ -131,31 +171,40 @@ function createWindow(): void {
       sandbox: true,
       nodeIntegration: false,
       devTools,
-      ...(testWindow ? { offscreen: { useSharedTexture: true }, backgroundThrottling: false } : {}),
+      ...(testWindow
+        ? {offscreen: {useSharedTexture: true}, backgroundThrottling: false}
+        : {}),
     },
   });
+
   if (testWindow) {
-    const counter = globalThis as { simcityPaintCount?: number };
+    const counter = globalThis as {simcityPaintCount?: number};
+
     counter.simcityPaintCount = 0;
     window.webContents.setFrameRate(60);
     // The line the desktop e2e waits for: the app is up, without a debugging port to ask.
-    window.webContents.once('did-finish-load', () => console.log('simcity: test window loaded'));
-    window.webContents.on('paint', (event) => {
+    window.webContents.once('did-finish-load', () =>
+      console.log('simcity: test window loaded'),
+    );
+    window.webContents.on('paint', event => {
       // Only a few shared textures may exist at once: release each frame as soon as it is counted.
       event.texture?.release();
       counter.simcityPaintCount = (counter.simcityPaintCount ?? 0) + 1;
     });
   }
-  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+
+  window.webContents.setWindowOpenHandler(() => ({action: 'deny'}));
   window.webContents.on('will-navigate', (event, url) => {
     if (!allowedOrigin(url)) {
       event.preventDefault();
     }
   });
-  void window.loadURL(devServerUrl ?? `app://${APP_HOST}/index.html`).catch((error: unknown) => {
-    console.error('Failed to load the game window', error);
-    app.exit(1);
-  });
+  void window
+    .loadURL(devServerUrl ?? `app://${APP_HOST}/index.html`)
+    .catch((error: unknown) => {
+      console.error('Failed to load the game window', error);
+      app.exit(1);
+    });
 }
 
 app.on('window-all-closed', () => app.quit());
@@ -172,12 +221,22 @@ void app
     if (!devTools) {
       Menu.setApplicationMenu(Menu.buildFromTemplate(RELEASE_MENU));
     }
+
     protocol.handle('app', serveRenderer);
-    registerSaveHandlers(ipcMain, path.join(app.getPath('userData'), 'saves'), (event) => {
-      // Only the main frame of the game's own page: not a subframe, not a page the window was steered to.
-      const { sender, senderFrame } = event as IpcMainInvokeEvent;
-      return senderFrame !== null && senderFrame === sender.mainFrame && allowedOrigin(senderFrame.url);
-    });
+    registerSaveHandlers(
+      ipcMain,
+      path.join(app.getPath('userData'), 'saves'),
+      event => {
+        // Only the main frame of the game's own page: not a subframe, not a page the window was steered to.
+        const {sender, senderFrame} = event as IpcMainInvokeEvent;
+
+        return (
+          senderFrame !== null &&
+          senderFrame === sender.mainFrame &&
+          allowedOrigin(senderFrame.url)
+        );
+      },
+    );
     createWindow();
   })
   .catch((error: unknown) => {

@@ -1,8 +1,14 @@
-import { buildingKit, plotKit, type BuildingKit, type PlotKit } from './assetKits';
-import { WAREHOUSES } from './harborLayout';
-import { CITY_GRID, LEGACY_CITY_GRID, type CityGrid } from './cityGrid';
+import {
+  buildingKit,
+  plotKit,
+  type BuildingKit,
+  type PlotKit,
+} from './assetKits';
+import {WAREHOUSES} from './harborLayout';
+import {CITY_GRID, LEGACY_CITY_GRID, type CityGrid} from './cityGrid';
 
-export type District = 'downtown' | 'commercial' | 'residential' | 'industrial' | 'park' | 'railway';
+export type District =
+  'downtown' | 'commercial' | 'residential' | 'industrial' | 'park' | 'railway';
 export type Variant =
   | 'glass'
   | 'stepped'
@@ -64,13 +70,17 @@ export const districtNames: Record<District, string> = {
 
 function randomFromSeed(seed: string): () => number {
   let state = 2166136261;
+
   for (const char of seed) {
     state = Math.imul(state ^ char.charCodeAt(0), 16777619);
   }
+
   return () => {
     state += 0x6d2b79f5;
     let value = Math.imul(state ^ (state >>> 15), 1 | state);
+
     value ^= value + Math.imul(value ^ (value >>> 7), 61 | value);
+
     return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
   };
 }
@@ -79,10 +89,17 @@ function districtAt(column: number, row: number): District {
   if ((column >= 5 && row >= 3) || (column === 6 && row === 2)) {
     return 'industrial';
   }
-  if ((column === 1 && row === 1) || (column === 3 && row === 3) || (row === 6 && column >= 2 && column <= 4)) {
+  if (
+    (column === 1 && row === 1) ||
+    (column === 3 && row === 3) ||
+    (row === 6 && column >= 2 && column <= 4)
+  ) {
     return 'park';
   }
-  if ((column >= 2 && column <= 4 && row >= 1 && row <= 2) || (column === 3 && row === 0)) {
+  if (
+    (column >= 2 && column <= 4 && row >= 1 && row <= 2) ||
+    (column === 3 && row === 0)
+  ) {
     return 'downtown';
   }
   if (
@@ -92,34 +109,51 @@ function districtAt(column: number, row: number): District {
   ) {
     return 'commercial';
   }
+
   return 'residential';
 }
 
 export function generateCity(seed: string, expanded = true): CityLayout {
   const random = randomFromSeed(seed);
-  const blocks: CityBlock[] = [],
-    buildings: CityBuilding[] = [];
-  const appendBlock = (column: number, row: number, district: District, random: () => number) => {
-    const pick = <T>(values: readonly T[]): T => values[Math.floor(random() * values.length)]!;
+  const blocks: CityBlock[] = [];
+  const buildings: CityBuilding[] = [];
+  const appendBlock = (
+    column: number,
+    row: number,
+    district: District,
+    random: () => number,
+  ) => {
+    const pick = <T>(values: readonly T[]): T =>
+      values[Math.floor(random() * values.length)]!;
     const block = {
       id: `block-${column}-${row}`,
       x: (column - 3) * CITY_GRID.blockStep,
       z: (row - 3) * CITY_GRID.blockStep,
       district,
     };
+
     blocks.push(block);
+
     if (district === 'park' || district === 'railway') {
       return;
     }
-    const columns = district === 'residential' ? 3 : district === 'industrial' ? 1 : 2;
+
+    const columns =
+      district === 'residential' ? 3 : district === 'industrial' ? 1 : 2;
     const rows = 2;
+
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < columns; c++) {
         const width = 24 / columns - 1.5 - random() * 0.8;
         const depth = 9.5 - random() * 1.4;
-        let floors: number, variant: Variant, color: string, name: string;
+        let floors: number;
+        let variant: Variant;
+        let color: string;
+        let name: string;
+
         if (district === 'downtown') {
           const central = column === 3 && row === 2;
+
           floors = central
             ? 38 + Math.floor(random() * 14)
             : r === 0 && c === 0
@@ -136,15 +170,18 @@ export function generateCity(seed: string, expanded = true): CityLayout {
         } else if (district === 'industrial') {
           floors = 2 + Math.floor(random() * 3);
           // Cycling guarantees a readable mix of infrastructure even in an unlucky seed.
-          variant = (['sawtooth', 'warehouse', 'tanks', 'power'] as const)[(row + column + r) % 4]!;
+          variant = (['sawtooth', 'warehouse', 'tanks', 'power'] as const)[
+            (row + column + r) % 4
+          ]!;
           color = pick(['cream', 'brick', 'roof', 'sage']);
-          name = `${{ sawtooth: 'Производственный цех', warehouse: 'Логистический склад', tanks: 'Резервуарный парк', power: 'Энергоцентр' }[variant]} ${buildings.length + 1}`;
+          name = `${{sawtooth: 'Производственный цех', warehouse: 'Логистический склад', tanks: 'Резервуарный парк', power: 'Энергоцентр'}[variant]} ${buildings.length + 1}`;
         } else {
           floors = 2 + Math.floor(random() * 6);
           variant = pick(['gable', 'terrace', 'slab'] as const);
           color = pick(['cream', 'coral', 'sage', 'yellow', 'teal', 'brick']);
           name = `Жилой дом ${buildings.length + 1}`;
         }
+
         const building = {
           id: `building-${column}-${row}-${c}-${r}`,
           blockId: block.id,
@@ -159,41 +196,59 @@ export function generateCity(seed: string, expanded = true): CityLayout {
           floors,
           color,
         };
-        buildings.push({ ...building, kit: buildingKit(seed, building) });
+
+        buildings.push({...building, kit: buildingKit(seed, building)});
       }
     }
   };
+
   // The original stream runs first so additions cannot change existing assets.
   for (let row = 0; row <= LEGACY_CITY_GRID.maxRow; row++) {
     for (let column = 0; column <= LEGACY_CITY_GRID.maxColumn; column++) {
       appendBlock(column, row, districtAt(column, row), random);
     }
   }
+
   if (expanded) {
     for (let row = CITY_GRID.minRow; row <= CITY_GRID.maxRow; row++) {
-      for (let column = CITY_GRID.minColumn; column <= CITY_GRID.maxColumn; column++) {
+      for (
+        let column = CITY_GRID.minColumn;
+        column <= CITY_GRID.maxColumn;
+        column++
+      ) {
         if (row >= 0 && column >= 0) {
           continue;
         }
+
         const district =
           row === -1
             ? 'railway'
             : column === -1 && row >= 0
               ? 'park'
-              : (row === -2 && column >= 1 && column <= 4) || (column === -2 && row >= 2 && row <= 3)
+              : (row === -2 && column >= 1 && column <= 4) ||
+                  (column === -2 && row >= 2 && row <= 3)
                 ? 'commercial'
                 : 'residential';
-        appendBlock(column, row, district, randomFromSeed(`${seed}/expansion/${column}/${row}`));
+
+        appendBlock(
+          column,
+          row,
+          district,
+          randomFromSeed(`${seed}/expansion/${column}/${row}`),
+        );
       }
     }
   }
+
   const workingBuildings = buildings
-    .filter((b) => !WAREHOUSES.some((yard) => yard.forecourtId === b.id))
+    .filter(b => !WAREHOUSES.some(yard => yard.forecourtId === b.id))
     .map((b): CityBuilding => {
-      const yard = WAREHOUSES.find((yard) => yard.buildingId === b.id);
+      const yard = WAREHOUSES.find(yard => yard.buildingId === b.id);
+
       if (!yard) {
         return b;
       }
+
       const warehouse: CityBuilding = {
         ...b,
         name: yard.name,
@@ -202,31 +257,47 @@ export function generateCity(seed: string, expanded = true): CityLayout {
         height: 5.6,
         depth: 8.1,
       };
-      warehouse.kit = { ...buildingKit(seed, warehouse), rhythm: 2, entrance: 'plain' };
+
+      warehouse.kit = {
+        ...buildingKit(seed, warehouse),
+        rhythm: 2,
+        entrance: 'plain',
+      };
+
       return warehouse;
     });
   // Convert only these outer residential blocks after generation, preserving every other district's random stream.
   const houseBlocks = new Set(
     blocks
       .filter(
-        (b) =>
+        b =>
           b.district === 'residential' &&
-          (b.x === -102 || (b.x === -68 && b.z === 102) || b.x === -170 || (b.z === -170 && b.x < -68)),
+          (b.x === -102 ||
+            (b.x === -68 && b.z === 102) ||
+            b.x === -170 ||
+            (b.z === -170 && b.x < -68)),
       )
-      .map((b) => b.id),
+      .map(b => b.id),
   );
   const withHouses = workingBuildings.flatMap((b): CityBuilding[] => {
     if (!houseBlocks.has(b.blockId)) {
       return [b];
     }
-    const block = blocks.find((block) => block.id === b.blockId)!;
-    const column = Number(b.id.split('-').at(-2)),
-      row = Number(b.id.split('-').at(-1));
+
+    const block = blocks.find(block => block.id === b.blockId)!;
+    const column = Number(b.id.split('-').at(-2));
+    const row = Number(b.id.split('-').at(-1));
+
     if (column === 2) {
       return [];
     }
+
     const kit = plotKit(seed, b.id);
-    const [width, depth] = { compact: [5.2, 4.5], wide: [6.2, 4.4], deep: [5.4, 5.4] }[kit.plan] as [number, number];
+    const [width, depth] = {
+      compact: [5.2, 4.5],
+      wide: [6.2, 4.4],
+      deep: [5.4, 5.4],
+    }[kit.plan] as [number, number];
     const plot: HousePlot = {
       ...kit,
       x: block.x + (column - 0.5) * 12.5,
@@ -248,8 +319,16 @@ export function generateCity(seed: string, expanded = true): CityLayout {
       floors: 1,
       plot,
     };
+
     house.kit = buildingKit(seed, house);
+
     return [house];
   });
-  return { seed, grid: expanded ? CITY_GRID : LEGACY_CITY_GRID, blocks, buildings: withHouses };
+
+  return {
+    seed,
+    grid: expanded ? CITY_GRID : LEGACY_CITY_GRID,
+    blocks,
+    buildings: withHouses,
+  };
 }

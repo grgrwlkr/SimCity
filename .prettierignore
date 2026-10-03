@@ -4,6 +4,7 @@ docs/
 AGENTS.md
 CLAUDE.md
 .claude/
+.codex/
 .superpowers/
 .orchestrator/
 .scratch/

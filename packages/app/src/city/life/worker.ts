@@ -1,11 +1,13 @@
-import { CityLife } from './world';
+import {CityLife} from './world';
 
-import type { LifeCommand } from './protocol';
+import type {LifeCommand} from './protocol';
 
-let world: CityLife | undefined,
-  selected: number | null = null;
+let world: CityLife | undefined;
+let selected: number | null = null;
+
 self.onmessage = (event: MessageEvent<LifeCommand>) => {
   const command = event.data;
+
   try {
     if (command.type === 'init') {
       world = new CityLife(command.seed);
@@ -27,12 +29,16 @@ self.onmessage = (event: MessageEvent<LifeCommand>) => {
     if (command.type === 'invite') {
       world.inviteFamily();
     }
+
     self.postMessage({
       id: command.id,
       frame: world.frame(selected),
-      ...(command.type === 'save' ? { save: world.save() } : {}),
+      ...(command.type === 'save' ? {save: world.save()} : {}),
     });
   } catch (error) {
-    self.postMessage({ id: command.id, error: error instanceof Error ? error.message : String(error) });
+    self.postMessage({
+      id: command.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 };

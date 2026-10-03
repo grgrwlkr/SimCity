@@ -23,7 +23,8 @@
     "format:check": "prettier . --check",
     "build": "vite build packages/app",
     "check": "bun run format:check && bun run typecheck && bun run lint && bun run test && bun run test:life-week",
-    "test:life-week": "bun tools/test-life-week.ts"
+    "test:life-week": "bun tools/test-life-week.ts",
+    "test:region-week": "bun tools/test-region-week.ts"
   },
   "dependencies": {
     "react": "19.2.8",
@@ -35,6 +36,7 @@
   "devDependencies": {
     "@eslint/js": "10.0.1",
     "@playwright/test": "1.63.0",
+    "@stylistic/eslint-plugin": "5.10.0",
     "@types/node": "24.13.3",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",

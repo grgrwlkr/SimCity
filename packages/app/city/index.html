@@ -11,29 +11,55 @@
     />
   </head>
   <body>
-    <svg class="icon-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <svg
+      class="icon-defs"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
       <defs>
         <symbol id="sun" viewBox="0 0 24 24">
           <circle cx="12" cy="12" r="4" />
-          <path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5" />
+          <path
+            d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"
+          />
         </symbol>
-        <symbol id="moon" viewBox="0 0 24 24"><path d="M20 15.5A8.5 8.5 0 0 1 8.5 4 8.5 8.5 0 1 0 20 15.5Z" /></symbol>
-        <symbol id="pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14" /></symbol>
-        <symbol id="play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7Z" /></symbol>
+        <symbol id="moon" viewBox="0 0 24 24">
+          <path d="M20 15.5A8.5 8.5 0 0 1 8.5 4 8.5 8.5 0 1 0 20 15.5Z" />
+        </symbol>
+        <symbol id="pause" viewBox="0 0 24 24">
+          <path d="M8 5v14M16 5v14" />
+        </symbol>
+        <symbol id="play" viewBox="0 0 24 24">
+          <path d="m8 5 11 7-11 7Z" />
+        </symbol>
         <symbol id="orbit" viewBox="0 0 24 24">
-          <ellipse cx="12" cy="12" rx="10" ry="5" transform="rotate(-30 12 12)" />
+          <ellipse
+            cx="12"
+            cy="12"
+            rx="10"
+            ry="5"
+            transform="rotate(-30 12 12)"
+          />
           <circle cx="12" cy="12" r="2" />
         </symbol>
         <symbol id="plan" viewBox="0 0 24 24">
           <rect x="4" y="4" width="16" height="16" rx="2" />
           <path d="M4 12h16M12 4v16" />
         </symbol>
-        <symbol id="reset" viewBox="0 0 24 24"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" /></symbol>
-        <symbol id="plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14" /></symbol>
+        <symbol id="reset" viewBox="0 0 24 24">
+          <path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" />
+        </symbol>
+        <symbol id="plus" viewBox="0 0 24 24">
+          <path d="M5 12h14M12 5v14" />
+        </symbol>
         <symbol id="minus" viewBox="0 0 24 24"><path d="M5 12h14" /></symbol>
-        <symbol id="close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6" /></symbol>
+        <symbol id="close" viewBox="0 0 24 24">
+          <path d="m6 6 12 12M6 18 18 6" />
+        </symbol>
         <symbol id="build" viewBox="0 0 24 24">
-          <path d="M4 21h16M7 21V9h10v12M10 13h1m2 0h1m-4 4h1m2 0h1M12 9V3m-3 3 3-3 3 3" />
+          <path
+            d="M4 21h16M7 21V9h10v12M10 13h1m2 0h1m-4 4h1m2 0h1M12 9V3m-3 3 3-3 3 3"
+          />
         </symbol>
       </defs>
     </svg>
@@ -44,38 +70,75 @@
         aria-label="Трёхмерный город. Перетаскивайте левой кнопкой для перемещения, правой кнопкой для вращения камеры. Колесо меняет масштаб. Короткий клик выбирает здание. Стрелки вращают камеру, плюс и минус меняют масштаб."
       ></canvas>
       <header class="masthead">
-        <a class="brand" href="/" aria-label="В главное меню"><span class="brand-mark">s</span>SimCity</a>
+        <a class="brand" href="/" aria-label="В главное меню"
+          ><span class="brand-mark">s</span>SimCity</a
+        >
         <h1>Город<br />у воды</h1>
         <p>От тихих улиц<br />до самой высокой крыши.</p>
-        <div class="live-state"><span></span><span id="scene-state">День в городе</span></div>
+        <div class="live-state">
+          <span></span><span id="scene-state">День в городе</span>
+        </div>
       </header>
       <nav class="district-list" aria-label="Районы города">
         <button data-district="all" aria-label="Весь город" aria-pressed="true">
           <i class="dot-all"></i>Весь город
         </button>
-        <button data-district="downtown" aria-label="Деловой центр" aria-pressed="false">
+        <button
+          data-district="downtown"
+          aria-label="Деловой центр"
+          aria-pressed="false"
+        >
           <i class="dot-downtown"></i>Деловой центр
         </button>
-        <button data-district="commercial" aria-label="Торговый район" aria-pressed="false">
+        <button
+          data-district="commercial"
+          aria-label="Торговый район"
+          aria-pressed="false"
+        >
           <i class="dot-commercial"></i>Торговые улицы
         </button>
-        <button data-district="residential" aria-label="Жилые кварталы" aria-pressed="false">
+        <button
+          data-district="residential"
+          aria-label="Жилые кварталы"
+          aria-pressed="false"
+        >
           <i class="dot-residential"></i>Жилые кварталы
         </button>
-        <button data-district="houses" aria-label="Частные дома" aria-pressed="false">
+        <button
+          data-district="houses"
+          aria-label="Частные дома"
+          aria-pressed="false"
+        >
           <i class="dot-residential"></i>Частные дома
         </button>
-        <button data-district="industrial" aria-label="Промышленный район" aria-pressed="false">
+        <button
+          data-district="industrial"
+          aria-label="Промышленный район"
+          aria-pressed="false"
+        >
           <i class="dot-industrial"></i>Промзона и порт
         </button>
-        <button data-district="harbor" aria-label="Работающий порт" aria-pressed="false">
+        <button
+          data-district="harbor"
+          aria-label="Работающий порт"
+          aria-pressed="false"
+        >
           <i class="dot-harbor"></i>Работающий порт
         </button>
-        <button data-district="railway" aria-label="ЖД вокзал" aria-pressed="false">
+        <button
+          data-district="railway"
+          aria-label="ЖД вокзал"
+          aria-pressed="false"
+        >
           <i class="dot-railway"></i>ЖД вокзал
         </button>
       </nav>
-      <section id="harbor-panel" class="harbor-status" aria-label="Работа порта" hidden>
+      <section
+        id="harbor-panel"
+        class="harbor-status"
+        aria-label="Работа порта"
+        hidden
+      >
         <strong id="harbor-activity">Разгрузка судна</strong>
         <dl>
           <div>
@@ -99,7 +162,12 @@
         </dl>
         <p>Контейнеры · 4 фуры на маршрутах</p>
       </section>
-      <section id="railway-panel" class="harbor-status railway-status" aria-label="Работа вокзала" hidden>
+      <section
+        id="railway-panel"
+        class="harbor-status railway-status"
+        aria-label="Работа вокзала"
+        hidden
+      >
         <strong id="railway-activity">Ожидаем поезд</strong>
         <dl>
           <div>
@@ -134,18 +202,28 @@
               maxlength="32"
               spellcheck="false"
               autocomplete="off"
-            /><button type="submit" aria-label="Построить по ключу">Создать</button>
+            /><button type="submit" aria-label="Построить по ключу">
+              Создать
+            </button>
           </div>
-          <button type="button" id="regenerate">Другой город <span aria-hidden="true">↻</span></button>
+          <button type="button" id="regenerate">
+            Другой город <span aria-hidden="true">↻</span>
+          </button>
         </form>
-        <label for="building-select" class="building-label">Рассмотреть здание</label>
+        <label for="building-select" class="building-label"
+          >Рассмотреть здание</label
+        >
         <select id="building-select" aria-label="Здание в городе">
           <option value="">Выберите здание</option>
         </select>
         <section id="building-info" hidden aria-live="polite">
           <div class="info-header">
             <span id="building-type"></span
-            ><button id="close-info" class="icon-button" aria-label="Закрыть описание">
+            ><button
+              id="close-info"
+              class="icon-button"
+              aria-label="Закрыть описание"
+            >
               <svg><use href="#close" /></svg>
             </button>
           </div>
@@ -162,23 +240,36 @@
               <dd id="building-character"></dd>
             </div>
           </dl>
-          <button id="build-selected" class="build-action">Показать строительство</button>
+          <button id="build-selected" class="build-action">
+            Показать строительство
+          </button>
         </section>
       </aside>
-      <section id="construction-panel" class="construction-panel" aria-label="Строительство здания" hidden>
+      <section
+        id="construction-panel"
+        class="construction-panel"
+        aria-label="Строительство здания"
+        hidden
+      >
         <div class="construction-heading">
           <span>ОТ ФУНДАМЕНТА ДО КРЫШИ</span
-          ><button id="close-construction" class="icon-button" aria-label="Закрыть строительство">
+          ><button
+            id="close-construction"
+            class="icon-button"
+            aria-label="Закрыть строительство"
+          >
             <svg><use href="#close" /></svg>
           </button>
         </div>
         <h2 id="construction-name"></h2>
         <div class="construction-examples" aria-label="Примеры строительства">
-          <button data-build-example="residential">Жилой дом</button><button data-build-example="downtown">Башня</button
+          <button data-build-example="residential">Жилой дом</button
+          ><button data-build-example="downtown">Башня</button
           ><button data-build-example="industrial">Промышленность</button>
         </div>
         <div class="construction-readout">
-          <strong id="construction-stage">Пустой участок</strong><span id="construction-height"></span>
+          <strong id="construction-stage">Пустой участок</strong
+          ><span id="construction-height"></span>
         </div>
         <label class="construction-progress"
           ><span>Готовность <output id="construction-percent">0%</output></span
@@ -192,7 +283,8 @@
             aria-label="Готовность здания"
         /></label>
         <div class="construction-actions">
-          <button id="construction-play" class="build-action">Продолжить строительство</button
+          <button id="construction-play" class="build-action">
+            Продолжить строительство</button
           ><button id="construction-replay" aria-label="Строить с нуля">
             <svg><use href="#reset" /></svg>
           </button>
@@ -210,7 +302,10 @@
       <footer class="bottom-panel">
         <div class="view-hint">
           <span>Посмотрите на город с другой стороны</span
-          ><span>Левая кнопка — перемещение &nbsp; / &nbsp; правая — вращение &nbsp; / &nbsp; колесо — масштаб</span>
+          ><span
+            >Левая кнопка — перемещение &nbsp; / &nbsp; правая — вращение &nbsp;
+            / &nbsp; колесо — масштаб</span
+          >
         </div>
         <nav class="controls" aria-label="Управление сценой">
           <div class="time-switch" aria-label="Время суток">
@@ -221,13 +316,25 @@
             </button>
           </div>
           <span class="divider"></span>
-          <button id="motion" aria-label="Остановить движение" aria-pressed="false">
+          <button
+            id="motion"
+            aria-label="Остановить движение"
+            aria-pressed="false"
+          >
             <svg><use href="#pause" /></svg><span>Пауза</span>
           </button>
-          <button id="construction-open" aria-label="Строительство" aria-pressed="false">
+          <button
+            id="construction-open"
+            aria-label="Строительство"
+            aria-pressed="false"
+          >
             <svg><use href="#build" /></svg><span>Строить</span>
           </button>
-          <button id="orbit-toggle" aria-label="Автовращение" aria-pressed="false">
+          <button
+            id="orbit-toggle"
+            aria-label="Автовращение"
+            aria-pressed="false"
+          >
             <svg><use href="#orbit" /></svg><span>Облететь</span>
           </button>
           <button id="top-view" aria-label="Вид сверху" aria-pressed="false">
@@ -237,7 +344,10 @@
             <svg><use href="#reset" /></svg><span>Сбросить</span>
           </button>
         </nav>
-        <div class="scene-caption"><span>Процедурный город в миниатюре</span><span id="object-count"></span></div>
+        <div class="scene-caption">
+          <span>Процедурный город в миниатюре</span
+          ><span id="object-count"></span>
+        </div>
       </footer>
       <p id="scene-error" role="alert" hidden></p>
     </main>

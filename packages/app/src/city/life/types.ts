@@ -1,7 +1,7 @@
-import type { CityBuilding, CityLayout } from '../generator';
-import type { LanePose, LaneRoute } from '../trafficRoutes';
-import type { RailwaySnapshot, RailwayStatus } from '../railway';
-import type { HarborSnapshot, HarborStatus } from '../harbor';
+import type {CityBuilding, CityLayout} from '../generator';
+import type {LanePose, LaneRoute} from '../trafficRoutes';
+import type {RailwaySnapshot, RailwayStatus} from '../railway';
+import type {HarborSnapshot, HarborStatus} from '../harbor';
 
 export interface Point {
   x: number;
@@ -20,7 +20,15 @@ export interface RoadAccess {
   nextColumn: number;
   nextRow: number;
 }
-export type PlaceKind = 'home' | 'office' | 'factory' | 'shop' | 'cafe' | 'park' | 'school' | 'station';
+export type PlaceKind =
+  | 'home'
+  | 'office'
+  | 'factory'
+  | 'shop'
+  | 'cafe'
+  | 'park'
+  | 'school'
+  | 'station';
 export interface LifePlace {
   id: string;
   name: string;
@@ -113,7 +121,17 @@ export interface Job {
   start: number;
   shift: number;
 }
-export type Activity = 'train' | 'home' | 'walk' | 'drive' | 'work' | 'shop' | 'leisure' | 'school' | 'garage' | 'dead';
+export type Activity =
+  | 'train'
+  | 'home'
+  | 'walk'
+  | 'drive'
+  | 'work'
+  | 'shop'
+  | 'leisure'
+  | 'school'
+  | 'garage'
+  | 'dead';
 export type Purpose = 'work' | 'shop' | 'leisure' | 'school' | 'home' | 'move';
 export interface Trip {
   purpose: Purpose;
@@ -192,11 +210,11 @@ export interface CarPose {
 export interface CitizenDetails {
   person: Resident;
   family: Household;
-  members: Array<{ id: number; name: string; age: number; activity: Activity }>;
+  members: Array<{id: number; name: string; age: number; activity: Activity}>;
   age: number;
   home: LifePlace;
   ownsHome: boolean;
-  cars: Array<OwnedCar & { place: string; name: string }>;
+  cars: Array<OwnedCar & {place: string; name: string}>;
   destination: string;
   next: string;
 }
@@ -215,9 +233,14 @@ export interface LifeFrame {
   cars: CarPose[];
   carOwners: Record<number, number>;
   freight: LanePose[];
-  bus: LanePose & { visible: boolean };
-  parking: Array<{ id: number; occupant: number | null; reserved: number | null; household: number | null }>;
-  catalog: Array<{ id: number; name: string; family: number }>;
+  bus: LanePose & {visible: boolean};
+  parking: Array<{
+    id: number;
+    occupant: number | null;
+    reserved: number | null;
+    household: number | null;
+  }>;
+  catalog: Array<{id: number; name: string; family: number}>;
   selected: CitizenDetails | null;
   harbor: HarborSnapshot;
   harborStatus: HarborStatus;

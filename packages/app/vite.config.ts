@@ -1,5 +1,5 @@
-import { defineConfig, type Connect, type Plugin } from 'vite';
-import { fileURLToPath } from 'node:url';
+import {defineConfig, type Connect, type Plugin} from 'vite';
+import {fileURLToPath} from 'node:url';
 
 // SharedArrayBuffer needs a cross-origin isolated page: COOP same-origin + COEP require-corp.
 const crossOriginIsolation = {
@@ -11,7 +11,11 @@ const crossOriginIsolation = {
  * Answers every request in full. A 304 carries no COEP, and WebKit refuses a worker whose script it
  * revalidated that way: the second page opened in the same tab (a scenario link) never started the sim.
  */
-const stripConditionalRequest: Connect.NextHandleFunction = (req, _res, next) => {
+const stripConditionalRequest: Connect.NextHandleFunction = (
+  req,
+  _res,
+  next,
+) => {
   delete req.headers['if-none-match'];
   delete req.headers['if-modified-since'];
   next();
@@ -19,8 +23,10 @@ const stripConditionalRequest: Connect.NextHandleFunction = (req, _res, next) =>
 
 const alwaysFullResponses: Plugin = {
   name: 'always-full-responses',
-  configureServer: (server) => void server.middlewares.use(stripConditionalRequest),
-  configurePreviewServer: (server) => void server.middlewares.use(stripConditionalRequest),
+  configureServer: server =>
+    void server.middlewares.use(stripConditionalRequest),
+  configurePreviewServer: server =>
+    void server.middlewares.use(stripConditionalRequest),
 };
 
 /** 5174, the port the e2e gate opens; a preview beside another dev server gets its own through `PORT`. */
@@ -28,8 +34,8 @@ const port = Number(process.env.PORT ?? 5174);
 
 export default defineConfig({
   plugins: [alwaysFullResponses],
-  server: { port, strictPort: true, headers: crossOriginIsolation },
-  preview: { port, strictPort: true, headers: crossOriginIsolation },
+  server: {port, strictPort: true, headers: crossOriginIsolation},
+  preview: {port, strictPort: true, headers: crossOriginIsolation},
   // The one engine the game runs in: the Chromium of the desktop Electron (44.3.0 ships 152).
   // No source maps in a production build (Vite's default, pinned: the shipped app must not carry them).
   build: {
@@ -39,8 +45,9 @@ export default defineConfig({
       input: {
         menu: fileURLToPath(new URL('./index.html', import.meta.url)),
         city: fileURLToPath(new URL('./city/index.html', import.meta.url)),
+        region: fileURLToPath(new URL('./region/index.html', import.meta.url)),
       },
     },
   },
-  worker: { format: 'es' },
+  worker: {format: 'es'},
 });

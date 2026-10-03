@@ -4,5 +4,5 @@
     "lib": ["ES2023", "WebWorker"],
     "types": []
   },
-  "include": ["src/city/life/worker.ts"]
+  "include": ["src/city/life/worker.ts", "src/region/worker.ts"]
 }

@@ -1,27 +1,42 @@
-import type { CityBuilding } from './generator';
+import type {CityBuilding} from './generator';
 
 /** An object's own random stream keeps its assembly stable when neighbors are added or reordered. */
 function choices(seed: string, family: string, id: string | number) {
   let state = 2166136261;
+
   for (const char of `${seed}/${family}/${id}`) {
     state = Math.imul(state ^ char.charCodeAt(0), 16777619);
   }
+
   const random = () => {
     state = (state + 0x6d2b79f5) | 0;
     let n = Math.imul(state ^ (state >>> 15), 1 | state);
+
     n ^= n + Math.imul(n ^ (n >>> 7), 61 | n);
+
     return ((n ^ (n >>> 14)) >>> 0) / 4294967296;
   };
+
   return {
-    pick: <T>(values: readonly T[]): T => values[Math.floor(random() * values.length)]!,
-    integer: (min: number, max: number) => min + Math.floor(random() * (max - min + 1)),
+    pick: <T>(values: readonly T[]): T =>
+      values[Math.floor(random() * values.length)]!,
+    integer: (min: number, max: number) =>
+      min + Math.floor(random() * (max - min + 1)),
   };
 }
 
 export interface BuildingKit {
   foundation: 'stone' | 'brick' | 'columns';
   facade: 'classic' | 'ribbon' | 'vertical' | 'recessed';
-  roof: 'gable' | 'hip' | 'flat' | 'garden' | 'solar' | 'sawtooth' | 'dome' | 'cone';
+  roof:
+    | 'gable'
+    | 'hip'
+    | 'flat'
+    | 'garden'
+    | 'solar'
+    | 'sawtooth'
+    | 'dome'
+    | 'cone';
   rooftop: 'chimney' | 'dormers' | 'vents' | 'pergola' | 'antenna' | 'skylight';
   balconies: 'none' | 'alternate' | 'rows';
   entrance: 'plain' | 'canopy' | 'steps';
@@ -30,11 +45,14 @@ export interface BuildingKit {
   equipmentCount: number;
 }
 
-export function buildingKit(seed: string, building: Pick<CityBuilding, 'id' | 'district' | 'variant'>): BuildingKit {
+export function buildingKit(
+  seed: string,
+  building: Pick<CityBuilding, 'id' | 'district' | 'variant'>,
+): BuildingKit {
   const r = choices(seed, 'building', building.id);
   const cottage = building.variant === 'cottage';
-  const tower = building.district === 'downtown',
-    industrial = building.district === 'industrial';
+  const tower = building.district === 'downtown';
+  const industrial = building.district === 'industrial';
   const roof = industrial
     ? building.variant === 'tanks'
       ? r.pick(['dome', 'cone'] as const)
@@ -46,9 +64,12 @@ export function buildingKit(seed: string, building: Pick<CityBuilding, 'id' | 'd
       : tower
         ? r.pick(['flat', 'garden', 'solar'] as const)
         : r.pick(['gable', 'hip', 'flat', 'garden', 'solar'] as const);
+
   return {
     foundation: r.pick(
-      industrial || cottage ? (['stone', 'brick'] as const) : (['stone', 'brick', 'columns'] as const),
+      industrial || cottage
+        ? (['stone', 'brick'] as const)
+        : (['stone', 'brick', 'columns'] as const),
     ),
     facade: r.pick(['classic', 'ribbon', 'vertical', 'recessed'] as const),
     roof,
@@ -64,9 +85,20 @@ export function buildingKit(seed: string, building: Pick<CityBuilding, 'id' | 'd
             : tower
               ? r.pick(['vents', 'antenna', 'skylight'] as const)
               : r.pick(['vents', 'skylight'] as const),
-    balconies: industrial || tower || cottage ? 'none' : r.pick(['none', 'alternate', 'rows'] as const),
-    entrance: r.pick(industrial ? (['plain', 'canopy'] as const) : (['plain', 'canopy', 'steps'] as const)),
-    accent: r.pick(industrial || tower ? ['trim', 'cream', 'roof', 'dark'] : ['trim', 'cream', 'trim', 'roof']),
+    balconies:
+      industrial || tower || cottage
+        ? 'none'
+        : r.pick(['none', 'alternate', 'rows'] as const),
+    entrance: r.pick(
+      industrial
+        ? (['plain', 'canopy'] as const)
+        : (['plain', 'canopy', 'steps'] as const),
+    ),
+    accent: r.pick(
+      industrial || tower
+        ? ['trim', 'cream', 'roof', 'dark']
+        : ['trim', 'cream', 'trim', 'roof'],
+    ),
     rhythm: r.integer(2, cottage ? 3 : 4),
     equipmentCount: cottage ? 1 : r.integer(1, 3),
   };
@@ -80,8 +112,10 @@ export interface PlotKit {
   plan: 'compact' | 'wide' | 'deep';
   roofColor: string;
 }
+
 export function plotKit(seed: string, id: string): PlotKit {
   const r = choices(seed, 'private-plot', id);
+
   return {
     fence: r.pick(['picket', 'slats', 'hedge'] as const),
     garden: r.pick(['flowers', 'orchard', 'lawn'] as const),
@@ -91,11 +125,20 @@ export function plotKit(seed: string, id: string): PlotKit {
     roofColor: r.pick(['roof', 'brick', 'teal']),
   };
 }
+
 export function describePlotKit(kit: PlotKit): string[] {
   return [
-    { picket: 'Светлый штакетник', slats: 'Деревянный забор', hedge: 'Живая изгородь' }[kit.fence],
-    { flowers: 'Цветник', orchard: 'Плодовый сад', lawn: 'Лужайка и терраса' }[kit.garden],
-    { garage: 'Отдельный гараж', shed: 'Садовый сарай', none: 'Открытый двор' }[kit.annex],
+    {
+      picket: 'Светлый штакетник',
+      slats: 'Деревянный забор',
+      hedge: 'Живая изгородь',
+    }[kit.fence],
+    {flowers: 'Цветник', orchard: 'Плодовый сад', lawn: 'Лужайка и терраса'}[
+      kit.garden
+    ],
+    {garage: 'Отдельный гараж', shed: 'Садовый сарай', none: 'Открытый двор'}[
+      kit.annex
+    ],
   ];
 }
 
@@ -110,18 +153,46 @@ export interface VehicleKit {
   length: number;
   width: number;
 }
+
 export function vehicleKit(seed: string, id: number): VehicleKit {
   const r = choices(seed, 'vehicle', id);
-  const body = r.pick(['sedan', 'hatchback', 'estate', 'van', 'pickup', 'truck'] as const);
+  const body = r.pick([
+    'sedan',
+    'hatchback',
+    'estate',
+    'van',
+    'pickup',
+    'truck',
+  ] as const);
+
   return {
     body,
     cabin: r.pick(['split', 'panoramic'] as const),
-    roof: body === 'truck' || body === 'pickup' ? 'bare' : r.pick(['bare', 'rack', 'box'] as const),
+    roof:
+      body === 'truck' || body === 'pickup'
+        ? 'bare'
+        : r.pick(['bare', 'rack', 'box'] as const),
     bumper: r.pick(['dark', 'steel'] as const),
     wheel: r.pick(['steel', 'alloy'] as const),
     lamp: r.pick(['round', 'bar'] as const),
-    color: r.pick(['coral', 'cream', 'gold', 'teal', 'blue', 'red', 'sage', 'cargoBlue']),
-    length: { sedan: 3.2, hatchback: 2.8, estate: 3.8, van: 4.2, pickup: 4.4, truck: 5.8 }[body],
+    color: r.pick([
+      'coral',
+      'cream',
+      'gold',
+      'teal',
+      'blue',
+      'red',
+      'sage',
+      'cargoBlue',
+    ]),
+    length: {
+      sedan: 3.2,
+      hatchback: 2.8,
+      estate: 3.8,
+      van: 4.2,
+      pickup: 4.4,
+      truck: 5.8,
+    }[body],
     width: body === 'truck' || body === 'van' ? 1.9 : 1.5,
   };
 }
@@ -137,8 +208,10 @@ export interface PersonKit {
   trousers: string;
   hairColor: string;
 }
+
 export function personKit(seed: string, id: string | number): PersonKit {
   const r = choices(seed, 'person', id);
+
   return {
     build: r.pick(['slim', 'regular', 'broad'] as const),
     top: r.pick(['shirt', 'coat', 'vest'] as const),
@@ -146,7 +219,15 @@ export function personKit(seed: string, id: string | number): PersonKit {
     accessory: r.pick(['none', 'bag', 'backpack'] as const),
     height: r.pick([0.88, 0.96, 1.04, 1.12]),
     skin: r.pick(['skinLight', 'skinTan', 'skinDeep']),
-    clothing: r.pick(['coral', 'blue', 'yellow', 'cream', 'teal', 'sage', 'brick']),
+    clothing: r.pick([
+      'coral',
+      'blue',
+      'yellow',
+      'cream',
+      'teal',
+      'sage',
+      'brick',
+    ]),
     trousers: r.pick(['dark', 'roof', 'cargoBlue']),
     hairColor: r.pick(['trunk', 'dark', 'gold']),
   };
@@ -159,8 +240,10 @@ export interface TreeKit {
   height: number;
   spread: number;
 }
+
 export function treeKit(seed: string, id: string | number): TreeKit {
   const r = choices(seed, 'tree', id);
+
   return {
     crown: r.pick(['round', 'column', 'pine', 'cluster'] as const),
     trunk: r.pick(['single', 'forked'] as const),
@@ -170,15 +253,22 @@ export function treeKit(seed: string, id: string | number): TreeKit {
   };
 }
 
-export type PropFamily = 'bench' | 'lamp' | 'fountain' | 'container' | 'crane' | 'boat';
+export type PropFamily =
+  'bench' | 'lamp' | 'fountain' | 'container' | 'crane' | 'boat';
 export interface PropKit {
   profile: 'classic' | 'minimal' | 'double';
   frame: 'metal' | 'stone' | 'timber';
   color: string;
   details: number;
 }
-export function propKit(seed: string, family: PropFamily, id: string | number): PropKit {
+
+export function propKit(
+  seed: string,
+  family: PropFamily,
+  id: string | number,
+): PropKit {
   const r = choices(seed, family, id);
+
   return {
     profile: r.pick(['classic', 'minimal', 'double'] as const),
     frame: r.pick(['metal', 'stone', 'timber'] as const),
@@ -189,7 +279,11 @@ export function propKit(seed: string, family: PropFamily, id: string | number): 
 
 export function describeBuildingKit(kit: BuildingKit): string[] {
   return [
-    { stone: 'Каменный цоколь', brick: 'Кирпичный цоколь', columns: 'Цоколь с колоннами' }[kit.foundation],
+    {
+      stone: 'Каменный цоколь',
+      brick: 'Кирпичный цоколь',
+      columns: 'Цоколь с колоннами',
+    }[kit.foundation],
     {
       classic: 'Окна с наличниками',
       ribbon: 'Ленточное остекление',
