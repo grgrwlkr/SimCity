@@ -2,3 +2,15 @@ model_context_window = 1000000
 
 [plugins."product-management@claude-cowork"]
 enabled = true
+
+[mcp_servers.chrome-devtools]
+command = "/opt/homebrew/opt/node@24/bin/npx"
+args = ["-y", "chrome-devtools-mcp@latest", "--autoConnect"]
+startup_timeout_sec = 60.0
+enabled = true
+
+[mcp_servers.playwright-local]
+command = "/opt/homebrew/opt/node@24/bin/npx"
+args = ["-y", "@playwright/mcp@0.0.80", "--browser", "chrome", "--headless", "--isolated", "--allowed-origins", "http://localhost:8081;http://localhost:8080;http://localhost:8090;http://localhost:8000;http://localhost:8082"]
+startup_timeout_sec = 60.0
+enabled = true
