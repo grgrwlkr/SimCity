@@ -5,8 +5,7 @@
 // shell and fuses as the release, its page built with `window.__sim`, which the release leaves out.
 // The clone never ships: every call replaces it from the current build.
 import {FuseV1Options, FuseVersion, flipFuses} from '@electron/fuses';
-import {execFileSync, spawn} from 'node:child_process';
-import {once} from 'node:events';
+import {execFileSync} from 'node:child_process';
 import {existsSync, mkdirSync, readFileSync, rmSync} from 'node:fs';
 import {dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -67,61 +66,6 @@ export async function makeInspectableClone(
     resetAdHocDarwinSignature: true,
     [FuseV1Options.EnableNodeCliInspectArguments]: true,
   });
-  await warmUp(binaryOf(INSPECTABLE_APP));
 
   return binaryOf(INSPECTABLE_APP);
-}
-
-/**
- * Starts the fresh clone once (no window) until main.ts reports its page loaded, then closes it.
- * The first start of freshly signed code was 12.0 s against 5.3 s for the next ones (measured under
- * load): it is paid here rather than inside a spec's 30 s launch step, and a clone that does not
- * start at all fails here with its output.
- */
-async function warmUp(bin: string): Promise<void> {
-  const env: NodeJS.ProcessEnv = {...process.env, SIMCITY_TEST_WINDOW: '1'};
-
-  delete env.NODE_OPTIONS;
-  const child = spawn(bin, [], {env});
-  const exited = once(child, 'exit');
-  let output = '';
-  const cameUp = await new Promise<boolean>((resolve, reject) => {
-    const timer = setTimeout(() => resolve(false), 60_000);
-    const onData = (chunk: Buffer) => {
-      output += chunk.toString();
-
-      if (/simcity: test window loaded/.test(output)) {
-        clearTimeout(timer);
-        resolve(true);
-      }
-    };
-
-    child.stdout.on('data', onData);
-    child.stderr.on('data', onData);
-    void exited.then(
-      () => {
-        clearTimeout(timer);
-        resolve(false);
-      },
-      (error: unknown) => {
-        clearTimeout(timer);
-        reject(
-          error instanceof Error
-            ? error
-            : new Error('Electron failed to start', {cause: error}),
-        );
-      },
-    );
-  });
-
-  if (child.exitCode === null && child.signalCode === null) {
-    child.kill('SIGTERM');
-    const killer = setTimeout(() => child.kill('SIGKILL'), 5000);
-
-    await exited;
-    clearTimeout(killer);
-  }
-  if (!cameUp) {
-    throw new Error(`the inspectable clone did not start:\n${output}`);
-  }
 }

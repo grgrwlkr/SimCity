@@ -1,6 +1,6 @@
 # AGENTS.md
 
-_Last updated: 2026-10-02._
+_Last updated: 2026-10-03._
 
 ## Current project
 
@@ -8,14 +8,17 @@ Read `README.md` first, then `CODESTYLE.md` before code changes. The only target
 
 Preserve the approved city's appearance, including modular buildings, cars, pedestrians, ships, port logistics and construction sites. Develop gameplay here by reusing appropriate archived systems or implementing them anew. Do not restore the old scenario menu as the primary game.
 
+The entire core game must live at the URL root `/` as one application. The main menu, save selection, region management and city gameplay are internal screens of that application; do not split them across `/menu/`, `/region/` or other required gameplay routes. Subpaths may host tests, diagnostics and reference prototypes. This is a URL and application-shell requirement, not a requirement to flatten source directories.
+
 ## Active code
 
-- `packages/app/index.html` and `packages/app/src/main.ts`: the main menu, with one city entry.
-- `packages/app/city/index.html` and `packages/app/src/city/`: the city and its interface. `main.ts` owns the camera and controls; `model.ts` creates the scene; `generator.ts` creates seeded layouts.
+- `packages/app/index.html` and its entry script: the unified main game and its internal menu at `/`.
+- `packages/app/src/region/`: the core regional game, editor, camera, scene and saves, loaded by the root application. `model/life/` owns regional development, residents, trips, logistics and economy.
+- `packages/app/city/index.html` and `packages/app/src/city/`: the reference city prototype and shared assets. `main.ts` owns its camera and controls; `model.ts` creates the scene; `generator.ts` creates seeded layouts.
 - `primitives.ts`, `assetKits.ts`, `assetParts.ts`, `buildingModules.ts`: shared geometry, palette and modular assets. The scene uses Y-up and `WebGLRenderer`.
 - `trafficRoutes.ts`, `trafficFlow.ts`, `harbor.ts`, `harborView.ts`: lane traffic, cargo transfers, ships, cranes and trucks.
 - `construction.ts`, `constructionSite.ts`: bottom-up building reveal, animated cranes and temporary fenced sites. Completed buildings retain their original geometry.
-- `packages/app/src/city/life/`: the active worker simulation, residents, families, parking, snapshots and their views. Shared protocol types live in `protocol.ts` and `types.ts`.
+- `packages/app/src/city/life/`: the reference prototype's worker simulation, residents, families, parking, snapshots and their views. Shared protocol types live in `protocol.ts` and `types.ts`.
 - `packages/desktop/`: the Electron shell, packaging and local save-file infrastructure. The old simulation is not started by the current app.
 - `packages/app/test/`, `packages/desktop/test/`, `e2e/`: active checks. Archive checks run separately from `deprecated/`.
 

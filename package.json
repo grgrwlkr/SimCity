@@ -23,7 +23,8 @@
     "format:check": "prettier . --check",
     "build": "vite build packages/app",
     "check": "bun run format:check && bun run typecheck && bun run lint && bun run test && bun run test:life-week",
-    "test:life-week": "bun tools/test-life-week.ts"
+    "test:life-week": "bun tools/test-life-week.ts",
+    "test:region-week": "bun tools/test-region-week.ts"
   },
   "dependencies": {
     "react": "19.2.8",

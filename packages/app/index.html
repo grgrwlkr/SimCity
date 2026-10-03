@@ -7,17 +7,285 @@
     <meta name="theme-color" content="#dce8e3" />
   </head>
   <body>
-    <main class="menu">
+    <main id="main-menu" class="menu">
       <span class="brand-mark" aria-hidden="true">s</span>
       <h1>SimCity</h1>
       <nav aria-label="Главное меню">
-        <a id="open-city" href="/city/?seed=689856" aria-label="Город у воды">
-          <strong>Город у воды</strong>
-          <span>Жилые кварталы, деловой центр и работающий порт</span>
+        <button id="resume-region" type="button" hidden>Продолжить</button>
+        <a id="open-region" href="/?seed=689856" aria-label="Создать регион">
+          <strong>Создать регион</strong>
+          <span>Основывай поселения, строй дороги и планируй города</span>
         </a>
+        <button
+          id="menu-load-region"
+          type="button"
+          aria-expanded="false"
+          aria-controls="saved-regions"
+        >
+          Загрузить
+        </button>
       </nav>
-      <p class="hint">Enter — открыть город</p>
+      <section id="saved-regions" aria-labelledby="saves-title" hidden>
+        <div class="saves-heading">
+          <h2 id="saves-title">Сохранённые регионы</h2>
+          <button
+            id="refresh-saves"
+            type="button"
+            aria-label="Обновить список сохранений"
+          >
+            Обновить
+          </button>
+        </div>
+        <p id="saves-status" role="status" aria-live="polite"></p>
+        <ul id="save-list" aria-label="Список сохранений"></ul>
+      </section>
+      <a class="prototype-link" id="open-city" href="/city/?seed=689856"
+        >Город у воды — прототип</a
+      >
+      <p id="shell-status" role="status"></p>
+      <p id="menu-hint" class="hint">Enter — создать регион</p>
     </main>
+    <section id="game-shell" data-mode="region" hidden inert>
+      <canvas
+        id="region"
+        aria-label="Карта региона"
+        tabindex="0"
+        data-ready="false"
+      ></canvas>
+      <header class="region-header">
+        <a href="/" class="region-brand" aria-label="В главное меню"
+          ><span>s</span>SimCity</a
+        >
+        <nav class="workspace-switch" aria-label="Режим игры">
+          <button
+            id="mode-region"
+            aria-label="Режим региона"
+            aria-pressed="true"
+          >
+            Регион
+          </button>
+          <button
+            id="mode-city"
+            aria-label="Режим города"
+            aria-pressed="false"
+            disabled
+          >
+            Город
+          </button>
+        </nav>
+        <div class="region-heading">
+          <h1 id="workspace-title">Регион</h1>
+          <span id="workspace-detail">4 × 4 км</span>
+        </div>
+        <div class="simulation-controls" aria-label="Время игры">
+          <span id="simulation-time">День 1 · 06:00</span>
+          <div>
+            <button
+              id="simulation-toggle"
+              aria-label="Запустить симуляцию"
+              aria-pressed="false"
+            >
+              ▶
+            </button>
+            <label class="visually-hidden" for="simulation-speed"
+              >Скорость симуляции</label
+            ><select id="simulation-speed">
+              <option value="1">×1</option>
+              <option value="5">×5</option>
+              <option value="20">×20</option>
+              <option value="120">×120</option>
+            </select>
+          </div>
+        </div>
+        <div class="region-finance">
+          <span>Бюджет региона</span><strong id="region-budget">…</strong>
+        </div>
+        <button id="save-region">Сохранить</button
+        ><button id="load-region">Загрузить</button>
+      </header>
+      <aside
+        id="regional-menu"
+        class="region-menu panel"
+        aria-label="Управление регионом"
+      >
+        <div class="panel-heading">
+          <h2>Поселения</h2>
+          <span id="region-city-total">0</span>
+        </div>
+        <p id="settlements-empty" class="muted">
+          Выбери место первого города. Ратуша станет его центром.
+        </p>
+        <div id="city-list" class="city-list"></div>
+        <button data-tool="found" class="found-button">
+          Основать поселение
+        </button>
+        <div id="found-settings" class="found-settings" hidden>
+          <label for="settlement-name">Название нового поселения</label>
+          <input
+            id="settlement-name"
+            maxlength="64"
+            value="Поселение 1"
+            autocomplete="off"
+          />
+          <p class="muted">
+            Ратуша, площадь и стартовая дорога. Начальная территория — 300 м от
+            центра.
+          </p>
+        </div>
+        <section class="regional-connections" aria-label="Связи региона">
+          <h3>Связи региона</h3>
+          <button data-tool="road">Дорога</button>
+          <button data-tool="external-entry">Внешний въезд</button>
+        </section>
+        <div class="regional-edit">
+          <button data-tool="select" aria-pressed="true">Выбор</button
+          ><button data-tool="remove">Снос</button>
+        </div>
+        <details class="region-settings">
+          <summary>Параметры региона</summary>
+          <label for="region-seed">Ключ региона</label>
+          <div>
+            <input id="region-seed" maxlength="32" /><button id="new-region">
+              Новый регион
+            </button>
+          </div>
+        </details>
+      </aside>
+      <aside
+        id="city-menu"
+        class="city-menu panel"
+        aria-label="Управление городом"
+        hidden
+      >
+        <label for="settlement-select">Текущий город</label>
+        <select id="settlement-select">
+          <option value="">Нет поселений</option>
+        </select>
+        <div class="city-heading">
+          <h2 id="city-name"></h2>
+          <span id="city-level" class="level-badge">I</span>
+        </div>
+        <div class="city-territory">
+          <div>
+            <span>Радиус застройки</span><strong id="city-radius">300 м</strong>
+          </div>
+          <span class="territory-symbol" aria-hidden="true"></span>
+        </div>
+        <p class="muted">
+          Строительство доступно на суше внутри городской границы.
+        </p>
+        <div class="city-life-stats">
+          <span>Жители <strong id="city-population">0</strong></span
+          ><span>Работают <strong id="city-employed">0</strong></span
+          ><span>Товары <strong id="city-stock">0</strong></span>
+        </div>
+        <p id="city-development" class="muted"></p>
+        <button id="city-residents">Жители города</button>
+        <details class="hall-development">
+          <summary>Развитие ратуши</summary>
+          <p id="upgrade-target"></p>
+          <p id="upgrade-requirements" class="muted"></p>
+          <button id="upgrade-town-hall" disabled>Улучшить ратушу</button>
+        </details>
+      </aside>
+      <nav
+        id="city-build-tools"
+        class="city-build-tools panel"
+        aria-label="Строительство города"
+        hidden
+      >
+        <button data-tool="select" aria-pressed="true">
+          <span class="tool-symbol" aria-hidden="true">↖</span>Выбор
+        </button>
+        <button data-tool="road">
+          <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 2V22M18 2V22" />
+            <path d="M12 2V5M12 10V14M12 19V22" /></svg
+          >Дорога
+        </button>
+        <div class="zone-tools" aria-label="Зонирование">
+          <button data-tool="residential" aria-label="Жилая зона">
+            <span class="zone-symbol residential" aria-hidden="true"></span
+            >Жильё
+          </button>
+          <button data-tool="commercial" aria-label="Торговая зона">
+            <span class="zone-symbol commercial" aria-hidden="true"></span
+            >Торговля
+          </button>
+          <button data-tool="industrial" aria-label="Производственная зона">
+            <span class="zone-symbol industrial" aria-hidden="true"></span
+            >Производство
+          </button>
+        </div>
+        <button data-tool="warehouse">
+          <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M3 20V8L12 3L21 8V20ZM8 20V12H16V20M9 15H15M9 18H15"
+            /></svg
+          >Склад
+        </button>
+        <button data-tool="remove">
+          <span class="tool-symbol" aria-hidden="true">×</span>Снос
+        </button>
+      </nav>
+      <section class="tool-context panel" aria-label="Текущий инструмент">
+        <div>
+          <p id="tool-help">Выбери место первого поселения.</p>
+          <p id="region-preview" aria-live="polite"></p>
+        </div>
+        <button id="road-confirm" hidden>Подтвердить дорогу</button>
+      </section>
+      <div id="settlement-labels" aria-hidden="true"></div>
+      <section
+        class="region-inspect panel"
+        id="region-inspect"
+        hidden
+        aria-label="Выбранный объект"
+      >
+        <h2 id="selection-title"></h2>
+        <p id="selection-detail"></p>
+        <button id="focus-settlement">К поселению</button>
+      </section>
+      <div class="region-view-tools panel" aria-label="Вид региона">
+        <div>
+          <button id="zoom-in" aria-label="Приблизить">+</button
+          ><button id="zoom-out" aria-label="Отдалить">−</button>
+        </div>
+        <button id="view-region">Весь регион</button
+        ><button id="focus-active">К поселению</button>
+        <div>
+          <button id="day" aria-pressed="true">День</button
+          ><button id="night" aria-pressed="false">Ночь</button>
+        </div>
+      </div>
+      <footer class="region-footer">
+        <p id="region-status" role="status">Открываем регион…</p>
+        <div class="region-counts">
+          <span><b id="settlement-count">0</b> поселений</span
+          ><span><b id="road-count">0</b> дорог</span
+          ><span><b id="parcel-count">0</b> участков</span
+          ><span><b id="warehouse-count">0</b> складов</span>
+        </div>
+        <span class="camera-hint">WASD — движение · Q/E — поворот</span>
+      </footer>
+      <dialog id="residents-dialog">
+        <h2>Жители города</h2>
+        <div id="residents-list"></div>
+        <button id="residents-close">Закрыть</button>
+      </dialog>
+      <dialog id="load-dialog">
+        <h2>Сохранённые регионы</h2>
+        <label for="save-select">Выбери регион</label
+        ><select id="save-select"></select>
+        <p id="save-empty" hidden>Пока нет сохранений.</p>
+        <p id="save-feedback" role="status"></p>
+        <div>
+          <button id="load-confirm">Открыть сохранение</button
+          ><button id="delete-save">Удалить сохранение</button>
+          <button id="load-cancel">Закрыть</button>
+        </div>
+      </dialog>
+    </section>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

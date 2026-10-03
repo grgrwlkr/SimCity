@@ -70,6 +70,8 @@ const info = {
     sources: hashOf([
       ...sourceRoots,
       path.join(packages, 'app', 'index.html'),
+      path.join(packages, 'app', 'city', 'index.html'),
+      path.join(packages, 'app', 'region', 'index.html'),
       path.join(packages, 'app', 'vite.config.ts'),
     ]),
     shell: hashOf([

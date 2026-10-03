@@ -27,6 +27,7 @@ interface Vehicle {
   active: boolean;
   dormant: boolean;
   maneuverUntil: number;
+  maneuverFrom?: number;
 }
 export interface TrafficPlan {
   route: LaneRoute;
@@ -54,6 +55,8 @@ interface TrafficOptions {
   onReset?: () => void;
   initiallyInactive?: ReadonlySet<number>;
   pedestrians?: () => ReadonlyArray<{x: number; z: number}>;
+  pedestrianRadius?: number;
+  travelLimit?: (id: number) => number;
 }
 export interface TrafficSave {
   tick: number;
@@ -157,21 +160,28 @@ function maneuverFootprints(
   route: LaneRoute,
   size: VehicleSize,
   until: number,
+  from = 0,
 ): ManeuverFootprint[] {
   const footprints: ManeuverFootprint[] = [];
   let start = 0;
 
   for (const segment of route.segments) {
-    const length = Math.min(segment.length, until - start);
+    const offset = Math.max(0, from - start);
+    const length = Math.min(segment.length, until - start) - offset;
 
     if (length <= 0) {
-      break;
+      if (start >= until) {
+        break;
+      }
+
+      start += segment.length;
+      continue;
     }
     if (segment.kind === 'line') {
       footprints.push({
-        pose: sampleLaneRoute(route, start + length / 2),
+        pose: sampleLaneRoute(route, start + offset + length / 2),
         size: {length: size.length + length, width: size.width},
-        until: start + length,
+        until: start + offset + length,
       });
     } else {
       // Bound translation and rotation around each arc sample, not just its center.
@@ -185,12 +195,12 @@ function maneuverFootprints(
 
       for (let i = 0; i < count; i++) {
         footprints.push({
-          pose: sampleLaneRoute(route, start + (i + 0.5) * step),
+          pose: sampleLaneRoute(route, start + offset + (i + 0.5) * step),
           size: {
             length: size.length + padding * 2,
             width: size.width + padding * 2,
           },
-          until: start + (i + 1) * step,
+          until: start + offset + (i + 1) * step,
         });
       }
     }
@@ -226,14 +236,17 @@ function spatialBounds(pose: LanePose, size: VehicleSize): SpatialBounds {
 export class CityTraffic {
   private readonly vehicles: Vehicle[] = [];
   private readonly roads: readonly number[];
-  private readonly owners: Int32Array;
+  private owners: Int32Array;
   private held: Int32Array;
   private readonly order: Vehicle[];
   private readonly activeVehicles: Vehicle[] = [];
   private tick = 0;
   private lastTime = 0;
+  private pedestrianJunctionTick = -1;
+  private pedestrianJunctionSweeps: ManeuverFootprint[] = [];
   // Derived geometry is rebuilt on restore; saved routes remain the source of truth.
   private readonly maneuvers = new Map<number, ManeuverFootprint[]>();
+  private readonly pendingManeuvers = new Map<number, ManeuverFootprint[]>();
   private readonly maneuverJunctions = new Map<number, Set<number>>();
   private readonly spatial = new Map<number, Map<number, Set<Vehicle>>>();
   private readonly indexed = new Map<number, SpatialBounds>();
@@ -356,6 +369,25 @@ export class CityTraffic {
     options.onStep?.(0, this);
   }
 
+  /** Stable IDs retain reservations as a free-form road network grows. */
+  setJunctions(junctions: readonly JunctionBounds[]): void {
+    const count = Math.max(this.owners.length, ...junctions.map(j => j.id + 1));
+
+    if (count > this.owners.length) {
+      const owners = new Int32Array(count).fill(-1);
+
+      owners.set(this.owners);
+      this.owners = owners;
+    }
+
+    this.options.junctions = junctions;
+    this.pedestrianJunctionTick = -1;
+  }
+
+  progress(id: number): number {
+    return this.vehicles[id]?.distance ?? 0;
+  }
+
   atStop(id: number): number | null {
     const vehicle = this.vehicles[id];
 
@@ -390,14 +422,21 @@ export class CityTraffic {
     return this.vehicles[id]?.active ?? false;
   }
 
-  addCar(size: VehicleSize): number {
+  addCar(size: VehicleSize, parkedPose?: LanePose): number {
     const id = this.vehicles.length;
     const route: LaneRoute = {
       direction: 1,
       closed: false,
       length: 1,
       segments: [
-        {kind: 'line', x: 10000 + id * 20, z: 10000, dx: 1, dz: 0, length: 1},
+        {
+          kind: 'line',
+          x: parkedPose?.x ?? 10000 + id * 20,
+          z: parkedPose?.z ?? 10000,
+          dx: parkedPose?.dx ?? 1,
+          dz: parkedPose?.dz ?? 0,
+          length: 1,
+        },
       ],
     };
 
@@ -425,6 +464,204 @@ export class CityTraffic {
     this.held = held;
 
     return id;
+  }
+
+  /** Existing occupants may leave an ungranted maneuver, without admitting new occupants. */
+  pedestrianConflict(point: {x: number; z: number}): boolean {
+    if (this.pedestrianJunctionBlocked(point)) {
+      return true;
+    }
+
+    return [...this.pendingManeuvers].some(([id, sweeps]) => {
+      const car = this.vehicles[id]!;
+
+      return (
+        car.active &&
+        sweeps.some(sweep => {
+          if (car.distance >= sweep.until) {
+            return false;
+          }
+
+          const dx = point.x - sweep.pose.x;
+          const dz = point.z - sweep.pose.z;
+
+          return (
+            Math.abs(dx * sweep.pose.dx + dz * sweep.pose.dz) <
+              sweep.size.length / 2 + 0.9 &&
+            Math.abs(-dx * sweep.pose.dz + dz * sweep.pose.dx) <
+              sweep.size.width / 2 + 0.9
+          );
+        })
+      );
+    });
+  }
+
+  pedestrianClearance(point: {x: number; z: number}): number {
+    let clearance = Infinity;
+
+    for (const car of this.activeVehicles) {
+      const dx = point.x - car.pose.x;
+      const dz = point.z - car.pose.z;
+      const along = Math.max(
+        0,
+        Math.abs(dx * car.pose.dx + dz * car.pose.dz) - car.size.length / 2,
+      );
+      const across = Math.max(
+        0,
+        Math.abs(-dx * car.pose.dz + dz * car.pose.dx) - car.size.width / 2,
+      );
+
+      clearance = Math.min(clearance, Math.hypot(along, across));
+    }
+
+    return clearance;
+  }
+
+  pedestrianJunctionBlocked(point: {x: number; z: number}): boolean {
+    if (this.pedestrianJunctionTick !== this.tick) {
+      this.pedestrianJunctionSweeps = [];
+
+      for (const car of this.activeVehicles) {
+        const gate = this.held[car.id]!;
+
+        if (gate < 0) {
+          continue;
+        }
+
+        let until = car.distance;
+
+        while (until < Math.min(car.route.length, car.distance + 80)) {
+          until = Math.min(car.route.length, until + 0.5);
+
+          if (
+            junction(
+              sampleLaneRoute(car.route, until),
+              car.size,
+              this.options.junctions,
+              this.roads,
+            ) !== gate
+          ) {
+            break;
+          }
+        }
+
+        this.pedestrianJunctionSweeps.push(
+          ...maneuverFootprints(car.route, car.size, until, car.distance),
+        );
+      }
+
+      this.pedestrianJunctionTick = this.tick;
+    }
+
+    return this.pedestrianJunctionSweeps.some(sweep => {
+      const dx = point.x - sweep.pose.x;
+      const dz = point.z - sweep.pose.z;
+
+      return (
+        Math.abs(dx * sweep.pose.dx + dz * sweep.pose.dz) <
+          sweep.size.length / 2 + 0.9 &&
+        Math.abs(-dx * sweep.pose.dz + dz * sweep.pose.dx) <
+          sweep.size.width / 2 + 0.9
+      );
+    });
+  }
+
+  /** Pedestrians respect driveway and junction reservations as well as bodies. */
+  pedestrianBlocked(
+    point: {x: number; z: number},
+    reservations = true,
+  ): boolean {
+    if (reservations && this.pedestrianJunctionBlocked(point)) {
+      return true;
+    }
+
+    const inside = (
+      pose: LanePose,
+      size: VehicleSize,
+      margin: number,
+    ): boolean => {
+      const dx = point.x - pose.x;
+      const dz = point.z - pose.z;
+
+      return (
+        Math.abs(dx * pose.dx + dz * pose.dz) < size.length / 2 + margin &&
+        Math.abs(-dx * pose.dz + dz * pose.dx) < size.width / 2 + margin
+      );
+    };
+
+    return this.activeVehicles.some(
+      car =>
+        inside(car.pose, car.size, 0.3) ||
+        (reservations &&
+          (this.maneuvers.get(car.id) ?? []).some(
+            sweep =>
+              car.distance < sweep.until && inside(sweep.pose, sweep.size, 0.9),
+          )),
+    );
+  }
+
+  /** Reserve a bounded arrival maneuver without resetting the moving vehicle. */
+  reserveManeuver(id: number, from: number, until: number): boolean {
+    const car = this.vehicles[id];
+
+    if (
+      !car?.active ||
+      !Number.isFinite(from) ||
+      !Number.isFinite(until) ||
+      from < 0 ||
+      from >= car.route.length ||
+      until <= from ||
+      until <= car.distance
+    ) {
+      return false;
+    }
+
+    const end = Math.min(until, car.route.length);
+
+    if (
+      (car.maneuverFrom ?? 0) <= from &&
+      car.maneuverUntil === end &&
+      this.maneuvers.has(id)
+    ) {
+      return true;
+    }
+
+    const maneuver = maneuverFootprints(car.route, car.size, end, from);
+    const gates = this.maneuverGates(maneuver);
+
+    if (
+      [...gates].some(
+        gate => this.owners[gate]! >= 0 && this.owners[gate] !== id,
+      ) ||
+      maneuver.some(sweep => this.occupied(sweep.pose, car, sweep.size, false))
+    ) {
+      this.pendingManeuvers.set(id, maneuver);
+
+      return false;
+    }
+
+    this.pendingManeuvers.delete(id);
+
+    for (const gate of this.maneuverJunctions.get(id) ?? []) {
+      if (
+        !gates.has(gate) &&
+        this.held[id] !== gate &&
+        this.owners[gate] === id
+      ) {
+        this.owners[gate] = -1;
+      }
+    }
+
+    car.maneuverFrom = from;
+    car.maneuverUntil = end;
+    this.maneuvers.set(id, maneuver);
+    this.maneuverJunctions.set(id, gates);
+
+    for (const gate of gates) {
+      this.owners[gate] = id;
+    }
+
+    return true;
   }
 
   movingPoses(): Array<
@@ -478,7 +715,7 @@ export class CityTraffic {
     car.previous = 0;
     car.speed = 0;
     car.waiting = 0;
-    car.maneuverUntil = maneuverUntil;
+    car.maneuverUntil = Math.min(maneuverUntil, route.length);
 
     if (maneuver.length) {
       this.maneuvers.set(id, maneuver);
@@ -515,6 +752,7 @@ export class CityTraffic {
     }
 
     this.maneuverJunctions.delete(id);
+    this.pendingManeuvers.delete(id);
     const gate = this.held[id]!;
 
     if (gate >= 0 && this.owners[gate] === id) {
@@ -523,6 +761,7 @@ export class CityTraffic {
 
     this.held[id] = -1;
     car.maneuverUntil = 0;
+    delete car.maneuverFrom;
     this.maneuvers.delete(id);
     this.removeSpatial(car);
     car.active = false;
@@ -559,12 +798,15 @@ export class CityTraffic {
 
     const data = structuredClone(saved);
 
+    this.pedestrianJunctionTick = -1;
+
     this.tick = data.tick;
     this.lastTime = data.lastTime;
     this.owners.set(data.owners);
     this.held.set(data.held);
     this.activeVehicles.length = 0;
     this.maneuvers.clear();
+    this.pendingManeuvers.clear();
     this.maneuverJunctions.clear();
     data.vehicles.forEach((v, i) => {
       Object.assign(this.vehicles[i]!, v, {
@@ -575,7 +817,12 @@ export class CityTraffic {
         this.activeVehicles.push(this.vehicles[i]!);
 
         if (v.maneuverUntil > v.distance) {
-          const maneuver = maneuverFootprints(v.route, v.size, v.maneuverUntil);
+          const maneuver = maneuverFootprints(
+            v.route,
+            v.size,
+            v.maneuverUntil,
+            v.maneuverFrom ?? 0,
+          );
 
           this.maneuvers.set(v.id, maneuver);
           this.maneuverJunctions.set(
@@ -599,6 +846,10 @@ export class CityTraffic {
       this.reset();
     }
 
+    if (this.activeVehicles.length === 0 && !this.options.onStep) {
+      this.tick = Math.max(this.tick, Math.ceil((time - 1e-9) / STEP));
+    }
+
     while (this.tick * STEP < time - 1e-9) {
       this.step();
     }
@@ -616,7 +867,9 @@ export class CityTraffic {
 
   private reset(): void {
     this.tick = 0;
+    this.pedestrianJunctionTick = -1;
     this.maneuvers.clear();
+    this.pendingManeuvers.clear();
     this.maneuverJunctions.clear();
     this.owners.fill(-1);
     this.held.fill(-1);
@@ -848,8 +1101,10 @@ export class CityTraffic {
       const z = p.z - pose.z;
 
       return (
-        Math.abs(x * pose.dx + z * pose.dz) < size.length / 2 + 0.8 &&
-        Math.abs(-x * pose.dz + z * pose.dx) < size.width / 2 + 0.5
+        Math.abs(x * pose.dx + z * pose.dz) <
+          size.length / 2 + (this.options.pedestrianRadius ?? 0.8) &&
+        Math.abs(-x * pose.dz + z * pose.dx) <
+          size.width / 2 + (this.options.pedestrianRadius ?? 0.5)
       );
     });
   }
@@ -980,7 +1235,11 @@ export class CityTraffic {
         }
       }
 
-      const remaining = Math.max(0, car.stopDistance - car.distance);
+      const movementLimit = Math.min(
+        car.stopDistance,
+        this.options.travelLimit?.(car.id) ?? Infinity,
+      );
+      const remaining = Math.max(0, movementLimit - car.distance);
       const desired = Math.min(
         SPEED,
         Math.sqrt(2 * BRAKING * Math.max(0, free - 0.1)),

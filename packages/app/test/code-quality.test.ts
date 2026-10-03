@@ -8,8 +8,36 @@ const lint = new ESLint({
 const path = fileURLToPath(
   new URL('../src/city/life/world.ts', import.meta.url),
 );
+const regionPath = fileURLToPath(
+  new URL('../src/region/model/world.ts', import.meta.url),
+);
 
 describe('enforced code quality', () => {
+  it.each([
+    [
+      'unseeded regional randomness',
+      'export const value = Math.random();',
+      'no-restricted-properties',
+    ],
+    [
+      'host clocks in regional model',
+      'export const value = Date.now();',
+      'no-restricted-globals',
+    ],
+    [
+      'regional rendering dependency',
+      "import * as THREE from 'three'; export const value = new THREE.Scene();",
+      'no-restricted-imports',
+    ],
+  ])(
+    'rejects %s',
+    async (_name, code, rule) => {
+      const [result] = await lint.lintText(code, {filePath: regionPath});
+
+      expect(result!.messages.map(message => message.ruleId)).toContain(rule);
+    },
+    20_000,
+  );
   it.each([
     [
       'unhandled promises',

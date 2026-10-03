@@ -45,6 +45,7 @@ export default defineConfig({
       input: {
         menu: fileURLToPath(new URL('./index.html', import.meta.url)),
         city: fileURLToPath(new URL('./city/index.html', import.meta.url)),
+        region: fileURLToPath(new URL('./region/index.html', import.meta.url)),
       },
     },
   },

@@ -204,7 +204,7 @@ function skyscraper(batch: Batch, b: CityBuilding): void {
   }
 }
 
-function industry(
+export function industry(
   batch: Batch,
   b: CityBuilding,
   chimneys: THREE.Vector3[],

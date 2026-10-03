@@ -98,6 +98,8 @@ export default defineConfig([
   },
   {
     files: [
+      'packages/app/src/region/model/*.ts',
+      'packages/app/src/region/protocol.ts',
       'packages/app/src/city/life/{world,population,parking,network,streetParking,types,protocol}.ts',
       'packages/app/src/city/{generator,assetKits,cityGrid,trafficRoutes,trafficFlow,harbor,harborLayout,railway,railwayLayout}.ts',
     ],
