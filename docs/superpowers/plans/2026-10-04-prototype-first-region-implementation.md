@@ -67,16 +67,18 @@
 
 **Planned shell interface:** `GameRuntime {ready: Promise<void>; setVisible(visible: boolean): void; save(): Promise<unknown>; load(value: unknown): Promise<void>; dispose(): void}`. Реализация делегирует исходному `LifeClient` и shared city runtime. `city/main.ts` остаётся standalone bootstrap этого же runtime, а не копией его тела.
 
-- [ ] Написать RED shell test: вход в игру создаёт ровно один native client; меню/возврат сохраняют тот же world и камеру; hidden view не получает controls/advance.
-- [ ] Механически вынести существующий city runtime, сохранив renderer, панели, управление, `LifeView`, `ParkingView`, стройку, порт и вокзал. Не собирать упрощённый интерфейс с нуля и не использовать iframe/новый URL для основной игры.
-- [ ] Root оболочка запускает native runtime. `region/main.ts`/региональный life worker не являются управляющим runtime нового мира.
-- [ ] Подключить save/load native world к обычному списку сохранений через versioned game envelope: `{kind:'simcity-game', version:1, id, name, seed, world}`. Legacy региональные записи сохраняются и распознаются; до импортера не открывать их как пустой native world и не менять их байты.
-- [ ] Перенести существующий придуманный знак валюты в presentation основной игры. Изменение формата не меняет цены/счета или эталонный default prototype.
-- [ ] Пройти через `/`: семьи/жильё/покупка машины, parking, автобусное прибытие, поезд/переезды, school/leisure, port cargo, construction, день/ночь, карточки, меню, save-mid-trip.
+- [x] Написать RED shell test: вход в игру создаёт ровно один native client; меню/возврат сохраняют тот же world и камеру; hidden view не получает controls/advance.
+- [x] Механически вынести существующий city runtime, сохранив renderer, панели, управление, `LifeView`, `ParkingView`, стройку, порт и вокзал. Не собирать упрощённый интерфейс с нуля и не использовать iframe/новый URL для основной игры.
+- [x] Root оболочка запускает native runtime. `region/main.ts`/региональный life worker не являются управляющим runtime нового мира.
+- [x] Подключить save/load native world к обычному списку сохранений через versioned game envelope: `{kind:'simcity-game', version:1, id, name, seed, world}`. Legacy региональные записи сохраняются и распознаются; до импортера не открывать их как пустой native world и не менять их байты.
+- [x] Перенести существующий придуманный знак валюты в presentation основной игры. Изменение формата не меняет цены/счета или эталонный default prototype.
+- [x] Пройти через `/`: семьи/жильё/покупка машины, parking, автобусное прибытие, поезд/переезды, school/leisure, port cargo, construction, день/ночь, карточки, меню, save-mid-trip.
 
 **Checks:** source city-life/parking/railway/population/world tests; существующие source Chromium scenes через shared runtime; новые `game-runtime.test.ts`, `game-save.test.ts`, `e2e/native-root.spec.ts`.
 
 **Done:** исходный город работает на `/` со всеми уже существующими системами. Это первый предъявляемый результат. Готовый исходный город пока служит приёмочным сохранением; не добавлять продуктовый demo mode.
+
+**Delivered:** `0f4d814`, main and origin/main, primary5197. Full check375tests/nativeweek/build; Chromium6cases; primary observed screenshot `.scratch/prototype-first/stage2-primary.jpg`. Legacy saves retained pending importer.
 
 ## Task3. World definition и routing вместо зашитого создания карты
 
@@ -89,12 +91,12 @@
 - Региональный road-access использует отдельный graph variant с edge/offset; native grid variant сохраняет прежние значения. Не подставлять фиктивные column/row/direction вместо фактического graph access. Parking enter/exit routes и walk access также проходят через routing adapter, который использует исходные кривые в их настоящем placement frame.
 - World definition содержит profile/asset references, routing definition, bounds/terrain, infrastructure configuration и стабильные identities. Описание сохраняется; runtime functions из сохранения восстанавливаются адаптерами.
 
-- [ ] RED: explicit prototype definition должен дать тот же frame/save, что прежний constructor, на нескольких временах и после restore.
-- [ ] Убрать `generateCity` из единственного обязательного пути constructor, сохранив default constructor façade.
-- [ ] Вынести grid-only access/onRoad/arrival bindings в legacy adapter; Native scheduler и `Population` остаются теми же.
-- [ ] Ввести стабильный vehicle allocator, совместимый с прежними default indices. Не выделять112 фиктивных региональных машин ради старого offset.
-- [ ] Настроить инфраструктурные registries на исходные `Harbor`/`Railway` процедуры; default definition по-прежнему создаёт прежний порт/станцию/автобус.
-- [ ] Обработать отсутствие homes/school/terminal/entry/port/rail без скрытых grid defaults, новых fake actors или exception в scheduler. Для пустого мира используются0 начальных семей и действительные условия миграции.
+- [x] RED: explicit prototype definition должен дать тот же frame/save, что прежний constructor, на нескольких временах и после restore.
+- [x] Убрать `generateCity` из единственного обязательного пути constructor, сохранив default constructor façade.
+- [x] Вынести grid-only access/onRoad/arrival bindings в legacy adapter; Native scheduler и `Population` остаются теми же.
+- [x] Ввести стабильный vehicle allocator, совместимый с прежними default indices. Не выделять112 фиктивных региональных машин ради старого offset.
+- [x] Настроить инфраструктурные registries на исходные `Harbor`/`Railway` процедуры; default definition по-прежнему создаёт прежний порт/станцию/автобус.
+- [x] Обработать отсутствие homes/school/terminal/entry/port/rail без скрытых grid defaults, новых fake actors или exception в scheduler. Для пустого мира используются0 начальных семей и действительные условия миграции.
 
 **Checks:** default source snapshot/geometry equality; empty-definition and missing-infrastructure tests; allocator/save continuity.
 
@@ -104,10 +106,10 @@
 
 **Modify:** shared native renderer/runtime, camera/bounds/shadow targeting. **Reuse:** региональные terrain generation, river/lakes/vegetation и пригодный terrain view.
 
-- [ ] RED world-bounds test: исходный город существует на карте4×4км; его native geometry и поведение не меняются от размера окружающего мира.
-- [ ] Подключить geography и региональный camera range; сохранить физический размер объектов, source materials/light/shadows и useful native close-up scale.
-- [ ] Убрать из renderer единственную обязательную sea/port/rail position; world definition определяет окружение и размещение. Не копировать `createCity` несколько раз целиком для разных городов.
-- [ ] Пройти исходный город на большой карте: port, поезд, автобус, school/leisure, residents/parking/строительство. Проверить последовательные кадры и pause.
+- [x] RED world-bounds test: исходный город существует на карте4×4км; его native geometry и поведение не меняются от размера окружающего мира.
+- [x] Подключить geography и региональный camera range; сохранить физический размер объектов, source materials/light/shadows и useful native close-up scale.
+- [x] Убрать из renderer единственную обязательную sea/port/rail position; world definition определяет окружение и размещение. Не копировать `createCity` несколько раз целиком для разных городов.
+- [x] Пройти исходный город на большой карте: port, поезд, автобус, school/leisure, residents/parking/строительство. Проверить последовательные кадры и pause.
 
 **Done:** сначала один полный исходный город на большой geography, без утраченных механизмов. Этот fixture не является обязательной застройкой при создании новых регионов.
 
@@ -117,12 +119,12 @@
 
 **Planned operations:** `applyWorldEdit(document, command)` возвращает validated document change; `CityLife.applyDefinitionUpdate(update)` применяет только согласованную topology/place change со стабильными IDs. Один profile/Population/ParkingBook обслуживает все municipalities.
 
-- [ ] Реализовать regional routing как адаптер тех же native операций к авторскому road graph; использовать пригодные graph/connection algorithms, без второго контроллера поездок.
-- [ ] Подключить region/city mode, ратушу с её дорогой, radius и manual upgrades к общему документу native мира.
-- [ ] Регистрировать native building/plot/units/business/parking по одной сущности. Render asset reference не выбирается независимо от сущности симуляции; template identity сохраняет исходный kit/сад при переносе.
-- [ ] Подключить исходную стройку к actual building lifecycle: готовое native место появляется в Population только после завершения. Topology update не пересоздаёт существующую Population/traffic.
-- [ ] Закрытие/удаление дороги проверяет текущие routes/parking; либо дождаться завершения, либо отказать. Снос ратуши/дороги остаётся согласованным действием.
-- [ ] Проверить две player-founded cities и межгородскую поездку/работу в одной native simulation. Новый регион запускается пустым и растёт через editor/native lifecycle.
+- [x] Реализовать regional routing как адаптер тех же native операций к авторскому road graph; использовать пригодные graph/connection algorithms, без второго контроллера поездок.
+- [x] Подключить region/city mode, ратушу с её дорогой, radius и manual upgrades к общему документу native мира.
+- [x] Регистрировать native building/plot/units/business/parking по одной сущности. Render asset reference не выбирается независимо от сущности симуляции; template identity сохраняет исходный kit/сад при переносе.
+- [x] Подключить исходную стройку к actual building lifecycle: готовое native место появляется в Population только после завершения. Topology update не пересоздаёт существующую Population/traffic.
+- [x] Закрытие/удаление дороги проверяет текущие routes/parking; либо дождаться завершения, либо отказать. Снос ратуши/дороги остаётся согласованным действием.
+- [x] Проверить две player-founded cities и межгородскую поездку/работу в одной native simulation. Новый регион запускается пустым и растёт через editor/native lifecycle.
 
 **Checks:** graph adapter equality на prototype network; arbitrary road angles; dynamic places/finite parking; two-city trips; old controls/menu/source behaviours.
 
@@ -132,14 +134,17 @@
 
 **Reuse after review:** existing `Harbor` parameterization, navigation, full native port views, railway placement helpers, `drawNativeBlock`, regional logistics/accounting. **Modify:** native world registries/profile/account provider, shared renderer/editor.
 
-- [ ] Зарегистрировать размещаемые native порт/вокзал/школу/парк в общем world definition. Исходные schedules/controllers не писать заново; зависимость от одного координатного адреса заменять данными.
-- [ ] Сохранить исходный микроавтобус, arrival selection и rail disembarkation. Native функции выбирают действительный городской entry/terminal и не забирают семью двумя транспортами.
-- [ ] Подключить реальную региональную логистику к native `Business`/складским inventory и одним счетам. Ни второй population model, ни зеркальный inventory не допускаются.
-- [ ] Account provider поддерживает уже согласованную семейную/инвесторскую/публичную собственность, цены и учёт transfers. Default prototype provider сохраняет прежний результат.
-- [ ] В региональном provider запретить timer shop restock; товар приходит реальным грузом. Полный port chain имеет одного владельца cargo на каждом участке.
-- [ ] Проверить placement/physical access/full footprint, school/leisure, cargo shipment, occupied demolition и save-mid-operation всех объектов через UI.
+- [x] Зарегистрировать размещаемые native порт/вокзал/школу/парк в общем world definition. Исходные schedules/controllers не писать заново; зависимость от одного координатного адреса заменять данными.
+- [x] Сохранить исходный микроавтобус, arrival selection и rail disembarkation. Native функции выбирают действительный городской entry/terminal и не забирают семью двумя транспортами.
+- [x] Подключить реальную региональную логистику к native `Business`/складским inventory и одним счетам. Ни второй population model, ни зеркальный inventory не допускаются.
+- [x] Account provider поддерживает уже согласованную семейную/инвесторскую/публичную собственность, цены и учёт transfers. Default prototype provider сохраняет прежний результат.
+- [x] В региональном provider запретить timer shop restock; товар приходит реальным грузом. Полный port chain имеет одного владельца cargo на каждом участке.
+- [x] Проверить placement/physical access/full footprint, school/leisure, cargo shipment, occupied demolition и save-mid-operation всех объектов через UI.
 
 **Done:** каждая исходная система доступна в авторском мире, сохраняет свой механизм и участвует в общей симуляции/экономике.
+
+
+**Delivered Tasks5–6:** `028e39e`, main/origin/main and primary5197 immutable checkpoint. Main fullcheck449tests/source8days; source+root/native Chromium13 cases accepted across reruns, current ordinary1000-world24s; infrastructure UI2cases16.3s and full living clone1case1.1min. Primary ordinary file import observed207buildings/1000people/250families/two towns/paused; save id native-living-region-with-services. Source9JSON snapshots and4render geometry snapshots unchanged. Screenshot `.scratch/prototype-first/stage5-6-primary.png`.
 
 ## Task7. Старые сохранения и устойчивые identities
 

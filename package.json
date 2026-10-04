@@ -24,7 +24,9 @@
     "build": "vite build packages/app",
     "check": "bun run format:check && bun run typecheck && bun run lint && bun run test && bun run test:life-week",
     "test:life-week": "bun tools/test-life-week.ts",
-    "test:region-week": "bun tools/test-region-week.ts"
+    "test:legacy-region": "bun run --cwd deprecated/regional test",
+    "typecheck:legacy-region": "bun run --cwd deprecated/regional typecheck",
+    "test:legacy-region-week": "bun run --cwd deprecated/regional week"
   },
   "dependencies": {
     "react": "19.2.8",

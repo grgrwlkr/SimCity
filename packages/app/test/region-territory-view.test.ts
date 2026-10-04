@@ -2,7 +2,7 @@ import {describe, expect, it} from 'vitest';
 import * as THREE from 'three';
 import {createRegion} from '../src/region/model/world';
 import type {RegionState} from '../src/region/model/types';
-import {createRegionView} from '../src/region/view/scene';
+import {createCivicFixture as createRegionView} from './helpers/civicViewFixture';
 
 function fixture(level = 1): RegionState {
   const state = createRegion('territory-view', 'territory-view');

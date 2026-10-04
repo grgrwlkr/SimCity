@@ -17,8 +17,8 @@ The entire core game must live at the URL root `/` as one application. The main 
 ## Active code
 
 - `packages/app/index.html` and its entry script: the unified main game and its internal menu at `/`.
-- `packages/app/src/game/`: the unified root shell and native save catalogue. `city/runtime.ts` runs the original native game from both root and reference entries. `region/` currently retains the previous editor, terrain and legacy saves for the planned native-world adapters; its standalone simulation is not started by the root shell.
-- `packages/app/city/index.html` and `packages/app/src/city/`: the reference city prototype and shared assets. `main.ts` owns its camera and controls; `model.ts` creates the scene; `generator.ts` creates seeded layouts.
+- `packages/app/src/game/`: the root shell, player-authored region document/editor, native-world compiler, save catalogue and supported legacy import. `city/runtime.ts` runs the same original game at root and reference entries. `region/` retains pure geography, topology, civic views and legacy validation/storage; replaced controllers and renderers are archived separately in `deprecated/regional/`.
+- `packages/app/city/index.html` and `packages/app/src/city/`: the reference city prototype and shared assets. `runtime.ts` owns the shared camera and controls; `main.ts` is the reference bootstrap; `model.ts` creates the scene; `generator.ts` creates seeded layouts.
 - `primitives.ts`, `assetKits.ts`, `assetParts.ts`, `buildingModules.ts`: shared geometry, palette and modular assets. The scene uses Y-up and `WebGLRenderer`.
 - `trafficRoutes.ts`, `trafficFlow.ts`, `harbor.ts`, `harborView.ts`: lane traffic, cargo transfers, ships, cranes and trucks.
 - `construction.ts`, `constructionSite.ts`: bottom-up building reveal, animated cranes and temporary fenced sites. Completed buildings retain their original geometry.

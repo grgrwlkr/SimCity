@@ -1,6 +1,6 @@
 import {expect, it} from 'vitest';
 import {CityTraffic} from '../src/city/trafficFlow';
-import {polylineLane} from '../src/region/model/life/routes';
+import {polylineLane} from '../src/region/model/pathGeometry';
 
 it('grows arbitrary junction reservations without resetting a moving vehicle', () => {
   const box = {id: 0, minX: -6, maxX: 6, minZ: -6, maxZ: 6};

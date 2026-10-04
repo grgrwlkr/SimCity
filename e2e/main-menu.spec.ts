@@ -26,17 +26,23 @@ test('the primary menu opens the region and Enter returns there after leaving it
   await expect(page).toHaveURL(
     url => url.pathname === '/' && url.searchParams.has('regionId'),
   );
-  await expect(page.locator('#region')).toHaveAttribute('data-ready', 'true');
+  await expect(page.locator('#city')).toHaveAttribute(
+    'data-life-ready',
+    'true',
+  );
   await expect(
     page.getByRole('button', {name: 'Основать поселение', exact: true}),
   ).toBeVisible();
   expect(workers).toHaveLength(1);
-  expect(workers[0]).toContain('/src/region/worker.ts');
+  expect(workers[0]).toContain('/src/city/life/worker.ts');
   await page.getByRole('link', {name: 'В главное меню'}).click();
   await expect(menu).toBeVisible();
   await page.waitForLoadState('domcontentloaded');
   await page.keyboard.press('Enter');
-  await expect(page.locator('#region')).toHaveAttribute('data-ready', 'true');
+  await expect(page.locator('#city')).toHaveAttribute(
+    'data-life-ready',
+    'true',
+  );
   expect(errors).toEqual([]);
 });
 

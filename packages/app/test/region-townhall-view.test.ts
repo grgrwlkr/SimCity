@@ -2,8 +2,8 @@ import {describe, expect, it} from 'vitest';
 import * as THREE from 'three';
 import {geometries, materials} from '../src/city/primitives';
 import {createRegion} from '../src/region/model/world';
-import type {RegionState, Settlement} from '../src/region/model/types';
-import {createRegionView} from '../src/region/view/scene';
+import type {RegionState} from '../src/region/model/types';
+import {createCivicFixture as createRegionView} from './helpers/civicViewFixture';
 
 function fixture(heading = 0): RegionState {
   const state = createRegion('town-hall-view', 'town-hall-view');
@@ -124,23 +124,6 @@ describe('town hall view', () => {
     expect(heightAt(100, 176)).toBeGreaterThan(12);
     expect(heightAt(55, 175)).toBeLessThan(1.4);
     expect(heightAt(145, 175)).toBeLessThan(1.4);
-    view.dispose();
-  });
-
-  it('preserves the old point marker and selection radius in legacy snapshots', () => {
-    const state = fixture();
-    const legacy: Settlement = {
-      id: 'settlement-hall',
-      name: 'Legacy',
-      center: {x: 100, z: 200},
-    };
-    const view = createRegionView({...state, settlements: [legacy]});
-
-    expect(view.pick({x: 100, z: 206})).toBe('settlement-hall');
-    expect(view.pick({x: 100, z: 220})).toBeNull();
-    expect(new THREE.Box3().setFromObject(hallGroup(view)).max.y).toBeLessThan(
-      8,
-    );
     view.dispose();
   });
 

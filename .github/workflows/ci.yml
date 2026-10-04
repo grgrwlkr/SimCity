@@ -27,7 +27,8 @@ jobs:
             lint,
             test,
             'test:life-week',
-            'test:region-week',
+            'test:legacy-region',
+            'typecheck:legacy-region',
             build,
           ]
     steps:
