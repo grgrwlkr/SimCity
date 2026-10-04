@@ -405,12 +405,10 @@ test('an authored entry brings a native family and real parked cars survive ordi
   const arrivalPath = test.info().outputPath('authored-arrival-save.json');
 
   await writeFile(arrivalPath, JSON.stringify(arrival));
-  await test
-    .info()
-    .attach('authored-arrival-save', {
-      path: arrivalPath,
-      contentType: 'application/json',
-    });
+  await test.info().attach('authored-arrival-save', {
+    path: arrivalPath,
+    contentType: 'application/json',
+  });
 
   expect(arrival.population.families).toHaveLength(1);
   expect(arrival.population.people.length).toBeGreaterThanOrEqual(3);
