@@ -210,6 +210,7 @@ export async function createGame(
   active = createCityRuntime({
     seed,
     visible: false,
+    region: true,
     onExit: () => exit(),
     onSave: async world => {
       updateIdentity();

@@ -299,3 +299,35 @@ test('cold loading never overwrites the selected record with a generated initial
     true,
   );
 });
+
+test('the native city has a regional overview and keyboard camera controls', async ({
+  page,
+}) => {
+  await startNativeWorld(page);
+  const before = await page.evaluate(() => window.__cityLife.save());
+
+  await page.locator('#native-region-overview').click();
+  await page.locator('#city').focus();
+  await page.waitForTimeout(180);
+  const initial = await page.evaluate(() => window.__cityLife.project(0, 0, 1));
+
+  await page.keyboard.down('KeyW');
+  await page.waitForTimeout(200);
+  await page.keyboard.up('KeyW');
+  await page.waitForTimeout(180);
+  const moved = await page.evaluate(() => window.__cityLife.project(0, 0, 1));
+
+  expect(Math.hypot(initial.x - moved.x, initial.y - moved.y)).toBeGreaterThan(
+    1,
+  );
+  await page.keyboard.down('KeyQ');
+  await page.waitForTimeout(200);
+  await page.keyboard.up('KeyQ');
+  await page.waitForTimeout(180);
+  const rotated = await page.evaluate(() =>
+    window.__cityLife.project(200, 200, 1),
+  );
+
+  expect(Number.isFinite(rotated.x) && Number.isFinite(rotated.y)).toBe(true);
+  expect(await page.evaluate(() => window.__cityLife.save())).toEqual(before);
+});
