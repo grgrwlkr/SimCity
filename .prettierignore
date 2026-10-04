@@ -19,3 +19,7 @@ node_modules/
 bun.lock
 
 CODESTYLE.md
+.zcode/
+.video_agent/
+.cursor/
+.mimosa/

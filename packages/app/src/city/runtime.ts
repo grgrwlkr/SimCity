@@ -1081,6 +1081,19 @@ export function createCityRuntime(
               y: ((1 - p.y) * canvas.clientHeight) / 2,
             };
           },
+          focus: (x: number, z: number, zoom = 2) => {
+            following = false;
+            const offset = camera.position.clone().sub(controls.target);
+
+            controls.target.set(x, 0, z);
+            camera.position.copy(controls.target).add(offset);
+            camera.zoom = Math.max(
+              controls.minZoom,
+              Math.min(controls.maxZoom, zoom),
+            );
+            camera.updateProjectionMatrix();
+            controls.update();
+          },
         },
       });
     }

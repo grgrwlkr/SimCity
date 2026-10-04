@@ -13,6 +13,7 @@ declare global {
       select(id: number): void;
       pause(): void;
       project(x: number, y: number, z: number): {x: number; y: number};
+      focus(x: number, z: number, zoom?: number): void;
     };
   }
 }

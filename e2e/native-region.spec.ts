@@ -501,3 +501,71 @@ test('an authored entry brings a native family and real parked cars survive ordi
   expect(await page.evaluate(() => window.__cityLife.save())).toEqual(parked);
   expect(workers).toHaveLength(1);
 });
+
+test('an authored region renders varied prototype assemblies through day and night', async ({
+  page,
+}) => {
+  const errors: string[] = [];
+
+  page.on('pageerror', error => errors.push(error.message));
+  await start(page);
+  await found(page, 'Свет', {x: -1300, z: -500});
+  const town = (await readDocument(page)).settlements[0]!;
+  const center = {x: town.center.x, z: town.center.z + 120};
+
+  await road(
+    page,
+    {x: center.x - 104, z: center.z - 22},
+    {x: center.x + 104, z: center.z - 22},
+  );
+  await road(
+    page,
+    {x: center.x - 104, z: center.z + 22},
+    {x: center.x + 104, z: center.z + 22},
+  );
+  await road(
+    page,
+    {x: center.x + 104, z: town.center.z + 48},
+    {x: center.x + 104, z: center.z + 22},
+  );
+
+  await tool(page, 'homes');
+  await clickWorld(page, {x: center.x - 60, z: center.z});
+  await expect(page.locator('#native-editor-status')).toHaveText(
+    'Изменение применено.',
+  );
+  await tool(page, 'homes');
+  await clickWorld(page, {x: center.x + 60, z: center.z});
+  await expect(page.locator('#native-editor-status')).toHaveText(
+    'Изменение применено.',
+  );
+
+  const blocks = (await readDocument(page)).blocks;
+
+  expect(blocks).toHaveLength(2);
+  expect(blocks[0]!.sourceSeed).not.toBe(blocks[1]!.sourceSeed);
+  expect(blocks[0]!.templates).not.toEqual(blocks[1]!.templates);
+
+  await page.evaluate(() => window.__cityLife.advance(61));
+  const ready = await page.evaluate(() => window.__cityLife.save());
+
+  expect(ready.population.units.length).toBeGreaterThan(0);
+  await expect(page.locator('#city')).toHaveAttribute(
+    'data-life-ready',
+    'true',
+  );
+  await page.evaluate(
+    point => window.__cityLife.focus(point.x, point.z, 1),
+    center,
+  );
+  await page.waitForTimeout(400);
+  await page.screenshot({
+    path: test.info().outputPath('authored-blocks-day.png'),
+  });
+  await page.getByRole('button', {name: 'Ночь', exact: true}).click();
+  await expect(page.locator('#scene-state')).toHaveText('Город зажигает огни');
+  await page.screenshot({
+    path: test.info().outputPath('authored-blocks-night.png'),
+  });
+  expect(errors).toEqual([]);
+});
