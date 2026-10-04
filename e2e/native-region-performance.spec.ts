@@ -121,6 +121,7 @@ test('a real active native region sustains 30 FPS near both cities', async ({
   await expect(page.locator('#city')).toHaveAttribute(
     'data-life-ready',
     'true',
+    {timeout: 30_000},
   );
   await expect(page.locator('#native-region-editor')).toBeVisible();
   await page.locator('#native-region-editor [data-mode="region"]').click();

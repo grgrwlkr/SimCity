@@ -90,8 +90,7 @@
   }
 }
 
-.native-city.is-regional #construction-open,
-.native-city.is-regional #construction-panel {
+.native-city.is-regional #construction-open {
   display: none;
 }
 .native-city.night #native-region-editor {

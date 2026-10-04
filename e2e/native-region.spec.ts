@@ -288,6 +288,29 @@ test('new root region builds finite native homes and resumes an unfinished const
   expect(ready.population.people).toEqual([]);
   expect(ready.parking.length).toBeGreaterThan(0);
   expect(ready.population.units.every(unit => unit.tenant === null)).toBe(true);
+
+  if (ready.version !== 3) {
+    throw new Error('Expected the authored native region');
+  }
+
+  const house = ready.definition.layout.buildings.find(
+    building => building.plot,
+  )!;
+
+  await tool(page, 'select');
+  await page.locator('#building-select').selectOption(house.id);
+  await page.locator('#build-selected').click();
+  await expect(page.locator('#construction-panel')).toBeVisible();
+  await page.locator('#close-construction').click();
+  await expect(page.locator('#native-game-view')).not.toHaveClass(
+    /is-building/,
+  );
+  await page.locator('#life-open').click();
+  await expect(page.locator('#residents-panel')).toBeVisible();
+  await expect(page.locator('#life-save')).toBeVisible();
+  await page.locator('#life-save').click();
+  await expect(page.locator('#life-save-status')).toContainText('сохранён');
+  expect(await page.evaluate(() => window.__cityLife.save())).toEqual(ready);
   expect(workers).toHaveLength(1);
   expect(workers[0]).toContain('/city/life/worker.ts');
   expect(new URL(page.url()).pathname).toBe('/');
