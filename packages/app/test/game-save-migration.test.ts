@@ -5,6 +5,7 @@ import {
   LegacyMigrationError,
 } from '../src/game/saveMigration';
 import {parseRegion, serializeRegion} from '../src/region/model/save';
+import type {Parcel} from '../src/region/model/types';
 import {flatFixture} from './helpers/regionFixture';
 import {generateCity} from '../src/city/generator';
 import {createAuthoredDefinition} from '../src/city/life/definition';
@@ -320,6 +321,152 @@ describe('settled legacy import into one native authored world', () => {
         allowReplanForId: AUTHORIZED_LEGACY_REPLAN_ID,
       }),
     ).toThrow(/не разрешена/);
+    expect(serializeRegion(state)).toBe(raw);
+  });
+
+  it('selects diverse complete prototype assemblies by stable legacy IDs without changing native parking roles', () => {
+    const parcels: Parcel[] = [];
+    const state = {
+      ...settledFixture(),
+      id: AUTHORIZED_LEGACY_REPLAN_ID,
+      seed: '689856',
+      parcels,
+    };
+
+    state.terrain = {...state.terrain, seed: state.seed, water: []};
+    const home = state.life.buildings[0]!;
+    const factory = state.life.buildings[1]!;
+
+    state.life.buildings = [
+      ...Array.from({length: 63}, (_, i) => ({
+        ...home,
+        id: i === 0 ? home.id : `home-${i + 10}`,
+      })),
+      ...Array.from({length: 24}, (_, i) => ({
+        ...factory,
+        id: i === 0 ? factory.id : `factory-${i + 10}`,
+      })),
+      ...Array.from({length: 24}, (_, i) => ({
+        ...factory,
+        kind: 'commercial' as const,
+        id: `shop-${i + 10}`,
+      })),
+      ...Array.from({length: 24}, (_, i) => ({
+        ...factory,
+        kind: 'warehouse' as const,
+        ownerId: 'region',
+        cash: 0,
+        id: `warehouse-${i + 10}`,
+      })),
+    ];
+    state.nextId = 5000;
+    state.life.nextId = 5000;
+    state.life.buildings = state.life.buildings.map((building, i) => ({
+      ...building,
+      lotId: `lot-${i + 100}`,
+    }));
+    state.parcels = state.life.buildings.flatMap((building, i) =>
+      building.kind === 'warehouse'
+        ? []
+        : [
+            {
+              id: building.lotId,
+              settlementId: building.settlementId,
+              center: {
+                x: -1000 + (i % 12) * 40,
+                z: -600 + Math.floor(i / 12) * 40,
+              },
+              heading: 0,
+              width: 32,
+              depth: 32,
+              zone: building.kind,
+              access: null,
+            },
+          ],
+    );
+    state.warehouses = state.life.buildings.flatMap((building, i) =>
+      building.kind === 'warehouse'
+        ? [
+            {
+              id: building.lotId,
+              settlementId: building.settlementId,
+              center: {
+                x: -1000 + (i % 12) * 40,
+                z: -600 + Math.floor(i / 12) * 40,
+              },
+              heading: 0,
+              access: null,
+            },
+          ]
+        : [],
+    );
+    const raw = serializeRegion(state);
+    const result = replanAuthorizedLegacyLayout(raw);
+    const homes = result.placements.filter(p => p.kind === 'home');
+    const shops = result.placements.filter(p => p.id.startsWith('shop-'));
+    const factories = result.placements.filter(
+      p => p.id === factory.id || p.id.startsWith('factory-'),
+    );
+    const warehouses = result.placements.filter(p =>
+      p.id.startsWith('warehouse-'),
+    );
+
+    expect(new Set(homes.map(p => p.template.variant))).toEqual(
+      new Set(['slab', 'gable', 'terrace']),
+    );
+    expect(
+      new Set(homes.map(p => JSON.stringify(p.template.kit))).size,
+    ).toBeGreaterThan(6);
+    expect(new Set(shops.map(p => p.template.variant))).toEqual(
+      new Set(['store', 'mall', 'terrace']),
+    );
+    expect(new Set(factories.map(p => p.template.variant))).toEqual(
+      new Set(['sawtooth', 'tanks', 'power']),
+    );
+    expect(warehouses.every(p => p.template.variant === 'warehouse')).toBe(
+      true,
+    );
+    expect(new Set(warehouses.map(p => p.template.id)).size).toBeGreaterThan(1);
+    const source = generateCity(state.seed);
+
+    for (const placement of result.placements) {
+      expect(placement.template).toEqual(
+        source.buildings.find(b => b.id === placement.template.id),
+      );
+      expect(placement.sourceBlock).toEqual(
+        source.blocks.find(b => b.id === placement.template.blockId),
+      );
+    }
+
+    for (const placement of [...homes, ...shops]) {
+      expect(placement.template.plot).toBeUndefined();
+      expect(
+        result.profile.facilities.some(
+          f => f.buildingId === placement.id && f.kind === 'underground',
+        ),
+      ).toBe(true);
+    }
+
+    const reordered = replanAuthorizedLegacyLayout(
+      serializeRegion({
+        ...state,
+        life: {
+          ...state.life,
+          buildings: state.life.buildings
+            .filter(building =>
+              [home.id, factory.id, 'warehouse-10'].includes(building.id),
+            )
+            .reverse(),
+        },
+      }),
+    );
+    const choices = (definition: typeof result) =>
+      Object.fromEntries(definition.placements.map(p => [p.id, p.template.id]));
+
+    for (const [id, template] of Object.entries(choices(reordered))) {
+      expect(template).toBe(choices(result)[id]);
+    }
+
     expect(serializeRegion(state)).toBe(raw);
   });
 

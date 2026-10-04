@@ -29,31 +29,47 @@ export function replanAuthorizedLegacyLayout(
   }
 
   const source = generateCity(state.seed);
-  const home = source.buildings.find(
+  const homes = source.buildings.filter(
     b =>
       b.district === 'residential' &&
       !b.plot &&
       b.floors >= 6 &&
       b.z > source.blocks.find(block => block.id === b.blockId)!.z,
   );
-  const shop = source.buildings.find(
+  const shops = source.buildings.filter(
     b =>
       b.district === 'commercial' &&
       b.floors >= 6 &&
       b.z > source.blocks.find(block => block.id === b.blockId)!.z,
   );
-  const factory = source.buildings.find(
-    b => b.district === 'industrial' && b.variant === 'sawtooth',
+  const factories = source.buildings.filter(
+    b => b.district === 'industrial' && b.variant !== 'warehouse',
   );
-  const warehouse = source.buildings.find(
+  const warehouses = source.buildings.filter(
     b => b.district === 'industrial' && b.variant === 'warehouse',
   );
 
-  if (!home || !shop || !factory || !warehouse) {
+  if (
+    !homes.length ||
+    !shops.length ||
+    !factories.length ||
+    !warehouses.length
+  ) {
     throw new Error(
       'Нет полного исходного набора моделей для переноса тестового мира.',
     );
   }
+
+  // Keep native underground parking eligibility while varying full source assemblies by stable address ID.
+  const chooseTemplate = (pool: typeof source.buildings, id: string) => {
+    let hash = 2166136261;
+
+    for (const char of `${state.seed}/${id}`) {
+      hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+    }
+
+    return pool[(hash >>> 0) % pool.length]!;
+  };
 
   const roads: Road[] = [];
   const segments = new Set<string>();
@@ -117,14 +133,15 @@ export function replanAuthorizedLegacyLayout(
         }
 
         const building = buildings[next++]!;
-        const template =
+        const pool =
           building.kind === 'residential'
-            ? home
+            ? homes
             : building.kind === 'commercial'
-              ? shop
+              ? shops
               : building.kind === 'industrial'
-                ? factory
-                : warehouse;
+                ? factories
+                : warehouses;
+        const template = chooseTemplate(pool, building.id);
         const block = source.blocks.find(
           block => block.id === template.blockId,
         )!;
