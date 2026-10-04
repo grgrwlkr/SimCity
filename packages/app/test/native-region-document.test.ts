@@ -84,7 +84,7 @@ describe('native region document', () => {
 
     expect(block.templates.some(template => template.plot)).toBe(true);
     expect(block.templates).toEqual(
-      generateCity('689856').buildings.filter(
+      generateCity(block.sourceSeed).buildings.filter(
         template => template.blockId === block.sourceBlock.id,
       ),
     );
@@ -101,6 +101,41 @@ describe('native region document', () => {
         10,
       ),
     ).toThrow('радиусе');
+  });
+  it('assembles distinct placed blocks from stable original procedural seeds', () => {
+    const founded = applyNativeEdit(
+      createNativeRegionDocument('world', '689856'),
+      {type: 'found', center: {x: -600, z: 0}, name: 'Первый'},
+      1000000,
+      0,
+    ).document;
+    const edit = {
+      type: 'block' as const,
+      settlementId: founded.settlements[0]!.id,
+      center: {x: -600, z: 75},
+      district: 'residential' as const,
+      houses: true,
+    };
+    const first = applyNativeEdit(founded, edit, 1000000, 10).document;
+    const removed = applyNativeEdit(
+      first,
+      {type: 'remove', id: first.blocks[0]!.id},
+      1000000,
+      10,
+    ).document;
+    const second = applyNativeEdit(removed, edit, 1000000, 10).document;
+
+    expect(first.blocks[0]!.sourceSeed).not.toBe(second.blocks[0]!.sourceSeed);
+    expect(first.blocks[0]!.templates).not.toEqual(second.blocks[0]!.templates);
+    expect(applyNativeEdit(founded, edit, 1000000, 10).document).toEqual(first);
+    const restored = readNativeRegionDocument(
+      JSON.parse(JSON.stringify(second)) as unknown,
+    )!;
+
+    expect(restored.blocks[0]!.templates).toEqual(second.blocks[0]!.templates);
+    expect(compileNativeRegion(restored, 10)).toEqual(
+      compileNativeRegion(second, 10),
+    );
   });
   it('never mutates a document on a failed budget or upgrade requirement', () => {
     const initial = createNativeRegionDocument('world', '689856');

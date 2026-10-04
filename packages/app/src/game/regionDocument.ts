@@ -291,7 +291,7 @@ export function applyNativeEdit(
         throw new Error('Квартал пересекает дорогу.');
       }
 
-      const source = generateCity(document.seed);
+      const source = generateCity(`${document.seed}/block/${id}`);
       const candidates = source.blocks.filter(
         block =>
           block.district === edit.district &&
