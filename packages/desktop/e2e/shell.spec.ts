@@ -27,8 +27,10 @@ test('the hidden packaged app keeps the original city accessible through the pro
   try {
     const page = await app.firstWindow({timeout: 30_000});
     const errors: string[] = [];
+    const workers: string[] = [];
 
     page.on('pageerror', error => errors.push(error.message));
+    page.on('worker', worker => workers.push(worker.url()));
     await expect(
       page.getByRole('navigation', {name: 'Главное меню'}),
     ).toBeVisible();
@@ -72,7 +74,10 @@ test('the hidden packaged app keeps the original city accessible through the pro
       .toBeGreaterThan(painted);
     expect(
       await page.evaluate(
-        () => '__sim' in window || '__regionEditor' in window,
+        () =>
+          '__sim' in window ||
+          '__regionEditor' in window ||
+          '__cityLife' in window,
       ),
     ).toBe(false);
     await page.locator('#life-open').click();
@@ -94,6 +99,10 @@ test('the hidden packaged app keeps the original city accessible through the pro
     await expect(
       page.getByRole('navigation', {name: 'Главное меню'}),
     ).toBeVisible();
+    expect(workers).toHaveLength(1);
+    expect(new URL(workers[0]!).protocol).toBe('app:');
+    expect(new URL(workers[0]!).hostname).toBe('bundle');
+    expect(new URL(workers[0]!).pathname).toMatch(/^\/assets\/worker-.+\.js$/);
     expect(errors).toEqual([]);
   } finally {
     await app.close();

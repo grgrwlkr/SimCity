@@ -487,6 +487,13 @@ test('an ordinary clone of the living region gains native services while preserv
   );
   await page.locator('#menu-load-region').click();
   await page.getByRole('button', {name: /Живой регион.*689856/}).click();
+  await expect(page.locator('#city')).toHaveAttribute(
+    'data-life-ready',
+    'true',
+    {
+      timeout: 30000,
+    },
+  );
   await expect(page.locator('#native-region-editor')).toBeVisible();
   await page.evaluate(() => window.__cityLife.pause());
   const original = await page.evaluate(() => window.__cityLife.save());
@@ -574,6 +581,22 @@ test('an ordinary clone of the living region gains native services while preserv
   expect(edited.population.cars).toEqual(original.population.cars);
   expect(edited.tick).toBe(original.tick);
   expect(edited.population.treasury).toBeLessThan(original.population.treasury);
+  await page.evaluate(() => window.__cityLife.advance(61));
+  const completed = await page.evaluate(() => window.__cityLife.save());
+
+  if (completed.version !== 3) {
+    throw new Error('Living service clone lost its native authored definition');
+  }
+
+  expect(
+    completed.definition.profile.places.some(place => place.kind === 'school'),
+  ).toBe(true);
+  expect(
+    completed.definition.profile.places.some(place => place.kind === 'park'),
+  ).toBe(true);
+  expect(completed.population.people.map(person => person.id)).toEqual(
+    original.population.people.map(person => person.id),
+  );
   await page.locator('#life-open').click();
   await page.locator('#life-save').click();
   await expect(page.locator('#life-save-status')).toContainText('сохранён');
@@ -581,7 +604,7 @@ test('an ordinary clone of the living region gains native services while preserv
   await page.screenshot({
     path: testInfo.outputPath('living-native-region-with-services.png'),
   });
-  const exported = createGameSave(id, 'Живой регион', edited);
+  const exported = createGameSave(id, 'Живой регион', completed);
   const output = process.env.NATIVE_INFRASTRUCTURE_OUTPUT_SAVE;
 
   if (output) {
@@ -597,6 +620,10 @@ test('an ordinary clone of the living region gains native services while preserv
         population: edited.population.people.length,
         originalTreasury: original.population.treasury,
         editedTreasury: edited.population.treasury,
+        completedTreasury: completed.population.treasury,
+        sourceEconomyLedger: original.economy?.ledger,
+        completedEconomyLedger: completed.economy?.ledger,
+        completedPopulation: completed.population.people.length,
         unchangedPeople: true,
         unchangedFamilies: true,
         unchangedCars: true,

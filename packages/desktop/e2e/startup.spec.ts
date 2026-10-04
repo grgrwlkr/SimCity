@@ -18,6 +18,7 @@ test('packaged startup gates readiness until Playwright connects and stays hidde
     await expect(
       page.getByRole('navigation', {name: 'Главное меню'}),
     ).toBeVisible();
+    await expect(page).toHaveURL('app://bundle/');
     const state = await app.evaluate(({app, BrowserWindow}) => ({
       gate: typeof (globalThis as {__playwright_run?: unknown})
         .__playwright_run,

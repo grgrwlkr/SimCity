@@ -6,7 +6,7 @@ import {FuseState, FuseV1Options, getCurrentFuseWire} from '@electron/fuses';
 import {expect, test} from '@playwright/test';
 import {execFileSync, spawn} from 'node:child_process';
 import {createServer} from 'node:net';
-import {existsSync, readFileSync} from 'node:fs';
+import {readFileSync} from 'node:fs';
 import {once} from 'node:events';
 import {fileURLToPath} from 'node:url';
 import {
@@ -22,10 +22,10 @@ const BUILD_ICNS = fileURLToPath(
   new URL('../build/icon.icns', import.meta.url),
 );
 
-test.skip(
-  !existsSync(binaryOf(RELEASE_APP)),
-  'build the app first: bun run desktop:build',
-);
+test.beforeAll(() => {
+  requireBuild(RELEASE_APP);
+  requireBuild(TEST_APP);
+});
 
 /** Fuse name -> 'on' | 'off' as read from the Electron Framework binary of `app`. */
 async function fusesOf(app: string): Promise<Record<string, string>> {
@@ -264,8 +264,11 @@ function countInAsar(app: string, text: string): number {
   return count;
 }
 
-test('neitherBuildCarriesTheDeprecatedSimApi', () => {
+test('neitherBuildCarriesDevelopmentSimulationApis', () => {
   requireBuild(TEST_APP);
-  expect(countInAsar(RELEASE_APP, '__sim')).toBe(0);
-  expect(countInAsar(TEST_APP, '__sim')).toBe(0);
+
+  for (const name of ['__sim', '__regionEditor', '__cityLife']) {
+    expect(countInAsar(RELEASE_APP, name), `Release API ${name}`).toBe(0);
+    expect(countInAsar(TEST_APP, name), `Test-build API ${name}`).toBe(0);
+  }
 });
