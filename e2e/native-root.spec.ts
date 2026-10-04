@@ -13,6 +13,7 @@ async function records(page: Page) {
 
         open.onupgradeneeded = () => open.result.createObjectStore('regions');
         open.onerror = () => reject(open.error ?? new Error('Open failed'));
+
         open.onsuccess = () => {
           const db = open.result;
           const transaction = db.transaction('regions');
@@ -23,17 +24,22 @@ async function records(page: Page) {
             const cursor = request.result;
 
             if (cursor) {
-              result.push({
-                id: String(cursor.key),
-                value: cursor.value as unknown,
-              });
+              if (typeof cursor.key === 'string') {
+                result.push({
+                  id: cursor.key,
+                  value: cursor.value as unknown,
+                });
+              }
+
               cursor.continue();
             }
           };
+
           transaction.oncomplete = () => {
             db.close();
             resolve(result);
           };
+
           transaction.onerror = () => {
             db.close();
             reject(transaction.error ?? new Error('Read failed'));
@@ -229,15 +235,18 @@ test('legacy regions remain visible and retain their exact stored bytes', async 
 
       open.onupgradeneeded = () => open.result.createObjectStore('regions');
       open.onerror = () => reject(open.error ?? new Error('Open failed'));
+
       open.onsuccess = () => {
         const db = open.result;
         const transaction = db.transaction('regions', 'readwrite');
 
         transaction.objectStore('regions').put(value, 'legacy-native-root');
+
         transaction.oncomplete = () => {
           db.close();
           resolve();
         };
+
         transaction.onerror = () => {
           db.close();
           reject(transaction.error ?? new Error('Write failed'));

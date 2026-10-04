@@ -949,6 +949,8 @@ export function createCityRuntime(
           paused = true;
           syncMotion();
           await loadWorld(saved);
+
+          return true;
         },
       },
       host.querySelector('main') ?? host,
