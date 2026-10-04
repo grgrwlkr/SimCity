@@ -267,6 +267,8 @@ function mountEditor(): void {
       return document;
     },
   });
+
+  editor.update(latestFrame?.population, latestFrame?.growth);
 }
 
 export async function createGame(
