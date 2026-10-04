@@ -41,13 +41,16 @@ export class ParkingView {
 
   constructor(readonly profile: LifeProfile) {
     const batch = new Batch();
-    // A short connection to the world outside the diorama for incoming households.
-    const arrivalX = profile.arrival.point.x;
 
-    batch.add('box', 'asphalt', arrivalX + 12, 0.79, -85, 16, 0.12, 8);
+    // Only the prototype owns this fixed entry spur; authored roads come from their document.
+    if (profile.arrival && !('kind' in profile.arrival)) {
+      const arrivalX = profile.arrival.point.x;
 
-    for (const x of [arrivalX + 17, arrivalX + 12, arrivalX + 7]) {
-      batch.add('box', 'cream', x, 0.866, -85, 2, 0.02, 0.12);
+      batch.add('box', 'asphalt', arrivalX + 12, 0.79, -85, 16, 0.12, 8);
+
+      for (const x of [arrivalX + 17, arrivalX + 12, arrivalX + 7]) {
+        batch.add('box', 'cream', x, 0.866, -85, 2, 0.02, 0.12);
+      }
     }
 
     addCurbParking(batch, profile);
@@ -157,8 +160,11 @@ export function addCurbParking(
 ): void {
   for (const bay of profile.bays) {
     const f = profile.facilities[bay.facility]!;
-    const d = DIRECTIONS[f.road.direction]!;
-    const r = rightOf(f.road.direction);
+    const graph = 'kind' in f.road;
+    const d = graph
+      ? {x: Math.sin(f.yaw), z: Math.cos(f.yaw)}
+      : DIRECTIONS[f.road.direction]!;
+    const r = graph ? {x: -d.z, z: d.x} : rightOf(f.road.direction);
     const {x, z} = f.entrance;
 
     batch.add(
@@ -251,6 +257,8 @@ export function addCurbParking(
       const other = profile.facilities[b.facility]!;
 
       if (
+        'kind' in f.road ||
+        'kind' in other.road ||
         f.road.direction !== other.road.direction ||
         Math.abs(Math.hypot(a.x - b.x, a.z - b.z) - 34) > 0.01
       ) {
@@ -261,7 +269,11 @@ export function addCurbParking(
       const x = (a.x + b.x) / 2;
       const z = (a.z + b.z) / 2;
 
-      if (f.road.direction === 1 && Math.abs(z - profile.arrival.point.z) < 4) {
+      if (
+        profile.arrival &&
+        f.road.direction === 1 &&
+        Math.abs(z - profile.arrival.point.z) < 4
+      ) {
         continue;
       }
 

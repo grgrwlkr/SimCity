@@ -10,6 +10,7 @@ import type {
   Resident,
 } from './types';
 import type {ParkingBook} from './parking';
+import type {NativeCalendar} from './definition';
 
 export const MINUTE_SECONDS = 3;
 export const INITIAL_MINUTE = 450;
@@ -116,33 +117,17 @@ export class Population {
     readonly parking: ParkingBook,
     count = 180,
     initialCars = true,
+    private readonly options: {
+      calendar?: NativeCalendar | undefined;
+      deliveredGoods?: boolean;
+      startingCash?: number | undefined;
+    } = {},
   ) {
     this.random = new LifeRandom(profile.seed + '/life');
+    this.treasury = this.options.startingCash ?? this.treasury;
 
     for (const p of profile.places) {
-      this.places.set(p.id, p);
-
-      if (p.kind === 'home') {
-        for (let i = 0; i < p.capacity; i++) {
-          this.units.push({
-            id: this.units.length,
-            building: p.id,
-            capacity: p.building?.plot ? 4 : 3 + (p.building!.floors % 2),
-            price: p.price,
-            rent: Math.round(p.price / 3000),
-            tenant: null,
-            owner: null,
-          });
-        }
-      } else if (p.kind !== 'park') {
-        this.businesses.push({
-          building: p.id,
-          balance: 1000000,
-          stock: p.kind === 'shop' ? 120 : 0,
-          jobs: p.kind === 'school' ? 12 : p.capacity,
-          workers: [],
-        });
-      }
+      this.registerPlace(p);
     }
 
     for (let i = 0; i < count; i++) {
@@ -156,6 +141,70 @@ export class Population {
         this.buyCar(f, 0, true);
       }
     }
+  }
+
+  registerPlace(p: LifePlace): void {
+    if (this.places.has(p.id)) {
+      throw new Error(`Duplicate native place ${p.id}`);
+    }
+
+    this.places.set(p.id, p);
+
+    if (p.kind === 'home') {
+      for (let i = 0; i < p.capacity; i++) {
+        this.units.push({
+          id: this.units.length,
+          building: p.id,
+          capacity: p.building?.plot ? 4 : 3 + (p.building!.floors % 2),
+          price: p.price,
+          rent: Math.round(p.price / 3000),
+          tenant: null,
+          owner: null,
+        });
+      }
+    } else if (p.kind !== 'park') {
+      this.businesses.push({
+        building: p.id,
+        balance: this.options.deliveredGoods ? 0 : 1000000,
+        stock: p.kind === 'shop' && !this.options.deliveredGoods ? 120 : 0,
+        jobs: p.kind === 'school' ? 12 : p.capacity,
+        workers: [],
+      });
+    }
+  }
+
+  hasPlace(id: string): boolean {
+    return this.places.has(id);
+  }
+
+  unregisterPlace(id: string): void {
+    if (
+      this.units.some(
+        unit =>
+          unit.building === id && (unit.tenant !== null || unit.owner !== null),
+      ) ||
+      this.businesses.some(
+        business =>
+          business.building === id &&
+          (business.workers.length || business.stock || business.balance),
+      )
+    ) {
+      throw new Error('Здание занято или хранит имущество');
+    }
+
+    for (const unit of this.units.filter(unit => unit.building === id)) {
+      unit.retired = true;
+    }
+
+    const index = this.businesses.findIndex(
+      business => business.building === id,
+    );
+
+    if (index >= 0) {
+      this.businesses.splice(index, 1);
+    }
+
+    this.places.delete(id);
   }
 
   place(id: string): LifePlace {
@@ -233,17 +282,27 @@ export class Population {
 
   createFamily(at: number, immigrant: boolean): Household | null {
     const homes = this.profile.places.filter(p => p.kind === 'home');
+
+    if (!homes.length) {
+      return null;
+    }
+
     const preferred = homes[this.families.length % homes.length]!;
     const unit =
-      this.units.find(u => u.tenant === null && u.building === preferred.id) ??
-      this.units.find(u => u.tenant === null);
+      this.units.find(
+        u => !u.retired && u.tenant === null && u.building === preferred.id,
+      ) ?? this.units.find(u => !u.retired && u.tenant === null);
 
     if (!unit) {
       return null;
     }
 
     const id = this.families.length;
-    const day = Math.floor((INITIAL_MINUTE + at / MINUTE_SECONDS) / 1440);
+    const day = Math.floor(
+      ((this.options.calendar?.startingMinute ?? INITIAL_MINUTE) +
+        at / (this.options.calendar?.secondsPerMinute ?? MINUTE_SECONDS)) /
+        1440,
+    );
     const f: Household = {
       id,
       surname: this.random.pick(SURNAMES),
@@ -453,12 +512,16 @@ export class Population {
 
     const employer = this.businesses.find(b => b.building === p.job!.building)!;
     const attended = Math.min(
-      p.job.shift * MINUTE_SECONDS,
+      p.job.shift * (this.options.calendar?.secondsPerMinute ?? MINUTE_SECONDS),
       Math.max(0, seconds - p.workStarted),
     );
     const wage = Math.min(
       employer.balance,
-      Math.floor((p.job.wage * attended) / (p.job.shift * MINUTE_SECONDS)),
+      Math.floor(
+        (p.job.wage * attended) /
+          (p.job.shift *
+            (this.options.calendar?.secondsPerMinute ?? MINUTE_SECONDS)),
+      ),
     );
 
     employer.balance -= wage;
@@ -506,9 +569,14 @@ export class Population {
   daily(day: number, at: number): void {
     // Businesses serve the region as well as residents; these are explicit external revenues.
     for (const b of this.businesses) {
-      b.balance += this.place(b.building).wage * b.workers.length;
+      if (!this.options.deliveredGoods) {
+        b.balance += this.place(b.building).wage * b.workers.length;
+      }
 
-      if (this.place(b.building).kind === 'shop') {
+      if (
+        !this.options.deliveredGoods &&
+        this.place(b.building).kind === 'shop'
+      ) {
         const goods = Math.max(0, 120 - b.stock);
 
         b.balance -= goods * 70;

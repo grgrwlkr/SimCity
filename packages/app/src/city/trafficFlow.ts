@@ -802,6 +802,16 @@ export class CityTraffic {
 
     this.tick = data.tick;
     this.lastTime = data.lastTime;
+
+    // Authored junction IDs keep their high-water mark after unused roads retire.
+    // Their reservation capacity is saved independently of the live geometry.
+    if (
+      this.options.roads?.length === 0 &&
+      data.owners.length > this.owners.length
+    ) {
+      this.owners = new Int32Array(data.owners.length).fill(-1);
+    }
+
     this.owners.set(data.owners);
     this.held.set(data.held);
     this.activeVehicles.length = 0;

@@ -1,4 +1,3 @@
-import {generateCity} from '../generator';
 import {Harbor, freightPlans} from '../harbor';
 import {
   AMBIENT_VEHICLES,
@@ -24,6 +23,17 @@ import {
 } from './network';
 import {ParkingBook} from './parking';
 import {
+  createPrototypeDefinition,
+  completeAuthoredConstruction,
+  parseWorldDefinition,
+} from './definition';
+import {NoNativeRoute, RegionRouting} from './regionRouting';
+import {reconcileWorldDefinition} from './worldReconciliation';
+import type {
+  CityLifeDefinitionOptions,
+  CityWorldDefinition,
+} from './definition';
+import {
   carName,
   INITIAL_MINUTE,
   lifeCarKit,
@@ -36,6 +46,9 @@ import type {
   LifePlace,
   OwnedCar,
   ParkingFacility,
+  ParkingSlot,
+  RoadAccess,
+  PlannedDrive,
   Point,
   Purpose,
   Resident,
@@ -80,8 +93,9 @@ interface RailArrival {
 }
 
 export class CityLife {
+  private currentDefinition: CityWorldDefinition;
   readonly profile;
-  readonly network;
+  readonly network: LifeNetwork | RegionRouting;
   readonly parking;
   readonly population;
   readonly harbor = new Harbor();
@@ -104,40 +118,143 @@ export class CityLife {
     terminal: null,
   };
   private railArrival: RailArrival | null = null;
-  private readonly terminal: ParkingFacility;
+  private terminal: ParkingFacility | null;
+  private busVehicleId: number | null = BUS_INDEX;
+  private readonly carVehicleIds: number[] = [];
+  private readonly expanded: boolean;
+
+  get definition(): CityWorldDefinition {
+    return this.currentDefinition;
+  }
+
+  static fromDefinition(
+    definition: CityWorldDefinition,
+    options: CityLifeDefinitionOptions = {},
+  ): CityLife {
+    return new CityLife(
+      definition,
+      options.initialFamilies,
+      definition.expanded,
+      options.network,
+    );
+  }
 
   constructor(
-    seed: string,
-    families = 180,
-    private expanded = true,
+    seedOrDefinition: string | CityWorldDefinition,
+    families?: number,
+    expanded = true,
+    network?: LifeNetwork,
+    restoringAuthored = false,
   ) {
-    this.profile = createLifeProfile(generateCity(seed, expanded));
-    this.network = new LifeNetwork(this.profile.layout);
-    this.railway = new Railway(0, expanded, this.network.roads);
+    this.currentDefinition =
+      typeof seedOrDefinition === 'string'
+        ? createPrototypeDefinition(seedOrDefinition, expanded)
+        : seedOrDefinition;
+    const definition = parseWorldDefinition(this.definition);
+    const authored = definition.kind === 'authored';
+    const seed = definition.seed;
+
+    if (definition.version !== 1 || definition.layout.seed !== seed) {
+      throw new Error('Некорректное описание исходного мира');
+    }
+
+    this.expanded = definition.expanded;
+    this.network = authored
+      ? new RegionRouting(definition.layout, definition.roads)
+      : (network ?? new LifeNetwork(definition.layout));
+
+    if (this.network.layout !== definition.layout) {
+      throw new Error('Дорожная сеть относится к другой планировке');
+    }
+
+    this.profile =
+      definition.kind === 'authored'
+        ? structuredClone(definition.profile)
+        : createLifeProfile(
+            definition.layout,
+            network ??
+              (this.network instanceof LifeNetwork
+                ? this.network
+                : new LifeNetwork(definition.layout)),
+          );
+
+    if (this.network instanceof RegionRouting) {
+      this.network.validateProfile(this.profile);
+    }
+
+    this.railway = new Railway(0, this.expanded, this.network.roads);
     this.parking = new ParkingBook(this.profile);
-    this.population = new Population(this.profile, this.parking, families);
-    const sizes = [...cityVehicleKits(seed), {length: 4.2, width: 1.9}];
+    this.population = new Population(
+      this.profile,
+      this.parking,
+      families ?? (authored ? 0 : 180),
+      true,
+      definition.kind === 'authored'
+        ? {
+            calendar: definition.calendar,
+            deliveredGoods: true,
+            startingCash: definition.startingCash ?? 1_000_000,
+          }
+        : {},
+    );
+    const sizes = authored
+      ? []
+      : [...cityVehicleKits(seed), {length: 4.2, width: 1.9}];
 
     this.traffic = new CityTraffic(sizes, {
       initiallyInactive: new Set([
         ...Array.from({length: AMBIENT_VEHICLES}, (_, i) => i),
         BUS_INDEX,
       ]),
-      plans: freightPlans(),
+      ...(authored ? {} : {plans: freightPlans()}),
       roads: this.network.roads,
-      junctions: freightJunctions(this.network.roads.length ** 2),
+      junctions:
+        this.network instanceof RegionRouting
+          ? this.network.junctions()
+          : freightJunctions(this.network.roads.length ** 2),
       blocked: (proposed, current, size, currentSize) =>
         this.railway.blocksVehicle(proposed, current, size, currentSize),
       pedestrians: () => this.crossings,
-      onStep: (time, traffic) => this.harbor.advance(time, traffic),
+      ...(authored
+        ? {}
+        : {
+            onStep: (time: number, traffic: CityTraffic) =>
+              this.harbor.advance(time, traffic),
+          }),
     });
-    this.terminal = this.profile.facilities
-      .filter(f => f.kind === 'street' && f.road.direction === 1)
-      .sort(
-        (a, b) =>
-          distance(a.road.point, this.profile.arrival.point) -
-          distance(b.road.point, this.profile.arrival.point),
-      )[0]!;
+    this.terminal =
+      definition.kind === 'authored'
+        ? (this.profile.facilities[
+            definition.entries[0]?.terminalFacilityId ?? -1
+          ] ?? null)
+        : this.profile.facilities
+            .filter(f => f.kind === 'street' && f.road.direction === 1)
+            .sort(
+              (a, b) =>
+                distance(a.road.point, this.profile.arrival!.point) -
+                distance(b.road.point, this.profile.arrival!.point),
+            )[0]!;
+
+    if (authored) {
+      this.busVehicleId =
+        !restoringAuthored && this.terminal && this.profile.arrival
+          ? this.traffic.addCar({length: 4.2, width: 1.9})
+          : null;
+      const state = this.harbor.save();
+
+      this.harbor.restore({
+        ...state,
+        cargo: [],
+        jobs: [],
+        homes: [],
+        phase: 'away',
+        nextId: 0,
+        created: 0,
+        production: [],
+        waitingSince: [],
+      });
+    }
+
     this.syncCars();
   }
 
@@ -145,16 +262,172 @@ export class CityLife {
     return this.tick * STEP;
   }
 
+  private get startingMinute(): number {
+    return this.definition.kind === 'authored'
+      ? (this.definition.calendar?.startingMinute ?? INITIAL_MINUTE)
+      : INITIAL_MINUTE;
+  }
+
+  private get secondsPerMinute(): number {
+    return this.definition.kind === 'authored'
+      ? (this.definition.calendar?.secondsPerMinute ?? MINUTE_SECONDS)
+      : MINUTE_SECONDS;
+  }
+
+  carVehicleId(id: number): number {
+    const index = this.carVehicleIds[id];
+
+    if (index === undefined) {
+      throw new Error('Незарегистрированная машина');
+    }
+
+    return index;
+  }
+
+  private isOnRoad(point: Point): boolean {
+    return this.network instanceof RegionRouting
+      ? this.network.isOnRoad(point)
+      : onRoad(point, this.network.roads);
+  }
+
+  private walkParking(
+    facility: ParkingFacility,
+    slot: ParkingSlot,
+  ): WalkAccess {
+    return this.network instanceof RegionRouting
+      ? this.network.parkingWalkAccess(facility, slot)
+      : parkingWalkAccess(this.network, facility, slot);
+  }
+
+  private departure(facility: ParkingFacility, slot: ParkingSlot): RoadAccess {
+    return this.network instanceof RegionRouting
+      ? this.network.departureAccess(facility, slot)
+      : departureAccess(facility, slot, this.network.roads);
+  }
+
+  private parkingManoeuvre(
+    facility: ParkingFacility,
+    slot: ParkingSlot,
+    entering: boolean,
+  ): PlannedDrive {
+    return this.network instanceof RegionRouting
+      ? this.network.parkingRoute(facility, slot, entering)
+      : parkingRoute(facility, slot, entering);
+  }
+
+  applyDefinitionUpdate(value: CityWorldDefinition, cost = 0): void {
+    if (!Number.isFinite(cost) || cost < 0 || cost > this.population.treasury) {
+      throw new Error('Недостаточно средств на изменение мира');
+    }
+
+    const definition = parseWorldDefinition(value);
+
+    if (
+      this.definition.kind !== 'authored' ||
+      definition.kind !== 'authored' ||
+      !(this.network instanceof RegionRouting) ||
+      definition.seed !== this.profile.seed
+    ) {
+      throw new Error('Изменение относится к другому миру');
+    }
+
+    const active =
+      this.population.people.some(person => person.trip !== null) ||
+      this.population.cars.some(car => car.status !== 'parked');
+    const roadRemovedOrChanged = this.definition.roads.some(
+      road =>
+        !definition.roads.some(
+          other =>
+            other.id === road.id &&
+            JSON.stringify(other.points) === JSON.stringify(road.points),
+        ),
+    );
+
+    if (active && roadRemovedOrChanged) {
+      throw new Error('Дорога занята активной поездкой');
+    }
+
+    const candidateRouting = new RegionRouting(
+      definition.layout,
+      definition.roads,
+    );
+
+    candidateRouting.validateProfile(definition.profile);
+    const next = reconcileWorldDefinition(
+      this.profile,
+      this.parking.slots,
+      this.population,
+      definition,
+      active,
+    );
+
+    for (const place of this.profile.places.filter(
+      place => !next.profile.places.some(other => other.id === place.id),
+    )) {
+      this.population.unregisterPlace(place.id);
+    }
+
+    const places = next.profile.places.map(place => {
+      const original = this.profile.places.find(other => other.id === place.id);
+
+      if (original) {
+        Object.assign(original, place);
+
+        return original;
+      }
+
+      this.population.registerPlace(place);
+
+      return place;
+    });
+
+    this.profile.places.splice(0, this.profile.places.length, ...places);
+    this.profile.facilities.splice(
+      0,
+      this.profile.facilities.length,
+      ...next.profile.facilities,
+    );
+    this.profile.slots.splice(
+      0,
+      this.profile.slots.length,
+      ...next.profile.slots,
+    );
+    this.profile.bays.splice(0, this.profile.bays.length, ...next.profile.bays);
+    this.profile.layout = next.layout;
+    this.profile.arrival = next.profile.arrival;
+    this.profile.garageBuildings = next.profile.garageBuildings;
+
+    for (const slot of this.profile.slots.slice(this.parking.slots.length)) {
+      this.parking.slots.push(structuredClone(slot));
+    }
+
+    this.network.update(next.layout, next.roads);
+    this.traffic.setJunctions(this.network.junctions());
+    this.currentDefinition = {...next, profile: structuredClone(this.profile)};
+    this.terminal =
+      this.profile.facilities[next.entries[0]?.terminalFacilityId ?? -1] ??
+      null;
+
+    if (this.busVehicleId === null && this.terminal && this.profile.arrival) {
+      this.busVehicleId = this.traffic.addCar({length: 4.2, width: 1.9});
+    }
+
+    this.population.assignJobs(this.day, this.seconds);
+    this.population.treasury -= cost;
+  }
+
   get day(): number {
-    return Math.floor((INITIAL_MINUTE + this.seconds / MINUTE_SECONDS) / 1440);
+    return Math.floor(
+      (this.startingMinute + this.seconds / this.secondsPerMinute) / 1440,
+    );
   }
 
   get minute(): number {
-    return (INITIAL_MINUTE + this.seconds / MINUTE_SECONDS) % 1440;
+    return (this.startingMinute + this.seconds / this.secondsPerMinute) % 1440;
   }
 
   private atMinute(minute: number, day = this.day): number {
-    return (day * 1440 + minute - INITIAL_MINUTE) * MINUTE_SECONDS;
+    return (day * 1440 + minute - this.startingMinute) * this.secondsPerMinute;
   }
 
   advance(seconds: number): void {
@@ -178,7 +451,12 @@ export class CityLife {
         lifeCarKit(this.profile.seed, car.id, car.tier),
       );
 
-      if (id !== CAR_OFFSET + car.id) {
+      const expected =
+        this.definition.kind === 'authored' ? id : CAR_OFFSET + car.id;
+
+      this.carVehicleIds.push(id);
+
+      if (id !== expected) {
         throw new Error('Vehicle identity mismatch');
       }
 
@@ -252,7 +530,20 @@ export class CityLife {
   ): void {
     const family = this.population.families[p.family]!;
     const from = this.accessAt(p);
-    const walk = this.network.walk(from, destination.access);
+    let walk;
+
+    try {
+      walk = this.network.walk(from, destination.access);
+    } catch (error) {
+      if (error instanceof NoNativeRoute) {
+        p.nextAt = this.seconds + 3;
+
+        return;
+      }
+
+      throw error;
+    }
+
     const walkingTime = pathLength(walk) / WALK_SPEED;
     let best:
       | {
@@ -279,7 +570,7 @@ export class CityLife {
 
         const slot = this.parking.slots[car.slot]!;
         const originFacility = this.profile.facilities[slot.facility]!;
-        const fromCar = parkingWalkAccess(this.network, originFacility, slot);
+        const fromCar = this.walkParking(originFacility, slot);
         const toCarSeconds =
           pathLength(this.network.walk(from, fromCar)) / WALK_SPEED;
 
@@ -288,10 +579,21 @@ export class CityLife {
             continue;
           }
 
-          const drive = this.network.drive(
-            departureAccess(originFacility, slot, this.network.roads),
-            f.road,
-          );
+          let drive;
+
+          try {
+            drive = this.network.drive(
+              this.departure(originFacility, slot),
+              f.road,
+            );
+          } catch (error) {
+            if (error instanceof NoNativeRoute) {
+              continue;
+            }
+
+            throw error;
+          }
+
           const expense = Math.ceil(drive.length * 0.55) + f.fee;
 
           if (family.balance < expense + 160) {
@@ -307,7 +609,7 @@ export class CityLife {
           const tail =
             pathLength(
               this.network.walk(
-                parkingWalkAccess(this.network, f, endSlot),
+                this.walkParking(f, endSlot),
                 destination.access,
               ),
             ) / WALK_SPEED;
@@ -342,7 +644,7 @@ export class CityLife {
         'to-car',
         best.car.id,
         best.facility.id,
-        `Идёт к своей машине. Поездка удобнее: ${Math.ceil(best.cost / MINUTE_SECONDS)} мин, пешком ${Math.ceil(walkingTime / MINUTE_SECONDS)} мин`,
+        `Идёт к своей машине. Поездка удобнее: ${Math.ceil(best.cost / this.secondsPerMinute)} мин, пешком ${Math.ceil(walkingTime / this.secondsPerMinute)} мин`,
       );
     } else {
       const unavailable = family.cars.some(
@@ -358,7 +660,7 @@ export class CityLife {
         'walk',
         null,
         null,
-        `Идёт пешком в «${destination.name}»: ${Math.max(1, Math.ceil(walkingTime / MINUTE_SECONDS))} мин${unavailable ? '. Семейная машина занята' : best ? '. С учётом парковки так удобнее' : ''}`,
+        `Идёт пешком в «${destination.name}»: ${Math.max(1, Math.ceil(walkingTime / this.secondsPerMinute))} мин${unavailable ? '. Семейная машина занята' : best ? '. С учётом парковки так удобнее' : ''}`,
       );
     }
   }
@@ -382,9 +684,9 @@ export class CityLife {
       return;
     }
 
-    const exit = parkingRoute(source, slot, false).route;
+    const exit = this.parkingManoeuvre(source, slot, false).route;
     const road = this.network.drive(
-      departureAccess(source, slot, this.network.roads),
+      this.departure(source, slot),
       destination.road,
     );
     const expense = Math.ceil(road.length * 0.55) + destination.fee;
@@ -394,7 +696,7 @@ export class CityLife {
       car.status = 'parked';
       this.walkStart(
         p,
-        parkingWalkAccess(this.network, source, slot),
+        this.walkParking(source, slot),
         this.population.place(trip.destination).access,
         trip.purpose,
         this.population.place(trip.destination),
@@ -412,7 +714,9 @@ export class CityLife {
       .append(road)
       .route();
 
-    if (!this.traffic.beginTrip(CAR_OFFSET + car.id, route, exit.length)) {
+    if (
+      !this.traffic.beginTrip(this.carVehicleId(car.id), route, exit.length)
+    ) {
       p.nextAt = this.seconds + 0.5;
 
       return;
@@ -469,10 +773,10 @@ export class CityLife {
     } else if (purpose === 'shop') {
       p.activity = 'shop';
       this.population.shop(p, destination, this.seconds);
-      p.nextAt = this.seconds + 12 * MINUTE_SECONDS;
+      p.nextAt = this.seconds + 12 * this.secondsPerMinute;
     } else if (purpose === 'leisure') {
       p.activity = 'leisure';
-      p.nextAt = this.seconds + (25 + (p.id % 30)) * MINUTE_SECONDS;
+      p.nextAt = this.seconds + (25 + (p.id % 30)) * this.secondsPerMinute;
 
       if (destination.kind === 'cafe') {
         const f = this.population.families[p.family]!;
@@ -546,7 +850,9 @@ export class CityLife {
     if (p.activity === 'work') {
       this.population.payWage(
         p,
-        Math.floor((INITIAL_MINUTE + p.workStarted / MINUTE_SECONDS) / 1440),
+        Math.floor(
+          (this.startingMinute + p.workStarted / this.secondsPerMinute) / 1440,
+        ),
         this.seconds,
       );
     }
@@ -564,7 +870,14 @@ export class CityLife {
       p.paidDay !== this.day &&
       this.minute < 15 * 60
     ) {
-      const school = this.profile.places.find(b => b.kind === 'school')!;
+      const school = this.profile.places.find(b => b.kind === 'school');
+
+      if (!school) {
+        p.nextAt = this.seconds + 30;
+
+        return;
+      }
+
       const leave =
         this.atMinute(9 * 60) -
         (distance(home.door, school.door) / WALK_SPEED) * 1.5;
@@ -668,8 +981,8 @@ export class CityLife {
       return;
     }
     if (
-      onRoad(pose, this.network.roads) &&
-      !onRoad(p.position, this.network.roads) &&
+      this.isOnRoad(pose) &&
+      !this.isOnRoad(p.position) &&
       cars.some(car => {
         const x = pose.x - car.x;
         const z = pose.z - car.z;
@@ -686,7 +999,7 @@ export class CityLife {
     p.position = {
       x: pose.x,
       z: pose.z,
-      y: onRoad(pose, this.network.roads) ? 0.88 : (pose.y ?? 1.07),
+      y: this.isOnRoad(pose) ? 0.88 : (pose.y ?? 1.07),
     };
     p.dx = pose.dx;
     p.dz = pose.dz;
@@ -709,7 +1022,7 @@ export class CityLife {
       const p = this.population.people[car.driver]!;
       const trip = p.trip!;
 
-      if (this.traffic.atStop(CAR_OFFSET + car.id) !== 1) {
+      if (this.traffic.atStop(this.carVehicleId(car.id)) !== 1) {
         continue;
       }
 
@@ -748,7 +1061,7 @@ export class CityLife {
           }
           if (
             this.traffic.beginTrip(
-              CAR_OFFSET + car.id,
+              this.carVehicleId(car.id),
               this.network.drive(f.road, next.road),
             )
           ) {
@@ -769,11 +1082,11 @@ export class CityLife {
           continue;
         }
 
-        const manoeuvre = parkingRoute(f, slot, true);
+        const manoeuvre = this.parkingManoeuvre(f, slot, true);
 
         if (
           this.traffic.beginTrip(
-            CAR_OFFSET + car.id,
+            this.carVehicleId(car.id),
             manoeuvre.route,
             manoeuvre.route.length,
           )
@@ -789,7 +1102,7 @@ export class CityLife {
         }
       } else {
         this.parking.park(car.targetSlot!, car.id);
-        this.traffic.park(CAR_OFFSET + car.id);
+        this.traffic.park(this.carVehicleId(car.id));
         car.slot = car.targetSlot;
         car.targetSlot = null;
         car.status = 'parked';
@@ -808,8 +1121,25 @@ export class CityLife {
   }
 
   inviteFamily(): boolean {
-    if (this.bus.phase !== 'idle') {
+    if (
+      this.bus.phase !== 'idle' ||
+      !this.terminal ||
+      !this.profile.arrival ||
+      this.busVehicleId === null
+    ) {
       return false;
+    }
+
+    let route;
+
+    try {
+      route = this.network.drive(this.profile.arrival, this.terminal.road);
+    } catch (error) {
+      if (error instanceof NoNativeRoute) {
+        return false;
+      }
+
+      throw error;
     }
 
     const family = this.population.createFamily(this.seconds, true);
@@ -839,9 +1169,7 @@ export class CityLife {
       };
     }
 
-    const route = this.network.drive(this.profile.arrival, this.terminal.road);
-
-    if (!this.traffic.beginTrip(BUS_INDEX, route)) {
+    if (!this.traffic.beginTrip(this.busVehicleId, route)) {
       throw new Error('Arrival entrance is occupied');
     }
 
@@ -858,6 +1186,10 @@ export class CityLife {
   }
 
   private updateBus(): void {
+    if (this.busVehicleId === null || !this.terminal || !this.profile.arrival) {
+      return;
+    }
+
     const terminal =
       this.bus.terminal === null
         ? this.terminal
@@ -879,19 +1211,21 @@ export class CityLife {
       }
 
       const slot = this.parking.slots[this.bus.slot!]!;
-      const exit = parkingRoute(terminal, slot, false).route;
+      const exit = this.parkingManoeuvre(terminal, slot, false).route;
       const road = this.network.drive(
-        departureAccess(terminal, slot, this.network.roads),
-        roadAccess(
-          {x: this.profile.arrival.point.x, z: -87, y: 0.91},
-          2,
-          this.network.roads,
-        ),
+        this.departure(terminal, slot),
+        this.definition.kind === 'authored'
+          ? this.definition.entries[0]!.exit
+          : roadAccess(
+              {x: this.profile.arrival.point.x, z: -87, y: 0.91},
+              2,
+              this.network.roads,
+            ),
       );
 
       if (
         this.traffic.beginTrip(
-          BUS_INDEX,
+          this.busVehicleId,
           new RouteBuilder(slot.position).append(exit).append(road).route(),
           exit.length,
         )
@@ -902,27 +1236,29 @@ export class CityLife {
 
       return;
     }
-    if (this.traffic.atStop(BUS_INDEX) !== 1) {
+    if (this.traffic.atStop(this.busVehicleId) !== 1) {
       return;
     }
     if (this.bus.phase === 'approach') {
       const slot = this.parking.reserve(terminal.id, -2, -1, '');
-      const entry = slot ? parkingRoute(terminal, slot, true).route : null;
+      const entry = slot
+        ? this.parkingManoeuvre(terminal, slot, true).route
+        : null;
 
       if (
         slot &&
         entry &&
-        this.traffic.beginTrip(BUS_INDEX, entry, entry.length)
+        this.traffic.beginTrip(this.busVehicleId, entry, entry.length)
       ) {
         this.bus.phase = 'parking';
         this.bus.slot = slot.id;
       }
     } else if (this.bus.phase === 'parking') {
       this.parking.park(this.bus.slot!, -2);
-      this.traffic.park(BUS_INDEX);
+      this.traffic.park(this.busVehicleId);
       const family = this.population.families[this.bus.family!]!;
       const slot = this.parking.slots[this.bus.slot!]!;
-      const from = parkingWalkAccess(this.network, terminal, slot);
+      const from = this.walkParking(terminal, slot);
 
       for (const id of family.members) {
         this.walkStart(
@@ -941,7 +1277,7 @@ export class CityLife {
       this.bus.phase = 'unloading';
       this.bus.until = this.seconds + 8;
     } else {
-      this.traffic.park(BUS_INDEX);
+      this.traffic.park(this.busVehicleId);
       this.bus = {
         phase: 'idle',
         family: null,
@@ -953,7 +1289,7 @@ export class CityLife {
   }
 
   private updateRailArrivals(): void {
-    if (!this.expanded) {
+    if (!this.expanded || this.definition.kind === 'authored') {
       return;
     }
 
@@ -1063,6 +1399,20 @@ export class CityLife {
   }
 
   private step(): void {
+    if (
+      this.definition.kind === 'authored' &&
+      this.definition.placements.some(
+        placement =>
+          (placement.readyAt ?? 0) > 0 &&
+          placement.readyAt! <= this.seconds &&
+          !this.population.hasPlace(placement.id),
+      )
+    ) {
+      this.applyDefinitionUpdate(
+        completeAuthoredConstruction(this.definition, this.seconds),
+      );
+    }
+
     this.railway.advance(this.seconds, {
       vehicles: this.traffic.movingPoses(),
       walkers: this.population.people
@@ -1076,7 +1426,7 @@ export class CityLife {
       if (
         car.status === 'parked' ||
         distance(
-          this.traffic.pose(CAR_OFFSET + id),
+          this.traffic.pose(this.carVehicleId(id)),
           this.profile.facilities[facility]!.entrance,
         ) > 12
       ) {
@@ -1134,7 +1484,7 @@ export class CityLife {
 
           this.walkStart(
             p,
-            parkingWalkAccess(this.network, f, slot),
+            this.walkParking(f, slot),
             this.population.place(trip.destination).access,
             trip.purpose,
             this.population.place(trip.destination),
@@ -1154,9 +1504,7 @@ export class CityLife {
     }
 
     this.crossings = this.population.people
-      .filter(
-        p => p.activity === 'walk' && onRoad(p.position, this.network.roads),
-      )
+      .filter(p => p.activity === 'walk' && this.isOnRoad(p.position))
       .map(p => p.position);
     this.traffic.update(this.seconds);
     this.updateCars();
@@ -1231,7 +1579,9 @@ export class CityLife {
           p.trip?.car !== undefined
         ) {
           const pose = this.traffic.pose(
-            p.trip.car === -1 ? BUS_INDEX : CAR_OFFSET + p.trip.car,
+            p.trip.car === -1
+              ? this.busVehicleId!
+              : this.carVehicleId(p.trip.car),
           );
 
           position = pose;
@@ -1262,7 +1612,7 @@ export class CityLife {
       const f = slot ? this.profile.facilities[slot.facility]! : undefined;
       const pose = slot
         ? {...slot.position, dx: Math.sin(slot.yaw), dz: Math.cos(slot.yaw)}
-        : this.traffic.pose(CAR_OFFSET + car.id);
+        : this.traffic.pose(this.carVehicleId(car.id));
       const garage =
         f?.kind === 'underground' ||
         (f?.kind === 'private' &&
@@ -1280,23 +1630,26 @@ export class CityLife {
         tier: car.tier,
       };
     });
-    const positions = Array.from({length: AMBIENT_VEHICLES + 4}, (_, id) =>
-      this.traffic.pose(id),
+    const positions = Array.from(
+      {length: this.definition.kind === 'authored' ? 0 : AMBIENT_VEHICLES + 4},
+      (_, id) => this.traffic.pose(id),
     );
     const busPose =
       this.bus.phase === 'unloading'
         ? {
             ...this.parking.slots[this.bus.slot!]!.position,
             dx: Math.sin(
-              this.profile.facilities[this.bus.terminal ?? this.terminal.id]!
+              this.profile.facilities[this.bus.terminal ?? this.terminal!.id]!
                 .yaw,
             ),
             dz: Math.cos(
-              this.profile.facilities[this.bus.terminal ?? this.terminal.id]!
+              this.profile.facilities[this.bus.terminal ?? this.terminal!.id]!
                 .yaw,
             ),
           }
-        : this.traffic.pose(BUS_INDEX);
+        : this.busVehicleId === null
+          ? {x: 0, z: 0, dx: 1, dz: 0, y: 0.91}
+          : this.traffic.pose(this.busVehicleId);
 
     return {
       seconds: this.seconds,
@@ -1339,15 +1692,48 @@ export class CityLife {
         .filter(p => p.activity !== 'dead')
         .map(({id, name, family}) => ({id, name, family})),
       selected: selected === null ? null : this.details(selected),
-      harbor: this.harbor.snapshot(this.seconds, positions),
-      harborStatus: this.harbor.status(),
+      harbor:
+        this.definition.kind === 'authored'
+          ? {
+              ...this.harbor.snapshot(this.seconds, positions),
+              ship: {
+                ...this.harbor.snapshot(this.seconds, positions).ship,
+                visible: false,
+              },
+              status: {...this.harbor.status(), freightTrucks: 0},
+            }
+          : this.harbor.snapshot(this.seconds, positions),
+      harborStatus:
+        this.definition.kind === 'authored'
+          ? {...this.harbor.status(), freightTrucks: 0}
+          : this.harbor.status(),
       railway: this.railway.snapshot(),
       railwayStatus: this.railway.status(),
+      ...(this.definition.kind === 'authored'
+        ? {
+            treasury: this.population.treasury,
+            construction: Object.fromEntries(
+              this.definition.placements
+                .filter(placement => (placement.readyAt ?? 0) > 0)
+                .map(placement => [
+                  placement.id,
+                  Math.max(
+                    0,
+                    Math.min(
+                      1,
+                      (this.seconds - (placement.startedAt ?? 0)) /
+                        (placement.readyAt! - (placement.startedAt ?? 0)),
+                    ),
+                  ),
+                ]),
+            ),
+          }
+        : {}),
     };
   }
 
   save() {
-    return {
+    const snapshot = {
       version: 2 as const,
       expanded: this.expanded,
       railway: this.railway.save(),
@@ -1366,14 +1752,29 @@ export class CityLife {
       traffic: this.traffic.save(),
       harbor: this.harbor.save(),
     };
+
+    if (this.definition.kind === 'authored') {
+      return {
+        ...snapshot,
+        version: 3 as const,
+        definition: structuredClone(this.definition),
+        vehicleIds: {cars: [...this.carVehicleIds], bus: this.busVehicleId},
+        junctionKeys:
+          this.network instanceof RegionRouting
+            ? this.network.savedJunctionKeys()
+            : [],
+      };
+    }
+
+    return snapshot;
   }
 
-  static fromSave(value: unknown): CityLife {
+  static fromSave(value: unknown, definition?: CityWorldDefinition): CityLife {
     const input = value as CurrentSave | LegacySave;
 
     if (
       !input ||
-      (input.version !== 1 && input.version !== 2) ||
+      (input.version !== 1 && input.version !== 2 && input.version !== 3) ||
       typeof input.seed !== 'string' ||
       !Number.isInteger(input.tick) ||
       input.tick < 0 ||
@@ -1383,11 +1784,42 @@ export class CityLife {
       throw new Error('Некорректное сохранение города');
     }
 
+    const savedDefinition =
+      input.version === 3 ? parseWorldDefinition(input.definition) : definition;
+
+    if (savedDefinition && savedDefinition.seed !== input.seed) {
+      throw new Error('Ключ описания не совпадает с сохранением');
+    }
+    if (input.version === 3 && savedDefinition?.kind !== 'authored') {
+      throw new Error('Сохранение не содержит авторский мир');
+    }
+
+    const expanded = input.version === 1 || input.expanded;
+
+    if (definition && definition.seed !== input.seed) {
+      throw new Error('Ключ описания не совпадает с сохранённым миром');
+    }
+    if (definition && definition.expanded !== expanded) {
+      throw new Error('Описание относится к другой планировке города');
+    }
+
     const world = new CityLife(
-      input.seed,
+      savedDefinition ?? input.seed,
       0,
-      input.version === 1 || input.expanded,
+      expanded,
+      undefined,
+      input.version === 3,
     );
+
+    if (input.version === 3 && world.network instanceof RegionRouting) {
+      world.network.update(
+        world.profile.layout,
+        input.definition.roads,
+        input.junctionKeys,
+      );
+      world.traffic.setJunctions(world.network.junctions());
+    }
+
     const s = input.version === 1 ? migrateLegacySave(input, world) : input;
 
     if (s.parking.length !== world.parking.slots.length) {
@@ -1400,7 +1832,35 @@ export class CityLife {
       world.parking.slots.length,
       ...structuredClone(s.parking),
     );
-    world.syncCars();
+
+    if (s.version === 3) {
+      const ids = [
+        ...s.vehicleIds.cars,
+        ...(s.vehicleIds.bus === null ? [] : [s.vehicleIds.bus]),
+      ];
+
+      if (
+        s.vehicleIds.cars.length !== world.population.cars.length ||
+        new Set(ids).size !== ids.length ||
+        ids.some(
+          id =>
+            !Number.isInteger(id) || id < 0 || id >= s.traffic.vehicles.length,
+        )
+      ) {
+        throw new Error('Изменились идентичности транспорта');
+      }
+
+      world.carVehicleIds.splice(
+        0,
+        world.carVehicleIds.length,
+        ...s.vehicleIds.cars,
+      );
+      world.busVehicleId = s.vehicleIds.bus;
+      world.carsAdded = s.carsAdded;
+    } else {
+      world.syncCars();
+    }
+
     world.traffic.restore(s.traffic);
     world.harbor.restore(s.harbor);
     world.tick = s.tick;
@@ -1440,14 +1900,17 @@ export class CityLife {
 }
 
 type CurrentSave = ReturnType<CityLife['save']>;
+type PrototypeSave = Extract<CurrentSave, {version: 2}>;
 type LegacySave = Omit<
-  CurrentSave,
+  PrototypeSave,
   'version' | 'expanded' | 'railway' | 'railArrival'
 > & {version: 1};
 
 /** Spatial identities survive map growth; numeric parking and junction slots do not. */
-function migrateLegacySave(saved: LegacySave, world: CityLife): CurrentSave {
-  const legacy = createLifeProfile(generateCity(saved.seed, false));
+function migrateLegacySave(saved: LegacySave, world: CityLife): PrototypeSave {
+  const legacy = createLifeProfile(
+    createPrototypeDefinition(saved.seed, false).layout,
+  );
 
   if (saved.parking.length !== legacy.slots.length) {
     throw new Error(
@@ -1555,8 +2018,8 @@ function migrateLegacySave(saved: LegacySave, world: CityLife): CurrentSave {
           .filter(f => f.kind === 'street' && f.road.direction === 1)
           .sort(
             (a, b) =>
-              distance(a.road.point, legacy.arrival.point) -
-              distance(b.road.point, legacy.arrival.point),
+              distance(a.road.point, legacy.arrival!.point) -
+              distance(b.road.point, legacy.arrival!.point),
           )[0]!.id
       : saved.parking[saved.bus.slot]!.facility;
   const railway = new Railway(saved.tick * STEP, true, world.network.roads);

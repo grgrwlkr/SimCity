@@ -1,6 +1,7 @@
 import type {LifeFrame} from './types';
 import type {LifeCommand} from './protocol';
 import type {CityLife} from './world';
+import type {CityWorldDefinition} from './definition';
 
 type Save = ReturnType<CityLife['save']>;
 type Request = LifeCommand extends infer C
@@ -13,6 +14,7 @@ interface Response {
   frame: LifeFrame;
   save?: Save;
   error?: string;
+  definition?: CityWorldDefinition;
 }
 
 /** One outstanding motion request bounds the queue when the simulation runs slower than rendering. */
@@ -29,12 +31,14 @@ export class LifeClient {
   private accumulated = 0;
   private alive = true;
   frame: LifeFrame | null = null;
+  definition: CityWorldDefinition | null = null;
   readonly ready: Promise<void>;
 
   constructor(
     seed: string,
     changed: (frame: LifeFrame) => void,
     private failed: (message: string) => void,
+    definition?: CityWorldDefinition,
   ) {
     this.worker.onmessage = (event: MessageEvent<Response>) => {
       if (!this.alive) {
@@ -50,6 +54,10 @@ export class LifeClient {
         pending?.reject(new Error(response.error));
 
         return;
+      }
+
+      if (response.definition) {
+        this.definition = response.definition;
       }
 
       this.frame = response.frame;
@@ -71,7 +79,11 @@ export class LifeClient {
       this.pending.clear();
     };
 
-    this.ready = this.request({type: 'init', seed}).then(() => undefined);
+    this.ready = this.request({
+      type: 'init',
+      seed,
+      ...(definition ? {definition} : {}),
+    }).then(() => undefined);
     void this.ready.catch((error: Error) => {
       if (this.alive) {
         this.failed(error.message);
@@ -132,8 +144,25 @@ export class LifeClient {
     return (await this.request({type: 'save'})).save!;
   }
 
-  async load(value: unknown): Promise<void> {
-    await this.request({type: 'load', value});
+  async load(value: unknown, definition?: CityWorldDefinition): Promise<void> {
+    await this.request({
+      type: 'load',
+      value,
+      ...(definition ? {definition} : {}),
+    });
+  }
+
+  async updateDefinition(
+    definition: CityWorldDefinition,
+    cost = 0,
+  ): Promise<CityWorldDefinition> {
+    const response = await this.request({type: 'edit', definition, cost});
+
+    if (!response.definition) {
+      throw new Error('Изменённый мир не вернул своё описание.');
+    }
+
+    return response.definition;
   }
 
   dispose(): void {

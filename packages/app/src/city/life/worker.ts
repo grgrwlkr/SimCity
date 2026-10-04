@@ -10,7 +10,14 @@ self.onmessage = (event: MessageEvent<LifeCommand>) => {
 
   try {
     if (command.type === 'init') {
-      world = new CityLife(command.seed);
+      world = command.definition
+        ? CityLife.fromDefinition(command.definition)
+        : new CityLife(command.seed);
+
+      if (world.profile.seed !== command.seed) {
+        throw new Error('Ключ описания не совпадает с командой');
+      }
+
       selected = null;
     }
     if (!world) {
@@ -19,11 +26,14 @@ self.onmessage = (event: MessageEvent<LifeCommand>) => {
     if (command.type === 'advance') {
       world.advance(command.seconds);
     }
+    if (command.type === 'edit') {
+      world.applyDefinitionUpdate(command.definition, command.cost);
+    }
     if (command.type === 'inspect') {
       selected = command.person;
     }
     if (command.type === 'load') {
-      world = CityLife.fromSave(command.value);
+      world = CityLife.fromSave(command.value, command.definition);
       selected = null;
     }
     if (command.type === 'invite') {
@@ -34,6 +44,9 @@ self.onmessage = (event: MessageEvent<LifeCommand>) => {
       id: command.id,
       frame: world.frame(selected),
       ...(command.type === 'save' ? {save: world.save()} : {}),
+      ...(['init', 'edit', 'load'].includes(command.type)
+        ? {definition: world.definition}
+        : {}),
     });
   } catch (error) {
     self.postMessage({

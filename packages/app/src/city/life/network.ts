@@ -8,6 +8,7 @@ import type {
   PlannedDrive,
   Point,
   RoadAccess,
+  GridRoadAccess,
   WalkAccess,
 } from './types';
 import {CURB_PARKING, streetParkingSegments} from './streetParking';
@@ -199,7 +200,7 @@ export function roadAccess(
   p: Point,
   direction: number,
   roads = CITY_ROAD_CENTERS,
-): RoadAccess {
+): GridRoadAccess {
   const d = DIRECTIONS[direction]!;
   const r = rightOf(direction);
   const origin = roads[0]!;
@@ -387,6 +388,10 @@ export class LifeNetwork {
   }
 
   walk(from: WalkAccess, to: WalkAccess): Point[] {
+    if ('kind' in from || 'kind' in to) {
+      throw new Error('Graph access requires authored routing');
+    }
+
     if (same(from.point, to.point)) {
       return [from.point];
     }
@@ -456,6 +461,10 @@ export class LifeNetwork {
   }
 
   drive(from: RoadAccess, to: RoadAccess): LaneRoute {
+    if ('kind' in from || 'kind' in to) {
+      throw new Error('Graph access requires authored routing');
+    }
+
     const roads = this.roads;
     const width = roads.length;
     const key = JSON.stringify([from, to]);
@@ -630,8 +639,10 @@ function buildingAccess(
   ]);
 }
 
-export function createLifeProfile(layout: CityLayout): LifeProfile {
-  const network = new LifeNetwork(layout);
+export function createLifeProfile(
+  layout: CityLayout,
+  network = new LifeNetwork(layout),
+): LifeProfile {
   const roads = network.roads;
   const profile: LifeProfile = {
     seed: layout.seed,

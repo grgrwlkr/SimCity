@@ -8,18 +8,38 @@ export interface Point {
   z: number;
   y?: number;
 }
-export interface WalkAccess {
+export interface GridWalkAccess {
   point: Point;
   chain: Point[];
   a: number;
   b: number;
 }
-export interface RoadAccess {
+export interface GraphWalkAccess {
+  kind: 'graph';
+  point: Point;
+  chain: Point[];
+  roadId: string;
+  segment: number;
+  offset: number;
+  side: 1 | -1;
+}
+export type WalkAccess = GridWalkAccess | GraphWalkAccess;
+
+export interface GridRoadAccess {
   point: Point;
   direction: number;
   nextColumn: number;
   nextRow: number;
 }
+export interface GraphRoadAccess {
+  kind: 'graph';
+  point: Point;
+  roadId: string;
+  segment: number;
+  offset: number;
+  direction: 1 | -1;
+}
+export type RoadAccess = GridRoadAccess | GraphRoadAccess;
 export type PlaceKind =
   | 'home'
   | 'office'
@@ -44,6 +64,7 @@ export interface LifePlace {
   education: number;
   open: number;
   close: number;
+  municipalityId?: string;
 }
 export type ParkingKind = 'private' | 'street' | 'underground';
 export interface ParkingFacility {
@@ -59,6 +80,7 @@ export interface ParkingFacility {
   residentsOnly: boolean;
   fee: number;
   slots: number[];
+  key?: string;
 }
 export interface ParkingSlot {
   id: number;
@@ -70,6 +92,7 @@ export interface ParkingSlot {
   household: number | null;
   occupant: number | null;
   reserved: number | null;
+  key?: string;
 }
 export interface StreetBay {
   x: number;
@@ -87,7 +110,7 @@ export interface LifeProfile {
   slots: ParkingSlot[];
   bays: StreetBay[];
   garageBuildings: Record<string, number>;
-  arrival: RoadAccess;
+  arrival: RoadAccess | null;
 }
 export interface HousingUnit {
   id: number;
@@ -97,6 +120,7 @@ export interface HousingUnit {
   rent: number;
   tenant: number | null;
   owner: number | null;
+  retired?: boolean;
 }
 export interface LifeEvent {
   at: number;
@@ -219,6 +243,8 @@ export interface CitizenDetails {
   next: string;
 }
 export interface LifeFrame {
+  treasury?: number;
+  construction?: Record<string, number>;
   seconds: number;
   day: number;
   minute: number;
