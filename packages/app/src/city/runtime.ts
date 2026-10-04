@@ -55,6 +55,7 @@ export interface CityRuntime {
     cost?: number,
   ): Promise<void>;
   viewRegion(): void;
+  inspectInfrastructure(kind: 'port' | 'railway', id: string): void;
   focus(point: {x: number; z: number}, zoom?: number): void;
   setOverlay(overlay: THREE.Object3D | null): void;
   groundPoint(clientX: number, clientY: number): {x: number; z: number} | null;
@@ -167,6 +168,8 @@ export function createCityRuntime(
   const motionPreference = matchMedia('(prefers-reduced-motion: reduce)');
   let paused = motionPreference.matches;
   let night = false;
+  let inspectedPort: string | null = null;
+  let inspectedRailway: string | null = null;
   let definition =
     options.definition ??
     createPrototypeDefinition(
@@ -760,7 +763,14 @@ export function createCityRuntime(
           raycaster.intersectObjects(city?.railwayTargets ?? [], false).length
         ) {
           selectBuilding(undefined);
+          const id: unknown = raycaster.intersectObjects(
+            city?.railwayTargets ?? [],
+            false,
+          )[0]?.object.userData['infrastructureId'];
+
+          inspectedRailway = typeof id === 'string' ? id : null;
           markDistrict('railway');
+          syncRailwayStatus();
           pointers.delete(event.pointerId);
 
           return;
@@ -833,6 +843,29 @@ export function createCityRuntime(
     {signal: lifetime.signal},
   );
 
+  function syncRailwayStatus(): void {
+    if (!frame) {
+      return;
+    }
+
+    const chosen = frame.railways?.find(item => item.id === inspectedRailway);
+    const railway = chosen?.status ?? frame.railwayStatus;
+    const labels = {
+      away: 'Ожидаем поезд',
+      arriving: 'Поезд прибывает',
+      boarding: 'Высадка пассажиров',
+      leaving: 'Поезд отправляется',
+    };
+
+    element('railway-activity').textContent = labels[railway.phase];
+    element('railway-arrivals').textContent = String(railway.arrivals);
+    element('railway-departures').textContent = String(railway.departures);
+    element('railway-passengers').textContent = String(railway.passengers);
+    element('railway-gates').textContent =
+      `${railway.crossingsClosed} / ${(chosen?.snapshot ?? frame.railway).crossings.length}`;
+    element('railway-panel').dataset['phase'] = railway.phase;
+  }
+
   function receiveFrame(nextFrame: LifeFrame): void {
     if (loadingLayout) {
       deferredFrame = nextFrame;
@@ -860,21 +893,7 @@ export function createCityRuntime(
     lifeView!.update(frame);
     parkingView!.update(frame);
     lifePanel!.update(frame);
-    const railway = frame.railwayStatus;
-    const labels = {
-      away: 'Ожидаем поезд',
-      arriving: 'Поезд прибывает',
-      boarding: 'Высадка пассажиров',
-      leaving: 'Поезд отправляется',
-    };
-
-    element('railway-activity').textContent = labels[railway.phase];
-    element('railway-arrivals').textContent = String(railway.arrivals);
-    element('railway-departures').textContent = String(railway.departures);
-    element('railway-passengers').textContent = String(railway.passengers);
-    element('railway-gates').textContent =
-      `${railway.crossingsClosed} / ${frame.railway.crossings.length}`;
-    element('railway-panel').dataset['phase'] = railway.phase;
+    syncRailwayStatus();
     element('object-count').textContent =
       `${layout.buildings.length} зданий · ${frame.population} жителей · ${frame.families} семей`;
     canvas.dataset['lifeReady'] = 'true';
@@ -1367,7 +1386,9 @@ export function createCityRuntime(
     host.classList.toggle('is-close', camera.zoom > 1.2);
 
     if (city) {
-      const status = city.harborStatus();
+      const status =
+        frame?.ports?.find(item => item.id === inspectedPort)?.snapshot
+          .status ?? city.harborStatus();
       const signature = JSON.stringify(status);
 
       if (signature !== lastHarborStatus) {
@@ -1479,6 +1500,18 @@ export function createCityRuntime(
       }
     },
     viewRegion: overviewRegion,
+    inspectInfrastructure(kind, id) {
+      if (kind === 'port') {
+        inspectedPort = id;
+        element('harbor-panel').dataset['infrastructureId'] = id;
+        markDistrict('harbor');
+      } else {
+        inspectedRailway = id;
+        element('railway-panel').dataset['infrastructureId'] = id;
+        markDistrict('railway');
+        syncRailwayStatus();
+      }
+    },
     focus(point, zoom = 2) {
       stopOrbit();
       following = false;

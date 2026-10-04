@@ -12,7 +12,10 @@ import {
   nativeRailwayFootprint,
   nativeRailwayAccessRoads,
 } from '../city/life/nativeInfrastructure';
-import {nativePortPlacementError} from '../city/nativePortNavigation';
+import {
+  nativePortPlacementError,
+  nativePortNavigation,
+} from '../city/nativePortNavigation';
 import type {PlaceKind} from '../city/life/types';
 import {generateTerrain} from '../region/model/terrain';
 import {
@@ -377,6 +380,12 @@ export function applyNativeEdit(
         throw new Error(error);
       }
 
+      const navigation = nativePortNavigation(document.terrain, port);
+
+      if (!navigation) {
+        throw new Error('Нет водного пути до границы региона.');
+      }
+
       assertLand(document, nativePortFootprint(port).land);
       const infrastructure = document.infrastructure ?? {
         ports: [],
@@ -388,7 +397,7 @@ export function applyNativeEdit(
         roads: [...document.roads, ...nativePortRoads(port)],
         infrastructure: {
           ...infrastructure,
-          ports: [...infrastructure.ports, port],
+          ports: [...infrastructure.ports, {...port, navigation}],
         },
       };
       cost = 200000;
@@ -625,6 +634,19 @@ const savedDocument = z.object({
           yaw: z.number().finite(),
           source: savedPoint.optional(),
           warehouseBuildingIds: z.array(z.string()),
+          navigation: z
+            .object({
+              speed: z.number().positive(),
+              arrivals: z.tuple([
+                z.array(savedPoint).min(2),
+                z.array(savedPoint).min(2),
+              ]),
+              departures: z.tuple([
+                z.array(savedPoint).min(2),
+                z.array(savedPoint).min(2),
+              ]),
+            })
+            .optional(),
         }),
       ),
       railways: z.array(
@@ -748,10 +770,13 @@ export function readNativeRegionDocument(
     ...(infrastructure
       ? {
           infrastructure: {
-            ports: infrastructure.ports.map(({source, ...port}) => ({
-              ...port,
-              ...(source ? {source} : {}),
-            })),
+            ports: infrastructure.ports.map(
+              ({source, navigation, ...port}) => ({
+                ...port,
+                ...(source ? {source} : {}),
+                ...(navigation ? {navigation} : {}),
+              }),
+            ),
             railways: infrastructure.railways.map(({source, ...railway}) => ({
               ...railway,
               ...(source ? {source} : {}),

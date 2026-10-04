@@ -3,6 +3,7 @@ import type {CityRuntime} from '../city/runtime';
 import {createTownHallView} from '../region/view/townHallView';
 import {createTerritoryView} from '../region/view/territoryView';
 import {cityRadius, townHallLevel} from '../region/model/territory';
+import {TOWN_HALL_LEVELS} from '../region/model/rules';
 import {nearestRoadAccess} from '../region/model/roads';
 import {distance, pointInPolygon, rectangle} from '../region/model/geometry';
 import {
@@ -220,12 +221,27 @@ export class NativeRegionEditor {
     const road = nearestRoadAccess(this.document.roads, point, 8);
 
     switch (this.tool) {
-      case 'select':
+      case 'select': {
+        const port = this.document.infrastructure?.ports.find(
+          port =>
+            pointInPolygon(point, nativePortFootprint(port).land) ||
+            pointInPolygon(point, nativePortFootprint(port).quay),
+        );
+        const railway = this.document.infrastructure?.railways.find(railway =>
+          pointInPolygon(point, nativeRailwayFootprint(railway)),
+        );
+
         if (town) {
           this.openTown(town.id);
+        } else if (port) {
+          this.options.runtime.inspectInfrastructure('port', port.id);
+        } else if (railway) {
+          this.options.runtime.inspectInfrastructure('railway', railway.id);
         }
 
         return;
+      }
+
       case 'found':
         this.submit({
           type: 'found',
@@ -435,8 +451,6 @@ export class NativeRegionEditor {
     this.panel.querySelector('#native-town-radius')!.textContent = town
       ? `Ратуша ${townHallLevel(town)} · радиус ${cityRadius(town)} м`
       : '';
-    this.panel.querySelector('#native-hall-upgrade')!.textContent =
-      'Новый уровень требует готовых кварталов и средств региона.';
     this.clearOverlay();
     this.overlay = new THREE.Group();
 
@@ -455,6 +469,20 @@ export class NativeRegionEditor {
   }
 
   update(population?: number): void {
+    const town = this.document.settlements.find(
+      item => item.id === this.activeTown,
+    );
+    const next = town ? TOWN_HALL_LEVELS[townHallLevel(town)] : undefined;
+    const {seconds} = this.options.state();
+    const ready = this.document.blocks.filter(
+      block =>
+        block.municipalityId === town?.id &&
+        seconds >= block.startedAt + block.duration,
+    ).length;
+
+    this.panel.querySelector('#native-hall-upgrade')!.textContent = next
+      ? `Радиус ${next.radius} м · ${next.cost.toLocaleString('ru-RU')} ◈. Готовые кварталы: ${ready} / ${next.requiredParcels}.`
+      : 'Ратуша достигла последнего уровня.';
     const state = this.options.state();
 
     this.panel.querySelector('#native-region-budget')!.textContent =

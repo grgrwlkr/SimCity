@@ -3,10 +3,39 @@ import {generateCity} from '../src/city/generator';
 import {
   applyNativeEdit,
   createNativeRegionDocument,
+  readNativeRegionDocument,
 } from '../src/game/regionDocument';
+import {compileNativeRegion} from '../src/game/compileRegion';
+import {nativePortNavigation} from '../src/city/nativePortNavigation';
 import {townHallRoadPoints} from '../src/region/model/townHall';
 
 describe('native region document', () => {
+  it('keeps the validated whole-ship boundary route through document and world JSON', () => {
+    const initial = createNativeRegionDocument('world', '689856');
+    const placed = applyNativeEdit(
+      initial,
+      {
+        type: 'port',
+        center: {x: 1571.3997225421572, z: -176.83003340676078},
+        yaw: Math.PI * 1.5,
+      },
+      1000000,
+      0,
+    ).document;
+    const port = placed.infrastructure!.ports[0]!;
+    const route = nativePortNavigation(initial.terrain, port);
+
+    expect(route).not.toBeNull();
+    expect(port.navigation).toEqual(route);
+    const restored = readNativeRegionDocument(
+      JSON.parse(JSON.stringify(placed)) as unknown,
+    );
+
+    expect(restored!.infrastructure!.ports[0]!.navigation).toEqual(route);
+    expect(
+      compileNativeRegion(restored!, 0).infrastructure!.ports[0]!.navigation,
+    ).toEqual(route);
+  });
   it('founds a hall with its road and removes both atomically', () => {
     const initial = createNativeRegionDocument('world', '689856');
     const result = applyNativeEdit(
@@ -100,6 +129,49 @@ describe('native region document', () => {
         100,
       ),
     ).toThrow('готовых');
+  });
+  it('expands a hall only after eight full blocks finish and the upgrade is paid', () => {
+    let document = applyNativeEdit(
+      createNativeRegionDocument('world', '689856'),
+      {type: 'found', center: {x: -600, z: 0}, name: 'Первый'},
+      1000000,
+      0,
+    ).document;
+    const settlementId = document.settlements[0]!.id;
+
+    for (const z of [90, 130]) {
+      for (const x of [-680, -640, -600, -560]) {
+        document = applyNativeEdit(
+          document,
+          {
+            type: 'block',
+            center: {x, z},
+            settlementId,
+            district: 'residential',
+          },
+          1000000,
+          0,
+        ).document;
+      }
+    }
+
+    expect(() =>
+      applyNativeEdit(document, {type: 'upgrade', settlementId}, 50000, 59),
+    ).toThrow('готовых');
+    expect(() =>
+      applyNativeEdit(document, {type: 'upgrade', settlementId}, 49999, 60),
+    ).toThrow('средств');
+    const upgraded = applyNativeEdit(
+      document,
+      {type: 'upgrade', settlementId},
+      50000,
+      60,
+    );
+
+    expect(upgraded.cost).toBe(50000);
+    expect(upgraded.document.settlements[0]!.townHall!.level).toBe(2);
+    expect(document.settlements[0]!.townHall!.level).toBe(1);
+    expect(upgraded.document.blocks).toEqual(document.blocks);
   });
   it('rounds ray-picked diagonal road prices to whole game currency', () => {
     const initial = createNativeRegionDocument('world', '689856');
