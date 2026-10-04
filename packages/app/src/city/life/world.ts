@@ -2428,6 +2428,10 @@ export class CityLife {
     world.dayDone = s.dayDone;
     world.carsAdded = s.carsAdded;
     world.nextImmigration = s.nextImmigration;
+    world.lastArrivalBlock =
+      definition?.kind === 'authored' && world.population.nextHome() === null
+        ? 'нет свободного жилья'
+        : null;
     world.nextAssets = s.nextAssets;
     world.bus = structuredClone(s.bus);
     world.railway.restore(s.railway);

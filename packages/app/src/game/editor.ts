@@ -511,13 +511,18 @@ export class NativeRegionEditor {
       const names = new Map(
         this.document.settlements.map(item => [item.id, item.name]),
       );
+
+      for (const port of this.document.infrastructure?.ports ?? []) {
+        names.set(port.id, 'Порт');
+      }
+
       const list = this.panel.querySelector('#native-town-growth')!;
 
       list.replaceChildren(
         ...Object.entries(growth.towns).map(([municipalityId, facts]) => {
           const item = document.createElement('li');
 
-          item.textContent = `${names.get(municipalityId) ?? municipalityId}: жителей ${facts.residents} · семей ${facts.families} · свободное жильё ${facts.freeHousing} · места работы ${facts.freeJobs}`;
+          item.textContent = `${names.get(municipalityId) ?? 'Вне городов'}: жителей ${facts.residents} · семей ${facts.families} · свободное жильё ${facts.freeHousing} · места работы ${facts.freeJobs}`;
 
           return item;
         }),
