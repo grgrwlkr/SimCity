@@ -24,7 +24,7 @@ export interface LifeActions {
   parking(on: boolean): void;
   speed(value: number): void;
   save(): Promise<void>;
-  load(): Promise<void>;
+  load(): Promise<void | boolean>;
 }
 export class LifePanel {
   readonly root = document.createElement('div');
@@ -39,12 +39,13 @@ export class LifePanel {
   constructor(
     private profile: LifeProfile,
     private actions: LifeActions,
+    private host: HTMLElement = document.querySelector('main')!,
   ) {
     this.root.className = 'life-interface';
     this.root.innerHTML = `<section class="life-clock" aria-label="Жизнь города"><div class="life-timestamp"><strong id="life-time">07:30</strong><span id="life-day">День 1 · Пн</span></div><div class="life-speeds" aria-label="Скорость жизни"><button data-speed="1" aria-pressed="true">×1</button><button data-speed="5" aria-pressed="false">×5</button><button data-speed="20" aria-pressed="false">×20</button></div><button id="life-open" aria-expanded="false">Жители <b id="life-count">…</b></button><button id="parking-toggle" aria-pressed="false">P <span>Парковки</span></button></section>
     <section id="residents-panel" class="residents-panel" aria-label="Жители и семьи" hidden><div class="life-heading"><strong>Жители и семьи</strong><button id="life-close" aria-label="Закрыть жителей">×</button></div><p class="life-muted" id="life-summary"></p><label for="resident-select">Чья сегодня история?</label><select id="resident-select" aria-label="Житель города"><option value="">Выберите жителя</option></select><div id="resident-details" hidden><div class="resident-heading"><h2 id="resident-name"></h2><span id="resident-activity"></span></div><p id="resident-destination"></p><p class="life-muted" id="resident-decision"></p><button id="resident-follow" class="build-action" aria-pressed="false">Следовать за жителем</button><dl class="resident-facts"><div><dt>Семейный бюджет</dt><dd id="resident-money"></dd></div><div><dt>Возраст</dt><dd id="resident-age"></dd></div><div><dt>Жильё</dt><dd><button id="resident-home"></button></dd></div><div><dt>Работа</dt><dd id="resident-job"></dd></div></dl><p id="resident-car"></p><h3>Семья</h3><div id="resident-family"></div><h3>События</h3><ol id="resident-events"></ol></div><div class="life-storage"><button id="life-save">Сохранить</button><button id="life-load">Загрузить</button></div><p class="life-muted" id="life-save-status" role="status">Сохранение хранится на этом устройстве.</p></section>
     <section id="parking-panel" class="parking-panel" aria-label="Парковки города" hidden><div class="life-heading"><strong id="parking-title">Парковки города</strong><button id="parking-close" aria-label="Закрыть парковки">×</button></div><p id="parking-count"></p><p id="parking-detail" class="life-muted">Нажмите на место или въезд, чтобы узнать, кому оно доступно.</p><div class="parking-key"><span>● Свободно</span><span>● Занято</span><span>● Манёвр</span></div></section>`;
-    document.querySelector('main')!.append(this.root);
+    this.host.append(this.root);
     this.el('life-open').addEventListener('click', () =>
       this.open(this.el('residents-panel').hidden !== false),
     );
@@ -92,11 +93,13 @@ export class LifePanel {
       this.el(`life-${kind}`).addEventListener('click', () => {
         this.message(kind === 'save' ? 'Сохраняю…' : 'Загружаю…');
         void this.actions[kind]()
-          .then(() =>
+          .then(result =>
             this.message(
               kind === 'save'
                 ? 'Город сохранён на этом устройстве.'
-                : 'Жизнь города восстановлена.',
+                : result === false
+                  ? 'Загрузка отменена.'
+                  : 'Жизнь города восстановлена.',
             ),
           )
           .catch((error: Error) => this.message(error.message));
@@ -140,7 +143,9 @@ export class LifePanel {
   open(value: boolean): void {
     this.el('residents-panel').hidden = !value;
     this.el('life-open').setAttribute('aria-expanded', String(value));
-    document.body.classList.toggle('is-inspecting-life', value);
+    (
+      this.host.closest<HTMLElement>('.native-city') ?? document.body
+    ).classList.toggle('is-inspecting-life', value);
   }
 
   select(id: number | null): void {
@@ -301,6 +306,8 @@ export class LifePanel {
 
   dispose(): void {
     this.root.remove();
-    document.body.classList.remove('is-inspecting-life');
+    (
+      this.host.closest<HTMLElement>('.native-city') ?? document.body
+    ).classList.remove('is-inspecting-life');
   }
 }

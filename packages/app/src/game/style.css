@@ -1,0 +1,30 @@
+#game-shell .game-currency {
+  display: inline-flex;
+  vertical-align: middle;
+}
+#game-shell .game-currency svg {
+  width: 12px;
+  height: 15px;
+}
+#native-load-dialog {
+  color: #29483e;
+  background: #f5f6ef;
+  border: 1px solid #aec1b7;
+  border-radius: 12px;
+  max-width: min(620px, 90vw);
+  padding: 24px;
+}
+#native-load-dialog::backdrop {
+  background: #18382a66;
+}
+#native-load-dialog select {
+  display: block;
+  margin: 12px 0;
+}
+#native-load-dialog button {
+  margin: 8px 8px 0 0;
+  padding: 10px 14px;
+  border: 1px solid #aec1b7;
+  border-radius: 6px;
+  background: #eef3e8;
+}

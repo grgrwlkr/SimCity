@@ -37,6 +37,10 @@ export class LifeClient {
     private failed: (message: string) => void,
   ) {
     this.worker.onmessage = (event: MessageEvent<Response>) => {
+      if (!this.alive) {
+        return;
+      }
+
       const response = event.data;
       const pending = this.pending.get(response.id);
 
@@ -54,6 +58,10 @@ export class LifeClient {
     };
 
     this.worker.onerror = event => {
+      if (!this.alive) {
+        return;
+      }
+
       failed(event.message);
 
       for (const p of this.pending.values()) {
@@ -64,7 +72,11 @@ export class LifeClient {
     };
 
     this.ready = this.request({type: 'init', seed}).then(() => undefined);
-    void this.ready.catch((error: Error) => this.failed(error.message));
+    void this.ready.catch((error: Error) => {
+      if (this.alive) {
+        this.failed(error.message);
+      }
+    });
   }
 
   private request(command: Request): Promise<Response> {
@@ -96,7 +108,11 @@ export class LifeClient {
 
     this.accumulated = 0;
     void this.request({type: 'advance', seconds: amount})
-      .catch((error: Error) => this.failed(error.message))
+      .catch((error: Error) => {
+        if (this.alive) {
+          this.failed(error.message);
+        }
+      })
       .finally(() => {
         this.advancing = false;
       });
@@ -123,7 +139,13 @@ export class LifeClient {
   dispose(): void {
     this.alive = false;
     this.worker.terminate();
+
+    for (const pending of this.pending.values()) {
+      pending.reject(new Error('Город закрыт'));
+    }
+
     this.pending.clear();
+    this.accumulated = 0;
   }
 }
 

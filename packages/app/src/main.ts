@@ -1,8 +1,8 @@
 import './menu.css';
-import type * as RegionRuntime from './region/main';
-import {deleteRegion, listRegions, readRegion} from './region/storage';
-import type {RegionSaveInfo} from './region/storage';
-import {parseRegion} from './region/model/save';
+import type * as GameRuntime from './game/runtime';
+import {deleteGame, listGames, readGame} from './game/storage';
+import type {GameSaveInfo} from './game/storage';
+import {parseGameSave} from './game/save';
 
 function element<T extends HTMLElement>(id: string, type: {new (): T}): T {
   const found = document.getElementById(id);
@@ -28,13 +28,11 @@ const menu = element('main-menu', HTMLElement);
 const gameShell = element('game-shell', HTMLElement);
 const resumeButton = element('resume-region', HTMLButtonElement);
 const shellStatus = element('shell-status', HTMLParagraphElement);
-let runtime: typeof RegionRuntime | null = null;
-let runtimePromise: Promise<typeof RegionRuntime> | null = null;
+let runtime: typeof GameRuntime | null = null;
+let runtimePromise: Promise<typeof GameRuntime> | null = null;
 let transitioning = false;
 
-async function enterGame(
-  start?: (game: typeof RegionRuntime) => Promise<void>,
-) {
+async function enterGame(start?: (game: typeof GameRuntime) => Promise<void>) {
   if (transitioning || deleting) {
     return;
   }
@@ -46,26 +44,27 @@ async function enterGame(
   gameShell.hidden = false;
 
   try {
-    runtimePromise ??= import('./region/main');
+    runtimePromise ??= import('./game/runtime');
     runtime = await runtimePromise;
+    runtime.configureGame({onExit: showMenu});
 
     if (start) {
       await start(runtime);
     }
 
-    runtime.setRegionVisible(true);
+    runtime.setGameVisible(true);
     gameShell.inert = false;
     menu.hidden = true;
     menu.inert = true;
     panel.hidden = true;
     loadButton.setAttribute('aria-expanded', 'false');
     opening = false;
-    document.title = 'Регион — SimCity';
+    document.title = 'Город у воды — SimCity';
   } catch (error) {
     gameShell.hidden = true;
     gameShell.inert = true;
-    runtime?.setRegionVisible(false);
-    resumeButton.hidden = !runtime?.hasRegionGame();
+    runtime?.setGameVisible(false);
+    resumeButton.hidden = !runtime?.hasGame();
     shellStatus.textContent =
       error instanceof Error ? error.message : 'Не удалось открыть регион.';
 
@@ -88,7 +87,7 @@ function showMenu() {
     return;
   }
 
-  runtime?.setRegionVisible(false);
+  runtime?.setGameVisible(false);
   gameShell.hidden = true;
   gameShell.inert = true;
   menu.hidden = false;
@@ -98,7 +97,7 @@ function showMenu() {
   panel.hidden = true;
   panel.removeAttribute('aria-busy');
   loadButton.setAttribute('aria-expanded', 'false');
-  resumeButton.hidden = !runtime?.hasRegionGame();
+  resumeButton.hidden = !runtime?.hasGame();
   shellStatus.textContent = '';
   hint.textContent = 'Enter — создать регион';
   history.replaceState(null, '', '/' + location.hash);
@@ -113,7 +112,7 @@ regionLink.addEventListener('click', event => {
     return;
   }
 
-  enterGame(game => game.createRegionGame('689856')).catch(() => {
+  enterGame(game => game.createGame('689856')).catch(() => {
     opening = false;
   });
 });
@@ -121,10 +120,6 @@ resumeButton.addEventListener('click', () => {
   enterGame().catch(() => {
     opening = false;
   });
-});
-document.querySelector('.region-brand')?.addEventListener('click', event => {
-  event.preventDefault();
-  showMenu();
 });
 
 function closeSaves() {
@@ -141,7 +136,7 @@ function closeSaves() {
   loadButton.focus();
 }
 
-async function openSave(save: RegionSaveInfo) {
+async function openSave(save: GameSaveInfo) {
   if (opening || deleting || transitioning || panel.hidden) {
     return;
   }
@@ -153,7 +148,7 @@ async function openSave(save: RegionSaveInfo) {
   status.textContent = 'Открываем сохранение…';
 
   try {
-    const raw = await readRegion(save.id);
+    const raw = await readGame(save.id);
 
     if (request !== generation) {
       return;
@@ -162,13 +157,13 @@ async function openSave(save: RegionSaveInfo) {
       throw new Error('Сохранение больше не найдено. Обновите список.');
     }
 
-    const state = parseRegion(raw);
+    const state = parseGameSave(raw);
 
     if (state.id !== save.id) {
       throw new Error('ID сохранения не совпадает с регионом');
     }
 
-    await enterGame(game => game.loadRegionGame(raw));
+    await enterGame(game => game.loadGame(raw));
   } catch {
     if (request === generation) {
       status.textContent =
@@ -183,8 +178,8 @@ async function openSave(save: RegionSaveInfo) {
 }
 
 function saveDisambiguation(
-  save: RegionSaveInfo,
-  saves: readonly RegionSaveInfo[],
+  save: GameSaveInfo,
+  saves: readonly GameSaveInfo[],
 ): string {
   const duplicates = saves.filter(
     other => other.name === save.name && other.seed === save.seed,
@@ -210,7 +205,7 @@ function saveDisambiguation(
   return `Сохранение ${save.id.slice(0, length)}`;
 }
 
-async function removeSave(save: RegionSaveInfo, row: HTMLLIElement) {
+async function removeSave(save: GameSaveInfo, row: HTMLLIElement) {
   if (
     opening ||
     deleting ||
@@ -238,7 +233,7 @@ async function removeSave(save: RegionSaveInfo, row: HTMLLIElement) {
   status.textContent = 'Удаляем сохранение…';
 
   try {
-    await deleteRegion(save.id);
+    await deleteGame(save.id);
     row.remove();
     status.textContent = list.children.length
       ? `Сохранение удалено. Осталось: ${list.children.length}.`
@@ -264,8 +259,8 @@ async function removeSave(save: RegionSaveInfo, row: HTMLLIElement) {
 }
 
 function saveRow(
-  save: RegionSaveInfo,
-  saves: readonly RegionSaveInfo[],
+  save: GameSaveInfo,
+  saves: readonly GameSaveInfo[],
 ): HTMLLIElement {
   const row = document.createElement('li');
   const button = document.createElement('button');
@@ -274,12 +269,13 @@ function saveRow(
 
   button.type = 'button';
   button.className = 'save-card';
-  button.disabled = save.seed === null;
+  button.disabled = !save.loadable;
   name.textContent = save.name;
-  detail.textContent =
-    save.seed === null
-      ? 'Недоступно для загрузки'
-      : `Ключ региона: ${save.seed}`;
+  detail.textContent = save.loadable
+    ? `Ключ мира: ${save.seed}`
+    : save.kind === 'legacy-region'
+      ? 'Требуется импорт старого региона'
+      : 'Недоступно для загрузки';
   button.append(name, detail);
 
   const disambiguation = saveDisambiguation(save, saves);
@@ -328,7 +324,7 @@ async function showSaves() {
   status.textContent = 'Читаем сохранения…';
 
   try {
-    const saves = await listRegions();
+    const saves = await listGames();
 
     if (request !== generation) {
       return;
@@ -398,7 +394,7 @@ if (parameters.has('seed') || parameters.has('regionId')) {
 
   enterGame(async game => {
     if (savedId) {
-      const raw = await readRegion(savedId);
+      const raw = await readGame(savedId);
 
       if (raw === null) {
         throw new Error(
@@ -406,15 +402,15 @@ if (parameters.has('seed') || parameters.has('regionId')) {
         );
       }
 
-      const saved = parseRegion(raw);
+      const saved = parseGameSave(raw);
 
       if (saved.id !== savedId) {
         throw new Error('ID сохранения не совпадает с регионом');
       }
 
-      await game.loadRegionGame(raw);
+      await game.loadGame(raw);
     } else {
-      await game.createRegionGame(seed);
+      await game.createGame(seed);
     }
   }).catch(() => {
     opening = false;

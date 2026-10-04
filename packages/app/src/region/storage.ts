@@ -28,7 +28,7 @@ function database(): Promise<IDBDatabase> {
   });
 }
 
-const indexedDBPort: RegionStoragePort = {
+export const indexedDBPort: RegionStoragePort = {
   async put(id, value) {
     const db = await database();
 

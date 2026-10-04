@@ -1,793 +1,795 @@
 @import './base.css';
-#city {
-  display: block;
-  width: 100%;
-  height: 100dvh;
-  touch-action: none;
-  outline-offset: -4px;
-}
-.masthead h1 {
-  font-size: clamp(38px, 4vw, 58px);
-}
-.live-state {
-  margin-top: 17px;
-}
-.district-list {
-  position: absolute;
-  top: 328px;
-  left: 30px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.district-list button {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  border: 0;
-  border-radius: 6px;
-  padding: 9px 10px;
-  background: transparent;
-  font-size: 12px;
-  text-align: left;
-}
-.district-list button:hover {
-  background: #f6f8f27a;
-}
-.district-list button[aria-pressed='true'] {
-  background: #f4f7f0;
-  font-weight: 650;
-}
-.district-list i {
-  width: 9px;
-  height: 9px;
-  border-radius: 2px;
-}
-.dot-all {
-  background: #647d6e;
-}
-.dot-downtown {
-  background: #789aaf;
-}
-.dot-commercial {
-  background: #daaf66;
-}
-.dot-residential {
-  background: #8fae7e;
-}
-.dot-industrial {
-  background: #ac745e;
-}
-.dot-harbor {
-  background: #67a9ac;
-}
-.dot-railway {
-  background: #a66c53;
-}
-.harbor-status {
-  position: absolute;
-  bottom: 164px;
-  left: 30px;
-  width: 230px;
-  padding: 14px;
-  border-radius: 8px;
-  background: #f2f5ed;
-  font-size: 12px;
-}
-.harbor-status strong {
-  font-size: 12px;
-  font-weight: 600;
-}
-.harbor-status dl {
-  margin: 10px 0 0;
-  padding-top: 9px;
-  gap: 30px;
-}
-.harbor-status dd {
-  font-size: 16px;
-}
-.harbor-status p {
-  font-size: 10px;
-  color: #607265;
-  margin: 12px 0 0;
-}
-body.night .harbor-status {
-  background: #293e46;
-}
-body.night .harbor-status p {
-  color: #b2c3b9;
-}
-.seed-form {
-  padding: 15px;
-  background: #f2f5ed;
-  border: 1px solid #fff8;
-  border-radius: 10px;
-  box-shadow: 0 6px 24px #29483e0a;
-}
-.seed-form > label {
-  font-size: 12px;
-  display: block;
-  margin-bottom: 9px;
-}
-.seed-row {
-  display: flex;
-  gap: 6px;
-}
-.seed-row input {
-  width: 100%;
-  min-width: 0;
-  border: 1px solid #becdc2;
-  border-radius: 5px;
-  padding: 9px;
-  color: inherit;
-  font: inherit;
-  font-size: 14px;
-  background: #fff9;
-}
-.seed-row input:focus-visible {
-  outline: 2px solid #ca6c3e;
-  outline-offset: 2px;
-}
-.seed-row button {
-  border: 0;
-  border-radius: 5px;
-  background: #dce7d9;
-  padding: 8px 10px;
-  font-size: 12px;
-}
-#regenerate {
-  display: flex;
-  width: 100%;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 12px;
-  margin-top: 9px;
-  border-radius: 6px;
-  border: 0;
-  background: #2b5846;
-  color: #fff7e5;
-  font-size: 13px;
-}
-#regenerate span {
-  font-size: 22px;
-  line-height: 20px;
-}
-#regenerate:hover {
-  background: #3c6b55;
-}
-.inspector .building-label {
-  margin-top: 18px;
-}
-.inspector #building-info {
-  margin-top: 8px;
-}
-.inspector dl {
-  gap: 16px;
-}
-.inspector dd {
-  font-size: 12px;
-}
-#building-parts {
-  list-style: none;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  padding: 0;
-  margin: 14px 0 0;
-}
-#building-parts li {
-  padding: 4px 6px;
-  border-radius: 4px;
-  font-size: 10px;
-  line-height: 1.35;
-  color: #4f6e5d;
-  background: #e4ebdf;
-}
-body.night #building-parts li {
-  color: #d5dfce;
-  background: #405553;
-}
-#building-info {
-  max-height: calc(100dvh - 310px);
-  overflow-y: auto;
-}
-.view-hint {
-  margin-bottom: 12px;
-}
-body.night .district-list button[aria-pressed='true'],
-body.night .seed-form {
-  background: #293e46;
-  border-color: #52636b;
-}
-body.night .district-list button:hover {
-  background: #3d535c;
-}
-body.night .seed-row input {
-  background: #20333d;
-  border-color: #52636b;
-}
-body.night .seed-row button {
-  background: #465b5f;
-}
-body.night #regenerate {
-  background: #dec98e;
-  color: #243938;
-}
-.is-close .masthead h1,
-.is-close .masthead p,
-.is-close .live-state {
-  visibility: hidden;
-}
-.is-close .brand {
-  padding: 8px 10px;
-  border-radius: 7px;
-  background: #f6f8f2;
-}
-.is-close .district-list {
-  top: 110px;
-  padding: 7px;
-  border-radius: 8px;
-  background: #f2f5ed;
-}
-.is-close .inspector .building-label {
-  display: none;
-}
-.is-close .inspector > select {
-  margin-top: 10px;
-}
-.is-close .view-hint {
-  padding: 7px 10px;
-  border-radius: 7px;
-  background: #f6f8f2;
-}
-body.night.is-close .brand,
-body.night.is-close .district-list,
-body.night.is-close .view-hint {
-  background: #293e46;
-}
-.build-action {
-  border: 0;
-  border-radius: 6px;
-  padding: 11px 12px;
-  color: #fff7e5;
-  background: #2b5846;
-  font-size: 12px;
-}
-#build-selected {
-  width: 100%;
-  margin-top: 17px;
-}
-.construction-panel {
-  position: absolute;
-  top: 35px;
-  right: 32px;
-  width: 292px;
-  padding: 17px 19px;
-  border: 1px solid #fff8;
-  border-radius: 12px;
-  background: #f5f6ef;
-  box-shadow: 0 10px 28px #29483e12;
-}
-.construction-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 5px;
-  font-size: 9px;
-  letter-spacing: 0.1em;
-  color: #607064;
-}
-.construction-heading .icon-button {
-  width: 27px;
-  height: 27px;
-  background: transparent;
-}
-.construction-panel h2 {
-  font-size: 23px;
-  margin: 9px 0 15px;
-}
-.construction-examples {
-  display: flex;
-  gap: 4px;
-  margin-bottom: 23px;
-}
-.construction-examples button {
-  padding: 7px 8px;
-  background: #e4ebdf;
-  font-size: 10px;
-  border: 0;
-  border-radius: 5px;
-}
-.construction-examples button[aria-pressed='true'] {
-  background: #d4dfcb;
-  box-shadow: inset 0 0 0 1px #8ba181;
-}
-.construction-readout {
-  display: flex;
-  justify-content: space-between;
-  gap: 6px;
-  align-items: baseline;
-  font-size: 11px;
-}
-.construction-readout strong {
-  font-weight: 600;
-}
-#construction-height {
-  color: #607064;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-.construction-progress {
-  display: block;
-  margin: 17px 0 14px;
-  font-size: 11px;
-}
-.construction-progress > span {
-  display: flex;
-  justify-content: space-between;
-}
-.construction-progress output {
-  font-variant-numeric: tabular-nums;
-}
-.construction-progress input {
-  display: block;
-  width: 100%;
-  margin: 8px 0 0;
-  height: 22px;
-  accent-color: #547854;
-  cursor: pointer;
-}
-.construction-actions {
-  display: flex;
-  gap: 6px;
-}
-.construction-actions .build-action {
-  flex: 1;
-  padding: 10px 5px;
-}
-#construction-replay {
-  display: grid;
-  place-items: center;
-  width: 38px;
-  border: 0;
-  border-radius: 6px;
-  background: #e4ebdf;
-}
-.construction-panel p {
-  margin: 12px 0 0;
-  font-size: 10px;
-  line-height: 1.5;
-  color: #607064;
-}
-.is-building .inspector {
-  visibility: hidden;
-}
-.is-building .view-hint {
-  visibility: hidden;
-}
-body.night .construction-panel {
-  background: #293e46;
-  border-color: #52636b;
-}
-body.night .construction-panel p,
-body.night .construction-heading,
-body.night #construction-height {
-  color: #b2c3b9;
-}
-body.night .build-action {
-  color: #243938;
-  background: #dec98e;
-}
-body.night .construction-examples button,
-body.night #construction-replay {
-  background: #405553;
-}
-body.night .construction-examples button[aria-pressed='true'] {
-  background: #57716b;
-  box-shadow: inset 0 0 0 1px #9ab3a1;
-}
-@media (max-width: 850px) {
-  .district-list {
-    top: 290px;
-    left: 14px;
-  }
-  .district-list button {
-    font-size: 11px;
-    padding: 8px;
-  }
-  .inspector {
-    width: 195px;
-  }
-  .seed-form {
-    padding: 12px;
-  }
-  .inspector .building-label,
-  .inspector > select {
-    display: none;
-  }
-}
-@media (max-width: 600px) {
-  .construction-panel {
-    top: auto;
-    bottom: 108px;
-    left: 17px;
-    right: 17px;
-    width: auto;
-    padding: 10px 14px;
-  }
-  .construction-panel h2 {
-    font-size: 19px;
-    margin: 2px 0 8px;
-  }
-  .construction-examples {
-    margin-bottom: 12px;
-  }
-  .construction-progress {
-    margin: 10px 0 8px;
-  }
-  .construction-panel p {
-    display: none;
-  }
-  .is-building .district-list,
-  .is-building .scene-caption {
-    display: none;
-  }
-  .is-building .zoom-controls {
-    bottom: 380px;
-  }
-  .controls {
-    gap: 0;
-    padding: 4px;
-  }
-  .controls > button {
-    padding: 9px;
-  }
-  .harbor-status {
-    top: 74px;
-    left: 17px;
-    width: 178px;
-    padding: 10px;
-  }
-  .harbor-status dl {
-    gap: 22px;
-    margin-top: 6px;
-    padding-top: 6px;
-  }
-  .harbor-status dd {
-    font-size: 13px;
-  }
-  .harbor-status strong {
-    font-size: 10px;
-  }
-  .harbor-status p {
-    font-size: 9px;
-    margin-top: 8px;
+@scope (.native-city) {
+  #city {
+    display: block;
+    width: 100%;
+    height: 100dvh;
+    touch-action: none;
+    outline-offset: -4px;
   }
   .masthead h1 {
-    font-size: 35px;
+    font-size: clamp(38px, 4vw, 58px);
   }
-  .inspector {
-    width: 172px;
-    top: 18px;
-  }
-  .seed-form {
-    padding: 9px;
-  }
-  .seed-form > label {
-    font-size: 10px;
-  }
-  .seed-row input {
-    padding: 6px;
-    font-size: 12px;
-  }
-  .seed-row button {
-    padding: 6px;
-    font-size: 10px;
-  }
-  #regenerate {
-    padding: 7px 9px;
-    font-size: 11px;
-    margin-top: 7px;
+  .live-state {
+    margin-top: 17px;
   }
   .district-list {
-    top: auto;
-    bottom: 159px;
-    left: 17px;
-    right: 60px;
-    flex-direction: row;
-    flex-wrap: wrap;
-    gap: 1px;
-  }
-  .is-close .district-list {
-    top: auto;
+    position: absolute;
+    top: 328px;
+    left: 30px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
   }
   .district-list button {
-    padding: 6px;
-    gap: 5px;
-    font-size: 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border: 0;
+    border-radius: 6px;
+    padding: 9px 10px;
+    background: transparent;
+    font-size: 12px;
+    text-align: left;
+  }
+  .district-list button:hover {
+    background: #f6f8f27a;
+  }
+  .district-list button[aria-pressed='true'] {
+    background: #f4f7f0;
+    font-weight: 650;
   }
   .district-list i {
-    width: 6px;
-    height: 6px;
+    width: 9px;
+    height: 9px;
+    border-radius: 2px;
   }
-  .zoom-controls {
-    bottom: 175px;
+  .dot-all {
+    background: #647d6e;
   }
-  .view-hint span:first-child {
-    font-size: 11px;
+  .dot-downtown {
+    background: #789aaf;
   }
-  .view-hint span:last-child::after {
-    content: 'Один палец — вращение, два — перемещение и масштаб';
-    font-size: 9px;
+  .dot-commercial {
+    background: #daaf66;
   }
-}
-
-/* The clock and citizen journal share the diorama's restrained paper-and-sage palette. */
-.life-clock {
-  position: absolute;
-  top: 22px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 9px 12px;
-  background: #f5f6ef;
-  border: 1px solid #fff9;
-  border-radius: 12px;
-  box-shadow: 0 6px 24px #29483e10;
-}
-.life-timestamp {
-  display: flex;
-  flex-direction: column;
-  min-width: 70px;
-}
-.life-timestamp strong {
-  font-size: 22px;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.04em;
-}
-.life-timestamp span {
-  font-size: 10px;
-  color: #65786b;
-}
-.life-clock button,
-.life-storage button,
-#resident-family button {
-  background: #e5ecdf;
-  border: 0;
-  border-radius: 5px;
-  padding: 8px;
-  font-size: 11px;
-  white-space: nowrap;
-}
-.life-clock button[aria-pressed='true'],
-.life-clock button[aria-expanded='true'],
-#resident-family button[aria-pressed='true'] {
-  background: #2b5846;
-  color: #fff7e5;
-}
-.life-speeds {
-  display: flex;
-  gap: 2px;
-}
-#life-count {
-  margin-left: 3px;
-}
-.residents-panel,
-.parking-panel {
-  position: absolute;
-  top: 98px;
-  right: 24px;
-  width: 300px;
-  padding: 16px;
-  background: #f5f6ef;
-  border: 1px solid #fff9;
-  border-radius: 12px;
-  box-shadow: 0 10px 28px #29483e12;
-  max-height: calc(100dvh - 245px);
-  overflow-y: auto;
-  scrollbar-width: thin;
-  font-size: 12px;
-}
-.life-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.life-heading > button {
-  border: 0;
-  background: transparent;
-  padding: 0 5px;
-  font-size: 24px;
-  line-height: 1;
-}
-.life-muted {
-  color: #65786b;
-  font-size: 11px;
-  line-height: 1.55;
-}
-.residents-panel label {
-  display: block;
-  font-size: 11px;
-  margin: 14px 0 8px;
-}
-.residents-panel select {
-  padding: 9px;
-  font-size: 12px;
-}
-.resident-heading {
-  margin-top: 18px;
-}
-.resident-heading h2 {
-  margin-bottom: 5px;
-}
-#resident-activity {
-  display: inline-block;
-  font-size: 11px;
-  padding: 4px 7px;
-  background: #e4ebdf;
-  border-radius: 4px;
-}
-#resident-destination {
-  margin-bottom: 4px;
-  font-weight: 600;
-}
-#resident-decision {
-  margin: 4px 0 12px;
-}
-#resident-follow {
-  width: 100%;
-}
-.resident-facts {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 13px;
-}
-.resident-facts > div:nth-child(n + 3) {
-  grid-column: 1 / -1;
-}
-#resident-home {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  text-align: left;
-  font-size: inherit;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-#resident-car {
-  font-size: 11px;
-  line-height: 1.6;
-  white-space: pre-line;
-}
-.residents-panel h3 {
-  font-size: 12px;
-  font-weight: 600;
-  margin: 18px 0 8px;
-}
-#resident-family {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-#resident-family button {
-  white-space: normal;
-  text-align: left;
-  font-size: 10px;
-  line-height: 1.5;
-}
-#resident-events {
-  padding-left: 14px;
-  margin: 0;
-  color: #65786b;
-  font-size: 10px;
-  line-height: 1.65;
-}
-#resident-events li {
-  margin: 5px 0;
-}
-.life-storage {
-  display: flex;
-  gap: 6px;
-  margin-top: 16px;
-  border-top: 1px solid #d8e1d3;
-  padding-top: 12px;
-}
-.life-storage button {
-  flex: 1;
-}
-#life-save-status {
-  margin-bottom: 0;
-}
-.parking-panel {
-  left: 24px;
-  right: auto;
-  top: auto;
-  bottom: 154px;
-  width: 260px;
-}
-.parking-key {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  font-size: 10px;
-}
-.parking-key span:first-child {
-  color: #4b8669;
-}
-.parking-key span:nth-child(2) {
-  color: #b5654a;
-}
-.parking-key span:last-child {
-  color: #ae822e;
-}
-.is-inspecting-life .inspector {
-  visibility: hidden;
-}
-.is-building .residents-panel {
-  display: none;
-}
-body.night .life-clock,
-body.night .residents-panel,
-body.night .parking-panel {
-  background: #293e46;
-  border-color: #52636b;
-}
-body.night .life-muted,
-body.night .life-timestamp span,
-body.night #resident-events {
-  color: #b2c3b9;
-}
-body.night .life-clock button,
-body.night .life-storage button,
-body.night #resident-family button,
-body.night #resident-activity {
-  background: #405553;
-}
-body.night .life-clock button[aria-pressed='true'],
-body.night .life-clock button[aria-expanded='true'],
-body.night #resident-family button[aria-pressed='true'] {
-  background: #dec98e;
-  color: #243938;
-}
-@media (max-width: 1100px) {
-  .life-clock {
-    top: 18px;
-    left: 210px;
-    transform: none;
-    gap: 7px;
+  .dot-residential {
+    background: #8fae7e;
   }
-  .life-clock button {
+  .dot-industrial {
+    background: #ac745e;
+  }
+  .dot-harbor {
+    background: #67a9ac;
+  }
+  .dot-railway {
+    background: #a66c53;
+  }
+  .harbor-status {
+    position: absolute;
+    bottom: 164px;
+    left: 30px;
+    width: 230px;
+    padding: 14px;
+    border-radius: 8px;
+    background: #f2f5ed;
+    font-size: 12px;
+  }
+  .harbor-status strong {
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .harbor-status dl {
+    margin: 10px 0 0;
+    padding-top: 9px;
+    gap: 30px;
+  }
+  .harbor-status dd {
+    font-size: 16px;
+  }
+  .harbor-status p {
     font-size: 10px;
-    padding: 7px 6px;
+    color: #607265;
+    margin: 12px 0 0;
   }
-  #parking-toggle span {
+  :scope.night .harbor-status {
+    background: #293e46;
+  }
+  :scope.night .harbor-status p {
+    color: #b2c3b9;
+  }
+  .seed-form {
+    padding: 15px;
+    background: #f2f5ed;
+    border: 1px solid #fff8;
+    border-radius: 10px;
+    box-shadow: 0 6px 24px #29483e0a;
+  }
+  .seed-form > label {
+    font-size: 12px;
+    display: block;
+    margin-bottom: 9px;
+  }
+  .seed-row {
+    display: flex;
+    gap: 6px;
+  }
+  .seed-row input {
+    width: 100%;
+    min-width: 0;
+    border: 1px solid #becdc2;
+    border-radius: 5px;
+    padding: 9px;
+    color: inherit;
+    font: inherit;
+    font-size: 14px;
+    background: #fff9;
+  }
+  .seed-row input:focus-visible {
+    outline: 2px solid #ca6c3e;
+    outline-offset: 2px;
+  }
+  .seed-row button {
+    border: 0;
+    border-radius: 5px;
+    background: #dce7d9;
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+  #regenerate {
+    display: flex;
+    width: 100%;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    margin-top: 9px;
+    border-radius: 6px;
+    border: 0;
+    background: #2b5846;
+    color: #fff7e5;
+    font-size: 13px;
+  }
+  #regenerate span {
+    font-size: 22px;
+    line-height: 20px;
+  }
+  #regenerate:hover {
+    background: #3c6b55;
+  }
+  .inspector .building-label {
+    margin-top: 18px;
+  }
+  .inspector #building-info {
+    margin-top: 8px;
+  }
+  .inspector dl {
+    gap: 16px;
+  }
+  .inspector dd {
+    font-size: 12px;
+  }
+  #building-parts {
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    padding: 0;
+    margin: 14px 0 0;
+  }
+  #building-parts li {
+    padding: 4px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    line-height: 1.35;
+    color: #4f6e5d;
+    background: #e4ebdf;
+  }
+  :scope.night #building-parts li {
+    color: #d5dfce;
+    background: #405553;
+  }
+  #building-info {
+    max-height: calc(100dvh - 310px);
+    overflow-y: auto;
+  }
+  .view-hint {
+    margin-bottom: 12px;
+  }
+  :scope.night .district-list button[aria-pressed='true'],
+  :scope.night .seed-form {
+    background: #293e46;
+    border-color: #52636b;
+  }
+  :scope.night .district-list button:hover {
+    background: #3d535c;
+  }
+  :scope.night .seed-row input {
+    background: #20333d;
+    border-color: #52636b;
+  }
+  :scope.night .seed-row button {
+    background: #465b5f;
+  }
+  :scope.night #regenerate {
+    background: #dec98e;
+    color: #243938;
+  }
+  :scope.is-close .masthead h1,
+  :scope.is-close .masthead p,
+  :scope.is-close .live-state {
+    visibility: hidden;
+  }
+  :scope.is-close .brand {
+    padding: 8px 10px;
+    border-radius: 7px;
+    background: #f6f8f2;
+  }
+  :scope.is-close .district-list {
+    top: 110px;
+    padding: 7px;
+    border-radius: 8px;
+    background: #f2f5ed;
+  }
+  :scope.is-close .inspector .building-label {
     display: none;
   }
+  :scope.is-close .inspector > select {
+    margin-top: 10px;
+  }
+  :scope.is-close .view-hint {
+    padding: 7px 10px;
+    border-radius: 7px;
+    background: #f6f8f2;
+  }
+  :scope.night.is-close .brand,
+  :scope.night.is-close .district-list,
+  :scope.night.is-close .view-hint {
+    background: #293e46;
+  }
+  .build-action {
+    border: 0;
+    border-radius: 6px;
+    padding: 11px 12px;
+    color: #fff7e5;
+    background: #2b5846;
+    font-size: 12px;
+  }
+  #build-selected {
+    width: 100%;
+    margin-top: 17px;
+  }
+  .construction-panel {
+    position: absolute;
+    top: 35px;
+    right: 32px;
+    width: 292px;
+    padding: 17px 19px;
+    border: 1px solid #fff8;
+    border-radius: 12px;
+    background: #f5f6ef;
+    box-shadow: 0 10px 28px #29483e12;
+  }
+  .construction-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 5px;
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    color: #607064;
+  }
+  .construction-heading .icon-button {
+    width: 27px;
+    height: 27px;
+    background: transparent;
+  }
+  .construction-panel h2 {
+    font-size: 23px;
+    margin: 9px 0 15px;
+  }
+  .construction-examples {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 23px;
+  }
+  .construction-examples button {
+    padding: 7px 8px;
+    background: #e4ebdf;
+    font-size: 10px;
+    border: 0;
+    border-radius: 5px;
+  }
+  .construction-examples button[aria-pressed='true'] {
+    background: #d4dfcb;
+    box-shadow: inset 0 0 0 1px #8ba181;
+  }
+  .construction-readout {
+    display: flex;
+    justify-content: space-between;
+    gap: 6px;
+    align-items: baseline;
+    font-size: 11px;
+  }
+  .construction-readout strong {
+    font-weight: 600;
+  }
+  #construction-height {
+    color: #607064;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .construction-progress {
+    display: block;
+    margin: 17px 0 14px;
+    font-size: 11px;
+  }
+  .construction-progress > span {
+    display: flex;
+    justify-content: space-between;
+  }
+  .construction-progress output {
+    font-variant-numeric: tabular-nums;
+  }
+  .construction-progress input {
+    display: block;
+    width: 100%;
+    margin: 8px 0 0;
+    height: 22px;
+    accent-color: #547854;
+    cursor: pointer;
+  }
+  .construction-actions {
+    display: flex;
+    gap: 6px;
+  }
+  .construction-actions .build-action {
+    flex: 1;
+    padding: 10px 5px;
+  }
+  #construction-replay {
+    display: grid;
+    place-items: center;
+    width: 38px;
+    border: 0;
+    border-radius: 6px;
+    background: #e4ebdf;
+  }
+  .construction-panel p {
+    margin: 12px 0 0;
+    font-size: 10px;
+    line-height: 1.5;
+    color: #607064;
+  }
+  :scope.is-building .inspector {
+    visibility: hidden;
+  }
+  :scope.is-building .view-hint {
+    visibility: hidden;
+  }
+  :scope.night .construction-panel {
+    background: #293e46;
+    border-color: #52636b;
+  }
+  :scope.night .construction-panel p,
+  :scope.night .construction-heading,
+  :scope.night #construction-height {
+    color: #b2c3b9;
+  }
+  :scope.night .build-action {
+    color: #243938;
+    background: #dec98e;
+  }
+  :scope.night .construction-examples button,
+  :scope.night #construction-replay {
+    background: #405553;
+  }
+  :scope.night .construction-examples button[aria-pressed='true'] {
+    background: #57716b;
+    box-shadow: inset 0 0 0 1px #9ab3a1;
+  }
+  @media (max-width: 850px) {
+    .district-list {
+      top: 290px;
+      left: 14px;
+    }
+    .district-list button {
+      font-size: 11px;
+      padding: 8px;
+    }
+    .inspector {
+      width: 195px;
+    }
+    .seed-form {
+      padding: 12px;
+    }
+    .inspector .building-label,
+    .inspector > select {
+      display: none;
+    }
+  }
+  @media (max-width: 600px) {
+    .construction-panel {
+      top: auto;
+      bottom: 108px;
+      left: 17px;
+      right: 17px;
+      width: auto;
+      padding: 10px 14px;
+    }
+    .construction-panel h2 {
+      font-size: 19px;
+      margin: 2px 0 8px;
+    }
+    .construction-examples {
+      margin-bottom: 12px;
+    }
+    .construction-progress {
+      margin: 10px 0 8px;
+    }
+    .construction-panel p {
+      display: none;
+    }
+    :scope.is-building .district-list,
+    :scope.is-building .scene-caption {
+      display: none;
+    }
+    :scope.is-building .zoom-controls {
+      bottom: 380px;
+    }
+    .controls {
+      gap: 0;
+      padding: 4px;
+    }
+    .controls > button {
+      padding: 9px;
+    }
+    .harbor-status {
+      top: 74px;
+      left: 17px;
+      width: 178px;
+      padding: 10px;
+    }
+    .harbor-status dl {
+      gap: 22px;
+      margin-top: 6px;
+      padding-top: 6px;
+    }
+    .harbor-status dd {
+      font-size: 13px;
+    }
+    .harbor-status strong {
+      font-size: 10px;
+    }
+    .harbor-status p {
+      font-size: 9px;
+      margin-top: 8px;
+    }
+    .masthead h1 {
+      font-size: 35px;
+    }
+    .inspector {
+      width: 172px;
+      top: 18px;
+    }
+    .seed-form {
+      padding: 9px;
+    }
+    .seed-form > label {
+      font-size: 10px;
+    }
+    .seed-row input {
+      padding: 6px;
+      font-size: 12px;
+    }
+    .seed-row button {
+      padding: 6px;
+      font-size: 10px;
+    }
+    #regenerate {
+      padding: 7px 9px;
+      font-size: 11px;
+      margin-top: 7px;
+    }
+    .district-list {
+      top: auto;
+      bottom: 159px;
+      left: 17px;
+      right: 60px;
+      flex-direction: row;
+      flex-wrap: wrap;
+      gap: 1px;
+    }
+    :scope.is-close .district-list {
+      top: auto;
+    }
+    .district-list button {
+      padding: 6px;
+      gap: 5px;
+      font-size: 10px;
+    }
+    .district-list i {
+      width: 6px;
+      height: 6px;
+    }
+    .zoom-controls {
+      bottom: 175px;
+    }
+    .view-hint span:first-child {
+      font-size: 11px;
+    }
+    .view-hint span:last-child::after {
+      content: 'Один палец — вращение, два — перемещение и масштаб';
+      font-size: 9px;
+    }
+  }
+
+  /* The clock and citizen journal share the diorama's restrained paper-and-sage palette. */
+  .life-clock {
+    position: absolute;
+    top: 22px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 12px;
+    background: #f5f6ef;
+    border: 1px solid #fff9;
+    border-radius: 12px;
+    box-shadow: 0 6px 24px #29483e10;
+  }
   .life-timestamp {
-    min-width: 60px;
+    display: flex;
+    flex-direction: column;
+    min-width: 70px;
   }
   .life-timestamp strong {
-    font-size: 19px;
+    font-size: 22px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.04em;
   }
-  .life-clock ~ .residents-panel {
+  .life-timestamp span {
+    font-size: 10px;
+    color: #65786b;
+  }
+  .life-clock button,
+  .life-storage button,
+  #resident-family button {
+    background: #e5ecdf;
+    border: 0;
+    border-radius: 5px;
+    padding: 8px;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .life-clock button[aria-pressed='true'],
+  .life-clock button[aria-expanded='true'],
+  #resident-family button[aria-pressed='true'] {
+    background: #2b5846;
+    color: #fff7e5;
+  }
+  .life-speeds {
+    display: flex;
+    gap: 2px;
+  }
+  #life-count {
+    margin-left: 3px;
+  }
+  .residents-panel,
+  .parking-panel {
+    position: absolute;
     top: 98px;
+    right: 24px;
+    width: 300px;
+    padding: 16px;
+    background: #f5f6ef;
+    border: 1px solid #fff9;
+    border-radius: 12px;
+    box-shadow: 0 10px 28px #29483e12;
+    max-height: calc(100dvh - 245px);
+    overflow-y: auto;
+    scrollbar-width: thin;
+    font-size: 12px;
   }
-}
-@media (max-width: 850px) {
-  .life-clock {
-    top: 78px;
-    left: auto;
-    right: 22px;
+  .life-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
   }
-  .inspector {
-    top: 145px;
+  .life-heading > button {
+    border: 0;
+    background: transparent;
+    padding: 0 5px;
+    font-size: 24px;
+    line-height: 1;
   }
-  .residents-panel {
-    top: 146px !important;
-    right: 22px;
-    max-height: calc(100dvh - 270px);
+  .life-muted {
+    color: #65786b;
+    font-size: 11px;
+    line-height: 1.55;
+  }
+  .residents-panel label {
+    display: block;
+    font-size: 11px;
+    margin: 14px 0 8px;
+  }
+  .residents-panel select {
+    padding: 9px;
+    font-size: 12px;
+  }
+  .resident-heading {
+    margin-top: 18px;
+  }
+  .resident-heading h2 {
+    margin-bottom: 5px;
+  }
+  #resident-activity {
+    display: inline-block;
+    font-size: 11px;
+    padding: 4px 7px;
+    background: #e4ebdf;
+    border-radius: 4px;
+  }
+  #resident-destination {
+    margin-bottom: 4px;
+    font-weight: 600;
+  }
+  #resident-decision {
+    margin: 4px 0 12px;
+  }
+  #resident-follow {
+    width: 100%;
+  }
+  .resident-facts {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 13px;
+  }
+  .resident-facts > div:nth-child(n + 3) {
+    grid-column: 1 / -1;
+  }
+  #resident-home {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    font-size: inherit;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  #resident-car {
+    font-size: 11px;
+    line-height: 1.6;
+    white-space: pre-line;
+  }
+  .residents-panel h3 {
+    font-size: 12px;
+    font-weight: 600;
+    margin: 18px 0 8px;
+  }
+  #resident-family {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  #resident-family button {
+    white-space: normal;
+    text-align: left;
+    font-size: 10px;
+    line-height: 1.5;
+  }
+  #resident-events {
+    padding-left: 14px;
+    margin: 0;
+    color: #65786b;
+    font-size: 10px;
+    line-height: 1.65;
+  }
+  #resident-events li {
+    margin: 5px 0;
+  }
+  .life-storage {
+    display: flex;
+    gap: 6px;
+    margin-top: 16px;
+    border-top: 1px solid #d8e1d3;
+    padding-top: 12px;
+  }
+  .life-storage button {
+    flex: 1;
+  }
+  #life-save-status {
+    margin-bottom: 0;
+  }
+  .parking-panel {
+    left: 24px;
+    right: auto;
+    top: auto;
+    bottom: 154px;
+    width: 260px;
+  }
+  .parking-key {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-size: 10px;
+  }
+  .parking-key span:first-child {
+    color: #4b8669;
+  }
+  .parking-key span:nth-child(2) {
+    color: #b5654a;
+  }
+  .parking-key span:last-child {
+    color: #ae822e;
+  }
+  :scope.is-inspecting-life .inspector {
+    visibility: hidden;
+  }
+  :scope.is-building .residents-panel {
+    display: none;
+  }
+  :scope.night .life-clock,
+  :scope.night .residents-panel,
+  :scope.night .parking-panel {
+    background: #293e46;
+    border-color: #52636b;
+  }
+  :scope.night .life-muted,
+  :scope.night .life-timestamp span,
+  :scope.night #resident-events {
+    color: #b2c3b9;
+  }
+  :scope.night .life-clock button,
+  :scope.night .life-storage button,
+  :scope.night #resident-family button,
+  :scope.night #resident-activity {
+    background: #405553;
+  }
+  :scope.night .life-clock button[aria-pressed='true'],
+  :scope.night .life-clock button[aria-expanded='true'],
+  :scope.night #resident-family button[aria-pressed='true'] {
+    background: #dec98e;
+    color: #243938;
+  }
+  @media (max-width: 1100px) {
+    .life-clock {
+      top: 18px;
+      left: 210px;
+      transform: none;
+      gap: 7px;
+    }
+    .life-clock button {
+      font-size: 10px;
+      padding: 7px 6px;
+    }
+    #parking-toggle span {
+      display: none;
+    }
+    .life-timestamp {
+      min-width: 60px;
+    }
+    .life-timestamp strong {
+      font-size: 19px;
+    }
+    .life-clock ~ .residents-panel {
+      top: 98px;
+    }
+  }
+  @media (max-width: 850px) {
+    .life-clock {
+      top: 78px;
+      left: auto;
+      right: 22px;
+    }
+    .inspector {
+      top: 145px;
+    }
+    .residents-panel {
+      top: 146px !important;
+      right: 22px;
+      max-height: calc(100dvh - 270px);
+    }
   }
 }

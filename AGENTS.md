@@ -1,26 +1,36 @@
 # AGENTS.md
 
-_Last updated: 2026-10-03._
+_Last updated: 2026-10-04._
 
 ## Current project
 
 Read `README.md` first, then `CODESTYLE.md` before code changes. The only target platform is desktop Electron/Chromium. The active game is **«Город у воды»**, developed from the procedural Three.js city. The previous worker-based game is deprecated; its source, scenarios, fixtures, documentation and tests live in `deprecated/`.
 
-Preserve the approved city's appearance, including modular buildings, cars, pedestrians, ships, port logistics and construction sites. Develop gameplay here by reusing appropriate archived systems or implementing them anew. Do not restore the old scenario menu as the primary game.
+The approved waterfront prototype is the foundation of the game, not an asset sample for a separate replacement. Extend it to player-authored regions and multiple cities while preserving its existing visuals, complete objects and mechanics. The approved reference is `/city/?seed=689856` at commit `e5c87830485f954f710c489d8837efa6b39031fc`; see `docs/reference/waterfront/README.md` for the pinned evidence and parity contract. Do not restore the deprecated scenario menu as the primary game.
+
+Preserve native geometry, scale, proportions, materials, lighting, shadows, complete house plots and surroundings. Fit new parcels to original assemblies, never shrink, squash, simplify or remove assembly parts to fit an invented parcel. Preserve original private, curb and underground parking with real access paths and ownership rules; do not add generic parking pads in front of houses. Reuse and generalize the existing renderers and behavior policies; mechanical extraction must leave the reference behavior and geometry unchanged. Region-specific topology is supplied through adapters, not a second simplified simulation. The user explicitly approved keeping the regional economy of actual production, deliveries and purchases and connecting the prototype port and railway to it.
+
+Every restoration must be checked against the pinned reference, including actual rendered day/night views and relevant behavior tests. Passing new-region tests alone does not establish prototype parity. Missing prototype capabilities remain unfinished work. Updating the approved reference requires an explicit user decision; never regenerate its fixtures merely to make a changed implementation pass.
 
 The entire core game must live at the URL root `/` as one application. The main menu, save selection, region management and city gameplay are internal screens of that application; do not split them across `/menu/`, `/region/` or other required gameplay routes. Subpaths may host tests, diagnostics and reference prototypes. This is a URL and application-shell requirement, not a requirement to flatten source directories.
 
 ## Active code
 
 - `packages/app/index.html` and its entry script: the unified main game and its internal menu at `/`.
-- `packages/app/src/region/`: the core regional game, editor, camera, scene and saves, loaded by the root application. `model/life/` owns regional development, residents, trips, logistics and economy.
+- `packages/app/src/game/`: the unified root shell and native save catalogue. `city/runtime.ts` runs the original native game from both root and reference entries. `region/` currently retains the previous editor, terrain and legacy saves for the planned native-world adapters; its standalone simulation is not started by the root shell.
 - `packages/app/city/index.html` and `packages/app/src/city/`: the reference city prototype and shared assets. `main.ts` owns its camera and controls; `model.ts` creates the scene; `generator.ts` creates seeded layouts.
 - `primitives.ts`, `assetKits.ts`, `assetParts.ts`, `buildingModules.ts`: shared geometry, palette and modular assets. The scene uses Y-up and `WebGLRenderer`.
 - `trafficRoutes.ts`, `trafficFlow.ts`, `harbor.ts`, `harborView.ts`: lane traffic, cargo transfers, ships, cranes and trucks.
 - `construction.ts`, `constructionSite.ts`: bottom-up building reveal, animated cranes and temporary fenced sites. Completed buildings retain their original geometry.
-- `packages/app/src/city/life/`: the reference prototype's worker simulation, residents, families, parking, snapshots and their views. Shared protocol types live in `protocol.ts` and `types.ts`.
+- `packages/app/src/city/life/`: the single active native worker simulation, residents, families, parking, snapshots and their views. Shared protocol types live in `protocol.ts` and `types.ts`.
 - `packages/desktop/`: the Electron shell, packaging and local save-file infrastructure. The old simulation is not started by the current app.
 - `packages/app/test/`, `packages/desktop/test/`, `e2e/`: active checks. Archive checks run separately from `deprecated/`.
+
+## Stage delivery
+
+The user requires each completed implementation stage to be visible in the primary game. Follow `docs/superpowers/plans/2026-10-04-prototype-first-region-implementation.md`, especially its stage-delivery section. Develop unaccepted changes in isolation; after the relevant checks pass, publish the completed checkpoint to the main branch and stable primary game URL (currently `http://localhost:5197/`). Do not substitute an old or separate preview for this delivery. This stage-by-stage update is already authorized; do not ask for the same permission again.
+
+Before an update, pause and save the affected active world in its current format, verify persistence, and preserve the original before migration. Do not lose live progress, overwrite unrelated work, or restart the whole desktop app/browser. Verify the published game, report the stage and available features with its URL, and identify any remaining save compatibility limits. A stage is not complete until its checked result is delivered to the primary game.
 
 ## Commands and verification
 
