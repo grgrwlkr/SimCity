@@ -1,4 +1,5 @@
 import {Harbor, freightPlans} from '../harbor';
+import {LIFE_RULES} from '../../region/model/life/rules';
 import {
   AMBIENT_VEHICLES,
   cityVehicleKits,
@@ -62,6 +63,8 @@ import type {
   Point,
   Purpose,
   Resident,
+  TownGrowth,
+  GrowthFrame,
   WalkAccess,
 } from './types';
 
@@ -126,6 +129,7 @@ export class CityLife {
   private crossings: Point[] = [];
   private portals = new Map<number, number>();
   private nextImmigration = 20;
+  private lastArrivalBlock: string | null = null;
   private nextAssets = 60;
   private bus: BusState = {
     phase: 'idle',
@@ -259,6 +263,11 @@ export class CityLife {
                 distance(a.road.point, this.profile.arrival!.point) -
                 distance(b.road.point, this.profile.arrival!.point),
             )[0]!;
+    this.lastArrivalBlock = !this.profile.arrival
+      ? 'нет внешнего въезда'
+      : authored && !this.terminal
+        ? 'нет автостанции у въезда'
+        : null;
 
     if (authored) {
       this.busVehicleId =
@@ -1387,12 +1396,17 @@ export class CityLife {
   }
 
   inviteFamily(): boolean {
-    if (
-      this.bus.phase !== 'idle' ||
-      !this.terminal ||
-      !this.profile.arrival ||
-      this.busVehicleId === null
-    ) {
+    if (this.bus.phase !== 'idle') {
+      return false;
+    }
+    if (!this.profile.arrival) {
+      this.lastArrivalBlock = 'нет внешнего въезда';
+
+      return false;
+    }
+    if (!this.terminal || this.busVehicleId === null) {
+      this.lastArrivalBlock = 'нет автостанции у въезда';
+
       return false;
     }
 
@@ -1406,6 +1420,8 @@ export class CityLife {
         const exit = this.definition.entries[0]?.exit;
 
         if (!slot || !exit) {
+          this.lastArrivalBlock = 'нет места у автостанции';
+
           return false;
         }
 
@@ -1413,6 +1429,8 @@ export class CityLife {
         const home = this.population.nextHome();
 
         if (!home) {
+          this.lastArrivalBlock = 'нет свободного жилья';
+
           return false;
         }
 
@@ -1420,6 +1438,8 @@ export class CityLife {
       }
     } catch (error) {
       if (error instanceof NoNativeRoute) {
+        this.lastArrivalBlock = 'нет маршрута от въезда';
+
         return false;
       }
 
@@ -1429,6 +1449,8 @@ export class CityLife {
     const family = this.population.createFamily(this.seconds, true);
 
     if (!family) {
+      this.lastArrivalBlock = 'нет свободного жилья';
+
       return false;
     }
 
@@ -1466,6 +1488,7 @@ export class CityLife {
       terminal: this.terminal.id,
     };
     this.nextImmigration = this.seconds + 900;
+    this.lastArrivalBlock = null;
 
     return true;
   }
@@ -1931,6 +1954,126 @@ export class CityLife {
     });
   }
 
+  /** Growth facts for the editor panel, computed from the same population the sim drives. */
+  private growth(): GrowthFrame {
+    const alive = this.population.people.filter(p => p.activity !== 'dead');
+    const freeHousing = this.population.units.filter(
+      unit => !unit.retired && unit.tenant === null && unit.owner === null,
+    ).length;
+    const totalHousing = this.population.units.filter(
+      unit => !unit.retired,
+    ).length;
+    const freeJobs = this.population.businesses.reduce(
+      (sum, business) => sum + (business.jobs - business.workers.length),
+      0,
+    );
+    const totalJobs = this.population.businesses.reduce(
+      (sum, business) => sum + business.jobs,
+      0,
+    );
+    const unemployed = alive.filter(person => {
+      if (person.job) {
+        return false;
+      }
+
+      const age = this.population.age(person, this.day);
+
+      return age >= LIFE_RULES.workerAge && age < LIFE_RULES.retirementAge;
+    }).length;
+    const towns: Record<string, TownGrowth> = {};
+
+    if (this.definition.kind === 'authored') {
+      const bucket = (muni: string | null): TownGrowth | null => {
+        if (!muni) {
+          return null;
+        }
+
+        return (towns[muni] ??= {
+          families: 0,
+          residents: 0,
+          employed: 0,
+          freeHousing: 0,
+          freeJobs: 0,
+        });
+      };
+      const muniOfBuilding = (buildingId: string): string | null =>
+        this.population.hasPlace(buildingId)
+          ? (this.population.place(buildingId).municipalityId ?? null)
+          : null;
+
+      for (const unit of this.population.units) {
+        if (unit.retired || unit.tenant !== null || unit.owner !== null) {
+          continue;
+        }
+
+        const entry = bucket(muniOfBuilding(unit.building));
+
+        if (entry) {
+          entry.freeHousing += 1;
+        }
+      }
+
+      for (const business of this.population.businesses) {
+        const entry = bucket(muniOfBuilding(business.building));
+
+        if (entry) {
+          entry.freeJobs += Math.max(
+            0,
+            business.jobs - business.workers.length,
+          );
+        }
+      }
+
+      for (const family of this.population.families) {
+        if (!family.members.length) {
+          continue;
+        }
+
+        const unit = this.population.units[family.home];
+        const entry = bucket(
+          unit && !unit.retired ? muniOfBuilding(unit.building) : null,
+        );
+
+        if (!entry) {
+          continue;
+        }
+
+        entry.families += 1;
+
+        for (const memberId of family.members) {
+          const person = this.population.people[memberId];
+
+          if (person && person.activity !== 'dead') {
+            entry.residents += 1;
+          }
+        }
+      }
+
+      for (const person of alive) {
+        if (!person.job) {
+          continue;
+        }
+
+        const entry = bucket(muniOfBuilding(person.job.building));
+
+        if (entry) {
+          entry.employed += 1;
+        }
+      }
+    }
+
+    return {
+      freeHousing,
+      totalHousing,
+      freeJobs,
+      totalJobs,
+      unemployed,
+      arrivalBlock: this.lastArrivalBlock,
+      nextArrivalIn: Math.max(0, this.nextImmigration - this.seconds),
+      towns,
+    };
+  }
+
   frame(selected: number | null = null): LifeFrame {
     const people = this.population.people
       .filter(p => p.activity !== 'dead')
@@ -2037,6 +2180,7 @@ export class CityLife {
       driving: this.population.cars.filter(
         c => c.driver !== null && c.status !== 'reserved',
       ).length,
+      growth: this.growth(),
       people,
       cars,
       carOwners: Object.fromEntries(

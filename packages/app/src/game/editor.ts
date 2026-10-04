@@ -11,6 +11,7 @@ import {
   nativeRailwayFootprint,
 } from '../city/life/nativeInfrastructure';
 import type {Point} from '../region/model/types';
+import type {GrowthFrame} from '../city/life/types';
 import type {NativeEdit, NativeRegionDocument} from './regionDocument';
 
 export interface NativeEditorOptions {
@@ -59,7 +60,7 @@ export class NativeRegionEditor {
     this.host.classList.add('is-regional');
     this.panel.id = 'native-region-editor';
     this.panel.innerHTML =
-      '<nav aria-label="Масштаб игры"><button data-mode="region">Регион</button><button data-mode="city">Город</button><button data-action="overview">Весь регион</button></nav><div class="native-region-summary"><span id="native-region-budget"></span><span id="native-region-population"></span></div><section data-panel="region"><h2>Поселения</h2><div id="native-town-list"></div><label for="native-town-name">Новое поселение</label><input id="native-town-name" value="Поселение 1" maxlength="64"><div class="native-tools"><button data-tool="found">Основать поселение</button><button data-tool="road">Дорога</button><button data-tool="entry">Внешний въезд</button><button data-tool="port">Порт</button><button data-tool="railway">ЖД вокзал</button></div></section><section data-panel="city" hidden><select id="native-town-select" aria-label="Текущий город"></select><h2 id="native-town-heading"></h2><p id="native-town-radius"></p><div class="native-tools"><button data-tool="road">Дорога</button><button data-tool="houses">Частные дома</button><button data-tool="homes">Жилой квартал</button><button data-tool="shops">Торговля</button><button data-tool="factories">Производство</button><button data-tool="offices">Деловой квартал</button><button data-tool="school">Школа</button><button data-tool="park">Парк</button></div><details><summary>Развитие ратуши</summary><p id="native-hall-upgrade"></p><button data-action="upgrade">Улучшить ратушу</button></details></section><button data-action="rotate-placement">Повернуть объект 90°</button><div class="native-tools"><button data-tool="select">Выбор</button><button data-tool="remove">Снос</button></div><p id="native-editor-status" role="status">Выберите место ратуши; её дорога появится вместе с ней.</p>';
+      '<nav aria-label="Масштаб игры"><button data-mode="region">Регион</button><button data-mode="city">Город</button><button data-action="overview">Весь регион</button></nav><div class="native-region-summary"><span id="native-region-budget"></span><span id="native-region-population"></span></div><section data-panel="growth" class="native-region-growth"><h2>Рост региона</h2><p id="native-growth-arrival" role="status"></p><dl class="native-growth-facts"><div><dt>Свободное жильё</dt><dd id="native-growth-housing"></dd></div><div><dt>Свободные места работы</dt><dd id="native-growth-jobs"></dd></div><div><dt>Безработные</dt><dd id="native-growth-unemployed"></dd></div></dl><ul id="native-town-growth"></ul></section><section data-panel="region"><h2>Поселения</h2><div id="native-town-list"></div><label for="native-town-name">Новое поселение</label><input id="native-town-name" value="Поселение 1" maxlength="64"><div class="native-tools"><button data-tool="found">Основать поселение</button><button data-tool="road">Дорога</button><button data-tool="entry">Внешний въезд</button><button data-tool="port">Порт</button><button data-tool="railway">ЖД вокзал</button></div></section><section data-panel="city" hidden><select id="native-town-select" aria-label="Текущий город"></select><h2 id="native-town-heading"></h2><p id="native-town-radius"></p><div class="native-tools"><button data-tool="road">Дорога</button><button data-tool="houses">Частные дома</button><button data-tool="homes">Жилой квартал</button><button data-tool="shops">Торговля</button><button data-tool="factories">Производство</button><button data-tool="offices">Деловой квартал</button><button data-tool="school">Школа</button><button data-tool="park">Парк</button></div><details><summary>Развитие ратуши</summary><p id="native-hall-upgrade"></p><button data-action="upgrade">Улучшить ратушу</button></details></section><button data-action="rotate-placement">Повернуть объект 90°</button><div class="native-tools"><button data-tool="select">Выбор</button><button data-tool="remove">Снос</button></div><p id="native-editor-status" role="status">Выберите место ратуши; её дорога появится вместе с ней.</p>';
     this.host.append(this.panel);
     const listen = {signal: this.lifetime.signal};
 
@@ -468,7 +469,7 @@ export class NativeRegionEditor {
     this.update();
   }
 
-  update(population?: number): void {
+  update(population?: number, growth?: GrowthFrame): void {
     const town = this.document.settlements.find(
       item => item.id === this.activeTown,
     );
@@ -491,6 +492,36 @@ export class NativeRegionEditor {
     if (population !== undefined) {
       this.panel.querySelector('#native-region-population')!.textContent =
         `Жители: ${population}`;
+    }
+
+    if (growth) {
+      this.panel.querySelector('#native-growth-arrival')!.textContent =
+        growth.arrivalBlock
+          ? `Приезд семей: ${growth.arrivalBlock}`
+          : growth.nextArrivalIn > 0
+            ? `Семьи могут заехать — следующая через ${Math.ceil(growth.nextArrivalIn / 60)} мин игры`
+            : 'Семьи могут заехать';
+      this.panel.querySelector('#native-growth-housing')!.textContent =
+        `${growth.freeHousing} из ${growth.totalHousing}`;
+      this.panel.querySelector('#native-growth-jobs')!.textContent =
+        `${growth.freeJobs} из ${growth.totalJobs}`;
+      this.panel.querySelector('#native-growth-unemployed')!.textContent =
+        `${growth.unemployed}`;
+
+      const names = new Map(
+        this.document.settlements.map(item => [item.id, item.name]),
+      );
+      const list = this.panel.querySelector('#native-town-growth')!;
+
+      list.replaceChildren(
+        ...Object.entries(growth.towns).map(([municipalityId, facts]) => {
+          const item = document.createElement('li');
+
+          item.textContent = `${names.get(municipalityId) ?? municipalityId}: жителей ${facts.residents} · семей ${facts.families} · свободное жильё ${facts.freeHousing} · места работы ${facts.freeJobs}`;
+
+          return item;
+        }),
+      );
     }
   }
 

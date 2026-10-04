@@ -510,6 +510,9 @@ test('an authored region renders varied prototype assemblies through day and nig
   page.on('pageerror', error => errors.push(error.message));
   await start(page);
   await found(page, 'Свет', {x: -1300, z: -500});
+  await expect(page.locator('#native-growth-arrival')).toHaveText(
+    'Приезд семей: нет внешнего въезда',
+  );
   const town = (await readDocument(page)).settlements[0]!;
   const center = {x: town.center.x, z: town.center.z + 120};
 
@@ -554,6 +557,19 @@ test('an authored region renders varied prototype assemblies through day and nig
     'data-life-ready',
     'true',
   );
+  await expect(page.locator('#native-growth-housing')).toHaveText(
+    /^\d+ из \d+$/,
+  );
+  expect(
+    await page.evaluate(
+      () =>
+        document
+          .querySelector('#native-growth-housing')!
+          .textContent.split(' ')[0],
+    ),
+  ).not.toBe('0');
+  await expect(page.locator('#native-town-growth li')).toHaveCount(1);
+  await expect(page.locator('#native-town-growth li')).toContainText('Свет');
   await page.evaluate(
     point => window.__cityLife.focus(point.x, point.z, 1),
     center,

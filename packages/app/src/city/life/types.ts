@@ -242,6 +242,23 @@ export interface CitizenDetails {
   destination: string;
   next: string;
 }
+export interface TownGrowth {
+  families: number;
+  residents: number;
+  employed: number;
+  freeHousing: number;
+  freeJobs: number;
+}
+export interface GrowthFrame {
+  freeHousing: number;
+  totalHousing: number;
+  freeJobs: number;
+  totalJobs: number;
+  unemployed: number;
+  arrivalBlock: string | null;
+  nextArrivalIn: number;
+  towns: Record<string, TownGrowth>;
+}
 export interface LifeFrame {
   ports?: Array<{id: string; snapshot: HarborSnapshot}>;
   railways?: Array<{
@@ -261,6 +278,7 @@ export interface LifeFrame {
   arrived: number;
   walking: number;
   driving: number;
+  growth: GrowthFrame;
   people: CitizenPose[];
   cars: CarPose[];
   carOwners: Record<number, number>;

@@ -340,7 +340,7 @@ export async function createGame(
       latestFrame = frame;
       updateIdentity();
       presentCurrency();
-      editor?.update(frame.population);
+      editor?.update(frame.population, frame.growth);
     },
   });
   await active.ready;

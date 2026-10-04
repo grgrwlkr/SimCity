@@ -80,6 +80,45 @@
   gap: 6px;
   font-weight: 600;
 }
+.native-region-growth {
+  margin: 10px 0;
+  padding-top: 10px;
+  border-top: 1px solid #aec1b7;
+}
+.native-region-growth h2 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+.native-region-growth #native-growth-arrival {
+  margin: 0 0 8px;
+  line-height: 1.5;
+}
+.native-growth-facts {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 8px;
+}
+.native-growth-facts div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.native-growth-facts dt {
+  color: inherit;
+  opacity: 0.75;
+}
+.native-growth-facts dd {
+  margin: 0;
+  font-weight: 600;
+}
+#native-town-growth {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  line-height: 1.5;
+}
 #native-editor-status {
   line-height: 1.55;
 }
@@ -96,6 +135,9 @@
 .native-city.night #native-region-editor {
   background: #293e46f5;
   color: #dce7df;
+}
+.native-city.night .native-region-growth {
+  border-top-color: #4d6a62;
 }
 .native-city.night #native-region-editor button,
 .native-city.night #native-region-editor input {
