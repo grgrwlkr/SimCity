@@ -170,6 +170,9 @@ test('root starts one native world and resumes its exact state and camera', asyn
   await page.locator('#resume-region').click();
   await expect(page.locator('#main-menu')).toBeHidden();
   await expect(page.locator('#city')).toBeVisible();
+  expect(new URL(page.url()).searchParams.get('regionId')).toBe(
+    'native-prototype',
+  );
   expect(await page.evaluate(() => window.__cityLife.save())).toEqual(before);
   expect(await page.evaluate(() => window.__cityLife.project(0, 0, 0))).toEqual(
     camera,

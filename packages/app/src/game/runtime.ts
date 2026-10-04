@@ -457,6 +457,10 @@ export function setGameVisible(value: boolean): void {
   }
 
   active?.setVisible(value);
+
+  if (value) {
+    updateIdentity();
+  }
 }
 
 export function hasGame(): boolean {
