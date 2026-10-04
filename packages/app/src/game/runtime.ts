@@ -7,6 +7,7 @@ import {generateTerrain} from '../region/model/terrain';
 import {NativeRegionEditor} from './editor';
 import {compileNativeRegion} from './compileRegion';
 import {documentFromDefinition} from './documentFromDefinition';
+import {repairLegacyHallRoads} from './repairLegacyHallRoads';
 import {parseRegion} from '../region/model/save';
 import {migrateLegacyRegionSave} from './saveMigration';
 import {
@@ -406,7 +407,9 @@ async function resolveGameSave(
     }
   }
 
-  return {save, converted};
+  const repaired = repairLegacyHallRoads(save);
+
+  return {save: repaired, converted: converted || repaired !== save};
 }
 
 export async function loadGame(value: unknown): Promise<void> {
