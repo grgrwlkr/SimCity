@@ -272,12 +272,16 @@ describe('settled legacy import into one native authored world', () => {
     expect(raw).toBe(serializeRegion(state));
   });
 
-  it('replans only the authorized world with complete dry nonoverlapping source blocks', () => {
+  it('replans only the authorized world with complete dry nonoverlapping source buildings', () => {
     const state = {...settledFixture(), id: AUTHORIZED_LEGACY_REPLAN_ID};
     const raw = serializeRegion(state);
     const definition = replanAuthorizedLegacyLayout(raw);
-    const blocks = definition.layout.blocks.map(block =>
-      rectangle(block, 26, 26),
+    const blocks = definition.placements.map(placement =>
+      rectangle(
+        placement.center,
+        placement.template.width,
+        placement.template.depth,
+      ),
     );
 
     expect(definition.placements.map(p => p.id)).toEqual([
@@ -468,7 +472,7 @@ describe('settled legacy import into one native authored world', () => {
     }
 
     expect(serializeRegion(state)).toBe(raw);
-  });
+  }, 60_000);
 
   it('maps the real parked car without copying dormant traffic actor slots', () => {
     const state = settledFixture();

@@ -38,6 +38,8 @@ export interface AuthoredPlacement {
   readonly jobs?: number;
   readonly readyAt?: number;
   readonly startedAt?: number;
+  /** Freestanding migrated houses render without the synthetic block pad. */
+  readonly standalone?: boolean | undefined;
 }
 export interface AuthoredEntry {
   readonly id: string;

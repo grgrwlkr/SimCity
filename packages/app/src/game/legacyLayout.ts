@@ -107,93 +107,195 @@ export function replanAuthorizedLegacyLayout(
     roads.push({id: `native-road-${roads.length + 1}`, points});
   };
 
+  // Town rows may cross ponds: split the street into short segments and keep the dry ones.
+  const addRoadChunked = (a: Point, b: Point): void => {
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const length = Math.hypot(dx, dz);
+    const chunks = Math.max(1, Math.ceil(length / 60));
+
+    for (let index = 0; index < chunks; index++) {
+      const p0 = {
+        x: a.x + dx * (index / chunks),
+        z: a.z + dz * (index / chunks),
+      };
+      const p1 = {
+        x: a.x + dx * ((index + 1) / chunks),
+        z: a.z + dz * ((index + 1) / chunks),
+      };
+
+      try {
+        addRoad(p0, p1);
+      } catch {
+        // A wet stretch simply gets no street; the dry parts keep their front.
+      }
+    }
+  };
+
+  const rowWidth = 240;
+  const gap = 1.5;
+  const roadHalf = 4;
+
   for (const town of state.settlements) {
     const buildings = state.life.buildings.filter(
       b => b.settlementId === town.id,
     );
-    const side = 2 * Math.ceil(Math.sqrt(buildings.length + 20) / 2);
-    const west = town.center.x - side * 17;
-    const north = town.center.z - side * 17;
+    const queue = [...buildings];
+    const startX = town.center.x - rowWidth / 2;
+    const endX = startX + rowWidth;
+    // The civic junction the hall street must legally plug into (see repairLegacyHallRoads).
+    const junctionZ = town.center.z + 68;
+
+    addRoadChunked(
+      {x: startX - roadHalf * 2, z: junctionZ},
+      {
+        x: town.center.x,
+        z: junctionZ,
+      },
+    );
+    addRoadChunked(
+      {x: town.center.x, z: junctionZ},
+      {
+        x: endX + roadHalf * 2,
+        z: junctionZ,
+      },
+    );
+
     const reservation = rectangle(town.center, 96, 80);
-    let next = 0;
+    // The hall link street drops from the starter road through this corridor;
+    // document block reservations reach 17 m past a building, so keep them clear.
+    const hallLink = rectangle({x: town.center.x, z: junctionZ - 10}, 52, 44);
+    let cursorX = startX;
+    let cursorZ = junctionZ + 12;
+    let rowDepth = 0;
 
-    joins.push({x: west, z: north});
+    // SimCity-style growth: every house takes only its own footprint; the next
+    // house fills whatever is left beside it until the row closes at a street.
+    const closeRow = (): void => {
+      if (rowDepth > 0) {
+        addRoadChunked(
+          {x: startX - roadHalf * 2, z: cursorZ + rowDepth + roadHalf},
+          {x: endX + roadHalf * 2, z: cursorZ + rowDepth + roadHalf},
+        );
+      }
 
-    for (let row = 0; row < side && next < buildings.length; row++) {
-      for (let column = 0; column < side && next < buildings.length; column++) {
-        const center = {x: west + column * 34 + 17, z: north + row * 34 + 17};
-        const footprint = rectangle(center, 26, 26);
+      cursorZ += rowDepth + roadHalf * 2 + 2;
+      cursorX = startX;
+      rowDepth = 0;
+    };
 
-        if (
-          !isDryFootprint(state.terrain, footprint) ||
-          convexInteriorsOverlap(footprint, reservation) ||
-          footprints.some(other => convexInteriorsOverlap(footprint, other))
-        ) {
-          continue;
+    while (queue.length > 0) {
+      const building = queue[0]!;
+      const pool =
+        building.kind === 'residential'
+          ? homes
+          : building.kind === 'commercial'
+            ? shops
+            : building.kind === 'industrial'
+              ? factories
+              : warehouses;
+      const template = chooseTemplate(pool, building.id);
+      const center = {
+        x: cursorX + template.width / 2,
+        z: cursorZ + template.depth / 2,
+      };
+      const footprint = rectangle(center, template.width, template.depth);
+      const fits =
+        isDryFootprint(state.terrain, footprint) &&
+        !convexInteriorsOverlap(footprint, reservation) &&
+        !convexInteriorsOverlap(rectangle(center, 34, 34), hallLink) &&
+        !footprints.some(other => convexInteriorsOverlap(footprint, other));
+
+      if (!fits) {
+        // Wet or taken ground: the skipped width stays empty, the queue head
+        // tries the next opening; close the row first when it ran out.
+        cursorX += template.width + gap;
+
+        if (cursorX - startX >= rowWidth) {
+          closeRow();
         }
 
-        const building = buildings[next++]!;
-        const pool =
-          building.kind === 'residential'
-            ? homes
-            : building.kind === 'commercial'
-              ? shops
-              : building.kind === 'industrial'
-                ? factories
-                : warehouses;
-        const template = chooseTemplate(pool, building.id);
-        const block = source.blocks.find(
+        if (cursorZ > state.terrain.bounds.maxZ - 60) {
+          throw new Error(
+            'Полные нативные здания не помещаются на сухой земле этого тестового мира.',
+          );
+        }
+
+        continue;
+      }
+
+      queue.shift();
+      placements.push({
+        id: building.id,
+        municipalityId: town.id,
+        template,
+        sourceBlock: source.blocks.find(
           block => block.id === template.blockId,
-        )!;
+        )!,
+        center,
+        yaw: 0,
+        kind:
+          building.kind === 'residential'
+            ? 'home'
+            : building.kind === 'commercial'
+              ? 'shop'
+              : 'factory',
+        capacity:
+          building.kind === 'residential'
+            ? Math.max(1, Math.floor(building.capacity / 4))
+            : building.jobs,
+        standalone: true,
+      });
+      footprints.push(footprint);
+      rowDepth = Math.max(rowDepth, template.depth);
+      cursorX += template.width + gap;
 
-        placements.push({
-          id: building.id,
-          municipalityId: town.id,
-          template,
-          sourceBlock: block,
-          center: {
-            x: center.x + template.x - block.x,
-            z: center.z + template.z - block.z,
-          },
-          yaw: 0,
-          kind:
-            building.kind === 'residential'
-              ? 'home'
-              : building.kind === 'commercial'
-                ? 'shop'
-                : 'factory',
-          capacity:
-            building.kind === 'residential'
-              ? Math.max(1, Math.floor(building.capacity / 4))
-              : building.jobs,
-        });
-        footprints.push(footprint);
-        const corners = rectangle(center, 34, 34);
-
-        for (let index = 0; index < corners.length; index++) {
-          addRoad(corners[index]!, corners[(index + 1) % corners.length]!);
-        }
+      if (cursorX - startX >= rowWidth) {
+        closeRow();
       }
     }
 
-    if (next !== buildings.length) {
-      throw new Error(
-        'Полные нативные кварталы не помещаются на сухой земле этого тестового мира.',
-      );
-    }
-  }
+    closeRow();
+    joins.push({x: startX, z: junctionZ});
 
-  const connectorZ = Math.min(...joins.map(point => point.z)) - 34;
+    const west = {x: startX - roadHalf * 2, z: junctionZ};
 
-  for (const point of joins) {
-    addRoad(point, {x: point.x, z: connectorZ});
+    addRoadChunked(west, {x: west.x, z: cursorZ});
+    addRoadChunked(
+      {x: endX + roadHalf * 2, z: junctionZ},
+      {
+        x: endX + roadHalf * 2,
+        z: cursorZ,
+      },
+    );
   }
 
   for (let index = 1; index < joins.length; index++) {
-    addRoad(
-      {x: joins[index - 1]!.x, z: connectorZ},
-      {x: joins[index]!.x, z: connectorZ},
-    );
+    const previous = joins[index - 1]!;
+    const join = joins[index]!;
+    const previousEast = previous.x + rowWidth + roadHalf * 2;
+
+    if (previous.z === join.z) {
+      addRoadChunked(
+        {x: previousEast, z: previous.z},
+        {x: join.x - roadHalf * 2, z: join.z},
+      );
+    } else {
+      addRoadChunked(
+        {x: previousEast, z: previous.z},
+        {
+          x: previousEast,
+          z: join.z,
+        },
+      );
+      addRoadChunked(
+        {x: previousEast, z: join.z},
+        {
+          x: join.x - roadHalf * 2,
+          z: join.z,
+        },
+      );
+    }
   }
 
   const first = joins[0];
@@ -204,7 +306,7 @@ export function replanAuthorizedLegacyLayout(
 
   const boundary = {x: state.terrain.bounds.minX + 4, z: first.z};
 
-  addRoad(boundary, first);
+  addRoadChunked(boundary, {x: first.x - roadHalf * 2, z: first.z});
   const definition = createAuthoredDefinition({
     seed: state.seed,
     roads,

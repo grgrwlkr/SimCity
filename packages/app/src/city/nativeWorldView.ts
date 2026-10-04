@@ -226,14 +226,24 @@ function createAuthoredView(
       0,
       source.blocks.findIndex(block => block.id === originalBlock.id),
     );
-    const block = drawNativeBlock(batch, layout, originalBlock, index, profile);
 
-    treeCount += block.treeCount;
-    lampPositions.push(
-      ...block.lampPositions.map(point =>
-        point.clone().applyMatrix4(transform),
-      ),
-    );
+    // Freestanding migrated houses keep their own gardens and no synthetic plaza.
+    if (!placed.every(placement => placement.standalone)) {
+      const block = drawNativeBlock(
+        batch,
+        layout,
+        originalBlock,
+        index,
+        profile,
+      );
+
+      treeCount += block.treeCount;
+      lampPositions.push(
+        ...block.lampPositions.map(point =>
+          point.clone().applyMatrix4(transform),
+        ),
+      );
+    }
 
     for (const placement of placed) {
       const template = placement.template;
