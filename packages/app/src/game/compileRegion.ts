@@ -72,6 +72,9 @@ export function compileNativeRegion(
     bounds: document.terrain.bounds,
     metadata: {regionDocument: document},
     ...(document.calendar ? {calendar: document.calendar} : {}),
+    ...(document.taxRate === undefined
+      ? {}
+      : {economy: {rules: {taxRate: document.taxRate}}}),
   });
   const routing = new RegionRouting(base.layout, document.roads);
   const profile = base.profile;

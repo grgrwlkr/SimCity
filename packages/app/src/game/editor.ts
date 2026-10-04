@@ -60,7 +60,7 @@ export class NativeRegionEditor {
     this.host.classList.add('is-regional');
     this.panel.id = 'native-region-editor';
     this.panel.innerHTML =
-      '<nav aria-label="Масштаб игры"><button data-mode="region">Регион</button><button data-mode="city">Город</button><button data-action="overview">Весь регион</button></nav><div class="native-region-summary"><span id="native-region-budget"></span><span id="native-region-population"></span></div><section data-panel="growth" class="native-region-growth"><h2>Рост региона</h2><p id="native-growth-arrival" role="status"></p><dl class="native-growth-facts"><div><dt>Свободное жильё</dt><dd id="native-growth-housing"></dd></div><div><dt>Свободные места работы</dt><dd id="native-growth-jobs"></dd></div><div><dt>Безработные</dt><dd id="native-growth-unemployed"></dd></div></dl><ul id="native-town-growth"></ul></section><section data-panel="region"><h2>Поселения</h2><div id="native-town-list"></div><label for="native-town-name">Новое поселение</label><input id="native-town-name" value="Поселение 1" maxlength="64"><div class="native-tools"><button data-tool="found">Основать поселение</button><button data-tool="road">Дорога</button><button data-tool="entry">Внешний въезд</button><button data-tool="port">Порт</button><button data-tool="railway">ЖД вокзал</button></div></section><section data-panel="city" hidden><select id="native-town-select" aria-label="Текущий город"></select><h2 id="native-town-heading"></h2><p id="native-town-radius"></p><div class="native-tools"><button data-tool="road">Дорога</button><button data-tool="houses">Частные дома</button><button data-tool="homes">Жилой квартал</button><button data-tool="shops">Торговля</button><button data-tool="factories">Производство</button><button data-tool="offices">Деловой квартал</button><button data-tool="school">Школа</button><button data-tool="park">Парк</button></div><details><summary>Развитие ратуши</summary><p id="native-hall-upgrade"></p><button data-action="upgrade">Улучшить ратушу</button></details></section><button data-action="rotate-placement">Повернуть объект 90°</button><div class="native-tools"><button data-tool="select">Выбор</button><button data-tool="remove">Снос</button></div><p id="native-editor-status" role="status">Выберите место ратуши; её дорога появится вместе с ней.</p>';
+      '<nav aria-label="Масштаб игры"><button data-mode="region">Регион</button><button data-mode="city">Город</button><button data-action="overview">Весь регион</button></nav><div class="native-region-summary"><span id="native-region-budget"></span><span id="native-region-population"></span></div><section data-panel="growth" class="native-region-growth"><h2>Рост региона</h2><p id="native-growth-arrival" role="status"></p><dl class="native-growth-facts"><div><dt>Свободное жильё</dt><dd id="native-growth-housing"></dd></div><div><dt>Свободные места работы</dt><dd id="native-growth-jobs"></dd></div><div><dt>Безработные</dt><dd id="native-growth-unemployed"></dd></div></dl><ul id="native-town-growth"></ul><p id="native-growth-flow"></p><label for="native-tax-rate">Налог с продаж: <span id="native-tax-value"></span></label><input id="native-tax-rate" type="range" min="0" max="0.25" step="0.05"></section><section data-panel="region"><h2>Поселения</h2><div id="native-town-list"></div><label for="native-town-name">Новое поселение</label><input id="native-town-name" value="Поселение 1" maxlength="64"><div class="native-tools"><button data-tool="found">Основать поселение</button><button data-tool="road">Дорога</button><button data-tool="entry">Внешний въезд</button><button data-tool="port">Порт</button><button data-tool="railway">ЖД вокзал</button></div></section><section data-panel="city" hidden><select id="native-town-select" aria-label="Текущий город"></select><h2 id="native-town-heading"></h2><p id="native-town-radius"></p><div class="native-tools"><button data-tool="road">Дорога</button><button data-tool="houses">Частные дома</button><button data-tool="homes">Жилой квартал</button><button data-tool="shops">Торговля</button><button data-tool="factories">Производство</button><button data-tool="offices">Деловой квартал</button><button data-tool="school">Школа</button><button data-tool="park">Парк</button></div><details><summary>Развитие ратуши</summary><p id="native-hall-upgrade"></p><button data-action="upgrade">Улучшить ратушу</button></details></section><button data-action="rotate-placement">Повернуть объект 90°</button><div class="native-tools"><button data-tool="select">Выбор</button><button data-tool="remove">Снос</button></div><p id="native-editor-status" role="status">Выберите место ратуши; её дорога появится вместе с ней.</p>';
     this.host.append(this.panel);
     const listen = {signal: this.lifetime.signal};
 
@@ -118,6 +118,15 @@ export class NativeRegionEditor {
     this.panel
       .querySelector('[data-action="overview"]')!
       .addEventListener('click', () => options.runtime.viewRegion(), listen);
+    this.panel.querySelector('#native-tax-rate')!.addEventListener(
+      'change',
+      event => {
+        const rate = Number((event.target as HTMLInputElement).value);
+
+        this.submit({type: 'tax', rate});
+      },
+      listen,
+    );
     this.panel.querySelector('[data-action="upgrade"]')!.addEventListener(
       'click',
       () => {
@@ -247,7 +256,8 @@ export class NativeRegionEditor {
         this.submit({
           type: 'found',
           center: point,
-          name: this.panel.querySelector<HTMLInputElement>('input')!.value,
+          name: this.panel.querySelector<HTMLInputElement>('#native-town-name')!
+            .value,
         });
 
         return;
@@ -507,6 +517,17 @@ export class NativeRegionEditor {
         `${growth.freeJobs} из ${growth.totalJobs}`;
       this.panel.querySelector('#native-growth-unemployed')!.textContent =
         `${growth.unemployed}`;
+      this.panel.querySelector('#native-growth-flow')!.textContent =
+        `Бюджет за сутки: ${growth.treasuryFlowToday >= 0 ? '+' : ''}${Math.round(growth.treasuryFlowToday).toLocaleString('ru-RU')} ◈ · содержание ${growth.upkeepPerDay.toLocaleString('ru-RU')} ◈/сутки`;
+      const slider =
+        this.panel.querySelector<HTMLInputElement>('#native-tax-rate');
+
+      if (slider) {
+        slider.value = String(growth.taxRate);
+      }
+
+      this.panel.querySelector('#native-tax-value')!.textContent =
+        `${Math.round(growth.taxRate * 100)}%`;
 
       const names = new Map(
         this.document.settlements.map(item => [item.id, item.name]),

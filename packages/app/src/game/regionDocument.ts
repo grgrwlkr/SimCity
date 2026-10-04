@@ -69,6 +69,7 @@ export interface NativeRegionDocument {
   readonly version: 1;
   readonly id: string;
   readonly seed: string;
+  readonly taxRate?: number | undefined;
   readonly calendar?: NativeCalendar | undefined;
   readonly spaces?: readonly AuthoredPublicSpace[] | undefined;
   readonly infrastructure?: AuthoredInfrastructure | undefined;
@@ -102,6 +103,7 @@ export type NativeEdit =
   | {type: 'railway'; center: Point; yaw: number}
   | {type: 'entry'; roadId: string; endpoint: 'start' | 'end'}
   | {type: 'upgrade'; settlementId: string}
+  | {type: 'tax'; rate: number}
   | {type: 'remove'; id: string};
 
 export interface NativeEditResult {
@@ -497,6 +499,18 @@ export function applyNativeEdit(
       break;
     }
 
+    case 'tax': {
+      if (edit.rate < 0 || edit.rate > 0.25) {
+        throw new Error('Налоговая ставка доступна от 0% до 25%.');
+      }
+
+      const quantized = Math.round(edit.rate * 20) / 20;
+
+      next = {...document, taxRate: quantized};
+      createdId = 'tax';
+      break;
+    }
+
     case 'remove': {
       const infrastructure = document.infrastructure ?? {
         ports: [],
@@ -620,6 +634,7 @@ const savedDocument = z.object({
   version: z.literal(1),
   id: z.string().min(1),
   seed: z.string().min(1),
+  taxRate: z.number().min(0).max(0.25).optional(),
   spaces: z
     .array(
       z.object({

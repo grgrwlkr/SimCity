@@ -499,17 +499,21 @@ export class Population {
       return null;
     }
 
-    const dealer = this.profile.facilities.find(
-      facility =>
-        facility.kind === 'underground' &&
-        !facility.residentsOnly &&
-        this.parking.available(facility.id, f.id, home.blockId),
+    const dealerFacilities = this.profile.facilities.filter(
+      facility => facility.kind === 'underground' && !facility.residentsOnly,
+    );
+    const dealer = dealerFacilities.find(facility =>
+      this.parking.available(facility.id, f.id, home.blockId),
     );
     const location = initial
       ? own
       : dealer
         ? this.parking.available(dealer.id, f.id, home.blockId)
-        : undefined;
+        : // A town without any dealer underground sells cars through home parking;
+          // the prototype always has dealer facilities, so its cadence is unchanged.
+          dealerFacilities.length
+          ? undefined
+          : own;
 
     if (!location) {
       return null;

@@ -68,6 +68,7 @@ export interface NativeGoodsSave {
   version: 1;
   lastSeconds: number;
   nextId: number;
+  taxRate?: number;
   investors: NativeInvestor[];
   owners: Array<[string, NativeAccount]>;
   work: Array<[string, number]>;
@@ -118,6 +119,7 @@ const goodsSchema = z.object({
   version: z.literal(1),
   lastSeconds: z.number().nonnegative().finite(),
   nextId: nonnegative,
+  taxRate: z.number().min(0).max(1).optional(),
   investors: z.array(z.object({id: z.string().min(1), cash: money})),
   owners: z.array(z.tuple([z.string(), accountSchema])),
   work: z.array(z.tuple([z.string(), z.number().nonnegative().finite()])),
@@ -180,7 +182,7 @@ export class NativeGoodsEconomy {
     buildingId: string;
     flow?: 'import' | 'export';
   }> = () => [];
-  readonly rules: NativeGoodsRules;
+  rules: NativeGoodsRules;
 
   constructor(
     readonly population: Population,
@@ -1316,11 +1318,29 @@ export class NativeGoodsEconomy {
     );
   }
 
+  /** Player-controlled sales tax for authored worlds; the prototype keeps its original rate. */
+  setTaxRate(rate: number): void {
+    this.rules = {...this.rules, taxRate: z.number().min(0).max(1).parse(rate)};
+  }
+
+  warehouseCount(): number {
+    let count = 0;
+
+    for (const configuration of this.configurations.values()) {
+      if (configuration.role === 'warehouse') {
+        count += 1;
+      }
+    }
+
+    return count;
+  }
+
   save(): NativeGoodsSave {
     return structuredClone({
       version: 1,
       lastSeconds: this.lastSeconds,
       nextId: this.nextId,
+      taxRate: this.rules.taxRate,
       investors: this.investors,
       owners: [...this.owners],
       work: [...this.work],
@@ -1346,6 +1366,11 @@ export class NativeGoodsEconomy {
     this.lastSeconds = saved.lastSeconds;
     this.nextId = saved.nextId;
     this.completedDeliveries = saved.completedDeliveries;
+
+    if (saved.taxRate !== undefined) {
+      this.rules = {...this.rules, taxRate: saved.taxRate};
+    }
+
     this.investors.splice(0, this.investors.length, ...saved.investors);
     this.deliveries.splice(0, this.deliveries.length, ...saved.deliveries);
     this.capital.splice(0, this.capital.length, ...saved.capital);

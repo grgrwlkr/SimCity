@@ -130,6 +130,7 @@ export class CityLife {
   private portals = new Map<number, number>();
   private nextImmigration = 20;
   private lastArrivalBlock: string | null = null;
+  private treasuryAtDayStart = 0;
   private nextAssets = 60;
   private bus: BusState = {
     phase: 'idle',
@@ -268,6 +269,7 @@ export class CityLife {
       : authored && !this.terminal
         ? 'нет автостанции у въезда'
         : null;
+    this.treasuryAtDayStart = Math.max(0, this.population.treasury);
 
     if (authored) {
       this.busVehicleId =
@@ -675,6 +677,12 @@ export class CityLife {
     this.economy?.syncHiringCapacity();
     this.population.assignJobs(this.day, this.seconds);
     this.configureInfrastructure();
+
+    const nextTaxRate = definition.economy?.rules?.taxRate;
+
+    if (this.economy && nextTaxRate !== undefined) {
+      this.economy.setTaxRate(nextTaxRate);
+    }
   }
 
   get day(): number {
@@ -1493,6 +1501,43 @@ export class CityLife {
     return true;
   }
 
+  /** Declared upkeep policy: road kilometres plus maintained warehouses, charged daily in authored worlds. */
+  private dailyUpkeepAmount(): number {
+    if (this.definition.kind !== 'authored') {
+      return 0;
+    }
+
+    let roadMetres = 0;
+
+    for (const road of this.definition.roads) {
+      for (let i = 1; i < road.points.length; i++) {
+        roadMetres += Math.hypot(
+          road.points[i]!.x - road.points[i - 1]!.x,
+          road.points[i]!.z - road.points[i - 1]!.z,
+        );
+      }
+    }
+
+    return Math.round(
+      (roadMetres / 1000) * LIFE_RULES.roadUpkeepPerKm +
+        (this.economy?.warehouseCount() ?? 0) * LIFE_RULES.warehouseUpkeep,
+    );
+  }
+
+  private chargeDailyUpkeep(): void {
+    const amount = this.dailyUpkeepAmount();
+
+    if (!amount || !this.economy) {
+      return;
+    }
+
+    const paid = Math.min(amount, Math.max(0, this.population.treasury));
+
+    this.population.treasury -= paid;
+    this.economy.ledger.maintenancePaid += paid;
+    this.economy.ledger.maintenanceDebt += amount - paid;
+  }
+
   private updateBus(): void {
     if (this.busVehicleId === null || !this.terminal || !this.profile.arrival) {
       return;
@@ -1819,7 +1864,13 @@ export class CityLife {
     const day = this.day;
 
     if (day !== this.dayDone) {
+      this.treasuryAtDayStart = this.population.treasury;
       this.population.daily(day, this.seconds);
+
+      if (this.definition.kind === 'authored') {
+        this.chargeDailyUpkeep();
+      }
+
       this.dayDone = day;
     }
     if (this.seconds >= this.nextAssets) {
@@ -2071,6 +2122,9 @@ export class CityLife {
       arrivalBlock: this.lastArrivalBlock,
       nextArrivalIn: Math.max(0, this.nextImmigration - this.seconds),
       towns,
+      treasuryFlowToday: this.population.treasury - this.treasuryAtDayStart,
+      upkeepPerDay: this.dailyUpkeepAmount(),
+      taxRate: this.economy?.rules.taxRate ?? LIFE_RULES.taxRate,
     };
   }
 
@@ -2287,6 +2341,7 @@ export class CityLife {
       carsAdded: this.carsAdded,
       nextImmigration: this.nextImmigration,
       nextAssets: this.nextAssets,
+      treasuryAtDayStart: this.treasuryAtDayStart,
       bus: structuredClone(this.bus),
       portals: [...this.portals],
       population: this.population.save(),
@@ -2432,6 +2487,10 @@ export class CityLife {
       definition?.kind === 'authored' && world.population.nextHome() === null
         ? 'нет свободного жилья'
         : null;
+    world.treasuryAtDayStart =
+      typeof s.treasuryAtDayStart === 'number'
+        ? s.treasuryAtDayStart
+        : Math.max(0, world.population.treasury);
     world.nextAssets = s.nextAssets;
     world.bus = structuredClone(s.bus);
     world.railway.restore(s.railway);

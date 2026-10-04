@@ -570,6 +570,17 @@ test('an authored region renders varied prototype assemblies through day and nig
   ).not.toBe('0');
   await expect(page.locator('#native-town-growth li')).toHaveCount(1);
   await expect(page.locator('#native-town-growth li')).toContainText('Свет');
+  await expect(page.locator('#native-growth-flow')).toHaveText(
+    /Бюджет за сутки: [+-][\d\s]+ ◈ · содержание [\d\s]+ ◈\/сутки/,
+  );
+  await expect(page.locator('#native-tax-value')).toHaveText('10%');
+  await page.locator('#native-tax-rate').fill('0.15');
+  await expect(page.locator('#native-tax-value')).toHaveText('15%', {
+    timeout: 10_000,
+  });
+  expect(
+    (await page.evaluate(() => window.__cityLife.save())) as unknown,
+  ).toMatchObject({economy: {taxRate: 0.15}});
   await page.evaluate(
     point => window.__cityLife.focus(point.x, point.z, 1),
     center,

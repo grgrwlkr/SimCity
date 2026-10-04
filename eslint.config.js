@@ -14,6 +14,11 @@ export default defineConfig([
     '.claude/**',
     '.scratch/**',
     '.orchestrator/**',
+    '.zcode/**',
+    '.mimosa/**',
+    '.video_agent/**',
+    '.cursor/**',
+    'experiments/**',
     // The archived game retains its original rules and frozen fixtures.
     'deprecated/**',
     'docs/**',

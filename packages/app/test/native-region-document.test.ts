@@ -270,4 +270,35 @@ describe('native region document', () => {
     expect(Number.isInteger(result.cost)).toBe(true);
     expect(result.cost).toBe(Math.round(Math.hypot(132.31, 48.068) * 100));
   });
+  it('stores a quantized sales tax rate and compiles it into the authored economy', () => {
+    const initial = createNativeRegionDocument('world', '689856');
+
+    expect(() =>
+      applyNativeEdit(initial, {type: 'tax', rate: 0.4}, 1000000, 0),
+    ).toThrow('25%');
+
+    const raised = applyNativeEdit(
+      initial,
+      {type: 'tax', rate: 0.13},
+      1000000,
+      0,
+    ).document;
+
+    expect(raised.taxRate).toBe(0.15);
+
+    const compiled = compileNativeRegion(raised, 0);
+
+    if (compiled.kind !== 'authored') {
+      throw new Error('Expected the authored definition');
+    }
+
+    expect(compiled.economy?.rules?.taxRate).toBe(0.15);
+
+    const restored = readNativeRegionDocument(
+      JSON.parse(JSON.stringify(raised)) as unknown,
+    )!;
+
+    expect(restored.taxRate).toBe(0.15);
+    expect(compileNativeRegion(restored, 0)).toEqual(compiled);
+  });
 });

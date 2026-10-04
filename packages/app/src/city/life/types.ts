@@ -258,6 +258,9 @@ export interface GrowthFrame {
   arrivalBlock: string | null;
   nextArrivalIn: number;
   towns: Record<string, TownGrowth>;
+  treasuryFlowToday: number;
+  upkeepPerDay: number;
+  taxRate: number;
 }
 export interface LifeFrame {
   ports?: Array<{id: string; snapshot: HarborSnapshot}>;

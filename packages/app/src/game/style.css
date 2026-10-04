@@ -119,6 +119,22 @@
   list-style: none;
   line-height: 1.5;
 }
+.native-region-growth #native-growth-flow {
+  margin: 8px 0 10px;
+  line-height: 1.5;
+}
+.native-region-growth label {
+  display: block;
+  margin-top: 4px;
+}
+.native-region-growth #native-tax-rate {
+  width: 100%;
+  margin-top: 6px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  accent-color: #2b5846;
+}
 #native-editor-status {
   line-height: 1.55;
 }
