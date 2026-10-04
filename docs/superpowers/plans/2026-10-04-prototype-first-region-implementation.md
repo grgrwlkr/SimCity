@@ -150,12 +150,12 @@
 
 **Create:** `game/saveMigration.ts`, import tests. **Modify:** shared storage/catalogue, native world restore and game envelope.
 
-- [ ] Составить mapping legacy regional IDs→native stable identities, сохраняя исходные внешние ID в document. Native числовые внутренние indices не должны менять принадлежность/историю.
-- [ ] Перенести семьи, units/ownership, people, cars/parking, business stocks/accounts, native-compatible traffic routes/reservations и живые deliveries.
-- [ ] Согласовать calendar anchor и physical clock: старый регион не прыгает на90минут/много суток из-за иных старых epochs. Default prototype сохраняет исходный clock.
-- [ ] Проверить пакет поддерживаемых старых сейвов, active arrival/parking/loaded truck/hoist. Балансы до/после равны; input record не меняется.
-- [ ] Unsupported payload получает ясное сообщение и сохраняемый оригинал, а не пустой мир/поддельную «успешную» загрузку.
-- [ ] Пересобрать только разрешённый тестовый мир под native размеры, сохранив backup. «Приозёрск» и другие ручные миры автоматически не переделывать.
+- [x] Составить mapping legacy regional IDs→native stable identities, сохраняя исходные внешние ID в document. Native числовые внутренние indices не должны менять принадлежность/историю.
+- [x] Перенести семьи, units/ownership, people, cars/parking, business stocks/accounts, native-compatible traffic routes/reservations и живые deliveries.
+- [x] Согласовать calendar anchor и physical clock: старый регион не прыгает на90минут/много суток из-за иных старых epochs. Default prototype сохраняет исходный clock.
+- [x] Проверить пакет поддерживаемых старых сейвов, active arrival/parking/loaded truck/hoist. Балансы до/после равны; input record не меняется.
+- [x] Unsupported payload получает ясное сообщение и сохраняемый оригинал, а не пустой мир/поддельную «успешную» загрузку.
+- [x] Пересобрать только разрешённый тестовый мир под native размеры, сохранив backup. «Приозёрск» и другие ручные миры автоматически не переделывать.
 
 **Done:** новый game envelope и допустимые legacy saves открываются обычным меню, процесс загрузки доказан на реальном мире.
 
@@ -163,10 +163,10 @@
 
 **Candidates:** standalone `region/model/life/{population,residents,mobility,simulation}.ts`, regional life worker/controller и дубли renderer. Полезные validators, migration code, graph/account adapters сохраняются в соответствующих компонентах.
 
-- [ ] Доказать runtime dependency graph: root использует native `CityLife`/Population/ParkingBook/traffic; никакой второй life worker не запускается.
-- [ ] Удалять заменённые modules/exports/tests по coherent группам после reference/import/route checks. Не выполнять global reset каталога.
-- [ ] Сохранить tests настоящих региональных требований, перенаправив их к единому native core. Не сохранить тесты только потому, что они подтверждали ошибочную implementation-specific модель.
-- [ ] Проверить `/city/` и `/`: один renderer/runtime и default reference route, без зависимости от архивного регионального игрового ядра.
+- [x] Доказать runtime dependency graph: root использует native `CityLife`/Population/ParkingBook/traffic; никакой второй life worker не запускается.
+- [x] Удалять заменённые modules/exports/tests по coherent группам после reference/import/route checks. Не выполнять global reset каталога.
+- [x] Сохранить tests настоящих региональных требований, перенаправив их к единому native core. Не сохранить тесты только потому, что они подтверждали ошибочную implementation-specific модель.
+- [x] Проверить `/city/` и `/`: один renderer/runtime и default reference route, без зависимости от архивного регионального игрового ядра.
 
 **Done:** регион остаётся редактором и данными, а не второй игрой рядом с прототипом.
 
