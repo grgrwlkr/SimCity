@@ -32,6 +32,7 @@ import {reconcileWorldDefinition} from './worldReconciliation';
 import {NativeGoodsEconomy} from './goodsEconomy';
 import {
   createNativePortConfiguration,
+  nativePortJunctionAliases,
   createNativeRailwayConfiguration,
 } from './nativeInfrastructure';
 import type {
@@ -401,13 +402,27 @@ export class CityLife {
       this.nativeRailArrivals.set(placement.id, saved?.arrival ?? null);
     }
 
+    const ports = [...this.nativePorts.values()];
+    const graph = routing.junctions();
+    const freight = ports.flatMap(configuration => configuration.junctions);
+    const aliases = new Map(
+      ports.flatMap(configuration => [
+        ...nativePortJunctionAliases(configuration, graph),
+      ]),
+    );
+
+    this.traffic.setJunctions([...freight, ...graph]);
+
+    if (restored) {
+      this.traffic.reconcileOrphanReservations();
+    }
+
     this.traffic.setJunctions(
-      [...this.nativePorts.values()]
-        .flatMap(configuration => configuration.junctions)
-        .map(box => ({...box}))
-        .concat(
-          routing.junctions().map(box => ({...box, key: `graph/${box.id}`})),
-        ),
+      [
+        ...freight,
+        ...graph.map(box => ({...box, id: aliases.get(box.id) ?? box.id})),
+      ],
+      aliases,
     );
     this.economy?.setPortCargoProvider(() =>
       [...this.nativePorts.values()].flatMap(configuration =>

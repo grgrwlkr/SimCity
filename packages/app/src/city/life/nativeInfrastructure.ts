@@ -49,6 +49,34 @@ export interface NativePortConfiguration {
   readonly transform: NativePlacementTransform;
 }
 
+/** Private driveway nodes belong to the original extended freight reservation. */
+export function nativePortJunctionAliases(
+  configuration: NativePortConfiguration,
+  graph: readonly JunctionBounds[],
+): Map<number, number> {
+  const aliases = new Map<number, number>();
+
+  for (const node of graph) {
+    const point = configuration.transform.toLocal({
+      x: (node.minX + node.maxX) / 2,
+      z: (node.minZ + node.maxZ) / 2,
+    });
+    const index = FREIGHT_JUNCTIONS.findIndex(
+      box =>
+        point.x >= box.minX &&
+        point.x <= box.maxX &&
+        point.z >= box.minZ &&
+        point.z <= box.maxZ,
+    );
+
+    if (index >= 0) {
+      aliases.set(node.id, configuration.junctions[index]!.id);
+    }
+  }
+
+  return aliases;
+}
+
 /** Preserve native line/arc geometry and metre-based speed in a rigid placement. */
 export function nativeInfrastructureRoute(
   route: LaneRoute,

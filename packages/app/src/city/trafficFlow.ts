@@ -410,10 +410,41 @@ export class CityTraffic {
   }
 
   /** Stable IDs retain reservations as a free-form road network grows. */
-  setJunctions(junctions: readonly JunctionBounds[]): void {
+  setJunctions(
+    junctions: readonly JunctionBounds[],
+    aliases?: ReadonlyMap<number, number>,
+  ): void {
     const count = Math.max(this.owners.length, ...junctions.map(j => j.id + 1));
 
-    if (count > this.owners.length) {
+    if (aliases?.size) {
+      const owners = new Int32Array(count).fill(-1);
+
+      owners.set(this.owners);
+
+      for (const [source, target] of aliases) {
+        const owner = owners[source]!;
+
+        if (owner < 0 || source === target) {
+          continue;
+        }
+        if (owners[target]! >= 0 && owners[target] !== owner) {
+          throw new Error('Несовместимые владельцы общей дорожной резервации');
+        }
+
+        owners[target] = owner;
+        owners[source] = -1;
+      }
+
+      this.owners = owners;
+      this.held = this.held.map(gate => aliases.get(gate) ?? gate);
+
+      for (const [id, gates] of this.maneuverJunctions) {
+        this.maneuverJunctions.set(
+          id,
+          new Set([...gates].map(gate => aliases.get(gate) ?? gate)),
+        );
+      }
+    } else if (count > this.owners.length) {
       const owners = new Int32Array(count).fill(-1);
 
       owners.set(this.owners);
@@ -950,6 +981,62 @@ export class CityTraffic {
     this.rebuildSpatial();
   }
 
+  /** Recover authored saves whose former gate was lost during a direct handover. */
+  reconcileOrphanReservations(): number[] {
+    if (this.options.roads?.length !== 0) {
+      return [];
+    }
+
+    // Infrastructure bounds arrive after traffic restore; retain their complete maneuver claims.
+    for (const [id, maneuver] of this.maneuvers) {
+      this.maneuverJunctions.set(
+        id,
+        new Set(
+          [...this.maneuverGates(maneuver)].filter(
+            gate => this.owners[gate] === id,
+          ),
+        ),
+      );
+    }
+
+    const recovered: number[] = [];
+
+    for (let gate = 0; gate < this.owners.length; gate++) {
+      const owner = this.owners[gate]!;
+      const car = this.vehicles[owner];
+
+      if (
+        owner < 0 ||
+        !car ||
+        this.held[owner] === gate ||
+        this.maneuverJunctions.get(owner)?.has(gate)
+      ) {
+        continue;
+      }
+
+      const bounds =
+        this.options.junctions?.filter(box => box.id === gate) ?? [];
+      const l = car.size.length / 2 + BUMPER_MARGIN;
+      const w = car.size.width / 2 + SIDE_MARGIN;
+      const ex = l * Math.abs(car.pose.dx) + w * Math.abs(car.pose.dz);
+      const ez = l * Math.abs(car.pose.dz) + w * Math.abs(car.pose.dx);
+
+      if (
+        !bounds.length ||
+        bounds.some(box => extensionOverlaps(car.pose, car.size, box, ex, ez))
+      ) {
+        continue;
+      }
+
+      this.owners[gate] = -1;
+      recovered.push(gate);
+    }
+
+    this.pedestrianJunctionTick = -1;
+
+    return recovered;
+  }
+
   update(seconds: number): LanePose[] {
     const time = Math.max(0, seconds);
 
@@ -1391,6 +1478,18 @@ export class CityTraffic {
       );
 
       if (gate >= 0) {
+        const previous = this.held[car.id]!;
+
+        // Adjacent extensions can change identity within one step, before the next cleanup.
+        if (
+          previous >= 0 &&
+          previous !== gate &&
+          this.owners[previous] === car.id &&
+          !this.maneuverJunctions.get(car.id)?.has(previous)
+        ) {
+          this.owners[previous] = -1;
+        }
+
         this.owners[gate] = car.id;
         this.held[car.id] = gate;
       }

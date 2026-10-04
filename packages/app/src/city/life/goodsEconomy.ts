@@ -925,17 +925,15 @@ export class NativeGoodsEconomy {
       exportTarget: warehouse =>
         Math.min(
           3,
-          Math.ceil(
-            (this.availableStock(warehouses[warehouse]!) +
-              this.portCargo()
-                .filter(
-                  cargo =>
-                    cargo.buildingId === warehouses[warehouse] &&
-                    cargo.flow === 'export',
-                )
-                .reduce((sum, cargo) => sum + cargo.quantity, 0)) /
-              this.rules.deliverySize,
-          ),
+          this.portCargo().filter(
+            cargo =>
+              cargo.buildingId === warehouses[warehouse] &&
+              cargo.flow === 'export',
+          ).length +
+            Math.ceil(
+              this.availableStock(warehouses[warehouse]!) /
+                this.rules.deliverySize,
+            ),
         ),
       imports,
       takeExport: warehouse => {
