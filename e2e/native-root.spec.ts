@@ -276,3 +276,26 @@ test('legacy regions remain visible and retain their exact stored bytes', async 
   expect(await page.evaluate(() => window.__cityLife.save())).toEqual(before);
   expect(await records(page)).toEqual(stored);
 });
+
+test('cold loading never overwrites the selected record with a generated initial world', async ({
+  page,
+}) => {
+  await startNativeWorld(page);
+  await page.evaluate(() => window.__cityLife.advance(24));
+  await page.locator('#life-open').click();
+  await page.locator('#life-save').click();
+  await expect(page.locator('#life-save-status')).toContainText(
+    'Город сохранён',
+  );
+  const saved = await records(page);
+
+  await page.reload();
+  await expect(page.locator('#city')).toHaveAttribute(
+    'data-life-ready',
+    'true',
+  );
+  await expect(page.locator('#main-menu')).toBeHidden();
+  expect(JSON.stringify(await records(page)) === JSON.stringify(saved)).toBe(
+    true,
+  );
+});

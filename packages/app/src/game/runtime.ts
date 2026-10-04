@@ -194,6 +194,7 @@ async function chooseSave(): Promise<unknown> {
 export async function createGame(
   seed: string,
   id: string = crypto.randomUUID(),
+  persistInitial = true,
 ): Promise<void> {
   cancelChooser?.();
   active?.dispose();
@@ -228,9 +229,13 @@ export async function createGame(
     },
   });
   await active.ready;
-  await storeGame(
-    createGameSave(identity.id, identity.name, await active.save()),
-  );
+
+  if (persistInitial) {
+    await storeGame(
+      createGameSave(identity.id, identity.name, await active.save()),
+    );
+  }
+
   updateIdentity();
 }
 
@@ -238,7 +243,7 @@ export async function loadGame(value: unknown): Promise<void> {
   const save = parseGameSave(value);
 
   if (!active) {
-    await createGame(save.seed, save.id);
+    await createGame(save.seed, save.id, false);
   }
 
   pending = save;
