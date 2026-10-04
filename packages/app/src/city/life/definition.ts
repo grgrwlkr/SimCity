@@ -48,6 +48,7 @@ export interface AuthoredEntry {
 export interface AuthoredPublicSpace {
   readonly id: string;
   readonly municipalityId: string;
+  readonly sourceSeed?: string | undefined;
   readonly sourceBlock: CityBlock;
   readonly center: Point;
   readonly yaw: number;

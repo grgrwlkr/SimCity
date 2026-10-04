@@ -350,12 +350,20 @@ export function applyNativeEdit(
 
       withinTown(contour);
       assertLand(document, contour);
-      const sourceBlock = generateCity(document.seed).blocks.find(
+      const source = generateCity(document.seed);
+      const candidates = source.blocks.filter(
         block => block.district === 'park',
-      )!;
+      );
+      const sourceBlock = candidates[document.nextId % candidates.length];
+
+      if (!sourceBlock) {
+        throw new Error('Для парка нет исходного шаблона.');
+      }
+
       const space: AuthoredPublicSpace = {
         id,
         municipalityId: town!.id,
+        sourceSeed: source.seed,
         sourceBlock,
         center: edit.center,
         yaw,
@@ -617,6 +625,7 @@ const savedDocument = z.object({
       z.object({
         id: z.string(),
         municipalityId: z.string(),
+        sourceSeed: z.string().optional(),
         sourceBlock: savedBlock,
         center: savedPoint,
         yaw: z.number().finite(),
