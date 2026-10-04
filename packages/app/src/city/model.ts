@@ -39,9 +39,11 @@ import {
   houseGardenModules,
 } from './housePlots';
 import type {LifeFrame, LifeProfile} from './life/types';
-import {CURB_PARKING} from './life/streetParking';
 import {addGarage} from './life/parkingView';
 import {addStreetCrossings} from './streetCrossings';
+import {drawNativeBlock} from './blockModules';
+import {createNativeRegionView} from './regionGeography';
+import type {NativeRegionGeography} from './regionGeography';
 
 for (const [key, color] of Object.entries({
   glassBlue: 0x789aaf,
@@ -431,6 +433,65 @@ export function industry(
   }
 }
 
+/** Draw the whole native building and its annex/garden without altering its source frame. */
+export function drawNativeBuilding(
+  batch: Batch,
+  b: CityBuilding,
+  seed: string,
+  life?: LifeProfile,
+  chimneys: THREE.Vector3[] = [],
+): {object: BatchObject; treeCount: number} {
+  let treeCount = 0;
+  const garden = b.plot
+    ? batch.capture(sink => {
+        treeCount += houseGardenModules(sink, b, seed);
+      })
+    : undefined;
+  const body = batch.capture(sink => {
+    if (b.district === 'downtown') {
+      skyscraper(sink, b);
+    } else if (b.district === 'industrial') {
+      industry(sink, b, chimneys);
+    } else if (b.plot) {
+      houseBodyModules(sink, b);
+    } else {
+      lowriseModules(
+        sink,
+        b,
+        life?.garageBuildings[b.id] !== undefined
+          ? Math.min(1.4, b.width / 4)
+          : 0,
+      );
+    }
+
+    const garage = life?.garageBuildings[b.id];
+
+    if (garage !== undefined) {
+      addGarage(sink, life!.facilities[garage]!);
+    }
+    if (life && b.district === 'downtown') {
+      const door = life.places.find(p => p.id === b.id)!.door;
+
+      sink.add('box', 'dark', door.x, 2.15, door.z, 1.2, 2.25, 0.1);
+    }
+    if (b.plot) {
+      houseAnnexModules(sink, b);
+    }
+  });
+
+  const object = garden
+    ? {
+        parts: body.parts,
+        setVisible: (visible: boolean) => {
+          body.setVisible(visible);
+          garden.setVisible(visible);
+        },
+      }
+    : body;
+
+  return {object, treeCount};
+}
+
 export interface GeneratedCity {
   group: THREE.Group;
   hitboxes: THREE.Mesh[];
@@ -449,6 +510,7 @@ export interface GeneratedCity {
 export function createCity(
   layout: CityLayout,
   life?: LifeProfile,
+  geography?: NativeRegionGeography,
 ): GeneratedCity {
   const group = new THREE.Group();
   const batch = new Batch();
@@ -589,184 +651,17 @@ export function createCity(
   const lampPositions: THREE.Vector3[] = [];
 
   for (const [index, block] of layout.blocks.entries()) {
-    const freightYard = WAREHOUSES.some(yard => yard.blockId === block.id);
+    const drawn = drawNativeBlock(
+      batch,
+      layout,
+      block,
+      index,
+      life,
+      WAREHOUSES.some(yard => yard.blockId === block.id),
+    );
 
-    if (block.district === 'railway') {
-      continue;
-    }
-
-    const bays = life?.bays.filter(bay => bay.blockId === block.id) ?? [];
-    const curbParking = bays.length > 0;
-    const cuts = bays.map(bay => {
-      const f = life!.facilities[bay.facility]!;
-      const vertical = f.road.direction % 2 === 1;
-      const hx = (vertical ? CURB_PARKING.width : CURB_PARKING.pavedLength) / 2;
-      const hz = (vertical ? CURB_PARKING.pavedLength : CURB_PARKING.width) / 2;
-
-      return {
-        minX: Math.max(block.x - 13, f.entrance.x - hx),
-        maxX: Math.min(block.x + 13, f.entrance.x + hx),
-        minZ: Math.max(block.z - 13, f.entrance.z - hz),
-        maxZ: Math.min(block.z + 13, f.entrance.z + hz),
-      };
-    });
-
-    if (curbParking) {
-      const xs = [
-        ...new Set([
-          block.x - 13,
-          block.x + 13,
-          ...cuts.flatMap(c => [c.minX, c.maxX]),
-        ]),
-      ].sort((a, b) => a - b);
-      const zs = [
-        ...new Set([
-          block.z - 13,
-          block.z + 13,
-          ...cuts.flatMap(c => [c.minZ, c.maxZ]),
-        ]),
-      ].sort((a, b) => a - b);
-
-      for (let ix = 1; ix < xs.length; ix++) {
-        for (let iz = 1; iz < zs.length; iz++) {
-          const x = (xs[ix - 1]! + xs[ix]!) / 2;
-          const z = (zs[iz - 1]! + zs[iz]!) / 2;
-
-          if (
-            !cuts.some(
-              c => x > c.minX && x < c.maxX && z > c.minZ && z < c.maxZ,
-            )
-          ) {
-            batch.add(
-              'box',
-              'paving',
-              x,
-              0.91,
-              z,
-              xs[ix]! - xs[ix - 1]!,
-              0.3,
-              zs[iz]! - zs[iz - 1]!,
-            );
-          }
-        }
-      }
-    } else {
-      batch.add(
-        'box',
-        block.district === 'industrial' ? 'port' : 'paving',
-        block.x,
-        freightYard ? 0.7 : 0.91,
-        block.z,
-        26,
-        0.3,
-        26,
-      );
-    }
-
-    let grassMinX = -11.8;
-    let grassMaxX = 11.8;
-    let grassMinZ = -11.8;
-    let grassMaxZ = 11.8;
-    const grassEdge =
-      17 -
-      CITY_ROAD_WIDTH / 2 -
-      CURB_PARKING.width -
-      CURB_PARKING.sidewalkWidth;
-
-    for (const bay of bays) {
-      const f = life!.facilities[bay.facility]!;
-
-      if (f.road.direction % 2 === 1) {
-        if (f.entrance.x > block.x) {
-          grassMaxX = grassEdge;
-        } else {
-          grassMinX = -grassEdge;
-        }
-      } else if (f.entrance.z > block.z) {
-        grassMaxZ = grassEdge;
-      } else {
-        grassMinZ = -grassEdge;
-      }
-    }
-
-    if (block.district === 'park') {
-      batch.add(
-        'box',
-        'grass',
-        block.x + (grassMinX + grassMaxX) / 2,
-        1.11,
-        block.z + (grassMinZ + grassMaxZ) / 2,
-        grassMaxX - grassMinX,
-        0.1,
-        grassMaxZ - grassMinZ,
-      );
-      batch.add('box', 'path', block.x, 1.18, block.z, 23.6, 0.05, 2.5);
-      batch.add(
-        'box',
-        'path',
-        block.x,
-        1.18,
-        block.z,
-        2.5,
-        0.05,
-        grassMaxZ - grassMinZ,
-      );
-
-      for (const dx of [-8, -4, 5, 9]) {
-        for (const dz of [-8, 7]) {
-          plant(block.x + dx, block.z + dz, 1.2 + (index % 3) * 0.2);
-        }
-      }
-
-      if (block.x >= -102) {
-        addParts(
-          batch,
-          propParts('fountain', propKit(layout.seed, 'fountain', block.id)),
-          block.x,
-          1.1,
-          block.z,
-        );
-      }
-
-      bench(block.x - 6, block.z - 3);
-      bench(block.x + 6, block.z + 3, Math.PI);
-    } else if (
-      block.district !== 'industrial' &&
-      !layout.buildings.some(b => b.blockId === block.id && b.plot)
-    ) {
-      for (const [dx, dz] of [
-        [-12, -10],
-        [12, 10],
-        [-12, 10],
-        [12, -10],
-      ]) {
-        plant(block.x + dx!, block.z + dz!, 0.86);
-      }
-    }
-
-    for (const side of [-1, 1]) {
-      const verticalParking = bays.some(b => {
-        const f = life!.facilities[b.facility]!;
-
-        return (
-          f.road.direction % 2 === 1 &&
-          Math.sign(f.entrance.x - block.x) === side
-        );
-      });
-      const lx = block.x + side * (verticalParking ? 9.8 : 12.4);
-      const lz = block.z + side * 4;
-
-      addParts(
-        batch,
-        propParts('lamp', propKit(layout.seed, 'lamp', `${block.id}/${side}`)),
-        lx,
-        freightYard ? 0.87 : 1.03,
-        lz,
-        1,
-        side > 0 ? 0 : Math.PI,
-      );
-      lampPositions.push(new THREE.Vector3(lx, 1.13, lz));
-    }
+    treeCount += drawn.treeCount;
+    lampPositions.push(...drawn.lampPositions);
   }
 
   addStreetCrossings(batch, !!life, roads);
@@ -836,55 +731,10 @@ export function createCity(
 
   for (const b of layout.buildings) {
     const firstChimney = chimneys.length;
-    const garden = b.plot
-      ? batch.capture(sink => {
-          treeCount += houseGardenModules(sink, b, layout.seed);
-        })
-      : undefined;
-    const body = batch.capture(sink => {
-      if (b.district === 'downtown') {
-        skyscraper(sink, b);
-      } else if (b.district === 'industrial') {
-        industry(sink, b, chimneys);
-      } else if (b.plot) {
-        houseBodyModules(sink, b);
-      } else {
-        lowriseModules(
-          sink,
-          b,
-          life?.garageBuildings[b.id] !== undefined
-            ? Math.min(1.4, b.width / 4)
-            : 0,
-        );
-      }
+    const drawn = drawNativeBuilding(batch, b, layout.seed, life, chimneys);
 
-      const garage = life?.garageBuildings[b.id];
-
-      if (garage !== undefined) {
-        addGarage(sink, life!.facilities[garage]!);
-      }
-      if (life && b.district === 'downtown') {
-        const door = life.places.find(p => p.id === b.id)!.door;
-
-        sink.add('box', 'dark', door.x, 2.15, door.z, 1.2, 2.25, 0.1);
-      }
-      if (b.plot) {
-        houseAnnexModules(sink, b);
-      }
-    });
-
-    buildings.set(
-      b.id,
-      garden
-        ? {
-            parts: body.parts,
-            setVisible: visible => {
-              body.setVisible(visible);
-              garden.setVisible(visible);
-            },
-          }
-        : body,
-    );
+    treeCount += drawn.treeCount;
+    buildings.set(b.id, drawn.object);
 
     for (let i = firstChimney; i < chimneys.length; i++) {
       chimneyBuildings.push(b.id);
@@ -1095,12 +945,17 @@ export function createCity(
   };
 
   update(0);
+  const region = geography ? createNativeRegionView(layout, geography) : null;
+
+  if (region) {
+    group.add(region.group);
+  }
 
   return {
     group,
     hitboxes,
     railwayTargets: railwayView?.targets ?? [],
-    treeCount,
+    treeCount: treeCount + (region?.treeCount ?? 0),
     peopleCount: people?.count ?? 0,
     update,
     harborStatus: () => liveHarbor ?? harbor.status(),
@@ -1124,6 +979,7 @@ export function createCity(
     },
     dispose() {
       construction.dispose();
+      region?.dispose();
       group.traverse(object => {
         if (object instanceof THREE.InstancedMesh) {
           object.dispose();

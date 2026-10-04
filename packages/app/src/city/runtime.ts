@@ -1,16 +1,20 @@
 import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
 import {material} from './primitives';
+import {districtNames, type CityBuilding, type District} from './generator';
+import {type GeneratedCity} from './model';
+import {createNativeWorldView} from './nativeWorldView';
 import {
-  districtNames,
-  generateCity,
-  type CityBuilding,
-  type District,
-} from './generator';
-import {createCity, type GeneratedCity} from './model';
+  createPrototypeDefinition,
+  parseWorldDefinition,
+} from './life/definition';
+import type {CityWorldDefinition} from './life/definition';
+import type {NativeRegionGeography} from './regionGeography';
 import {describeBuildingKit, describePlotKit} from './assetKits';
 import {buildingTop} from './buildingModules';
 import {gridForLayout} from './cityGrid';
+import {createNativeRegionGeography} from './regionGeography';
+import {CameraKeyboard, stepCameraKeyboard} from '../region/cameraKeyboard';
 import {createLifeProfile} from './life/network';
 import {LifeClient, readCity, storeCity} from './life/client';
 import {LifeView} from './life/view';
@@ -25,10 +29,16 @@ export type NativeCitySave = ReturnType<CityLife['save']>;
 export interface CityRuntimeOptions {
   seed?: string;
   visible?: boolean;
+  region?: boolean;
+  definition?: CityWorldDefinition;
+  geography?: NativeRegionGeography;
+  getGeography?: (
+    definition: CityWorldDefinition,
+  ) => NativeRegionGeography | undefined;
   onExit?: () => void;
   onSave?: (world: NativeCitySave) => Promise<void>;
   onLoad?: () => Promise<unknown>;
-  afterFrame?: () => void;
+  afterFrame?: (frame: LifeFrame) => void;
   onLoadResult?: (success: boolean) => void;
 }
 
@@ -39,6 +49,15 @@ export interface CityRuntime {
   load(value: unknown): Promise<void>;
   dispose(): void;
   currentSeed(): string;
+  currentDefinition(): CityWorldDefinition;
+  updateDefinition(
+    definition: CityWorldDefinition,
+    cost?: number,
+  ): Promise<void>;
+  viewRegion(): void;
+  focus(point: {x: number; z: number}, zoom?: number): void;
+  setOverlay(overlay: THREE.Object3D | null): void;
+  groundPoint(clientX: number, clientY: number): {x: number; z: number} | null;
 }
 
 function element<T extends HTMLElement>(id: string): T {
@@ -75,6 +94,7 @@ export function createCityRuntime(
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.localClippingEnabled = true;
   const scene = new THREE.Scene();
+  let overlay: THREE.Object3D | null = null;
   const camera = new THREE.OrthographicCamera(-200, 200, 170, -170, 0.1, 1800);
 
   camera.position.set(350, 340, 430);
@@ -88,7 +108,13 @@ export function createCityRuntime(
   controls.dampingFactor = 0.08;
   controls.minPolarAngle = 0.025;
   controls.maxPolarAngle = Math.PI * 0.445;
-  controls.minZoom = 0.65;
+  controls.minZoom = options.region ? 0.075 : 0.65;
+
+  if (options.region) {
+    camera.far = 12000;
+    camera.updateProjectionMatrix();
+  }
+
   controls.maxZoom = 9;
   controls.rotateSpeed = 0.65;
   controls.zoomSpeed = 0.7;
@@ -141,11 +167,17 @@ export function createCityRuntime(
   const motionPreference = matchMedia('(prefers-reduced-motion: reduce)');
   let paused = motionPreference.matches;
   let night = false;
-  let layout = generateCity(
-    options.seed ??
-      (new URLSearchParams(location.search).get('seed')?.trim().slice(0, 32) ||
-        '1206'),
-  );
+  let definition =
+    options.definition ??
+    createPrototypeDefinition(
+      options.seed ??
+        (new URLSearchParams(location.search)
+          .get('seed')
+          ?.trim()
+          .slice(0, 32) ||
+          '1206'),
+    );
+  let layout = definition.layout;
   let city: GeneratedCity | undefined;
   let life: LifeClient | undefined;
   let lifeView: LifeView | undefined;
@@ -835,15 +867,31 @@ export function createCityRuntime(
     element('object-count').textContent =
       `${layout.buildings.length} зданий · ${frame.population} жителей · ${frame.families} семей`;
     canvas.dataset['lifeReady'] = 'true';
-    options.afterFrame?.();
+    options.afterFrame?.(frame);
   }
 
-  function regenerate(seed: string, reuseLife = false): void {
+  function regenerate(
+    seed: string,
+    reuseLife = false,
+    supplied?: CityWorldDefinition,
+  ): void {
     closeConstruction();
     canvas.dataset['ready'] = 'false';
-    const nextLayout = generateCity(seed);
-    const profile = createLifeProfile(nextLayout);
-    const next = createCity(nextLayout, profile);
+    const nextDefinition = supplied ?? createPrototypeDefinition(seed);
+    const nextLayout = nextDefinition.layout;
+    const profile =
+      nextDefinition.kind === 'authored'
+        ? nextDefinition.profile
+        : createLifeProfile(nextLayout);
+    const geography =
+      nextDefinition.kind === 'authored'
+        ? (options.getGeography?.(nextDefinition) ?? options.geography)
+        : options.region
+          ? createNativeRegionGeography(nextLayout)
+          : undefined;
+    const next = createNativeWorldView(nextDefinition, geography);
+
+    definition = nextDefinition;
 
     if (!reuseLife) {
       life?.dispose();
@@ -863,7 +911,9 @@ export function createCityRuntime(
     frame = null;
     following = false;
     speed = 1;
-    lifeView = new LifeView(seed);
+    lifeView = new LifeView(seed, {
+      utilities: nextDefinition.kind !== 'authored',
+    });
     parkingView = new ParkingView(profile);
     scene.add(lifeView.group, parkingView.group);
 
@@ -957,17 +1007,22 @@ export function createCityRuntime(
     );
 
     if (!reuseLife) {
-      life = new LifeClient(seed, receiveFrame, message => {
-        if (disposed) {
-          return;
-        }
+      life = new LifeClient(
+        seed,
+        receiveFrame,
+        message => {
+          if (disposed) {
+            return;
+          }
 
-        paused = true;
-        syncMotion();
-        element('scene-error').hidden = false;
-        element('scene-error').textContent =
-          `Симуляция остановлена: ${message}`;
-      });
+          paused = true;
+          syncMotion();
+          element('scene-error').hidden = false;
+          element('scene-error').textContent =
+            `Симуляция остановлена: ${message}`;
+        },
+        nextDefinition,
+      );
     }
 
     canvas.dataset['lifeReady'] = 'false';
@@ -1033,6 +1088,12 @@ export function createCityRuntime(
 
   async function loadWorld(value: unknown): Promise<void> {
     const priorPaused = paused;
+    let nextDefinition: CityWorldDefinition | undefined;
+
+    if (typeof value === 'object' && value !== null && 'definition' in value) {
+      nextDefinition = parseWorldDefinition(value.definition);
+    }
+
     const nextSeed =
       typeof value === 'object' &&
       value !== null &&
@@ -1045,13 +1106,21 @@ export function createCityRuntime(
       await life!.ready;
       paused = true;
       syncMotion();
-      loadingLayout = nextSeed !== layout.seed;
+      loadingLayout =
+        nextSeed !== layout.seed ||
+        nextDefinition?.kind === 'authored' ||
+        definition.kind === 'authored';
+
       // The worker replaces its world only after native validation succeeds.
       // Hold that frame until its matching scene/profile have been rebuilt.
-      await life!.load(value);
+      if (nextDefinition) {
+        await life!.load(value, nextDefinition);
+      } else {
+        await life!.load(value);
+      }
 
       if (loadingLayout) {
-        regenerate(nextSeed, true);
+        regenerate(nextSeed, true, life!.definition ?? nextDefinition);
       }
 
       options.onLoadResult?.(true);
@@ -1114,7 +1183,7 @@ export function createCityRuntime(
   );
   resize();
   syncMotion();
-  regenerate(layout.seed);
+  regenerate(layout.seed, false, definition);
 
   if (new URLSearchParams(location.search).get('view') === 'harbor') {
     host.querySelector<HTMLButtonElement>('[data-district="harbor"]')!.click();
@@ -1127,6 +1196,34 @@ export function createCityRuntime(
   }
   if (new URLSearchParams(location.search).get('view') === 'construction') {
     showConstruction(exampleBuilding('residential'));
+  }
+
+  function overviewRegion(): void {
+    stopOrbit();
+    following = false;
+    const offset = camera.position
+      .clone()
+      .sub(controls.target)
+      .normalize()
+      .multiplyScalar(5500);
+
+    controls.target.set(0, 0, 0);
+    camera.position.copy(offset);
+    camera.zoom = 0.085;
+    camera.updateProjectionMatrix();
+    controls.update();
+  }
+
+  if (options.region) {
+    const overview = document.createElement('button');
+
+    overview.id = 'native-region-overview';
+    overview.textContent = 'Весь регион';
+    overview.className = 'native-region-overview';
+    overview.addEventListener('click', overviewRegion, {
+      signal: lifetime.signal,
+    });
+    host.append(overview);
   }
 
   const ready = life!.ready;
@@ -1166,6 +1263,38 @@ export function createCityRuntime(
     );
   }
 
+  const keyboard = new CameraKeyboard();
+
+  if (options.region) {
+    window.addEventListener(
+      'keydown',
+      event => {
+        const target = event.target instanceof Element ? event.target : null;
+        const blocked =
+          !visible ||
+          !!target?.closest(
+            'input, select, textarea, dialog, [contenteditable]',
+          );
+
+        if (keyboard.press(event.code, blocked)) {
+          event.preventDefault();
+        }
+      },
+      {signal: lifetime.signal},
+    );
+    window.addEventListener('keyup', event => keyboard.release(event.code), {
+      signal: lifetime.signal,
+    });
+    window.addEventListener('blur', () => keyboard.clear(), {
+      signal: lifetime.signal,
+    });
+    const hint = host.querySelector('.view-hint span:last-child');
+
+    if (hint) {
+      hint.textContent += ' · WASD — движение · Q/E — поворот';
+    }
+  }
+
   let previous = performance.now();
   let lastHarborStatus = '';
 
@@ -1183,6 +1312,18 @@ export function createCityRuntime(
 
     if (document.hidden || !visible || disposed) {
       return;
+    }
+    if (definition.kind === 'authored') {
+      sun.target.position.set(controls.target.x, 0, controls.target.z);
+      sun.position.set(controls.target.x - 160, 280, controls.target.z + 140);
+      sun.target.updateMatrixWorld();
+    }
+    if (options.region && keyboard.active) {
+      stepCameraKeyboard(
+        {position: camera.position, target: controls.target, zoom: camera.zoom},
+        keyboard,
+        dt * 0.18,
+      );
     }
     if (!paused) {
       life?.tick(dt * speed);
@@ -1249,6 +1390,7 @@ export function createCityRuntime(
 
       visible = value;
       controls.enabled = value;
+      keyboard.clear();
       pointers.clear();
       dragged = false;
       previous = performance.now();
@@ -1294,5 +1436,74 @@ export function createCityRuntime(
       }
     },
     currentSeed: () => layout.seed,
+    currentDefinition: () => definition,
+    async updateDefinition(next, cost = 0) {
+      const priorPaused = paused;
+
+      loadingLayout = true;
+
+      try {
+        const updated = await life!.updateDefinition(next, cost);
+
+        regenerate(updated.seed, true, updated);
+        loadingLayout = false;
+        const incoming = deferredFrame;
+
+        deferredFrame = null;
+
+        if (incoming) {
+          receiveFrame(incoming);
+        }
+      } catch (error) {
+        loadingLayout = false;
+        deferredFrame = null;
+        throw error;
+      } finally {
+        paused = priorPaused;
+        syncMotion();
+      }
+    },
+    viewRegion: overviewRegion,
+    focus(point, zoom = 2) {
+      stopOrbit();
+      following = false;
+      const offset = camera.position.clone().sub(controls.target);
+
+      controls.target.set(point.x, 0, point.z);
+      camera.position.copy(controls.target).add(offset);
+      camera.zoom = Math.max(
+        controls.minZoom,
+        Math.min(controls.maxZoom, zoom),
+      );
+      camera.updateProjectionMatrix();
+      controls.update();
+    },
+    setOverlay(next) {
+      if (overlay) {
+        scene.remove(overlay);
+      }
+
+      overlay = next;
+
+      if (overlay) {
+        scene.add(overlay);
+      }
+    },
+    groundPoint(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      const pointer = new THREE.Vector2(
+        ((clientX - rect.left) / rect.width) * 2 - 1,
+        -((clientY - rect.top) / rect.height) * 2 + 1,
+      );
+      const ray = new THREE.Raycaster();
+
+      ray.setFromCamera(pointer, camera);
+      const point = ray.ray.intersectPlane(
+        new THREE.Plane(new THREE.Vector3(0, 1, 0), -1),
+        new THREE.Vector3(),
+      );
+
+      return point ? {x: point.x, z: point.z} : null;
+    },
   };
 }

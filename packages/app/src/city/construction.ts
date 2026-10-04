@@ -19,6 +19,13 @@ export interface ConstructionStatus {
   running: boolean;
 }
 
+export type ConstructionSiteFactory = (
+  id: string,
+  plot: ConstructionPlot,
+  height: number,
+  clearance: (x: number, z: number, radius: number) => number,
+) => ReturnType<typeof createConstructionSite>;
+
 interface SectionPart {
   vertices: THREE.Vector3[];
   edges: Array<[number, number]>;
@@ -135,6 +142,12 @@ export class Construction {
       z: number,
       radius: number,
     ) => number = () => 0,
+    private readonly siteFactory: ConstructionSiteFactory = (
+      _id,
+      plot,
+      height,
+      clearance,
+    ) => createConstructionSite(plot, height, clearance),
   ) {
     this.group.name = 'building-construction';
     this.cap.name = 'construction-surface';
@@ -175,7 +188,7 @@ export class Construction {
       maxZ: bounds.max.z + 1,
     };
 
-    this.site = createConstructionSite(plot, this.active.top, (x, z, radius) =>
+    this.site = this.siteFactory(id, plot, this.active.top, (x, z, radius) =>
       this.clearance(id, x, z, radius),
     );
     this.group.add(this.site.group);

@@ -793,3 +793,22 @@
     }
   }
 }
+
+@scope (.native-city) {
+  .native-region-overview {
+    position: absolute;
+    top: 25px;
+    left: 165px;
+    border: 1px solid #aec1b7;
+    border-radius: 7px;
+    background: #f5f6ef;
+    color: #29483e;
+    padding: 9px 12px;
+    font-size: 12px;
+  }
+  :scope.night .native-region-overview {
+    background: #293e46;
+    color: #dce7df;
+    border-color: #52636b;
+  }
+}

@@ -45,13 +45,26 @@ export function freightParts(seed: string): AssetPart[][] {
     });
 }
 
+function busParts(seed: string): AssetPart[] {
+  return vehicleParts({
+    ...vehicleKit(seed, 9876),
+    body: 'van',
+    length: 4.2,
+    width: 1.9,
+    color: 'yellow',
+    roof: 'bare',
+  });
+}
+
 export class LifeView {
   readonly group = new THREE.Group();
   readonly people = new THREE.Group();
   readonly cars = new THREE.Group();
   private personAssets: MovingAssets | undefined;
   private carAssets: MovingAssets | undefined;
-  private readonly freight: MovingAssets;
+  private freight: MovingAssets | undefined;
+  private readonly utilities = new THREE.Group();
+  private utilitySignature = '';
   private personIds = '';
   private carIds = '';
   private readonly object = new THREE.Object3D();
@@ -65,24 +78,22 @@ export class LifeView {
   );
   selected: number | null = null;
 
-  constructor(private seed: string) {
+  constructor(
+    private seed: string,
+    private options: {utilities?: boolean} = {},
+  ) {
     this.people.userData['kind'] = 'person';
     this.cars.userData['kind'] = 'car';
     this.group.add(this.people, this.cars);
-    const utility = new THREE.Group();
+    this.group.add(this.utilities);
 
-    this.group.add(utility);
-    this.freight = new MovingAssets(utility, [
-      ...freightParts(seed),
-      vehicleParts({
-        ...vehicleKit(seed, 9876),
-        body: 'van',
-        length: 4.2,
-        width: 1.9,
-        color: 'yellow',
-        roof: 'bare',
-      }),
-    ]);
+    if (options.utilities !== false) {
+      this.freight = new MovingAssets(this.utilities, [
+        ...freightParts(seed),
+        busParts(seed),
+      ]);
+    }
+
     this.ring.rotation.x = -Math.PI / 2;
     this.ring.visible = false;
     this.ring.renderOrder = 10;
@@ -148,18 +159,46 @@ export class LifeView {
       frame.cars.map(c => this.pose(c.x, c.y, c.z, c.yaw, c.visible ? 1 : 0)),
       frame.seconds,
     );
-    this.freight.update(
+    const dynamic = this.options.utilities === false;
+    const busVisible = frame.bus.visible;
+
+    if (dynamic) {
+      const signature = `${frame.freight.length}/${busVisible}`;
+
+      if (signature !== this.utilitySignature) {
+        this.clear(this.utilities);
+        this.utilitySignature = signature;
+        const freight = freightParts(this.seed);
+        const assets = frame.freight.map(
+          (_, index) => freight[index % freight.length]!,
+        );
+
+        if (busVisible) {
+          assets.push(busParts(this.seed));
+        }
+
+        this.freight = assets.length
+          ? new MovingAssets(this.utilities, assets)
+          : undefined;
+      }
+    }
+
+    this.freight?.update(
       [
         ...frame.freight.map(p =>
           this.pose(p.x, p.y ?? 0.91, p.z, Math.atan2(p.dx, p.dz)),
         ),
-        this.pose(
-          frame.bus.x,
-          frame.bus.y ?? 0.91,
-          frame.bus.z,
-          Math.atan2(frame.bus.dx, frame.bus.dz),
-          frame.bus.visible ? 1 : 0,
-        ),
+        ...(!dynamic || busVisible
+          ? [
+              this.pose(
+                frame.bus.x,
+                frame.bus.y ?? 0.91,
+                frame.bus.z,
+                Math.atan2(frame.bus.dx, frame.bus.dz),
+                frame.bus.visible ? 1 : 0,
+              ),
+            ]
+          : []),
       ],
       frame.seconds,
     );
