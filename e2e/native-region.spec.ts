@@ -4,6 +4,7 @@ import type {NativeRegionDocument} from '../packages/app/src/game/regionDocument
 import type {Point} from '../packages/app/src/region/model/types';
 import {readFile, writeFile} from 'node:fs/promises';
 import {parseGameSave} from '../packages/app/src/game/save';
+import {repairLegacyHallRoads} from '../packages/app/src/game/repairLegacyHallRoads';
 import {
   buildRoadGraph,
   findRoadPath,
@@ -27,7 +28,16 @@ test('the real acceptance world opens through the ordinary save catalogue', asyn
   }
 
   const raw = await readFile(path, 'utf8');
-  const game = parseGameSave(raw);
+  const game = repairLegacyHallRoads(parseGameSave(raw));
+
+  if (game.world.version !== 3) {
+    throw new Error('The acceptance save must be an authored native region');
+  }
+
+  expect(game.world.population.people.length).toBeGreaterThanOrEqual(1000);
+  const buildingCount = game.world.definition.layout.buildings.length;
+
+  expect(buildingCount).toBeGreaterThanOrEqual(200);
   const workers: string[] = [];
 
   page.on('worker', worker => workers.push(worker.url()));
@@ -70,7 +80,9 @@ test('the real acceptance world opens through the ordinary save catalogue', asyn
     'true',
   );
   await expect(page.locator('#life-count')).toHaveText('1000');
-  await expect(page.locator('#object-count')).toContainText('201');
+  await expect(page.locator('#object-count')).toContainText(
+    `${buildingCount} зданий`,
+  );
   const restored = await page.evaluate(() => window.__cityLife.save());
 
   expect(JSON.parse(JSON.stringify(restored)) as unknown).toEqual(game.world);

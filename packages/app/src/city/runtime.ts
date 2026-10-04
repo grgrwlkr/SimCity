@@ -1166,6 +1166,8 @@ export function createCityRuntime(
       if (loadedFrame) {
         receiveFrame(loadedFrame);
       }
+
+      lifePanel?.message('Город загружен на этом устройстве.');
     } catch (error) {
       loadingLayout = false;
       deferredFrame = null;

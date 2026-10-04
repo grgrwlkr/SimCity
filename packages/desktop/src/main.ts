@@ -200,7 +200,7 @@ function createWindow(): void {
     }
   });
   void window
-    .loadURL(devServerUrl ?? `app://${APP_HOST}/index.html`)
+    .loadURL(devServerUrl ?? `app://${APP_HOST}/`)
     .catch((error: unknown) => {
       console.error('Failed to load the game window', error);
       app.exit(1);

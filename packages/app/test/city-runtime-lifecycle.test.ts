@@ -28,6 +28,7 @@ const native = vi.hoisted(() => ({
     save: () => Promise<void>;
     load: () => Promise<void>;
   }>,
+  panelMessages: [] as string[][],
 }));
 
 vi.mock('three', async importOriginal => {
@@ -121,12 +122,18 @@ vi.mock('../src/city/life/parkingView', () => ({
 }));
 vi.mock('../src/city/life/panel', () => ({
   LifePanel: class {
+    readonly messages: string[] = [];
     stopFollowing = vi.fn();
     update = vi.fn();
     dispose = vi.fn();
 
     constructor(_profile: unknown, actions: (typeof native.panels)[number]) {
       native.panels.push(actions);
+      native.panelMessages.push(this.messages);
+    }
+
+    message(value: string): void {
+      this.messages.push(value);
     }
   },
 }));
@@ -215,6 +222,7 @@ afterEach(() => {
   native.controls = [];
   native.constructions = [];
   native.panels = [];
+  native.panelMessages = [];
 });
 
 describe('shared native runtime lifecycle', () => {
@@ -344,6 +352,10 @@ describe('shared native runtime lifecycle', () => {
     await runtime.load({seed: '1206'});
 
     expect(events).toEqual(['loaded', 'frame']);
+    expect(native.panelMessages).toEqual([
+      [],
+      ['Город загружен на этом устройстве.'],
+    ]);
     expect(runtime.currentSeed()).toBe('1206');
     expect(elements.get('city')!.dataset['lifeReady']).toBe('true');
     expect(elements.get('object-count')!.textContent).toContain('жителей');
