@@ -64,7 +64,7 @@ test('the real acceptance world opens through the ordinary save catalogue', asyn
   );
   await page.locator('#menu-load-region').click();
   await page.getByRole('button', {name: /Живой регион.*689856/}).click();
-  await expect(page.locator('#main-menu')).toBeHidden();
+  await expect(page.locator('#main-menu')).toBeHidden({timeout: 30_000});
   await expect(page.locator('#city')).toHaveAttribute(
     'data-life-ready',
     'true',

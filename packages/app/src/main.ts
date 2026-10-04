@@ -275,11 +275,14 @@ function saveRow(
   button.className = 'save-card';
   button.disabled = !save.loadable;
   name.textContent = save.name;
-  detail.textContent = save.loadable
-    ? `Ключ мира: ${save.seed}`
-    : save.kind === 'legacy-region'
-      ? 'Требуется импорт старого региона'
-      : 'Недоступно для загрузки';
+  detail.textContent =
+    save.kind === 'legacy-region'
+      ? save.loadable
+        ? `Ключ мира: ${save.seed} · Импортировать старый регион`
+        : 'Требуется ручная адаптация старого региона'
+      : save.loadable
+        ? `Ключ мира: ${save.seed}`
+        : 'Недоступно для загрузки';
   button.append(name, detail);
 
   const disambiguation = saveDisambiguation(save, saves);
