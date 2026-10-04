@@ -26,6 +26,7 @@ import {rectangle} from '../region/model/geometry';
 import {CITY_ROAD_WIDTH} from './trafficRoutes';
 import {createNativeInfrastructureView} from './nativeInfrastructureView';
 import {nativePlacementTransform} from './nativeInfrastructurePlacement';
+import {addAuthoredRoadDetails} from './nativeRoadParts';
 
 interface PlacedAssembly {
   sourcePlot: ConstructionPlot;
@@ -445,6 +446,21 @@ function createAuthoredView(
   }
 
   group.add(roads);
+  const details = new THREE.Group();
+  const detailBatch = new Batch();
+
+  details.name = 'authored-road-details';
+  addAuthoredRoadDetails(
+    detailBatch,
+    definition.roads.filter(
+      road =>
+        !definition.infrastructure?.ports.some(port =>
+          road.id.startsWith(`${port.id}/road/`),
+        ),
+    ),
+  );
+  detailBatch.finish(details);
+  group.add(details);
 
   const clearance = (
     id: string,

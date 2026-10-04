@@ -39,7 +39,12 @@ import {
 } from './housePlots';
 import type {LifeFrame, LifeProfile} from './life/types';
 import {addGarage} from './life/parkingView';
-import {addStreetCrossings} from './streetCrossings';
+import {streetCrossings} from './streetCrossings';
+import {
+  addNativeCrosswalk,
+  addNativeRoadDash,
+  nativeRoadDashOffsets,
+} from './nativeRoadParts';
 import {drawNativeBlock} from './blockModules';
 import {drawNativePortFoundation} from './nativePortParts';
 import {createNativeRegionView} from './regionGeography';
@@ -616,13 +621,14 @@ export function createCity(
       CITY_ROAD_WIDTH,
     );
 
-    for (let along = roads[0]! + 4; along <= roads.at(-1)! - 4; along += 4) {
-      if (roads.some(cross => Math.abs(along - cross) < 5)) {
-        continue;
-      }
+    for (const offset of nativeRoadDashOffsets(
+      roads.at(-1)! - roads[0]!,
+      roads.map(cross => cross - roads[0]!),
+    )) {
+      const along = roads[0]! + offset;
 
-      batch.add('box', 'cream', position, 0.865, along, 0.13, 0.015, 1.7);
-      batch.add('box', 'cream', along, 0.865, position, 1.7, 0.015, 0.13);
+      addNativeRoadDash(batch, {x: position, z: along}, {x: 0, z: 1});
+      addNativeRoadDash(batch, {x: along, z: position}, {x: 1, z: 0});
     }
   }
 
@@ -664,7 +670,13 @@ export function createCity(
     lampPositions.push(...drawn.lampPositions);
   }
 
-  addStreetCrossings(batch, !!life, roads);
+  for (const crossing of streetCrossings(!!life, roads)) {
+    addNativeCrosswalk(
+      batch,
+      crossing,
+      crossing.axis === 'x' ? {x: 0, z: 1} : {x: 1, z: 0},
+    );
+  }
 
   // Waterfront promenade and industrial quays.
   for (let x = minX + 15; x < 48; x += 9) {
