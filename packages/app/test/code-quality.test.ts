@@ -1,9 +1,44 @@
-import {ESLint} from 'eslint';
+import {ESLint, type Linter} from 'eslint';
 import {fileURLToPath} from 'node:url';
+import {parser} from 'typescript-eslint';
+import type {Program} from 'typescript';
 import {describe, expect, it} from 'vitest';
 
+// The aggregator's compatibility type omits the supported parser options and typed services.
+const parseProbe = parser.parseForESLint.bind(parser) as (
+  code: string,
+  options?: Linter.ParserOptions,
+) => ReturnType<typeof parser.parseForESLint> & {
+  services: {program: Program | null};
+};
 const lint = new ESLint({
   cwd: fileURLToPath(new URL('../../../', import.meta.url)),
+  overrideConfig: {
+    languageOptions: {
+      // CI's one-shot programs read the first probe from disk; these are mutable lintText sessions.
+      parserOptions: {disallowAutomaticSingleRunInference: true},
+      parser: {
+        ...parser,
+        parseForESLint(code: string, options?: Linter.ParserOptions) {
+          const result = parseProbe(code, options);
+          const filePath: unknown = options?.['filePath'];
+
+          if (typeof filePath !== 'string') {
+            throw new Error('The typed probe has no file path');
+          }
+
+          const parsed = result.services.program?.getSourceFile(filePath)?.text;
+
+          expect(
+            parsed === code,
+            'Typed parser must analyze the supplied probe text',
+          ).toBe(true);
+
+          return result;
+        },
+      },
+    },
+  },
 });
 const path = fileURLToPath(
   new URL('../src/city/life/world.ts', import.meta.url),
@@ -11,6 +46,20 @@ const path = fileURLToPath(
 const regionPath = fileURLToPath(
   new URL('../src/region/model/world.ts', import.meta.url),
 );
+
+async function rejectProbe(
+  code: string,
+  filePath: string,
+  rule: string,
+): Promise<void> {
+  const config: unknown = await lint.calculateConfigForFile(filePath);
+
+  expect(config).toHaveProperty(['rules', rule, 0], 2);
+  const [result] = await lint.lintText(code, {filePath});
+
+  expect(result!.fatalErrorCount).toBe(0);
+  expect(result!.messages.map(message => message.ruleId)).toContain(rule);
+}
 
 describe('enforced code quality', () => {
   it.each([
@@ -32,9 +81,7 @@ describe('enforced code quality', () => {
   ])(
     'rejects %s',
     async (_name, code, rule) => {
-      const [result] = await lint.lintText(code, {filePath: regionPath});
-
-      expect(result!.messages.map(message => message.ruleId)).toContain(rule);
+      await rejectProbe(code, regionPath, rule);
     },
     20_000,
   );
@@ -67,9 +114,18 @@ describe('enforced code quality', () => {
   ])(
     'rejects %s',
     async (_name, code, rule) => {
-      const [result] = await lint.lintText(code, {filePath: path});
+      await rejectProbe(code, path, rule);
+    },
+    20_000,
+  );
+  it.each([regionPath, path])(
+    'accepts a clean typed probe at %s after earlier violations',
+    async filePath => {
+      const [result] = await lint.lintText('export const qualityProbe = 1;', {
+        filePath,
+      });
 
-      expect(result!.messages.map(message => message.ruleId)).toContain(rule);
+      expect(result!.messages).toEqual([]);
     },
     20_000,
   );

@@ -19,8 +19,16 @@ const chromium = {
 export default defineConfig({
   testDir: 'e2e',
   fullyParallel: true,
+  // SwiftShader and trace readbacks share the runner's CPUs; keep one browser rendering at a time.
+  ...(process.env.CI ? {workers: 1} : {}),
   reporter: [['list']],
-  use: {baseURL: `http://localhost:${port}`},
+  use: {
+    baseURL: `http://localhost:${port}`,
+    // Retain DOM/actions/network diagnostics without per-frame WebGL ReadPixels screencasts.
+    trace: process.env.CI
+      ? {mode: 'retain-on-failure', screenshots: false}
+      : 'off',
+  },
   // The stage gate: the same numbers in Chromium as in Node.
   projects: [{name: 'chromium', use: chromium}],
   webServer: {
