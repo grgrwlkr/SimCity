@@ -11,6 +11,9 @@ import {
   RAILWAY_TRACKS,
 } from './railwayLayout';
 import type {RailwaySnapshot} from './railway';
+import type {RailwayCrossingLayout} from './railwayLayout';
+import {nativePlacementTransform} from './nativeInfrastructurePlacement';
+import type {NativeInfrastructurePlacement} from './nativeInfrastructurePlacement';
 
 const TRACKS = RAILWAY_TRACKS;
 const STATION_X = RAILWAY_STATION_X;
@@ -451,10 +454,36 @@ function trainCar(engine: boolean): {
   return {group, doors, wheels};
 }
 
-export function createRailwayView() {
+export function createRailwayView(
+  options: {
+    placement?: NativeInfrastructurePlacement;
+    roads?: readonly number[];
+    crossings?: readonly RailwayCrossingLayout[];
+  } = {},
+) {
+  const placement = options.placement;
+  const transform = placement
+    ? nativePlacementTransform(placement, {x: -34, z: -136})
+    : undefined;
+  const source = placement?.source ?? {x: -34, z: -136};
+  const matrix = placement
+    ? new THREE.Matrix4()
+        .makeTranslation(placement.center.x, 0, placement.center.z)
+        .multiply(new THREE.Matrix4().makeRotationY(placement.yaw))
+        .multiply(new THREE.Matrix4().makeTranslation(-source.x, 0, -source.z))
+    : undefined;
+  const crossingLayouts: readonly RailwayCrossingLayout[] =
+    options.crossings ??
+    (options.roads ?? RAILWAY_ROAD_CENTERS).map((x, id) => ({id, x, z: -136}));
+  const roads = crossingLayouts.map(crossing => crossing.x);
   const group = new THREE.Group();
 
   group.name = 'working-railway';
+
+  if (matrix) {
+    group.applyMatrix4(matrix);
+  }
+
   const clipped: Array<{
     source: THREE.MeshStandardMaterial;
     copy: THREE.MeshStandardMaterial;
@@ -463,6 +492,11 @@ export function createRailwayView() {
     new THREE.Plane(new THREE.Vector3(1, 0, 0), 208.9),
     new THREE.Plane(new THREE.Vector3(-1, 0, 0), 140.9),
   ];
+
+  if (matrix) {
+    boundaries.forEach(plane => plane.applyMatrix4(matrix));
+  }
+
   const clip = (root: THREE.Object3D): void => {
     root.traverse(object => {
       if (
@@ -481,7 +515,7 @@ export function createRailwayView() {
   };
   const infrastructure = new Batch();
 
-  railwayInfrastructure(infrastructure);
+  railwayInfrastructure(infrastructure, roads);
   const trackRoot = new THREE.Group();
 
   infrastructure.finish(trackRoot);
@@ -496,6 +530,12 @@ export function createRailwayView() {
   target.position.set(STATION_X, 3.2, -146);
   target.scale.set(26, 5, 5);
   target.userData['railwayStation'] = true;
+
+  if (matrix) {
+    target.updateMatrix();
+    target.applyMatrix4(matrix);
+  }
+
   target.updateMatrixWorld();
   const targets = [target];
   const ownedTextures: THREE.Texture[] = [];
@@ -559,7 +599,7 @@ export function createRailwayView() {
 
   clip(train);
   group.add(train);
-  const barriers = RAILWAY_ROAD_CENTERS.map((x, id) => {
+  const barriers = crossingLayouts.map(({x, id, yaw = 0}) => {
     const crossing = new THREE.Group();
 
     crossing.name = `railway-crossing-${id}`;
@@ -671,6 +711,15 @@ export function createRailwayView() {
       }
     }
 
+    if (yaw) {
+      crossing.applyMatrix4(
+        new THREE.Matrix4()
+          .makeTranslation(x, 0, -136)
+          .multiply(new THREE.Matrix4().makeRotationY(yaw))
+          .multiply(new THREE.Matrix4().makeTranslation(-x, 0, 136)),
+      );
+    }
+
     group.add(crossing);
 
     return {arms, signals};
@@ -682,6 +731,16 @@ export function createRailwayView() {
     group,
     targets,
     update(snapshot: RailwaySnapshot, seconds: number): void {
+      if (transform) {
+        snapshot = {
+          ...snapshot,
+          train: transform.toLocal(snapshot.train),
+          crossings: snapshot.crossings.map(crossing =>
+            transform.toLocal(crossing),
+          ),
+        };
+      }
+
       const pose = snapshot.train;
 
       train.visible = pose.phase !== 'away';

@@ -72,4 +72,26 @@ describe('native life client lifecycle', () => {
     expect(changed).toHaveBeenCalledOnce();
     await expect(client.load({})).rejects.toThrow('Город закрыт');
   });
+  it('rejects a request when applying its returned frame fails instead of leaving it pending', async () => {
+    vi.stubGlobal('Worker', WorkerStub);
+    const changed = vi.fn();
+    const failed = vi.fn();
+    const client = new LifeClient('689856', changed, failed);
+    const worker = WorkerStub.instances[0]!;
+
+    worker.respond(1);
+    await client.ready;
+    changed.mockImplementationOnce(() => {
+      throw new Error('View profile is stale');
+    });
+    const result = client.load({}).then(
+      () => 'resolved',
+      error => (error as Error).message,
+    );
+
+    worker.respond(2);
+    await expect(result).resolves.toBe('View profile is stale');
+    expect(failed).toHaveBeenCalledWith('View profile is stale');
+    client.dispose();
+  });
 });

@@ -107,6 +107,30 @@ function connectedFixture(): AuthoredWorldDefinition {
 }
 
 describe('one native authored world', () => {
+  it('waits without creating a family when an authored bus has no legal return lane', () => {
+    const definition = connectedFixture();
+    const routing = new RegionRouting(definition.layout, definition.roads);
+    const access = routing.roadAccess({x: 15, z: 9}, 1);
+    const exit = routing.roadAccess({x: 15, z: 9}, -1);
+    const world = CityLife.fromDefinition({
+      ...definition,
+      entries: [{id: 'entry', access, exit, terminalFacilityId: 1}],
+      profile: {...definition.profile, arrival: access},
+    });
+    const money = world.economy!.moneyBalance();
+
+    expect(() => world.advance(150)).not.toThrow();
+    expect(world.population.families).toEqual([]);
+    expect(world.population.people).toEqual([]);
+    expect(world.traffic.save().vehicles).toHaveLength(1);
+    expect(world.economy!.moneyBalance()).toBe(money);
+    expect(
+      CityLife.fromSave(
+        JSON.parse(JSON.stringify(world.save())) as unknown,
+      ).save(),
+    ).toEqual(world.save());
+  });
+
   it('preserves retired junction identity capacity after removing an unused crossing and saving', () => {
     const definition = connectedFixture();
     const world = CityLife.fromDefinition({

@@ -24,6 +24,8 @@ import type {HarborStatus} from './harbor';
 import {roadContour} from '../region/model/roads';
 import {rectangle} from '../region/model/geometry';
 import {CITY_ROAD_WIDTH} from './trafficRoutes';
+import {createNativeInfrastructureView} from './nativeInfrastructureView';
+import {nativePlacementTransform} from './nativeInfrastructurePlacement';
 
 interface PlacedAssembly {
   sourcePlot: ConstructionPlot;
@@ -157,7 +159,17 @@ function createAuthoredView(
   blocks.name = 'authored-blocks';
   group.add(blocks);
 
+  const portWarehouses = new Set(
+    definition.infrastructure?.ports.flatMap(port => [
+      ...port.warehouseBuildingIds,
+    ]) ?? [],
+  );
+
   for (const placement of definition.placements) {
+    if (portWarehouses.has(placement.id)) {
+      continue;
+    }
+
     const b = definition.layout.buildings.find(
       item => item.id === placement.id,
     );
@@ -285,6 +297,114 @@ function createAuthoredView(
     occupied.push(rectangle(center, 58, 58, first.yaw));
   }
 
+  for (const space of definition.spaces ?? []) {
+    const sourceBlock = space.sourceBlock;
+    const layout: CityLayout = {
+      seed: definition.seed,
+      grid: CITY_GRID,
+      blocks: [sourceBlock],
+      buildings: [],
+    };
+    const profile = createLifeProfile(layout);
+    const placement = {...space, source: sourceBlock};
+    const scalar = nativePlacementTransform(placement, sourceBlock);
+    const transform = new THREE.Matrix4()
+      .makeTranslation(space.center.x, 0, space.center.z)
+      .multiply(new THREE.Matrix4().makeRotationY(space.yaw))
+      .multiply(
+        new THREE.Matrix4().makeTranslation(-sourceBlock.x, 0, -sourceBlock.z),
+      );
+
+    profile.bays = profile.bays.filter(bay => {
+      const entrance = scalar.toWorld(
+        profile.facilities[bay.facility]!.entrance,
+      );
+
+      return definition.profile.bays.some(actual => {
+        const candidate =
+          definition.profile.facilities[actual.facility]!.entrance;
+
+        return (
+          Math.hypot(candidate.x - entrance.x, candidate.z - entrance.z) < 0.001
+        );
+      });
+    });
+    const batch = new Batch();
+    let count = 0;
+    const captured = batch.capture(sink => {
+      const drawn = drawNativeBlock(
+        sink,
+        layout,
+        sourceBlock,
+        Math.max(
+          0,
+          source.blocks.findIndex(block => block.id === sourceBlock.id),
+        ),
+        profile,
+      );
+
+      count = drawn.treeCount;
+      lampPositions.push(
+        ...drawn.lampPositions.map(point =>
+          point.clone().applyMatrix4(transform),
+        ),
+      );
+    });
+    const root = new THREE.Group();
+
+    root.name = `native-public-space-${space.id}`;
+    batch.finish(root);
+    root.applyMatrix4(transform);
+    group.add(root);
+    treeCount += count;
+    occupied.push(rectangle(space.center, 58, 58, space.yaw));
+    objects.set(space.id, {
+      parts: captured.parts.map(part => ({
+        ...part,
+        matrix: transform.clone().multiply(part.matrix),
+      })),
+      setVisible: visible => captured.setVisible(visible),
+    });
+    const plot: ConstructionPlot = {
+      x: sourceBlock.x,
+      z: sourceBlock.z,
+      width: 26,
+      depth: 26,
+      minX: sourceBlock.x - 12.75,
+      maxX: sourceBlock.x + 12.75,
+      minZ: sourceBlock.z - 12.75,
+      maxZ: sourceBlock.z + 12.75,
+    };
+
+    assemblies.set(space.id, {sourcePlot: plot, transform});
+    plots.set(space.id, {...plot, x: space.center.x, z: space.center.z});
+  }
+
+  const infrastructure = createNativeInfrastructureView(definition);
+
+  group.add(infrastructure.group);
+  lampPositions.push(...infrastructure.lampPositions);
+  hitboxes.push(...infrastructure.hitboxes);
+
+  for (const port of definition.infrastructure?.ports ?? []) {
+    const transform = nativePlacementTransform(port, {x: 85, z: 135});
+    const land = transform.toWorld({x: 85, z: 89});
+    const quay = transform.toWorld({x: 85, z: 135});
+
+    occupied.push(
+      rectangle(land, 100, 92, port.yaw),
+      rectangle(quay, 100, 48, port.yaw),
+    );
+  }
+
+  for (const railway of definition.infrastructure?.railways ?? []) {
+    const center = nativePlacementTransform(railway, {x: -34, z: -136}).toWorld(
+      {x: -34, z: -136},
+    );
+
+    occupied.push(rectangle(center, 420, 70, railway.yaw));
+  }
+
   const region = createNativeRegionView(
     definition.layout,
     geography ?? {
@@ -301,6 +421,14 @@ function createAuthoredView(
   roads.name = 'authored-roads';
 
   for (const road of definition.roads) {
+    if (
+      definition.infrastructure?.ports.some(port =>
+        road.id.startsWith(`${port.id}/road/`),
+      )
+    ) {
+      continue;
+    }
+
     const contour = roadContour(road.points, CITY_ROAD_WIDTH);
     const shape = new THREE.Shape(
       contour.map(point => new THREE.Vector2(point.x, -point.z)),
@@ -391,8 +519,14 @@ function createAuthoredView(
     return renderer;
   }
 
-  for (const placement of definition.placements) {
-    if ((placement.readyAt ?? 0) > (placement.startedAt ?? 0)) {
+  for (const placement of [
+    ...definition.placements,
+    ...(definition.spaces ?? []),
+  ]) {
+    if (
+      objects.has(placement.id) &&
+      (placement.readyAt ?? 0) > (placement.startedAt ?? 0)
+    ) {
       pendingBuilding(placement.id);
     }
   }
@@ -478,7 +612,7 @@ function createAuthoredView(
   return {
     group,
     hitboxes,
-    railwayTargets: [],
+    railwayTargets: infrastructure.targets,
     treeCount,
     peopleCount: 0,
     construction,
@@ -494,6 +628,7 @@ function createAuthoredView(
     applyLife(frame) {
       lastSeconds = frame.seconds;
       harbor = frame.harborStatus;
+      infrastructure.update(frame, frame.seconds);
 
       for (const [id, progress] of Object.entries(frame.construction ?? {})) {
         if (progress < 1) {
@@ -515,6 +650,7 @@ function createAuthoredView(
     setNight(night) {
       lampPools.visible = night;
       construction.syncLighting();
+      infrastructure.setNight();
 
       for (const renderer of pending.values()) {
         renderer.syncLighting();
@@ -529,6 +665,7 @@ function createAuthoredView(
 
       pending.clear();
       region.dispose();
+      infrastructure.dispose();
       lampMaterial.dispose();
       smokeMaterial.dispose();
       group.traverse(object => {

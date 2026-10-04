@@ -61,8 +61,17 @@ export class LifeClient {
       }
 
       this.frame = response.frame;
-      changed(response.frame);
-      pending?.resolve(response);
+
+      try {
+        changed(response.frame);
+        pending?.resolve(response);
+      } catch (error) {
+        const failure =
+          error instanceof Error ? error : new Error(String(error));
+
+        pending?.reject(failure);
+        failed(failure.message);
+      }
     };
 
     this.worker.onerror = event => {

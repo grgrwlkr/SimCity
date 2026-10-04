@@ -29,6 +29,15 @@ import {
 } from './definition';
 import {NoNativeRoute, RegionRouting} from './regionRouting';
 import {reconcileWorldDefinition} from './worldReconciliation';
+import {NativeGoodsEconomy} from './goodsEconomy';
+import {
+  createNativePortConfiguration,
+  createNativeRailwayConfiguration,
+} from './nativeInfrastructure';
+import type {
+  NativePortConfiguration,
+  NativeRailwayConfiguration,
+} from './nativeInfrastructure';
 import type {
   CityLifeDefinitionOptions,
   CityWorldDefinition,
@@ -100,6 +109,13 @@ export class CityLife {
   readonly population;
   readonly harbor = new Harbor();
   readonly traffic: CityTraffic;
+  readonly economy: NativeGoodsEconomy | undefined;
+  private readonly nativePorts = new Map<string, NativePortConfiguration>();
+  private readonly nativeRailways = new Map<
+    string,
+    NativeRailwayConfiguration
+  >();
+  private readonly nativeRailArrivals = new Map<string, RailArrival | null>();
   readonly railway: Railway;
   readonly errors: string[] = [];
   private tick = 0;
@@ -213,7 +229,15 @@ export class CityLife {
           ? this.network.junctions()
           : freightJunctions(this.network.roads.length ** 2),
       blocked: (proposed, current, size, currentSize) =>
-        this.railway.blocksVehicle(proposed, current, size, currentSize),
+        this.railway.blocksVehicle(proposed, current, size, currentSize) ||
+        [...this.nativeRailways.values()].some(configuration =>
+          configuration.railway.blocksVehicle(
+            proposed,
+            current,
+            size,
+            currentSize,
+          ),
+        ),
       pedestrians: () => this.crossings,
       ...(authored
         ? {}
@@ -256,6 +280,165 @@ export class CityLife {
     }
 
     this.syncCars();
+    this.economy =
+      definition.kind === 'authored' && this.network instanceof RegionRouting
+        ? new NativeGoodsEconomy(
+            this.population,
+            this.traffic,
+            this.network,
+            definition,
+          )
+        : undefined;
+
+    if (this.economy) {
+      this.population.setEconomicProvider(this.economy);
+    }
+    if (authored && !restoringAuthored) {
+      this.configureInfrastructure();
+    }
+  }
+
+  private configureInfrastructure(restored?: {
+    ports: Array<{
+      id: string;
+      truckIds: readonly [number, number, number, number];
+      harbor: ReturnType<Harbor['save']>;
+    }>;
+    railways: Array<{
+      id: string;
+      railway: ReturnType<Railway['save']>;
+      arrival: RailArrival | null;
+    }>;
+  }): void {
+    if (
+      this.definition.kind !== 'authored' ||
+      !(this.network instanceof RegionRouting)
+    ) {
+      return;
+    }
+
+    const definition = this.definition;
+    const routing = this.network;
+
+    for (const [id, configuration] of this.nativePorts) {
+      if (
+        !(definition.infrastructure?.ports ?? []).some(port => port.id === id)
+      ) {
+        for (const vehicleId of configuration.truckIds) {
+          this.traffic.park(vehicleId);
+        }
+
+        this.nativePorts.delete(id);
+      }
+    }
+
+    for (const id of this.nativeRailways.keys()) {
+      if (
+        !(definition.infrastructure?.railways ?? []).some(
+          railway => railway.id === id,
+        )
+      ) {
+        this.nativeRailways.delete(id);
+        this.nativeRailArrivals.delete(id);
+      }
+    }
+
+    for (const placement of definition.infrastructure?.ports ?? []) {
+      if (this.nativePorts.has(placement.id)) {
+        continue;
+      }
+
+      const saved = restored?.ports.find(port => port.id === placement.id);
+      const configuration = createNativePortConfiguration(
+        placement,
+        this.profile,
+        routing,
+        (size, plan) => {
+          const id = this.traffic.addCar(size);
+
+          this.traffic.registerPlan(id, plan);
+
+          return id;
+        },
+        {
+          provider: this.economy!.harborProvider(
+            placement.warehouseBuildingIds,
+          ),
+          ...(placement.navigation ? {navigation: placement.navigation} : {}),
+          ...(saved
+            ? {
+                restoredTruckIds: saved.truckIds,
+                restoredHarborSave: saved.harbor,
+              }
+            : {}),
+          allocateJunction: key => routing.allocateJunction(key),
+        },
+      );
+
+      this.nativePorts.set(placement.id, configuration);
+    }
+
+    for (const placement of definition.infrastructure?.railways ?? []) {
+      if (this.nativeRailways.has(placement.id)) {
+        continue;
+      }
+
+      const saved = restored?.railways.find(
+        railway => railway.id === placement.id,
+      );
+      const configuration = createNativeRailwayConfiguration(
+        placement,
+        this.profile,
+        routing,
+        {
+          startSeconds: this.seconds,
+          roads: definition.roads,
+          ...(saved ? {restoredSave: saved.railway} : {}),
+        },
+      );
+
+      this.nativeRailways.set(placement.id, configuration);
+      this.nativeRailArrivals.set(placement.id, saved?.arrival ?? null);
+    }
+
+    this.traffic.setJunctions(
+      [...this.nativePorts.values()]
+        .flatMap(configuration => configuration.junctions)
+        .map(box => ({...box}))
+        .concat(
+          routing.junctions().map(box => ({...box, key: `graph/${box.id}`})),
+        ),
+    );
+    this.economy?.setPortCargoProvider(() =>
+      [...this.nativePorts.values()].flatMap(configuration =>
+        configuration.harbor.save().cargo.flatMap(cargo =>
+          cargo.shipment
+            ? [
+                {
+                  quantity: cargo.shipment.quantity,
+                  buildingId:
+                    configuration.placement.warehouseBuildingIds[
+                      cargo.shipment.warehouse
+                    ]!,
+                  flow: cargo.flow,
+                },
+              ]
+            : [],
+        ),
+      ),
+    );
+  }
+
+  private portPoses(): LanePose[] {
+    const poses: LanePose[] = [];
+
+    for (const configuration of this.nativePorts.values()) {
+      for (const id of configuration.truckIds) {
+        poses[id] = this.traffic.pose(id);
+      }
+    }
+
+    return poses;
   }
 
   get seconds(): number {
@@ -331,9 +514,38 @@ export class CityLife {
       throw new Error('Изменение относится к другому миру');
     }
 
+    for (const [id, configuration] of this.nativePorts) {
+      if (
+        !(definition.infrastructure?.ports ?? []).some(
+          port => port.id === id,
+        ) &&
+        (configuration.harbor.save().cargo.length > 0 ||
+          configuration.harbor.save().jobs.some(job => job !== null))
+      ) {
+        throw new Error('Порт занят действительным грузом');
+      }
+    }
+
+    for (const [id, configuration] of this.nativeRailways) {
+      if (
+        !(definition.infrastructure?.railways ?? []).some(
+          railway => railway.id === id,
+        ) &&
+        configuration.railway.snapshot().train.phase !== 'away'
+      ) {
+        throw new Error('Вокзал занят действительным поездом');
+      }
+    }
+
     const active =
       this.population.people.some(person => person.trip !== null) ||
-      this.population.cars.some(car => car.status !== 'parked');
+      this.population.cars.some(car => car.status !== 'parked') ||
+      this.traffic.movingPoses().length > 0 ||
+      this.bus.phase !== 'idle' ||
+      (this.economy?.deliveries.some(
+        delivery => delivery.state !== 'delivered',
+      ) ??
+        false);
     const roadRemovedOrChanged = this.definition.roads.some(
       road =>
         !definition.roads.some(
@@ -353,11 +565,33 @@ export class CityLife {
     );
 
     candidateRouting.validateProfile(definition.profile);
+    const metadata = {
+      ...this.definition.metadata,
+      ...definition.metadata,
+      ...(this.definition.metadata?.['legacyMigration']
+        ? {legacyMigration: this.definition.metadata['legacyMigration']}
+        : {}),
+    };
+    const newIds = definition.placements
+      .filter(
+        placement =>
+          !(
+            this.definition.kind === 'authored' &&
+            this.definition.placements.some(prior => prior.id === placement.id)
+          ),
+      )
+      .map(placement => placement.id);
     const next = reconcileWorldDefinition(
       this.profile,
       this.parking.slots,
       this.population,
-      definition,
+      {
+        ...definition,
+        metadata,
+        ...((definition.economy ?? this.definition.economy)
+          ? {economy: definition.economy ?? this.definition.economy}
+          : {}),
+      },
       active,
     );
 
@@ -412,8 +646,11 @@ export class CityLife {
       this.busVehicleId = this.traffic.addCar({length: 4.2, width: 1.9});
     }
 
-    this.population.assignJobs(this.day, this.seconds);
     this.population.treasury -= cost;
+    this.economy?.recordConstruction(next, newIds, cost);
+    this.economy?.syncHiringCapacity();
+    this.population.assignJobs(this.day, this.seconds);
+    this.configureInfrastructure();
   }
 
   get day(): number {
@@ -462,6 +699,14 @@ export class CityLife {
 
       this.carsAdded++;
     }
+  }
+
+  requestDelivery(
+    sourceId: string,
+    targetId: string,
+    quantity?: number,
+  ): boolean {
+    return this.economy?.requestDelivery(sourceId, targetId, quantity) ?? false;
   }
 
   private accessAt(p: Resident): WalkAccess {
@@ -786,6 +1031,7 @@ export class CityLife {
         this.population.businesses.find(
           b => b.building === destination.id,
         )!.balance += cost;
+        this.economy?.recordRetail(destination.id, cost);
         this.population.event(p, this.seconds, 'Отдыхает в кафе');
       } else {
         this.population.event(p, this.seconds, 'Гуляет в парке');
@@ -977,7 +1223,12 @@ export class CityLife {
     const proposed = Math.min(trip.length, trip.distance + WALK_SPEED * STEP);
     const pose = sampleWalk(trip.points, proposed);
 
-    if (this.railway.blocksWalker(pose, p.position)) {
+    if (
+      this.railway.blocksWalker(pose, p.position) ||
+      [...this.nativeRailways.values()].some(configuration =>
+        configuration.railway.blocksWalker(pose, p.position),
+      )
+    ) {
       return;
     }
     if (
@@ -1134,6 +1385,24 @@ export class CityLife {
 
     try {
       route = this.network.drive(this.profile.arrival, this.terminal.road);
+
+      if (this.definition.kind === 'authored') {
+        const slot = this.parking.slots[this.terminal.slots[0]!];
+        const exit = this.definition.entries[0]?.exit;
+
+        if (!slot || !exit) {
+          return false;
+        }
+
+        this.network.drive(this.departure(this.terminal, slot), exit);
+        const home = this.population.nextHome();
+
+        if (!home) {
+          return false;
+        }
+
+        this.network.walk(this.terminal.access, home.access);
+      }
     } catch (error) {
       if (error instanceof NoNativeRoute) {
         return false;
@@ -1148,6 +1417,7 @@ export class CityLife {
       return false;
     }
 
+    this.economy?.syncHiringCapacity();
     this.population.assignJobs(this.day, this.seconds);
 
     for (const id of family.members) {
@@ -1200,7 +1470,9 @@ export class CityLife {
         this.expanded && this.railway.snapshot().train.phase !== 'away';
 
       if (this.seconds >= this.nextImmigration && !trainExpected) {
-        this.inviteFamily();
+        if (!this.inviteFamily() && this.definition.kind === 'authored') {
+          this.nextImmigration = this.seconds + 3;
+        }
       }
 
       return;
@@ -1212,16 +1484,26 @@ export class CityLife {
 
       const slot = this.parking.slots[this.bus.slot!]!;
       const exit = this.parkingManoeuvre(terminal, slot, false).route;
-      const road = this.network.drive(
-        this.departure(terminal, slot),
-        this.definition.kind === 'authored'
-          ? this.definition.entries[0]!.exit
-          : roadAccess(
-              {x: this.profile.arrival.point.x, z: -87, y: 0.91},
-              2,
-              this.network.roads,
-            ),
-      );
+      let road;
+
+      try {
+        road = this.network.drive(
+          this.departure(terminal, slot),
+          this.definition.kind === 'authored'
+            ? this.definition.entries[0]!.exit
+            : roadAccess(
+                {x: this.profile.arrival.point.x, z: -87, y: 0.91},
+                2,
+                this.network.roads,
+              ),
+        );
+      } catch (error) {
+        if (error instanceof NoNativeRoute) {
+          return;
+        }
+
+        throw error;
+      }
 
       if (
         this.traffic.beginTrip(
@@ -1288,120 +1570,169 @@ export class CityLife {
     }
   }
 
-  private updateRailArrivals(): void {
-    if (!this.expanded || this.definition.kind === 'authored') {
-      return;
+  private updateRailArrivals(configuration?: NativeRailwayConfiguration): void {
+    const previous = this.railArrival;
+
+    if (configuration) {
+      this.railArrival =
+        this.nativeRailArrivals.get(configuration.placement.id) ?? null;
     }
 
-    const train = this.railway.snapshot().train;
+    const railway = configuration?.railway ?? this.railway;
 
-    if (
-      this.railArrival === null &&
-      this.bus.phase === 'idle' &&
-      this.seconds >= this.nextImmigration &&
-      train.phase === 'arriving' &&
-      Math.abs(train.x - RAILWAY_STATION_X) / RAILWAY_SPEED < 25
-    ) {
-      const family = this.population.createFamily(this.seconds, true);
+    try {
+      if (
+        !configuration &&
+        (!this.expanded || this.definition.kind === 'authored')
+      ) {
+        return;
+      }
 
-      if (family) {
-        this.population.assignJobs(this.day, this.seconds);
+      const train = railway.snapshot().train;
+      const localTrain = configuration
+        ? configuration.transform.toLocal(train)
+        : train;
 
-        for (const id of family.members) {
-          const p = this.population.people[id]!;
+      if (
+        this.railArrival === null &&
+        this.bus.phase === 'idle' &&
+        this.seconds >= this.nextImmigration &&
+        train.phase === 'arriving' &&
+        Math.abs(localTrain.x - RAILWAY_STATION_X) / RAILWAY_SPEED < 25
+      ) {
+        if (configuration) {
+          const home = this.population.nextHome();
 
-          p.activity = 'train';
-          p.location = 'railway-station';
-          p.nextAt = Infinity;
-          p.trip = {
-            purpose: 'move',
-            destination: this.population.home(family).id,
-            started: this.seconds,
-            reason: 'Приезжает в город поездом',
-            leg: 'train',
-            car: null,
-            points: [],
-            distance: 0,
-            length: 0,
-            facility: null,
-          };
-          this.population.event(
-            p,
-            this.seconds,
-            'Приезжает с семьёй на городской вокзал',
-          );
+          if (!home) {
+            return;
+          }
+
+          try {
+            this.network.walk(
+              this.population.place(configuration.placement.stationPlaceId)
+                .access,
+              home.access,
+            );
+          } catch (error) {
+            if (error instanceof NoNativeRoute) {
+              return;
+            }
+
+            throw error;
+          }
         }
 
-        this.railway.recordPassengers(family.members.length);
-        this.railArrival = {
-          serial: train.serial,
-          family: family.id,
-          released: 0,
-          nextAt: null,
-        };
-        this.nextImmigration = this.seconds + 900;
+        const family = this.population.createFamily(this.seconds, true);
+
+        if (family) {
+          this.population.assignJobs(this.day, this.seconds);
+
+          for (const id of family.members) {
+            const p = this.population.people[id]!;
+
+            p.activity = 'train';
+            p.location =
+              configuration?.placement.stationPlaceId ?? 'railway-station';
+            p.nextAt = Infinity;
+            p.trip = {
+              purpose: 'move',
+              destination: this.population.home(family).id,
+              started: this.seconds,
+              reason: 'Приезжает в город поездом',
+              leg: 'train',
+              car: null,
+              points: [],
+              distance: 0,
+              length: 0,
+              facility: null,
+            };
+            this.population.event(
+              p,
+              this.seconds,
+              'Приезжает с семьёй на городской вокзал',
+            );
+          }
+
+          railway.recordPassengers(family.members.length);
+          this.railArrival = {
+            serial: train.serial,
+            family: family.id,
+            released: 0,
+            nextAt: null,
+          };
+          this.nextImmigration = this.seconds + 900;
+        }
       }
-    }
 
-    const arrival = this.railArrival;
+      const arrival = this.railArrival;
 
-    if (!arrival || train.serial !== arrival.serial || !train.doorsOpen) {
-      return;
-    }
-    if (arrival.nextAt === null) {
-      arrival.nextAt = this.seconds + 1;
-    }
-    if (this.seconds < arrival.nextAt) {
-      return;
-    }
+      if (!arrival || train.serial !== arrival.serial || !train.doorsOpen) {
+        return;
+      }
+      if (arrival.nextAt === null) {
+        arrival.nextAt = this.seconds + 1;
+      }
+      if (this.seconds < arrival.nextAt) {
+        return;
+      }
 
-    const family = this.population.families[arrival.family]!;
-    const id = family.members[arrival.released]!;
-    const y = 1.4;
-    const chain: Point[] =
-      train.direction === 1
-        ? [
-            {x: -34, z: -130, y},
-            {x: -24, z: -130, y},
-            {x: -24, z: -126.5},
-            {x: -24, z: -123.45},
-          ]
-        : [
-            {x: -34, z: -142, y},
-            {x: -33.7, z: -142, y},
-            {x: -44.5, z: -142, y: 7.35},
-            {x: -44.5, z: -130, y: 7.35},
-            {x: -33.7, z: -130, y},
-            {x: -24, z: -130, y},
-            {x: -24, z: -126.5},
-            {x: -24, z: -123.45},
-          ];
-    const from = this.network.access(chain[0]!, chain.slice(1));
+      const family = this.population.families[arrival.family]!;
+      const id = family.members[arrival.released]!;
+      const y = 1.4;
+      const chain: Point[] =
+        train.direction === 1
+          ? [
+              {x: -34, z: -130, y},
+              {x: -24, z: -130, y},
+              {x: -24, z: -126.5},
+              {x: -24, z: -123.45},
+            ]
+          : [
+              {x: -34, z: -142, y},
+              {x: -33.7, z: -142, y},
+              {x: -44.5, z: -142, y: 7.35},
+              {x: -44.5, z: -130, y: 7.35},
+              {x: -33.7, z: -130, y},
+              {x: -24, z: -130, y},
+              {x: -24, z: -126.5},
+              {x: -24, z: -123.45},
+            ];
+      const actualChain = configuration?.arrivalChain(train.direction) ?? chain;
+      const from = this.network.access(actualChain[0]!, actualChain.slice(1));
 
-    this.walkStart(
-      this.population.people[id]!,
-      from,
-      this.population.home(family).access,
-      'move',
-      this.population.home(family),
-      'walk',
-      null,
-      null,
-      'Вышел из поезда. Идёт с вокзала заселяться с семьёй',
-    );
-    this.railway.disembarkPassenger();
-    arrival.released++;
-    arrival.nextAt = this.seconds + 1.4;
+      this.walkStart(
+        this.population.people[id]!,
+        from,
+        this.population.home(family).access,
+        'move',
+        this.population.home(family),
+        'walk',
+        null,
+        null,
+        'Вышел из поезда. Идёт с вокзала заселяться с семьёй',
+      );
+      railway.disembarkPassenger();
+      arrival.released++;
+      arrival.nextAt = this.seconds + 1.4;
 
-    if (arrival.released >= family.members.length) {
-      this.railArrival = null;
+      if (arrival.released >= family.members.length) {
+        this.railArrival = null;
+      }
+    } finally {
+      if (configuration) {
+        this.nativeRailArrivals.set(
+          configuration.placement.id,
+          this.railArrival,
+        );
+        this.railArrival = previous;
+      }
     }
   }
 
   private step(): void {
     if (
       this.definition.kind === 'authored' &&
-      this.definition.placements.some(
+      [...this.definition.placements, ...(this.definition.spaces ?? [])].some(
         placement =>
           (placement.readyAt ?? 0) > 0 &&
           placement.readyAt! <= this.seconds &&
@@ -1419,6 +1750,19 @@ export class CityLife {
         .filter(p => p.activity === 'walk')
         .map(p => p.position),
     });
+
+    for (const configuration of this.nativeRailways.values()) {
+      configuration.railway.advance(this.seconds, {
+        vehicles: this.traffic.movingPoses(),
+        walkers: this.population.people
+          .filter(person => person.activity === 'walk')
+          .map(person => person.position),
+      });
+    }
+
+    for (const configuration of this.nativePorts.values()) {
+      configuration.harbor.advance(this.seconds, this.traffic);
+    }
 
     for (const [facility, id] of this.portals) {
       const car = this.population.cars[id]!;
@@ -1509,7 +1853,13 @@ export class CityLife {
     this.traffic.update(this.seconds);
     this.updateCars();
     this.updateRailArrivals();
+
+    for (const configuration of this.nativeRailways.values()) {
+      this.updateRailArrivals(configuration);
+    }
+
     this.updateBus();
+    this.economy?.step(this.seconds);
   }
 
   details(id: number): CitizenDetails | null {
@@ -1588,7 +1938,13 @@ export class CityLife {
           yaw = Math.atan2(pose.dx, pose.dz);
         }
         if (p.activity === 'train') {
-          const train = this.railway.snapshot().train;
+          const configuration = [...this.nativeRailways.values()].find(
+            configuration =>
+              this.nativeRailArrivals.get(configuration.placement.id)
+                ?.family === p.family,
+          );
+          const train = (configuration?.railway ?? this.railway).snapshot()
+            .train;
 
           position = {x: train.x, z: train.z, y: 1.4};
           yaw = (train.direction * Math.PI) / 2;
@@ -1673,7 +2029,13 @@ export class CityLife {
           .filter(c => c.owner >= 0)
           .map(c => [c.id, this.population.families[c.owner]!.members[0]!]),
       ),
-      freight: positions.slice(AMBIENT_VEHICLES),
+      freight: this.economy
+        ? [...this.nativePorts.values()]
+            .flatMap(configuration =>
+              configuration.truckIds.map(id => this.traffic.pose(id)),
+            )
+            .concat(this.economy.freight())
+        : positions.slice(AMBIENT_VEHICLES),
       bus: {
         ...busPose,
         visible:
@@ -1692,8 +2054,12 @@ export class CityLife {
         .filter(p => p.activity !== 'dead')
         .map(({id, name, family}) => ({id, name, family})),
       selected: selected === null ? null : this.details(selected),
-      harbor:
-        this.definition.kind === 'authored'
+      harbor: this.nativePorts.size
+        ? [...this.nativePorts.values()][0]!.harbor.snapshot(
+            this.seconds,
+            this.portPoses(),
+          )
+        : this.definition.kind === 'authored'
           ? {
               ...this.harbor.snapshot(this.seconds, positions),
               ship: {
@@ -1703,17 +2069,34 @@ export class CityLife {
               status: {...this.harbor.status(), freightTrucks: 0},
             }
           : this.harbor.snapshot(this.seconds, positions),
-      harborStatus:
-        this.definition.kind === 'authored'
+      harborStatus: this.nativePorts.size
+        ? [...this.nativePorts.values()][0]!.harbor.status()
+        : this.definition.kind === 'authored'
           ? {...this.harbor.status(), freightTrucks: 0}
           : this.harbor.status(),
-      railway: this.railway.snapshot(),
-      railwayStatus: this.railway.status(),
+      railway: this.nativeRailways.size
+        ? [...this.nativeRailways.values()][0]!.railway.snapshot()
+        : this.railway.snapshot(),
+      railwayStatus: this.nativeRailways.size
+        ? [...this.nativeRailways.values()][0]!.railway.status()
+        : this.railway.status(),
       ...(this.definition.kind === 'authored'
         ? {
+            ports: [...this.nativePorts].map(([id, configuration]) => ({
+              id,
+              snapshot: configuration.harbor.snapshot(
+                this.seconds,
+                this.portPoses(),
+              ),
+            })),
+            railways: [...this.nativeRailways].map(([id, configuration]) => ({
+              id,
+              snapshot: configuration.railway.snapshot(),
+              status: configuration.railway.status(),
+            })),
             treasury: this.population.treasury,
             construction: Object.fromEntries(
-              this.definition.placements
+              [...this.definition.placements, ...(this.definition.spaces ?? [])]
                 .filter(placement => (placement.readyAt ?? 0) > 0)
                 .map(placement => [
                   placement.id,
@@ -1759,6 +2142,17 @@ export class CityLife {
         version: 3 as const,
         definition: structuredClone(this.definition),
         vehicleIds: {cars: [...this.carVehicleIds], bus: this.busVehicleId},
+        ...(this.economy ? {economy: this.economy.save()} : {}),
+        ports: [...this.nativePorts].map(([id, configuration]) => ({
+          id,
+          truckIds: configuration.truckIds,
+          harbor: configuration.harbor.save(),
+        })),
+        railways: [...this.nativeRailways].map(([id, configuration]) => ({
+          id,
+          railway: configuration.railway.save(),
+          arrival: this.nativeRailArrivals.get(id) ?? null,
+        })),
         junctionKeys:
           this.network instanceof RegionRouting
             ? this.network.savedJunctionKeys()
@@ -1862,6 +2256,13 @@ export class CityLife {
     }
 
     world.traffic.restore(s.traffic);
+
+    if (s.version === 3 && s.economy) {
+      world.economy?.restore(s.economy);
+    } else if (s.version === 3) {
+      world.economy?.rebaseExistingAccounts();
+    }
+
     world.harbor.restore(s.harbor);
     world.tick = s.tick;
     world.requested = s.requested;
@@ -1873,6 +2274,13 @@ export class CityLife {
     world.railway.restore(s.railway);
     world.railArrival = structuredClone(s.railArrival);
     world.portals = new Map(s.portals);
+
+    if (s.version === 3) {
+      world.configureInfrastructure({
+        ports: s.ports ?? [],
+        railways: s.railways ?? [],
+      });
+    }
 
     for (const p of world.population.people) {
       if (

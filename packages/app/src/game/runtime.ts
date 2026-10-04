@@ -1,6 +1,23 @@
 import {createCityRuntime} from '../city/runtime';
 import type {CityRuntime} from '../city/runtime';
 import {createNativeCityView} from '../city/viewTemplate';
+import type {CityWorldDefinition} from '../city/life/definition';
+import type {LifeFrame} from '../city/life/types';
+import {generateTerrain} from '../region/model/terrain';
+import {NativeRegionEditor} from './editor';
+import {compileNativeRegion} from './compileRegion';
+import {documentFromDefinition} from './documentFromDefinition';
+import {parseRegion} from '../region/model/save';
+import {migrateLegacyRegionSave} from './saveMigration';
+import {
+  replanAuthorizedLegacyLayout,
+  AUTHORIZED_LEGACY_REPLAN_ID,
+} from './legacyLayout';
+import {
+  applyNativeEdit,
+  createNativeRegionDocument,
+  readNativeRegionDocument,
+} from './regionDocument';
 import {createGameSave, parseGameSave} from './save';
 import type {NativeGameSave} from './save';
 import {deleteGame, listGames, readGame, storeGame} from './storage';
@@ -9,7 +26,10 @@ import './style.css';
 let active: CityRuntime | null = null;
 let identity: {id: string; name: string; seed: string} | null = null;
 let pending: NativeGameSave | null = null;
+let pendingConversion = false;
 let visible = false;
+let editor: NativeRegionEditor | null = null;
+let latestFrame: LifeFrame | null = null;
 let exit: () => void = () => {};
 let cancelChooser: (() => void) | null = null;
 
@@ -33,7 +53,10 @@ function updateIdentity(): void {
   url.pathname = '/';
   url.searchParams.set('seed', seed);
   url.searchParams.set('regionId', identity.id);
-  history.replaceState(null, '', url);
+
+  if (url.href !== location.href) {
+    history.replaceState(null, '', url);
+  }
 }
 
 function presentCurrency(): void {
@@ -152,9 +175,11 @@ async function chooseSave(): Promise<unknown> {
 
       busy = true;
       void readGame(select.value)
-        .then(raw => {
-          const save = parseGameSave(raw);
+        .then(async raw => {
+          const resolved = await resolveGameSave(raw);
+          const save = resolved.save;
 
+          pendingConversion = resolved.converted;
           pending = save;
           finish(save.world);
         })
@@ -191,15 +216,75 @@ async function chooseSave(): Promise<unknown> {
   });
 }
 
+function mountEditor(): void {
+  editor?.dispose();
+  editor = null;
+  const definition = active?.currentDefinition();
+
+  if (!active || definition?.kind !== 'authored') {
+    return;
+  }
+
+  let document = readNativeRegionDocument(
+    definition.metadata?.['regionDocument'],
+  );
+
+  document ??= documentFromDefinition(definition, identity!.id);
+
+  const runtime = active;
+
+  editor = new NativeRegionEditor({
+    runtime,
+    document,
+    state: () => ({
+      seconds: latestFrame?.seconds ?? 0,
+      cash: latestFrame?.treasury ?? 0,
+    }),
+    edit: async action => {
+      const seconds = latestFrame?.seconds ?? 0;
+      const result = applyNativeEdit(
+        document!,
+        action,
+        latestFrame?.treasury ?? 0,
+        seconds,
+      );
+
+      await runtime.updateDefinition(
+        compileNativeRegion(result.document, seconds),
+        result.cost,
+      );
+      document = result.document;
+      identity!.name =
+        document.settlements
+          .map(town => town.name)
+          .join(', ')
+          .slice(0, 64) || 'Новый регион';
+      await storeGame(
+        createGameSave(identity!.id, identity!.name, await runtime.save()),
+      );
+
+      return document;
+    },
+  });
+}
+
 export async function createGame(
   seed: string,
   id: string = crypto.randomUUID(),
+  definition?: CityWorldDefinition,
   persistInitial = true,
 ): Promise<void> {
   cancelChooser?.();
+  editor?.dispose();
+  editor = null;
   active?.dispose();
-  identity = {id, name: 'Город у воды', seed};
+  identity = {
+    id,
+    name: definition?.kind === 'authored' ? 'Новый регион' : 'Город у воды',
+    seed,
+  };
   pending = null;
+  latestFrame = null;
   const shell = document.getElementById('game-shell');
 
   if (!shell) {
@@ -209,8 +294,23 @@ export async function createGame(
   createNativeCityView(shell);
   active = createCityRuntime({
     seed,
+    ...(definition ? {definition} : {}),
     visible: false,
     region: true,
+    getGeography: world => {
+      if (world.kind !== 'authored') {
+        return undefined;
+      }
+
+      const document = readNativeRegionDocument(
+        world.metadata?.['regionDocument'],
+      );
+
+      return {
+        kind: 'native-region',
+        terrain: document?.terrain ?? generateTerrain(world.seed, 4000),
+      };
+    },
     onExit: () => exit(),
     onSave: async world => {
       updateIdentity();
@@ -220,13 +320,26 @@ export async function createGame(
     onLoadResult: success => {
       if (success && pending) {
         identity = {id: pending.id, name: pending.name, seed: pending.seed};
+        mountEditor();
+
+        if (pendingConversion) {
+          void storeGame(pending).catch((error: unknown) => {
+            document.getElementById('life-save-status')!.textContent =
+              error instanceof Error
+                ? error.message
+                : 'Не удалось записать импорт.';
+          });
+        }
       }
 
+      pendingConversion = false;
       pending = null;
     },
-    afterFrame: () => {
+    afterFrame: frame => {
+      latestFrame = frame;
       updateIdentity();
       presentCurrency();
+      editor?.update(frame.population);
     },
   });
   await active.ready;
@@ -237,20 +350,100 @@ export async function createGame(
     );
   }
 
+  mountEditor();
   updateIdentity();
 }
 
+export async function createRegionGame(seed: string): Promise<void> {
+  const document = createNativeRegionDocument(crypto.randomUUID(), seed);
+
+  await createGame(seed, document.id, compileNativeRegion(document, 0));
+}
+
+async function resolveGameSave(
+  value: unknown,
+): Promise<{save: NativeGameSave; converted: boolean}> {
+  let save: NativeGameSave;
+  let converted = false;
+
+  try {
+    save = parseGameSave(value);
+  } catch {
+    const region = parseRegion(value);
+
+    if (region.id !== AUTHORIZED_LEGACY_REPLAN_ID) {
+      throw new Error(
+        'Этот старый регион требует ручной адаптации участков к исходным моделям. Оригинал сохранён и не изменён.',
+      );
+    }
+
+    const convertedId = `native-${region.id}`;
+    const existing = await readGame(convertedId);
+
+    if (existing !== null) {
+      save = parseGameSave(existing);
+    } else {
+      const definition = replanAuthorizedLegacyLayout(value);
+      const migration = migrateLegacyRegionSave(value, definition, {
+        allowReplanForId: AUTHORIZED_LEGACY_REPLAN_ID,
+      });
+      const world = migration.world;
+
+      if (world.version !== 3) {
+        throw new Error('Импорт не создал региональный мир.');
+      }
+
+      const document = documentFromDefinition(world.definition, convertedId);
+
+      save = createGameSave(convertedId, 'Живой регион', {
+        ...world,
+        definition: {
+          ...world.definition,
+          metadata: {...world.definition.metadata, regionDocument: document},
+        },
+      });
+      converted = true;
+    }
+  }
+
+  return {save, converted};
+}
+
 export async function loadGame(value: unknown): Promise<void> {
-  const save = parseGameSave(value);
+  const {save, converted} = await resolveGameSave(value);
 
   if (!active) {
-    await createGame(save.seed, save.id, false);
+    await createGame(
+      save.seed,
+      save.id,
+      save.world.version === 3 ? save.world.definition : undefined,
+      false,
+    );
   }
 
   pending = save;
   await active!.load(save.world);
   identity = {id: save.id, name: save.name, seed: save.seed};
+  mountEditor();
   updateIdentity();
+
+  if (converted) {
+    await storeGame(
+      createGameSave(identity.id, identity.name, await active!.save()),
+    );
+  }
+}
+
+export async function importGame(value: unknown): Promise<void> {
+  const supplied = parseGameSave(value);
+  const existing = await readGame(supplied.id);
+  const save =
+    existing === null ? supplied : {...supplied, id: crypto.randomUUID()};
+
+  await loadGame(save);
+  await storeGame(
+    createGameSave(identity!.id, identity!.name, await active!.save()),
+  );
 }
 
 export function setGameVisible(value: boolean): void {

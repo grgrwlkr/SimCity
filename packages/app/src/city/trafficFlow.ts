@@ -35,6 +35,14 @@ export interface TrafficPlan {
   initialStop: number;
 }
 export interface JunctionBounds {
+  oriented?: {
+    center: {x: number; z: number};
+    yaw: number;
+    minX: number;
+    maxX: number;
+    minZ: number;
+    maxZ: number;
+  };
   id: number;
   minX: number;
   maxX: number;
@@ -107,6 +115,43 @@ function overlaps(
   );
 }
 
+function extensionOverlaps(
+  pose: LanePose,
+  size: VehicleSize,
+  box: JunctionBounds,
+  ex: number,
+  ez: number,
+): boolean {
+  const frame = box.oriented;
+
+  if (!frame) {
+    return (
+      pose.x + ex > box.minX &&
+      pose.x - ex < box.maxX &&
+      pose.z + ez > box.minZ &&
+      pose.z - ez < box.maxZ
+    );
+  }
+
+  const c = Math.cos(frame.yaw);
+  const s = Math.sin(frame.yaw);
+  const x = c * (pose.x - frame.center.x) - s * (pose.z - frame.center.z);
+  const z = s * (pose.x - frame.center.x) + c * (pose.z - frame.center.z);
+  const dx = c * pose.dx - s * pose.dz;
+  const dz = s * pose.dx + c * pose.dz;
+  const l = size.length / 2 + BUMPER_MARGIN;
+  const w = size.width / 2 + SIDE_MARGIN;
+  const halfX = l * Math.abs(dx) + w * Math.abs(dz);
+  const halfZ = l * Math.abs(dz) + w * Math.abs(dx);
+
+  return (
+    x + halfX > frame.minX &&
+    x - halfX < frame.maxX &&
+    z + halfZ > frame.minZ &&
+    z - halfZ < frame.maxZ
+  );
+}
+
 function junction(
   p: LanePose,
   size: VehicleSize,
@@ -119,12 +164,7 @@ function junction(
   const ez = halfLength * Math.abs(p.dz) + halfWidth * Math.abs(p.dx);
 
   for (const box of extensions) {
-    if (
-      p.x + ex > box.minX &&
-      p.x - ex < box.maxX &&
-      p.z + ez > box.minZ &&
-      p.z - ez < box.maxZ
-    ) {
+    if (extensionOverlaps(p, size, box, ex, ez)) {
       return box.id;
     }
   }
@@ -464,6 +504,67 @@ export class CityTraffic {
     this.held = held;
 
     return id;
+  }
+
+  /** Existing occupants may leave an ungranted maneuver, without admitting new occupants. */
+  registerPlan(id: number, plan: TrafficPlan): void {
+    const vehicle = this.vehicles[id];
+    const distance = plan.stops[plan.initialStop];
+
+    if (
+      !vehicle ||
+      distance === undefined ||
+      !Number.isFinite(distance) ||
+      plan.route.length <= 0
+    ) {
+      throw new Error('Invalid native vehicle plan');
+    }
+
+    const pose = sampleLaneRoute(plan.route, distance);
+
+    if (this.occupied(pose, vehicle, vehicle.size, false, pose)) {
+      throw new Error('Native vehicle plan starts in an occupied position');
+    }
+
+    this.park(id);
+    Object.assign(vehicle, {
+      route: structuredClone(plan.route),
+      plan: structuredClone(plan),
+      start: distance,
+      distance,
+      previous: distance,
+      speed: 0,
+      waiting: 0,
+      pose,
+      stopIndex: plan.initialStop,
+      stopDistance: distance,
+      stopped: true,
+      active: true,
+      dormant: false,
+      maneuverUntil: 0,
+    });
+    this.activeVehicles.push(vehicle);
+    this.updateSpatial(vehicle);
+  }
+
+  /** Roll back an unowned registration before any native actor can observe its ID. */
+  discardDormantVehicle(id: number): boolean {
+    const vehicle = this.vehicles[id];
+
+    if (
+      !vehicle ||
+      id !== this.vehicles.length - 1 ||
+      vehicle.active ||
+      !vehicle.dormant ||
+      this.held[id] !== -1
+    ) {
+      return false;
+    }
+
+    this.vehicles.pop();
+    this.held = this.held.slice(0, id);
+
+    return true;
   }
 
   /** Existing occupants may leave an ungranted maneuver, without admitting new occupants. */
@@ -993,12 +1094,7 @@ export class CityTraffic {
       const ez = l * Math.abs(pose.dz) + w * Math.abs(pose.dx);
 
       for (const box of this.options.junctions ?? []) {
-        if (
-          pose.x + ex > box.minX &&
-          pose.x - ex < box.maxX &&
-          pose.z + ez > box.minZ &&
-          pose.z - ez < box.maxZ
-        ) {
+        if (extensionOverlaps(pose, size, box, ex, ez)) {
           gates.add(box.id);
         }
       }

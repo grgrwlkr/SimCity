@@ -1,9 +1,51 @@
 import {expect, test, type Page} from '@playwright/test';
+import {CityLife} from '../packages/app/src/city/life/world';
+import {createGameSave} from '../packages/app/src/game/save';
 import {createRegion} from '../packages/app/src/region/model/world';
 import {serializeRegion} from '../packages/app/src/region/model/save';
 
 test.use({viewport: {width: 1440, height: 1000}, reducedMotion: 'reduce'});
 test.describe.configure({timeout: 90_000});
+
+test.beforeEach(async ({page}) => {
+  const save = createGameSave(
+    'native-prototype',
+    'Город у воды',
+    new CityLife('689856').save(),
+  );
+
+  await page.goto('/');
+  await page.evaluate(async saved => {
+    await new Promise<void>((resolve, reject) => {
+      const open = indexedDB.open('simcity-regions', 1);
+
+      open.onupgradeneeded = () => open.result.createObjectStore('regions');
+      open.onerror = () => reject(open.error ?? new Error('Open failed'));
+
+      open.onsuccess = () => {
+        const db = open.result;
+        const transaction = db.transaction('regions', 'readwrite');
+
+        transaction.objectStore('regions').put(JSON.stringify(saved), saved.id);
+
+        transaction.oncomplete = () => {
+          db.close();
+          resolve();
+        };
+
+        transaction.onerror = () => {
+          db.close();
+          reject(transaction.error ?? new Error('Write failed'));
+        };
+      };
+    });
+  }, save);
+});
+
+async function openPrototypeSave(page: Page): Promise<void> {
+  await page.locator('#menu-load-region').click();
+  await page.locator('.save-card').click();
+}
 
 async function records(page: Page) {
   return page.evaluate(async () => {
@@ -52,7 +94,7 @@ async function records(page: Page) {
 
 async function startNativeWorld(page: Page) {
   await page.goto('/');
-  await page.locator('#open-region').click();
+  await openPrototypeSave(page);
   await expect(page.locator('#city')).toHaveAttribute(
     'data-life-ready',
     'true',
@@ -73,7 +115,7 @@ test('root starts one native world and resumes its exact state and camera', asyn
   const origin = await page.evaluate(() => performance.timeOrigin);
 
   expect(workers).toHaveLength(0);
-  await page.locator('#open-region').click();
+  await openPrototypeSave(page);
   await expect(page.locator('#city')).toHaveAttribute(
     'data-life-ready',
     'true',
@@ -256,11 +298,11 @@ test('legacy regions remain visible and retain their exact stored bytes', async 
   }, raw);
   await page.getByRole('link', {name: 'В главное меню', exact: true}).click();
   await page.locator('#menu-load-region').click();
-  const card = page.getByRole('button', {name: /Приозёрск.*импорт/});
+  const card = page.getByRole('button', {name: /Приозёрск.*адаптация/});
 
   await expect(card).toBeVisible();
   await expect(card).toBeDisabled();
-  await expect(card).toContainText(/импорт/i);
+  await expect(card).toContainText(/адаптац/i);
   const stored = await records(page);
 
   expect(stored).toHaveLength(initialRecords.length + 1);
@@ -330,4 +372,28 @@ test('the native city has a regional overview and keyboard camera controls', asy
 
   expect(Number.isFinite(rotated.x) && Number.isFinite(rotated.y)).toBe(true);
   expect(await page.evaluate(() => window.__cityLife.save())).toEqual(before);
+});
+
+test('save deletion keeps the live world and honors cancel before deleting one record', async ({
+  page,
+}) => {
+  await startNativeWorld(page);
+  const world = await page.evaluate(() => window.__cityLife.save());
+
+  await page.getByRole('link', {name: 'В главное меню', exact: true}).click();
+  await page.locator('#menu-load-region').click();
+  const before = await records(page);
+
+  page.once('dialog', dialog => dialog.dismiss());
+  await page.locator('.save-delete').click();
+  expect(await records(page)).toEqual(before);
+  await expect(page.locator('.save-card')).toHaveCount(1);
+  page.once('dialog', dialog => dialog.accept());
+  await page.locator('.save-delete').click();
+  await expect(page.locator('#saves-status')).toHaveText('Сохранений пока нет');
+  expect(await records(page)).toEqual([]);
+  await page.keyboard.press('Escape');
+  await page.locator('#resume-region').click();
+  await expect(page.locator('#main-menu')).toBeHidden();
+  expect(await page.evaluate(() => window.__cityLife.save())).toEqual(world);
 });

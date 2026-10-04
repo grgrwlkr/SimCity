@@ -7,6 +7,7 @@ let selected: number | null = null;
 
 self.onmessage = (event: MessageEvent<LifeCommand>) => {
   const command = event.data;
+  const previousDefinition = world?.definition;
 
   try {
     if (command.type === 'init') {
@@ -44,7 +45,8 @@ self.onmessage = (event: MessageEvent<LifeCommand>) => {
       id: command.id,
       frame: world.frame(selected),
       ...(command.type === 'save' ? {save: world.save()} : {}),
-      ...(['init', 'edit', 'load'].includes(command.type)
+      ...(['init', 'edit', 'load'].includes(command.type) ||
+      previousDefinition !== world.definition
         ? {definition: world.definition}
         : {}),
     });

@@ -150,7 +150,7 @@ describe('unified game catalogue', () => {
       {id: 'invalid', seed: null, kind: 'invalid', loadable: false},
       {id: 'wrong-key', seed: null, kind: 'invalid', loadable: false},
     ]);
-    expect(games[1]?.label).toMatch(/импорт/i);
+    expect(games[1]?.label).toMatch(/импорт|адаптац/i);
     expect(restore).not.toHaveBeenCalled();
     restore.mockRestore();
     expect(port.records).toEqual(before);

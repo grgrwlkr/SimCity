@@ -844,6 +844,17 @@ export function createCityRuntime(
       return;
     }
 
+    const updated = life?.definition;
+
+    if (
+      definition.kind === 'authored' &&
+      updated?.kind === 'authored' &&
+      (updated.profile.places.length !== definition.profile.places.length ||
+        updated.profile.slots.length !== definition.profile.slots.length)
+    ) {
+      regenerate(updated.seed, true, updated);
+    }
+
     frame = nextFrame;
     city!.applyLife(frame);
     lifeView!.update(frame);
@@ -909,8 +920,12 @@ export function createCityRuntime(
     }
 
     frame = null;
-    following = false;
-    speed = 1;
+
+    if (!reuseLife) {
+      following = false;
+      speed = 1;
+    }
+
     lifeView = new LifeView(seed, {
       utilities: nextDefinition.kind !== 'authored',
     });

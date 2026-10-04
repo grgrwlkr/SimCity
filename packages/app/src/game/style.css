@@ -28,3 +28,85 @@
   border-radius: 6px;
   background: #eef3e8;
 }
+.native-city.is-regional .district-list,
+.native-city.is-regional #seed-form {
+  display: none;
+}
+#native-region-editor {
+  position: absolute;
+  top: 95px;
+  left: 20px;
+  width: 245px;
+  max-height: calc(100vh - 270px);
+  overflow: auto;
+  padding: 16px;
+  border-radius: 10px;
+  background: #f5f6eff5;
+  color: #29483e;
+  font-size: 12px;
+}
+#native-region-editor nav,
+#native-region-editor .native-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0;
+}
+#native-region-editor button,
+#native-region-editor input {
+  border: 1px solid #aec1b7;
+  border-radius: 6px;
+  color: inherit;
+  background: #edf3e7;
+  padding: 8px 9px;
+  font: inherit;
+}
+#native-region-editor button[aria-pressed='true'] {
+  color: #fff8e8;
+  background: #2b5846;
+}
+#native-town-list {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 12px;
+}
+#native-town-name {
+  width: 100%;
+  margin-top: 6px;
+}
+.native-region-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-weight: 600;
+}
+#native-editor-status {
+  line-height: 1.55;
+}
+@media (max-width: 900px) {
+  #native-region-editor {
+    width: 215px;
+    left: 14px;
+  }
+}
+
+.native-city.is-regional #construction-open,
+.native-city.is-regional #construction-panel {
+  display: none;
+}
+.native-city.night #native-region-editor {
+  background: #293e46f5;
+  color: #dce7df;
+}
+.native-city.night #native-region-editor button,
+.native-city.night #native-region-editor input {
+  background: #1d303a;
+  border-color: #52636b;
+}
+
+.native-city.is-regional .masthead h1,
+.native-city.is-regional .masthead p,
+.native-city.is-regional .live-state,
+.native-city.is-regional #native-region-overview {
+  display: none;
+}

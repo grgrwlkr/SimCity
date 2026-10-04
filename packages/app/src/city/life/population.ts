@@ -12,6 +12,18 @@ import type {
 import type {ParkingBook} from './parking';
 import type {NativeCalendar} from './definition';
 
+export interface NativePopulationEconomy {
+  registriesChanged(): void;
+  readonly retailPrice: number;
+  availableStock(id: string): number;
+  recordRetail(id: string, value: number): void;
+  recordWage(value: number): void;
+  recordConsumption(quantity: number): void;
+  recordFamilyCapital(value: number, goods?: number): number;
+  payRent(unit: HousingUnit, value: number): void;
+  payHome(unit: HousingUnit, value: number): void;
+}
+
 export const MINUTE_SECONDS = 3;
 export const INITIAL_MINUTE = 450;
 export class LifeRandom {
@@ -111,6 +123,11 @@ export class Population {
   born = 0;
   arrivals = 0;
   private readonly places = new Map<string, LifePlace>();
+  private economy: NativePopulationEconomy | undefined;
+
+  setEconomicProvider(provider: NativePopulationEconomy): void {
+    this.economy = provider;
+  }
 
   constructor(
     readonly profile: LifeProfile,
@@ -319,6 +336,10 @@ export class Population {
       arrived: !immigrant,
     };
 
+    if (this.economy) {
+      f.food = this.economy.recordFamilyCapital(f.balance, f.food);
+    }
+
     this.families.push(f);
     unit.tenant = id;
     const years = this.random.int(27, 63);
@@ -361,6 +382,20 @@ export class Population {
     );
 
     return f;
+  }
+
+  nextHome(): LifePlace | null {
+    const homes = this.profile.places.filter(place => place.kind === 'home');
+    const preferred = homes[this.families.length % homes.length];
+    const unit =
+      this.units.find(
+        unit =>
+          !unit.retired &&
+          unit.tenant === null &&
+          unit.building === preferred?.id,
+      ) ?? this.units.find(unit => !unit.retired && unit.tenant === null);
+
+    return unit ? this.place(unit.building) : null;
   }
 
   assignJobs(day: number, at: number): void {
@@ -426,7 +461,13 @@ export class Population {
     }
 
     f.balance -= unit.price;
-    this.treasury += unit.price;
+
+    if (this.economy) {
+      this.economy.payHome(unit, unit.price);
+    } else {
+      this.treasury += unit.price;
+    }
+
     unit.owner = f.id;
     f.goal = 'Семейные накопления';
     this.familyEvent(f, at, `Куплено жильё: ${this.home(f).name}`);
@@ -527,6 +568,7 @@ export class Population {
     employer.balance -= wage;
     this.families[p.family]!.balance += wage;
     p.earnings += wage;
+    this.economy?.recordWage(wage);
     p.paidDay = day;
     this.event(
       p,
@@ -546,16 +588,17 @@ export class Population {
     const quantity = Math.max(
       0,
       Math.min(
-        business.stock,
+        this.economy?.availableStock(place.id) ?? business.stock,
         f.members.length * 6 - f.food,
-        Math.floor(f.balance / 160),
+        Math.floor(f.balance / (this.economy?.retailPrice ?? 160)),
       ),
     );
-    const cost = quantity * 160;
+    const cost = quantity * (this.economy?.retailPrice ?? 160);
 
     f.balance -= cost;
     business.balance += cost;
     business.stock -= quantity;
+    this.economy?.recordRetail(place.id, cost);
     f.food += quantity;
     this.event(
       p,
@@ -636,7 +679,10 @@ export class Population {
         continue;
       }
 
+      const used = Math.min(f.food, f.members.length * 2);
+
       f.food = Math.max(0, f.food - f.members.length * 2);
+      this.economy?.recordConsumption(used);
       const unit = this.units[f.home]!;
 
       if (unit.owner !== f.id) {
@@ -644,7 +690,9 @@ export class Population {
 
         f.balance -= rent;
 
-        if (unit.owner === null) {
+        if (this.economy) {
+          this.economy.payRent(unit, rent);
+        } else if (unit.owner === null) {
           this.treasury += rent;
         } else {
           this.families[unit.owner]!.balance += rent;
@@ -735,5 +783,6 @@ export class Population {
     this.treasury = s.treasury;
     this.born = s.born;
     this.arrivals = s.arrivals;
+    this.economy?.registriesChanged();
   }
 }

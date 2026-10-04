@@ -22,6 +22,14 @@ import type {
   WalkAccess,
 } from './types';
 
+const ROAD_QUERY_CELL = 64;
+const MAX_ROAD_QUERY_CELLS = 65536;
+
+interface RoadQuerySegment {
+  readonly a: Point;
+  readonly b: Point;
+}
+
 export class NoNativeRoute extends Error {
   constructor() {
     super('Нет связанного маршрута по авторской дорожной сети');
@@ -64,6 +72,8 @@ export class RegionRouting {
   readonly roads: readonly number[] = [];
   private graph;
   private readonly junctionKeys: string[];
+  private readonly roadCells = new Map<string, RoadQuerySegment[]>();
+  private readonly unindexedRoadSegments: RoadQuerySegment[] = [];
 
   constructor(
     public layout: CityLayout,
@@ -72,6 +82,7 @@ export class RegionRouting {
   ) {
     this.graph = buildRoadGraph(source);
     this.junctionKeys = [...junctionKeys];
+    this.indexRoadSegments();
   }
 
   update(
@@ -82,6 +93,7 @@ export class RegionRouting {
     this.layout = layout;
     this.source = roads;
     this.graph = buildRoadGraph(roads);
+    this.indexRoadSegments();
 
     if (keys) {
       this.junctionKeys.splice(0, this.junctionKeys.length, ...keys);
@@ -493,14 +505,55 @@ export class RegionRouting {
     return null;
   }
 
+  private indexRoadSegments(): void {
+    this.roadCells.clear();
+    this.unindexedRoadSegments.length = 0;
+
+    for (const road of this.source) {
+      for (let index = 1; index < road.points.length; index++) {
+        const a = road.points[index - 1]!;
+        const b = road.points[index]!;
+        const segment = {a, b};
+        // Include the entire native 4 m strip and circular endpoint caps. The index
+        // only selects candidates; the original exact distance predicate decides.
+        const minX = Math.floor((Math.min(a.x, b.x) - 4) / ROAD_QUERY_CELL);
+        const maxX = Math.floor((Math.max(a.x, b.x) + 4) / ROAD_QUERY_CELL);
+        const minZ = Math.floor((Math.min(a.z, b.z) - 4) / ROAD_QUERY_CELL);
+        const maxZ = Math.floor((Math.max(a.z, b.z) + 4) / ROAD_QUERY_CELL);
+
+        if (
+          ![minX, maxX, minZ, maxZ].every(Number.isSafeInteger) ||
+          (maxX - minX + 1) * (maxZ - minZ + 1) > MAX_ROAD_QUERY_CELLS
+        ) {
+          this.unindexedRoadSegments.push(segment);
+          continue;
+        }
+
+        for (let x = minX; x <= maxX; x++) {
+          for (let z = minZ; z <= maxZ; z++) {
+            const key = `${x}/${z}`;
+            let cell = this.roadCells.get(key);
+
+            if (!cell) {
+              cell = [];
+              this.roadCells.set(key, cell);
+            }
+
+            cell.push(segment);
+          }
+        }
+      }
+    }
+  }
+
   isOnRoad(point: Point): boolean {
-    return this.source.some(road =>
-      road.points
-        .slice(1)
-        .some(
-          (b, index) =>
-            projectSegment(point, road.points[index]!, b).distance < 4,
-        ),
+    const key = `${Math.floor(point.x / ROAD_QUERY_CELL)}/${Math.floor(point.z / ROAD_QUERY_CELL)}`;
+    const onRoad = (segment: RoadQuerySegment) =>
+      projectSegment(point, segment.a, segment.b).distance < 4;
+
+    return (
+      (this.roadCells.get(key)?.some(onRoad) ?? false) ||
+      this.unindexedRoadSegments.some(onRoad)
     );
   }
 
@@ -639,6 +692,17 @@ export class RegionRouting {
     }
 
     return result;
+  }
+
+  allocateJunction(key: string): number {
+    let id = this.junctionKeys.indexOf(key);
+
+    if (id < 0) {
+      id = this.junctionKeys.length;
+      this.junctionKeys.push(key);
+    }
+
+    return id;
   }
 
   savedJunctionKeys(): string[] {

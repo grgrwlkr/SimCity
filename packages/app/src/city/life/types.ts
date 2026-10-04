@@ -243,6 +243,12 @@ export interface CitizenDetails {
   next: string;
 }
 export interface LifeFrame {
+  ports?: Array<{id: string; snapshot: HarborSnapshot}>;
+  railways?: Array<{
+    id: string;
+    snapshot: RailwaySnapshot;
+    status: RailwayStatus;
+  }>;
   treasury?: number;
   construction?: Record<string, number>;
   seconds: number;

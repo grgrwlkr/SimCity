@@ -1,5 +1,6 @@
 import {z} from 'zod';
 import type {CityLife} from '../city/life/world';
+import {parseWorldDefinition} from '../city/life/definition';
 
 type NativeWorldSave = ReturnType<CityLife['save']>;
 
@@ -16,7 +17,7 @@ const counter = z.number().int().nonnegative();
 const finite = z.number().finite();
 const record = z.record(z.string(), z.unknown());
 const nativeWorldStructure = z.object({
-  version: z.literal(2),
+  version: z.union([z.literal(2), z.literal(3)]),
   expanded: z.boolean(),
   seed: z.string().min(1).max(32),
   tick: counter,
@@ -94,7 +95,36 @@ const nativeWorldStructure = z.object({
 function isNativeWorld(value: unknown): boolean {
   // Check the catalogue boundary without constructing another simulation.
   // Entity relationships and resumable state are validated by the native worker.
-  return nativeWorldStructure.safeParse(value).success;
+  if (!nativeWorldStructure.safeParse(value).success) {
+    return false;
+  }
+
+  const header = value as {
+    version: number;
+    seed: string;
+    definition?: unknown;
+    vehicleIds?: unknown;
+    junctionKeys?: unknown;
+  };
+
+  if (header.version === 2) {
+    return true;
+  }
+
+  try {
+    const definition = parseWorldDefinition(header.definition);
+
+    return (
+      definition.kind === 'authored' &&
+      definition.seed === header.seed &&
+      z
+        .object({cars: z.array(counter), bus: counter.nullable()})
+        .safeParse(header.vehicleIds).success &&
+      z.array(z.string()).safeParse(header.junctionKeys).success
+    );
+  } catch {
+    return false;
+  }
 }
 
 const gameSchema = z

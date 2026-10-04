@@ -3,6 +3,7 @@ import type * as GameRuntime from './game/runtime';
 import {deleteGame, listGames, readGame} from './game/storage';
 import type {GameSaveInfo} from './game/storage';
 import {parseGameSave} from './game/save';
+import {parseRegion} from './region/model/save';
 
 function element<T extends HTMLElement>(id: string, type: {new (): T}): T {
   const found = document.getElementById(id);
@@ -112,7 +113,7 @@ regionLink.addEventListener('click', event => {
     return;
   }
 
-  enterGame(game => game.createGame('689856')).catch(() => {
+  enterGame(game => game.createRegionGame('689856')).catch(() => {
     opening = false;
   });
 });
@@ -157,17 +158,20 @@ async function openSave(save: GameSaveInfo) {
       throw new Error('Сохранение больше не найдено. Обновите список.');
     }
 
-    const state = parseGameSave(raw);
+    const state =
+      save.kind === 'legacy-region' ? parseRegion(raw) : parseGameSave(raw);
 
     if (state.id !== save.id) {
       throw new Error('ID сохранения не совпадает с регионом');
     }
 
     await enterGame(game => game.loadGame(raw));
-  } catch {
+  } catch (error) {
     if (request === generation) {
       status.textContent =
-        'Не удалось открыть сохранение. Оно недоступно или повреждено. Обновите список и попробуйте ещё раз.';
+        error instanceof Error
+          ? error.message
+          : 'Не удалось открыть сохранение. Обновите список и попробуйте ещё раз.';
     }
   } finally {
     if (request === generation) {
@@ -346,6 +350,37 @@ async function showSaves() {
   }
 }
 
+const importButton = element('menu-import-save', HTMLButtonElement);
+const importFile = element('import-save-file', HTMLInputElement);
+
+importButton.addEventListener('click', () => {
+  if (!transitioning && !deleting) {
+    importFile.click();
+  }
+});
+importFile.addEventListener('change', () => {
+  const file = importFile.files?.[0];
+
+  if (!file || transitioning || deleting) {
+    return;
+  }
+
+  void file
+    .text()
+    .then(async value => {
+      await enterGame(game => game.importGame(value));
+    })
+    .catch((error: unknown) => {
+      shellStatus.textContent =
+        error instanceof Error
+          ? error.message
+          : 'Не удалось импортировать сохранение.';
+    })
+    .finally(() => {
+      importFile.value = '';
+    });
+});
+
 loadButton.addEventListener('click', () => {
   if (panel.hidden) {
     showSaves().catch(() => {
@@ -402,7 +437,13 @@ if (parameters.has('seed') || parameters.has('regionId')) {
         );
       }
 
-      const saved = parseGameSave(raw);
+      let saved: {id: string};
+
+      try {
+        saved = parseGameSave(raw);
+      } catch {
+        saved = parseRegion(raw);
+      }
 
       if (saved.id !== savedId) {
         throw new Error('ID сохранения не совпадает с регионом');
@@ -410,7 +451,7 @@ if (parameters.has('seed') || parameters.has('regionId')) {
 
       await game.loadGame(raw);
     } else {
-      await game.createGame(seed);
+      await game.createRegionGame(seed);
     }
   }).catch(() => {
     opening = false;

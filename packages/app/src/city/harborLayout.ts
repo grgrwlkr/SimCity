@@ -86,3 +86,34 @@ export function cityVehicleKits(seed: string): VehicleKit[] {
     })),
   ];
 }
+
+export interface HarborLayout {
+  readonly berths: readonly [number, number];
+  readonly warehouses: readonly [
+    {readonly x: number; readonly z: number},
+    {readonly x: number; readonly z: number},
+  ];
+  readonly freightRoutes: readonly [
+    (typeof FREIGHT_ROUTES)[number],
+    (typeof FREIGHT_ROUTES)[number],
+  ];
+  readonly truckIds: readonly [number, number, number, number];
+  readonly shipEntryX: number;
+  readonly shipExitX: number;
+  readonly clipX: readonly [number, number];
+}
+
+export const ORIGINAL_HARBOR_LAYOUT: HarborLayout = {
+  berths: BERTHS,
+  warehouses: WAREHOUSES,
+  freightRoutes: [FREIGHT_ROUTES[0]!, FREIGHT_ROUTES[1]!],
+  truckIds: [112, 113, 114, 115],
+  shipEntryX: -158,
+  shipExitX: 160,
+  clipX: [-138.4, 138.4],
+};
+
+/** The four original articulated trucks, without ambient city vehicles. */
+export function harborVehicleKits(seed: string): VehicleKit[] {
+  return cityVehicleKits(seed).slice(AMBIENT_VEHICLES);
+}

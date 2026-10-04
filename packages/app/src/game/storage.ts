@@ -2,6 +2,7 @@ import {parseRegion} from '../region/model/save';
 import {indexedDBPort} from '../region/storage';
 import type {RegionStoragePort} from '../region/storage';
 import {parseGameSave} from './save';
+import {AUTHORIZED_LEGACY_REPLAN_ID} from './legacyLayout';
 import type {NativeGameSave} from './save';
 
 export interface GameSaveInfo {
@@ -64,9 +65,9 @@ export async function listGames(
           id,
           name,
           seed: region.seed,
-          label: `${name} · ${region.seed} · ${id} · Требуется импорт старого региона`,
+          label: `${name} · ${region.seed} · ${id} · ${id === AUTHORIZED_LEGACY_REPLAN_ID ? 'Импортировать старый регион' : 'Требуется ручная адаптация старого региона'}`,
           kind: 'legacy-region',
-          loadable: false,
+          loadable: id === AUTHORIZED_LEGACY_REPLAN_ID,
         };
       }
     } catch {

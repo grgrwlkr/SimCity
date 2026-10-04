@@ -1,5 +1,11 @@
 import type {Point} from './life/types';
 import type {LanePose} from './trafficRoutes';
+import {nativePlacementTransform} from './nativeInfrastructurePlacement';
+import type {
+  NativeInfrastructurePlacement,
+  NativePlacementTransform,
+} from './nativeInfrastructurePlacement';
+import type {RailwayCrossingLayout} from './railwayLayout';
 import {
   RAILWAY_CROSSING_HALF_DEPTH,
   RAILWAY_CROSSING_HALF_WIDTH,
@@ -25,7 +31,7 @@ export interface RailwayTrain {
   doorsOpen: boolean;
   passengers: number;
 }
-export interface RailwayCrossing {
+export interface RailwayCrossing extends RailwayCrossingLayout {
   id: number;
   x: number;
   z: number;
@@ -91,16 +97,22 @@ const footprint = (
   halfZ: (Math.abs(pose.dz) * size.length + Math.abs(pose.dx) * size.width) / 2,
 });
 const intersects = (body: Bounds, crossing: RailwayCrossing): boolean =>
-  Math.abs(body.x - crossing.x) < body.halfX + RAILWAY_CROSSING_HALF_WIDTH &&
-  Math.abs(body.z - crossing.z) < body.halfZ + RAILWAY_CROSSING_HALF_DEPTH;
+  Math.abs(body.x - crossing.x) <
+    body.halfX + (crossing.halfWidth ?? RAILWAY_CROSSING_HALF_WIDTH) &&
+  Math.abs(body.z - crossing.z) <
+    body.halfZ + (crossing.halfDepth ?? RAILWAY_CROSSING_HALF_DEPTH);
 
 function sweptIntersects(
   from: Bounds,
   to: Bounds,
   crossing: RailwayCrossing,
 ): boolean {
-  const halfX = Math.max(from.halfX, to.halfX) + RAILWAY_CROSSING_HALF_WIDTH;
-  const halfZ = Math.max(from.halfZ, to.halfZ) + RAILWAY_CROSSING_HALF_DEPTH;
+  const halfX =
+    Math.max(from.halfX, to.halfX) +
+    (crossing.halfWidth ?? RAILWAY_CROSSING_HALF_WIDTH);
+  const halfZ =
+    Math.max(from.halfZ, to.halfZ) +
+    (crossing.halfDepth ?? RAILWAY_CROSSING_HALF_DEPTH);
   let entry = 0;
   let exit = 1;
 
@@ -141,6 +153,7 @@ export class Railway {
   private passengers = 0;
   private train: RailwayTrain;
   private crossings: RailwayCrossing[];
+  private readonly placement: NativePlacementTransform | undefined;
   private readonly west: number;
   private readonly east: number;
 
@@ -148,10 +161,19 @@ export class Railway {
     startSeconds = 0,
     enabled = true,
     roads: readonly number[] = RAILWAY_ROAD_CENTERS,
+    options: {
+      placement?: NativeInfrastructurePlacement;
+      crossings?: readonly RailwayCrossingLayout[];
+      west?: number;
+      east?: number;
+    } = {},
   ) {
     this.enabled = enabled;
-    this.west = Math.min(...roads, RAILWAY_STATION_X) - 45;
-    this.east = Math.max(...roads, RAILWAY_STATION_X) + 45;
+    this.placement = options.placement
+      ? nativePlacementTransform(options.placement, {x: -34, z: -136})
+      : undefined;
+    this.west = options.west ?? Math.min(...roads, RAILWAY_STATION_X) - 45;
+    this.east = options.east ?? Math.max(...roads, RAILWAY_STATION_X) + 45;
     this.train = {
       serial: 0,
       phase: 'away',
@@ -161,12 +183,14 @@ export class Railway {
       doorsOpen: false,
       passengers: 0,
     };
-    this.crossings = railwayCrossings(roads).map(crossing => ({
-      ...crossing,
-      openness: 1,
-      state: 'open',
-      occupied: false,
-    }));
+    this.crossings = (options.crossings ?? railwayCrossings(roads)).map(
+      crossing => ({
+        ...crossing,
+        openness: 1,
+        state: 'open',
+        occupied: false,
+      }),
+    );
     this.reset(startSeconds);
   }
 
@@ -176,6 +200,17 @@ export class Railway {
       absoluteSeconds + 1e-8 < this.seconds
     ) {
       throw new Error('Railway time must be finite and monotonic');
+    }
+
+    const placement = this.placement;
+
+    if (placement) {
+      occupancy = {
+        vehicles: occupancy.vehicles.map(vehicle =>
+          placement.localVector(placement.toLocal(vehicle)),
+        ),
+        walkers: occupancy.walkers.map(point => placement.toLocal(point)),
+      };
     }
 
     const target = Math.floor((absoluteSeconds - this.origin + 1e-8) / STEP);
@@ -230,11 +265,11 @@ export class Railway {
         this.train.phase !== 'away' &&
         ahead >=
           -HALF_TRAIN -
-            RAILWAY_CROSSING_HALF_WIDTH -
+            (crossing.halfWidth ?? RAILWAY_CROSSING_HALF_WIDTH) -
             (moving ? TRACK_CLEARANCE : 0) &&
         ahead <=
           HALF_TRAIN +
-            RAILWAY_CROSSING_HALF_WIDTH +
+            (crossing.halfWidth ?? RAILWAY_CROSSING_HALF_WIDTH) +
             (moving ? APPROACH_WARNING : 0);
 
       if (close) {
@@ -276,7 +311,10 @@ export class Railway {
       }
 
       const remaining =
-        distance - HALF_TRAIN - RAILWAY_CROSSING_HALF_WIDTH - TRACK_CLEARANCE;
+        distance -
+        HALF_TRAIN -
+        (crossing.halfWidth ?? RAILWAY_CROSSING_HALF_WIDTH) -
+        TRACK_CLEARANCE;
 
       if (remaining >= -1e-8) {
         travel = Math.min(travel, Math.max(0, remaining));
@@ -320,6 +358,11 @@ export class Railway {
       return false;
     }
 
+    if (this.placement) {
+      current = this.placement.localVector(this.placement.toLocal(current));
+      proposed = this.placement.localVector(this.placement.toLocal(proposed));
+    }
+
     const before = footprint(current, currentSize);
     const after = footprint(proposed, size);
 
@@ -334,6 +377,11 @@ export class Railway {
   blocksWalker(proposed: Point, current: Point): boolean {
     if (!this.enabled || !groundLevel(proposed) || !groundLevel(current)) {
       return false;
+    }
+
+    if (this.placement) {
+      current = this.placement.toLocal(current);
+      proposed = this.placement.toLocal(proposed);
     }
 
     const before = {...current, halfX: 0.22, halfZ: 0.22};
@@ -382,8 +430,12 @@ export class Railway {
 
   snapshot(): RailwaySnapshot {
     return {
-      train: {...this.train},
-      crossings: this.crossings.map(crossing => ({...crossing})),
+      train: this.placement
+        ? this.placement.toWorld({...this.train})
+        : {...this.train},
+      crossings: this.crossings.map(crossing =>
+        this.placement ? this.placement.toWorld({...crossing}) : {...crossing},
+      ),
     };
   }
 
@@ -412,7 +464,12 @@ export class Railway {
       arrivals: this.arrivals,
       departures: this.departures,
       passengers: this.passengers,
-      ...this.snapshot(),
+      ...(this.placement
+        ? {
+            train: {...this.train},
+            crossings: this.crossings.map(crossing => ({...crossing})),
+          }
+        : this.snapshot()),
     };
   }
 
@@ -450,10 +507,8 @@ export class Railway {
       doorsOpen: false,
       passengers: 0,
     };
-    this.crossings = this.crossings.map(({id, x, z}) => ({
-      id,
-      x,
-      z,
+    this.crossings = this.crossings.map(crossing => ({
+      ...crossing,
       openness: 1,
       state: 'open',
       occupied: false,

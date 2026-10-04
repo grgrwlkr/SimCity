@@ -23,10 +23,38 @@ export interface RailwayCrossingLayout {
   id: number;
   x: number;
   z: number;
+  yaw?: number;
+  halfWidth?: number;
+  halfDepth?: number;
 }
 
 export function railwayCrossings(
   roads: readonly number[] = RAILWAY_ROAD_CENTERS,
 ): RailwayCrossingLayout[] {
   return roads.map((x, id) => ({id, x, z: RAILWAY_Z}));
+}
+
+/** Original south platform or north footbridge path, in the station's native frame. */
+export function railwayArrivalChain(
+  direction: 1 | -1,
+): Array<{x: number; z: number; y?: number}> {
+  const y = 1.4;
+
+  return direction === 1
+    ? [
+        {x: -34, z: -130, y},
+        {x: -24, z: -130, y},
+        {x: -24, z: -126.5},
+        {x: -24, z: -123.45},
+      ]
+    : [
+        {x: -34, z: -142, y},
+        {x: -33.7, z: -142, y},
+        {x: -44.5, z: -142, y: 7.35},
+        {x: -44.5, z: -130, y: 7.35},
+        {x: -33.7, z: -130, y},
+        {x: -24, z: -130, y},
+        {x: -24, z: -126.5},
+        {x: -24, z: -123.45},
+      ];
 }

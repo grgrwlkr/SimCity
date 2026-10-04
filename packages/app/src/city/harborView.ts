@@ -2,21 +2,61 @@ import * as THREE from 'three';
 import {Batch, geometries, material} from './primitives';
 import {propKit} from './assetKits';
 import {addParts, MovingAssets, propParts} from './assetParts';
-import {BERTHS, CARGO_CAPACITY, CARGO_SCALE, WAREHOUSES} from './harborLayout';
+import {
+  ORIGINAL_HARBOR_LAYOUT,
+  CARGO_CAPACITY,
+  CARGO_SCALE,
+  type HarborLayout,
+} from './harborLayout';
 import type {CargoPose, HarborSnapshot} from './harbor';
+import {nativePlacementTransform} from './nativeInfrastructurePlacement';
+import type {NativeInfrastructurePlacement} from './nativeInfrastructurePlacement';
 
-export function createHarborView(seed: string) {
+export function createHarborView(
+  seed: string,
+  options: {
+    layout?: HarborLayout;
+    worldFromLocal?: THREE.Matrix4;
+    placement?: NativeInfrastructurePlacement;
+  } = {},
+) {
+  const layout = options.layout ?? ORIGINAL_HARBOR_LAYOUT;
+  const placement = options.placement;
+  const placementTransform = placement
+    ? nativePlacementTransform(placement, {x: 85, z: 135})
+    : undefined;
+  const source = placement?.source ?? {x: 85, z: 135};
+  const worldFromLocal =
+    options.worldFromLocal ??
+    (placement
+      ? new THREE.Matrix4()
+          .makeTranslation(placement.center.x, 0, placement.center.z)
+          .multiply(new THREE.Matrix4().makeRotationY(placement.yaw))
+          .multiply(
+            new THREE.Matrix4().makeTranslation(-source.x, 0, -source.z),
+          )
+      : undefined);
   const group = new THREE.Group();
 
   group.name = 'working-harbor';
+
+  if (worldFromLocal) {
+    group.matrix.copy(worldFromLocal);
+    group.matrixAutoUpdate = false;
+  }
+
   const clipped: Array<{
     copy: THREE.MeshStandardMaterial;
     source: THREE.MeshStandardMaterial;
   }> = [];
   const boundaries = [
-    new THREE.Plane(new THREE.Vector3(1, 0, 0), 138.4),
-    new THREE.Plane(new THREE.Vector3(-1, 0, 0), 138.4),
+    new THREE.Plane(new THREE.Vector3(1, 0, 0), -layout.clipX[0]),
+    new THREE.Plane(new THREE.Vector3(-1, 0, 0), layout.clipX[1]),
   ];
+
+  if (worldFromLocal) {
+    boundaries.forEach(plane => plane.applyMatrix4(worldFromLocal));
+  }
 
   function clip(root: THREE.Object3D): void {
     root.traverse(object => {
@@ -80,8 +120,8 @@ export function createHarborView(seed: string) {
 
   function hoist(index: number) {
     const port = index < 2;
-    const warehouse = WAREHOUSES[index - 2];
-    const x = port ? BERTHS[index]! : warehouse!.x;
+    const warehouse = layout.warehouses[index - 2];
+    const x = port ? layout.berths[index]! : warehouse!.x;
     const z = port ? 143 : warehouse!.z + 2.5;
     const root = new THREE.Group();
 
@@ -182,11 +222,34 @@ export function createHarborView(seed: string) {
   return {
     group,
     update(snapshot: HarborSnapshot, seconds: number) {
+      if (placementTransform) {
+        const localPose = (pose: CargoPose): CargoPose => ({
+          ...placementTransform.toLocal(pose),
+          yaw: pose.yaw - placementTransform.yaw,
+        });
+
+        snapshot = {
+          ...snapshot,
+          ship: {
+            ...placementTransform.toLocal(snapshot.ship),
+            yaw:
+              (snapshot.ship.yaw ?? placementTransform.yaw) -
+              placementTransform.yaw,
+          },
+          hooks: snapshot.hooks.map(localPose),
+          cargo: snapshot.cargo.map(cargo => ({
+            ...cargo,
+            pose: localPose(cargo.pose),
+          })),
+        };
+      }
+
       ships.forEach((ship, index) => {
         ship.visible =
           snapshot.ship.visible &&
           index === (snapshot.ship.mode === 'import' ? 0 : 1);
         ship.position.set(snapshot.ship.x, 0.8, snapshot.ship.z);
+        ship.rotation.y = snapshot.ship.yaw ?? 0;
       });
 
       for (const matrix of cargoPoses) {

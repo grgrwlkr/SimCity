@@ -8,6 +8,10 @@ import type {CityBlock, CityBuilding} from '../generator';
 import type {Road, Bounds} from '../../region/model/types';
 import type {GraphRoadAccess, LifeProfile, PlaceKind, Point} from './types';
 import {z} from 'zod';
+import type {NativeEconomyDefinition} from './goodsEconomy';
+import {nativePlacementTransform} from '../nativeInfrastructurePlacement';
+import {RAILWAY_STATION_EXIT} from '../railwayLayout';
+import type {HarborNavigation} from '../harbor';
 
 /** Serializable input for the existing prototype topology compiler. */
 export interface PrototypeWorldDefinition {
@@ -41,6 +45,34 @@ export interface AuthoredEntry {
   readonly exit: GraphRoadAccess;
   readonly terminalFacilityId: number;
 }
+export interface AuthoredPublicSpace {
+  readonly id: string;
+  readonly municipalityId: string;
+  readonly sourceBlock: CityBlock;
+  readonly center: Point;
+  readonly yaw: number;
+  readonly readyAt?: number;
+  readonly startedAt?: number;
+}
+export interface NativePortPlacement {
+  readonly id: string;
+  readonly center: Point;
+  readonly yaw: number;
+  readonly source?: Point;
+  readonly warehouseBuildingIds: readonly string[];
+  readonly navigation?: HarborNavigation;
+}
+export interface NativeRailwayPlacement {
+  readonly id: string;
+  readonly center: Point;
+  readonly yaw: number;
+  readonly source?: Point;
+  readonly stationPlaceId: string;
+}
+export interface AuthoredInfrastructure {
+  readonly ports: readonly NativePortPlacement[];
+  readonly railways: readonly NativeRailwayPlacement[];
+}
 export interface AuthoredWorldDefinition {
   readonly version: 1;
   readonly kind: 'authored';
@@ -55,6 +87,9 @@ export interface AuthoredWorldDefinition {
   readonly startingCash?: number;
   readonly calendar?: NativeCalendar;
   readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly spaces?: readonly AuthoredPublicSpace[];
+  readonly infrastructure?: AuthoredInfrastructure;
+  readonly economy?: NativeEconomyDefinition;
 }
 export type CityWorldDefinition =
   PrototypeWorldDefinition | AuthoredWorldDefinition;
@@ -70,6 +105,9 @@ export interface AuthoredDefinitionOptions {
   readonly startingCash?: number;
   readonly calendar?: NativeCalendar;
   readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly spaces?: readonly AuthoredPublicSpace[];
+  readonly infrastructure?: AuthoredInfrastructure;
+  readonly economy?: NativeEconomyDefinition;
 }
 
 export interface CityLifeDefinitionOptions {
@@ -120,6 +158,10 @@ export function createAuthoredDefinition(
   const roads = options.roads ?? [];
   const placements = options.placements ?? [];
   const source = generateCity(seed);
+  const approvedProfile =
+    placements.length || options.infrastructure?.railways.length
+      ? createLifeProfile(source)
+      : null;
   const layout: CityLayout = {seed, blocks: [], buildings: []};
   const routing = new RegionRouting(layout, roads);
   const profile: LifeProfile = options.profile
@@ -206,6 +248,12 @@ export function createAuthoredDefinition(
       }
 
       const original = native.places.find(place => place.id === template.id)!;
+      const policy =
+        approvedProfile?.places.find(
+          place => place.id === template.id && place.kind === placement.kind,
+        ) ??
+        approvedProfile?.places.find(place => place.kind === placement.kind) ??
+        original;
       const door = transformPlacement(original.door, placement);
       const access = routing.access(
         door,
@@ -215,8 +263,15 @@ export function createAuthoredDefinition(
       );
       const place = {
         ...original,
+        price: policy.price,
+        wage: policy.wage,
+        education: policy.education,
+        open: policy.open,
+        close: policy.close,
         id: placement.id,
-        name: placement.name ?? original.name,
+        name:
+          placement.name ??
+          (placement.kind === 'school' ? policy.name : template.name),
         municipalityId: placement.municipalityId,
         kind: placement.kind,
         blockId,
@@ -224,7 +279,7 @@ export function createAuthoredDefinition(
         door,
         access,
         parking: null,
-        capacity: placement.capacity ?? original.capacity,
+        capacity: placement.capacity ?? policy.capacity,
       };
 
       profile.places.push(place);
@@ -360,6 +415,79 @@ export function createAuthoredDefinition(
     }
   }
 
+  for (const space of options.spaces ?? []) {
+    if (space.sourceBlock.district !== 'park') {
+      throw new Error('Публичный парк требует исходный парковый блок');
+    }
+
+    const c = Math.cos(space.yaw);
+    const s = Math.sin(space.yaw);
+    const transform = (point: Point): Point => ({
+      x:
+        space.center.x +
+        c * (point.x - space.sourceBlock.x) +
+        s * (point.z - space.sourceBlock.z),
+      z:
+        space.center.z -
+        s * (point.x - space.sourceBlock.x) +
+        c * (point.z - space.sourceBlock.z),
+      ...(point.y === undefined ? {} : {y: point.y}),
+    });
+
+    layout.blocks.push({...space.sourceBlock, id: space.id, ...space.center});
+
+    if (options.profile || (space.readyAt ?? 0) > (options.atSeconds ?? 0)) {
+      continue;
+    }
+
+    const native = createLifeProfile({
+      seed,
+      grid: CITY_GRID,
+      blocks: [space.sourceBlock],
+      buildings: [],
+    });
+    const source = native.places.find(place => place.kind === 'park')!;
+    const door = transform(source.door);
+
+    profile.places.push({
+      ...source,
+      id: space.id,
+      municipalityId: space.municipalityId,
+      blockId: space.id,
+      door,
+      access: routing.access(door, source.access.chain.slice(1).map(transform)),
+    });
+  }
+
+  for (const railway of options.infrastructure?.railways ?? []) {
+    if (profile.places.some(place => place.id === railway.stationPlaceId)) {
+      continue;
+    }
+
+    const original = approvedProfile?.places.find(
+      place => place.kind === 'station',
+    );
+
+    if (!original) {
+      throw new Error('Нет исходного нативного вокзала');
+    }
+
+    const transform = nativePlacementTransform(railway, {x: -34, z: -136});
+    const door = transform.toWorld(RAILWAY_STATION_EXIT);
+    const access = routing.access(door, [
+      transform.toWorld({x: -24, z: -123.45}),
+    ]);
+
+    profile.places.push({
+      ...original,
+      id: railway.stationPlaceId,
+      blockId: railway.id,
+      door,
+      access,
+      parking: null,
+    });
+  }
+
   if (options.profile) {
     layout.blocks.push(
       ...profile.layout.blocks.filter(
@@ -401,6 +529,9 @@ export function createAuthoredDefinition(
       : {startingCash: options.startingCash}),
     ...(options.calendar ? {calendar: options.calendar} : {}),
     ...(options.metadata ? {metadata: options.metadata} : {}),
+    ...(options.spaces ? {spaces: options.spaces} : {}),
+    ...(options.infrastructure ? {infrastructure: options.infrastructure} : {}),
+    ...(options.economy ? {economy: options.economy} : {}),
   };
 }
 
@@ -417,15 +548,18 @@ export function completeAuthoredConstruction(
     profile: undefined,
     atSeconds: seconds,
   });
-  const placementIds = new Set(
-    definition.placements.map(placement => placement.id),
-  );
+  const placementIds = new Set([
+    ...definition.placements.map(placement => placement.id),
+    ...(definition.spaces ?? []).map(space => space.id),
+  ]);
   const facilityMap = new Map<number, number>();
 
   for (const place of definition.profile.places.filter(
     place => !placementIds.has(place.id),
   )) {
-    next.profile.places.push(structuredClone(place));
+    if (!next.profile.places.some(other => other.id === place.id)) {
+      next.profile.places.push(structuredClone(place));
+    }
   }
 
   for (const original of definition.profile.facilities) {
