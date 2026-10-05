@@ -5,6 +5,14 @@ import type {
   AuthoredWorldDefinition,
 } from '../city/life/definition';
 import {RegionRouting} from '../city/life/regionRouting';
+import type {NativePortPlacement} from '../city/life/definition';
+import {
+  createNativePortWarehousePlacements,
+  nativePortFootprint,
+  nativePortRoads,
+} from '../city/life/nativeInfrastructure';
+import {nativePortNavigation} from '../city/nativePortNavigation';
+import {nativePlacementTransform} from '../city/nativeInfrastructurePlacement';
 import {parseRegion} from '../region/model/save';
 import {
   convexInteriorsOverlap,
@@ -12,9 +20,135 @@ import {
   rectangle,
 } from '../region/model/geometry';
 import type {Point, Road} from '../region/model/types';
+import type {Terrain} from '../region/model/types';
 
 export const AUTHORIZED_LEGACY_REPLAN_ID =
   'a9e39ac9-250e-4e50-84f8-1b45c2502c4d';
+
+interface ShorePort {
+  placement: NativePortPlacement;
+}
+
+/** Walk the shoreline and return the first fully legal port site: dry land lot,
+ *  quay inside bounds and a real whole-ship navigation route to the region edge. */
+function findShorePort(
+  terrain: Terrain,
+  towns: ReadonlyArray<{center: Point}>,
+  buildingFootprints: readonly Point[][],
+): ShorePort | null {
+  const distances = towns.map(town =>
+    Math.hypot(
+      town.center.x - (towns[0]?.center.x ?? 0),
+      town.center.z - (towns[0]?.center.z ?? 0),
+    ),
+  );
+  const order = terrain.water
+    .flatMap((polygon, waterIndex) => {
+      const edges: Array<{
+        mid: Point;
+        nx: number;
+        nz: number;
+        waterIndex: number;
+      }> = [];
+
+      for (let index = 0; index < polygon.length; index++) {
+        const a = polygon[index]!;
+        const b = polygon[(index + 1) % polygon.length]!;
+        const dx = b.x - a.x;
+        const dz = b.z - a.z;
+        const length = Math.hypot(dx, dz);
+
+        if (length < 60) {
+          continue;
+        }
+
+        edges.push({
+          mid: {x: (a.x + b.x) / 2, z: (a.z + b.z) / 2},
+          nx: -dz / length,
+          nz: dx / length,
+          waterIndex,
+        });
+      }
+
+      return edges;
+    })
+    .sort(
+      (first, second) =>
+        Math.hypot(
+          first.mid.x - (towns[0]?.center.x ?? 0),
+          first.mid.z - (towns[0]?.center.z ?? 0),
+        ) -
+        Math.hypot(
+          second.mid.x - (towns[0]?.center.x ?? 0),
+          second.mid.z - (towns[0]?.center.z ?? 0),
+        ),
+    );
+
+  void distances;
+
+  for (const edge of order) {
+    for (const side of [1, -1]) {
+      // The port anchor hugs the waterline: its quay reaches ~16 m past the
+      // anchor into the water, its warehouses stretch ~80 m behind it.
+      for (const push of [16, 20, 12, 24, 8, 28, 4, 32, 0, -8, -16]) {
+        const center = {
+          x: edge.mid.x + side * edge.nx * push,
+          z: edge.mid.z + side * edge.nz * push,
+        };
+
+        if (
+          towns.some(
+            town =>
+              Math.hypot(town.center.x - center.x, town.center.z - center.z) <
+              260,
+          )
+        ) {
+          continue;
+        }
+
+        // Face the open water mass, not the shoreline point itself.
+        const waterPoint = {
+          x: edge.mid.x + side * edge.nx * 60,
+          z: edge.mid.z + side * edge.nz * 60,
+        };
+        const toWater = {
+          x: waterPoint.x - center.x,
+          z: waterPoint.z - center.z,
+        };
+        const yaw = Math.atan2(toWater.x, toWater.z);
+        const placement: NativePortPlacement = {
+          id: 'native-port-migrated',
+          center,
+          yaw,
+          warehouseBuildingIds: [
+            'native-port-migrated/warehouse-0',
+            'native-port-migrated/warehouse-1',
+          ],
+        };
+        const land = nativePortFootprint(placement).land;
+
+        if (!isDryFootprint(terrain, land)) {
+          continue;
+        }
+        if (
+          buildingFootprints.some(shape => convexInteriorsOverlap(land, shape))
+        ) {
+          continue;
+        }
+
+        const navigation = nativePortNavigation(terrain, placement);
+
+        if (!navigation) {
+          continue;
+        }
+
+        return {placement: {...placement, navigation}};
+      }
+    }
+  }
+
+  return null;
+}
 
 /** The user authorized rebuilding this one acceptance save, never arbitrary manual worlds. */
 export function replanAuthorizedLegacyLayout(
@@ -76,6 +210,7 @@ export function replanAuthorizedLegacyLayout(
   const footprints: Point[][] = [];
   const placements: AuthoredPlacement[] = [];
   const joins: Point[] = [];
+  const townEastEdges: Point[] = [];
   const addRoad = (a: Point, b: Point): void => {
     const points = [a, b];
     const key = points
@@ -132,7 +267,7 @@ export function replanAuthorizedLegacyLayout(
     }
   };
 
-  const rowWidth = 240;
+  const rowWidth = 520;
   const gap = 1.5;
   const roadHalf = 4;
 
@@ -272,6 +407,10 @@ export function replanAuthorizedLegacyLayout(
 
     closeRow();
     joins.push({x: startX, z: junctionZ});
+    townEastEdges.push({
+      x: endX + roadHalf * 2,
+      z: junctionZ + (cursorZ - junctionZ) / 2,
+    });
 
     const west = {x: startX - roadHalf * 2, z: junctionZ};
 
@@ -322,11 +461,82 @@ export function replanAuthorizedLegacyLayout(
   const boundary = {x: state.terrain.bounds.minX + 4, z: first.z};
 
   addRoadChunked(boundary, {x: first.x - roadHalf * 2, z: first.z});
+
+  // The authorized world is «Город у воды»: scan the shoreline for a legal
+  // full-body port with real ship navigation, nearest to the first town.
+  // Inland water with no ship route to the edge simply gets no port.
+  const portCandidate = findShorePort(
+    state.terrain,
+    state.settlements,
+    footprints,
+  );
+  const infrastructure = portCandidate
+    ? {ports: [portCandidate.placement], railways: []}
+    : undefined;
+  const port = portCandidate?.placement;
+
+  if (port) {
+    const portRoads = nativePortRoads(port);
+    const warehouses = createNativePortWarehousePlacements(state.seed, port);
+
+    roads.push(...portRoads);
+    placements.push(...warehouses);
+
+    const portGate = nativePlacementTransform(port, {
+      x: 85,
+      z: 135,
+    }).toWorld({x: 85, z: 140});
+    const link = townEastEdges.reduce((best, edge) =>
+      Math.hypot(edge.x - portGate.x, edge.z - portGate.z) <
+      Math.hypot(best.x - portGate.x, best.z - portGate.z)
+        ? edge
+        : best,
+    );
+    const blocked = warehouses.map(warehouse =>
+      rectangle(
+        warehouse.center,
+        warehouse.template.width,
+        warehouse.template.depth,
+      ),
+    );
+    const clearTo = (target: Point): boolean => {
+      const samples = 24;
+
+      for (let index = 0; index <= samples; index++) {
+        const t = index / samples;
+        const point = {
+          x: link.x + (target.x - link.x) * t,
+          z: link.z + (target.z - link.z) * t,
+        };
+
+        if (
+          blocked.some(shape =>
+            convexInteriorsOverlap(rectangle(point, 8, 8), shape),
+          )
+        ) {
+          return false;
+        }
+      }
+
+      return true;
+    };
+    const gates = [
+      portGate,
+      ...portRoads.flatMap(road => [road.points[0]!, road.points.at(-1)!]),
+    ];
+    const gate = gates.find(candidate => clearTo(candidate));
+
+    if (gate) {
+      addRoadChunked(link, gate);
+    }
+  }
+
   const definition = createAuthoredDefinition({
     seed: state.seed,
     roads,
     placements,
     bounds: state.terrain.bounds,
+    ...(infrastructure ? {infrastructure} : {}),
     metadata: {
       legacyReplan: {
         authorizedId: state.id,

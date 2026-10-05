@@ -115,11 +115,9 @@ export class NativeRegionEditor {
         },
         listen,
       );
-    this.panel.querySelector('[data-action="overview"]')!.addEventListener(
-      'click',
-      () => options.runtime.viewRegion(),
-      listen,
-    );
+    this.panel
+      .querySelector('[data-action="overview"]')!
+      .addEventListener('click', () => options.runtime.viewRegion(), listen);
     this.panel.querySelector('#native-tax-rate')!.addEventListener(
       'change',
       event => {

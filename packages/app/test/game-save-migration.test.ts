@@ -73,7 +73,7 @@ describe('legacy native migration preflight', () => {
   });
 });
 
-function settledFixture() {
+export function settledFixture() {
   const state = flatFixture();
   const life = state.life;
 
@@ -284,6 +284,8 @@ describe('settled legacy import into one native authored world', () => {
       ),
     );
 
+    // The fixture pond is landlocked: the replan stays valid without a port.
+    expect(definition.infrastructure).toBeUndefined();
     expect(definition.placements.map(p => p.id)).toEqual([
       'building-1',
       'building-2',
@@ -583,5 +585,44 @@ describe('settled legacy import into one native authored world', () => {
         );
       }
     }
+  });
+
+  it('plants the original port on navigable water with warehouses and access roads', () => {
+    const state = {
+      ...settledFixture(),
+      id: AUTHORIZED_LEGACY_REPLAN_ID,
+      terrain: {
+        ...settledFixture().terrain,
+        water: [
+          [
+            {x: -2000, z: 640},
+            {x: 2000, z: 640},
+            {x: 2000, z: 820},
+            {x: -2000, z: 820},
+          ],
+        ],
+      },
+    };
+    const raw = serializeRegion(state);
+    const definition = replanAuthorizedLegacyLayout(raw);
+    const port = definition.infrastructure?.ports[0];
+
+    expect(port).toBeDefined();
+    expect(port?.navigation).toBeDefined();
+    expect(port?.warehouseBuildingIds).toHaveLength(2);
+    expect(
+      definition.placements.filter(p =>
+        p.id.startsWith('native-port-migrated/warehouse'),
+      ),
+    ).toHaveLength(2);
+    expect(
+      definition.roads.some(road => road.id.includes('native-port-migrated')),
+    ).toBe(true);
+    expect(
+      definition.roads.some(road =>
+        road.points.some(point => Math.abs(point.z - 640) < 300),
+      ),
+    ).toBe(true);
+    expect(definition.placements).toHaveLength(4);
   });
 });
