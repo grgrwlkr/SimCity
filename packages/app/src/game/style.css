@@ -39,7 +39,7 @@
   width: 245px;
   max-height: calc(100vh - 270px);
   overflow: auto;
-  padding: 16px;
+  padding: 16px 16px 28px;
   border-radius: 10px;
   background: #f5f6eff5;
   color: #29483e;
@@ -165,5 +165,9 @@
 .native-city.is-regional .masthead p,
 .native-city.is-regional .live-state,
 .native-city.is-regional #native-region-overview {
+  display: none;
+}
+/* A region frame keeps only the live object counter, not the diorama caption. */
+.native-city.is-regional .scene-caption span:first-child {
   display: none;
 }
