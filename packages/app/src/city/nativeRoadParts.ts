@@ -99,13 +99,23 @@ export function addAuthoredRoadDetails(
 ): void {
   const graph = buildRoadGraph(roads);
   const nodes = new Map(graph.nodes.map(node => [node.id, node.point]));
+  const degree = new Map<string, number>();
+
+  for (const edge of graph.edges) {
+    degree.set(edge.from, (degree.get(edge.from) ?? 0) + 1);
+  }
+
   const junctions: Array<{
     point: Point;
-    rays: Array<{direction: Point; length: number}>;
+    rays: Array<{direction: Point; length: number; far: string}>;
   }> = [];
 
   for (const node of graph.nodes) {
-    const rays: Array<{direction: Point; length: number}> = [];
+    const rays: Array<{
+      direction: Point;
+      length: number;
+      far: string;
+    }> = [];
     const connectedRoads = new Set<string>();
 
     for (const edge of graph.edges.filter(edge => edge.from === node.id)) {
@@ -120,15 +130,16 @@ export function addAuthoredRoadDetails(
       const sign =
         (to.x - node.point.x) * dx + (to.z - node.point.z) * dz >= 0 ? 1 : -1;
       const direction = {x: (sign * dx) / length, z: (sign * dz) / length};
+      const existing = rays.find(
+        ray =>
+          ray.direction.x * direction.x + ray.direction.z * direction.z >
+          1 - 1e-8,
+      );
 
-      if (
-        !rays.some(
-          ray =>
-            ray.direction.x * direction.x + ray.direction.z * direction.z >
-            1 - 1e-8,
-        )
-      ) {
-        rays.push({direction, length: edge.length});
+      if (existing) {
+        existing.length = Math.max(existing.length, length);
+      } else {
+        rays.push({direction, length, far: edge.to});
       }
     }
 
@@ -173,18 +184,51 @@ export function addAuthoredRoadDetails(
     }
   }
 
+  // A crossing belongs where people actually cross: never inside a stub that
+  // dead-ends just past a through junction, and never twice on one short span.
+  // An isolated model crossroad (every ray a dead end) keeps all four zebras,
+  // matching the original prototype cadence.
+  const placed: Array<{point: Point; direction: Point}> = [];
+
   for (const junction of junctions) {
-    for (const ray of junction.rays) {
-      if (ray.length >= CROSSWALK_OFFSET + 2.1 / 2) {
-        addNativeCrosswalk(
-          batch,
-          {
-            x: junction.point.x + ray.direction.x * CROSSWALK_OFFSET,
-            z: junction.point.z + ray.direction.z * CROSSWALK_OFFSET,
-          },
-          ray.direction,
-        );
+    const usable = junction.rays.filter(
+      ray => ray.length >= CROSSWALK_OFFSET + 2.1 / 2,
+    );
+    const stubs = usable.filter(
+      ray => degree.get(ray.far) === 1 && ray.length < CROSSWALK_OFFSET + 24,
+    );
+    const hasThrough = usable.length > stubs.length;
+
+    for (const ray of usable) {
+      if (hasThrough && stubs.includes(ray)) {
+        continue;
       }
+
+      const point = {
+        x: junction.point.x + ray.direction.x * CROSSWALK_OFFSET,
+        z: junction.point.z + ray.direction.z * CROSSWALK_OFFSET,
+      };
+
+      // Only approaches along the SAME street line can collide (two junctions
+      // too close together); the four approaches of one junction are 8.9 m
+      // apart laterally and are all legitimate.
+      if (
+        placed.some(other => {
+          const along =
+            Math.abs(other.direction.x * ray.direction.x) +
+            Math.abs(other.direction.z * ray.direction.z);
+
+          return (
+            along > 1.9 &&
+            Math.hypot(other.point.x - point.x, other.point.z - point.z) < 12
+          );
+        })
+      ) {
+        continue;
+      }
+
+      placed.push({point, direction: ray.direction});
+      addNativeCrosswalk(batch, point, ray.direction);
     }
   }
 }

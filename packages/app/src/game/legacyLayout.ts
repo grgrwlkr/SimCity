@@ -199,6 +199,21 @@ export function replanAuthorizedLegacyLayout(
         x: cursorX + template.width / 2,
         z: cursorZ + template.depth / 2,
       };
+
+      // The row ends at its street: an overflowing house wraps to the next row
+      // instead of leaning into the perimeter street.
+      if (center.x + template.width / 2 > endX) {
+        closeRow();
+
+        if (cursorZ > state.terrain.bounds.maxZ - 60) {
+          throw new Error(
+            'Полные нативные здания не помещаются на сухой земле этого тестового мира.',
+          );
+        }
+
+        continue;
+      }
+
       const footprint = rectangle(center, template.width, template.depth);
       const fits =
         isDryFootprint(state.terrain, footprint) &&

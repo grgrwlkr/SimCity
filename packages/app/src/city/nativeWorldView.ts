@@ -416,6 +416,27 @@ function createAuthoredView(
     occupied.push(rectangle(center, 420, 70, railway.yaw));
   }
 
+  // Streets claim their corridor too, so scattered vegetation never grows on asphalt.
+  for (const road of definition.roads) {
+    const [a, b] = road.points;
+
+    if (!a || !b) {
+      continue;
+    }
+
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+
+    occupied.push(
+      rectangle(
+        {x: (a.x + b.x) / 2, z: (a.z + b.z) / 2},
+        CITY_ROAD_WIDTH + 6,
+        Math.hypot(dx, dz) + 4,
+        Math.atan2(dx, dz),
+      ),
+    );
+  }
+
   const region = createNativeRegionView(
     definition.layout,
     geography ?? {
