@@ -1,4 +1,5 @@
 import {generateCity} from '../city/generator';
+import type {CityBuilding, CityLayout} from '../city/generator';
 import {createAuthoredDefinition} from '../city/life/definition';
 import type {
   AuthoredPlacement,
@@ -162,24 +163,38 @@ export function replanAuthorizedLegacyLayout(
     );
   }
 
-  const source = generateCity(state.seed);
-  const homes = source.buildings.filter(
-    b =>
+  // Several procedural source cities keep one assembly from repeating along a
+  // row: every pool below is drawn from the original generator, never invented.
+  const sources = [
+    generateCity(state.seed),
+    generateCity(`${state.seed}/v2`),
+    generateCity(`${state.seed}/v3`),
+  ];
+  const pool = (
+    test: (building: CityBuilding, city: CityLayout) => boolean,
+  ): Array<{template: CityBuilding; city: CityLayout}> =>
+    sources.flatMap(city =>
+      city.buildings
+        .filter(building => test(building, city))
+        .map(template => ({template, city})),
+    );
+  const homes = pool(
+    (b, city) =>
       b.district === 'residential' &&
       !b.plot &&
       b.floors >= 6 &&
-      b.z > source.blocks.find(block => block.id === b.blockId)!.z,
+      b.z > city.blocks.find(block => block.id === b.blockId)!.z,
   );
-  const shops = source.buildings.filter(
-    b =>
+  const shops = pool(
+    (b, city) =>
       b.district === 'commercial' &&
       b.floors >= 6 &&
-      b.z > source.blocks.find(block => block.id === b.blockId)!.z,
+      b.z > city.blocks.find(block => block.id === b.blockId)!.z,
   );
-  const factories = source.buildings.filter(
+  const factories = pool(
     b => b.district === 'industrial' && b.variant !== 'warehouse',
   );
-  const warehouses = source.buildings.filter(
+  const warehouses = pool(
     b => b.district === 'industrial' && b.variant === 'warehouse',
   );
 
@@ -194,15 +209,31 @@ export function replanAuthorizedLegacyLayout(
     );
   }
 
-  // Keep native underground parking eligibility while varying full source assemblies by stable address ID.
-  const chooseTemplate = (pool: typeof source.buildings, id: string) => {
+  // Keep native underground parking eligibility while varying full source
+  // assemblies by stable address ID; the recent-ring keeps neighbours distinct.
+  const RECENT_RING = 10;
+  const recent: string[] = [];
+  const chooseTemplate = (
+    candidates: typeof homes,
+    id: string,
+  ): (typeof homes)[number] => {
     let hash = 2166136261;
 
     for (const char of `${state.seed}/${id}`) {
       hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
     }
 
-    return pool[(hash >>> 0) % pool.length]!;
+    const start = (hash >>> 0) % candidates.length;
+
+    for (let offset = 0; offset < candidates.length; offset++) {
+      const entry = candidates[(start + offset) % candidates.length]!;
+
+      if (!recent.includes(entry.template.id)) {
+        return entry;
+      }
+    }
+
+    return candidates[start]!;
   };
 
   const roads: Road[] = [];
@@ -321,7 +352,7 @@ export function replanAuthorizedLegacyLayout(
 
     while (queue.length > 0) {
       const building = queue[0]!;
-      const pool =
+      const candidates =
         building.kind === 'residential'
           ? homes
           : building.kind === 'commercial'
@@ -329,7 +360,8 @@ export function replanAuthorizedLegacyLayout(
             : building.kind === 'industrial'
               ? factories
               : warehouses;
-      const template = chooseTemplate(pool, building.id);
+      const entry = chooseTemplate(candidates, building.id);
+      const template = entry.template;
       const center = {
         x: cursorX + template.width / 2,
         z: cursorZ + template.depth / 2,
@@ -375,11 +407,17 @@ export function replanAuthorizedLegacyLayout(
       }
 
       queue.shift();
+      recent.push(template.id);
+
+      if (recent.length > RECENT_RING) {
+        recent.shift();
+      }
+
       placements.push({
         id: building.id,
         municipalityId: town.id,
         template,
-        sourceBlock: source.blocks.find(
+        sourceBlock: entry.city.blocks.find(
           block => block.id === template.blockId,
         )!,
         center,

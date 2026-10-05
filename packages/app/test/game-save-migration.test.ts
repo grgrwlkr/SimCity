@@ -433,14 +433,42 @@ describe('settled legacy import into one native authored world', () => {
       true,
     );
     expect(new Set(warehouses.map(p => p.template.id)).size).toBeGreaterThan(1);
-    const source = generateCity(state.seed);
+    // The recent-ring must keep neighbours distinct: no triple run in a row.
+    const ids = result.placements.map(p => p.template.id);
+
+    for (let index = 2; index < ids.length; index++) {
+      expect(
+        ids[index - 2] === ids[index - 1] && ids[index - 1] === ids[index],
+        `triple run at ${ids[index]}`,
+      ).toBe(false);
+    }
+    // Assemblies may arrive from any of the migration's source cities; ids
+    // repeat across cities, so match by the whole template signature.
+    const sourceCities = [
+      generateCity(state.seed),
+      generateCity(`${state.seed}/v2`),
+      generateCity(`${state.seed}/v3`),
+    ];
+    const signature = (b: {
+      id: string;
+      color: string;
+      floors: number;
+      height: number;
+      width: number;
+      depth: number;
+    }) =>
+      `${b.id}|${b.color}|${b.floors}|${b.height}|${b.width.toFixed(3)}|${b.depth.toFixed(3)}`;
 
     for (const placement of result.placements) {
-      expect(placement.template).toEqual(
-        source.buildings.find(b => b.id === placement.template.id),
+      const origin = sourceCities.find(city =>
+        city.buildings.some(
+          b => signature(b) === signature(placement.template),
+        ),
       );
+
+      expect(origin).toBeDefined();
       expect(placement.sourceBlock).toEqual(
-        source.blocks.find(b => b.id === placement.template.blockId),
+        origin!.blocks.find(b => b.id === placement.template.blockId),
       );
     }
 
