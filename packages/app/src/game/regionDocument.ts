@@ -694,6 +694,10 @@ export function applyNativeEdit(
 
       const removedRoad = settlement?.townHall?.roadId ?? edit.id;
 
+      if ((document.zones ?? []).some(zone => zone.roadId === removedRoad)) {
+        throw new Error('Сначала снимите разметку зоны у дороги.');
+      }
+
       next = {
         ...document,
         settlements: document.settlements.filter(

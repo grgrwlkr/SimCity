@@ -147,6 +147,32 @@ describe('road zoning', () => {
     ).toHaveLength(0);
   });
 
+  it('forbids deleting a road while its strip is zoned', () => {
+    const {road, document} = zonedDocument(1);
+
+    expect(() =>
+      applyNativeEdit(document, {type: 'remove', id: road.id}, 1_000_000, 30),
+    ).toThrow('Сначала снимите разметку зоны');
+
+    const cleared = applyNativeEdit(
+      document,
+      {type: 'remove', id: document.zones![0]!.id},
+      1_000_000,
+      30,
+    ).document;
+    const afterRoadRemoval = applyNativeEdit(
+      cleared,
+      {type: 'remove', id: road.id},
+      1_000_000,
+      30,
+    ).document;
+
+    expect(afterRoadRemoval.roads.some(item => item.id === road.id)).toBe(
+      false,
+    );
+    expect(afterRoadRemoval.zones ?? []).toHaveLength(0);
+  });
+
   it('forbids placing a block on a marked strip', () => {
     const {road, document} = zonedDocument(1);
     const strip = zoneStrip({roadId: road.id, side: 1}, document.roads)!;
