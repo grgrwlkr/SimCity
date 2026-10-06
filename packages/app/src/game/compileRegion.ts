@@ -7,6 +7,13 @@ import {RegionRouting} from '../city/life/regionRouting';
 import {createNativePortWarehousePlacements} from '../city/life/nativeInfrastructure';
 import {CURB_PARKING} from '../city/life/streetParking';
 import type {ParkingFacility} from '../city/life/types';
+import {
+  convexInteriorsOverlap,
+  isDryFootprint,
+  rectangle,
+} from '../region/model/geometry';
+import {zoneStrip} from './regionDocument';
+import {packStreetStrip} from './assemblyPool';
 import type {NativeRegionDocument} from './regionDocument';
 
 /** Compile editor geometry into the same native places and parking that the worker consumes. */
@@ -58,6 +65,64 @@ export function compileNativeRegion(
     placements.push(
       ...createNativePortWarehousePlacements(document.seed, port),
     );
+  }
+
+  // Zones grow freestanding houses of their own size along the marked strip.
+  const packed: Array<{
+    center: {x: number; z: number};
+    width: number;
+    depth: number;
+  }> = [];
+
+  for (const placement of placements) {
+    packed.push({
+      center: placement.center,
+      width: placement.template.width,
+      depth: placement.template.depth,
+    });
+  }
+
+  for (const block of document.blocks) {
+    packed.push({center: block.center, width: 34, depth: 34});
+  }
+
+  for (const zone of document.zones ?? []) {
+    const strip = zoneStrip(zone, document.roads);
+
+    if (!strip || strip.length <= 12) {
+      continue;
+    }
+
+    const zonePlacements = packStreetStrip({
+      seed: document.seed,
+      district: zone.district,
+      origin: strip.origin,
+      direction: strip.direction,
+      length: strip.length,
+      municipalityId: zone.municipalityId,
+      idPrefix: zone.id,
+      startedAt: zone.startedAt,
+      duration: 60,
+      dry: (center, width, depth) =>
+        isDryFootprint(document.terrain, rectangle(center, width, depth)),
+      blocked: (center, width, depth) =>
+        packed.some(other =>
+          convexInteriorsOverlap(
+            rectangle(center, width, depth),
+            rectangle(other.center, other.width, other.depth),
+          ),
+        ),
+    });
+
+    placements.push(...zonePlacements);
+
+    for (const placement of zonePlacements) {
+      packed.push({
+        center: placement.center,
+        width: placement.template.width,
+        depth: placement.template.depth,
+      });
+    }
   }
 
   const base = createAuthoredDefinition({

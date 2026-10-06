@@ -442,6 +442,7 @@ describe('settled legacy import into one native authored world', () => {
         `triple run at ${ids[index]}`,
       ).toBe(false);
     }
+
     // Assemblies may arrive from any of the migration's source cities; ids
     // repeat across cities, so match by the whole template signature.
     const sourceCities = [

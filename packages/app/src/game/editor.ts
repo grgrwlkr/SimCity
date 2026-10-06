@@ -32,6 +32,9 @@ type Tool =
   | 'offices'
   | 'school'
   | 'park'
+  | 'zone-homes'
+  | 'zone-shops'
+  | 'zone-factories'
   | 'port'
   | 'railway'
   | 'entry'
@@ -60,7 +63,7 @@ export class NativeRegionEditor {
     this.host.classList.add('is-regional');
     this.panel.id = 'native-region-editor';
     this.panel.innerHTML =
-      '<nav aria-label="Масштаб игры"><button data-mode="region">Регион</button><button data-mode="city">Город</button><button data-action="overview">Весь регион</button></nav><div class="native-region-summary"><span id="native-region-budget"></span><span id="native-region-population"></span></div><section data-panel="growth" class="native-region-growth"><h2>Рост региона</h2><p id="native-growth-arrival" role="status"></p><dl class="native-growth-facts"><div><dt>Свободное жильё</dt><dd id="native-growth-housing"></dd></div><div><dt>Свободные места работы</dt><dd id="native-growth-jobs"></dd></div><div><dt>Безработные</dt><dd id="native-growth-unemployed"></dd></div></dl><ul id="native-town-growth"></ul><p id="native-growth-flow"></p><label for="native-tax-rate">Налог с продаж: <span id="native-tax-value"></span></label><input id="native-tax-rate" type="range" min="0" max="0.25" step="0.05"></section><section data-panel="region"><h2>Поселения</h2><div id="native-town-list"></div><label for="native-town-name">Новое поселение</label><input id="native-town-name" value="Поселение 1" maxlength="64"><div class="native-tools"><button data-tool="found">Основать поселение</button><button data-tool="road">Дорога</button><button data-tool="entry">Внешний въезд</button><button data-tool="port">Порт</button><button data-tool="railway">ЖД вокзал</button></div></section><section data-panel="city" hidden><select id="native-town-select" aria-label="Текущий город"></select><h2 id="native-town-heading"></h2><p id="native-town-radius"></p><div class="native-tools"><button data-tool="road">Дорога</button><button data-tool="houses">Частные дома</button><button data-tool="homes">Жилой квартал</button><button data-tool="shops">Торговля</button><button data-tool="factories">Производство</button><button data-tool="offices">Деловой квартал</button><button data-tool="school">Школа</button><button data-tool="park">Парк</button></div><details><summary>Развитие ратуши</summary><p id="native-hall-upgrade"></p><button data-action="upgrade">Улучшить ратушу</button></details></section><button data-action="rotate-placement">Повернуть объект 90°</button><div class="native-tools"><button data-tool="select">Выбор</button><button data-tool="remove">Снос</button></div><p id="native-editor-status" role="status">Выберите место ратуши; её дорога появится вместе с ней.</p>';
+      '<nav aria-label="Масштаб игры"><button data-mode="region">Регион</button><button data-mode="city">Город</button><button data-action="overview">Весь регион</button></nav><div class="native-region-summary"><span id="native-region-budget"></span><span id="native-region-population"></span></div><section data-panel="growth" class="native-region-growth"><h2>Рост региона</h2><p id="native-growth-arrival" role="status"></p><dl class="native-growth-facts"><div><dt>Свободное жильё</dt><dd id="native-growth-housing"></dd></div><div><dt>Свободные места работы</dt><dd id="native-growth-jobs"></dd></div><div><dt>Безработные</dt><dd id="native-growth-unemployed"></dd></div></dl><ul id="native-town-growth"></ul><p id="native-growth-flow"></p><label for="native-tax-rate">Налог с продаж: <span id="native-tax-value"></span></label><input id="native-tax-rate" type="range" min="0" max="0.25" step="0.05"></section><section data-panel="region"><h2>Поселения</h2><div id="native-town-list"></div><label for="native-town-name">Новое поселение</label><input id="native-town-name" value="Поселение 1" maxlength="64"><div class="native-tools"><button data-tool="found">Основать поселение</button><button data-tool="road">Дорога</button><button data-tool="entry">Внешний въезд</button><button data-tool="port">Порт</button><button data-tool="railway">ЖД вокзал</button></div></section><section data-panel="city" hidden><select id="native-town-select" aria-label="Текущий город"></select><h2 id="native-town-heading"></h2><p id="native-town-radius"></p><div class="native-tools"><button data-tool="road">Дорога</button><button data-tool="houses">Частные дома</button><button data-tool="homes">Жилой квартал</button><button data-tool="shops">Торговля</button><button data-tool="factories">Производство</button><button data-tool="offices">Деловой квартал</button><button data-tool="school">Школа</button><button data-tool="park">Парк</button></div><div class="native-tools"><button data-tool="zone-homes">Зона: жильё</button><button data-tool="zone-shops">Зона: торговля</button><button data-tool="zone-factories">Зона: производство</button></div><details><summary>Развитие ратуши</summary><p id="native-hall-upgrade"></p><button data-action="upgrade">Улучшить ратушу</button></details></section><button data-action="rotate-placement">Повернуть объект 90°</button><div class="native-tools"><button data-tool="select">Выбор</button><button data-tool="remove">Снос</button></div><p id="native-editor-status" role="status">Выберите место ратуши; её дорога появится вместе с ней.</p>';
     this.host.append(this.panel);
     const listen = {signal: this.lifetime.signal};
 
@@ -346,6 +349,13 @@ export class NativeRegionEditor {
         }
 
         return;
+      case 'zone-homes':
+      case 'zone-shops':
+      case 'zone-factories':
+        this.submitZone(point);
+
+        return;
+
       case 'school':
       case 'houses':
       case 'homes':
@@ -375,6 +385,53 @@ export class NativeRegionEditor {
           ...(this.tool === 'school' ? {service: 'school'} : {}),
         });
     }
+  }
+
+  /** The click side of the nearest street segment marks the zone side. */
+  private submitZone(point: Point): void {
+    if (!this.activeTown) {
+      this.message('Сначала выберите город.');
+
+      return;
+    }
+
+    const access = nearestRoadAccess(this.document.roads, point, 40);
+
+    if (!access) {
+      this.message('Кликните рядом с дорогой этого города.');
+
+      return;
+    }
+
+    const road = this.document.roads.find(item => item.id === access.roadId);
+
+    if (!road || road.points.length !== 2) {
+      this.message('Кликните рядом с дорогой этого города.');
+
+      return;
+    }
+
+    const a = road.points[0]!;
+    const b = road.points[1]!;
+    // The strip normal for side=+1 is (-dz, dx); the click sign of the cross
+    // product is opposite to it, hence the inversion.
+    const side =
+      (point.x - a.x) * (b.z - a.z) - (point.z - a.z) * (b.x - a.x) >= 0
+        ? -1
+        : 1;
+
+    this.submit({
+      type: 'zone',
+      roadId: access.roadId,
+      side,
+      district:
+        this.tool === 'zone-shops'
+          ? 'commercial'
+          : this.tool === 'zone-factories'
+            ? 'industrial'
+            : 'residential',
+      settlementId: this.activeTown,
+    });
   }
 
   private submit(action: NativeEdit): void {

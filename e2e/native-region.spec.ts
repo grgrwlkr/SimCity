@@ -596,3 +596,50 @@ test('an authored region renders varied prototype assemblies through day and nig
   });
   expect(errors).toEqual([]);
 });
+
+test('zoning grows a marked street side into original houses', async ({
+  page,
+}) => {
+  const errors: string[] = [];
+
+  page.on('pageerror', error => errors.push(error.message));
+  await start(page);
+  await found(page, 'Зона', {x: -1300, z: -500});
+  const town = (await readDocument(page)).settlements[0]!;
+  const roadA = {x: town.center.x - 64, z: town.center.z + 120};
+  const roadB = {x: town.center.x + 64, z: town.center.z + 120};
+
+  await road(page, roadA, roadB);
+  await tool(page, 'zone-homes');
+  await clickWorld(page, {x: town.center.x, z: town.center.z + 130});
+  await expect(page.locator('#native-editor-status')).toHaveText(
+    'Изменение применено.',
+  );
+
+  const zoned = await readDocument(page);
+
+  expect(zoned.zones).toHaveLength(1);
+  expect(zoned.zones![0]!.district).toBe('residential');
+
+  const zoneId = zoned.zones![0]!.id;
+  const grown = await page.evaluate(async zonePrefix => {
+    const saved = await window.__cityLife.save();
+
+    if (saved.version !== 3) {
+      throw new Error('Expected the authored native save');
+    }
+
+    return saved.definition.placements
+      .filter(placement => placement.id.startsWith(zonePrefix))
+      .map(placement => ({id: placement.id, readyAt: placement.readyAt}));
+  }, `${zoneId}/`);
+
+  expect(grown.length).toBeGreaterThan(3);
+  expect(grown.every(placement => placement.readyAt! > 0)).toBe(true);
+
+  await page.evaluate(() => window.__cityLife.advance(61));
+  const ready = await page.evaluate(() => window.__cityLife.save());
+
+  expect(ready.population.units.length).toBeGreaterThan(0);
+  expect(errors).toEqual([]);
+});

@@ -64,6 +64,15 @@ export interface NativeBlockPlacement {
     | undefined;
 }
 
+export interface NativeZonePlacement {
+  readonly id: string;
+  readonly municipalityId: string;
+  readonly roadId: string;
+  readonly side: 1 | -1;
+  readonly district: 'residential' | 'commercial' | 'industrial';
+  readonly startedAt: number;
+}
+
 export interface NativeRegionDocument {
   readonly kind: 'native-region-document';
   readonly version: 1;
@@ -72,6 +81,7 @@ export interface NativeRegionDocument {
   readonly taxRate?: number | undefined;
   readonly calendar?: NativeCalendar | undefined;
   readonly spaces?: readonly AuthoredPublicSpace[] | undefined;
+  readonly zones?: readonly NativeZonePlacement[] | undefined;
   readonly infrastructure?: AuthoredInfrastructure | undefined;
   readonly terrain: Terrain;
   readonly settlements: readonly Settlement[];
@@ -104,6 +114,13 @@ export type NativeEdit =
   | {type: 'entry'; roadId: string; endpoint: 'start' | 'end'}
   | {type: 'upgrade'; settlementId: string}
   | {type: 'tax'; rate: number}
+  | {
+      type: 'zone';
+      roadId: string;
+      side: 1 | -1;
+      district: 'residential' | 'commercial' | 'industrial';
+      settlementId: string;
+    }
   | {type: 'remove'; id: string};
 
 export interface NativeEditResult {
@@ -131,6 +148,56 @@ export function createNativeRegionDocument(
   };
 }
 
+const ZONE_OFFSET = 8;
+const ZONE_WIDTH = 26;
+const ZONE_END_MARGIN = 6;
+
+/** The buildable strip a road opens along one of its sides. */
+export function zoneStrip(
+  zone: Pick<NativeZonePlacement, 'roadId' | 'side'>,
+  roads: readonly Road[],
+): {origin: Point; direction: Point; length: number; contour: Point[]} | null {
+  const road = roads.find(item => item.id === zone.roadId);
+
+  if (!road || road.points.length !== 2) {
+    return null;
+  }
+
+  const a = road.points[0]!;
+  const b = road.points[1]!;
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  const roadLength = Math.hypot(dx, dz);
+  const direction = {x: dx / roadLength, z: dz / roadLength};
+  const normal = {x: -direction.z * zone.side, z: direction.x * zone.side};
+  const length = roadLength - 2 * ZONE_END_MARGIN;
+  const origin = {
+    x: a.x + direction.x * ZONE_END_MARGIN + normal.x * ZONE_OFFSET,
+    z: a.z + direction.z * ZONE_END_MARGIN + normal.z * ZONE_OFFSET,
+  };
+
+  return {
+    origin,
+    direction,
+    length,
+    contour: rectangle(
+      {
+        x: origin.x + direction.x * (length / 2) + normal.x * (ZONE_WIDTH / 2),
+        z: origin.z + direction.z * (length / 2) + normal.z * (ZONE_WIDTH / 2),
+      },
+      ZONE_WIDTH,
+      length,
+      Math.atan2(direction.x, direction.z),
+    ),
+  };
+}
+
+function zoneContours(document: NativeRegionDocument): Point[][] {
+  return (document.zones ?? [])
+    .map(zone => zoneStrip(zone, document.roads)?.contour)
+    .filter((contour): contour is Point[] => !!contour);
+}
+
 function assertLand(
   document: NativeRegionDocument,
   contour: readonly Point[],
@@ -145,6 +212,7 @@ function assertLand(
     (document.spaces ?? []).some(space =>
       polygonsOverlap(contour, rectangle(space.center, 34, 34, space.yaw)),
     ) ||
+    zoneContours(document).some(strip => polygonsOverlap(contour, strip)) ||
     (document.infrastructure?.ports ?? []).some(
       port =>
         polygonsOverlap(contour, nativePortFootprint(port).land) ||
@@ -377,6 +445,65 @@ export function applyNativeEdit(
       break;
     }
 
+    case 'zone': {
+      const road = document.roads.find(item => item.id === edit.roadId);
+
+      if (!road || road.points.length !== 2) {
+        throw new Error('Зона размечается вдоль существующей дороги.');
+      }
+      if (
+        (document.zones ?? []).some(
+          zone =>
+            zone.roadId === edit.roadId &&
+            zone.side === edit.side &&
+            zone.municipalityId === town?.id,
+        )
+      ) {
+        throw new Error('Эта сторона дороги уже размечена.');
+      }
+
+      const strip = zoneStrip(
+        {roadId: edit.roadId, side: edit.side},
+        document.roads,
+      );
+
+      if (!strip) {
+        throw new Error('Зона размечается вдоль существующей дороги.');
+      }
+
+      withinTown(strip.contour);
+      assertLand(document, strip.contour);
+
+      if (
+        document.roads.some(other => {
+          if (other.id === edit.roadId) {
+            return false;
+          }
+
+          return polygonsOverlap(
+            strip.contour,
+            roadContour(other.points, REGION_RULES.roadWidth),
+          );
+        })
+      ) {
+        throw new Error('Полоса зоны пересекает другую дорогу.');
+      }
+
+      const zone: NativeZonePlacement = {
+        id,
+        municipalityId: town!.id,
+        roadId: edit.roadId,
+        side: edit.side,
+        district: edit.district,
+        startedAt: seconds,
+      };
+
+      next = {...document, zones: [...(document.zones ?? []), zone]};
+      cost = 6000;
+      createdId = id;
+      break;
+    }
+
     case 'port': {
       const port = {
         id,
@@ -521,6 +648,15 @@ export function applyNativeEdit(
         railway => railway.id === edit.id,
       );
       const space = document.spaces?.find(space => space.id === edit.id);
+      const zone = document.zones?.find(zone => zone.id === edit.id);
+
+      if (zone) {
+        next = {
+          ...document,
+          zones: (document.zones ?? []).filter(item => item.id !== zone.id),
+        };
+        break;
+      }
 
       if (port || railway || space) {
         const roadIds = new Set(
@@ -646,6 +782,18 @@ const savedDocument = z.object({
         yaw: z.number().finite(),
         readyAt: z.number().nonnegative().optional(),
         startedAt: z.number().nonnegative().optional(),
+      }),
+    )
+    .optional(),
+  zones: z
+    .array(
+      z.object({
+        id: z.string(),
+        municipalityId: z.string(),
+        roadId: z.string(),
+        side: z.union([z.literal(1), z.literal(-1)]),
+        district: z.enum(['residential', 'commercial', 'industrial']),
+        startedAt: z.number().nonnegative(),
       }),
     )
     .optional(),
@@ -777,11 +925,12 @@ export function readNativeRegionDocument(
     return null;
   }
 
-  const {spaces, infrastructure, calendar, ...document} = parsed.data;
+  const {spaces, zones, infrastructure, calendar, ...document} = parsed.data;
 
   return {
     ...document,
     ...(calendar ? {calendar} : {}),
+    ...(zones ? {zones} : {}),
     ...(spaces
       ? {
           spaces: spaces.map(({readyAt, startedAt, ...space}) => ({
