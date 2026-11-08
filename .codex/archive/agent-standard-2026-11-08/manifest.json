@@ -1,0 +1,37 @@
+[
+  {
+    "source": "AGENTS.md",
+    "archive": ".codex/archive/agent-standard-2026-11-08/AGENTS.source.txt",
+    "kind": "file",
+    "sha256": "9999534c58e24e025aff0b11b0e53efa6b49ec83cd333e65044c846133cb05a5",
+    "source_commit": "625d887c76ff82ffe974968d2314c5a744e59cc8"
+  },
+  {
+    "source": "CLAUDE.md",
+    "archive": ".codex/archive/agent-standard-2026-11-08/CLAUDE.source.txt",
+    "kind": "file",
+    "sha256": "d5ce38c5c85d9365b3c4d4aae314339fea73c87a954e3a8f605ac7ce8787b3a9",
+    "source_commit": "625d887c76ff82ffe974968d2314c5a744e59cc8"
+  },
+  {
+    "source": "deprecated/AGENTS.md",
+    "archive": ".codex/archive/agent-standard-2026-11-08/deprecated/AGENTS.source.txt",
+    "kind": "file",
+    "sha256": "d9942f84488c33f9de0368b5dfc4f6636434f9d3d1cbd1501dd827d2b0679588",
+    "source_commit": "625d887c76ff82ffe974968d2314c5a744e59cc8"
+  },
+  {
+    "source": "deprecated/CLAUDE.md",
+    "archive": ".codex/archive/agent-standard-2026-11-08/deprecated/CLAUDE.source.txt",
+    "kind": "file",
+    "sha256": "9ddffedcfd34f86721cd6fbd1913c8f26be5977104809b078b71d93b60374746",
+    "source_commit": "625d887c76ff82ffe974968d2314c5a744e59cc8"
+  },
+  {
+    "source": "deprecated/.claude/skills/simcity-live/SKILL.md",
+    "archive": ".codex/archive/agent-standard-2026-11-08/deprecated/.claude/skills/simcity-live/SKILL.source.txt",
+    "kind": "file",
+    "sha256": "77dbbc0f7c98749a7b878068e250f29d7826acada41effa716ebde1c3f44d81e",
+    "source_commit": "625d887c76ff82ffe974968d2314c5a744e59cc8"
+  }
+]

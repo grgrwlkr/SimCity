@@ -1,0 +1,1 @@
+Committed source snapshots for this publication branch. They are not copies of unrelated unfinished local adaptations. source_commit and SHA-256 are recorded per input. Historical references are not active policy.
